@@ -4,7 +4,10 @@
 //! an input witness, not an invocation of the lowering module's private API.
 
 use std::{
-    path::Path,
+    collections::HashMap,
+    error::Error,
+    io,
+    path::{Path, PathBuf},
     sync::atomic::AtomicBool,
     thread,
     time::{Duration, Instant},
@@ -38,6 +41,16 @@ const TRANSCRIPT: &[u8] =
     include_bytes!("../../../frontends/typescript/tests/transcripts/golden.json");
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
+type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
+
+struct RemoveDirectoryOnDrop(PathBuf);
+
+impl Drop for RemoveDirectoryOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn report(source: &[u8]) -> Report {
     let digest = backend_frontend_typescript::legacy::source_digest(source)
         .iter()
@@ -54,18 +67,21 @@ fn report(source: &[u8]) -> Report {
     }
 }
 
-fn try_lower(
-    source: &'static [u8],
-    authority: Option<&Report>,
-) -> Result<backend_engine::driver::CompiledIr, CompileFailure<'static>> {
-    let toolchain = ResolvedToolchain::from_version(
+fn test_toolchain() -> TestResult<ResolvedToolchain<'static>> {
+    Ok(ResolvedToolchain::from_version(
         NativeTool::TypeScriptCompiler,
         Path::new("/bin/true"),
         b"typescript-authority-test",
-    )
-    .unwrap();
+    )?)
+}
+
+fn try_lower(
+    source: &'static [u8],
+    authority: Option<&Report>,
+) -> TestResult<backend_engine::driver::CompiledIr> {
+    let toolchain = test_toolchain()?;
     let diagnostic: &'static mut [u8] = Box::leak(Box::new([0; 4096]));
-    compile_ir(
+    Ok(compile_ir(
         CompileRequest {
             profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
             stage: Stage::LowerIr,
@@ -84,19 +100,14 @@ fn try_lower(
             diagnostic_output: diagnostic,
             native_work: Path::new("/tmp"),
         },
-    )
+    )?)
 }
 
-fn fragment(source: &'static [u8], authority: Option<&Report>) -> FragmentView<'static> {
-    let toolchain = ResolvedToolchain::from_version(
-        NativeTool::TypeScriptCompiler,
-        Path::new("/bin/true"),
-        b"typescript-authority-test",
-    )
-    .unwrap();
+fn fragment(source: &'static [u8], authority: Option<&Report>) -> TestResult<FragmentView<'static>> {
+    let toolchain = test_toolchain()?;
     let diagnostic: &'static mut [u8] = Box::leak(Box::new([0; 4096]));
     let output: &'static mut [u8] = Box::leak(vec![0; 8 * 1024 * 1024].into_boxed_slice());
-    compile(
+    let compiled = compile(
         CompileRequest {
             profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
             stage: Stage::LowerIr,
@@ -118,12 +129,11 @@ fn fragment(source: &'static [u8], authority: Option<&Report>) -> FragmentView<'
         CompileOutput {
             fragment_output: output,
         },
-    )
-    .unwrap()
-    .fragment
+    )?;
+    Ok(compiled.fragment)
 }
 
-fn view(source: &'static [u8], authority: Option<&Report>) -> FragmentView<'static> {
+fn view(source: &'static [u8], authority: Option<&Report>) -> TestResult<FragmentView<'static>> {
     match authority {
         Some(report) => fragment(source, Some(report)),
         None => {
@@ -152,35 +162,53 @@ fn entities(view: &FragmentView<'_>) -> Vec<(u32, Vec<u8>, EntityKind)> {
         })
         .collect()
 }
-fn named(view: &FragmentView<'_>, name: &[u8]) -> (u32, EntityKind) {
+fn named(view: &FragmentView<'_>, name: &[u8]) -> TestResult<(u32, EntityKind)> {
     entities(view)
         .into_iter()
         .find(|(_, n, _)| n == name)
         .map(|(id, _, kind)| (id, kind))
-        .unwrap()
+        .ok_or_else(|| io::Error::other(format!("fragment has no entity named {name:?}")))
+        .map_err(Into::into)
 }
 fn facts<'a>(view: &'a FragmentView<'a>) -> Vec<DecodedTypeFact<'a>> {
     view.type_facts().into_iter().flatten().flatten().collect()
 }
-fn fact<'a>(view: &'a FragmentView<'a>, owner: u32) -> DecodedTypeFact<'a> {
+fn fact<'a>(view: &'a FragmentView<'a>, owner: u32) -> TestResult<DecodedTypeFact<'a>> {
     facts(view)
         .into_iter()
         .find(|f| f.owner.raw == owner)
-        .unwrap()
+        .ok_or_else(|| io::Error::other(format!("fragment has no type fact for owner {owner}")))
+        .map_err(Into::into)
 }
 fn occurrences<'a>(view: &'a FragmentView<'a>) -> Vec<DecodedOccurrence<'a>> {
     view.occurrences().into_iter().flatten().flatten().collect()
 }
 
-fn token_span(source: &[u8], needle: &[u8]) -> (u32, u32) {
+fn require_some<T>(value: Option<T>, context: &str) -> TestResult<T> {
+    value.ok_or_else(|| io::Error::other(context.to_owned()).into())
+}
+
+fn join_test_thread<T>(result: thread::Result<T>, context: &str) -> TestResult<T> {
+    result.map_err(|payload| {
+        let detail = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&'static str>().copied())
+            .unwrap_or("non-string panic payload");
+        io::Error::other(format!("{context}: {detail}"))
+    })
+    .map_err(Into::into)
+}
+
+fn token_span(source: &[u8], needle: &[u8]) -> TestResult<(u32, u32)> {
     let start = source
         .windows(needle.len())
         .position(|window| window == needle)
-        .unwrap_or_else(|| panic!("missing token {needle:?}"));
-    (
-        u32::try_from(start).unwrap(),
-        u32::try_from(start + needle.len()).unwrap(),
-    )
+        .ok_or_else(|| io::Error::other(format!("missing token {needle:?}")))?;
+    Ok((
+        u32::try_from(start)?,
+        u32::try_from(start + needle.len())?,
+    ))
 }
 
 fn recover_site_bytes<'a>(
@@ -193,11 +221,16 @@ fn recover_site_bytes<'a>(
     &source[abs_start as usize..abs_end as usize]
 }
 
-fn property_token(source: &[u8], prefix: &[u8], token: &[u8]) -> u32 {
+fn property_token(source: &[u8], prefix: &[u8], token: &[u8]) -> TestResult<u32> {
     property_token_nth(source, prefix, token, 0)
 }
 
-fn property_token_nth(source: &[u8], prefix: &[u8], token: &[u8], index: usize) -> u32 {
+fn property_token_nth(
+    source: &[u8],
+    prefix: &[u8],
+    token: &[u8],
+    index: usize,
+) -> TestResult<u32> {
     let needle = [prefix, token].concat();
     let mut at = 0;
     for occurrence in 0..=index {
@@ -205,30 +238,54 @@ fn property_token_nth(source: &[u8], prefix: &[u8], token: &[u8], index: usize) 
             .windows(needle.len())
             .position(|window| window == needle.as_slice())
             .map(|offset| at + offset)
-            .unwrap_or_else(|| panic!("missing property token {prefix:?}.{token:?} #{index}"));
+            .ok_or_else(|| {
+                io::Error::other(format!("missing property token {prefix:?}.{token:?} #{index}"))
+            })?;
         if occurrence == index {
-            return u32::try_from(start + prefix.len()).unwrap();
+            return Ok(u32::try_from(start + prefix.len())?);
         }
         at = start + 1;
     }
-    unreachable!()
+    Err(io::Error::other("property token occurrence scan ended unexpectedly").into())
 }
 
 fn entity_decl_start(
     source: &'static [u8],
     authority: Option<&Report>,
     owner: u32,
-) -> u32 {
+) -> TestResult<u32> {
     let default = report(source);
     let authority = authority.unwrap_or(&default);
-    let compiled = try_lower(source, Some(authority)).expect("lower for owner source span");
+    let compiled = try_lower(source, Some(authority))?;
     compiled
         .ir
         .items()
         .find(|item| item.id().raw == owner)
         .and_then(|item| item.source())
-        .expect("owner declaration source span")
-        .start()
+        .map(|source| source.start())
+        .ok_or_else(|| io::Error::other(format!("owner {owner} has no declaration source span")).into())
+}
+
+fn entity_decl_starts(
+    source: &'static [u8],
+    authority: Option<&Report>,
+    occurrences: &[DecodedOccurrence<'_>],
+) -> TestResult<HashMap<u32, u32>> {
+    let default = report(source);
+    let authority = authority.unwrap_or(&default);
+    let compiled = try_lower(source, Some(authority))?;
+    let starts: HashMap<_, _> = compiled
+        .ir
+        .items()
+        .filter_map(|item| item.source().map(|span| (item.id().raw, span.start())))
+        .collect();
+    for occurrence in occurrences {
+        require_some(
+            starts.get(&occurrence.owner.raw),
+            "occurrence owner has no declaration source span",
+        )?;
+    }
+    Ok(starts)
 }
 
 fn assert_property_token_site(
@@ -237,8 +294,8 @@ fn assert_property_token_site(
     occurrence: &DecodedOccurrence<'_>,
     token: &[u8],
     token_start: u32,
-) {
-    let owner_decl_start = entity_decl_start(source, authority, occurrence.owner.raw);
+) -> TestResult<()> {
+    let owner_decl_start = entity_decl_start(source, authority, occurrence.owner.raw)?;
     assert_eq!(
         recover_site_bytes(source, owner_decl_start, occurrence),
         token,
@@ -249,6 +306,7 @@ fn assert_property_token_site(
         token_start,
         "absolute property token start must match the independently located token"
     );
+    Ok(())
 }
 
 fn entities_named(view: &FragmentView<'_>, name: &[u8], kind: EntityKind) -> Vec<u32> {
@@ -267,16 +325,11 @@ struct StackLowered {
 impl StackLowered {
     fn try_compile<'diagnostic>(
         source: &[u8],
+        toolchain: ResolvedToolchain<'_>,
         diagnostic: &'diagnostic mut [u8],
         fragment_output: &mut [u8],
     ) -> Result<usize, CompileFailure<'diagnostic>> {
         let authority = report(source);
-        let toolchain = ResolvedToolchain::from_version(
-            NativeTool::TypeScriptCompiler,
-            Path::new("/bin/true"),
-            b"typescript-authority-test",
-        )
-        .unwrap();
         let cancelled = AtomicBool::new(false);
         compile(
             CompileRequest {
@@ -302,29 +355,39 @@ impl StackLowered {
         .map(|compiled| compiled.fragment.as_ref().len())
     }
 
-    fn compile(source: &[u8]) -> Self {
+    fn compile(source: &[u8]) -> TestResult<Self> {
         let mut diagnostic = [0u8; 4096];
         let mut output = vec![0_u8; 8 * 1024 * 1024];
-        let len = Self::try_compile(source, &mut diagnostic, &mut output).unwrap();
-        FragmentView::validate(&output[..len]).expect("fragment validates");
-        Self { output, len }
+        let toolchain = test_toolchain()?;
+        let len = Self::try_compile(source, toolchain, &mut diagnostic, &mut output)
+            .map_err(|error| io::Error::other(format!("TypeScript test lowering failed: {error:?}")))?;
+        FragmentView::validate(&output[..len])?;
+        Ok(Self { output, len })
     }
 
-    fn view(&self) -> FragmentView<'_> {
-        FragmentView::validate(&self.output[..self.len]).expect("fragment validates")
+    fn view(&self) -> TestResult<FragmentView<'_>> {
+        Ok(FragmentView::validate(&self.output[..self.len])?)
     }
 }
 
-fn ir_tag_shape(ir: &backend_semantic::ir::Ir, id: backend_semantic::ir::TypeId) -> (SemanticTypeTag, u8) {
+fn ir_tag_shape(
+    ir: &backend_semantic::ir::Ir,
+    id: backend_semantic::ir::TypeId,
+) -> TestResult<(SemanticTypeTag, u8)> {
     use backend_semantic::ir::{ComputedType, ConcreteType, TypeExpr};
-    match ir.ty(id).unwrap() {
+    let expression = ir
+        .ty(id)
+        .ok_or_else(|| io::Error::other(format!("type id {id:?} has no admitted expression")))?;
+    let shape = match expression {
         TypeExpr::Concrete(ConcreteType::Builtin(_) | ConcreteType::Literal(_)) => {
             (SemanticTypeTag::Primitive, 0)
         }
         TypeExpr::Concrete(ConcreteType::Nominal(_)) => (SemanticTypeTag::Nominal, 0),
         TypeExpr::Concrete(ConcreteType::Applied { arguments, .. }) => (
             SemanticTypeTag::Apply,
-            ir.types(arguments).unwrap().len() as u8,
+            ir.types(arguments)
+                .ok_or_else(|| io::Error::other("applied type references a missing child list"))?
+                .len() as u8,
         ),
         TypeExpr::Concrete(ConcreteType::Function {
             parameters,
@@ -332,12 +395,21 @@ fn ir_tag_shape(ir: &backend_semantic::ir::Ir, id: backend_semantic::ir::TypeId)
             ..
         }) => (
             SemanticTypeTag::FunctionPointer,
-            (ir.tuple_elements(parameters).unwrap().len()
-                + ir.tuple_elements(results).unwrap().len()) as u8,
+            (ir.tuple_elements(parameters)
+                .ok_or_else(|| io::Error::other("function type references missing parameters"))?
+                .len()
+                + ir.tuple_elements(results)
+                    .ok_or_else(|| io::Error::other("function type references missing results"))?
+                    .len()) as u8,
         ),
         TypeExpr::Concrete(ConcreteType::Array { .. }) => (SemanticTypeTag::ArraySequence, 1),
         TypeExpr::Concrete(ConcreteType::Union(types)) => {
-            (SemanticTypeTag::Union, ir.types(types).unwrap().len() as u8)
+            (
+                SemanticTypeTag::Union,
+                ir.types(types)
+                    .ok_or_else(|| io::Error::other("union references a missing child list"))?
+                    .len() as u8,
+            )
         }
         TypeExpr::Concrete(_) => (SemanticTypeTag::Unknown, 0),
         TypeExpr::Unknown(_) => (SemanticTypeTag::Unknown, 0),
@@ -350,14 +422,19 @@ fn ir_tag_shape(ir: &backend_semantic::ir::Ir, id: backend_semantic::ir::TypeId)
         TypeExpr::Computed(ComputedType::Infer { .. }) => (SemanticTypeTag::TypeVar, 1),
         TypeExpr::Computed(ComputedType::TemplateLiteral(parts)) => (
             SemanticTypeTag::TemplateLiteral,
-            ir.template_parts(parts).unwrap().len() as u8,
+            ir.template_parts(parts)
+                .ok_or_else(|| io::Error::other("template type references missing parts"))?
+                .len() as u8,
         ),
         TypeExpr::Computed(ComputedType::Import { arguments, .. }) => (
             SemanticTypeTag::Apply,
-            ir.types(arguments).unwrap().len() as u8,
+            ir.types(arguments)
+                .ok_or_else(|| io::Error::other("import type references a missing child list"))?
+                .len() as u8,
         ),
         TypeExpr::Computed(ComputedType::Awaited(_)) => (SemanticTypeTag::Apply, 1),
-    }
+    };
+    Ok(shape)
 }
 
 fn expected_kind_matches(actual: backend_semantic::ir::ItemKind, expected: EntityKind) -> bool {
@@ -372,23 +449,25 @@ fn expected_kind_matches(actual: backend_semantic::ir::ItemKind, expected: Entit
 }
 
 #[test]
-fn declared_scalar_annotations_map_onto_lattice_records() {
-    let v = view(b"export const n: number = 1; export const s: string = 'x'; export const b: boolean = false;", None);
+fn declared_scalar_annotations_map_onto_lattice_records() -> TestResult<()> {
+    let v = view(b"export const n: number = 1; export const s: string = 'x'; export const b: boolean = false;", None)?;
     assert_eq!(
-        fact(&v, named(&v, b"n").0).record.payload0,
+        fact(&v, named(&v, b"n")?.0)?.record.payload0,
         u32::from(PrimitiveShape::Float)
     );
     assert_eq!(
-        fact(&v, named(&v, b"s").0).record.payload0,
+        fact(&v, named(&v, b"s")?.0)?.record.payload0,
         u32::from(PrimitiveShape::Str)
     );
     assert_eq!(
-        fact(&v, named(&v, b"b").0).record.payload0,
+        fact(&v, named(&v, b"b")?.0)?.record.payload0,
         u32::from(PrimitiveShape::Bool)
     );
+
+    Ok(())
 }
 #[test]
-fn ambient_async_transform_index_signatures_keep_distinct_object_owners() {
+fn ambient_async_transform_index_signatures_keep_distinct_object_owners() -> TestResult<()> {
     const SOURCE: &[u8] = br#"
 export interface Dictionary<T> {
     [key: string]: T;
@@ -405,7 +484,7 @@ export function transform<T, R, E = Error>(
 "#;
     let mut authority = report(SOURCE);
     authority.declaration_file = true;
-    let compiled = try_lower(SOURCE, Some(&authority)).expect("ambient index signatures lower");
+    let compiled = try_lower(SOURCE, Some(&authority))?;
     let fields: Vec<_> = compiled
         .ir
         .items()
@@ -420,7 +499,7 @@ export function transform<T, R, E = Error>(
         parents.push(parent);
         assert!(field.semantic_type().is_some());
     }
-    let decoded = view(SOURCE, Some(&authority));
+    let decoded = view(SOURCE, Some(&authority))?;
     assert_eq!(
         entities(&decoded)
             .iter()
@@ -428,43 +507,49 @@ export function transform<T, R, E = Error>(
             .count(),
         6
     );
+
+    Ok(())
 }
 
 #[test]
-fn mutually_recursive_interfaces_keep_diagonal_self_nominals_and_linked_members() {
+fn mutually_recursive_interfaces_keep_diagonal_self_nominals_and_linked_members() -> TestResult<()> {
     let v = view(
         b"export interface A { b: B; } export interface B { a: A; }",
         None,
-    );
+    )?;
     for n in [b"A".as_slice(), b"B".as_slice()] {
-        let (id, k) = named(&v, n);
+        let (id, k) = named(&v, n)?;
         assert_eq!(k, EntityKind::Trait);
         assert_eq!(
-            fact(&v, id).record.nominal,
+            fact(&v, id)?.record.nominal,
             Some(backend_semantic::ir::NominalRef::Local(backend_semantic::ir::EntityId::new(
                 id
             )))
         );
     }
+
+    Ok(())
 }
 #[test]
-fn structural_types_commit_union_intersection_tuple_array_and_apply_records() {
-    let v=view(b"export type U=string|number; export type I=string&number; export type T=[string,number]; export const a:number[]= [];",None);
+fn structural_types_commit_union_intersection_tuple_array_and_apply_records() -> TestResult<()> {
+    let v=view(b"export type U=string|number; export type I=string&number; export type T=[string,number]; export const a:number[]= [];",None)?;
     for (n, t, c) in [
         (b"U", SemanticTypeTag::Union, 2),
         (b"I", SemanticTypeTag::Intersection, 2),
         (b"T", SemanticTypeTag::Tuple, 2),
         (b"a", SemanticTypeTag::ArraySequence, 1),
     ] {
-        let f = fact(&v, named(&v, n).0);
+        let f = fact(&v, named(&v, n)?.0)?;
         assert_eq!(f.record.tag, t);
         assert_eq!(f.record.children.length, c);
     }
+
+    Ok(())
 }
 #[test]
-fn signatures_commit_parameter_and_result_facts_and_distinct_overloads() {
-    let v=view(b"export function f(x:number,y:string):boolean{return true;} declare function g(x:string):void; declare function g(x:number):void;",None);
-    assert_eq!(fact(&v, named(&v, b"f").0).record.children.length, 3);
+fn signatures_commit_parameter_and_result_facts_and_distinct_overloads() -> TestResult<()> {
+    let v=view(b"export function f(x:number,y:string):boolean{return true;} declare function g(x:string):void; declare function g(x:number):void;",None)?;
+    assert_eq!(fact(&v, named(&v, b"f")?.0)?.record.children.length, 3);
     assert_eq!(
         entities(&v)
             .into_iter()
@@ -472,11 +557,13 @@ fn signatures_commit_parameter_and_result_facts_and_distinct_overloads() {
             .count(),
         2
     );
+
+    Ok(())
 }
 #[test]
-fn references_resolve_local_import_and_unresolved_targets() {
-    let v=view(b"import { foreign } from 'pkg'; export interface Shape { area(): number; } export const s: Shape = foreign(); export const broken = missingGlobal;",None);
-    let (_, k) = named(&v, b"foreign");
+fn references_resolve_local_import_and_unresolved_targets() -> TestResult<()> {
+    let v=view(b"import { foreign } from 'pkg'; export interface Shape { area(): number; } export const s: Shape = foreign(); export const broken = missingGlobal;",None)?;
+    let (_, k) = named(&v, b"foreign")?;
     assert_eq!(k, EntityKind::Reexport);
     assert!(
         occurrences(&v)
@@ -484,30 +571,34 @@ fn references_resolve_local_import_and_unresolved_targets() {
             .any(|o| o.occurrence.kind == ReferenceKind::Import
                 && o.occurrence.confidence == OccurrenceConfidence::Import)
     );
-    let (s, _) = named(&v, b"s");
+    let (s, _) = named(&v, b"s")?;
     assert!(
         occurrences(&v)
             .iter()
             .any(|o| o.owner.raw == s && o.occurrence.confidence == OccurrenceConfidence::Index)
     );
+
+    Ok(())
 }
 #[test]
-fn jsdoc_commits_text_code_and_local_link_fragments() {
+fn jsdoc_commits_text_code_and_local_link_fragments() -> TestResult<()> {
     let v = view(
         b"/** Checks {@code x} and {@link Shape}. */ export interface Shape {}",
         None,
-    );
+    )?;
     assert!(v.docs().is_some());
+
+    Ok(())
 }
 #[test]
-fn a_jsdoc_line_with_seventeen_code_tags_keeps_every_tag() {
+fn a_jsdoc_line_with_seventeen_code_tags_keeps_every_tag() -> TestResult<()> {
     let mut source = b"/** ".to_vec();
     for index in 0..17 {
         source.extend_from_slice(format!("{{@code {index}}} ").as_bytes());
     }
     source.extend_from_slice(b"*/\nexport interface Wide {}\n");
     let source: &'static [u8] = Box::leak(source.into_boxed_slice());
-    let view = view(source, None);
+    let view = view(source, None)?;
     let mut docs = view.docs().expect("docs");
     let mut codes = 0_usize;
     while let Some(fact) = docs.next() {
@@ -517,23 +608,27 @@ fn a_jsdoc_line_with_seventeen_code_tags_keeps_every_tag() {
         }
     }
     assert_eq!(codes, 17);
+
+    Ok(())
 }
 
 #[test]
-fn absent_jsdoc_commits_no_documentation_section() {
-    let v = view(b"export interface Plain {}", None);
+fn absent_jsdoc_commits_no_documentation_section() -> TestResult<()> {
+    let v = view(b"export interface Plain {}", None)?;
     assert!(v.docs().is_none());
+
+    Ok(())
 }
 #[test]
-fn template_literal_mapped_and_conditional_records_commit_their_tags() {
-    let v=view(b"export type Lit=`pre${string}post`; export type Branch=string extends string ? number : boolean;",None);
+fn template_literal_mapped_and_conditional_records_commit_their_tags() -> TestResult<()> {
+    let v=view(b"export type Lit=`pre${string}post`; export type Branch=string extends string ? number : boolean;",None)?;
     assert_eq!(
-        fact(&v, named(&v, b"Lit").0).record.tag,
+        fact(&v, named(&v, b"Lit")?.0)?.record.tag,
         SemanticTypeTag::TemplateLiteral
     );
-    assert_eq!(fact(&v, named(&v, b"Branch").0).record.children.length, 4);
-    let lit_owner = named(&v, b"Lit").0;
-    let branch_owner = named(&v, b"Branch").0;
+    assert_eq!(fact(&v, named(&v, b"Branch")?.0)?.record.children.length, 4);
+    let lit_owner = named(&v, b"Lit")?.0;
+    let branch_owner = named(&v, b"Branch")?.0;
     assert!(facts(&v).iter().any(|f| {
         f.owner.raw == lit_owner
             && f.record.tag == SemanticTypeTag::TemplateLiteral
@@ -544,18 +639,20 @@ fn template_literal_mapped_and_conditional_records_commit_their_tags() {
             && f.record.tag == SemanticTypeTag::Conditional
             && f.record.children.length == 4
     }));
+
+    Ok(())
 }
 
 #[test]
-fn decoded_computed_records_retain_mapped_modifiers_and_literal_bases() {
+fn decoded_computed_records_retain_mapped_modifiers_and_literal_bases() -> TestResult<()> {
     let source =
         b"export type M={ readonly [K in string]?: number }; export type L=\"ok\"|42|1n|true;";
-    let v = view(source, None);
-    let mapped_owner = named(&v, b"M").0;
+    let v = view(source, None)?;
+    let mapped_owner = named(&v, b"M")?.0;
     let mapped = facts(&v)
         .into_iter()
         .find(|f| f.owner.raw == mapped_owner && f.record.tag == SemanticTypeTag::Mapped)
-        .unwrap();
+        .ok_or_else(|| io::Error::other("mapped type fact is missing"))?;
     assert_eq!(mapped.record.children.length, 2);
     assert_eq!(mapped.record.payload0, 0);
     assert_eq!(mapped.record.payload1, 0);
@@ -571,35 +668,43 @@ fn decoded_computed_records_retain_mapped_modifiers_and_literal_bases() {
     let mut sorted = bases;
     sorted.sort_unstable();
     assert_eq!(sorted, vec![0, 1, 2, 3]);
+
+    Ok(())
 }
 #[test]
-fn anonymous_object_literals_commit_named_member_children() {
+fn anonymous_object_literals_commit_named_member_children() -> TestResult<()> {
     let v = view(
         b"export const p: { readonly a: string; b?: number } = {a:'x',b:1};",
         None,
-    );
+    )?;
     assert_eq!(
-        fact(&v, named(&v, b"p").0).record.tag,
+        fact(&v, named(&v, b"p")?.0)?.record.tag,
         SemanticTypeTag::AnonymousRecord
     );
-    assert_eq!(fact(&v, named(&v, b"p").0).record.children.length, 2);
+    assert_eq!(fact(&v, named(&v, b"p")?.0)?.record.children.length, 2);
+
+    Ok(())
 }
 #[test]
-fn single_declaration_owns_its_annotation_without_synthetic_rows() {
-    let v = view(b"export const only: number = 1;", None);
+fn single_declaration_owns_its_annotation_without_synthetic_rows() -> TestResult<()> {
+    let v = view(b"export const only: number = 1;", None)?;
     assert_eq!(entities(&v).len(), 1);
     assert_eq!(
-        fact(&v, named(&v, b"only").0).record.payload1,
+        fact(&v, named(&v, b"only")?.0)?.record.payload1,
         TypeWidth::Fixed(64).to_cell()
     );
+
+    Ok(())
 }
 #[test]
-fn foreign_generic_reference_is_unknown_without_checker_module_authority() {
-    let v = view(b"export const m: Map<string, number> = new Map();", None);
-    let f = fact(&v, named(&v, b"m").0);
+fn foreign_generic_reference_is_unknown_without_checker_module_authority() -> TestResult<()> {
+    let v = view(b"export const m: Map<string, number> = new Map();", None)?;
+    let f = fact(&v, named(&v, b"m")?.0)?;
     assert_eq!(f.record.tag, SemanticTypeTag::Unknown);
     assert_eq!(f.record.payload0, u32::from(TypeReason::UnresolvedExternal));
     assert_eq!(f.record.text, Some(&b"Map"[..]));
+
+    Ok(())
 }
 
 /// Syntactic type lowering recurses once per object-literal nesting level,
@@ -609,7 +714,7 @@ fn foreign_generic_reference_is_unknown_without_checker_module_authority() {
 /// per frame) overflowed that stack; twelve levels overflowed it before the
 /// child lane moved to the heap.
 #[test]
-fn nested_object_literal_types_lower_on_a_small_stack() {
+fn nested_object_literal_types_lower_on_a_small_stack() -> TestResult<()> {
     const LEVELS: usize = 12;
     let mut source = String::from("export type Deep = ");
     for level in 0..LEVELS {
@@ -627,46 +732,49 @@ fn nested_object_literal_types_lower_on_a_small_stack() {
             let authority = report(source);
             try_lower(source, Some(&authority)).is_ok()
         })
-        .unwrap()
-        .join()
-        .unwrap();
+        ?;
+    let lowered = join_test_thread(lowered.join(), "small-stack lowering worker panicked")?;
     assert!(lowered, "nested object literal type must lower");
+
+    Ok(())
 }
 
 #[test]
-fn self_referential_alias_is_bounded_on_a_small_stack() {
+fn self_referential_alias_is_bounded_on_a_small_stack() -> TestResult<()> {
     const SOURCE: &[u8] = b"export type A = A | false; export const x: A = false;";
     let join = thread::Builder::new()
         .stack_size(2 * 1024 * 1024)
-        .spawn(|| {
+        .spawn(|| -> TestResult<_> {
             let checker = Checker::default()
                 .run(TypeScriptSource::TypeScript, SOURCE)
-                .unwrap();
-            let view = view(SOURCE, Some(&checker));
-            let owner = named(&view, b"x").0;
+                ?;
+            let view = view(SOURCE, Some(&checker))?;
+            let owner = named(&view, b"x")?.0;
             let record = facts(&view)
                 .into_iter()
                 .find(|record| {
                     record.owner.raw == owner
                         && record.segment == backend_semantic::ir::TypeFactSegment::Computed
                 })
-                .unwrap();
-            (
+                .ok_or_else(|| io::Error::other("recursive alias computed fact is missing"))?;
+            Ok((
                 record.record.tag,
                 TypeReason::try_from(record.record.payload0).ok(),
-            )
+            ))
         })
-        .unwrap()
-        .join()
-        .unwrap();
+        ?
+        .join();
+    let join = join_test_thread(join, "recursive-alias stack worker panicked")??;
     assert_eq!(
         join,
         (SemanticTypeTag::Unknown, Some(TypeReason::DynamicallyTyped))
     );
+
+    Ok(())
 }
 
 #[test]
-fn plugin_union_keeps_all_forty_literal_members_reachable() {
+fn plugin_union_keeps_all_forty_literal_members_reachable() -> TestResult<()> {
     const SOURCE: &[u8] = b"export const Plugin = null;";
     let mut checker = report(SOURCE);
     checker.declarations = Box::new([backend_frontend_typescript::legacy::Declaration {
@@ -683,17 +791,19 @@ fn plugin_union_keeps_all_forty_literal_members_reachable() {
                 .collect(),
         }),
     }]);
-    let view = view(SOURCE, Some(&checker));
+    let view = view(SOURCE, Some(&checker))?;
     let literals = facts(&view)
         .into_iter()
         .filter(|record| record.segment == backend_semantic::ir::TypeFactSegment::Computed)
         .filter(|record| record.record.tag == SemanticTypeTag::Primitive)
         .count();
     assert_eq!(literals, 40);
+
+    Ok(())
 }
 
 #[test]
-fn checker_mapped_types_map_their_modifier_vocabularies_and_as_child_exactly() {
+fn checker_mapped_types_map_their_modifier_vocabularies_and_as_child_exactly() -> TestResult<()> {
     const SOURCE: &[u8] = b"export type added = { +readonly [K in string as number]+?: boolean };\nexport type removed = { -readonly [K in string]-?: boolean };\nexport type preserved = { [K in string]: boolean };";
     let primitive = |name: &str| TypeTree::Primitive {
         name: name.to_owned(),
@@ -742,7 +852,7 @@ fn checker_mapped_types_map_their_modifier_vocabularies_and_as_child_exactly() {
             false,
         ),
     ]);
-    let view = view(SOURCE, Some(&checker));
+    let view = view(SOURCE, Some(&checker))?;
     for (name, readonly, optional, children) in [
         (
             b"added".as_slice(),
@@ -763,7 +873,7 @@ fn checker_mapped_types_map_their_modifier_vocabularies_and_as_child_exactly() {
             2,
         ),
     ] {
-        let owner = named(&view, name).0;
+        let owner = named(&view, name)?.0;
         let row = facts(&view)
             .into_iter()
             .find(|row| {
@@ -776,13 +886,15 @@ fn checker_mapped_types_map_their_modifier_vocabularies_and_as_child_exactly() {
         assert_eq!(row.record.payload1, u32::from(optional));
         assert_eq!(row.record.children.length, children);
     }
+
+    Ok(())
 }
 
 #[test]
-fn direct_mapped_conditional_key_does_not_fabricate_an_optional_modifier() {
+fn direct_mapped_conditional_key_does_not_fabricate_an_optional_modifier() -> TestResult<()> {
     const SOURCE: &[u8] = b"export type table<T, U, X, Y, V> = { [K in T extends U ? X : Y]: V };";
-    let view = view(SOURCE, None);
-    let owner = named(&view, b"table").0;
+    let view = view(SOURCE, None)?;
+    let owner = named(&view, b"table")?.0;
     let mapped = facts(&view)
         .into_iter()
         .find(|row| row.owner.raw == owner && row.record.tag == SemanticTypeTag::Mapped)
@@ -791,74 +903,92 @@ fn direct_mapped_conditional_key_does_not_fabricate_an_optional_modifier() {
         mapped.record.payload1,
         u32::from(backend_semantic::ir::LatticeMappedModifier::Absent)
     );
+
+    Ok(())
 }
 #[test]
 fn empty_source_admits_the_current_schema_fragment_without_semantic_data() {
     assert!(try_lower(b"", Some(&report(b""))).is_err());
 }
 #[test]
-fn oxc_bound_symbols_fill_the_canonical_declaration_lane() {
+fn oxc_bound_symbols_fill_the_canonical_declaration_lane() -> TestResult<()> {
     let v = view(
         b"import { foreign } from 'pkg'; export class Box {} export const value = foreign;",
         None,
-    );
+    )?;
     assert_eq!(entities(&v).len(), 3);
-    assert_eq!(named(&v, b"Box").1, EntityKind::Record);
+    assert_eq!(named(&v, b"Box")?.1, EntityKind::Record);
+
+    Ok(())
 }
 #[test]
-fn oxc_interface_is_never_rewritten_as_a_record() {
-    let v = view(b"export interface Shape { area(): number; }", None);
-    let (id, k) = named(&v, b"Shape");
+fn oxc_interface_is_never_rewritten_as_a_record() -> TestResult<()> {
+    let v = view(b"export interface Shape { area(): number; }", None)?;
+    let (id, k) = named(&v, b"Shape")?;
     assert_eq!(k, EntityKind::Trait);
-    assert_eq!(fact(&v, id).record.tag, SemanticTypeTag::Nominal);
+    assert_eq!(fact(&v, id)?.record.tag, SemanticTypeTag::Nominal);
+
+    Ok(())
 }
 
 #[test]
-fn golden_computed_cells_fill_extension_facts_with_checker_rows() {
-    let r = Checker::default().decode(TRANSCRIPT).unwrap();
-    assert!(try_lower(SOURCE, Some(&r)).unwrap().ir.entity_count() > 0);
+fn golden_computed_cells_fill_extension_facts_with_checker_rows() -> TestResult<()> {
+    let r = Checker::default().decode(TRANSCRIPT)?;
+    assert!(try_lower(SOURCE, Some(&r))?.ir.entity_count() > 0);
+
+    Ok(())
 }
 #[test]
-fn golden_inferred_const_and_union_records_match_the_checker() {
-    let r = Checker::default().decode(TRANSCRIPT).unwrap();
-    assert!(try_lower(SOURCE, Some(&r)).unwrap().ir.entity_count() >= 2);
+fn golden_inferred_const_and_union_records_match_the_checker() -> TestResult<()> {
+    let r = Checker::default().decode(TRANSCRIPT)?;
+    assert!(try_lower(SOURCE, Some(&r))?.ir.entity_count() >= 2);
+
+    Ok(())
 }
 #[test]
-fn golden_foreign_generic_base_names_the_resolved_spelling() {
-    let r = Checker::default().decode(TRANSCRIPT).unwrap();
-    assert!(try_lower(SOURCE, Some(&r)).unwrap().ir.entity_count() >= 5);
+fn golden_foreign_generic_base_names_the_resolved_spelling() -> TestResult<()> {
+    let r = Checker::default().decode(TRANSCRIPT)?;
+    assert!(try_lower(SOURCE, Some(&r))?.ir.entity_count() >= 5);
+
+    Ok(())
 }
 #[test]
-fn golden_this_type_and_local_nominal_computed_rows_bind_by_name() {
-    let r = Checker::default().decode(TRANSCRIPT).unwrap();
-    assert!(try_lower(SOURCE, Some(&r)).unwrap().ir.entity_count() >= 10);
+fn golden_this_type_and_local_nominal_computed_rows_bind_by_name() -> TestResult<()> {
+    let r = Checker::default().decode(TRANSCRIPT)?;
+    assert!(try_lower(SOURCE, Some(&r))?.ir.entity_count() >= 10);
+
+    Ok(())
 }
 #[test]
-fn golden_oracle_confidence_picks_distinct_overload_targets() {
-    let r = Checker::default().decode(TRANSCRIPT).unwrap();
-    assert!(try_lower(SOURCE, Some(&r)).unwrap().ir.entity_count() >= 10);
+fn golden_oracle_confidence_picks_distinct_overload_targets() -> TestResult<()> {
+    let r = Checker::default().decode(TRANSCRIPT)?;
+    assert!(try_lower(SOURCE, Some(&r))?.ir.entity_count() >= 10);
+
+    Ok(())
 }
 #[test]
-fn golden_narrowing_extends_the_declared_fact_with_a_site_row() {
-    let r = Checker::default().decode(TRANSCRIPT).unwrap();
-    assert!(try_lower(SOURCE, Some(&r)).unwrap().ir.entity_count() >= 10);
+fn golden_narrowing_extends_the_declared_fact_with_a_site_row() -> TestResult<()> {
+    let r = Checker::default().decode(TRANSCRIPT)?;
+    assert!(try_lower(SOURCE, Some(&r))?.ir.entity_count() >= 10);
+
+    Ok(())
 }
 
 #[test]
-fn computed_reference_to_earlier_fact_resolves_locally() {
-    let report = Checker::default().decode(TRANSCRIPT).unwrap();
-    let compiled = try_lower(SOURCE, Some(&report)).unwrap();
+fn computed_reference_to_earlier_fact_resolves_locally() -> TestResult<()> {
+    let report = Checker::default().decode(TRANSCRIPT)?;
+    let compiled = try_lower(SOURCE, Some(&report))?;
     let box_id = compiled
         .ir
         .items()
         .find(|item| item.name() == b"Box" && item.kind() == ItemKind::Record)
-        .unwrap()
+        .ok_or_else(|| io::Error::other("compiled TypeScript IR is missing the Box record"))?
         .id();
     let made_id = compiled
         .ir
         .items()
         .find(|item| item.name() == b"made" && item.kind() == ItemKind::Constant)
-        .unwrap()
+        .ok_or_else(|| io::Error::other("compiled TypeScript IR is missing the made constant"))?
         .id();
     assert!(
         compiled
@@ -872,9 +1002,11 @@ fn computed_reference_to_earlier_fact_resolves_locally() {
         "the observed made -> Box reference must remain in the TypeScript extension plane"
     );
     assert_ne!(box_id, made_id);
+
+    Ok(())
 }
 #[test]
-fn narrowing_object_members_bind_spellings_at_the_assignment_site() {
+fn narrowing_object_members_bind_spellings_at_the_assignment_site() -> TestResult<()> {
     let mut r = report(b"let wide: number = 0;\nwide = { alpha: 1 };");
     r.narrowings = Box::new([backend_frontend_typescript::legacy::Narrowing {
         name_start: 4,
@@ -892,43 +1024,51 @@ fn narrowing_object_members_bind_spellings_at_the_assignment_site() {
             }],
         }),
     }]);
-    let v = view(b"let wide: number = 0;\nwide = { alpha: 1 };", Some(&r));
+    let v = view(b"let wide: number = 0;\nwide = { alpha: 1 };", Some(&r))?;
     assert!(
         facts(&v)
             .iter()
             .any(|f| f.record.tag == SemanticTypeTag::AnonymousRecord)
     );
+
+    Ok(())
 }
 #[test]
-fn checker_resolved_global_reaches_an_oracle_universe_key() {
-    let v = view(b"export const term = console;", None);
+fn checker_resolved_global_reaches_an_oracle_universe_key() -> TestResult<()> {
+    let v = view(b"export const term = console;", None)?;
     assert!(
         occurrences(&v)
             .iter()
             .any(|o| matches!(o.occurrence.target, OccurrenceTarget::Foreign(_)))
     );
+
+    Ok(())
 }
 #[test]
-fn package_module_bases_stay_honestly_syntactic() {
-    let v = view(b"export const q = missing;", None);
+fn package_module_bases_stay_honestly_syntactic() -> TestResult<()> {
+    let v = view(b"export const q = missing;", None)?;
     assert!(
         occurrences(&v)
             .iter()
             .any(|o| o.occurrence.confidence == OccurrenceConfidence::Syntactic)
     );
+
+    Ok(())
 }
 #[test]
-fn checker_only_property_call_targets_the_exact_member() {
+fn checker_only_property_call_targets_the_exact_member() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Box { tick(): number { return 1; } } export const box = new Box(); export const t = box.tick();";
-    let v = view(SOURCE, None);
-    let tick_property_start = property_token(SOURCE, b"box.", b"tick");
+    let v = view(SOURCE, None)?;
+    let resolved_occurrences = occurrences(&v);
+    let source_starts = entity_decl_starts(SOURCE, None, &resolved_occurrences)?;
+    let tick_property_start = property_token(SOURCE, b"box.", b"tick")?;
     let tick_call = occurrences(&v)
         .into_iter()
         .find(|o| {
             o.occurrence.kind == ReferenceKind::FunctionCall
                 && recover_site_bytes(
                     SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    source_starts[&o.owner.raw],
                     o,
                 ) == b"tick"
         })
@@ -946,8 +1086,8 @@ fn checker_only_property_call_targets_the_exact_member() {
             panic!("box.tick() must stay a syntactic foreign property call")
         }
     }
-    assert_eq!(tick_call.owner.raw, named(&v, b"t").0);
-    assert_property_token_site(SOURCE, None, &tick_call, b"tick", tick_property_start);
+    assert_eq!(tick_call.owner.raw, named(&v, b"t")?.0);
+    assert_property_token_site(SOURCE, None, &tick_call, b"tick", tick_property_start)?;
     assert_eq!(
         occurrences(&v)
             .iter()
@@ -955,7 +1095,7 @@ fn checker_only_property_call_targets_the_exact_member() {
                 o.occurrence.kind == ReferenceKind::FunctionCall
                     && recover_site_bytes(
                         SOURCE,
-                        entity_decl_start(SOURCE, None, o.owner.raw),
+                        source_starts[&o.owner.raw],
                         o,
                     ) == b"tick"
             })
@@ -963,16 +1103,18 @@ fn checker_only_property_call_targets_the_exact_member() {
         1,
         "box.tick() must be the sole property-call site on tick"
     );
+
+    Ok(())
 }
 
 #[test]
-fn this_field_read_targets_the_enclosing_class_field() {
+fn this_field_read_targets_the_enclosing_class_field() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Point { score: number; read(): number { return this.score; } }";
-    let v = view(SOURCE, None);
-    let (score_field, _) = named(&v, b"score");
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let v = view(SOURCE, None)?;
+    let (score_field, _) = named(&v, b"score")?;
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let field_reads: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -985,18 +1127,20 @@ fn this_field_read_targets_the_enclosing_class_field() {
         OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score_field))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn nested_same_name_field_inside_type_literal_does_not_shadow_class_member() {
+fn nested_same_name_field_inside_type_literal_does_not_shadow_class_member() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Point { score: number; meta: { score: string }; read(): number { return this.score; } }";
-    let v = view(SOURCE, None);
+    let v = view(SOURCE, None)?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let point_score = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let field_reads: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1011,18 +1155,20 @@ fn nested_same_name_field_inside_type_literal_does_not_shadow_class_member() {
     assert_ne!(site.occurrence.target, OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score_fields[1])));
     assert!(!matches!(site.occurrence.target, OccurrenceTarget::Foreign(_)));
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn nested_same_name_field_inside_nested_class_does_not_shadow_class_member() {
+fn nested_same_name_field_inside_nested_class_does_not_shadow_class_member() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Point { score: number; host(): void { class Inner { score: number; } } read(): number { return this.score; } }";
-    let v = view(SOURCE, None);
+    let v = view(SOURCE, None)?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let point_score = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let field_reads: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1035,20 +1181,22 @@ fn nested_same_name_field_inside_nested_class_does_not_shadow_class_member() {
         OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(point_score))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn this_field_read_stays_inside_its_enclosing_class() {
+fn this_field_read_stays_inside_its_enclosing_class() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Point { score: number; read(): number { return this.score; } } export class Other { score: number; read(): number { return this.score; } }";
-    let v = view(SOURCE, None);
+    let v = view(SOURCE, None)?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 2);
     let other_read = read_owners[1];
     let other_score = score_fields[1];
-    let other_score_token_start = property_token_nth(SOURCE, b"this.", b"score", 1);
+    let other_score_token_start = property_token_nth(SOURCE, b"this.", b"score", 1)?;
     let other_read_site = occurrences(&v)
         .into_iter()
         .find(|o| o.owner.raw == other_read)
@@ -1063,15 +1211,17 @@ fn this_field_read_stays_inside_its_enclosing_class() {
         &other_read_site,
         b"score",
         other_score_token_start,
-    );
+    )?;
+
+    Ok(())
 }
 
 #[test]
-fn this_method_call_targets_the_enclosing_class_method() {
+fn this_method_call_targets_the_enclosing_class_method() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Client { send(): number { return this.send(); } }";
-    let v = view(SOURCE, None);
-    let (send_method, _) = named(&v, b"send");
-    let send_token_start = property_token(SOURCE, b"this.", b"send");
+    let v = view(SOURCE, None)?;
+    let (send_method, _) = named(&v, b"send")?;
+    let send_token_start = property_token(SOURCE, b"this.", b"send")?;
     let calls: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -1084,7 +1234,7 @@ fn this_method_call_targets_the_enclosing_class_method() {
         OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(send_method))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, site, b"send", send_token_start);
+    assert_property_token_site(SOURCE, None, site, b"send", send_token_start)?;
     assert!(
         !occurrences(&v).iter().any(|o| {
             o.occurrence.kind == ReferenceKind::FieldAccess
@@ -1094,18 +1244,20 @@ fn this_method_call_targets_the_enclosing_class_method() {
                 )
         })
     );
+
+    Ok(())
 }
 
 #[test]
-fn this_inherited_field_resolves_to_base_score() {
+fn this_inherited_field_resolves_to_base_score() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { score: number; } export class Child extends Base { read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     let base_score = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let site = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1117,19 +1269,21 @@ fn this_inherited_field_resolves_to_base_score() {
         OccurrenceTarget::Local(EntityId::new(base_score))
     );
     assert_eq!(site[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &site[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &site[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn this_inherited_field_resolves_to_grand_score() {
+fn this_inherited_field_resolves_to_grand_score() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Grand { score: number; } export class Base extends Grand { } export class Child extends Base { read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     let grand_score = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let site = occurrences(&v)
         .into_iter()
         .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1140,21 +1294,23 @@ fn this_inherited_field_resolves_to_grand_score() {
         OccurrenceTarget::Local(EntityId::new(grand_score))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &site, b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &site, b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn this_inherited_field_child_shadows_base_score() {
+fn this_inherited_field_child_shadows_base_score() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { score: number; } export class Child extends Base { score: number; read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let base_score = score_fields[0];
     let child_score = score_fields[1];
     assert_ne!(base_score, child_score);
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let site = occurrences(&v)
         .into_iter()
         .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1169,21 +1325,23 @@ fn this_inherited_field_child_shadows_base_score() {
         OccurrenceTarget::Local(EntityId::new(base_score))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &site, b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &site, b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn this_inherited_field_unrelated_class_does_not_steal() {
+fn this_inherited_field_unrelated_class_does_not_steal() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { score: number; } export class Base { score: number; } export class Child extends Base { read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let other_score = score_fields[0];
     let base_score = score_fields[1];
     assert_ne!(other_score, base_score);
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let site = occurrences(&v)
         .into_iter()
         .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1198,20 +1356,22 @@ fn this_inherited_field_unrelated_class_does_not_steal() {
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &site, b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &site, b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn parameter_property_public_read_targets_same_class_score() {
+fn parameter_property_public_read_targets_same_class_score() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { constructor(public score: number) {} read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     let score_field = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1223,21 +1383,23 @@ fn parameter_property_public_read_targets_same_class_score() {
         OccurrenceTarget::Local(EntityId::new(score_field))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn parameter_property_private_keyword_read_targets_same_class_score() {
+fn parameter_property_private_keyword_read_targets_same_class_score() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { constructor(private score: number) {} read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     assert!(entities_named(&v, b"#score", EntityKind::Field).is_empty());
     let score_field = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1249,20 +1411,22 @@ fn parameter_property_private_keyword_read_targets_same_class_score() {
         OccurrenceTarget::Local(EntityId::new(score_field))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn parameter_property_protected_read_targets_same_class_score() {
+fn parameter_property_protected_read_targets_same_class_score() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { constructor(protected score: number) {} read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     let score_field = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1274,20 +1438,22 @@ fn parameter_property_protected_read_targets_same_class_score() {
         OccurrenceTarget::Local(EntityId::new(score_field))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn parameter_property_readonly_read_targets_same_class_score() {
+fn parameter_property_readonly_read_targets_same_class_score() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { constructor(readonly score: number) {} read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     let score_field = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1299,18 +1465,20 @@ fn parameter_property_readonly_read_targets_same_class_score() {
         OccurrenceTarget::Local(EntityId::new(score_field))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn parameter_property_ordinary_parameter_stays_syntactic() {
+fn parameter_property_ordinary_parameter_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { constructor(score: number) {} read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     assert!(entities_named(&v, b"score", EntityKind::Field).is_empty());
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1332,21 +1500,23 @@ fn parameter_property_ordinary_parameter_stays_syntactic() {
             panic!("ordinary constructor parameter must stay syntactic foreign")
         }
     }
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn parameter_property_child_read_targets_base_score_not_other() {
+fn parameter_property_child_read_targets_base_score_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { constructor(public score: number) {} } export class Base { constructor(public score: number) {} } export class Child extends Base { read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let other_score = score_fields[0];
     let base_score = score_fields[1];
     assert_ne!(other_score, base_score);
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1362,21 +1532,23 @@ fn parameter_property_child_read_targets_base_score_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn parameter_property_child_own_score_wins_over_base() {
+fn parameter_property_child_own_score_wins_over_base() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { constructor(public score: number) {} } export class Base { constructor(public score: number) {} } export class Child extends Base { constructor(public score: number) {} read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 3);
     let other_score = score_fields[0];
     let base_score = score_fields[1];
     let child_score = score_fields[2];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1396,20 +1568,22 @@ fn parameter_property_child_own_score_wins_over_base() {
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn accessor_field_read_targets_same_class_score() {
+fn accessor_field_read_targets_same_class_score() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { accessor score = 1; read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     let score_field = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1421,20 +1595,22 @@ fn accessor_field_read_targets_same_class_score() {
         OccurrenceTarget::Local(EntityId::new(score_field))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn accessor_private_field_read_targets_same_class_score() {
+fn accessor_private_field_read_targets_same_class_score() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { accessor #score = 1; read(): number { return this.#score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"#score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     let score_field = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"#score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"#score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1446,25 +1622,27 @@ fn accessor_private_field_read_targets_same_class_score() {
         OccurrenceTarget::Local(EntityId::new(score_field))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start)?;
     let calls: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .collect();
     assert_eq!(calls.len(), 0);
+
+    Ok(())
 }
 
 #[test]
-fn accessor_static_field_read_targets_same_class_score() {
+fn accessor_static_field_read_targets_same_class_score() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { static accessor score = 1; static read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     let score_field = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1476,21 +1654,23 @@ fn accessor_static_field_read_targets_same_class_score() {
         OccurrenceTarget::Local(EntityId::new(score_field))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn accessor_child_read_targets_base_score_not_other() {
+fn accessor_child_read_targets_base_score_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { accessor score = 9; } export class Base { accessor score = 1; } export class Child extends Base { read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let other_score = score_fields[0];
     let base_score = score_fields[1];
     assert_ne!(other_score, base_score);
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1506,21 +1686,23 @@ fn accessor_child_read_targets_base_score_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn accessor_child_own_score_wins_over_base() {
+fn accessor_child_own_score_wins_over_base() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { accessor score = 9; } export class Base { accessor score = 1; } export class Child extends Base { accessor score = 2; read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 3);
     let other_score = score_fields[0];
     let base_score = score_fields[1];
     let child_score = score_fields[2];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1540,22 +1722,24 @@ fn accessor_child_own_score_wins_over_base() {
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn accessor_public_keyword_read_targets_same_class_score() {
+fn accessor_public_keyword_read_targets_same_class_score() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { public accessor score = 1; read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     assert!(entities_named(&v, b"public", EntityKind::Field).is_empty());
     assert!(entities_named(&v, b"accessor", EntityKind::Field).is_empty());
     let score_field = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1567,21 +1751,23 @@ fn accessor_public_keyword_read_targets_same_class_score() {
         OccurrenceTarget::Local(EntityId::new(score_field))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn getter_setter_read_targets_getter_not_setter() {
+fn getter_setter_read_targets_getter_not_setter() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { get score(): number { return 1; } set score(value: number) {} read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_functions = entities_named(&v, b"score", EntityKind::Function);
     assert_eq!(score_functions.len(), 2);
     let getter = score_functions[0];
     let setter = score_functions[1];
     assert_ne!(getter, setter);
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let field_reads: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1598,25 +1784,27 @@ fn getter_setter_read_targets_getter_not_setter() {
         OccurrenceTarget::Local(EntityId::new(setter))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start)?;
     let calls: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .collect();
     assert_eq!(calls.len(), 0);
+
+    Ok(())
 }
 
 #[test]
-fn getter_only_read_targets_getter() {
+fn getter_only_read_targets_getter() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { get score(): number { return 1; } read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_functions = entities_named(&v, b"score", EntityKind::Function);
     assert_eq!(score_functions.len(), 1);
     let getter = score_functions[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let field_reads: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1629,25 +1817,27 @@ fn getter_only_read_targets_getter() {
         OccurrenceTarget::Local(EntityId::new(getter))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start)?;
     let calls: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .collect();
     assert_eq!(calls.len(), 0);
+
+    Ok(())
 }
 
 #[test]
-fn setter_only_read_targets_setter() {
+fn setter_only_read_targets_setter() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { set score(value: number) {} read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_functions = entities_named(&v, b"score", EntityKind::Function);
     assert_eq!(score_functions.len(), 1);
     let setter = score_functions[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let field_reads: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1660,26 +1850,28 @@ fn setter_only_read_targets_setter() {
         OccurrenceTarget::Local(EntityId::new(setter))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start)?;
     let calls: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .collect();
     assert_eq!(calls.len(), 0);
+
+    Ok(())
 }
 
 #[test]
-fn getter_setter_call_targets_getter_not_setter() {
+fn getter_setter_call_targets_getter_not_setter() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { get score(): number { return 1; } set score(value: number) {} read(): number { return this.score(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_functions = entities_named(&v, b"score", EntityKind::Function);
     assert_eq!(score_functions.len(), 2);
     let getter = score_functions[0];
     let setter = score_functions[1];
     assert_ne!(getter, setter);
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let calls: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -1696,19 +1888,21 @@ fn getter_setter_call_targets_getter_not_setter() {
         OccurrenceTarget::Local(EntityId::new(setter))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start)?;
     let field_reads: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
         .collect();
     assert_eq!(field_reads.len(), 0);
+
+    Ok(())
 }
 
 #[test]
-fn getter_setter_child_read_targets_child_getter() {
+fn getter_setter_child_read_targets_child_getter() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { get score(): number { return 9; } set score(value: number) {} } export class Base { get score(): number { return 1; } set score(value: number) {} } export class Child extends Base { get score(): number { return 2; } set score(value: number) {} read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_functions = entities_named(&v, b"score", EntityKind::Function);
     assert_eq!(score_functions.len(), 6);
     let other_getter = score_functions[0];
@@ -1720,8 +1914,8 @@ fn getter_setter_child_read_targets_child_getter() {
     assert_ne!(other_getter, other_setter);
     assert_ne!(base_getter, base_setter);
     assert_ne!(child_getter, child_setter);
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let field_reads: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1746,14 +1940,16 @@ fn getter_setter_child_read_targets_child_getter() {
         OccurrenceTarget::Local(EntityId::new(other_getter))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn getter_setter_child_read_targets_base_getter_not_setter() {
+fn getter_setter_child_read_targets_base_getter_not_setter() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { get score(): number { return 9; } set score(value: number) {} } export class Base { get score(): number { return 1; } set score(value: number) {} } export class Child extends Base { read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_functions = entities_named(&v, b"score", EntityKind::Function);
     assert_eq!(score_functions.len(), 4);
     let other_getter = score_functions[0];
@@ -1762,8 +1958,8 @@ fn getter_setter_child_read_targets_base_getter_not_setter() {
     let base_setter = score_functions[3];
     assert_ne!(other_getter, other_setter);
     assert_ne!(base_getter, base_setter);
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let field_reads: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1784,25 +1980,27 @@ fn getter_setter_child_read_targets_base_getter_not_setter() {
         OccurrenceTarget::Local(EntityId::new(other_getter))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start)?;
     assert_ne!(
         site.occurrence.target,
         OccurrenceTarget::Local(EntityId::new(other_setter))
     );
+
+    Ok(())
 }
 
 #[test]
-fn getter_setter_read_targets_getter_when_setter_is_declared_first() {
+fn getter_setter_read_targets_getter_when_setter_is_declared_first() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { set score(value: number) {} get score(): number { return 1; } read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_functions = entities_named(&v, b"score", EntityKind::Function);
     assert_eq!(score_functions.len(), 2);
     let setter = score_functions[0];
     let getter = score_functions[1];
     assert_ne!(setter, getter);
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1818,21 +2016,23 @@ fn getter_setter_read_targets_getter_when_setter_is_declared_first() {
         OccurrenceTarget::Local(EntityId::new(setter))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .count();
     assert_eq!(calls, 0);
+
+    Ok(())
 }
 
 #[test]
-fn parameter_property_object_literal_inside_constructor_is_not_the_field() {
+fn parameter_property_object_literal_inside_constructor_is_not_the_field() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { constructor() { const box = { score: 1 }; } read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1854,20 +2054,22 @@ fn parameter_property_object_literal_inside_constructor_is_not_the_field() {
             panic!("object-literal score inside constructor must not bind this.score")
         }
     }
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn parameter_property_nested_class_targets_inner_score() {
+fn parameter_property_nested_class_targets_inner_score() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Outer { constructor(public score: number) {} } export class Inner { constructor(public score: number) {} read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let outer_score = score_fields[0];
     let inner_score = score_fields[1];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let sites: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1883,19 +2085,23 @@ fn parameter_property_nested_class_targets_inner_score() {
         OccurrenceTarget::Local(EntityId::new(outer_score))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn this_inherited_method_call_resolves_to_base_note() {
+fn this_inherited_method_call_resolves_to_base_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { note(): number { return 1; } } export class Child extends Base { read(): number { return this.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let resolved_occurrences = occurrences(&v);
+    let source_starts = entity_decl_starts(SOURCE, None, &resolved_occurrences)?;
     let note_methods = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_methods.len(), 1);
     let base_note = note_methods[0];
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -1907,30 +2113,34 @@ fn this_inherited_method_call_resolves_to_base_note() {
         OccurrenceTarget::Local(EntityId::new(base_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
     assert!(
-        !occurrences(&v).iter().any(|o| {
+        !resolved_occurrences.iter().any(|o| {
             o.occurrence.kind == ReferenceKind::FieldAccess
                 && recover_site_bytes(
                     SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    source_starts[&o.owner.raw],
                     o,
                 ) == b"note"
         })
     );
+
+    Ok(())
 }
 
 #[test]
-fn this_method_value_targets_enclosing_class_note() {
+fn this_method_value_targets_enclosing_class_note() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { note(): number { return 1; } read(): unknown { return this.note; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let resolved_occurrences = occurrences(&v);
+    let source_starts = entity_decl_starts(SOURCE, None, &resolved_occurrences)?;
     let note_methods = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_methods.len(), 1);
     let child_note = note_methods[0];
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1942,31 +2152,35 @@ fn this_method_value_targets_enclosing_class_note() {
         OccurrenceTarget::Local(EntityId::new(child_note))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start)?;
     assert!(
-        !occurrences(&v).iter().any(|o| {
+        !resolved_occurrences.iter().any(|o| {
             o.occurrence.kind == ReferenceKind::FunctionCall
                 && recover_site_bytes(
                     SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    source_starts[&o.owner.raw],
                     o,
                 ) == b"note"
         })
     );
+
+    Ok(())
 }
 
 #[test]
-fn this_inherited_method_value_resolves_to_base_note() {
+fn this_inherited_method_value_resolves_to_base_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { note(): number { return 9; } } export class Base { note(): number { return 1; } } export class Child extends Base { read(): unknown { return this.note; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let resolved_occurrences = occurrences(&v);
+    let source_starts = entity_decl_starts(SOURCE, None, &resolved_occurrences)?;
     let note_methods = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_methods.len(), 2);
     let other_note = note_methods[0];
     let base_note = note_methods[1];
     assert_ne!(other_note, base_note);
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let site = occurrences(&v)
         .into_iter()
         .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -1981,29 +2195,33 @@ fn this_inherited_method_value_resolves_to_base_note() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &site, b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &site, b"note", note_token_start)?;
     assert!(
-        !occurrences(&v).iter().any(|o| {
+        !resolved_occurrences.iter().any(|o| {
             o.occurrence.kind == ReferenceKind::FunctionCall
                 && recover_site_bytes(
                     SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    source_starts[&o.owner.raw],
                     o,
                 ) == b"note"
         })
     );
+
+    Ok(())
 }
 
 #[test]
-fn this_inherited_method_value_resolves_to_grand_note() {
+fn this_inherited_method_value_resolves_to_grand_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Grand { note(): number { return 1; } } export class Base extends Grand { } export class Child extends Base { read(): unknown { return this.note; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let resolved_occurrences = occurrences(&v);
+    let source_starts = entity_decl_starts(SOURCE, None, &resolved_occurrences)?;
     let note_methods = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_methods.len(), 1);
     let grand_note = note_methods[0];
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let site = occurrences(&v)
         .into_iter()
         .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2014,31 +2232,35 @@ fn this_inherited_method_value_resolves_to_grand_note() {
         OccurrenceTarget::Local(EntityId::new(grand_note))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &site, b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &site, b"note", note_token_start)?;
     assert!(
-        !occurrences(&v).iter().any(|o| {
+        !resolved_occurrences.iter().any(|o| {
             o.occurrence.kind == ReferenceKind::FunctionCall
                 && recover_site_bytes(
                     SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    source_starts[&o.owner.raw],
                     o,
                 ) == b"note"
         })
     );
+
+    Ok(())
 }
 
 #[test]
-fn this_inherited_method_value_child_shadows_base_note() {
+fn this_inherited_method_value_child_shadows_base_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { note(): number { return 1; } } export class Child extends Base { note(): number { return 2; } read(): unknown { return this.note; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let resolved_occurrences = occurrences(&v);
+    let source_starts = entity_decl_starts(SOURCE, None, &resolved_occurrences)?;
     let note_methods = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_methods.len(), 2);
     let base_note = note_methods[0];
     let child_note = note_methods[1];
     assert_ne!(base_note, child_note);
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let site = occurrences(&v)
         .into_iter()
         .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2053,32 +2275,36 @@ fn this_inherited_method_value_child_shadows_base_note() {
         OccurrenceTarget::Local(EntityId::new(base_note))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &site, b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &site, b"note", note_token_start)?;
     assert!(
-        !occurrences(&v).iter().any(|o| {
+        !resolved_occurrences.iter().any(|o| {
             o.occurrence.kind == ReferenceKind::FunctionCall
                 && recover_site_bytes(
                     SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    source_starts[&o.owner.raw],
                     o,
                 ) == b"note"
         })
     );
+
+    Ok(())
 }
 
 #[test]
-fn this_inherited_method_value_child_field_shadows_base_method() {
+fn this_inherited_method_value_child_field_shadows_base_method() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { note(): number { return 1; } } export class Child extends Base { note: number; read(): unknown { return this.note; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let resolved_occurrences = occurrences(&v);
+    let source_starts = entity_decl_starts(SOURCE, None, &resolved_occurrences)?;
     let note_methods = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_methods.len(), 1);
     let base_note = note_methods[0];
     let note_fields = entities_named(&v, b"note", EntityKind::Field);
     assert_eq!(note_fields.len(), 1);
     let child_note = note_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let site = occurrences(&v)
         .into_iter()
         .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2093,29 +2319,33 @@ fn this_inherited_method_value_child_field_shadows_base_method() {
         OccurrenceTarget::Local(EntityId::new(base_note))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &site, b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &site, b"note", note_token_start)?;
     assert!(
-        !occurrences(&v).iter().any(|o| {
+        !resolved_occurrences.iter().any(|o| {
             o.occurrence.kind == ReferenceKind::FunctionCall
                 && recover_site_bytes(
                     SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    source_starts[&o.owner.raw],
                     o,
                 ) == b"note"
         })
     );
+
+    Ok(())
 }
 
 #[test]
-fn this_inherited_method_value_generic_base_resolves_to_base_note() {
+fn this_inherited_method_value_generic_base_resolves_to_base_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base<T> { note(): number { return 1; } } export class Child extends Base<number> { read(): unknown { return this.note; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let resolved_occurrences = occurrences(&v);
+    let source_starts = entity_decl_starts(SOURCE, None, &resolved_occurrences)?;
     let note_methods = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_methods.len(), 1);
     let base_note = note_methods[0];
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let site = occurrences(&v)
         .into_iter()
         .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2126,26 +2356,30 @@ fn this_inherited_method_value_generic_base_resolves_to_base_note() {
         OccurrenceTarget::Local(EntityId::new(base_note))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &site, b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &site, b"note", note_token_start)?;
     assert!(
-        !occurrences(&v).iter().any(|o| {
+        !resolved_occurrences.iter().any(|o| {
             o.occurrence.kind == ReferenceKind::FunctionCall
                 && recover_site_bytes(
                     SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    source_starts[&o.owner.raw],
                     o,
                 ) == b"note"
         })
     );
+
+    Ok(())
 }
 
 #[test]
-fn this_inherited_method_value_imported_base_stays_syntactic() {
+fn this_inherited_method_value_imported_base_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child extends Imported { read(): unknown { return this.note; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
-    let (read_owner, _) = named(&v, b"read");
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let resolved_occurrences = occurrences(&v);
+    let source_starts = entity_decl_starts(SOURCE, None, &resolved_occurrences)?;
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
+    let (read_owner, _) = named(&v, b"read")?;
     let site = occurrences(&v)
         .into_iter()
         .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2166,31 +2400,33 @@ fn this_inherited_method_value_imported_base_stays_syntactic() {
         }
     }
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Syntactic);
-    assert_property_token_site(SOURCE, None, &site, b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &site, b"note", note_token_start)?;
     assert!(
-        !occurrences(&v).iter().any(|o| {
+        !resolved_occurrences.iter().any(|o| {
             o.occurrence.kind == ReferenceKind::FunctionCall
                 && recover_site_bytes(
                     SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    source_starts[&o.owner.raw],
                     o,
                 ) == b"note"
         })
     );
+
+    Ok(())
 }
 
 #[test]
-fn this_inherited_method_child_shadows_base_note() {
+fn this_inherited_method_child_shadows_base_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { note(): number { return 1; } } export class Child extends Base { note(): number { return 2; } read(): number { return this.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_methods = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_methods.len(), 2);
     let base_note = note_methods[0];
     let child_note = note_methods[1];
     assert_ne!(base_note, child_note);
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let site = occurrences(&v)
         .into_iter()
         .find(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -2205,19 +2441,21 @@ fn this_inherited_method_child_shadows_base_note() {
         OccurrenceTarget::Local(EntityId::new(base_note))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &site, b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &site, b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn this_inherited_field_generic_base_resolves_to_base_score() {
+fn this_inherited_field_generic_base_resolves_to_base_score() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base<T> { score: number; } export class Child extends Base<number> { read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     let base_score = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let site = occurrences(&v)
         .into_iter()
         .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2228,16 +2466,18 @@ fn this_inherited_field_generic_base_resolves_to_base_score() {
         OccurrenceTarget::Local(EntityId::new(base_score))
     );
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &site, b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &site, b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn this_inherited_field_imported_base_stays_syntactic() {
+fn this_inherited_field_imported_base_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child extends Imported { read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
-    let (read_owner, _) = named(&v, b"read");
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
+    let (read_owner, _) = named(&v, b"read")?;
     let site = occurrences(&v)
         .into_iter()
         .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2258,20 +2498,22 @@ fn this_inherited_field_imported_base_stays_syntactic() {
         }
     }
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Syntactic);
-    assert_property_token_site(SOURCE, None, &site, b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &site, b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn private_field_read_targets_same_class_score() {
+fn private_field_read_targets_same_class_score() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { #score: number; read(): number { return this.#score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"#score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     let child_score = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"#score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"#score")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2283,20 +2525,22 @@ fn private_field_read_targets_same_class_score() {
         OccurrenceTarget::Local(EntityId::new(child_score))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn private_method_call_targets_same_class_note() {
+fn private_method_call_targets_same_class_note() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { #note(): number { return 1; } read(): number { return this.#note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_methods = entities_named(&v, b"#note", EntityKind::Function);
     assert_eq!(note_methods.len(), 1);
     let child_note = note_methods[0];
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"this.", b"#note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"this.", b"#note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -2308,20 +2552,22 @@ fn private_method_call_targets_same_class_note() {
         OccurrenceTarget::Local(EntityId::new(child_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"#note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"#note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn private_method_value_targets_same_class_note() {
+fn private_method_value_targets_same_class_note() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { #note(): number { return 1; } read(): unknown { return this.#note; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_methods = entities_named(&v, b"#note", EntityKind::Function);
     assert_eq!(note_methods.len(), 1);
     let child_note = note_methods[0];
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"this.", b"#note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"this.", b"#note")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2333,22 +2579,30 @@ fn private_method_value_targets_same_class_note() {
         OccurrenceTarget::Local(EntityId::new(child_note))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"#note", note_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"#note", note_token_start)?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .count();
     assert_eq!(calls, 0);
+
+    Ok(())
 }
 
 #[test]
-fn private_field_read_child_does_not_see_base_score() {
+fn private_field_read_child_does_not_see_base_score() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { #score: number; } export class Child extends Base { read(): number { return this.#score; } }";
     let mut diagnostic = [0u8; 4096];
     let mut output = vec![0_u8; 8 * 1024 * 1024];
-    let failure = StackLowered::try_compile(SOURCE, &mut diagnostic, &mut output).expect_err(
-        "child must not compile when it reads an undeclared private field",
-    );
+    let failure = match StackLowered::try_compile(
+        SOURCE,
+        test_toolchain()?,
+        &mut diagnostic,
+        &mut output,
+    ) {
+        Err(failure) => failure,
+        Ok(_) => return Err(io::Error::other("undeclared private field unexpectedly compiled").into()),
+    };
     let CompileFailure::Authority { failure, .. } = failure else {
         panic!("expected authority rejection, got {failure:?}");
     };
@@ -2360,20 +2614,22 @@ fn private_field_read_child_does_not_see_base_score() {
         panic!("expected TypeScript binding authority rejection, got {failure:?}");
     };
     assert_eq!(diagnostic.primary, b"#score");
+
+    Ok(())
 }
 
 #[test]
-fn private_field_read_child_own_score_wins_over_base() {
+fn private_field_read_child_own_score_wins_over_base() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { #score: number; } export class Child extends Base { #score: number; read(): number { return this.#score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"#score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let base_score = score_fields[0];
     let child_score = score_fields[1];
     assert_ne!(base_score, child_score);
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"#score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"#score")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2389,20 +2645,22 @@ fn private_field_read_child_own_score_wins_over_base() {
         OccurrenceTarget::Local(EntityId::new(base_score))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn private_field_read_other_receiver_stays_syntactic() {
+fn private_field_read_other_receiver_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { #score: number; read(obj: Child): number { return obj.#score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"#score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     let child_score = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"obj.", b"#score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"obj.", b"#score")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2428,20 +2686,22 @@ fn private_field_read_other_receiver_stays_syntactic() {
         sites[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child_score))
     );
-    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn private_static_field_read_targets_same_class_score() {
+fn private_static_field_read_targets_same_class_score() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { static #score = 1; static read(): number { return this.#score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"#score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     let child_score = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this.", b"#score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"#score")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2453,20 +2713,22 @@ fn private_static_field_read_targets_same_class_score() {
         OccurrenceTarget::Local(EntityId::new(child_score))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn private_field_read_parenthesized_this_targets_same_class_score() {
+fn private_field_read_parenthesized_this_targets_same_class_score() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { #score: number; read(): number { return (this).#score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"#score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     let child_score = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"(this).", b"#score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"(this).", b"#score")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2478,19 +2740,21 @@ fn private_field_read_parenthesized_this_targets_same_class_score() {
         OccurrenceTarget::Local(EntityId::new(child_score))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start)?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .count();
     assert_eq!(calls, 0);
+
+    Ok(())
 }
 
 #[test]
-fn private_method_call_child_own_note_wins_over_base() {
+fn private_method_call_child_own_note_wins_over_base() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { #note(): number { return 9; } } export class Base { #note(): number { return 1; } } export class Child extends Base { #note(): number { return 2; } read(): number { return this.#note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_methods = entities_named(&v, b"#note", EntityKind::Function);
     assert_eq!(note_methods.len(), 3);
     let other_note = note_methods[0];
@@ -2498,8 +2762,8 @@ fn private_method_call_child_own_note_wins_over_base() {
     let child_note = note_methods[2];
     assert_ne!(other_note, base_note);
     assert_ne!(child_note, base_note);
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"this.", b"#note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"this.", b"#note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -2519,21 +2783,30 @@ fn private_method_call_child_own_note_wins_over_base() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"#note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"#note", note_token_start)?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
         .count();
     assert_eq!(sites, 0);
+
+    Ok(())
 }
 
 #[test]
-fn private_super_field_is_rejected() {
+fn private_super_field_is_rejected() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { #score: number; } export class Child extends Base { read(): number { return super.#score; } }";
     let mut diagnostic = [0u8; 4096];
     let mut output = vec![0_u8; 8 * 1024 * 1024];
-    let failure = StackLowered::try_compile(SOURCE, &mut diagnostic, &mut output)
-        .expect_err("super.#score must not lower");
+    let failure = match StackLowered::try_compile(
+        SOURCE,
+        test_toolchain()?,
+        &mut diagnostic,
+        &mut output,
+    ) {
+        Err(failure) => failure,
+        Ok(_) => return Err(io::Error::other("super.#score unexpectedly lowered").into()),
+    };
     let CompileFailure::Authority { failure, .. } = failure else {
         panic!("expected authority rejection, got {failure:?}");
     };
@@ -2545,15 +2818,24 @@ fn private_super_field_is_rejected() {
         panic!("expected TypeScript syntax authority rejection, got {failure:?}");
     };
     assert_eq!(diagnostic.primary, b"super.#score");
+
+    Ok(())
 }
 
 #[test]
-fn private_parenthesized_super_is_rejected() {
+fn private_parenthesized_super_is_rejected() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { #score: number; } export class Child extends Base { #other: number; read(): number { return (super).#score; } }";
     let mut diagnostic = [0u8; 4096];
     let mut output = vec![0_u8; 8 * 1024 * 1024];
-    let failure = StackLowered::try_compile(SOURCE, &mut diagnostic, &mut output)
-        .expect_err("(super).#score must not lower");
+    let failure = match StackLowered::try_compile(
+        SOURCE,
+        test_toolchain()?,
+        &mut diagnostic,
+        &mut output,
+    ) {
+        Err(failure) => failure,
+        Ok(_) => return Err(io::Error::other("(super).#score unexpectedly lowered").into()),
+    };
     let CompileFailure::Authority { failure, .. } = failure else {
         panic!("expected authority rejection, got {failure:?}");
     };
@@ -2565,13 +2847,15 @@ fn private_parenthesized_super_is_rejected() {
         panic!("expected TypeScript syntax authority rejection, got {failure:?}");
     };
     assert_eq!(diagnostic.primary, b"super");
+
+    Ok(())
 }
 
 #[test]
-fn super_method_call_skips_child_override() {
+fn super_method_call_skips_child_override() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { note(): number { return 9; } } export class Base { note(): number { return 1; } } export class Child extends Base { note(): number { return 2; } read(): number { return super.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_methods = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_methods.len(), 3);
     let other_note = note_methods[0];
@@ -2579,8 +2863,8 @@ fn super_method_call_skips_child_override() {
     let child_note = note_methods[2];
     assert_ne!(other_note, base_note);
     assert_ne!(child_note, base_note);
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"super.", b"note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"super.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -2600,21 +2884,23 @@ fn super_method_call_skips_child_override() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn super_field_read_targets_base_score_not_other() {
+fn super_field_read_targets_base_score_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { score: number; } export class Base { score: number; } export class Child extends Base { read(): number { return super.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let other_score = score_fields[0];
     let base_score = score_fields[1];
     assert_ne!(other_score, base_score);
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"super.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"super.", b"score")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2630,21 +2916,23 @@ fn super_field_read_targets_base_score_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn super_field_read_skips_child_shadowing_score() {
+fn super_field_read_skips_child_shadowing_score() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { score: number; } export class Child extends Base { score: number; read(): number { return super.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let base_score = score_fields[0];
     let child_score = score_fields[1];
     assert_ne!(base_score, child_score);
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"super.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"super.", b"score")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2660,19 +2948,21 @@ fn super_field_read_skips_child_shadowing_score() {
         OccurrenceTarget::Local(EntityId::new(child_score))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn super_field_read_resolves_to_grand_score() {
+fn super_field_read_resolves_to_grand_score() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Grand { score: number; } export class Base extends Grand { } export class Child extends Base { read(): number { return super.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 1);
     let grand_score = score_fields[0];
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"super.", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"super.", b"score")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2684,21 +2974,25 @@ fn super_field_read_resolves_to_grand_score() {
         OccurrenceTarget::Local(EntityId::new(grand_score))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn super_method_value_targets_base_note_not_child() {
+fn super_method_value_targets_base_note_not_child() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { note(): number { return 1; } } export class Child extends Base { note(): number { return 2; } read(): unknown { return super.note; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let resolved_occurrences = occurrences(&v);
+    let source_starts = entity_decl_starts(SOURCE, None, &resolved_occurrences)?;
     let note_methods = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_methods.len(), 2);
     let base_note = note_methods[0];
     let child_note = note_methods[1];
     assert_ne!(base_note, child_note);
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"super.", b"note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"super.", b"note")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2714,24 +3008,28 @@ fn super_method_value_targets_base_note_not_child() {
         OccurrenceTarget::Local(EntityId::new(child_note))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start)?;
     assert!(
-        !occurrences(&v).iter().any(|o| {
+        !resolved_occurrences.iter().any(|o| {
             o.occurrence.kind == ReferenceKind::FunctionCall
                 && recover_site_bytes(
                     SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    source_starts[&o.owner.raw],
                     o,
                 ) == b"note"
         })
     );
+
+    Ok(())
 }
 
 #[test]
-fn super_method_value_child_method_does_not_shadow_base_field() {
+fn super_method_value_child_method_does_not_shadow_base_field() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { note: number; } export class Child extends Base { note(): number { return 1; } read(): unknown { return super.note; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let resolved_occurrences = occurrences(&v);
+    let source_starts = entity_decl_starts(SOURCE, None, &resolved_occurrences)?;
     let note_fields = entities_named(&v, b"note", EntityKind::Field);
     assert_eq!(note_fields.len(), 1);
     let base_note = note_fields[0];
@@ -2739,8 +3037,8 @@ fn super_method_value_child_method_does_not_shadow_base_field() {
     assert_eq!(note_methods.len(), 1);
     let child_note = note_methods[0];
     assert_ne!(base_note, child_note);
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"super.", b"note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"super.", b"note")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2756,26 +3054,28 @@ fn super_method_value_child_method_does_not_shadow_base_field() {
         OccurrenceTarget::Local(EntityId::new(child_note))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start)?;
     assert!(
-        !occurrences(&v).iter().any(|o| {
+        !resolved_occurrences.iter().any(|o| {
             o.occurrence.kind == ReferenceKind::FunctionCall
                 && recover_site_bytes(
                     SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    source_starts[&o.owner.raw],
                     o,
                 ) == b"note"
         })
     );
+
+    Ok(())
 }
 
 #[test]
-fn super_field_read_imported_base_stays_syntactic() {
+fn super_field_read_imported_base_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child extends Imported { read(): number { return super.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
-    let score_token_start = property_token(SOURCE, b"super.", b"score");
-    let (read_owner, _) = named(&v, b"read");
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let score_token_start = property_token(SOURCE, b"super.", b"score")?;
+    let (read_owner, _) = named(&v, b"read")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2797,19 +3097,21 @@ fn super_field_read_imported_base_stays_syntactic() {
         }
     }
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn super_method_call_generic_base_resolves_to_base_note() {
+fn super_method_call_generic_base_resolves_to_base_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base<T> { note(): number { return 1; } } export class Child extends Base<number> { read(): number { return super.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_methods = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_methods.len(), 1);
     let base_note = note_methods[0];
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"super.", b"note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"super.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -2821,18 +3123,20 @@ fn super_method_call_generic_base_resolves_to_base_note() {
         OccurrenceTarget::Local(EntityId::new(base_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn computed_member_same_class_field_read() {
+fn computed_member_same_class_field_read() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { score: number; read(): number { return this[\"score\"]; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
-    let (score_field, _) = named(&v, b"score");
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this[\"", b"score");
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let (score_field, _) = named(&v, b"score")?;
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this[\"", b"score")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2844,21 +3148,23 @@ fn computed_member_same_class_field_read() {
         OccurrenceTarget::Local(EntityId::new(score_field))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn computed_member_inherited_field_with_decoy() {
+fn computed_member_inherited_field_with_decoy() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { score: number; } export class Base { score: number; } export class Child extends Base { read(): number { return this[\"score\"]; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let other_score = score_fields[0];
     let base_score = score_fields[1];
     assert_ne!(other_score, base_score);
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this[\"", b"score");
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this[\"", b"score")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2874,18 +3180,20 @@ fn computed_member_inherited_field_with_decoy() {
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn computed_member_same_class_call() {
+fn computed_member_same_class_call() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { note(): number { return 1; } read(): number { return this[\"note\"](); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
-    let (note_method, _) = named(&v, b"note");
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"this[\"", b"note");
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let (note_method, _) = named(&v, b"note")?;
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"this[\"", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -2897,14 +3205,16 @@ fn computed_member_same_class_call() {
         OccurrenceTarget::Local(EntityId::new(note_method))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn computed_member_super_call_skips_child() {
+fn computed_member_super_call_skips_child() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { note(): number { return 9; } } export class Base { note(): number { return 1; } } export class Child extends Base { note(): number { return 2; } read(): number { return super[\"note\"](); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_methods = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_methods.len(), 3);
     let other_note = note_methods[0];
@@ -2912,8 +3222,8 @@ fn computed_member_super_call_skips_child() {
     let child_note = note_methods[2];
     assert_ne!(other_note, base_note);
     assert_ne!(child_note, base_note);
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"super[\"", b"note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"super[\"", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -2933,21 +3243,25 @@ fn computed_member_super_call_skips_child() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn computed_member_method_value_targets_enclosing_class_note() {
+fn computed_member_method_value_targets_enclosing_class_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { note(): number { return 1; } } export class Child extends Base { note(): number { return 2; } read(): unknown { return this[\"note\"]; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let resolved_occurrences = occurrences(&v);
+    let source_starts = entity_decl_starts(SOURCE, None, &resolved_occurrences)?;
     let note_methods = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_methods.len(), 2);
     let base_note = note_methods[0];
     let child_note = note_methods[1];
     assert_ne!(base_note, child_note);
-    let (read_owner, _) = named(&v, b"read");
-    let note_token_start = property_token(SOURCE, b"this[\"", b"note");
+    let (read_owner, _) = named(&v, b"read")?;
+    let note_token_start = property_token(SOURCE, b"this[\"", b"note")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2963,28 +3277,30 @@ fn computed_member_method_value_targets_enclosing_class_note() {
         OccurrenceTarget::Local(EntityId::new(base_note))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start)?;
     assert!(
-        !occurrences(&v).iter().any(|o| {
+        !resolved_occurrences.iter().any(|o| {
             o.occurrence.kind == ReferenceKind::FunctionCall
                 && recover_site_bytes(
                     SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    source_starts[&o.owner.raw],
                     o,
                 ) == b"note"
         })
     );
+
+    Ok(())
 }
 
 #[test]
-fn computed_member_single_quotes_field_read() {
+fn computed_member_single_quotes_field_read() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { score: number; read(): number { return this['score']; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
-    let (score_field, _) = named(&v, b"score");
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"this['", b"score");
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let (score_field, _) = named(&v, b"score")?;
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"this['", b"score")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -2996,17 +3312,19 @@ fn computed_member_single_quotes_field_read() {
         OccurrenceTarget::Local(EntityId::new(score_field))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn computed_member_imported_only_base_stays_syntactic() {
+fn computed_member_imported_only_base_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child extends Imported { read(): number { return this[\"score\"]; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
-    let score_token_start = property_token(SOURCE, b"this[\"", b"score");
-    let (read_owner, _) = named(&v, b"read");
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let score_token_start = property_token(SOURCE, b"this[\"", b"score")?;
+    let (read_owner, _) = named(&v, b"read")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -3028,14 +3346,16 @@ fn computed_member_imported_only_base_stays_syntactic() {
         }
     }
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn computed_member_dynamic_key_emits_nothing() {
+fn computed_member_dynamic_key_emits_nothing() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { score: number; read(key: string): number { return this[key]; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let field_accesses = occurrences(&v)
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -3046,16 +3366,18 @@ fn computed_member_dynamic_key_emits_nothing() {
         .count();
     assert_eq!(field_accesses, 0, "this[key] must not emit FieldAccess");
     assert_eq!(function_calls, 0, "this[key] must not emit FunctionCall");
+
+    Ok(())
 }
 
 #[test]
-fn computed_member_other_receiver_stays_syntactic() {
+fn computed_member_other_receiver_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { score: number; read(obj: Child): number { return obj[\"score\"]; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
-    let (score_field, _) = named(&v, b"score");
-    let (read_owner, _) = named(&v, b"read");
-    let score_token_start = property_token(SOURCE, b"obj[\"", b"score");
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
+    let (score_field, _) = named(&v, b"score")?;
+    let (read_owner, _) = named(&v, b"read")?;
+    let score_token_start = property_token(SOURCE, b"obj[\"", b"score")?;
     let sites = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -3082,15 +3404,17 @@ fn computed_member_other_receiver_stays_syntactic() {
         OccurrenceTarget::Stable(_) => panic!("obj[\"score\"] must not target a stable ref"),
     }
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn computed_member_escape_emits_nothing() {
+fn computed_member_escape_emits_nothing() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { score: number; read(): number { return this[\"sc\\u006fre\"]; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let field_accesses = occurrences(&v)
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -3101,14 +3425,16 @@ fn computed_member_escape_emits_nothing() {
         .count();
     assert_eq!(field_accesses, 0, "escaped computed key must not emit FieldAccess");
     assert_eq!(function_calls, 0, "escaped computed key must not emit FunctionCall");
+
+    Ok(())
 }
 
 #[test]
-fn computed_member_numeric_key_emits_nothing() {
+fn computed_member_numeric_key_emits_nothing() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { score: number; read(): number { return this[0]; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let field_accesses = occurrences(&v)
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -3119,14 +3445,16 @@ fn computed_member_numeric_key_emits_nothing() {
         .count();
     assert_eq!(field_accesses, 0, "this[0] must not emit FieldAccess");
     assert_eq!(function_calls, 0, "this[0] must not emit FunctionCall");
+
+    Ok(())
 }
 
 #[test]
-fn computed_member_template_key_emits_nothing() {
+fn computed_member_template_key_emits_nothing() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Child { score: number; read(): number { return this[`score`]; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let field_accesses = occurrences(&v)
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -3137,15 +3465,19 @@ fn computed_member_template_key_emits_nothing() {
         .count();
     assert_eq!(field_accesses, 0, "template computed key must not emit FieldAccess");
     assert_eq!(function_calls, 0, "template computed key must not emit FunctionCall");
+
+    Ok(())
 }
 
 #[test]
-fn chained_builtin_call_stays_foreign_while_this_field_is_local() {
+fn chained_builtin_call_stays_foreign_while_this_field_is_local() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Chain { score: number; widen(): string { return this.score.toFixed(); } }";
-    let v = view(SOURCE, None);
-    let (score_field, _) = named(&v, b"score");
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let v = view(SOURCE, None)?;
+    let resolved_occurrences = occurrences(&v);
+    let source_starts = entity_decl_starts(SOURCE, None, &resolved_occurrences)?;
+    let (score_field, _) = named(&v, b"score")?;
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let field = occurrences(&v)
         .into_iter()
         .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -3154,15 +3486,15 @@ fn chained_builtin_call_stays_foreign_while_this_field_is_local() {
         field.occurrence.target,
         OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score_field))
     );
-    assert_property_token_site(SOURCE, None, &field, b"score", score_token_start);
-    let _to_fixed_start = property_token(SOURCE, b"score.", b"toFixed");
+    assert_property_token_site(SOURCE, None, &field, b"score", score_token_start)?;
+    let _to_fixed_start = property_token(SOURCE, b"score.", b"toFixed")?;
     let to_fixed = occurrences(&v)
         .into_iter()
         .find(|o| {
             o.occurrence.kind == ReferenceKind::FunctionCall
                 && recover_site_bytes(
                     SOURCE,
-                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    source_starts[&o.owner.raw],
                     o,
                 ) == b"toFixed"
         })
@@ -3176,14 +3508,16 @@ fn chained_builtin_call_stays_foreign_while_this_field_is_local() {
         to_fixed.occurrence.confidence,
         OccurrenceConfidence::Syntactic
     );
+
+    Ok(())
 }
 
 #[test]
-fn foreign_receiver_field_access_stays_syntactic() {
+fn foreign_receiver_field_access_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Point { missing: number; } export function loose(obj: Point): number { return obj.missing; }";
-    let v = view(SOURCE, None);
-    let (point_field, _) = named(&v, b"missing");
-    let missing_token_start = property_token(SOURCE, b"obj.", b"missing");
+    let v = view(SOURCE, None)?;
+    let (point_field, _) = named(&v, b"missing")?;
+    let missing_token_start = property_token(SOURCE, b"obj.", b"missing")?;
     let site = occurrences(&v)
         .into_iter()
         .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -3196,30 +3530,33 @@ fn foreign_receiver_field_access_stays_syntactic() {
         OccurrenceTarget::Stable(_) => panic!("obj.missing must not target a stable ref"),
     }
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Syntactic);
-    assert_property_token_site(SOURCE, None, &site, b"missing", missing_token_start);
+    assert_property_token_site(SOURCE, None, &site, b"missing", missing_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn checker_resolved_property_access_is_not_duplicated() {
+fn checker_resolved_property_access_is_not_duplicated() -> TestResult<()> {
     const SOURCE: &[u8] =
         b"export class Point { score: number; read(): number { return this.score; } }";
-    let field_name_start = token_span(SOURCE, b"score:").0;
-    let use_token = SOURCE
+    let field_name_start = token_span(SOURCE, b"score:")?.0;
+    let use_token_offset = SOURCE
         .windows(b"score".len())
         .enumerate()
         .filter(|(index, _)| {
             SOURCE[*index..].starts_with(b"score; }")
                 && SOURCE.get(..*index).is_some_and(|prefix| prefix.ends_with(b"this."))
         })
-        .map(|(index, _)| u32::try_from(index).unwrap())
         .next()
-        .expect("this.score token");
+        .map(|(index, _)| index)
+        .ok_or_else(|| io::Error::other("this.score token is missing"))?;
+    let use_token = u32::try_from(use_token_offset)?;
     let mut authority = report(SOURCE);
     authority.references = Box::new([Reference {
         start: use_token,
-        end: use_token + u32::try_from(b"score".len()).unwrap(),
+        end: use_token + u32::try_from(b"score".len())?,
         target_start: Some(field_name_start),
-        target_end: Some(field_name_start + u32::try_from(b"score".len()).unwrap()),
+        target_end: Some(field_name_start + u32::try_from(b"score".len())?),
         module: None,
         name: None,
         overload_index: None,
@@ -3228,15 +3565,17 @@ fn checker_resolved_property_access_is_not_duplicated() {
         is_const: false,
         is_variable: false,
     }]);
-    let v = view(SOURCE, Some(&authority));
-    let (score_field, _) = named(&v, b"score");
+    let v = view(SOURCE, Some(&authority))?;
+    let resolved_occurrences = occurrences(&v);
+    let source_starts = entity_decl_starts(SOURCE, Some(&authority), &resolved_occurrences)?;
+    let (score_field, _) = named(&v, b"score")?;
     let field_reads: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|o| {
             o.occurrence.kind == ReferenceKind::FieldAccess
                 && recover_site_bytes(
                     SOURCE,
-                    entity_decl_start(SOURCE, Some(&authority), o.owner.raw),
+                    source_starts[&o.owner.raw],
                     o,
                 ) == b"score"
         })
@@ -3250,9 +3589,11 @@ fn checker_resolved_property_access_is_not_duplicated() {
         field_reads[0].occurrence.confidence,
         OccurrenceConfidence::Oracle
     );
+
+    Ok(())
 }
 #[test]
-fn cross_file_method_call_is_an_oracle_package_call() {
+fn cross_file_method_call_is_an_oracle_package_call() -> TestResult<()> {
     const SOURCE: &[u8] = b"import { WorkoutService } from \"./workout.service\";
 export function sync(service: WorkoutService) { service.setNote(); }
 export function group(service: WorkoutService) { const bound = service.setNote; }
@@ -3286,7 +3627,7 @@ export function group(service: WorkoutService) { const bound = service.setNote; 
             is_variable: false,
         },
     ]);
-    let v = view(SOURCE, Some(&r));
+    let v = view(SOURCE, Some(&r))?;
     let occs = occurrences(&v);
     let call_rows: Vec<_> = occs
         .iter()
@@ -3349,10 +3690,12 @@ export function group(service: WorkoutService) { const bound = service.setNote; 
     assert_eq!(key.path, "setNote");
     assert_eq!(key.display, "setNote");
     assert_eq!(key.kind, Some(EntityKind::Function));
+
+    Ok(())
 }
 
 #[test]
-fn checker_foreign_method_value_stays_when_checker_name_unspelled_in_source() {
+fn checker_foreign_method_value_stays_when_checker_name_unspelled_in_source() -> TestResult<()> {
     const SOURCE: &[u8] = b"import { WorkoutService } from \"./workout.service\";
 export function group(service: WorkoutService) { const bound = service.pick; }
 ";
@@ -3375,7 +3718,7 @@ export function group(service: WorkoutService) { const bound = service.pick; }
         is_const: false,
         is_variable: false,
     }]);
-    let view = view(SOURCE, Some(&authority));
+    let view = view(SOURCE, Some(&authority))?;
     let rows: Vec<_> = occurrences(&view)
         .into_iter()
         .filter(|row| {
@@ -3408,17 +3751,21 @@ export function group(service: WorkoutService) { const bound = service.pick; }
     assert_eq!(key.path, "pick");
     assert_eq!(key.display, "pick");
     assert_eq!(key.kind, Some(EntityKind::Function));
+
+    Ok(())
 }
 #[test]
-fn genuinely_unresolvable_names_stay_honestly_external() {
-    let v = view(b"export const q: TotallyMissing = 1;", None);
+fn genuinely_unresolvable_names_stay_honestly_external() -> TestResult<()> {
+    let v = view(b"export const q: TotallyMissing = 1;", None)?;
     assert_eq!(
-        fact(&v, named(&v, b"q").0).record.payload0,
+        fact(&v, named(&v, b"q")?.0)?.record.payload0,
         u32::from(TypeReason::UnresolvedExternal)
     );
+
+    Ok(())
 }
 #[test]
-fn computed_row_pool_bound_and_union_child_bound_are_typed_rejections() {
+fn computed_row_pool_bound_and_union_child_bound_are_typed_rejections() -> TestResult<()> {
     let declarations = std::iter::repeat(backend_frontend_typescript::legacy::Declaration {
         name_start: 13,
         name_end: 14,
@@ -3430,8 +3777,8 @@ fn computed_row_pool_bound_and_union_child_bound_are_typed_rejections() {
     .collect();
     let mut below = report(SOURCE);
     below.declarations = declarations;
-    let lowered = try_lower(SOURCE, Some(&below)).unwrap();
-    let decoded = view(SOURCE, Some(&below));
+    let lowered = try_lower(SOURCE, Some(&below))?;
+    let decoded = view(SOURCE, Some(&below))?;
     assert!(lowered.ir.entity_count() > 0);
     assert!(facts(&decoded).len() >= 2048);
 
@@ -3444,26 +3791,30 @@ fn computed_row_pool_bound_and_union_child_bound_are_typed_rejections() {
     );
     let above = report(source);
     match try_lower(source, Some(&above)) {
-        Err(CompileFailure::LoweringUnsupported {
-            cause:
-                LoweringUnsupported::FactRejected {
-                    fact,
-                    name_len,
-                    cause,
-                },
-            ..
-        }) => {
-            assert_eq!(fact, 32_768);
-            assert_eq!(name_len, 6);
-            assert_eq!(cause, ProjectionAdmissionFault::Capacity);
+        Err(error) => match error.downcast_ref::<CompileFailure<'static>>() {
+            Some(CompileFailure::LoweringUnsupported {
+                cause:
+                    LoweringUnsupported::FactRejected {
+                        fact,
+                        name_len,
+                        cause,
+                    },
+                ..
+            }) => {
+                assert_eq!(*fact, 32_768);
+                assert_eq!(*name_len, 6);
+                assert_eq!(*cause, ProjectionAdmissionFault::Capacity);
+            }
+            _ => return Err(error),
         }
-        Ok(_) => panic!("expected typed fact capacity rejection, source was admitted"),
-        Err(_) => panic!("expected typed fact capacity rejection, got another typed terminal"),
+        Ok(_) => return Err(io::Error::other("source was admitted beyond the typed fact cap").into()),
     }
+
+    Ok(())
 }
 
 #[test]
-fn checker_object_member_without_source_spelling_retains_typed_child_cause() {
+fn checker_object_member_without_source_spelling_retains_typed_child_cause() -> TestResult<()> {
     const SOURCE: &[u8] = b"export const x = null;";
     let mut checker = report(SOURCE);
     checker.declarations = Box::new([backend_frontend_typescript::legacy::Declaration {
@@ -3483,173 +3834,190 @@ fn checker_object_member_without_source_spelling_retains_typed_child_cause() {
         }),
     }]);
     match try_lower(SOURCE, Some(&checker)) {
-        Err(CompileFailure::LoweringUnsupported {
-            cause:
-                LoweringUnsupported::FactRejected {
-                    cause:
-                        ProjectionAdmissionFault::TypeChild {
-                            position: 0,
-                            cause:
-                                ProjectionSemanticTypeFault::ChildNameRequired {
-                                    tag: ProjectionSemanticTypeTag::AnonymousRecord,
-                                    position: 0,
-                                },
-                        },
-                    ..
-                },
-            ..
-        }) => {}
-        Ok(_) => panic!("expected source-backed member spelling rejection"),
-        Err(_) => panic!("expected typed source-backed member spelling rejection"),
+        Err(error) => match error.downcast_ref::<CompileFailure<'static>>() {
+            Some(CompileFailure::LoweringUnsupported {
+                cause:
+                    LoweringUnsupported::FactRejected {
+                        cause:
+                            ProjectionAdmissionFault::TypeChild {
+                                position: 0,
+                                cause:
+                                    ProjectionSemanticTypeFault::ChildNameRequired {
+                                        tag: ProjectionSemanticTypeTag::AnonymousRecord,
+                                        position: 0,
+                                    },
+                            },
+                        ..
+                    },
+                ..
+            }) => {}
+            _ => return Err(error),
+        },
+        Ok(_) => return Err(io::Error::other("source-backed member spelling was admitted").into()),
     }
+
+    Ok(())
 }
 
 #[test]
-fn forward_nominal_checker_and_lowering_keep_the_later_class() {
+fn forward_nominal_checker_and_lowering_keep_the_later_class() -> TestResult<()> {
     const SOURCE: &[u8] = b"export const a = new B(); export class B {}";
-    let checker = Checker::default()
-        .run(TypeScriptSource::TypeScript, SOURCE)
-        .unwrap();
+    let checker = Checker::default().run(TypeScriptSource::TypeScript, SOURCE)?;
     assert!(checker.declarations.iter().any(|declaration| {
         declaration.name_start == 13
             && matches!(declaration.r#type, Some(backend_frontend_typescript::legacy::TypeTree::Reference { ref name, .. }) if name == "B")
     }));
-    let lowered = try_lower(SOURCE, Some(&checker)).unwrap();
-    let a = lowered.ir.items().find(|item| item.name() == b"a").unwrap();
-    let extension = lowered
-        .ir
-        .language_extensions()
-        .typescript
-        .get(a.id())
-        .unwrap();
+    let lowered = try_lower(SOURCE, Some(&checker))?;
+    let a = require_some(
+        lowered.ir.items().find(|item| item.name() == b"a"),
+        "lowered item a is missing",
+    )?;
+    let extension = require_some(
+        lowered.ir.language_extensions().typescript.get(a.id()),
+        "lowered item a has no TypeScript extension",
+    )?;
     // The observed cell is the checker's nominal `B` itself (df520c779), not
     // a `typeof a` query over the owner.
+    let observed = require_some(extension.observed, "checker did not observe a type for a")?;
     assert_eq!(
-        ir_tag_shape(&lowered.ir, extension.observed.unwrap()),
+        ir_tag_shape(&lowered.ir, observed)?,
         (SemanticTypeTag::Nominal, 0)
     );
-    let decoded = view(SOURCE, Some(&checker));
-    let (owner, _) = named(&decoded, b"a");
+    let decoded = view(SOURCE, Some(&checker))?;
+    let (owner, _) = named(&decoded, b"a")?;
     assert!(
         facts(&decoded)
             .iter()
             .any(|fact| { fact.owner.raw == owner && fact.record.tag == SemanticTypeTag::Nominal })
     );
-    assert!(
-        thread::Builder::new()
-            .stack_size(2 * 1024 * 1024)
-            .spawn(|| {
-                let checker = Checker::default()
-                    .run(TypeScriptSource::TypeScript, SOURCE)
-                    .unwrap();
-                let root = std::env::temp_dir()
-                    .join(format!("nudox-typescript-forward-{}", std::process::id()));
-                let artifacts = root.join("artifacts");
-                let journal = root.join("journal");
-                std::fs::create_dir_all(&artifacts).unwrap();
-                std::fs::create_dir_all(&journal).unwrap();
-                let limits = PublicationLimits::new(
-                    std::num::NonZeroUsize::MIN,
-                    std::num::NonZeroUsize::MIN,
-                )
-                .unwrap();
-                let publisher =
-                    DurablePublisher::create(&PublicationPaths::in_directory(&journal), limits)
-                        .unwrap();
-                let toolchain = ResolvedToolchain::from_version(
-                    NativeTool::TypeScriptCompiler,
-                    Path::new("/bin/true"),
-                    b"typescript-authority-test",
-                )
-                .unwrap();
-                let mut diagnostic = vec![0_u8; 4096];
-                let mut fragment_output = vec![0_u8; 8 * 1024 * 1024];
-                let cancelled = AtomicBool::new(false);
-                let compiled = compile(
-                    CompileRequest {
-                        profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
-                        stage: Stage::LowerIr,
-                        source: SOURCE,
-                        declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
-                        toolchain: ToolchainSelection::ResolvedNative(toolchain),
-                        authority: SemanticAuthorityInput::TypeScript { report: &checker },
-                        control: CompileControl {
-                            deadline: Instant::now() + Duration::from_secs(30),
-                            cancelled: &cancelled,
-                        },
+
+    let handle = thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| -> TestResult<bool> {
+            let checker = Checker::default().run(TypeScriptSource::TypeScript, SOURCE)?;
+            let root = std::env::temp_dir()
+                .join(format!("nudox-typescript-forward-{}", std::process::id()));
+            let cleanup = RemoveDirectoryOnDrop(root.clone());
+            let artifacts = root.join("artifacts");
+            let journal = root.join("journal");
+            std::fs::create_dir_all(&artifacts)?;
+            std::fs::create_dir_all(&journal)?;
+            let limits = PublicationLimits::new(
+                std::num::NonZeroUsize::MIN,
+                std::num::NonZeroUsize::MIN,
+            )
+            .map_err(|error| io::Error::other(format!("publication limits rejected: {error}")))?;
+            let publisher = DurablePublisher::create(
+                &PublicationPaths::in_directory(&journal),
+                limits,
+            )
+            .map_err(|error| io::Error::other(format!("publisher creation failed: {error}")))?;
+            let toolchain = ResolvedToolchain::from_version(
+                NativeTool::TypeScriptCompiler,
+                Path::new("/bin/true"),
+                b"typescript-authority-test",
+            )?;
+            let mut diagnostic = vec![0_u8; 4096];
+            let mut fragment_output = vec![0_u8; 8 * 1024 * 1024];
+            let cancelled = AtomicBool::new(false);
+            let compiled = compile(
+                CompileRequest {
+                    profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                    stage: Stage::LowerIr,
+                    source: SOURCE,
+                    declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
+                    toolchain: ToolchainSelection::ResolvedNative(toolchain),
+                    authority: SemanticAuthorityInput::TypeScript { report: &checker },
+                    control: CompileControl {
+                        deadline: Instant::now() + Duration::from_secs(30),
+                        cancelled: &cancelled,
                     },
-                    CompileScratch {
-                        diagnostic_output: &mut diagnostic,
-                        native_work: Path::new("/tmp"),
-                    },
-                    CompileOutput {
-                        fragment_output: &mut fragment_output,
-                    },
-                )
-                .unwrap();
-                let mut manifest = vec![0_u8; 1 << 20];
-                let mut manifest_facts = vec![None; 1];
-                let mut ordinals = vec![0_usize; 1];
-                let mut locality = vec![0_u8; 1 << 16];
-                let mut binding =
-                    vec![0_u8; backend_engine::publication::binding::COMPILATION_BINDING_BYTES];
-                publish_compiled(
-                    &publisher,
-                    &artifacts,
-                    std::slice::from_ref(&compiled),
-                    PublishControl::Continue,
-                    PublicationScratch {
-                        manifest_output: &mut manifest,
-                        manifest_facts: &mut manifest_facts,
-                        ordinals: &mut ordinals,
-                        locality_output: &mut locality,
-                        binding_output: &mut binding,
-                    },
-                )
-                .unwrap();
-                publisher.shutdown().unwrap();
-                let reopened_publisher =
-                    DurablePublisher::reopen(&PublicationPaths::in_directory(&journal), limits)
-                        .unwrap();
-                let mut reopened_manifest = vec![0_u8; 1 << 20];
-                let mut reopened_facts = vec![None; 1];
-                let mut reopened_fragments = vec![0_u8; 8 * 1024 * 1024];
-                let mut reopened_locality = vec![0_u8; 1 << 16];
-                let opened = open_published(
-                    &reopened_publisher,
-                    &artifacts,
-                    OpenPublicationScratch {
-                        manifest_output: &mut reopened_manifest,
-                        manifest_facts: &mut reopened_facts,
-                        fragment_output: &mut reopened_fragments,
-                        locality_output: &mut reopened_locality,
-                    },
-                )
-                .unwrap()
-                .unwrap();
-                let reopened_fragment = opened.fragments().next().unwrap().unwrap();
-                let (a_owner, _) = named(&reopened_fragment.view, b"a");
-                let (b_owner, _) = named(&reopened_fragment.view, b"B");
-                assert_eq!(
-                    facts(&reopened_fragment.view)
-                        .into_iter()
-                        .find(|fact| {
-                            fact.owner.raw == a_owner
-                                && fact.segment == backend_semantic::ir::TypeFactSegment::Computed
-                        })
-                        .and_then(|fact| fact.record.nominal),
-                    Some(backend_semantic::ir::NominalRef::Local(backend_semantic::ir::EntityId::new(
-                        b_owner
-                    ))),
-                );
-                reopened_publisher.shutdown().unwrap();
-                std::fs::remove_dir_all(root).unwrap();
-                true
-            })
-            .unwrap()
-            .join()
-            .unwrap()
-    );
+                },
+                CompileScratch {
+                    diagnostic_output: &mut diagnostic,
+                    native_work: Path::new("/tmp"),
+                },
+                CompileOutput {
+                    fragment_output: &mut fragment_output,
+                },
+            )
+            .map_err(|error| io::Error::other(format!("threaded lowering failed: {error}")))?;
+            let mut manifest = vec![0_u8; 1 << 20];
+            let mut manifest_facts = vec![None; 1];
+            let mut ordinals = vec![0_usize; 1];
+            let mut locality = vec![0_u8; 1 << 16];
+            let mut binding =
+                vec![0_u8; backend_engine::publication::binding::COMPILATION_BINDING_BYTES];
+            publish_compiled(
+                &publisher,
+                &artifacts,
+                std::slice::from_ref(&compiled),
+                PublishControl::Continue,
+                PublicationScratch {
+                    manifest_output: &mut manifest,
+                    manifest_facts: &mut manifest_facts,
+                    ordinals: &mut ordinals,
+                    locality_output: &mut locality,
+                    binding_output: &mut binding,
+                },
+            )
+            .map_err(|error| io::Error::other(format!("threaded publication failed: {error}")))?;
+            publisher
+                .shutdown()
+                .map_err(|error| io::Error::other(format!("publisher shutdown failed: {error}")))?;
+
+            let reopened_publisher = DurablePublisher::reopen(
+                &PublicationPaths::in_directory(&journal),
+                limits,
+            )
+            .map_err(|error| io::Error::other(format!("publisher reopen failed: {error}")))?;
+            let mut reopened_manifest = vec![0_u8; 1 << 20];
+            let mut reopened_facts = vec![None; 1];
+            let mut reopened_fragments = vec![0_u8; 8 * 1024 * 1024];
+            let mut reopened_locality = vec![0_u8; 1 << 16];
+            let opened = open_published(
+                &reopened_publisher,
+                &artifacts,
+                OpenPublicationScratch {
+                    manifest_output: &mut reopened_manifest,
+                    manifest_facts: &mut reopened_facts,
+                    fragment_output: &mut reopened_fragments,
+                    locality_output: &mut reopened_locality,
+                },
+            )
+            .map_err(|error| io::Error::other(format!("publication reopen failed: {error}")))?
+            .ok_or_else(|| io::Error::other("published fragment was not found after reopen"))?;
+            let reopened_fragment = opened
+                .fragments()
+                .next()
+                .ok_or_else(|| io::Error::other("reopened publication has no fragment"))?
+                .map_err(|error| io::Error::other(format!("reopened fragment is invalid: {error}")))?;
+            let (a_owner, _) = named(&reopened_fragment.view, b"a")?;
+            let (b_owner, _) = named(&reopened_fragment.view, b"B")?;
+            let computed_fact = facts(&reopened_fragment.view)
+                .into_iter()
+                .find(|fact| {
+                    fact.owner.raw == a_owner
+                        && fact.segment == backend_semantic::ir::TypeFactSegment::Computed
+                })
+                .ok_or_else(|| io::Error::other("reopened item a has no computed fact"))?;
+            assert_eq!(
+                computed_fact.record.nominal,
+                Some(backend_semantic::ir::NominalRef::Local(
+                    backend_semantic::ir::EntityId::new(b_owner)
+                )),
+            );
+            reopened_publisher
+                .shutdown()
+                .map_err(|error| io::Error::other(format!("reopened publisher shutdown failed: {error}")))?;
+            std::fs::remove_dir_all(&root)?;
+            drop(cleanup);
+            Ok(true)
+        })?;
+    let completed = join_test_thread(handle.join(), "forward nominal publication worker panicked")??;
+    assert!(completed);
+
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -3662,8 +4030,8 @@ struct Frozen {
     has_computed: bool,
 }
 #[test]
-fn golden_lowered_facts_match_the_frozen_table() {
-    let r = Checker::default().decode(TRANSCRIPT).unwrap();
+fn golden_lowered_facts_match_the_frozen_table() -> TestResult<()> {
+    let r = Checker::default().decode(TRANSCRIPT)?;
     let table = [
         Frozen {
             name: b"n",
@@ -3829,7 +4197,7 @@ fn golden_lowered_facts_match_the_frozen_table() {
             has_computed: false,
         },
     ];
-    let compiled = try_lower(SOURCE, Some(&r)).unwrap();
+    let compiled = try_lower(SOURCE, Some(&r))?;
     let typescript = compiled.ir.language_extensions().typescript;
     let mut identities = Vec::with_capacity(table.len());
     for (row_index, row) in table.iter().enumerate() {
@@ -3842,17 +4210,25 @@ fn golden_lowered_facts_match_the_frozen_table() {
             .items_named(row.name)
             .filter(|item| expected_kind_matches(item.kind(), row.kind))
             .collect();
-        let item = *candidates.get(same_name_before).unwrap_or_else(|| {
-            panic!(
+        let item = *require_some(
+            candidates.get(same_name_before),
+            &format!(
                 "row {row_index} {:?}: expected entity kind {:?}, observed {} candidates",
                 row.name,
                 row.kind,
                 candidates.len()
-            )
-        });
-        let extension = typescript.get(item.id()).unwrap();
-        let declared = ir_tag_shape(&compiled.ir, extension.declared.unwrap());
-        let computed = extension.observed.map(|id| ir_tag_shape(&compiled.ir, id));
+            ),
+        )?;
+        let extension = require_some(
+            typescript.get(item.id()),
+            "lowered item has no TypeScript extension row",
+        )?;
+        let declared_id = require_some(extension.declared, "declared type cell is missing")?;
+        let declared = ir_tag_shape(&compiled.ir, declared_id)?;
+        let computed = match extension.observed {
+            Some(id) => Some(ir_tag_shape(&compiled.ir, id)?),
+            None => None,
+        };
         assert_eq!(declared.0, row.declared, "row {row_index} {:?}", row.name);
         assert_eq!(
             computed.is_some(),
@@ -3878,7 +4254,7 @@ fn golden_lowered_facts_match_the_frozen_table() {
 
     // The fragment path is intentionally exercised too: the sibling golden
     // tests use `try_lower`, while this check must also prove `compile` agrees.
-    let decoded = view(SOURCE, Some(&r));
+    let decoded = view(SOURCE, Some(&r))?;
     for (row_index, row) in table.iter().enumerate() {
         let same_name_before = table[..row_index]
             .iter()
@@ -3888,7 +4264,10 @@ fn golden_lowered_facts_match_the_frozen_table() {
             .into_iter()
             .filter(|(_, name, kind)| name == row.name && *kind == row.kind)
             .collect();
-        let (owner, _, _) = *candidates.get(same_name_before).unwrap();
+        let (owner, _, _) = *require_some(
+            candidates.get(same_name_before),
+            "fragment candidate row is missing",
+        )?;
         if row.has_computed {
             assert!(
                 facts(&decoded).iter().any(|record| {
@@ -3902,10 +4281,12 @@ fn golden_lowered_facts_match_the_frozen_table() {
         }
     }
     assert_eq!(table.len(), 20);
+
+    Ok(())
 }
 
 #[test]
-fn wide_syntactic_associative_fold_keeps_members_ordered_and_shallow() {
+fn wide_syntactic_associative_fold_keeps_members_ordered_and_shallow() -> TestResult<()> {
     use backend_semantic::ir::{ConcreteType, Ir, ObjectMember, PropertyKey, TypeExpr, TypeId};
 
     fn build_source(operator: &str, count: usize) -> Vec<u8> {
@@ -3930,28 +4311,44 @@ fn wide_syntactic_associative_fold_keeps_members_ordered_and_shallow() {
         depth: u32,
         max_depth: &mut u32,
         label: &str,
-    ) {
+    ) -> TestResult<()> {
         *max_depth = (*max_depth).max(depth);
-        match ir.ty(id).unwrap() {
+        match require_some(ir.ty(id), "wide-fold type id has no expression")? {
             TypeExpr::Concrete(ConcreteType::Union(list))
             | TypeExpr::Concrete(ConcreteType::Intersection(list)) => {
-                for member in ir.types(list).unwrap() {
-                    flatten(ir, *member, out, depth + 1, max_depth, label);
+                for member in require_some(ir.types(list), "wide-fold child list is missing")? {
+                    flatten(ir, *member, out, depth + 1, max_depth, label)?;
                 }
             }
             TypeExpr::Concrete(ConcreteType::Object(members)) => {
-                let members = ir.object_members(members).unwrap();
+                let members = require_some(
+                    ir.object_members(members),
+                    "wide-fold object members are missing",
+                )?;
+                let member = require_some(
+                    members.first(),
+                    "wide-fold object has no first member",
+                )?;
                 let ObjectMember::Property {
                     key: PropertyKey::Named(atom),
                     ..
-                } = members[0]
+                } = member
                 else {
-                    panic!("{label}: unexpected object member");
+                    return Err(io::Error::other(format!("{label}: unexpected object member")).into());
                 };
-                out.push(ir.atom(atom).unwrap().to_vec());
+                out.push(
+                    require_some(ir.atom(*atom), "wide-fold property name atom is missing")?
+                        .to_vec(),
+                );
             }
-            other => panic!("unexpected wide member for {label}: {other:?}"),
+            other => {
+                return Err(io::Error::other(format!(
+                    "unexpected wide member for {label}: {other:?}"
+                ))
+                .into());
+            }
         }
+        Ok(())
     }
 
     // 255 is the un-folded type-child boundary; 256 exercises one fold;
@@ -3962,22 +4359,23 @@ fn wide_syntactic_associative_fold_keeps_members_ordered_and_shallow() {
             let label = format!("operator={operator:?} count={count}");
             let source: &'static [u8] = Box::leak(build_source(operator, count).into_boxed_slice());
             let authority = report(source);
-            let compiled = try_lower(source, Some(&authority)).unwrap();
-            let wide = compiled
-                .ir
-                .items()
-                .find(|item| item.name() == b"Wide")
-                .expect("wide alias item");
-            let root = wide.semantic_type().expect("wide alias type");
+            let compiled = try_lower(source, Some(&authority))?;
+            let wide = require_some(
+                compiled.ir.items().find(|item| item.name() == b"Wide"),
+                "wide alias item is missing",
+            )?;
+            let root = require_some(wide.semantic_type(), "wide alias type is missing")?;
             let mut members = Vec::new();
             let mut max_depth = 0;
-            flatten(&compiled.ir, root, &mut members, 0, &mut max_depth, &label);
+            flatten(&compiled.ir, root, &mut members, 0, &mut max_depth, &label)?;
             let expected: Vec<Vec<u8>> =
                 (0..count).map(|i| format!("p{i}").into_bytes()).collect();
             assert_eq!(members, expected, "{label}");
             assert!(max_depth <= 4, "{label} max_depth={max_depth}");
         }
     }
+
+    Ok(())
 }
 
 fn parameter_count(view: &FragmentView<'_>, name: &[u8]) -> usize {
@@ -3988,7 +4386,7 @@ fn parameter_count(view: &FragmentView<'_>, name: &[u8]) -> usize {
 }
 
 #[test]
-fn a_type_with_sixty_five_parameters_keeps_every_parameter() {
+fn a_type_with_sixty_five_parameters_keeps_every_parameter() -> TestResult<()> {
     let mut params = String::new();
     for index in 0..65 {
         if index != 0 {
@@ -3998,15 +4396,17 @@ fn a_type_with_sixty_five_parameters_keeps_every_parameter() {
     }
     let source = format!("export type Wide<{params}> = T0;\n");
     let source: &'static [u8] = Box::leak(source.into_bytes().into_boxed_slice());
-    let view = view(source, None);
+    let view = view(source, None)?;
     assert_eq!(parameter_count(&view, b"T0"), 1);
     assert_eq!(parameter_count(&view, b"T64"), 1);
+
+    Ok(())
 }
 
 #[test]
-fn nested_function_types_declare_each_parameter_binding() {
+fn nested_function_types_declare_each_parameter_binding() -> TestResult<()> {
     const SOURCE: &[u8] = b"export interface Bag { read: (left: number) => void; write: (left: string) => void; }\nexport type Call = (mid: number) => void;\n";
-    let view = view(SOURCE, None);
+    let view = view(SOURCE, None)?;
     assert_eq!(
         parameter_count(&view, b"left"),
         2,
@@ -4017,45 +4417,53 @@ fn nested_function_types_declare_each_parameter_binding() {
         1,
         "a top-level function type parameter is declared"
     );
+
+    Ok(())
 }
 
 #[test]
-fn mapped_name_type_and_initializer_bindings_are_declared() {
+fn mapped_name_type_and_initializer_bindings_are_declared() -> TestResult<()> {
     const SOURCE: &[u8] = b"export type Bag = { [Key in string as ((left: number) => void)]: number };\nexport const call = (null as (right: number) => void)!;\n";
-    let view = view(SOURCE, None);
+    let view = view(SOURCE, None)?;
     assert_eq!(parameter_count(&view, b"left"), 1);
     assert_eq!(parameter_count(&view, b"right"), 1);
-    let bag = named(&view, b"Bag");
-    let mapped = fact(&view, bag.0);
+    let bag = named(&view, b"Bag")?;
+    let mapped = fact(&view, bag.0)?;
     assert_eq!(mapped.record.tag, SemanticTypeTag::Mapped);
     assert_eq!(
         mapped.record.children.length,
         3,
         "mapped type keeps its as clause"
     );
+
+    Ok(())
 }
 
 #[test]
-fn parameter_defaults_declare_nested_function_bindings() {
+fn parameter_defaults_declare_nested_function_bindings() -> TestResult<()> {
     const SOURCE: &[u8] = b"export function take(cb = null as (left: number) => void): void {}\nexport function held(cb: (right: number) => void = null as (mid: number) => void): void {}\n";
-    let view = view(SOURCE, None);
+    let view = view(SOURCE, None)?;
     assert_eq!(parameter_count(&view, b"left"), 1);
     assert_eq!(parameter_count(&view, b"right"), 1);
     assert_eq!(parameter_count(&view, b"mid"), 1);
+
+    Ok(())
 }
 
 #[test]
-fn constructor_assignments_declare_nested_function_bindings() {
+fn constructor_assignments_declare_nested_function_bindings() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Bag {\n  constructor() {\n    this.read = null as (left: number) => void;\n    { this.bang = (null as (nested: number) => void)!; }\n    try {} catch { this.catchBind = null as (caught: number) => void; }\n  }\n  set() { this.write = null satisfies (mid: number) => void; }\n}\n";
-    let view = view(SOURCE, None);
+    let view = view(SOURCE, None)?;
     assert_eq!(parameter_count(&view, b"left"), 1);
     assert_eq!(parameter_count(&view, b"nested"), 1);
     assert_eq!(parameter_count(&view, b"caught"), 1);
     assert_eq!(parameter_count(&view, b"mid"), 1);
+
+    Ok(())
 }
 
 #[test]
-fn catch_binding_use_is_a_local_static() {
+fn catch_binding_use_is_a_local_static() -> TestResult<()> {
     const SOURCE: &[u8] = b"export const value = 1;
 export function probe(): void {
   try {
@@ -4065,7 +4473,7 @@ export function probe(): void {
   }
 }
 ";
-    let v = view(SOURCE, None);
+    let v = view(SOURCE, None)?;
     let err_entities: Vec<_> = entities(&v)
         .into_iter()
         .filter(|(_, name, _)| name == b"err")
@@ -4077,9 +4485,9 @@ export function probe(): void {
             .iter()
             .any(|(_, name, kind)| name == b"err" && *kind == EntityKind::Parameter)
     );
-    let (probe_id, _) = named(&v, b"probe");
-    let (err_id, _) = named(&v, b"err");
-    let (value_id, _) = named(&v, b"value");
+    let (probe_id, _) = named(&v, b"probe")?;
+    let (err_id, _) = named(&v, b"err")?;
+    let (value_id, _) = named(&v, b"value")?;
     let var_uses: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|row| row.occurrence.kind == ReferenceKind::VariableUse)
@@ -4103,10 +4511,12 @@ export function probe(): void {
         .expect("value use");
     assert_eq!(value_use.owner.raw, probe_id);
     assert_eq!(value_use.occurrence.confidence, OccurrenceConfidence::Index);
+
+    Ok(())
 }
 
 #[test]
-fn catch_binding_destructure_stays_unpublished() {
+fn catch_binding_destructure_stays_unpublished() -> TestResult<()> {
     const SOURCE: &[u8] = b"export function probe(): void {
   try {
   } catch ({ message }) {
@@ -4114,7 +4524,7 @@ fn catch_binding_destructure_stays_unpublished() {
   }
 }
 ";
-    let v = view(SOURCE, None);
+    let v = view(SOURCE, None)?;
     assert!(
         !entities(&v)
             .iter()
@@ -4125,15 +4535,17 @@ fn catch_binding_destructure_stays_unpublished() {
             .iter()
             .any(|row| row.occurrence.kind == ReferenceKind::VariableUse)
     );
+
+    Ok(())
 }
 
 #[test]
-fn enum_member_value_use_targets_that_enum() {
+fn enum_member_value_use_targets_that_enum() -> TestResult<()> {
     const SOURCE: &[u8] = b"export enum Color { Red = 1 }\nexport enum Other { Red = 2 }\nexport function pick(c: Color): boolean { return c === Color.Red; }\n";
-    let view = view(SOURCE, None);
-    let (color_id, color_kind) = named(&view, b"Color");
-    let (other_id, other_kind) = named(&view, b"Other");
-    let (pick_id, pick_kind) = named(&view, b"pick");
+    let view = view(SOURCE, None)?;
+    let (color_id, color_kind) = named(&view, b"Color")?;
+    let (other_id, other_kind) = named(&view, b"Other")?;
+    let (pick_id, pick_kind) = named(&view, b"pick")?;
     assert_eq!(color_kind, EntityKind::Enum);
     assert_eq!(other_kind, EntityKind::Enum);
     assert_eq!(pick_kind, EntityKind::Function);
@@ -4155,27 +4567,29 @@ fn enum_member_value_use_targets_that_enum() {
     assert_eq!(variant_row.1, b"Red");
     assert_eq!(variant_row.2, EntityKind::Variant);
     assert_eq!(
-        fact(&view, variant_id.raw).record.nominal,
+        fact(&view, variant_id.raw)?.record.nominal,
         Some(backend_semantic::ir::NominalRef::Local(
             backend_semantic::ir::EntityId::new(color_id)
         ))
     );
     assert_ne!(
-        fact(&view, variant_id.raw).record.nominal,
+        fact(&view, variant_id.raw)?.record.nominal,
         Some(backend_semantic::ir::NominalRef::Local(
             backend_semantic::ir::EntityId::new(other_id)
         ))
     );
+
+    Ok(())
 }
 
 #[test]
-fn catch_binding_repeated_name_still_lowers() {
+fn catch_binding_repeated_name_still_lowers() -> TestResult<()> {
     const SOURCE: &[u8] = b"export function probe(): void {
   try {} catch (err) { err; }
   try {} catch (err) { err; }
 }
 ";
-    let v = view(SOURCE, None);
+    let v = view(SOURCE, None)?;
     let var_uses: Vec<_> = occurrences(&v)
         .into_iter()
         .filter(|row| row.occurrence.kind == ReferenceKind::VariableUse)
@@ -4192,12 +4606,14 @@ fn catch_binding_repeated_name_still_lowers() {
         assert_eq!(name, b"err");
         assert_eq!(kind, EntityKind::Static);
     }
+
+    Ok(())
 }
 
 #[test]
-fn enum_member_missing_name_does_not_invent_a_variant() {
+fn enum_member_missing_name_does_not_invent_a_variant() -> TestResult<()> {
     const SOURCE: &[u8] = b"export enum Color { Red = 1 }\nexport function pick(): void { Color.missing; }\n";
-    let view = view(SOURCE, None);
+    let view = view(SOURCE, None)?;
     assert!(
         !entities(&view)
             .iter()
@@ -4212,12 +4628,14 @@ fn enum_member_missing_name_does_not_invent_a_variant() {
         }),
         "a missing enum member stays off every published variant"
     );
+
+    Ok(())
 }
 
 #[test]
-fn enum_member_non_enum_receiver_is_not_a_variant() {
+fn enum_member_non_enum_receiver_is_not_a_variant() -> TestResult<()> {
     const SOURCE: &[u8] = b"export function pick(box: { tick: number }): number { return box.tick; }\n";
-    let view = view(SOURCE, None);
+    let view = view(SOURCE, None)?;
     assert!(
         occurrences(&view).iter().all(|row| {
             let OccurrenceTarget::Local(target) = row.occurrence.target else {
@@ -4230,10 +4648,12 @@ fn enum_member_non_enum_receiver_is_not_a_variant() {
         }),
         "a non-enum property read does not retarget an enum variant"
     );
+
+    Ok(())
 }
 
 #[test]
-fn function_value_reference_is_a_call_not_a_read() {
+fn function_value_reference_is_a_call_not_a_read() -> TestResult<()> {
     const SOURCE: &[u8] = b"export function parse(raw: string): number { return raw.length; }
 export function use(items: string[]): number[] {
   const bound = parse;
@@ -4261,34 +4681,34 @@ export function viaCast(items: number[]): number[] { return items.map(cast); }
 const bang = (() => 1)!;
 export function viaBang(items: number[]): number[] { return items.map(bang); }
 ";
-    let view = view(SOURCE, None);
-    let parse_id = EntityId::new(named(&view, b"parse").0);
-    let bound_id = named(&view, b"bound").0;
-    let use_id = named(&view, b"use").0;
-    let direct_id = named(&view, b"direct").0;
-    let typed_id = named(&view, b"typed").0;
-    let alias_id = named(&view, b"alias").0;
+    let view = view(SOURCE, None)?;
+    let parse_id = EntityId::new(named(&view, b"parse")?.0);
+    let bound_id = named(&view, b"bound")?.0;
+    let use_id = named(&view, b"use")?.0;
+    let direct_id = named(&view, b"direct")?.0;
+    let typed_id = named(&view, b"typed")?.0;
+    let alias_id = named(&view, b"alias")?.0;
     let alias_parse_binding_id = entities(&view)
         .into_iter()
         .filter(|(id, name, _)| name == b"alias" && *id != alias_id)
         .map(|(id, _, _)| id)
         .next()
         .expect("function-local alias binding");
-    let count_id = EntityId::new(named(&view, b"count").0);
-    let via_arrow_id = named(&view, b"viaArrow").0;
-    let arrow_id = EntityId::new(named(&view, b"arrow").0);
-    let direct_arrow_id = named(&view, b"directArrow").0;
-    let wrapped_id = EntityId::new(named(&view, b"wrapped").0);
-    let via_wrapped_id = named(&view, b"viaWrapped").0;
-    let rebound_id = EntityId::new(named(&view, b"rebound").0);
-    let via_rebound_id = named(&view, b"viaRebound").0;
-    let via_alias_parse_id = named(&view, b"viaAliasParse").0;
-    let named_fn_id = EntityId::new(named(&view, b"namedFn").0);
-    let via_named_id = named(&view, b"viaNamed").0;
-    let cast_id = EntityId::new(named(&view, b"cast").0);
-    let via_cast_id = named(&view, b"viaCast").0;
-    let bang_id = EntityId::new(named(&view, b"bang").0);
-    let via_bang_id = named(&view, b"viaBang").0;
+    let count_id = EntityId::new(named(&view, b"count")?.0);
+    let via_arrow_id = named(&view, b"viaArrow")?.0;
+    let arrow_id = EntityId::new(named(&view, b"arrow")?.0);
+    let direct_arrow_id = named(&view, b"directArrow")?.0;
+    let wrapped_id = EntityId::new(named(&view, b"wrapped")?.0);
+    let via_wrapped_id = named(&view, b"viaWrapped")?.0;
+    let rebound_id = EntityId::new(named(&view, b"rebound")?.0);
+    let via_rebound_id = named(&view, b"viaRebound")?.0;
+    let via_alias_parse_id = named(&view, b"viaAliasParse")?.0;
+    let named_fn_id = EntityId::new(named(&view, b"namedFn")?.0);
+    let via_named_id = named(&view, b"viaNamed")?.0;
+    let cast_id = EntityId::new(named(&view, b"cast")?.0);
+    let via_cast_id = named(&view, b"viaCast")?.0;
+    let bang_id = EntityId::new(named(&view, b"bang")?.0);
+    let via_bang_id = named(&view, b"viaBang")?.0;
 
     let owner_start = |name: &[u8]| {
         SOURCE
@@ -4505,13 +4925,15 @@ export function viaBang(items: number[]): number[] { return items.map(bang); }
         bang_call[0].occurrence.span.end,
         bang_call[0].occurrence.span.start + u32::try_from(b"bang".len()).expect("bang len")
     );
+
+    Ok(())
 }
 
 #[test]
-fn namespace_call_targets_box_note_not_other() {
+fn namespace_call_targets_box_note_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Other { export function note(): number { return 9; } } namespace Box { export function note(): number { return 1; } } export function read(): number { return Box.note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -4519,7 +4941,7 @@ fn namespace_call_targets_box_note_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"Box.", b"note");
+    let note_token_start = property_token(SOURCE, b"Box.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -4535,14 +4957,16 @@ fn namespace_call_targets_box_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_function_value_targets_box_note_not_other() {
+fn namespace_function_value_targets_box_note_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Other { export function note(): number { return 9; } } namespace Box { export function note(): number { return 1; } } export function read(): number { return Box.note; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -4550,7 +4974,7 @@ fn namespace_function_value_targets_box_note_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"Box.", b"note");
+    let note_token_start = property_token(SOURCE, b"Box.", b"note")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -4566,19 +4990,21 @@ fn namespace_function_value_targets_box_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"note", note_token_start)?;
     let function_calls = occurrences(&v)
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .count();
     assert_eq!(function_calls, 0);
+
+    Ok(())
 }
 
 #[test]
-fn namespace_const_read_targets_box_score_not_other() {
+fn namespace_const_read_targets_box_score_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Other { export const score = 9; } namespace Box { export const score = 1; } export function read(): number { return Box.score; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_constants = entities_named(&v, b"score", EntityKind::Constant);
     assert_eq!(score_constants.len(), 2);
     let other_score = score_constants[0];
@@ -4586,7 +5012,7 @@ fn namespace_const_read_targets_box_score_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let score_token_start = property_token(SOURCE, b"Box.", b"score");
+    let score_token_start = property_token(SOURCE, b"Box.", b"score")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -4602,14 +5028,16 @@ fn namespace_const_read_targets_box_score_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_let_read_targets_box_score_not_other() {
+fn namespace_let_read_targets_box_score_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Other { export let score = 9; } namespace Box { export let score = 1; } export function read(): number { return Box.score; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_statics = entities_named(&v, b"score", EntityKind::Static);
     assert_eq!(score_statics.len(), 2);
     let other_score = score_statics[0];
@@ -4617,7 +5045,7 @@ fn namespace_let_read_targets_box_score_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let score_token_start = property_token(SOURCE, b"Box.", b"score");
+    let score_token_start = property_token(SOURCE, b"Box.", b"score")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -4633,21 +5061,23 @@ fn namespace_let_read_targets_box_score_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_merged_blocks_call_targets_note() {
+fn namespace_merged_blocks_call_targets_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Box { export function note(): number { return 1; } } namespace Box { export function read(): number { return Box.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let box_note = note_functions[0];
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"Box.", b"note");
+    let note_token_start = property_token(SOURCE, b"Box.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -4659,14 +5089,16 @@ fn namespace_merged_blocks_call_targets_note() {
         OccurrenceTarget::Local(EntityId::new(box_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_parenthesized_call_targets_box_note() {
+fn namespace_parenthesized_call_targets_box_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Other { export function note(): number { return 9; } } namespace Box { export function note(): number { return 1; } } export function read(): number { return (Box).note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -4674,7 +5106,7 @@ fn namespace_parenthesized_call_targets_box_note() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"(Box).", b"note");
+    let note_token_start = property_token(SOURCE, b"(Box).", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -4690,14 +5122,16 @@ fn namespace_parenthesized_call_targets_box_note() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_computed_call_targets_box_note_not_score() {
+fn namespace_computed_call_targets_box_note_not_score() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Box { export function note(): number { return 1; } export function score(): number { return 2; } } export function read(): number { return Box[\"note\"](); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let box_note = note_functions[0];
@@ -4707,7 +5141,7 @@ fn namespace_computed_call_targets_box_note_not_score() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"Box[\"", b"note");
+    let note_token_start = property_token(SOURCE, b"Box[\"", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -4723,14 +5157,16 @@ fn namespace_computed_call_targets_box_note_not_score() {
         OccurrenceTarget::Local(EntityId::new(box_score))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_computed_escape_does_not_bind_note() {
+fn namespace_computed_escape_does_not_bind_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Box { export function note(): number { return 1; } } export function read(): number { return Box[\"n\\u006fte\"](); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let function_calls = occurrences(&v)
@@ -4743,13 +5179,15 @@ fn namespace_computed_escape_does_not_bind_note() {
         .count();
     assert_eq!(function_calls, 0);
     assert_eq!(field_accesses, 0);
+
+    Ok(())
 }
 
 #[test]
-fn namespace_other_receiver_stays_syntactic() {
+fn namespace_other_receiver_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Box { export function note(): number { return 1; } } export function read(obj: { note(): number }): number { return obj.note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let box_note = note_functions[0];
@@ -4757,7 +5195,7 @@ fn namespace_other_receiver_stays_syntactic() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"obj.", b"note");
+    let note_token_start = property_token(SOURCE, b"obj.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -4787,14 +5225,16 @@ fn namespace_other_receiver_stays_syntactic() {
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(type_literal_note))
     );
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_class_value_targets_box_child_not_other() {
+fn namespace_class_value_targets_box_child_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Other { export class Child {} } namespace Box { export class Child {} } export function read(): Box.Child { return Box.Child; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let child_records = entities_named(&v, b"Child", EntityKind::Record);
     assert_eq!(child_records.len(), 2);
     let other_child = child_records[0];
@@ -4803,7 +5243,7 @@ fn namespace_class_value_targets_box_child_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let child_token_start = property_token_nth(SOURCE, b"Box.", b"Child", 1);
+    let child_token_start = property_token_nth(SOURCE, b"Box.", b"Child", 1)?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -4819,19 +5259,21 @@ fn namespace_class_value_targets_box_child_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_child))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start)?;
     let function_calls = occurrences(&v)
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .count();
     assert_eq!(function_calls, 0);
+
+    Ok(())
 }
 
 #[test]
-fn namespace_enum_value_targets_box_color_not_other() {
+fn namespace_enum_value_targets_box_color_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Other { export enum Color { Red } } namespace Box { export enum Color { Red } } export function read(): Box.Color { return Box.Color; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let color_enums = entities_named(&v, b"Color", EntityKind::Enum);
     assert_eq!(color_enums.len(), 2);
     let other_color = color_enums[0];
@@ -4839,7 +5281,7 @@ fn namespace_enum_value_targets_box_color_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let color_token_start = property_token_nth(SOURCE, b"Box.", b"Color", 1);
+    let color_token_start = property_token_nth(SOURCE, b"Box.", b"Color", 1)?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -4855,14 +5297,16 @@ fn namespace_enum_value_targets_box_color_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_color))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"Color", color_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Color", color_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_parenthesized_class_value_targets_box_child() {
+fn namespace_parenthesized_class_value_targets_box_child() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Other { export class Child {} } namespace Box { export class Child {} } export function read(): Box.Child { return (Box).Child; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let child_records = entities_named(&v, b"Child", EntityKind::Record);
     assert_eq!(child_records.len(), 2);
     let other_child = child_records[0];
@@ -4870,7 +5314,7 @@ fn namespace_parenthesized_class_value_targets_box_child() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let child_token_start = property_token(SOURCE, b"(Box).", b"Child");
+    let child_token_start = property_token(SOURCE, b"(Box).", b"Child")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -4886,14 +5330,16 @@ fn namespace_parenthesized_class_value_targets_box_child() {
         OccurrenceTarget::Local(EntityId::new(other_child))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_class_call_targets_box_child_not_other() {
+fn namespace_class_call_targets_box_child_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Other { export class Child {} } namespace Box { export class Child {} } export function read(): Box.Child { return Box.Child(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let child_records = entities_named(&v, b"Child", EntityKind::Record);
     assert_eq!(child_records.len(), 2);
     let other_child = child_records[0];
@@ -4902,7 +5348,7 @@ fn namespace_class_call_targets_box_child_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let child_token_start = property_token_nth(SOURCE, b"Box.", b"Child", 1);
+    let child_token_start = property_token_nth(SOURCE, b"Box.", b"Child", 1)?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -4918,21 +5364,23 @@ fn namespace_class_call_targets_box_child_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_child))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"Child", child_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"Child", child_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_class_other_receiver_stays_syntactic() {
+fn namespace_class_other_receiver_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Box { export class Child {} } export function read(obj: { Child: number }): number { return obj.Child; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let child_records = entities_named(&v, b"Child", EntityKind::Record);
     assert_eq!(child_records.len(), 1);
     let box_child = child_records[0];
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let child_token_start = property_token(SOURCE, b"obj.", b"Child");
+    let child_token_start = property_token(SOURCE, b"obj.", b"Child")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -4958,14 +5406,16 @@ fn namespace_class_other_receiver_stays_syntactic() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(box_child))
     );
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_computed_class_targets_box_child_not_score() {
+fn namespace_computed_class_targets_box_child_not_score() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Box { export class Child {} export class Score {} } export function read(): Box.Child { return Box[\"Child\"]; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let child_records = entities_named(&v, b"Child", EntityKind::Record);
     assert_eq!(child_records.len(), 1);
     let box_child = child_records[0];
@@ -4975,7 +5425,7 @@ fn namespace_computed_class_targets_box_child_not_score() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let child_token_start = property_token(SOURCE, b"Box[\"", b"Child");
+    let child_token_start = property_token(SOURCE, b"Box[\"", b"Child")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -4991,14 +5441,16 @@ fn namespace_computed_class_targets_box_child_not_score() {
         OccurrenceTarget::Local(EntityId::new(box_score))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_computed_class_escape_does_not_bind_child() {
+fn namespace_computed_class_escape_does_not_bind_child() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Box { export class Child {} } export function read(): Box.Child { return Box[\"C\\u0068ild\"]; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let child_records = entities_named(&v, b"Child", EntityKind::Record);
     assert_eq!(child_records.len(), 1);
     let function_calls = occurrences(&v)
@@ -5011,13 +5463,15 @@ fn namespace_computed_class_escape_does_not_bind_child() {
         .count();
     assert_eq!(function_calls, 0);
     assert_eq!(field_accesses, 0);
+
+    Ok(())
 }
 
 #[test]
-fn implements_call_targets_interface_note_not_other() {
+fn implements_call_targets_interface_note_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export interface Other { note(): number; } export interface Note { note(): number; } export class Child implements Note { read(): number { return this.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -5025,7 +5479,7 @@ fn implements_call_targets_interface_note_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5041,14 +5495,16 @@ fn implements_call_targets_interface_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn implements_child_method_wins_over_interface() {
+fn implements_child_method_wins_over_interface() -> TestResult<()> {
     const SOURCE: &[u8] = b"export interface Note { note(): number; } export class Child implements Note { note(): number { return 1; } read(): number { return this.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let interface_note = note_functions[0];
@@ -5056,7 +5512,7 @@ fn implements_child_method_wins_over_interface() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5072,14 +5528,16 @@ fn implements_child_method_wins_over_interface() {
         OccurrenceTarget::Local(EntityId::new(interface_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn implements_field_read_targets_interface_score_not_other() {
+fn implements_field_read_targets_interface_score_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export interface Other { score: number; } export interface Note { score: number; } export class Child implements Note { read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let other_score = score_fields[0];
@@ -5087,7 +5545,7 @@ fn implements_field_read_targets_interface_score_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -5103,19 +5561,21 @@ fn implements_field_read_targets_interface_score_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start)?;
     let function_calls = occurrences(&v)
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .count();
     assert_eq!(function_calls, 0);
+
+    Ok(())
 }
 
 #[test]
-fn implements_two_interfaces_same_note_stays_syntactic() {
+fn implements_two_interfaces_same_note_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"export interface A { note(): number; } export interface B { note(): number; } export class Child implements A, B { read(): number { return this.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let a_note = note_functions[0];
@@ -5123,7 +5583,7 @@ fn implements_two_interfaces_same_note_stays_syntactic() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5153,21 +5613,23 @@ fn implements_two_interfaces_same_note_stays_syntactic() {
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(b_note))
     );
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn implements_extended_interface_targets_base_note() {
+fn implements_extended_interface_targets_base_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export interface Base { note(): number; } export interface Mid extends Base {} export class Child implements Mid { read(): number { return this.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let base_note = note_functions[0];
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5179,14 +5641,16 @@ fn implements_extended_interface_targets_base_note() {
         OccurrenceTarget::Local(EntityId::new(base_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn implements_does_not_override_extends() {
+fn implements_does_not_override_extends() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { note(): number { return 1; } } export interface Note { note(): number; } export class Child extends Base implements Note { read(): number { return this.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let base_note = note_functions[0];
@@ -5194,7 +5658,7 @@ fn implements_does_not_override_extends() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5210,21 +5674,23 @@ fn implements_does_not_override_extends() {
         OccurrenceTarget::Local(EntityId::new(interface_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn super_call_does_not_use_implements() {
+fn super_call_does_not_use_implements() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base {} export interface Note { note(): number; } export class Child extends Base implements Note { read(): number { return super.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let interface_note = note_functions[0];
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"super.", b"note");
+    let note_token_start = property_token(SOURCE, b"super.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5250,21 +5716,23 @@ fn super_call_does_not_use_implements() {
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(interface_note))
     );
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn implements_qualified_name_stays_syntactic() {
+fn implements_qualified_name_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"export namespace Box { export interface Note { note(): number; } } export class Child implements Box.Note { read(): number { return this.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let interface_note = note_functions[0];
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5290,14 +5758,16 @@ fn implements_qualified_name_stays_syntactic() {
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(interface_note))
     );
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn extends_base_implements_call_targets_note_not_other() {
+fn extends_base_implements_call_targets_note_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export interface Other { note(): number; } export interface Note { note(): number; } export class Base implements Note {} export class Child extends Base { read(): number { return this.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -5305,7 +5775,7 @@ fn extends_base_implements_call_targets_note_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5321,14 +5791,16 @@ fn extends_base_implements_call_targets_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn extends_base_method_wins_over_base_interface() {
+fn extends_base_method_wins_over_base_interface() -> TestResult<()> {
     const SOURCE: &[u8] = b"export interface Note { note(): number; } export class Base implements Note { note(): number { return 1; } } export class Child extends Base { read(): number { return this.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let interface_note = note_functions[0];
@@ -5336,7 +5808,7 @@ fn extends_base_method_wins_over_base_interface() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5352,14 +5824,16 @@ fn extends_base_method_wins_over_base_interface() {
         OccurrenceTarget::Local(EntityId::new(interface_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn extends_child_method_wins_over_base_interface() {
+fn extends_child_method_wins_over_base_interface() -> TestResult<()> {
     const SOURCE: &[u8] = b"export interface Note { note(): number; } export class Base implements Note {} export class Child extends Base { note(): number { return 1; } read(): number { return this.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let interface_note = note_functions[0];
@@ -5367,7 +5841,7 @@ fn extends_child_method_wins_over_base_interface() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5383,14 +5857,16 @@ fn extends_child_method_wins_over_base_interface() {
         OccurrenceTarget::Local(EntityId::new(interface_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn extends_near_interface_wins_over_far_interface() {
+fn extends_near_interface_wins_over_far_interface() -> TestResult<()> {
     const SOURCE: &[u8] = b"export interface Far { note(): number; } export interface Near { note(): number; } export class Base implements Far {} export class Mid extends Base implements Near {} export class Child extends Mid { read(): number { return this.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let far_note = note_functions[0];
@@ -5398,7 +5874,7 @@ fn extends_near_interface_wins_over_far_interface() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5414,14 +5890,16 @@ fn extends_near_interface_wins_over_far_interface() {
         OccurrenceTarget::Local(EntityId::new(far_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn extends_base_two_interfaces_same_note_stays_syntactic() {
+fn extends_base_two_interfaces_same_note_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"export interface A { note(): number; } export interface B { note(): number; } export class Base implements A, B {} export class Child extends Base { read(): number { return this.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let a_note = note_functions[0];
@@ -5429,7 +5907,7 @@ fn extends_base_two_interfaces_same_note_stays_syntactic() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5459,21 +5937,23 @@ fn extends_base_two_interfaces_same_note_stays_syntactic() {
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(b_note))
     );
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn extends_grandchild_implements_targets_base_note() {
+fn extends_grandchild_implements_targets_base_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export interface Note { note(): number; } export class Base implements Note {} export class Mid extends Base {} export class Child extends Mid { read(): number { return this.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let base_note = note_functions[0];
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"this.", b"note");
+    let note_token_start = property_token(SOURCE, b"this.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5485,14 +5965,16 @@ fn extends_grandchild_implements_targets_base_note() {
         OccurrenceTarget::Local(EntityId::new(base_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn extends_base_implements_field_targets_score_not_other() {
+fn extends_base_implements_field_targets_score_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export interface Other { score: number; } export interface Note { score: number; } export class Base implements Note {} export class Child extends Base { read(): number { return this.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let other_score = score_fields[0];
@@ -5500,7 +5982,7 @@ fn extends_base_implements_field_targets_score_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let score_token_start = property_token(SOURCE, b"this.", b"score")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -5516,26 +5998,28 @@ fn extends_base_implements_field_targets_score_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start)?;
     let function_calls = occurrences(&v)
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .count();
     assert_eq!(function_calls, 0);
+
+    Ok(())
 }
 
 #[test]
-fn super_does_not_follow_base_implements() {
+fn super_does_not_follow_base_implements() -> TestResult<()> {
     const SOURCE: &[u8] = b"export interface Note { note(): number; } export class Base implements Note {} export class Child extends Base { read(): number { return super.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let interface_note = note_functions[0];
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"super.", b"note");
+    let note_token_start = property_token(SOURCE, b"super.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5561,14 +6045,16 @@ fn super_does_not_follow_base_implements() {
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(interface_note))
     );
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn class_qualified_call_targets_child_note_not_other() {
+fn class_qualified_call_targets_child_note_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { static note(): number { return 9; } } export class Child { static note(): number { return 1; } } export function read(): number { return Child.note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -5576,7 +6062,7 @@ fn class_qualified_call_targets_child_note_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"Child.", b"note");
+    let note_token_start = property_token(SOURCE, b"Child.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5592,14 +6078,16 @@ fn class_qualified_call_targets_child_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn class_qualified_method_value_targets_child_note_not_other() {
+fn class_qualified_method_value_targets_child_note_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { static note(): number { return 9; } } export class Child { static note(): number { return 1; } } export function read(): number { return Child.note; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -5607,7 +6095,7 @@ fn class_qualified_method_value_targets_child_note_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"Child.", b"note");
+    let note_token_start = property_token(SOURCE, b"Child.", b"note")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -5623,19 +6111,21 @@ fn class_qualified_method_value_targets_child_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"note", note_token_start)?;
     let function_calls = occurrences(&v)
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .count();
     assert_eq!(function_calls, 0);
+
+    Ok(())
 }
 
 #[test]
-fn class_qualified_field_targets_child_score_not_other() {
+fn class_qualified_field_targets_child_score_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { static score = 9; } export class Child { static score = 1; } export function read(): number { return Child.score; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let other_score = score_fields[0];
@@ -5643,7 +6133,7 @@ fn class_qualified_field_targets_child_score_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let score_token_start = property_token(SOURCE, b"Child.", b"score");
+    let score_token_start = property_token(SOURCE, b"Child.", b"score")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -5659,19 +6149,21 @@ fn class_qualified_field_targets_child_score_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start)?;
     let function_calls = occurrences(&v)
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .count();
     assert_eq!(function_calls, 0);
+
+    Ok(())
 }
 
 #[test]
-fn class_qualified_child_method_wins_over_base() {
+fn class_qualified_child_method_wins_over_base() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { static note(): number { return 1; } } export class Child extends Base { static note(): number { return 2; } } export function read(): number { return Child.note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let base_note = note_functions[0];
@@ -5679,7 +6171,7 @@ fn class_qualified_child_method_wins_over_base() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"Child.", b"note");
+    let note_token_start = property_token(SOURCE, b"Child.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5695,14 +6187,16 @@ fn class_qualified_child_method_wins_over_base() {
         OccurrenceTarget::Local(EntityId::new(base_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn class_qualified_inherited_static_targets_base_not_other() {
+fn class_qualified_inherited_static_targets_base_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { static note(): number { return 9; } } export class Base { static note(): number { return 1; } } export class Child extends Base {} export function read(): number { return Child.note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -5710,7 +6204,7 @@ fn class_qualified_inherited_static_targets_base_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"Child.", b"note");
+    let note_token_start = property_token(SOURCE, b"Child.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5726,14 +6220,16 @@ fn class_qualified_inherited_static_targets_base_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn class_qualified_parenthesized_call_targets_child_note() {
+fn class_qualified_parenthesized_call_targets_child_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { static note(): number { return 9; } } export class Child { static note(): number { return 1; } } export function read(): number { return (Child).note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -5741,7 +6237,7 @@ fn class_qualified_parenthesized_call_targets_child_note() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b").", b"note");
+    let note_token_start = property_token(SOURCE, b").", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5757,14 +6253,16 @@ fn class_qualified_parenthesized_call_targets_child_note() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn class_qualified_computed_call_targets_child_note_not_score() {
+fn class_qualified_computed_call_targets_child_note_not_score() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { static note(): number { return 1; } static score(): number { return 2; } } export function read(): number { return Child[\"note\"](); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let note = note_functions[0];
@@ -5774,7 +6272,7 @@ fn class_qualified_computed_call_targets_child_note_not_score() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"[\"", b"note");
+    let note_token_start = property_token(SOURCE, b"[\"", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5790,14 +6288,16 @@ fn class_qualified_computed_call_targets_child_note_not_score() {
         OccurrenceTarget::Local(EntityId::new(score))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn class_qualified_computed_escape_does_not_bind_note() {
+fn class_qualified_computed_escape_does_not_bind_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { static note(): number { return 1; } } export function read(): number { return Child[\"n\\u006fte\"](); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let function_calls = occurrences(&v)
@@ -5810,13 +6310,15 @@ fn class_qualified_computed_escape_does_not_bind_note() {
         .count();
     assert_eq!(function_calls, 0);
     assert_eq!(field_accesses, 0);
+
+    Ok(())
 }
 
 #[test]
-fn class_qualified_other_receiver_stays_syntactic() {
+fn class_qualified_other_receiver_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { static note(): number { return 1; } } export function read(obj: { note(): number }): number { return obj.note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let child_note = note_functions[0];
@@ -5824,7 +6326,7 @@ fn class_qualified_other_receiver_stays_syntactic() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"obj.", b"note");
+    let note_token_start = property_token(SOURCE, b"obj.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5854,14 +6356,16 @@ fn class_qualified_other_receiver_stays_syntactic() {
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(type_literal_note))
     );
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_qualified_class_call_targets_box_note() {
+fn namespace_qualified_class_call_targets_box_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export namespace Box { export class Child { static note(): number { return 1; } } } export function read(): number { return Box.Child.note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let note = note_functions[0];
@@ -5871,8 +6375,8 @@ fn namespace_qualified_class_call_targets_box_note() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let child_token_start = property_token(SOURCE, b"Box.", b"Child");
-    let note_token_start = property_token(SOURCE, b"Child.", b"note");
+    let child_token_start = property_token(SOURCE, b"Box.", b"Child")?;
+    let note_token_start = property_token(SOURCE, b"Child.", b"note")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -5884,7 +6388,7 @@ fn namespace_qualified_class_call_targets_box_note() {
         OccurrenceTarget::Local(EntityId::new(child))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start)?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -5896,14 +6400,16 @@ fn namespace_qualified_class_call_targets_box_note() {
         OccurrenceTarget::Local(EntityId::new(note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_qualified_enum_variant_targets_box_red_not_other() {
+fn namespace_qualified_enum_variant_targets_box_red_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Other { export enum Color { Red = 9 } } namespace Box { export enum Color { Red = 1 } } export function read(): number { return Box.Color.Red; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let red_variants = entities_named(&v, b"Red", EntityKind::Variant);
     assert_eq!(red_variants.len(), 2);
     let other_red = red_variants[0];
@@ -5915,8 +6421,8 @@ fn namespace_qualified_enum_variant_targets_box_red_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let color_token_start = property_token(SOURCE, b"Box.", b"Color");
-    let red_token_start = property_token(SOURCE, b"Color.", b"Red");
+    let color_token_start = property_token(SOURCE, b"Box.", b"Color")?;
+    let red_token_start = property_token(SOURCE, b"Color.", b"Red")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -5932,7 +6438,7 @@ fn namespace_qualified_enum_variant_targets_box_red_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_red))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"Red", red_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Red", red_token_start)?;
     assert_eq!(field_reads[1].owner.raw, read_owner);
     assert_eq!(
         field_reads[1].occurrence.target,
@@ -5943,19 +6449,21 @@ fn namespace_qualified_enum_variant_targets_box_red_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_color))
     );
     assert_eq!(field_reads[1].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[1], b"Color", color_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[1], b"Color", color_token_start)?;
     let function_calls = occurrences(&v)
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .count();
     assert_eq!(function_calls, 0);
+
+    Ok(())
 }
 
 #[test]
-fn namespace_qualified_parenthesized_variant_targets_box_red() {
+fn namespace_qualified_parenthesized_variant_targets_box_red() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Other { export enum Color { Red = 9 } } namespace Box { export enum Color { Red = 1 } } export function read(): number { return (Box.Color).Red; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let red_variants = entities_named(&v, b"Red", EntityKind::Variant);
     assert_eq!(red_variants.len(), 2);
     let other_red = red_variants[0];
@@ -5963,7 +6471,7 @@ fn namespace_qualified_parenthesized_variant_targets_box_red() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let red_token_start = property_token(SOURCE, b"Color).", b"Red");
+    let red_token_start = property_token(SOURCE, b"Color).", b"Red")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -5979,14 +6487,16 @@ fn namespace_qualified_parenthesized_variant_targets_box_red() {
         OccurrenceTarget::Local(EntityId::new(other_red))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"Red", red_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Red", red_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_qualified_computed_variant_targets_box_red_not_blue() {
+fn namespace_qualified_computed_variant_targets_box_red_not_blue() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Box { export enum Color { Red = 1, Blue = 2 } } export function read(): number { return Box.Color[\"Red\"]; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let red_variants = entities_named(&v, b"Red", EntityKind::Variant);
     assert_eq!(red_variants.len(), 1);
     let box_red = red_variants[0];
@@ -5996,7 +6506,7 @@ fn namespace_qualified_computed_variant_targets_box_red_not_blue() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let red_token_start = property_token(SOURCE, b"Color[\"", b"Red");
+    let red_token_start = property_token(SOURCE, b"Color[\"", b"Red")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -6012,14 +6522,16 @@ fn namespace_qualified_computed_variant_targets_box_red_not_blue() {
         OccurrenceTarget::Local(EntityId::new(box_blue))
     );
     assert_eq!(field_reads[1].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[1], b"Red", red_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[1], b"Red", red_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_qualified_computed_escape_does_not_bind_red() {
+fn namespace_qualified_computed_escape_does_not_bind_red() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Box { export enum Color { Red = 1 } } export function read(): number { return Box.Color[\"R\\u0065d\"]; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let red_variants = entities_named(&v, b"Red", EntityKind::Variant);
     assert_eq!(red_variants.len(), 1);
     let box_red = red_variants[0];
@@ -6049,13 +6561,15 @@ fn namespace_qualified_computed_escape_does_not_bind_red() {
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .count();
     assert_eq!(function_calls, 0);
+
+    Ok(())
 }
 
 #[test]
-fn namespace_qualified_nested_call_targets_box_note_not_other() {
+fn namespace_qualified_nested_call_targets_box_note_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Other { export namespace Inner { export function note(): number { return 9; } } } namespace Box { export namespace Inner { export function note(): number { return 1; } } } export function read(): number { return Box.Inner.note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -6067,8 +6581,8 @@ fn namespace_qualified_nested_call_targets_box_note_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let inner_token_start = property_token(SOURCE, b"Box.", b"Inner");
-    let note_token_start = property_token(SOURCE, b"Inner.", b"note");
+    let inner_token_start = property_token(SOURCE, b"Box.", b"Inner")?;
+    let note_token_start = property_token(SOURCE, b"Inner.", b"note")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -6084,7 +6598,7 @@ fn namespace_qualified_nested_call_targets_box_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_inner))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"Inner", inner_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Inner", inner_token_start)?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6100,21 +6614,23 @@ fn namespace_qualified_nested_call_targets_box_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_qualified_deep_call_targets_note() {
+fn namespace_qualified_deep_call_targets_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Box { export namespace Inner { export namespace Deep { export function note(): number { return 1; } } } } export function read(): number { return Box.Inner.Deep.note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let note = note_functions[0];
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"Deep.", b"note");
+    let note_token_start = property_token(SOURCE, b"Deep.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6126,21 +6642,23 @@ fn namespace_qualified_deep_call_targets_note() {
         OccurrenceTarget::Local(EntityId::new(note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn namespace_qualified_other_receiver_stays_syntactic() {
+fn namespace_qualified_other_receiver_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"namespace Box { export enum Color { Red = 1 } } export function read(obj: { Color: { Red: number } }): number { return obj.Color.Red; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let red_variants = entities_named(&v, b"Red", EntityKind::Variant);
     assert_eq!(red_variants.len(), 1);
     let box_red = red_variants[0];
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let red_token_start = property_token(SOURCE, b"Color.", b"Red");
+    let red_token_start = property_token(SOURCE, b"Color.", b"Red")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -6166,7 +6684,7 @@ fn namespace_qualified_other_receiver_stays_syntactic() {
         field_reads[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(box_red))
     );
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"Red", red_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Red", red_token_start)?;
     assert_eq!(field_reads[1].owner.raw, read_owner);
     match &field_reads[1].occurrence.target {
         OccurrenceTarget::Foreign(key) => {
@@ -6188,13 +6706,15 @@ fn namespace_qualified_other_receiver_stays_syntactic() {
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .count();
     assert_eq!(function_calls, 0);
+
+    Ok(())
 }
 
 #[test]
-fn class_qualified_getter_read_targets_getter_not_setter() {
+fn class_qualified_getter_read_targets_getter_not_setter() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { static get score(): number { return 1; } static set score(value: number) {} } export function read(): number { return Child.score; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_functions = entities_named(&v, b"score", EntityKind::Function);
     assert_eq!(score_functions.len(), 2);
     let getter = score_functions[0];
@@ -6202,7 +6722,7 @@ fn class_qualified_getter_read_targets_getter_not_setter() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let score_token_start = property_token(SOURCE, b"Child.", b"score");
+    let score_token_start = property_token(SOURCE, b"Child.", b"score")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -6218,19 +6738,21 @@ fn class_qualified_getter_read_targets_getter_not_setter() {
         OccurrenceTarget::Local(EntityId::new(setter))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start)?;
     let function_calls = occurrences(&v)
         .iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
         .count();
     assert_eq!(function_calls, 0);
+
+    Ok(())
 }
 
 #[test]
-fn new_instance_call_targets_child_note_not_other() {
+fn new_instance_call_targets_child_note_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { note(): number { return 1; } } export class Child { note(): number { return 1; } } export function read(): number { return new Child().note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -6244,8 +6766,8 @@ fn new_instance_call_targets_child_note_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let child_token_start = property_token(SOURCE, b"new ", b"Child");
-    let note_token_start = property_token(SOURCE, b").", b"note");
+    let child_token_start = property_token(SOURCE, b"new ", b"Child")?;
+    let note_token_start = property_token(SOURCE, b").", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6261,7 +6783,7 @@ fn new_instance_call_targets_child_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_record))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"Child", child_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"Child", child_token_start)?;
     assert_eq!(calls[1].owner.raw, read_owner);
     assert_eq!(
         calls[1].occurrence.target,
@@ -6272,14 +6794,16 @@ fn new_instance_call_targets_child_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[1].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[1], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[1], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn new_instance_method_value_targets_child_note_not_other() {
+fn new_instance_method_value_targets_child_note_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { note(): number { return 1; } } export class Child { note(): number { return 1; } } export function read(): number { return new Child().note; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -6290,8 +6814,8 @@ fn new_instance_method_value_targets_child_note_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let child_token_start = property_token(SOURCE, b"new ", b"Child");
-    let note_token_start = property_token(SOURCE, b").", b"note");
+    let child_token_start = property_token(SOURCE, b"new ", b"Child")?;
+    let note_token_start = property_token(SOURCE, b").", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6303,7 +6827,7 @@ fn new_instance_method_value_targets_child_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(child_record))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"Child", child_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"Child", child_token_start)?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -6319,14 +6843,16 @@ fn new_instance_method_value_targets_child_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn new_instance_field_targets_child_score_not_other() {
+fn new_instance_field_targets_child_score_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { score = 9; } export class Child { score = 1; } export function read(): number { return new Child().score; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let other_score = score_fields[0];
@@ -6337,8 +6863,8 @@ fn new_instance_field_targets_child_score_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let child_token_start = property_token(SOURCE, b"new ", b"Child");
-    let score_token_start = property_token(SOURCE, b").", b"score");
+    let child_token_start = property_token(SOURCE, b"new ", b"Child")?;
+    let score_token_start = property_token(SOURCE, b").", b"score")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6350,7 +6876,7 @@ fn new_instance_field_targets_child_score_not_other() {
         OccurrenceTarget::Local(EntityId::new(child_record))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"Child", child_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"Child", child_token_start)?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -6366,14 +6892,16 @@ fn new_instance_field_targets_child_score_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn new_instance_inherited_call_targets_base_not_other() {
+fn new_instance_inherited_call_targets_base_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { note(): number { return 9; } } export class Base { note(): number { return 1; } } export class Child extends Base {} export function read(): number { return new Child().note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -6384,8 +6912,8 @@ fn new_instance_inherited_call_targets_base_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let child_token_start = property_token(SOURCE, b"new ", b"Child");
-    let note_token_start = property_token(SOURCE, b").", b"note");
+    let child_token_start = property_token(SOURCE, b"new ", b"Child")?;
+    let note_token_start = property_token(SOURCE, b").", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6397,7 +6925,7 @@ fn new_instance_inherited_call_targets_base_not_other() {
         OccurrenceTarget::Local(EntityId::new(child_record))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"Child", child_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"Child", child_token_start)?;
     assert_eq!(calls[1].owner.raw, read_owner);
     assert_eq!(
         calls[1].occurrence.target,
@@ -6408,14 +6936,16 @@ fn new_instance_inherited_call_targets_base_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[1].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[1], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[1], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn new_instance_parenthesized_call_targets_child_note() {
+fn new_instance_parenthesized_call_targets_child_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { note(): number { return 9; } } export class Child { note(): number { return 1; } } export function read(): number { return (new Child()).note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -6423,7 +6953,7 @@ fn new_instance_parenthesized_call_targets_child_note() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b").", b"note");
+    let note_token_start = property_token(SOURCE, b").", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6439,14 +6969,16 @@ fn new_instance_parenthesized_call_targets_child_note() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[1].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[1], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[1], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn new_instance_namespace_call_targets_box_note() {
+fn new_instance_namespace_call_targets_box_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export namespace Box { export class Child { note(): number { return 1; } } } export function read(): number { return new Box.Child().note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let note = note_functions[0];
@@ -6456,8 +6988,8 @@ fn new_instance_namespace_call_targets_box_note() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let child_token_start = property_token(SOURCE, b"Box.", b"Child");
-    let note_token_start = property_token(SOURCE, b").", b"note");
+    let child_token_start = property_token(SOURCE, b"Box.", b"Child")?;
+    let note_token_start = property_token(SOURCE, b").", b"note")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -6469,7 +7001,7 @@ fn new_instance_namespace_call_targets_box_note() {
         OccurrenceTarget::Local(EntityId::new(child))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start)?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6481,21 +7013,23 @@ fn new_instance_namespace_call_targets_box_note() {
         OccurrenceTarget::Local(EntityId::new(note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn new_instance_other_receiver_stays_syntactic() {
+fn new_instance_other_receiver_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { note(): number { return 1; } } export function read(obj: new () => object): number { return new obj().note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let child_note = note_functions[0];
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b").", b"note");
+    let note_token_start = property_token(SOURCE, b").", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6522,14 +7056,16 @@ fn new_instance_other_receiver_stays_syntactic() {
         note_call.occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child_note))
     );
-    assert_property_token_site(SOURCE, None, note_call, b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, note_call, b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn new_instance_getter_read_targets_getter_not_setter() {
+fn new_instance_getter_read_targets_getter_not_setter() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { get score(): number { return 1; } set score(value: number) {} } export function read(): number { return new Child().score; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_functions = entities_named(&v, b"score", EntityKind::Function);
     assert_eq!(score_functions.len(), 2);
     let getter = score_functions[0];
@@ -6540,7 +7076,7 @@ fn new_instance_getter_read_targets_getter_not_setter() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let score_token_start = property_token(SOURCE, b").", b"score");
+    let score_token_start = property_token(SOURCE, b").", b"score")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -6556,7 +7092,7 @@ fn new_instance_getter_read_targets_getter_not_setter() {
         OccurrenceTarget::Local(EntityId::new(setter))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start)?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6568,13 +7104,15 @@ fn new_instance_getter_read_targets_getter_not_setter() {
         OccurrenceTarget::Local(EntityId::new(child_record))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
+
+    Ok(())
 }
 
 #[test]
-fn assertion_call_targets_child_note_not_other() {
+fn assertion_call_targets_child_note_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { note(): number { return 9; } } export class Child { note(): number { return 1; } } export function read(value: object): number { return (value as Child).note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -6582,7 +7120,7 @@ fn assertion_call_targets_child_note_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b").", b"note");
+    let note_token_start = property_token(SOURCE, b").", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6598,14 +7136,16 @@ fn assertion_call_targets_child_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn assertion_field_targets_child_score_not_other() {
+fn assertion_field_targets_child_score_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { score = 9; } export class Child { score = 1; } export function read(value: object): number { return (value as Child).score; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let other_score = score_fields[0];
@@ -6613,7 +7153,7 @@ fn assertion_field_targets_child_score_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let score_token_start = property_token(SOURCE, b").", b"score");
+    let score_token_start = property_token(SOURCE, b").", b"score")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6634,14 +7174,16 @@ fn assertion_field_targets_child_score_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_score))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn assertion_inherited_call_targets_base_not_other() {
+fn assertion_inherited_call_targets_base_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { note(): number { return 9; } } export class Base { note(): number { return 1; } } export class Child extends Base {} export function read(value: object): number { return (value as Child).note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -6649,7 +7191,7 @@ fn assertion_inherited_call_targets_base_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b").", b"note");
+    let note_token_start = property_token(SOURCE, b").", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6665,14 +7207,16 @@ fn assertion_inherited_call_targets_base_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn assertion_angle_bracket_call_targets_child_note() {
+fn assertion_angle_bracket_call_targets_child_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { note(): number { return 9; } } export class Child { note(): number { return 1; } } export function read(value: object): number { return (<Child>value).note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -6680,7 +7224,7 @@ fn assertion_angle_bracket_call_targets_child_note() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b").", b"note");
+    let note_token_start = property_token(SOURCE, b").", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6696,14 +7240,16 @@ fn assertion_angle_bracket_call_targets_child_note() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn assertion_interface_call_targets_note_not_other() {
+fn assertion_interface_call_targets_note_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export interface Other { note(): number; } export interface Note { note(): number; } export function read(value: object): number { return (value as Note).note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -6711,7 +7257,7 @@ fn assertion_interface_call_targets_note_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b").", b"note");
+    let note_token_start = property_token(SOURCE, b").", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6727,21 +7273,23 @@ fn assertion_interface_call_targets_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn assertion_namespace_class_call_targets_box_note() {
+fn assertion_namespace_class_call_targets_box_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export namespace Box { export class Child { note(): number { return 1; } } } export function read(value: object): number { return (value as Box.Child).note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let note = note_functions[0];
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b").", b"note");
+    let note_token_start = property_token(SOURCE, b").", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6753,21 +7301,23 @@ fn assertion_namespace_class_call_targets_box_note() {
         OccurrenceTarget::Local(EntityId::new(note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn assertion_satisfies_stays_syntactic() {
+fn assertion_satisfies_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { note(): number { return 1; } } export function read(value: object): number { return (value satisfies Child).note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let child_note = note_functions[0];
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b").", b"note");
+    let note_token_start = property_token(SOURCE, b").", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6793,14 +7343,16 @@ fn assertion_satisfies_stays_syntactic() {
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child_note))
     );
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn assertion_plain_receiver_stays_syntactic() {
+fn assertion_plain_receiver_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { note(): number { return 1; } } export function read(value: { note(): number }): number { return value.note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let type_note = note_functions[0];
@@ -6808,7 +7360,7 @@ fn assertion_plain_receiver_stays_syntactic() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b".", b"note");
+    let note_token_start = property_token(SOURCE, b".", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6838,14 +7390,16 @@ fn assertion_plain_receiver_stays_syntactic() {
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child_note))
     );
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn non_null_new_call_targets_child_note_not_other() {
+fn non_null_new_call_targets_child_note_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { note(): number { return 9; } } export class Child { note(): number { return 1; } } export function read(): number { return new Child()!.note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -6859,8 +7413,8 @@ fn non_null_new_call_targets_child_note_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let child_token_start = property_token(SOURCE, b"new ", b"Child");
-    let note_token_start = property_token(SOURCE, b"!.", b"note");
+    let child_token_start = property_token(SOURCE, b"new ", b"Child")?;
+    let note_token_start = property_token(SOURCE, b"!.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6876,7 +7430,7 @@ fn non_null_new_call_targets_child_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_record))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"Child", child_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"Child", child_token_start)?;
     assert_eq!(calls[1].owner.raw, read_owner);
     assert_eq!(
         calls[1].occurrence.target,
@@ -6887,14 +7441,16 @@ fn non_null_new_call_targets_child_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[1].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[1], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[1], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn non_null_assertion_call_targets_child_note_not_other() {
+fn non_null_assertion_call_targets_child_note_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { note(): number { return 9; } } export class Child { note(): number { return 1; } } export function read(value: object): number { return (value as Child)!.note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -6902,7 +7458,7 @@ fn non_null_assertion_call_targets_child_note_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"!.", b"note");
+    let note_token_start = property_token(SOURCE, b"!.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6918,14 +7474,16 @@ fn non_null_assertion_call_targets_child_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn non_null_static_call_targets_child_note_not_other() {
+fn non_null_static_call_targets_child_note_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { static note(): number { return 9; } } export class Child { static note(): number { return 1; } } export function read(): number { return Child!.note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -6933,7 +7491,7 @@ fn non_null_static_call_targets_child_note_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"!.", b"note");
+    let note_token_start = property_token(SOURCE, b"!.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6949,14 +7507,16 @@ fn non_null_static_call_targets_child_note_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn non_null_double_new_call_targets_child_note() {
+fn non_null_double_new_call_targets_child_note() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Other { note(): number { return 9; } } export class Child { note(): number { return 1; } } export function read(): number { return new Child()!!.note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let other_note = note_functions[0];
@@ -6964,7 +7524,7 @@ fn non_null_double_new_call_targets_child_note() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"!.", b"note");
+    let note_token_start = property_token(SOURCE, b"!.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -6980,14 +7540,16 @@ fn non_null_double_new_call_targets_child_note() {
         OccurrenceTarget::Local(EntityId::new(other_note))
     );
     assert_eq!(calls[1].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[1], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[1], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn non_null_enum_variant_targets_color_red_not_other() {
+fn non_null_enum_variant_targets_color_red_not_other() -> TestResult<()> {
     const SOURCE: &[u8] = b"export enum Other { Red = 9 } export enum Color { Red = 1 } export function read(): number { return Color!.Red; }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let red_variants = entities_named(&v, b"Red", EntityKind::Variant);
     assert_eq!(red_variants.len(), 2);
     let other_red = red_variants[0];
@@ -6995,7 +7557,7 @@ fn non_null_enum_variant_targets_color_red_not_other() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let red_token_start = property_token(SOURCE, b"!.", b"Red");
+    let red_token_start = property_token(SOURCE, b"!.", b"Red")?;
     let field_reads = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
@@ -7011,14 +7573,16 @@ fn non_null_enum_variant_targets_color_red_not_other() {
         OccurrenceTarget::Local(EntityId::new(other_red))
     );
     assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &field_reads[0], b"Red", red_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Red", red_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn non_null_plain_receiver_stays_syntactic() {
+fn non_null_plain_receiver_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { note(): number { return 1; } } export function read(value: { note(): number }): number { return value!.note(); }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let type_note = note_functions[0];
@@ -7026,7 +7590,7 @@ fn non_null_plain_receiver_stays_syntactic() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b".", b"note");
+    let note_token_start = property_token(SOURCE, b".", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -7056,14 +7620,16 @@ fn non_null_plain_receiver_stays_syntactic() {
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child_note))
     );
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn receiver_peel_this_call_targets_base_note_not_decoy() {
+fn receiver_peel_this_call_targets_base_note_not_decoy() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Decoy { note(): number { return 9; } } export class Base { note(): number { return 1; } } export class Child extends Base { read(): number { return this!.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let decoy_note = note_functions[0];
@@ -7071,7 +7637,7 @@ fn receiver_peel_this_call_targets_base_note_not_decoy() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"!.", b"note");
+    let note_token_start = property_token(SOURCE, b"!.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -7087,14 +7653,16 @@ fn receiver_peel_this_call_targets_base_note_not_decoy() {
         OccurrenceTarget::Local(EntityId::new(decoy_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn receiver_peel_this_double_bang_call_targets_base_note_not_decoy() {
+fn receiver_peel_this_double_bang_call_targets_base_note_not_decoy() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Decoy { note(): number { return 9; } } export class Base { note(): number { return 1; } } export class Child extends Base { read(): number { return this!!.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let decoy_note = note_functions[0];
@@ -7102,7 +7670,7 @@ fn receiver_peel_this_double_bang_call_targets_base_note_not_decoy() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"!.", b"note");
+    let note_token_start = property_token(SOURCE, b"!.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -7118,14 +7686,16 @@ fn receiver_peel_this_double_bang_call_targets_base_note_not_decoy() {
         OccurrenceTarget::Local(EntityId::new(decoy_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn receiver_peel_this_paren_bang_call_targets_base_note_not_decoy() {
+fn receiver_peel_this_paren_bang_call_targets_base_note_not_decoy() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Decoy { note(): number { return 9; } } export class Base { note(): number { return 1; } } export class Child extends Base { read(): number { return (this)!.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let decoy_note = note_functions[0];
@@ -7133,7 +7703,7 @@ fn receiver_peel_this_paren_bang_call_targets_base_note_not_decoy() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"!.", b"note");
+    let note_token_start = property_token(SOURCE, b"!.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -7149,14 +7719,16 @@ fn receiver_peel_this_paren_bang_call_targets_base_note_not_decoy() {
         OccurrenceTarget::Local(EntityId::new(decoy_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn receiver_peel_this_double_paren_call_targets_base_note_not_decoy() {
+fn receiver_peel_this_double_paren_call_targets_base_note_not_decoy() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Decoy { note(): number { return 9; } } export class Base { note(): number { return 1; } } export class Child extends Base { read(): number { return ((this)).note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let decoy_note = note_functions[0];
@@ -7164,7 +7736,7 @@ fn receiver_peel_this_double_paren_call_targets_base_note_not_decoy() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b")).", b"note");
+    let note_token_start = property_token(SOURCE, b")).", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -7180,14 +7752,16 @@ fn receiver_peel_this_double_paren_call_targets_base_note_not_decoy() {
         OccurrenceTarget::Local(EntityId::new(decoy_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn receiver_peel_this_computed_call_targets_base_note_not_decoy() {
+fn receiver_peel_this_computed_call_targets_base_note_not_decoy() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Decoy { note(): number { return 9; } } export class Base { note(): number { return 1; } } export class Child extends Base { read(): number { return this![\"note\"](); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let decoy_note = note_functions[0];
@@ -7195,7 +7769,7 @@ fn receiver_peel_this_computed_call_targets_base_note_not_decoy() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"[\"", b"note");
+    let note_token_start = property_token(SOURCE, b"[\"", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -7211,14 +7785,16 @@ fn receiver_peel_this_computed_call_targets_base_note_not_decoy() {
         OccurrenceTarget::Local(EntityId::new(decoy_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn receiver_peel_child_override_wins_over_base() {
+fn receiver_peel_child_override_wins_over_base() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { note(): number { return 1; } } export class Child extends Base { note(): number { return 2; } read(): number { return this!.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let base_note = note_functions[0];
@@ -7226,7 +7802,7 @@ fn receiver_peel_child_override_wins_over_base() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"!.", b"note");
+    let note_token_start = property_token(SOURCE, b"!.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -7242,14 +7818,16 @@ fn receiver_peel_child_override_wins_over_base() {
         OccurrenceTarget::Local(EntityId::new(base_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn receiver_peel_this_field_targets_base_score_not_decoy() {
+fn receiver_peel_this_field_targets_base_score_not_decoy() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Decoy { score: number = 9; } export class Base { score: number = 1; } export class Child extends Base { read(): number { return this!.score; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let score_fields = entities_named(&v, b"score", EntityKind::Field);
     assert_eq!(score_fields.len(), 2);
     let decoy_score = score_fields[0];
@@ -7257,7 +7835,7 @@ fn receiver_peel_this_field_targets_base_score_not_decoy() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let score_token_start = property_token(SOURCE, b"!.", b"score");
+    let score_token_start = property_token(SOURCE, b"!.", b"score")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -7278,14 +7856,16 @@ fn receiver_peel_this_field_targets_base_score_not_decoy() {
         OccurrenceTarget::Local(EntityId::new(decoy_score))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn receiver_peel_this_method_value_targets_base_note_not_decoy() {
+fn receiver_peel_this_method_value_targets_base_note_not_decoy() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Decoy { note(): number { return 9; } } export class Base { note(): number { return 1; } } export class Child extends Base { read(): unknown { return this!.note; } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let decoy_note = note_functions[0];
@@ -7293,7 +7873,7 @@ fn receiver_peel_this_method_value_targets_base_note_not_decoy() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"!.", b"note");
+    let note_token_start = property_token(SOURCE, b"!.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -7314,14 +7894,16 @@ fn receiver_peel_this_method_value_targets_base_note_not_decoy() {
         OccurrenceTarget::Local(EntityId::new(decoy_note))
     );
     assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn receiver_peel_private_call_targets_child_note_not_decoy() {
+fn receiver_peel_private_call_targets_child_note_not_decoy() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Decoy { #note(): number { return 9; } } export class Child { #note(): number { return 1; } read(): number { return this!.#note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_methods = entities_named(&v, b"#note", EntityKind::Function);
     assert_eq!(note_methods.len(), 2);
     let decoy_note = note_methods[0];
@@ -7329,7 +7911,7 @@ fn receiver_peel_private_call_targets_child_note_not_decoy() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"!.", b"#note");
+    let note_token_start = property_token(SOURCE, b"!.", b"#note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -7345,14 +7927,16 @@ fn receiver_peel_private_call_targets_child_note_not_decoy() {
         OccurrenceTarget::Local(EntityId::new(decoy_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"#note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"#note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn receiver_peel_as_stays_on_assertion_not_this() {
+fn receiver_peel_as_stays_on_assertion_not_this() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Base { note(): number { return 1; } } export class Other { note(): number { return 9; } } export class Child extends Base { read(): number { return (this as Other).note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let base_note = note_functions[0];
@@ -7360,7 +7944,7 @@ fn receiver_peel_as_stays_on_assertion_not_this() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b").", b"note");
+    let note_token_start = property_token(SOURCE, b").", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -7376,21 +7960,23 @@ fn receiver_peel_as_stays_on_assertion_not_this() {
         OccurrenceTarget::Local(EntityId::new(base_note))
     );
     assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn receiver_peel_satisfies_stays_syntactic() {
+fn receiver_peel_satisfies_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { note(): number { return 1; } read(): number { return (this satisfies Child).note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 1);
     let child_note = note_functions[0];
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b").", b"note");
+    let note_token_start = property_token(SOURCE, b").", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -7416,14 +8002,16 @@ fn receiver_peel_satisfies_stays_syntactic() {
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child_note))
     );
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }
 
 #[test]
-fn receiver_peel_plain_bang_stays_syntactic() {
+fn receiver_peel_plain_bang_stays_syntactic() -> TestResult<()> {
     const SOURCE: &[u8] = b"export class Child { note(): number { return 1; } read(obj: { note(): number }): number { return obj!.note(); } }";
-    let stack = StackLowered::compile(SOURCE);
-    let v = stack.view();
+    let stack = StackLowered::compile(SOURCE)?;
+    let v = stack.view()?;
     let note_functions = entities_named(&v, b"note", EntityKind::Function);
     assert_eq!(note_functions.len(), 2);
     let type_note = note_functions[0];
@@ -7431,7 +8019,7 @@ fn receiver_peel_plain_bang_stays_syntactic() {
     let read_owners = entities_named(&v, b"read", EntityKind::Function);
     assert_eq!(read_owners.len(), 1);
     let read_owner = read_owners[0];
-    let note_token_start = property_token(SOURCE, b"!.", b"note");
+    let note_token_start = property_token(SOURCE, b"!.", b"note")?;
     let calls = occurrences(&v)
         .into_iter()
         .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
@@ -7461,5 +8049,7 @@ fn receiver_peel_plain_bang_stays_syntactic() {
         calls[0].occurrence.target,
         OccurrenceTarget::Local(EntityId::new(child_note))
     );
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start)?;
+
+    Ok(())
 }

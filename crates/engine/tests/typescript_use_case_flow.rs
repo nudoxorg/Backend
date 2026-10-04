@@ -1,13 +1,15 @@
 //! TypeScript cross-file binding use-case flow with shared metering.
 
 use std::{
+    error::Error,
+    io,
     path::Path,
     sync::atomic::AtomicBool,
     time::{Duration, Instant},
 };
 
 use backend_engine::driver::{
-    CompileControl, CompileFailure, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
+    CompileControl, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile_ir,
 };
 use backend_frontend_typescript::legacy::{Checker, CheckerError, Report};
@@ -24,20 +26,22 @@ const SOURCE: &[u8] = br#"export class Box<T> { constructor(value: T) { this.rea
 export function take(input: Box<string>): Box<number> { return null as Box<number>; }
 "#;
 
+type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
+
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
 fn try_lower(
     source: &'static [u8],
     authority: Option<&Report>,
-) -> Result<backend_engine::driver::CompiledIr, CompileFailure<'static>> {
+) -> TestResult<backend_engine::driver::CompiledIr> {
     let toolchain = ResolvedToolchain::from_version(
         NativeTool::TypeScriptCompiler,
         Path::new("/bin/true"),
         b"typescript-authority-test",
     )
-    .unwrap();
+    ?;
     let diagnostic: &'static mut [u8] = Box::leak(Box::new([0; 4096]));
-    compile_ir(
+    Ok(compile_ir(
         CompileRequest {
             profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
             stage: Stage::LowerIr,
@@ -56,19 +60,19 @@ fn try_lower(
             diagnostic_output: diagnostic,
             native_work: Path::new("/tmp"),
         },
-    )
+    )?)
 }
 
-fn view(source: &'static [u8], authority: &Report) -> FragmentView<'static> {
+fn view(source: &'static [u8], authority: &Report) -> TestResult<FragmentView<'static>> {
     let toolchain = ResolvedToolchain::from_version(
         NativeTool::TypeScriptCompiler,
         Path::new("/bin/true"),
         b"typescript-authority-test",
     )
-    .unwrap();
+    ?;
     let diagnostic: &'static mut [u8] = Box::leak(Box::new([0; 4096]));
     let output: &'static mut [u8] = Box::leak(vec![0; 8 * 1024 * 1024].into_boxed_slice());
-    backend_engine::driver::compile(
+    let compiled = backend_engine::driver::compile(
         CompileRequest {
             profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
             stage: Stage::LowerIr,
@@ -88,9 +92,8 @@ fn view(source: &'static [u8], authority: &Report) -> FragmentView<'static> {
         backend_engine::driver::CompileOutput {
             fragment_output: output,
         },
-    )
-    .unwrap()
-    .fragment
+    )?;
+    Ok(compiled.fragment)
 }
 
 fn entities(view: &FragmentView<'_>) -> Vec<(u32, Vec<u8>, EntityKind)> {
@@ -113,12 +116,13 @@ fn entities(view: &FragmentView<'_>) -> Vec<(u32, Vec<u8>, EntityKind)> {
         .collect()
 }
 
-fn named(view: &FragmentView<'_>, name: &[u8]) -> (u32, EntityKind) {
+fn named(view: &FragmentView<'_>, name: &[u8]) -> TestResult<(u32, EntityKind)> {
     entities(view)
         .into_iter()
         .find(|(_, n, _)| n == name)
         .map(|(id, _, kind)| (id, kind))
-        .unwrap()
+        .ok_or_else(|| io::Error::other(format!("fragment has no entity named {name:?}")))
+        .map_err(Into::into)
 }
 
 fn facts<'a>(view: &'a FragmentView<'a>) -> Vec<DecodedTypeFact<'a>> {
@@ -191,35 +195,37 @@ fn checker_missing(error: &CheckerError) -> bool {
 }
 
 #[test]
-fn cross_file_bindings() {
+fn cross_file_bindings() -> TestResult<()> {
     let authority = match Checker::default().run(TypeScriptSource::TypeScript, SOURCE) {
         Ok(report) => report,
         Err(error) if checker_missing(&error) => {
             use_case_support::skip("typescript", "cross-file-bindings", "checker-missing")
-                .unwrap();
-            return;
+                ?;
+            return Ok(());
         }
-        Err(error) => panic!("checker failed: {error}"),
+        Err(error) => return Err(io::Error::other(format!("checker failed: {error}")).into()),
     };
 
     let timer = use_case_support::CompileTimer::start();
     let compiled = match try_lower(SOURCE, Some(&authority)) {
         Ok(compiled) => compiled,
-        Err(failure) => panic!("lowering failed: {failure:?}"),
+        Err(failure) => return Err(io::Error::other(format!("lowering failed: {failure}")).into()),
     };
     let ir = &compiled.ir;
-    use_case_support::finish("typescript", "cross-file-bindings", timer.elapsed(), ir).unwrap();
+    use_case_support::finish("typescript", "cross-file-bindings", timer.elapsed(), ir)?;
 
-    let decoded = view(SOURCE, &authority);
+    let decoded = view(SOURCE, &authority)?;
     assert_eq!(parameter_count(&decoded, b"left"), 1);
     assert_eq!(use_case_support::count_named(ir, EntityKind::Record, b"Box"), 1);
     assert_eq!(use_case_support::count_named(ir, EntityKind::Function, b"take"), 1);
 
-    let box_owner = named(&decoded, b"Box").0;
-    let input_owner = named(&decoded, b"input").0;
-    let input_type = declared_fact(&decoded, input_owner).unwrap();
+    let box_owner = named(&decoded, b"Box")?.0;
+    let input_owner = named(&decoded, b"input")?.0;
+    let input_type = declared_fact(&decoded, input_owner)
+        .ok_or_else(|| io::Error::other("input parameter has no declared type fact"))?;
     assert!(
         mentions_box(&decoded, &input_type, box_owner),
         "take's input parameter must mention Box"
     );
+    Ok(())
 }

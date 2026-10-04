@@ -5,8 +5,10 @@
 #![cfg(unix)]
 
 use std::{
+    error::Error,
     ffi::{OsStr, OsString},
     fs,
+    io,
     os::unix::ffi::OsStringExt,
     path::Path,
     sync::atomic::AtomicBool,
@@ -29,6 +31,8 @@ const GOLDEN_SOURCE: &[u8] =
     include_bytes!("../../../frontends/typescript/tests/fixtures/source.ts");
 const GOLDEN_TRANSCRIPT: &[u8] =
     include_bytes!("../../../frontends/typescript/tests/transcripts/golden.json");
+
+type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 fn empty_report(source: &[u8]) -> Report {
     let digest = source_digest(source);
@@ -96,13 +100,16 @@ impl Drop for CheckerEnvironment {
     }
 }
 
-fn assert_checker_terminal(value: &OsStr, expected: &str) {
-    let _serial = ENVIRONMENT.get_or_init(|| Mutex::new(())).lock().unwrap();
+fn assert_checker_terminal(value: &OsStr, expected: &str) -> TestResult<()> {
+    let _serial = ENVIRONMENT
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|error| io::Error::other(format!("checker environment lock poisoned: {error}")))?;
     let _environment = CheckerEnvironment::set(value);
     let request = request(
         SIMPLE_SOURCE,
         SemanticAuthorityInput::None,
-        tool(Path::new("/bin/true"), NativeTool::TypeScriptCompiler),
+        tool(Path::new("/bin/true"), NativeTool::TypeScriptCompiler)?,
         LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
     );
     let mut diagnostic = [0; 1024];
@@ -144,22 +151,26 @@ fn assert_checker_terminal(value: &OsStr, expected: &str) {
         Err(failure) => failure,
     };
     assert!(matches!(failure, CompileFailure::Authority { .. }));
+    Ok(())
 }
 
-fn tool<'path>(path: &'path Path, native: NativeTool) -> ResolvedToolchain<'path> {
-    ResolvedToolchain::from_version(native, path, b"typescript-authority-test")
-        .expect("absolute test tool path")
+fn tool<'path>(path: &'path Path, native: NativeTool) -> TestResult<ResolvedToolchain<'path>> {
+    Ok(ResolvedToolchain::from_version(
+        native,
+        path,
+        b"typescript-authority-test",
+    )?)
 }
 
 #[test]
-fn injected_report_reaches_public_ir() {
+fn injected_report_reaches_public_ir() -> TestResult<()> {
     let report = empty_report(SIMPLE_SOURCE);
     let mut diagnostic = [0; 1024];
     let result = compile_ir(
         request(
             SIMPLE_SOURCE,
             SemanticAuthorityInput::TypeScript { report: &report },
-            tool(Path::new("/bin/true"), NativeTool::TypeScriptCompiler),
+            tool(Path::new("/bin/true"), NativeTool::TypeScriptCompiler)?,
             LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
         ),
         CompileScratch {
@@ -167,12 +178,15 @@ fn injected_report_reaches_public_ir() {
             native_work: Path::new("/tmp"),
         },
     )
-    .expect("injected checker authority must compile");
+    .map_err(|error| {
+        io::Error::other(format!("injected TypeScript authority did not compile: {error:?}"))
+    })?;
     assert!(result.ir.entity_count() > 0);
+    Ok(())
 }
 
 #[test]
-fn report_for_mutated_source_is_a_source_binding_failure() {
+fn report_for_mutated_source_is_a_source_binding_failure() -> TestResult<()> {
     let report = empty_report(SIMPLE_SOURCE);
     let mut source = SIMPLE_SOURCE.to_vec();
     source[0] = b' ';
@@ -181,7 +195,7 @@ fn report_for_mutated_source_is_a_source_binding_failure() {
         request(
             &source,
             SemanticAuthorityInput::TypeScript { report: &report },
-            tool(Path::new("/bin/true"), NativeTool::TypeScriptCompiler),
+            tool(Path::new("/bin/true"), NativeTool::TypeScriptCompiler)?,
             LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
         ),
         CompileScratch {
@@ -191,13 +205,13 @@ fn report_for_mutated_source_is_a_source_binding_failure() {
     ) {
         Ok(_) => {
             assert!(false, "stale report must be rejected");
-            return;
+            return Ok(());
         }
         Err(failure) => failure,
     };
     let CompileFailure::Authority { failure, .. } = failure else {
         assert!(false, "binding rejection must be an authority failure");
-        return;
+        return Ok(());
     };
     assert!(matches!(
         failure,
@@ -208,17 +222,18 @@ fn report_for_mutated_source_is_a_source_binding_failure() {
             ..
         }
     ));
+    Ok(())
 }
 
 #[test]
-fn typescript_authority_rejects_a_non_typescript_profile() {
+fn typescript_authority_rejects_a_non_typescript_profile() -> TestResult<()> {
     let report = empty_report(SIMPLE_SOURCE);
     let mut diagnostic = [0; 1024];
     let failure = match compile_ir(
         request(
             SIMPLE_SOURCE,
             SemanticAuthorityInput::TypeScript { report: &report },
-            tool(Path::new("/bin/true"), NativeTool::Python),
+            tool(Path::new("/bin/true"), NativeTool::Python)?,
             LanguageProfile::Python(PythonVersion::Python314),
         ),
         CompileScratch {
@@ -228,7 +243,7 @@ fn typescript_authority_rejects_a_non_typescript_profile() {
     ) {
         Ok(_) => {
             assert!(false, "authority must bind to TypeScript");
-            return;
+            return Ok(());
         }
         Err(failure) => failure,
     };
@@ -236,53 +251,58 @@ fn typescript_authority_rejects_a_non_typescript_profile() {
         failure,
         CompileFailure::AuthorityInputProfileMismatch { .. }
     ));
+    Ok(())
 }
 
 const fn assert_copy<T: Copy>() {}
 
 #[test]
-fn public_request_and_authority_input_are_copy() {
+fn public_request_and_authority_input_are_copy() -> TestResult<()> {
     assert_copy::<backend_engine::driver::CompileRequest<'static, 'static, 'static>>();
     assert_copy::<SemanticAuthorityInput<'static>>();
+    Ok(())
 }
 
 #[test]
-fn checker_spawn_failure_is_a_public_authority_terminal() {
+fn checker_spawn_failure_is_a_public_authority_terminal() -> TestResult<()> {
     assert_checker_terminal(
         OsStr::new("/nonexistent/nudox-missing-checker"),
         "TypeScript checker could not be started",
-    );
+    )?;
+    Ok(())
 }
 
 #[test]
-fn checker_module_failure_is_a_public_authority_terminal() {
+fn checker_module_failure_is_a_public_authority_terminal() -> TestResult<()> {
     let path =
         std::env::temp_dir().join(format!("nudox-typescript-checker-{}", std::process::id()));
-    fs::write(&path, b"#!/bin/sh\nexit 3\n").expect("checker script");
+    fs::write(&path, b"#!/bin/sh\nexit 3\n")?;
     use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("checker permissions");
-    assert_checker_terminal(path.as_os_str(), "module unavailable");
-    fs::remove_file(path).expect("checker script cleanup");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+    assert_checker_terminal(path.as_os_str(), "module unavailable")?;
+    fs::remove_file(path)?;
+    Ok(())
 }
 
 #[test]
-fn checker_invalid_unicode_configuration_is_a_public_authority_terminal() {
+fn checker_invalid_unicode_configuration_is_a_public_authority_terminal() -> TestResult<()> {
     assert_checker_terminal(
         OsString::from_vec(b"/invalid/\xff/checker".to_vec()).as_os_str(),
         "NUDOX_TYPESCRIPT_CHECKER_BIN",
-    );
+    )?;
+    Ok(())
 }
 
 fn compile_report<'diagnostic>(
     source: &'static [u8],
     report: &Report,
     diagnostic: &'diagnostic mut [u8],
-) -> Result<backend_engine::driver::CompiledIr, CompileFailure<'diagnostic>> {
+) -> TestResult<backend_engine::driver::CompiledIr> {
     compile_ir(
         request(
             source,
             SemanticAuthorityInput::TypeScript { report },
-            tool(Path::new("/bin/true"), NativeTool::TypeScriptCompiler),
+            tool(Path::new("/bin/true"), NativeTool::TypeScriptCompiler)?,
             LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
         ),
         CompileScratch {
@@ -290,18 +310,15 @@ fn compile_report<'diagnostic>(
             native_work: Path::new("/tmp"),
         },
     )
+    .map_err(|error| io::Error::other(format!("TypeScript report compilation failed: {error:?}")))
+    .map_err(Into::into)
 }
 
 #[test]
-fn build_ir_populates_the_typescript_extension_plane() -> Result<(), CheckerError> {
+fn build_ir_populates_the_typescript_extension_plane() -> TestResult<()> {
     let report = Checker::default().decode(GOLDEN_TRANSCRIPT)?;
     let mut diagnostic = [0; 1024];
-    let ir = compile_report(GOLDEN_SOURCE, &report, &mut diagnostic).map_err(|error| {
-        CheckerError::Decode {
-            message: format!("golden report did not lower: {error:?}"),
-            transcript: String::new(),
-        }
-    })?;
+    let ir = compile_report(GOLDEN_SOURCE, &report, &mut diagnostic)?;
     let plane = ir.ir.storage_columns().language_extensions.typescript;
     assert!(!plane.facts.is_empty());
     assert!(plane.facts.iter().any(|facts| facts.observed.is_some()));
@@ -310,7 +327,7 @@ fn build_ir_populates_the_typescript_extension_plane() -> Result<(), CheckerErro
 }
 
 #[test]
-fn mutated_computed_report_changes_the_ir_extension_plane() -> Result<(), CheckerError> {
+fn mutated_computed_report_changes_the_ir_extension_plane() -> TestResult<()> {
     let report = Checker::default().decode(GOLDEN_TRANSCRIPT)?;
     let mut mutated = report.clone();
     let declaration = mutated
@@ -325,21 +342,9 @@ fn mutated_computed_report_changes_the_ir_extension_plane() -> Result<(), Checke
         name: "string".to_owned(),
     });
     let mut original_diagnostic = [0; 1024];
-    let original =
-        compile_report(GOLDEN_SOURCE, &report, &mut original_diagnostic).map_err(|error| {
-            CheckerError::Decode {
-                message: format!("golden report did not lower: {error:?}"),
-                transcript: String::new(),
-            }
-        })?;
+    let original = compile_report(GOLDEN_SOURCE, &report, &mut original_diagnostic)?;
     let mut changed_diagnostic = [0; 1024];
-    let changed =
-        compile_report(GOLDEN_SOURCE, &mutated, &mut changed_diagnostic).map_err(|error| {
-            CheckerError::Decode {
-                message: format!("mutated report did not lower: {error:?}"),
-                transcript: String::new(),
-            }
-        })?;
+    let changed = compile_report(GOLDEN_SOURCE, &mutated, &mut changed_diagnostic)?;
     let original_plane = original.ir.storage_columns().language_extensions.typescript;
     let changed_plane = changed.ir.storage_columns().language_extensions.typescript;
     assert_eq!(
