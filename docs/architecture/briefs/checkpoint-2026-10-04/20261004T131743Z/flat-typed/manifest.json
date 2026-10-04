@@ -1,0 +1,50 @@
+{
+  "kind": "UNACCEPTED_SOURCE_RECOVERY_CHECKPOINT",
+  "created_utc": "2026-10-04T13:17:43.230173+00:00",
+  "label": "flat-typed",
+  "branch": "codex/checkpoint-flat-typed-20261004T131743Z",
+  "worktree": "/private/tmp/nudox-flat-package-graph-typed-rebase-20261004",
+  "parent": "9a896bf197aed9028e9dbf14f0532eb00daad077",
+  "merge_parents": [],
+  "working_source_tree": "827fd39d13fee2433ccfde53dba140b1f7f32738",
+  "description": "Typed flat graph experiment with independent full-scan oracles and phase-separated construction timing. Root has read the source packet; Rust, tests and benchmarks remain unrun.",
+  "changed_paths": [
+    "crates/library/lib.rs",
+    "crates/library/package_graph.rs",
+    "crates/library/package_graph/index/benchmark.rs",
+    "crates/library/package_graph/index/flat.rs",
+    "crates/library/package_graph_page.rs",
+    "crates/library/surface.rs"
+  ],
+  "source_sha256": {
+    "crates/library/lib.rs": "e7f3eb4c2d75931e1de430f806c59fec6ebd97a2ef896fc26cea4c87c33ebb00",
+    "crates/library/package_graph.rs": "36324fbe272f7106fe9044ea39aa6c177f826d7bbbeed96977a6e2827812d107",
+    "crates/library/package_graph/index/benchmark.rs": "0bfa923055f7401e77dd528a352ff3606a328a8051e9e2d40b73b9f65874b03c",
+    "crates/library/package_graph/index/flat.rs": "1c241e32fa68047f6556b7bcb9d5b72d93b3ced89f15268f6fc5874a264c2c1b",
+    "crates/library/package_graph_page.rs": "77cb03397c5d90b437ad84ecf7eb19be30559337db0eb109b4482b567c37dd29",
+    "crates/library/surface.rs": "2b5bfffdb0f0cb141be40b03b23ec2399c330709e2801a6f46e4040ec59f707c"
+  },
+  "untracked_source_paths": [
+    "crates/library/package_graph/index/benchmark.rs",
+    "crates/library/package_graph/index/flat.rs"
+  ],
+  "original_index_sha256": "63aa8695da038ce55463e9b53b79a626d4fbb358788e7bd45c08cc2e26f3ec8a",
+  "original_index_stages_sha256": "19e759851a453f892618d262000a13d13e784228649d1d64e902147578272051",
+  "original_status_sha256": "07c3dce0c3fbc4be8a5930e6ad166467ec43f2add358fac7b34a9d5e43661277",
+  "preserved_index_blobs": [
+    "41b8ece017b86fe305dd737f8b1acc9ee0c183e1",
+    "4eb880efb1fd5c66184c348347f0083e25dc4e86",
+    "56466aaa8c61821b9cb4c22f0a6fdc21180eb868",
+    "7c42b557c97f0c00f8b605ab5c648c45f4914140"
+  ],
+  "related_slice_checkpoints": [],
+  "evidence": {
+    "preserved_files": {}
+  },
+  "acceptance": {
+    "full_root_review": false,
+    "combined_cargo_validation": false,
+    "native_gui_validation": false,
+    "release_or_deployment": false
+  }
+}
