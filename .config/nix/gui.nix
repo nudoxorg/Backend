@@ -89,7 +89,7 @@ let
     builtins.attrNames resolvedSourceHashes
   );
   strictComponentContract =
-    if builtins.length (builtins.attrNames resolvedSourceHashes) > 0 then
+    if workspaceAvailable && builtins.length (builtins.attrNames resolvedSourceHashes) > 0 then
       assert builtins.length componentBlocks == 1;
       assert componentSourceIdentity != null;
       true
@@ -145,8 +145,10 @@ let
     pkgs.dbus
     pkgs.fontconfig
     pkgs.grim
+    pkgs.openbox
     pkgs.weston
     pkgs.xvfb
+    pkgs.xdotool
   ];
   linuxGpuPackages = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
     pkgs.gawk

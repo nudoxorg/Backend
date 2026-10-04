@@ -41,7 +41,9 @@ let
             ${workspaceRoot + "/frontends/python/src/legacy/checker.rs"} \
             ${workspaceRoot + "/frontends/csharp/src/legacy/oracle.rs"} \
             ${workspaceRoot + "/tests/fleet/src/lib.rs"} \
-            ${workspaceRoot + "/tests/fleet/run-fleet.sh"}
+            ${workspaceRoot + "/tests/fleet/run-fleet.sh"} \
+            ${workspaceRoot + "/crates/compile/src/supervisor.rs"} \
+            ${workspaceRoot + "/crates/compile/src/tests.rs"}
           mkdir -p "$out/share"
           printf '%s\n' validated > "$out/share/local-host-runtime-contract"
         ''
@@ -68,8 +70,14 @@ in
         ];
       }
       ''
-        NUDOX_CARGO_CACHE_SCRIPT=${../scripts/cargo-shared-cache.sh} \
-          ${pkgs.bash}/bin/bash ${../../tests/cargo-shared-cache.sh}
+        # The test finds its sibling scripts (cargo-in.sh, the rustc cache
+        # wrapper, the provenance helper) from its own location, so run it
+        # from a tree with the repository's layout rather than the store.
+        mkdir -p repo/.config repo/tests
+        cp -r ${../scripts} repo/.config/scripts
+        cp ${../../tests/cargo-shared-cache.sh} repo/tests/cargo-shared-cache.sh
+        NUDOX_CARGO_CACHE_SCRIPT="$PWD/repo/.config/scripts/cargo-shared-cache.sh" \
+          ${pkgs.bash}/bin/bash repo/tests/cargo-shared-cache.sh
         mkdir -p $out/share
         echo validated > $out/share/cargo-cache-protocol
       '';
@@ -118,7 +126,7 @@ in
     ];
     environment = {
       BACKEND_CONFIG_MODE = "immutable";
-      BACKEND_CONFIG_SNAPSHOT = toString ../.;
+      BACKEND_CONFIG_SNAPSHOT = "${../.}";
       BACKEND_GUI_CONFIG = "${gui.configFile}/share/nudox/gui-control-plane.json";
       BACKEND_GUI_FONTCONFIG = gui.fontConfig;
     };
@@ -175,15 +183,32 @@ in
       pkgs.coreutils
       pkgs.stdenv.cc
       pkgs.libiconv
+      # dylint/test.nu starts a nested Cargo build; openssl-sys needs the
+      # discovery tool in this isolated check.
+      pkgs.pkg-config
       pkgs.zlib
     ];
     environment = {
-      BACKEND_DYLINT_ROOT = toString ../dylint;
+      BACKEND_DYLINT_ROOT = "${../dylint}";
       BACKEND_DYLINT_TOOLCHAIN = toolchains.dylintToolchain;
       BACKEND_DYLINT_DECLARATIONS = builtins.toJSON (
         map (rule: rule.id) (builtins.filter (rule: rule.engine == "dylint") control.lint.rules)
       );
       BACKEND_NIGHTLY_CARGO = toolchains.nightlyCargo;
+      # The nested Cargo build runs in the build sandbox, which has no
+      # network (on Linux; Darwin builds unsandboxed by default): its
+      # dependencies come vendored from the lint crate's own lockfile, plus
+      # the pinned graph of the rustc driver Dylint builds on first use.
+      BACKEND_DYLINT_VENDOR = "${pkgs.symlinkJoin {
+        name = "backend-dylint-vendor";
+        paths = map (lockFile: pkgs.rustPlatform.importCargoLock { inherit lockFile; }) [
+          ../dylint/Cargo.lock
+          ../dylint/driver/Cargo.lock
+        ];
+      }}";
+      # nuenv only adds packages to PATH; it does not run stdenv setup hooks
+      # that would discover OpenSSL's .pc file automatically.
+      PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
       LIBRARY_PATH = pkgs.lib.makeLibraryPath [
         pkgs.libiconv
         pkgs.zlib
@@ -195,6 +220,8 @@ in
       SDKROOT = pkgs.apple-sdk.sdkroot;
     };
     build = ''
+      # Fail before the expensive nested Cargo build if native discovery drifts.
+      pkg-config --modversion openssl
       with-env { BACKEND_DYLINT_ARTIFACTS: ($env.TMPDIR | path join "dylint") } {
         nu --no-config-file ${../.}/dylint/test.nu
       }
@@ -232,7 +259,7 @@ in
     environment = {
       BACKEND_AST_GREP = "${astGrepSuite}/sgconfig.yml";
       BACKEND_CONFIG_MODE = "immutable";
-      BACKEND_CONFIG_SNAPSHOT = toString ../.;
+      BACKEND_CONFIG_SNAPSHOT = "${../.}";
       BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
     };
     build = ''
@@ -259,7 +286,7 @@ in
     ];
     environment = {
       BACKEND_CONFIG_MODE = "immutable";
-      BACKEND_CONFIG_SNAPSHOT = toString ../.;
+      BACKEND_CONFIG_SNAPSHOT = "${../.}";
       BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
       BACKEND_LUNA_TOOLS = commands.roleBundles."luna-pair";
       BACKEND_TERRA_TOOLS = commands.roleBundles."terra-academic";

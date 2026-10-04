@@ -10,7 +10,30 @@
   corpus,
 }:
 let
-  compilers = tools.compilers;
+  inherit (tools) compilers;
+  # Coreutils for tests that run a tool after clearing their environment.
+  # Nix's coreutils is one multicall binary that dispatches on its own name,
+  # and the native authority runner stages an executable under a name of
+  # its own (`exec.out`), so a staged `cat` answers "unknown program". Each
+  # wrapper execs the real tool by its full path, whatever it is renamed to.
+  testCoreutils = pkgs.symlinkJoin {
+    name = "nudox-test-coreutils";
+    paths =
+      map
+        (
+          tool:
+          pkgs.writeShellScriptBin tool ''
+            exec ${pkgs.coreutils}/bin/${tool} "$@"
+          ''
+        )
+        [
+          "cat"
+          "true"
+          "sleep"
+          "kill"
+          "mv"
+        ];
+  };
   # `nix develop` assembles `NIX_CFLAGS_COMPILE`/`NIX_LDFLAGS` (and the
   # per-target-triple "role marker" that gates them, e.g.
   # `NIX_CC_WRAPPER_TARGET_HOST_<triple>`) from every `packages`/`buildInput`'s
@@ -26,13 +49,13 @@ let
   # (`brotli/c/common/platform.h` reaching for `<brotli/types.h>`, which the
   # checked-out corpus source does not ship on any `-I` path of its own)
   # depends on that closure's setup-hook-propagated dev headers to resolve at
-  # all. `.#complete`'s shell has them because every tool in `tools.complete`
-  # is a `packages` entry there; the wrapper does not. Build a real
-  # `stdenv.mkDerivation` (`runCommand`, unlike `mkShell`, actually runs its
-  # build phase) over the exact same `tools.complete` closure and capture
-  # what its setup hooks produced, so the gate and every interactive shell
-  # agree on this compiler environment byte-for-byte instead of drifting
-  # whenever the closure's package set changes. The role-marker variable
+  # all. Both `.#compiler` and `.#complete` include `tools.nativeCompilers`;
+  # their service and verifier tools do not supply these language headers.
+  # Build a real `stdenv.mkDerivation` (`runCommand`, unlike `mkShell`, actually
+  # runs its build phase) over this shared native-compiler subset and capture
+  # its setup hooks. This keeps the gate's compiler environment aligned with
+  # the interactive shells without realizing optional services such as
+  # Qdrant during evaluation. The role-marker variable
   # names themselves carry the host triple (e.g. `_arm64_apple_darwin`),
   # which must stay whatever this build platform's own cc-wrapper spells it
   # as, not a hardcoded string, so this discovers their names from the
@@ -40,7 +63,7 @@ let
   nativeCompilerShellEnv =
     pkgs.runCommand "backend-native-compiler-shell-env"
       {
-        nativeBuildInputs = tools.complete;
+        nativeBuildInputs = tools.nativeCompilers;
       }
       ''
         {
@@ -116,6 +139,10 @@ in
   COMPILER_GO_COMPILER = "${compilers.go}/bin/go";
   COMPILER_JAVA_COMPILER = "${compilers.jdk}/bin/javac";
   COMPILER_PYTHON_COMPILER = "${compilers.python}/bin/python3";
+  # Tests that execute coreutils after ProcessEnvironment::env_clear() must
+  # pass an absolute executable, not rely on the host's /bin layout or PATH.
+  NUDOX_TEST_COREUTILS_BIN = "${testCoreutils}/bin";
+  NUDOX_PROCESS_SHELL = "${pkgs.bash}/bin/sh";
   COMPILER_STABLE_TOOLCHAIN = "${toolchains.stable}";
   COMPILER_TYPESCRIPT_COMPILER = "${compilers.typescript}/bin/tsc";
   LIBCLANG_PATH = "${compilers.libclang.lib}/lib";

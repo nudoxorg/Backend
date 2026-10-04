@@ -501,7 +501,7 @@ impl WorkspaceRoot {
             name: Some(name.as_str().to_owned()),
         }));
         if let Err(source) = after_create()
-            .and_then(|()| restrict_handle_to_current_user(directory.handle()))
+            .and_then(|()| restrict_handle_to_current_user(&directory.0.handle))
             .and_then(|()| ensure_directory_handle(directory.handle()))
             .and_then(|()| ensure_private_handle(directory.handle()))
         {
@@ -567,12 +567,12 @@ impl WorkspaceRoot {
             ._parent
             .as_ref()
             .ok_or_else(|| invalid_data("created child has no pinned parent"))?;
-        if !Arc::ptr_eq(parent, expected_parent)
+        if !Arc::ptr_eq(&parent, expected_parent)
             || expected.0.name.as_deref() != Some(name)
         {
             return Err(invalid_data("created child receipt belongs to another parent or name"));
         }
-        let current = open_directory_child_for_created_delete(parent, leaf)?;
+        let current = open_directory_child_for_created_delete(&parent, leaf)?;
         if !same_directory_object(current.handle.as_raw_handle(), expected.handle())? {
             return Err(invalid_data("created directory name now refers to another object"));
         }

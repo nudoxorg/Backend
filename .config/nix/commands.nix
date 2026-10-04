@@ -54,26 +54,57 @@ let
   };
 in
 let
+  # nuenv's writeShellApplication starts the script with
+  # `#!/usr/bin/env -S <nu> --stdin`. A sandboxed builder has no
+  # /usr/bin/env, so every derivation that runs `backend` at build time (the
+  # agent skills, gui-contract, tooling-contracts, control-plane) failed with
+  # "bad interpreter"; they only passed while CI built checks in a container
+  # that happened to have one. `<nu> --stdin` is a single interpreter
+  # argument, which a direct shebang carries on Linux and macOS alike.
+  #
+  # nuenv also writes `runtimeEnv` and `runtimeInputs` into the script as
+  # plain text, which drops their string context: the store paths the script
+  # names are neither built as its inputs nor recorded as its references, so
+  # a sandboxed build that runs `backend` cannot see them (lanes build 59:
+  # "missing-configuration-snapshot"). Carrying the same values here keeps the
+  # context, so they are inputs of this derivation and, because the copied
+  # script names them, its runtime references.
+  sandboxSafe =
+    { app, tracked }:
+    pkgs.runCommand app.name
+      {
+        passthru = app.passthru or { };
+        meta = app.meta or { };
+        trackedRuntime = builtins.toJSON tracked;
+        passAsFile = [ "trackedRuntime" ];
+      }
+      ''
+        cp -R ${app} "$out"
+        chmod -R u+w "$out"
+        sed -i '1s|^#!/usr/bin/env -S |#!|' "$out/bin/backend"
+        head -1 "$out/bin/backend" | grep -q '^#!/nix/store/' || {
+          echo "backend shebang is not a store path: $(head -1 "$out/bin/backend")" >&2
+          exit 1
+        }
+      '';
   makeBackend =
     {
       runtimeEnv ? { },
       runtimeInputs ? [ ],
     }:
-    pkgs.nuenv.writeShellApplication {
-      name = "backend";
-      text = source;
-      runtimeInputs =
+    let
+      inputs =
         tools.qualityTools
-        ++ tools.serviceTools
+        ++ tools.coreServiceTools
         ++ tools.nativeCompilers
         ++ tools.authorityHelpers
         ++ gui.allPackages
         ++ runtimeInputs;
-      runtimeEnv =
+      env =
         nativeTestEnv
         // {
           CARGO_TARGET_DIR = ".local/target";
-          BACKEND_CONFIG_SNAPSHOT = toString ../.;
+          BACKEND_CONFIG_SNAPSHOT = "${../.}";
           BACKEND_AST_GREP = "${astGrepSuite}/sgconfig.yml";
           BACKEND_KOJI_CONFIG = artifacts.koji;
           BACKEND_NEXTEST_CONFIG = artifacts.nextest;
@@ -83,6 +114,7 @@ let
           BACKEND_POLICY_ROOT_DIGEST = control.policyRootDigest;
           BACKEND_COMMAND_CATALOG_DIGEST = builtins.hashString "sha256" source;
           BACKEND_STABLE_CARGO = toolchains.stableCargo;
+          BACKEND_PARALLEL_CARGO = "${tools.parallelCargo}/bin/cargo";
           BACKEND_CONTROL_SOURCE = toString workspaceRoot;
           # The control binary remains available as the dedicated
           # `.#backend-control` package. Keeping it out of this general shell
@@ -112,6 +144,17 @@ let
           NUDOX_GUI_HARNESS = "nix shell .#gui-harness .#gui-tools .#gui-runtime";
         }
         // runtimeEnv;
+    in
+    sandboxSafe {
+      app = pkgs.nuenv.writeShellApplication {
+        name = "backend";
+        text = source;
+        runtimeInputs = inputs;
+        runtimeEnv = env;
+      };
+      tracked = {
+        inherit inputs env;
+      };
     };
 in
 rec {

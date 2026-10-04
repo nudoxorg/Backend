@@ -167,7 +167,6 @@ let groups = $nextest.test-groups | columns
 assert equal ($groups | sort) (
     [
         "allocator-global"
-        "concurrency-proof"
         "display-global"
         "live-qdrant"
         "native-compiler"
