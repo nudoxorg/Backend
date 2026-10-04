@@ -84,6 +84,11 @@ def print-captured-failures []: nothing -> nothing {
 # to find unpacked in the Cargo cache. Best effort: a failure here shows up
 # as those tests' own failures, with their own messages.
 def warm-registry-cache []: nothing -> nothing {
+    # The Rust frontend's tests resolve this workspace itself offline, for
+    # every platform: macOS- and Windows-only dependencies (accesskit_*)
+    # included, which a Linux build never downloads. `cargo fetch` with no
+    # --target fetches them all.
+    run-external "cargo" "fetch" "--locked"
     for manifest in ["frontends/rust/fixtures/toml_pin/Cargo.toml" "apps/desktop/tests/fixtures/browse_tree/Cargo.toml"] {
         run-external "cargo" "fetch" "--locked" "--manifest-path" $manifest
     }
@@ -104,7 +109,7 @@ def warm-registry-cache []: nothing -> nothing {
         ["frontends/rust/fixtures/toml_pin/Cargo.lock" "apps/desktop/tests/fixtures/browse_tree/Cargo.lock"]
         | each {|lock| open --raw $lock | from toml | get package | where {|package| ($package.source? | default "") starts-with "registry+" } | each {|package| $"($package.name)-($package.version)" } }
         | flatten
-        | append ["toml-0.5.11" "anyhow-1.0.104"]
+        | append ["toml-0.5.11" "anyhow-1.0.104" "log-0.4.34"]
         | uniq
     )
     let cargo_home = ($env.CARGO_HOME? | default ($env.HOME? | default "" | path join ".cargo"))
