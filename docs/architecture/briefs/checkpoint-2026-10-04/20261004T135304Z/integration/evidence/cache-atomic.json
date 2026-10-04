@@ -1,0 +1,80 @@
+{
+  "commit": "e264d0361f54aba3681778224a7d8b8f7836f5c5",
+  "tree": "38e8f0ccc496631533a9b261f6d15bf160d713f6",
+  "base": "9a896bf197aed9028e9dbf14f0532eb00daad077",
+  "branch": "codex/cache-gate-atomic-20261004T132430Z",
+  "paths": [
+    ".config/scripts/cargo-rustc-cache.sh",
+    "tests/cargo-shared-cache.sh"
+  ],
+  "source_sha256": {
+    ".config/scripts/cargo-rustc-cache.sh": "63f4bc4c79f37fccb3cd57b2f9391a433f229e9bc2d7c37b06de5d54b94ff6b0",
+    "tests/cargo-shared-cache.sh": "6be3581ba813e417b20529c01e16b2b558020386c17c33574dd93e1798766e9c"
+  },
+  "root_source_review": "complete for wrapper, changed harness and owning harness",
+  "validation": {
+    "artifact_dir": "/private/tmp/nudox-root-cache-admission-20261004T132218Z",
+    "source_sha256": {
+      ".config/scripts/cargo-rustc-cache.sh": "63f4bc4c79f37fccb3cd57b2f9391a433f229e9bc2d7c37b06de5d54b94ff6b0",
+      "tests/cargo-shared-cache.sh": "6be3581ba813e417b20529c01e16b2b558020386c17c33574dd93e1798766e9c"
+    },
+    "results": [
+      {
+        "command": [
+          "sh",
+          "-n",
+          ".config/scripts/cargo-rustc-cache.sh"
+        ],
+        "exit": 0,
+        "started_utc": "2026-10-04T13:22:18.295508+00:00",
+        "completed_utc": "2026-10-04T13:22:18.360301+00:00",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "sh",
+          "-n",
+          "tests/cargo-shared-cache.sh"
+        ],
+        "exit": 0,
+        "started_utc": "2026-10-04T13:22:18.360475+00:00",
+        "completed_utc": "2026-10-04T13:22:18.370779+00:00",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "git",
+          "diff",
+          "--check"
+        ],
+        "exit": 0,
+        "started_utc": "2026-10-04T13:22:18.370974+00:00",
+        "completed_utc": "2026-10-04T13:22:18.468025+00:00",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "sh",
+          "tests/cargo-shared-cache.sh"
+        ],
+        "exit": 0,
+        "started_utc": "2026-10-04T13:22:18.468194+00:00",
+        "completed_utc": "2026-10-04T13:22:46.879853+00:00",
+        "log_sha256": "b589dfa308b8e77f5ee5b0cb0abf2dd09796a046e73b09cc966b2da7c71a7a3a"
+      }
+    ],
+    "successful": true,
+    "scope": "Shell protocol/dispatch harness only; no real Cargo or GUI execution"
+  },
+  "worktree_state_preserved": true,
+  "artifact_dir": "/private/tmp/nudox-cache-gate-atomic-20261004T132430Z",
+  "runtime_override": {
+    "local_path": "/private/tmp/nudox-cache-gate-atomic-20261004T132430Z/rustc-cache-wrapper.sh",
+    "sha256": "3db7a569285fc426dead9aa77e958d9173bdb4ecfd66078fdc0aa9d199108100",
+    "source_sha256": "63f4bc4c79f37fccb3cd57b2f9391a433f229e9bc2d7c37b06de5d54b94ff6b0",
+    "sccache_path": "/nix/store/508in5sysamxr8076xsfjx4fjxli1f3x-sccache-0.16.0/bin/sccache",
+    "sccache_sha256": "06085ce600d07001ab162307d7df787d83d3ffec17ceec6eace9f218db81c972"
+  },
+  "acceptance": "shell dispatch/cache isolation harness pass; real compiler/cache performance unrun",
+  "push_status": "PUSHED_AND_INDEPENDENTLY_VERIFIED"
+}

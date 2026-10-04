@@ -3847,6 +3847,12 @@ impl Window {
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
         self.scale_factor = scale_factor;
+        // NUDOX: a test window's device surface and resize callbacks follow
+        // the requested scale (its platform scale was a fixed 2x).
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(window) = self.platform_window.as_test() {
+            window.set_scale_factor(scale_factor);
+        }
         self.refresh();
     }
 
