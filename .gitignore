@@ -3,6 +3,8 @@
 # Generated artifacts are ignored by their conventional root-local names.
 
 /.local/
+/.direnv/
+/build/prelude-local/
 **/.backend/
 /.DS_Store
 /result
