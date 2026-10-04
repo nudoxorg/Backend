@@ -31,7 +31,7 @@ fn scratch(tag: &str) -> PathBuf {
         .as_nanos();
     // `/tmp`, not `temp_dir()`: under nix the latter makes the socket path
     // longer than `sockaddr_un` allows.
-    PathBuf::from("/tmp").join(format!("nx-w-index-{tag}-{}-{nonce}", std::process::id()))
+    crate::host::scratch_base().join(format!("nx-w-index-{tag}-{}-{nonce}", std::process::id()))
 }
 
 /// A small Rust crate, as the fixture roots are.

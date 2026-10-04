@@ -1,8 +1,9 @@
 //! `cargo metadata --no-deps --offline` reader.
 //!
 //! Cargo is the authority for workspace expansion and inherited package
-//! fields. It runs as a bounded subprocess: stdin closed, stderr discarded,
-//! stdout capped, and the process killed at the wall-clock bound.
+//! fields. It runs through the platform's bounded child capture: stdin
+//! closed, stdout and stderr capped, the whole process tree (a Unix process
+//! group, a Windows Job) retired at the wall-clock bound or on cancellation.
 
 use super::{
     CargoFailure, DependencyKind, Facts, LocalPackage, LocalPackageSource, dependencies, features,
@@ -10,13 +11,22 @@ use super::{
 };
 use crate::core::LocalProjectId;
 use crate::model::pages::{GapReason, Known, LicenseDeclaration};
-use backend_platform::child_output;
+use backend_platform::child_output::{
+    self, CaptureCommand, CaptureEnvironment, CaptureError, CaptureLimits,
+};
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+/// The metadata document is on stdout and `cargo metadata` prints little else.
+/// Stderr is read so its pipe never stalls the child, and like stdout it is
+/// bounded: more than this means the run is not a plain metadata read, and the
+/// capture refuses it as an output-limit failure.
+const STDERR_BYTES: usize = 64 * 1024;
 
 /// The stable subset of `cargo metadata --format-version 1` the dossier uses.
 #[derive(Deserialize)]
@@ -85,127 +95,92 @@ pub(super) fn metadata(
     manifest: &Path,
     timeout: Duration,
     max_output: usize,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &AtomicBool,
 ) -> Result<CargoMetadata, CargoFailure> {
-    let mut command = Command::new(program);
-    if let Some(directory) = manifest.parent() {
-        command.current_dir(directory);
-    }
-    command
-        .args([
-            "metadata",
-            "--no-deps",
-            "--format-version",
-            "1",
-            "--offline",
-            "--manifest-path",
-        ])
-        .arg(manifest)
-        .env("CARGO_NET_OFFLINE", "true")
-        .env("CARGO_TERM_COLOR", "never")
-        // A `rust-toolchain.toml` must not make rustup download a toolchain.
-        .env("RUSTUP_AUTO_INSTALL", "0");
-    let bytes = bounded_output_cancelled(command, timeout, max_output, cancelled)?;
+    let args = [
+        "metadata",
+        "--no-deps",
+        "--format-version",
+        "1",
+        "--offline",
+        "--manifest-path",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .chain([manifest.as_os_str().to_os_string()])
+    .collect();
+    let command = CaptureCommand {
+        program: program.as_os_str().to_os_string(),
+        args,
+        cwd: manifest.parent().map(Path::to_path_buf),
+        environment: CaptureEnvironment::Inherit,
+        overrides: [
+            ("CARGO_NET_OFFLINE", "true"),
+            ("CARGO_TERM_COLOR", "never"),
+            // A `rust-toolchain.toml` must not make rustup download a toolchain.
+            ("RUSTUP_AUTO_INSTALL", "0"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (OsString::from(name), Some(OsString::from(value))))
+        .collect(),
+    };
+    let bytes = bounded_output_cancelled(&command, timeout, max_output, cancelled)?;
     serde_json::from_slice(&bytes).map_err(|_| CargoFailure::Decode)
 }
 
 /// Runs `command` to completion, returning stdout within both bounds.
+#[cfg(test)]
 pub(super) fn bounded_output(
-    command: Command,
+    command: &CaptureCommand,
     timeout: Duration,
     max_output: usize,
 ) -> Result<Vec<u8>, CargoFailure> {
-    bounded_output_cancelled(command, timeout, max_output, &|| false)
+    bounded_output_cancelled(command, timeout, max_output, &AtomicBool::new(false))
 }
 
+/// [`bounded_output`] that also stops when `cancelled` is set.
 pub(super) fn bounded_output_cancelled(
-    mut command: Command,
+    command: &CaptureCommand,
     timeout: Duration,
     max_output: usize,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &AtomicBool,
 ) -> Result<Vec<u8>, CargoFailure> {
-    if cancelled() { return Err(CargoFailure::Cancelled); }
+    if cancelled.load(Ordering::Acquire) {
+        return Err(CargoFailure::Cancelled);
+    }
     // An arbitrary public timeout must never panic after the child starts.
     // Reject an unrepresentable deadline before creating a process or pipe.
-    let deadline = Instant::now().checked_add(timeout).ok_or(CargoFailure::Timeout)?;
-    #[cfg(windows)]
-    return Err(CargoFailure::UnsupportedCapture);
-    #[cfg(target_os = "macos")]
-    backend_platform::macos_process::configure_process_session(&mut command);
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        use std::os::unix::process::CommandExt as _;
-        command.process_group(0);
-    }
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| CargoFailure::Spawn)?;
-    let Some(mut stdout) = child.stdout.take() else {
-        child_output::stop(&mut child);
-        return Err(CargoFailure::Spawn);
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or(CargoFailure::Timeout)?;
+    let limits = CaptureLimits {
+        deadline,
+        stdout_bytes: max_output,
+        stderr_bytes: STDERR_BYTES,
     };
-    if child_output::configure(&stdout).is_err() {
-        child_output::stop(&mut child);
-        return Err(CargoFailure::Spawn);
+    let output = child_output::capture(command, limits, cancelled).map_err(CargoFailure::from)?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(CargoFailure::Status)
     }
-    let cap = max_output.saturating_add(1);
-    let mut bytes = Vec::new();
-    let mut scratch = [0_u8; 8 * 1024];
-    let mut eof = false;
-    loop {
-        if cancelled() {
-            child_output::stop(&mut child);
-            return Err(CargoFailure::Cancelled);
-        }
-        let mut progressed = false;
-        if !eof {
-            // One byte beyond the admitted output budget proves overflow.
-            let take = cap.saturating_sub(bytes.len()).max(1).min(scratch.len());
-            match child_output::read_available(&mut stdout, &mut scratch[..take]) {
-                Ok(Some(0)) => eof = true,
-                Ok(Some(count)) => {
-                    bytes.extend_from_slice(&scratch[..count]);
-                    if bytes.len() > max_output {
-                        child_output::stop(&mut child);
-                        return Err(CargoFailure::OutputLimit);
-                    }
-                    progressed = true;
-                }
-                Ok(None) => {}
-                Err(_) => {
-                    child_output::stop(&mut child);
-                    return Err(CargoFailure::Decode);
-                }
-            }
-        }
-        // A descendant can retain stdout after the leader exits. Do not reap
-        // the leader before EOF: macOS process-group retirement needs its PID
-        // pinned while the deadline is enforced on that inherited pipe.
-        if eof {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    return if status.success() {
-                        Ok(bytes)
-                    } else {
-                        Err(CargoFailure::Status)
-                    };
-                }
-                Ok(None) => {}
-                Err(_) => {
-                    child_output::stop(&mut child);
-                    return Err(CargoFailure::Spawn);
-                }
-            }
-        }
-        if Instant::now() >= deadline {
-            child_output::stop(&mut child);
-            return Err(CargoFailure::Timeout);
-        }
-        if !progressed {
-            std::thread::sleep(Duration::from_millis(10));
+}
+
+impl From<CaptureError> for CargoFailure {
+    /// The loader's view of a capture failure. Cleanup keeps its primary cause.
+    fn from(error: CaptureError) -> Self {
+        match error {
+            CaptureError::Unsupported => Self::UnsupportedCapture,
+            CaptureError::Capacity { .. } => Self::Busy,
+            CaptureError::Cancelled => Self::Cancelled,
+            CaptureError::Deadline => Self::Timeout,
+            CaptureError::OutputLimit { .. } => Self::OutputLimit,
+            CaptureError::Spawn(_)
+            | CaptureError::MissingPipe(_)
+            | CaptureError::Configure { .. }
+            | CaptureError::Wait(_) => Self::Spawn,
+            CaptureError::Read { .. } => Self::Decode,
+            CaptureError::Cleanup { primary, .. } => Self::from(*primary),
         }
     }
 }
@@ -240,7 +215,12 @@ pub(super) fn project(
         version: selected.map(|package| package.version.clone()),
         description: selected.and_then(|package| package.description.clone()),
         license: selected.map_or_else(
-            || Known::unknown(GapReason::NotRecorded, "Cargo did not select a root package."),
+            || {
+                Known::unknown(
+                    GapReason::NotRecorded,
+                    "Cargo did not select a root package.",
+                )
+            },
             |package| {
                 if let Some(value) = &package.license {
                     Known::Known(LicenseDeclaration::Expression(Arc::from(value.as_str())))

@@ -38,10 +38,59 @@ fn unique_collection() -> String {
     format!("server_index_it_{}_{}", std::process::id(), nanos)
 }
 
-fn configured_collection() -> Option<String> {
-    env::var("QDRANT_TEST_COLLECTION")
+/// A live-service test that was explicitly requested but cannot run.
+///
+/// These tests are `#[ignore]`d, so reaching one means somebody asked for it
+/// (`--ignored`). Returning success without a server would report a service
+/// that was never exercised as healthy, so the exact missing variable is
+/// named instead.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+enum LiveServiceUnconfigured {
+    /// The environment variable that locates the server or its collection.
+    #[error(
+        "{variable} is not set; this live-service test was requested but needs a running Qdrant server"
+    )]
+    Missing {
+        /// Name of the unset (or empty) variable.
+        variable: &'static str,
+    },
+}
+
+/// A running Qdrant server; each test creates its own uniquely named
+/// collection on it.
+struct LiveServer {
+    endpoint: String,
+}
+
+/// A running Qdrant server and the collection a launcher created on it for the
+/// test to find.
+struct ProvisionedServer {
+    endpoint: String,
+    collection: String,
+}
+
+fn required_variable(variable: &'static str) -> Result<String, LiveServiceUnconfigured> {
+    env::var(variable)
         .ok()
-        .filter(|collection| !collection.is_empty())
+        .filter(|value| !value.is_empty())
+        .ok_or(LiveServiceUnconfigured::Missing { variable })
+}
+
+impl LiveServer {
+    fn from_environment() -> Result<Self, LiveServiceUnconfigured> {
+        Ok(Self {
+            endpoint: required_variable("QDRANT_URL")?,
+        })
+    }
+}
+
+impl ProvisionedServer {
+    fn from_environment() -> Result<Self, LiveServiceUnconfigured> {
+        Ok(Self {
+            endpoint: required_variable("QDRANT_URL")?,
+            collection: required_variable("QDRANT_TEST_COLLECTION")?,
+        })
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -388,7 +437,9 @@ fn unavailable_endpoint_preserves_transport_phase_and_retry_bound() {
 #[test]
 #[ignore = "requires a Qdrant service at QDRANT_URL"]
 fn real_qdrant_service_metric_matrix_isolates_authority_and_stabilizes_ties() {
-    let Ok(endpoint) = env::var("QDRANT_URL") else {
+    let server = LiveServer::from_environment();
+    assert_eq!(server.as_ref().err(), None, "a live Qdrant server is required");
+    let Ok(LiveServer { endpoint }) = server else {
         return;
     };
     for metric in [Metric::SquaredEuclidean, Metric::NegativeDotProduct] {
@@ -406,7 +457,16 @@ const RESTART_SECOND_COORDINATES: [i16; 2] = [0, 2];
 #[test]
 #[ignore = "launcher provisions QDRANT_TEST_COLLECTION and QDRANT_URL"]
 fn real_qdrant_service_prepare_restart_fixture() {
-    let (Some(endpoint), Some(collection)) = (env::var("QDRANT_URL").ok(), configured_collection())
+    let server = ProvisionedServer::from_environment();
+    assert_eq!(
+        server.as_ref().err(),
+        None,
+        "a launcher-provisioned Qdrant server is required"
+    );
+    let Ok(ProvisionedServer {
+        endpoint,
+        collection,
+    }) = server
     else {
         return;
     };
@@ -455,7 +515,16 @@ fn real_qdrant_service_prepare_restart_fixture() {
 #[test]
 #[ignore = "launcher provisions QDRANT_TEST_COLLECTION and QDRANT_URL"]
 fn real_qdrant_service_reports_transport_during_launcher_outage() {
-    let (Some(endpoint), Some(collection)) = (env::var("QDRANT_URL").ok(), configured_collection())
+    let server = ProvisionedServer::from_environment();
+    assert_eq!(
+        server.as_ref().err(),
+        None,
+        "a launcher-provisioned Qdrant server is required"
+    );
+    let Ok(ProvisionedServer {
+        endpoint,
+        collection,
+    }) = server
     else {
         return;
     };
@@ -478,7 +547,16 @@ fn real_qdrant_service_reports_transport_during_launcher_outage() {
 #[test]
 #[ignore = "launcher provisions QDRANT_TEST_COLLECTION and QDRANT_URL"]
 fn real_qdrant_service_verifies_restart_fixture_and_cleans_up() {
-    let (Some(endpoint), Some(collection)) = (env::var("QDRANT_URL").ok(), configured_collection())
+    let server = ProvisionedServer::from_environment();
+    assert_eq!(
+        server.as_ref().err(),
+        None,
+        "a launcher-provisioned Qdrant server is required"
+    );
+    let Ok(ProvisionedServer {
+        endpoint,
+        collection,
+    }) = server
     else {
         return;
     };
@@ -560,7 +638,9 @@ fn real_qdrant_service_verifies_restart_fixture_and_cleans_up() {
 #[test]
 #[ignore = "requires a Qdrant service at QDRANT_URL"]
 fn real_qdrant_service_upload_readback_filter_query_delete_and_recovery() {
-    let Ok(endpoint) = env::var("QDRANT_URL") else {
+    let server = LiveServer::from_environment();
+    assert_eq!(server.as_ref().err(), None, "a live Qdrant server is required");
+    let Ok(LiveServer { endpoint }) = server else {
         return;
     };
     let collection = unique_collection();
@@ -573,4 +653,13 @@ fn real_qdrant_service_upload_readback_filter_query_delete_and_recovery() {
     let cleanup = adapter.delete_collection();
     assert!(cleanup.is_ok(), "collection cleanup failed: {cleanup:?}");
     assert!(result.is_ok(), "real-service journey failed: {result:?}");
+}
+
+#[test]
+fn an_unset_variable_is_a_typed_unconfigured_error_not_a_silent_pass() {
+    const NEVER_SET: &str = "NUDOX_QDRANT_TEST_VARIABLE_THAT_IS_NEVER_SET";
+    assert_eq!(
+        required_variable(NEVER_SET),
+        Err(LiveServiceUnconfigured::Missing { variable: NEVER_SET })
+    );
 }

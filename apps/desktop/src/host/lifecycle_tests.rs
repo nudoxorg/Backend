@@ -30,7 +30,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 fn scratch(tag: &str) -> PathBuf {
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
     // `/tmp`, not `temp_dir()`: the owner's socket path must fit `sockaddr_un`.
-    PathBuf::from("/tmp").join(format!("nx-life-{tag}-{}-{nonce}", std::process::id()))
+    crate::host::scratch_base().join(format!("nx-life-{tag}-{}-{nonce}", std::process::id()))
 }
 
 /// A workspace: a project folder, and an empty data directory.

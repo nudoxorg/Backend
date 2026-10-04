@@ -125,7 +125,7 @@ impl Attributes {
         if bytes == 0 {
             return Err(io::Error::last_os_error());
         }
-        let words = bytes.div_ceil(mem::size_of::<usize>());
+        let words = bytes.div_ceil(size_of::<usize>());
         let mut this = Self {
             storage: vec![0; words],
             initialized: false,
@@ -149,7 +149,7 @@ impl Attributes {
                 0,
                 attribute as usize,
                 handles.as_ptr().cast(),
-                mem::size_of_val(handles),
+                size_of_val(handles),
                 ptr::null_mut(),
                 ptr::null(),
             )
@@ -373,7 +373,7 @@ impl Pipe {
         })?;
         crate::win32::security::restrict_handle_to_current_user(&handle)?;
         let attributes = SECURITY_ATTRIBUTES {
-            nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: ptr::null_mut(),
             bInheritHandle: 1,
         };
@@ -616,7 +616,7 @@ pub(crate) fn capture(
             job.0,
             JobObjectExtendedLimitInformation,
             (&policy as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-            mem::size_of_val(&policy) as u32,
+            size_of_val(&policy) as u32,
         )
     } == 0
     {
@@ -633,7 +633,7 @@ pub(crate) fn capture(
             source,
         })?;
     let inheritable = SECURITY_ATTRIBUTES {
-        nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: ptr::null_mut(),
         bInheritHandle: 1,
     };
@@ -666,7 +666,7 @@ pub(crate) fn capture(
         return Err(CaptureError::Spawn(source));
     }
     let mut startup = STARTUPINFOEXW::default();
-    startup.StartupInfo.cb = mem::size_of::<STARTUPINFOEXW>() as u32;
+    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup.StartupInfo.hStdInput = stdin.0;
     startup.StartupInfo.hStdOutput = stdout_writer.0;
@@ -1038,6 +1038,7 @@ mod tests {
     };
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetProcessHandleCount, OpenProcess, PROCESS_SYNCHRONIZE,
+        PROCESS_TERMINATE, TerminateProcess,
     };
 
     // Serialize this module's process-wide capacity/handle-accounting tests.
@@ -1086,6 +1087,42 @@ mod tests {
         }
     }
 
+    /// The directory the fixture process tree records PIDs and handshakes in.
+    fn fixture_directory() -> PathBuf {
+        PathBuf::from(std::env::var_os("BACKEND_CAPTURE_DIR").expect("fixture directory"))
+    }
+
+    /// Records this process's PID as `role`, for the supervising test to pin.
+    fn record_pid(role: &str) {
+        fs::write(
+            fixture_directory().join(format!("{role}.pid")),
+            std::process::id().to_string(),
+        )
+        .expect("record the PID");
+    }
+
+    /// Starts a fixture process in `mode` that inherits this one's standard handles.
+    fn spawn_fixture(mode: &str) {
+        Command::new(std::env::current_exe().expect("fixture executable"))
+            .args(["--exact", FIXTURE, "--nocapture"])
+            .env("BACKEND_CAPTURE_FIXTURE", mode)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("start a fixture descendant");
+    }
+
+    /// Waits (bounded) for the supervising test to create `name` in the fixture directory.
+    fn wait_for_file(name: &str) {
+        let path = fixture_directory().join(name);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !path.exists() {
+            assert!(Instant::now() < deadline, "{name} never appeared");
+            thread::sleep(POLL);
+        }
+    }
+
     // Runs only in a spawned copy of this test executable. It uses the same
     // native process, argument, environment and standard-handle path as Cargo.
     // No installed shell, Python interpreter, or external fixture is required.
@@ -1096,23 +1133,33 @@ mod tests {
         };
         match mode.as_str() {
             "dual" => {
-                assert_eq!(std::io::stdin().read(&mut [0]).expect("NUL stdin"), 0);
-                std::io::stdout()
-                    .write_all(b"bounded stdout\n")
-                    .expect("stdout");
-                std::io::stderr()
-                    .write_all(b"bounded stderr\n")
-                    .expect("stderr");
+                assert_eq!(io::stdin().read(&mut [0]).expect("NUL stdin"), 0);
+                io::stdout().write_all(b"bounded stdout\n").expect("stdout");
+                io::stderr().write_all(b"bounded stderr\n").expect("stderr");
             }
             "large-out" => {
-                std::io::stdout()
-                    .write_all(&[b'x'; CHUNK * 4])
-                    .expect("stdout");
+                io::stdout().write_all(&[b'x'; CHUNK * 4]).expect("stdout");
             }
             "large-err" => {
-                std::io::stderr()
-                    .write_all(&[b'y'; CHUNK * 4])
-                    .expect("stderr");
+                io::stderr().write_all(&[b'y'; CHUNK * 4]).expect("stderr");
+            }
+            "leak-audit" => {
+                // The process-wide handle count is only meaningful when no other
+                // thread opens or closes handles, so the accounting runs here, in
+                // a process of its own, instead of beside the parallel tests.
+                let cancelled = AtomicBool::new(false);
+                capture(&command("dual"), limits(), &cancelled).expect("warm-up capture");
+                assert_eq!(occupied(), 0);
+                let before = handles();
+                for _ in 0..8 {
+                    capture(&command("dual"), limits(), &cancelled).expect("repeat capture");
+                }
+                assert_eq!(occupied(), 0);
+                assert_eq!(
+                    handles(),
+                    before,
+                    "capture must return all process, pipe, Job and IOCP handles"
+                );
             }
             "sleep" => {
                 if let Some(path) = std::env::var_os("BACKEND_CAPTURE_PID") {
@@ -1135,6 +1182,61 @@ mod tests {
                 // Leave an observation window for the parent test to acquire a
                 // process handle; then exit with the descendant holding writers.
                 thread::sleep(Duration::from_millis(300));
+            }
+            "tree" => {
+                // The leader of a three-level tree: it records its PID, starts a child that
+                // starts a grandchild, and then waits, holding the pipes the whole tree inherits.
+                record_pid("leader");
+                spawn_fixture("tree-child");
+                thread::sleep(Duration::from_secs(30));
+            }
+            "tree-child" => {
+                record_pid("child");
+                spawn_fixture("sleep-recorded");
+                thread::sleep(Duration::from_secs(30));
+            }
+            "sleep-recorded" => {
+                record_pid("grandchild");
+                thread::sleep(Duration::from_secs(30));
+            }
+            "flood" => {
+                // Starts a descendant that outlives any output, then writes until the pipe closes.
+                record_pid("leader");
+                spawn_fixture("sleep-recorded");
+                wait_for_file("grandchild.pid");
+                wait_for_file("go");
+                let mut stdout = io::stdout();
+                while stdout.write_all(&[b'z'; 65536]).is_ok() {}
+            }
+            "crash" => {
+                // Partial output, a descendant holding the pipes, then death without cleanup.
+                io::stdout().write_all(b"partial output\n").expect("stdout");
+                io::stdout().flush().expect("flush");
+                spawn_fixture("sleep-recorded");
+                wait_for_file("grandchild.pid");
+                wait_for_file("go");
+                std::process::exit(7);
+            }
+            "breakaway" => {
+                // A descendant that tries to leave the Job, as a daemonizing tool would.
+                use std::os::windows::process::CommandExt as _;
+                const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+                record_pid("leader");
+                let outcome = Command::new(std::env::current_exe().expect("fixture executable"))
+                    .args(["--exact", FIXTURE, "--nocapture"])
+                    .env("BACKEND_CAPTURE_FIXTURE", "sleep-recorded")
+                    .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit())
+                    .spawn();
+                let verdict = match outcome {
+                    Ok(_) => "spawned".to_owned(),
+                    Err(error) => format!("refused:{}", error.raw_os_error().unwrap_or(-1)),
+                };
+                let directory = std::env::var_os("BACKEND_CAPTURE_DIR").expect("fixture directory");
+                fs::write(PathBuf::from(directory).join("breakaway"), verdict).expect("verdict");
+                thread::sleep(Duration::from_secs(30));
             }
             _ => panic!("unknown fixture mode"),
         }
@@ -1159,15 +1261,26 @@ mod tests {
                 .any(|window| window == b"bounded stderr")
         );
         assert_eq!(occupied(), 0);
-        let before = handles();
-        for _ in 0..8 {
-            capture(&command("dual"), limits(), &cancelled).expect("repeat capture");
-        }
-        assert_eq!(occupied(), 0);
-        assert_eq!(
-            handles(),
-            before,
-            "capture must return all process, pipe, Job and IOCP handles"
+    }
+
+    #[test]
+    fn repeated_capture_returns_every_process_pipe_job_and_iocp_handle() {
+        let _serial = TESTS.lock().expect("test lock");
+        let audit = Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", FIXTURE, "--nocapture"])
+            .env("BACKEND_CAPTURE_FIXTURE", "leak-audit")
+            .stdin(Stdio::null())
+            .output()
+            .expect("run the isolated handle audit");
+        assert!(
+            audit.status.success(),
+            "isolated handle audit failed:\n{}\n{}",
+            String::from_utf8_lossy(&audit.stdout),
+            String::from_utf8_lossy(&audit.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&audit.stdout).contains("capture_fixture ... ok"),
+            "the audit fixture did not run: the filter matched no test"
         );
     }
 
@@ -1479,5 +1592,265 @@ mod tests {
             vec![0, 0]
         );
         assert!(wide(&OsString::from_wide(&[0])).is_err());
+    }
+
+    // ---- process-tree supervision --------------------------------------------------------
+
+    /// The directory a fixture process tree records its PIDs in, and which test owns it.
+    struct TreeDirectory(PathBuf);
+
+    impl TreeDirectory {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "backend-capture-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock after epoch")
+                    .as_nanos()
+            ));
+            fs::create_dir(&path).expect("tree directory");
+            Self(path)
+        }
+
+        fn command(&self, mode: &str) -> CaptureCommand {
+            let mut spec = command(mode);
+            spec.overrides.push((
+                "BACKEND_CAPTURE_DIR".into(),
+                Some(self.0.clone().into_os_string()),
+            ));
+            spec
+        }
+
+        /// Lets a fixture that waits for the `go` file continue.
+        fn release(&self) {
+            fs::write(self.0.join("go"), b"go").expect("release the fixture");
+        }
+
+        /// Waits for process `role` to record its PID, then pins that exact process with a handle
+        /// so a later liveness check cannot be fooled by PID reuse.
+        fn witness(&self, role: &str) -> Witness {
+            let path = self.0.join(format!("{role}.pid"));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Ok(contents) = fs::read_to_string(&path)
+                    && let Ok(pid) = contents.parse::<u32>()
+                {
+                    // SAFETY: opens a process by PID for waiting and termination only.
+                    let handle =
+                        unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+                    return Witness {
+                        role: role.to_owned(),
+                        handle: Handle::new(handle).expect("a live process handle"),
+                    };
+                }
+                assert!(Instant::now() < deadline, "{role} never recorded its PID");
+                thread::sleep(POLL);
+            }
+        }
+    }
+
+    impl Drop for TreeDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// One pinned process of a fixture tree.
+    struct Witness {
+        role: String,
+        handle: Handle,
+    }
+
+    impl Witness {
+        /// Whether the process has already exited.
+        fn is_dead(&self) -> bool {
+            // SAFETY: a zero-timeout wait on an owned process handle.
+            unsafe { WaitForSingleObject(self.handle.0, 0) == WAIT_OBJECT_0 }
+        }
+
+        /// Waits (bounded) for the process to be gone, as capture must have made it.
+        fn assert_dead(&self) {
+            // SAFETY: bounded wait on an owned process handle.
+            let waited = unsafe { WaitForSingleObject(self.handle.0, 2000) };
+            assert_eq!(waited, WAIT_OBJECT_0, "{} survived the capture", self.role);
+        }
+
+        /// Ends the process abruptly from outside, with `code`.
+        fn terminate(&self, code: u32) {
+            // SAFETY: terminating an owned, pinned process handle.
+            assert_ne!(unsafe { TerminateProcess(self.handle.0, code) }, 0);
+        }
+    }
+
+    #[test]
+    fn cancellation_ends_the_leader_and_every_descendant() {
+        let _serial = TESTS.lock().expect("test lock");
+        let tree = TreeDirectory::new("cancel");
+        let cancelled = AtomicBool::new(false);
+        thread::scope(|scope| {
+            let capturing = scope.spawn(|| capture(&tree.command("tree"), limits(), &cancelled));
+            let tree_processes = ["leader", "child", "grandchild"].map(|role| tree.witness(role));
+            assert!(tree_processes.iter().all(|process| !process.is_dead()));
+            let started = Instant::now();
+            cancelled.store(true, Ordering::Release);
+            let error = capturing
+                .join()
+                .expect("capture worker")
+                .expect_err("cancelled");
+            assert!(matches!(primary(&error), CaptureError::Cancelled));
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "cancellation is prompt"
+            );
+            for process in &tree_processes {
+                process.assert_dead();
+            }
+        });
+        assert_eq!(occupied(), 0);
+    }
+
+    #[test]
+    fn the_deadline_ends_the_leader_and_every_descendant() {
+        let _serial = TESTS.lock().expect("test lock");
+        let tree = TreeDirectory::new("deadline");
+        let mut bounds = limits();
+        bounds.deadline = Instant::now() + Duration::from_secs(4);
+        let cancelled = AtomicBool::new(false);
+        thread::scope(|scope| {
+            let capturing = scope.spawn(|| capture(&tree.command("tree"), bounds, &cancelled));
+            let tree_processes = ["leader", "child", "grandchild"].map(|role| tree.witness(role));
+            let error = capturing
+                .join()
+                .expect("capture worker")
+                .expect_err("deadline");
+            assert!(matches!(primary(&error), CaptureError::Deadline));
+            for process in &tree_processes {
+                process.assert_dead();
+            }
+        });
+        assert_eq!(occupied(), 0);
+    }
+
+    #[test]
+    fn exceeding_the_output_limit_ends_the_tree_even_while_the_leader_floods() {
+        let _serial = TESTS.lock().expect("test lock");
+        let tree = TreeDirectory::new("flood");
+        let mut bounds = limits();
+        bounds.stdout_bytes = 4096;
+        let cancelled = AtomicBool::new(false);
+        thread::scope(|scope| {
+            let capturing = scope.spawn(|| capture(&tree.command("flood"), bounds, &cancelled));
+            // Pin both processes while they are alive, then let the leader start flooding.
+            let tree_processes = ["leader", "grandchild"].map(|role| tree.witness(role));
+            let started = Instant::now();
+            tree.release();
+            let error = capturing
+                .join()
+                .expect("capture worker")
+                .expect_err("flood");
+            assert!(matches!(
+                primary(&error),
+                CaptureError::OutputLimit {
+                    stream: OutputStream::Stdout,
+                    ..
+                }
+            ));
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "the flood is cut off promptly"
+            );
+            for process in &tree_processes {
+                process.assert_dead();
+            }
+        });
+        assert_eq!(occupied(), 0);
+    }
+
+    #[test]
+    fn a_leader_killed_from_outside_reports_its_status_and_takes_the_tree_with_it() {
+        let _serial = TESTS.lock().expect("test lock");
+        let tree = TreeDirectory::new("killed");
+        let cancelled = AtomicBool::new(false);
+        thread::scope(|scope| {
+            let capturing = scope.spawn(|| capture(&tree.command("tree"), limits(), &cancelled));
+            let tree_processes = ["leader", "child", "grandchild"].map(|role| tree.witness(role));
+            tree_processes[0].terminate(77);
+            let output = capturing
+                .join()
+                .expect("capture worker")
+                .expect("an externally killed leader is still a complete transaction");
+            assert_eq!(output.status.code(), Some(77));
+            for process in &tree_processes {
+                process.assert_dead();
+            }
+        });
+        assert_eq!(occupied(), 0);
+    }
+
+    #[test]
+    fn a_crashing_leader_keeps_its_partial_output_and_leaves_no_descendant() {
+        let _serial = TESTS.lock().expect("test lock");
+        let tree = TreeDirectory::new("crash");
+        let cancelled = AtomicBool::new(false);
+        thread::scope(|scope| {
+            let capturing = scope.spawn(|| capture(&tree.command("crash"), limits(), &cancelled));
+            let grandchild = tree.witness("grandchild");
+            tree.release();
+            let output = capturing
+                .join()
+                .expect("capture worker")
+                .expect("a crash is a complete transaction");
+            assert_eq!(output.status.code(), Some(7));
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("partial output"),
+                "the output written before the crash is kept"
+            );
+            grandchild.assert_dead();
+        });
+        assert_eq!(occupied(), 0);
+    }
+
+    #[test]
+    fn a_descendant_cannot_break_away_from_the_job() {
+        let _serial = TESTS.lock().expect("test lock");
+        let tree = TreeDirectory::new("breakaway");
+        let cancelled = AtomicBool::new(false);
+        thread::scope(|scope| {
+            let capturing =
+                scope.spawn(|| capture(&tree.command("breakaway"), limits(), &cancelled));
+            let leader = tree.witness("leader");
+            let verdict_path = tree.0.join("breakaway");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let verdict = loop {
+                if let Ok(verdict) = fs::read_to_string(&verdict_path)
+                    && !verdict.is_empty()
+                {
+                    break verdict;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the breakaway attempt never reported"
+                );
+                thread::sleep(POLL);
+            };
+            eprintln!("breakaway attempt: {verdict}");
+            // Either the kernel refuses a breakaway from a Job that does not allow it, or the
+            // process it started is inside the Job; in neither case may anything outlive capture.
+            let escaped = (verdict == "spawned").then(|| tree.witness("grandchild"));
+            cancelled.store(true, Ordering::Release);
+            let error = capturing
+                .join()
+                .expect("capture worker")
+                .expect_err("cancelled");
+            assert!(matches!(primary(&error), CaptureError::Cancelled));
+            leader.assert_dead();
+            if let Some(escaped) = escaped {
+                escaped.assert_dead();
+            } else {
+                assert!(verdict.starts_with("refused:"), "{verdict}");
+            }
+        });
+        assert_eq!(occupied(), 0);
     }
 }

@@ -1,5 +1,10 @@
 //! Real Tantivy-backed lexical source with canonical ranking at the adapter boundary.
 
+use crate::publish::{
+    DirectoryPublication, PrivateNamespace, StagePreparationFailure, TransientDenial,
+    backend_is_transient_denial, failed_stage_preparation, io_is_transient_denial,
+    retry_while_denied,
+};
 use crate::{
     Binding, Cursor, DocumentState, Error, FieldSelection, LexicalPage, LexicalSource, Limits,
     MatchMode, OverlayLimits, Query, QueryRequest, RankedHit, Relevance, SchemaVersion,
@@ -32,7 +37,8 @@ const INTEGRITY_FILE: &str = "backend-files-v3";
 const ORDINAL_MAP_FILE: &str = "backend-ordinals-v1";
 const INTEGRITY_MAGIC: &[u8] = b"backend-tantivy-files-v3\0";
 const ORDINAL_MAP_MAGIC: &[u8] = b"backend-tantivy-ordinals-v1\0";
-const DURABLE_ROOTS_DIRECTORY: &str = "v3";
+const DURABLE_ROOTS_DIRECTORY: &str = "v4";
+const DURABLE_CACHE_LOCK: &str = ".search-index-v3.lock";
 const DURABLE_ROOT_LEASE: &str = ".backend-root-reader.lock";
 const MAX_RETAINED_DURABLE_ROOTS: usize = 4;
 const DEFAULT_DURABLE_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
@@ -391,10 +397,8 @@ struct DurableCacheLock {
 }
 
 impl DurableCacheLock {
-    fn acquire(cache_root: &Path) -> Result<Self, std::io::Error> {
-        let lock = backend_platform::durability::open_or_create_regular_file_nofollow(
-            &cache_root.join(".search-index-v2.lock"),
-        )?;
+    fn acquire(namespace: &PrivateNamespace) -> Result<Self, std::io::Error> {
+        let lock = namespace.open_private_file_read_write(DURABLE_CACHE_LOCK, true)?;
         lock.lock()?;
         Ok(Self { _file: lock })
     }
@@ -505,6 +509,16 @@ impl std::fmt::Display for TantivySourceError {
 }
 
 impl std::error::Error for TantivySourceError {}
+
+impl TransientDenial for TantivySourceError {
+    fn is_transient_denial(&self) -> bool {
+        match self {
+            Self::Io(error) => io_is_transient_denial(error),
+            Self::Backend(error) => backend_is_transient_denial(error),
+            _ => false,
+        }
+    }
+}
 
 impl From<Error> for TantivySourceError {
     fn from(error: Error) -> Self {
@@ -751,14 +765,15 @@ impl TantivySource {
         fs::create_dir_all(cache_root.as_ref())?;
         let _cache_directory =
             backend_platform::durability::open_directory_readonly_nofollow(cache_root.as_ref())?;
-        let _cache_lock = DurableCacheLock::acquire(cache_root.as_ref())?;
-        Self::open_or_build_locked(state, limits, cache_root.as_ref(), budget)
+        let namespace = PrivateNamespace::open_child(cache_root.as_ref(), DURABLE_ROOTS_DIRECTORY)?;
+        let _cache_lock = DurableCacheLock::acquire(&namespace)?;
+        Self::open_or_build_locked(state, limits, &namespace, budget)
     }
 
     fn open_or_build_locked(
         state: &DocumentState,
         limits: Limits,
-        cache_root: &Path,
+        namespace: &PrivateNamespace,
         budget: DurableCacheBudget,
     ) -> Result<(Self, DurableProjectionAction), TantivySourceError> {
         // The public entrypoints keep the process-safe cache lock alive across
@@ -768,10 +783,7 @@ impl TantivySource {
             return Err(Error::IncompleteCoverage.into());
         }
         preflight_ordinal_map_capacity(state.iter().count())?;
-        let version_root = cache_root.join(DURABLE_ROOTS_DIRECTORY);
-        fs::create_dir_all(&version_root)?;
-        let _version_directory =
-            backend_platform::durability::open_directory_readonly_nofollow(&version_root)?;
+        let version_root = namespace.path();
         remove_incomplete_stages(&version_root)?;
         let key = hex_fingerprint(projection_fingerprint(state.binding()));
         let selected = version_root.join(&key);
@@ -794,27 +806,55 @@ impl TantivySource {
             }
         }
 
-        let stage_id = NEXT_DURABLE_STAGE.fetch_add(1, AtomicOrdering::Relaxed);
-        let staging =
-            version_root.join(format!(".{key}.building-{}-{stage_id}", std::process::id()));
-        fs::create_dir(&staging)?;
-        let built = match Self::build_in_dir_with_budget(state, limits, &staging, budget) {
-            Ok(source) => source,
-            Err(error) => {
-                let _ = remove_projection_path(&staging);
-                return Err(error);
-            }
+        // Build the stage once. The shared publisher retries only its final
+        // idempotent rename, preserving these exact admitted bytes.
+        let action = match Self::stage_and_publish(state, limits, namespace, &key, budget)? {
+            DirectoryPublication::Published => DurableProjectionAction::Built,
+            // Another publisher named this exact root first. It is validated by
+            // the open below like any other existing root.
+            DirectoryPublication::AlreadyPresent => DurableProjectionAction::Opened,
         };
-        drop(built);
-        sync_directory(&staging)?;
-        fs::rename(&staging, &selected)?;
-        sync_directory(&version_root)?;
 
         let mut source = Self::open_in_dir_with_budget(state, limits, &selected, budget)?;
         pin_durable_root(&mut source, &selected)?;
         touch_durable_root(&selected)?;
         prune_durable_roots(&version_root, &selected, budget)?;
-        Ok((source, DurableProjectionAction::Built))
+        Ok((source, action))
+    }
+
+    /// Builds a complete projection in a fresh private stage and publishes it
+    /// under `selected`. A stage that fails is removed; a lost publication race
+    /// leaves the winner in place and removes this stage.
+    fn stage_and_publish(
+        state: &DocumentState,
+        limits: Limits,
+        namespace: &PrivateNamespace,
+        key: &str,
+        budget: DurableCacheBudget,
+    ) -> Result<DirectoryPublication, TantivySourceError> {
+        let stage = retry_while_denied(|| {
+            let stage_id = NEXT_DURABLE_STAGE.fetch_add(1, AtomicOrdering::Relaxed);
+            let stage_name = format!(".{key}.building-{}-{stage_id}", std::process::id());
+            let stage = namespace.create_stage(&stage_name).map_err(|error| {
+                StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
+            })?;
+            let built = match Self::build_in_dir_with_budget(state, limits, stage.path(), budget) {
+                Ok(source) => source,
+                Err(error) => return Err(failed_stage_preparation(stage, error)),
+            };
+            drop(built);
+            if let Err(error) = sync_directory(stage.path()) {
+                return Err(failed_stage_preparation(
+                    stage,
+                    TantivySourceError::Io(error),
+                ));
+            }
+            Ok(stage)
+        })
+        .map_err(StagePreparationFailure::into_error)?;
+        stage
+            .publish(key)
+            .map_err(|error| TantivySourceError::Io(error.into_io_error()))
     }
 
     /// Publishes a selected delta as a new durable generation. The previous
@@ -887,15 +927,9 @@ impl TantivySource {
         fs::create_dir_all(cache_root.as_ref())?;
         let _cache_directory =
             backend_platform::durability::open_directory_readonly_nofollow(cache_root.as_ref())?;
-        let _cache_lock = DurableCacheLock::acquire(cache_root.as_ref())?;
-        Self::open_or_advance_locked(
-            previous,
-            next,
-            limits,
-            budget,
-            cache_root.as_ref(),
-            cache_budget,
-        )
+        let namespace = PrivateNamespace::open_child(cache_root.as_ref(), DURABLE_ROOTS_DIRECTORY)?;
+        let _cache_lock = DurableCacheLock::acquire(&namespace)?;
+        Self::open_or_advance_locked(previous, next, limits, budget, &namespace, cache_budget)
     }
 
     fn open_or_advance_locked(
@@ -903,7 +937,7 @@ impl TantivySource {
         next: &DocumentState,
         limits: Limits,
         budget: OverlayLimits,
-        cache_root: &Path,
+        namespace: &PrivateNamespace,
         cache_budget: DurableCacheBudget,
     ) -> Result<(Self, Option<ProjectionRevision>, DurableProjectionAction), TantivySourceError>
     {
@@ -915,13 +949,10 @@ impl TantivySource {
         }
         preflight_ordinal_map_capacity(next.iter().count())?;
         if previous.binding() == next.binding() {
-            return Self::open_or_build_locked(next, limits, cache_root, cache_budget)
+            return Self::open_or_build_locked(next, limits, namespace, cache_budget)
                 .map(|(source, action)| (source, None, action));
         }
-        let version_root = cache_root.join(DURABLE_ROOTS_DIRECTORY);
-        fs::create_dir_all(&version_root)?;
-        let _version_directory =
-            backend_platform::durability::open_directory_readonly_nofollow(&version_root)?;
+        let version_root = namespace.path();
         remove_incomplete_stages(&version_root)?;
 
         let next_key = hex_fingerprint(projection_fingerprint(next.binding()));
@@ -947,61 +978,72 @@ impl TantivySource {
         let previous_key = hex_fingerprint(projection_fingerprint(previous.binding()));
         let previous_path = version_root.join(previous_key);
         let (previous_source, _) =
-            Self::open_or_build_locked(previous, limits, cache_root, cache_budget)?;
+            Self::open_or_build_locked(previous, limits, namespace, cache_budget)?;
         drop(previous_source);
-
-        let stage_id = NEXT_DURABLE_STAGE.fetch_add(1, AtomicOrdering::Relaxed);
-        let staging = version_root.join(format!(
-            ".{next_key}.building-{}-{stage_id}",
-            std::process::id()
-        ));
-        if let Err(error) = copy_projection_tree(&previous_path, &staging) {
-            let _ = remove_projection_path(&staging);
-            return Err(error.into());
-        }
-        let mut staged =
-            match Self::open_in_dir_with_budget(previous, limits, &staging, cache_budget) {
-                Ok(source) => source,
-                Err(error) => {
-                    let _ = remove_projection_path(&staging);
-                    return Err(error);
-                }
-            };
-        let revision = match staged.maintain_for_publication(next, budget) {
-            Ok(MaintainOutcome::Applied(revision)) => revision,
-            Ok(MaintainOutcome::RebuildRequired) => {
+        let prepared = retry_while_denied(|| {
+            let stage_id = NEXT_DURABLE_STAGE.fetch_add(1, AtomicOrdering::Relaxed);
+            let stage_name = format!(".{next_key}.building-{}-{stage_id}", std::process::id());
+            let stage = namespace.create_stage(&stage_name).map_err(|error| {
+                StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
+            })?;
+            let built = (|| -> Result<Option<ProjectionRevision>, TantivySourceError> {
+                copy_projection_tree(&previous_path, stage.path())?;
+                let mut staged =
+                    Self::open_in_dir_with_budget(previous, limits, stage.path(), cache_budget)?;
+                let revision = match staged.maintain_for_publication(next, budget) {
+                    Ok(MaintainOutcome::Applied(revision)) => revision,
+                    Ok(MaintainOutcome::RebuildRequired) => {
+                        drop(staged);
+                        return Ok(None);
+                    }
+                    Err(error) => {
+                        drop(staged);
+                        return Err(error);
+                    }
+                };
+                write_ordinal_map(
+                    stage.path(),
+                    projection_fingerprint(next.binding()),
+                    &staged.documents,
+                )?;
+                write_binding_stamp(stage.path(), projection_fingerprint(next.binding()))?;
                 drop(staged);
-                remove_projection_path(&staging)?;
-                return Self::open_or_build_locked(next, limits, cache_root, cache_budget)
-                    .map(|(source, action)| (source, None, action));
+                write_projection_manifest(
+                    stage.path(),
+                    projection_fingerprint(next.binding()),
+                    cache_budget,
+                )?;
+                sync_directory(stage.path())?;
+                Ok(Some(revision))
+            })();
+            match built {
+                Ok(Some(revision)) => Ok(Some((stage, revision))),
+                Ok(None) => stage.discard().map(|()| None).map_err(|error| {
+                    StagePreparationFailure::Terminal(TantivySourceError::Io(error))
+                }),
+                Err(error) => Err(failed_stage_preparation(stage, error)),
             }
-            Err(error) => {
-                drop(staged);
-                let _ = remove_projection_path(&staging);
-                return Err(error);
-            }
+        })
+        .map_err(StagePreparationFailure::into_error)?;
+        let Some((stage, revision)) = prepared else {
+            return Self::open_or_build_locked(next, limits, namespace, cache_budget)
+                .map(|(source, action)| (source, None, action));
         };
-        write_ordinal_map(
-            &staging,
-            projection_fingerprint(next.binding()),
-            &staged.documents,
-        )?;
-        write_binding_stamp(&staging, projection_fingerprint(next.binding()))?;
-        drop(staged);
-        write_projection_manifest(
-            &staging,
-            projection_fingerprint(next.binding()),
-            cache_budget,
-        )?;
-        sync_directory(&staging)?;
-        fs::rename(&staging, &selected)?;
-        sync_directory(&version_root)?;
+        let publication = stage
+            .publish(&next_key)
+            .map_err(|error| TantivySourceError::Io(error.into_io_error()))?;
 
         let mut source = Self::open_in_dir_with_budget(next, limits, &selected, cache_budget)?;
         pin_durable_root(&mut source, &selected)?;
         touch_durable_root(&selected)?;
         prune_durable_roots(&version_root, &selected, cache_budget)?;
-        Ok((source, Some(revision), DurableProjectionAction::Revised))
+        Ok(match publication {
+            DirectoryPublication::Published => {
+                (source, Some(revision), DurableProjectionAction::Revised)
+            }
+            // The winner's root was opened, not this delta's.
+            DirectoryPublication::AlreadyPresent => (source, None, DurableProjectionAction::Opened),
+        })
     }
 
     fn populate(

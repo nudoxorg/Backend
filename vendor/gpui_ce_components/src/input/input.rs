@@ -979,7 +979,6 @@ mod tests {
     fn native_input_focus_follows_the_editor_through_typing_blur_and_reopen(
         cx: &mut gpui::TestAppContext,
     ) {
-        use crate::Root;
         use gpui::{AppContext as _, Render};
 
         struct Probe {
