@@ -30,9 +30,10 @@ use super::type_model::{
     UnknownTypeId, Visibility,
 };
 use crate::ir::{
-    AtomId, AtomInterner, CapacityError, CapacitySpace, DeclarationIdentity, DeclarationKey,
-    DenseId, EntityAuthorityFacts, EntityId, ImageProvenance, Interner, ListInterner,
-    OccurrenceAuthorityFacts, PackageLineage, SemanticScopeClaim, SemanticScopeFacts,
+    AtomId, AtomInterner, AuthorityFactFault, AuthorityFactPlane, CapacityError, CapacitySpace,
+    DeclarationIdentity, DeclarationKey, DenseId, EntityAuthorityFacts, EntityId, FactAvailability,
+    ImageProvenance, ImageProvenanceClaim, Interner, ListId, ListInterner, OccurrenceAuthorityFacts,
+    PackageLineage, ParentageAuthority, SemanticScopeClaim, SemanticScopeFacts,
     SignatureCarrierBindingRole, SignatureCarrierOwnerInput, SignatureCarrierRole, SourceIdentity,
     TextId, TypeId,
     authority::{AuthorityColumns, OccurrenceAuthorityColumn},
