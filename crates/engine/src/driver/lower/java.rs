@@ -3443,14 +3443,14 @@ mod tests {
         fix.symbols.push(SymbolRow {
             owner: 0,
             name: brew2,
-            parameters: vec![string_row],
+            parameters: Vec::new(),
         });
         fix.declarations.push(DeclarationRow {
             kind: 11,
             name: brew,
             owner: Some(0),
             documentation: None,
-            semantic_type: Some(1),
+            semantic_type: Some(string_row),
             symbol: Some(0),
             span: None,
         });
@@ -3459,16 +3459,16 @@ mod tests {
             name: brew2,
             owner: Some(0),
             documentation: None,
-            semantic_type: Some(string_row),
+            semantic_type: Some(1),
             symbol: Some(1),
             span: None,
         });
-        let source = b"class C { int brew() { return 0; } String brew() { return null; } }";
+        let source = b"class C { String brew(int value) { return null; } int brew() { return 0; } }";
         let bytes = lower(&fix, source)?;
         let view = FragmentView::validate(&bytes)?;
-        // Facts: 0 class, 1 int param carrier, 2 int result carrier, 3 first
-        // brew, 4 unknown param carrier, 5 unknown result carrier, 6 second brew.
-        let second = row(&view, 6)?;
+        // Facts: 0 class, 1 int parameter carrier, 2 String result carrier,
+        // 3 first brew, 4 int result carrier, 5 second brew.
+        let second = row(&view, 5)?;
         if second.record.tag != SemanticTypeTag::FunctionPointer
             || second.record.payload1 != SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
         {
@@ -3491,6 +3491,22 @@ mod tests {
                 item.name() == b"brew" && item.kind() == backend_semantic::ir::ItemKind::Function
             })
             .ok_or(TestError::Missing("owned Java method"))?;
+        let parameter = owned
+            .items()
+            .find(|item| {
+                item.name() == b"int"
+                    && item.kind() == backend_semantic::ir::ItemKind::Parameter
+                    && item.parent() == Some(brew.id())
+            })
+            .ok_or(TestError::Missing("owned Java int parameter carrier"))?;
+        let result = owned
+            .items()
+            .find(|item| {
+                item.name() == b"java.lang.String"
+                    && item.kind() == backend_semantic::ir::ItemKind::Parameter
+                    && item.parent() == Some(brew.id())
+            })
+            .ok_or(TestError::Missing("owned Java String result carrier"))?;
         let bindings = match owned.signature_carrier_bindings(brew.id()) {
             Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
                 bindings.collect::<Vec<_>>()
@@ -3498,23 +3514,22 @@ mod tests {
             _ => return Err(TestError::Missing("owned Java signature bindings")),
         };
         if bindings
-            .iter()
-            .map(|binding| (binding.owner, binding.role, binding.position))
-            .collect::<Vec<_>>()
             != vec![
-                (
-                    brew.id(),
-                    backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
-                    0,
-                ),
-                (
-                    brew.id(),
-                    backend_semantic::ir::SignatureCarrierBindingRole::Result,
-                    0,
-                ),
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: brew.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    position: 0,
+                    carrier: parameter.id(),
+                },
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: brew.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                    position: 0,
+                    carrier: result.id(),
+                },
             ]
         {
-            return Err(TestError::Missing("Java executable binding slots"));
+            return Err(TestError::Missing("Java executable carrier IDs and slots"));
         }
         if owned.signature_carrier_role(brew.id())
             != Some(
@@ -3547,6 +3562,49 @@ mod tests {
         // only the deduplicated empty row remains in the pool.
         if !entity_list(&view, 0)?.is_empty() || entity_list(&view, 1).is_ok() {
             return Err(TestError::Missing("renamed method has no siblings"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn constructor_without_parameters_or_result_has_captured_empty_signature()
+    -> Result<(), TestError> {
+        let mut fix = Fixture::default();
+        fix.class(b"demo.C");
+        let constructor_name = fix.atom(b"C");
+        fix.symbols.push(SymbolRow {
+            owner: 0,
+            name: constructor_name,
+            parameters: Vec::new(),
+        });
+        fix.declarations.push(DeclarationRow {
+            kind: 10,
+            name: constructor_name,
+            owner: Some(0),
+            documentation: None,
+            semantic_type: None,
+            symbol: Some(0),
+            span: None,
+        });
+
+        let source = b"class C { C() {} }";
+        let owned = owned(&fix, source)?;
+        let constructor = owned
+            .items()
+            .find(|item| {
+                item.name() == b"C" && item.kind() == backend_semantic::ir::ItemKind::Function
+            })
+            .ok_or(TestError::Missing("owned Java constructor"))?;
+        let Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(
+            mut bindings,
+        )) = owned.signature_carrier_bindings(constructor.id())
+        else {
+            return Err(TestError::Missing(
+                "Java constructor's captured empty signature",
+            ));
+        };
+        if bindings.len() != 0 || bindings.next().is_some() {
+            return Err(TestError::Missing("Java constructor has no carrier slots"));
         }
         Ok(())
     }
