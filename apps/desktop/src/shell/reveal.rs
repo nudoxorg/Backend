@@ -1,5 +1,6 @@
-//! Held-modifier reveal: holding ⌘ alone raises key caps on everything that
-//! has a key, holding ⌥ alone x-rays every visible datum one rung up.
+//! Held-modifier reveal: holding the shortcut modifier alone (⌘ on macOS,
+//! Control elsewhere) raises key caps on keyed controls; ⌥ alone x-rays
+//! every visible datum one rung up.
 //!
 //! Each waits [`HOLD`] before it shows, so a chord (⌘C, ⌥←) never flashes
 //! caps: any key pressed during the hold disarms it. Releasing the modifier,
@@ -18,7 +19,7 @@ pub(crate) const HOLD: Duration = Duration::from_millis(260);
 /// Which reveal a pending hold arms.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Held {
-    /// ⌘: key caps.
+    /// Platform shortcut modifier: key caps.
     Keys,
     /// ⌥: x-ray.
     Xray,
@@ -55,9 +56,13 @@ impl RevealHold {
 
     /// The modifier state changed.
     pub(crate) fn modifiers(&mut self, modifiers: Modifiers) -> Change {
-        let others = modifiers.shift || modifiers.control || modifiers.function;
-        let lone_cmd = modifiers.platform && !modifiers.alt && !others;
-        let lone_alt = modifiers.alt && !modifiers.platform && !others;
+        // `secondary` is Command on macOS and Control elsewhere. Either
+        // primary modifier held alongside it makes this a chord.
+        let shortcut = modifiers.secondary();
+        let primary_keys = u8::from(modifiers.platform) + u8::from(modifiers.control);
+        let no_other = !modifiers.shift && !modifiers.function;
+        let lone_cmd = no_other && !modifiers.alt && shortcut && primary_keys == 1;
+        let lone_alt = no_other && modifiers.alt && primary_keys == 0;
         let before = self.reveal;
         // A reveal lasts exactly as long as its own modifier is held alone.
         self.reveal.keys &= lone_cmd;
@@ -128,10 +133,7 @@ mod tests {
     use super::*;
 
     fn cmd() -> Modifiers {
-        Modifiers {
-            platform: true,
-            ..Modifiers::default()
-        }
+        Modifiers::secondary_key()
     }
 
     fn alt() -> Modifiers {
@@ -160,6 +162,24 @@ mod tests {
         hold.key_down(); // ⌘C
         assert_eq!(hold.fire(generation), Change::default());
         assert_eq!(hold.reveal(), Reveal::default());
+    }
+
+    #[test]
+    fn both_primary_modifiers_are_a_chord_not_a_reveal() {
+        let mut hold = RevealHold::default();
+        let both = Modifiers { platform: true, control: true, ..Modifiers::default() };
+        assert_eq!(hold.modifiers(both).arm, None);
+        assert_eq!(hold.modifiers(Modifiers { alt: true, ..both }).arm, None);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn control_reveals_shortcuts_and_logo_does_not() {
+        let mut hold = RevealHold::default();
+        let logo = Modifiers { platform: true, ..Modifiers::default() };
+        assert_eq!(hold.modifiers(logo).arm, None);
+        let generation = hold.modifiers(Modifiers::secondary_key()).arm.expect("Control arms shortcuts");
+        assert_eq!(hold.fire(generation).reveal, Some(Reveal { keys: true, xray: false }));
     }
 
     #[test]

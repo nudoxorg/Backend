@@ -1119,7 +1119,7 @@ mod tests {
         let mut rig = rig_with_reads(cx, Some(page_route("RelationDirection")), 1440.0, 900.0,
             ReadPool::start(2, |_| Fixture).expect("fixture pool"));
         let committed = rig.route();
-        rig.keys("cmd-k");
+        rig.keys("secondary-k");
         let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
         let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
         rig.cx.update(|window, cx| input.update(cx, |input, cx| input.replace_all("RelationLabel", window, cx)));
@@ -1184,7 +1184,7 @@ mod tests {
     fn rapid_blank_invalid_valid_typing_only_requests_the_current_query(cx: &mut TestAppContext) {
         let mut rig = rig_with_reads(cx, None, 1440.0, 900.0,
             ReadPool::start(2, |_| Fixture).expect("fixture pool"));
-        rig.keys("cmd-k");
+        rig.keys("secondary-k");
         let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
         let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
         let oversized = "🧭".repeat(257);
@@ -1283,7 +1283,7 @@ mod tests {
             visual.run_until_parked();
         };
         draw(visual);
-        visual.simulate_keystrokes("cmd-k");
+        visual.simulate_keystrokes("secondary-k");
         draw(visual);
         let ask = shell.read_with(visual, |shell, _| shell.ask_entity());
         let input = ask.read_with(visual, |ask, _| ask.input().clone());
@@ -1363,7 +1363,7 @@ mod tests {
         // Keep the Hand's raw key session open under Ask. The
         // first character tests native text delivery; Backspace tests that
         // the covered Hand cannot let go of the saved card instead.
-        rig.keys("cmd-d");
+        rig.keys("secondary-d");
         let held = |rig: &mut Rig| rig.graph.store.read_with(rig.cx, |store, _|
             store.snapshot().session().hand.held().len());
         assert_eq!(held(&mut rig), 1, "fixture page is held");
@@ -1536,7 +1536,7 @@ mod tests {
     fn a_row_with_no_place_keeps_its_draft_and_speaks_inside_ask_on_enter(cx: &mut TestAppContext) {
         let pool = ReadPool::start(2, |_| NoPlaceSearch).expect("pool");
         let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0, pool);
-        rig.keys("cmd-k");
+        rig.keys("secondary-k");
         // Open with nothing typed, Ask is its field: no plate is drawn, and
         // none is said to be (the page under the veil is what shows).
         let dialogs = |ledger: &facet::probe::Ledger| -> Vec<String> {
@@ -1585,7 +1585,7 @@ mod tests {
         let mut rig = rig_with_reads(cx, None, 1440.0, 900.0,
             ReadPool::start(1, |_| FailedSearch).expect("fixture pool"));
         rig.cx.update(|_, cx| facet::probe::enable(cx));
-        rig.keys("cmd-k");
+        rig.keys("secondary-k");
         rig.cx.simulate_input("RelationLabel");
         rig.settle();
         let route = rig.route();
@@ -1627,7 +1627,7 @@ mod tests {
             facet::probe::enable(cx);
         });
         rig.settle();
-        rig.keys("cmd-k");
+        rig.keys("secondary-k");
     }
 
     fn assert_refusal(rig: &mut crate::shell::tests::Rig, draft: &str, words: &str) {
@@ -1658,14 +1658,14 @@ mod tests {
             let (resource, root, serving) = ask.search_resource(cx).expect("actual search resource");
             crate::core::admit_resource(&resource, root, serving).current_value().is_some_and(|page| page.rows.is_empty())
         }), "the actual worker delivered an admitted empty page");
-        for key in ["enter", "cmd-enter"] {
+        for key in ["enter", "secondary-enter"] {
             rig.keys(key);
             assert_eq!(rig.route(), route);
             assert_refusal(&mut rig, draft, "Try a declaration name or different words");
         }
         rig.keys("escape");
         assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None, "intentional Escape still cancels");
-        rig.keys("cmd-k");
+        rig.keys("secondary-k");
         let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
         assert!(input.read_with(rig.cx, |input, _| input.value().is_empty()), "only a new query visit clears the old draft");
     }
@@ -1806,15 +1806,15 @@ mod tests {
         let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
         assert!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset().y < gpui::px(0.0)));
         let covered_offset = ask.read_with(rig.cx, |ask, _| ask.scroll.offset());
-        rig.keys("cmd-o"); rig.keys("escape");
+        rig.keys("secondary-o"); rig.keys("escape");
         assert_eq!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset()), covered_offset, "covering and uncovering the same Ask visit preserves its scroll");
-        rig.keys("cmd-a"); rig.cx.simulate_input("short"); rig.settle();
+        rig.keys("secondary-a"); rig.cx.simulate_input("short"); rig.settle();
         assert_eq!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset().y), gpui::px(0.0));
         assert_native_result_visible(&mut rig, "Result 1:");
-        rig.keys("cmd-a"); rig.cx.simulate_input("many"); rig.settle();
+        rig.keys("secondary-a"); rig.cx.simulate_input("many"); rig.settle();
         for _ in 0..16 { rig.keys("down"); }
         assert!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset().y < gpui::px(0.0)));
-        rig.keys("escape"); rig.keys("cmd-k");
+        rig.keys("escape"); rig.keys("secondary-k");
         rig.cx.simulate_input("many"); rig.settle();
         assert_eq!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset().y), gpui::px(0.0));
         assert_native_result_visible(&mut rig, "Result 1:");

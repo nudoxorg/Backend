@@ -312,7 +312,7 @@ fn typing_into_ask_draws_the_query_and_a_result_row(cx: &mut TestAppContext) {
     rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
     for (width, height, plate) in [(1440.0_f32, 900.0_f32, 440.0_f32), (800.0, 600.0, 344.0), (360.0, 640.0, 360.0)] {
         resize(&mut rig, width, height);
-        rig.keys("cmd-k");
+        rig.keys("secondary-k");
         rig.keys("r e l a t i o n");
         rig.settle();
         let titlebar = f32::from(frame(&mut rig).titlebar);
@@ -358,7 +358,7 @@ fn typing_into_ask_draws_the_query_and_a_result_row(cx: &mut TestAppContext) {
 #[gpui::test]
 fn ask_preview_stays_beside_its_plate_through_zoom_and_resize(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
-    rig.keys("cmd-k");
+    rig.keys("secondary-k");
     rig.keys("r e l a t i o n");
     rig.settle();
     rig.keys("down");
@@ -419,7 +419,7 @@ fn a_sheet_removes_a_previously_mounted_reader_action_from_accesskit(cx: &mut Te
             && node["aria"]["on_action"].as_array().is_some_and(|actions|
                 actions.iter().any(|action| action.as_str() == Some("Click"))));
     assert!(has_jump(&native_tree(&mut rig)), "the Code Reader must positively mount a native action before Ask");
-    rig.keys("cmd-k");
+    rig.keys("secondary-k");
     rig.keys("r e l a t i o n");
     rig.settle();
     let plate = rig.cx.debug_bounds("ask-plate").expect("Ask sheet");
@@ -450,7 +450,7 @@ fn find_claims_native_query_focus_only_after_ask_exit_and_its_page_settle(cx: &m
         (id.to_owned(), tree["nodes"][id]["aria"]["label"].as_str().map(str::to_owned))
     };
 
-    rig.keys("cmd-k");
+    rig.keys("secondary-k");
     rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(destination.clone()), cx));
     rig.frame(0);
     assert_eq!(rig.route(), destination);
@@ -563,7 +563,7 @@ fn same_find_visit_returns_query_focus_once_after_ask_exit(cx: &mut TestAppConte
     rig.settle();
     assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
     let route = rig.route();
-    rig.keys("cmd-k");
+    rig.keys("secondary-k");
     assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
     rig.cx.simulate_keystrokes("escape");
     rig.frame(0);
@@ -581,7 +581,7 @@ fn same_find_visit_returns_query_focus_once_after_ask_exit(cx: &mut TestAppConte
     // A later query-focused Ask has its return canceled by a Tab during exit.
     rig.cx.update(|window, cx| window.focus_prev(cx));
     assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
-    rig.keys("cmd-k");
+    rig.keys("secondary-k");
     rig.cx.simulate_keystrokes("escape");
     rig.frame(0);
     rig.cx.simulate_keystrokes("tab");
@@ -628,7 +628,7 @@ fn pointer_during_ask_exit_cancels_find_query_return(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(find_route()), 1440.0, 900.0);
     rig.settle();
     assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
-    rig.keys("cmd-k");
+    rig.keys("secondary-k");
     rig.cx.simulate_keystrokes("escape");
     rig.frame(0);
     assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Leaving));
@@ -678,7 +678,7 @@ fn find_waits_for_its_own_arrival_and_releases_focus_on_departure(cx: &mut TestA
 #[gpui::test]
 fn ask_panel_and_sheet_hold_through_oscillating_resizes(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 800.0, 700.0);
-    rig.keys("cmd-k");
+    rig.keys("secondary-k");
     rig.keys("r e l a t i o n");
     rig.settle();
     let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
@@ -722,7 +722,7 @@ fn has_native_ask_results(rig: &mut Rig) -> bool {
 #[gpui::test]
 fn ask_entering_results_remain_inert_until_the_plate_exposes_them(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
-    rig.cx.simulate_keystrokes("cmd-k");
+    rig.cx.simulate_keystrokes("secondary-k");
     rig.frame(16);
     rig.cx.simulate_keystrokes("r e l a t i o n");
     rig.frame(32);
@@ -756,7 +756,7 @@ fn ask_entering_results_remain_inert_until_the_plate_exposes_them(cx: &mut TestA
 #[gpui::test]
 fn ask_exit_is_inert_and_reopen_reverses_its_painted_plate(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
-    rig.keys("cmd-k");
+    rig.keys("secondary-k");
     rig.keys("r e l a t i o n");
     assert!(has_native_ask_results(&mut rig), "the live Ask results must first exist in AccessKit");
     let opened = rig.cx.debug_bounds("ask-plate").expect("open plate");
@@ -773,7 +773,7 @@ fn ask_exit_is_inert_and_reopen_reverses_its_painted_plate(cx: &mut TestAppConte
     assert!(f32::from(narrowing.size.width) < f32::from(first.size.width) - 2.0);
     assert!(f32::from(narrowing.size.width) > 1.0);
 
-    rig.cx.simulate_keystrokes("cmd-k");
+    rig.cx.simulate_keystrokes("secondary-k");
     rig.frame(0);
     rig.cx.simulate_keystrokes("r e l a t i o n");
     rig.frame(0);
@@ -803,7 +803,7 @@ fn ask_exit_is_inert_and_reopen_reverses_its_painted_plate(cx: &mut TestAppConte
     assert!(!has_native_ask_results(&mut rig));
 
     rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
-    rig.cx.simulate_keystrokes("cmd-k");
+    rig.cx.simulate_keystrokes("secondary-k");
     rig.frame(0);
     rig.cx.simulate_keystrokes("r e l a t i o n");
     rig.frame(0);
@@ -834,12 +834,12 @@ fn ask_exit_blocks_background_keyboard_until_its_sampled_scene_clears(cx: &mut T
         "the keyboard did not stand on the visible Code control");
     rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("ask-exit-sentinel".into()));
 
-    rig.keys("cmd-k");
+    rig.keys("secondary-k");
     rig.keys("r e l a t i o n");
     rig.cx.simulate_keystrokes("escape");
     rig.frame(0);
     assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Leaving));
-    rig.cx.simulate_keystrokes("tab shift-tab j enter cmd-. ctrl-1");
+    rig.cx.simulate_keystrokes("tab shift-tab j enter secondary-. ctrl-1");
     rig.frame(0);
     assert_eq!(rig.route(), code, "a background navigation key fired under the painted Ask exit");
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)), selected,
@@ -847,7 +847,7 @@ fn ask_exit_blocks_background_keyboard_until_its_sampled_scene_clears(cx: &mut T
     assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("ask-exit-sentinel"),
         "Enter activated the selected Code control beneath Ask's exit");
 
-    rig.cx.simulate_keystrokes("cmd-k");
+    rig.cx.simulate_keystrokes("secondary-k");
     rig.frame(0);
     assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
         Some(crate::navigation::Overlay::CommandPalette), "⌘K could not interrupt Ask's exit");
@@ -860,7 +860,7 @@ fn ask_exit_blocks_background_keyboard_until_its_sampled_scene_clears(cx: &mut T
     rig.keys("enter");
     assert_ne!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("ask-exit-sentinel"),
         "the Code control did not activate after Ask's plate cleared");
-    rig.keys("cmd-.");
+    rig.keys("secondary-.");
     assert_eq!(rig.route(), view_route("RelationLabel", View::Page),
         "source navigation did not resume after Ask's plate cleared");
 }
@@ -868,7 +868,7 @@ fn ask_exit_blocks_background_keyboard_until_its_sampled_scene_clears(cx: &mut T
 #[gpui::test]
 fn reader_clearance_follows_the_plate_that_was_painted_mid_flight(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 670.0, 700.0);
-    rig.keys("cmd-k");
+    rig.keys("secondary-k");
     rig.keys("r e l a t i o n");
     rig.settle();
     rig.keys("down");
@@ -1048,7 +1048,7 @@ fn native_find_pointer_arrival_and_failed_owner_edit_keep_one_current_query_focu
     assert_eq!(native["nodes"][owner]["aria"]["label"].as_str(), Some("Find query"));
     assert_eq!(native["nodes"][owner]["aria"]["value"].as_str(), Some("base16"));
     assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.owner_serving()), "focus/editing never grants resource readiness");
-    rig.keys("cmd-o");
+    rig.keys("secondary-o");
     assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"), "covering Add owns native input");
     rig.keys("escape");
     assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"), "current underlay regains its exact native query owner");
@@ -1059,7 +1059,7 @@ fn native_find_query_return_from_add_is_canceled_by_a_new_tab(cx: &mut TestAppCo
     let mut rig = rig(cx, Some(find_route()), 1440.0, 900.0);
     rig.settle();
     assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
-    rig.keys("cmd-o");
+    rig.keys("secondary-o");
     assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
     rig.cx.simulate_keystrokes("escape");
     assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None);
@@ -1075,7 +1075,7 @@ fn native_find_query_return_from_add_is_canceled_by_another_key(cx: &mut TestApp
     rig.settle();
     assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
     let query_focus = rig.cx.update(|window, cx| window.focused(cx)).expect("mounted Find query focus");
-    rig.keys("cmd-o");
+    rig.keys("secondary-o");
     // Dispatch real key events synchronously. `simulate_keystrokes` drains
     // the test executor after Escape, which lets the child finish its
     // deferred return before a second input can interrupt it.

@@ -1648,8 +1648,8 @@ impl Shell {
             // key context gates its actions; this also stops raw child keys.
             // A new Ask and the platform's close shortcuts stay available.
             let key = event.keystroke.key.as_str();
-            let platform = event.keystroke.modifiers.platform;
-            if !(platform && matches!(key, "k" | "q" | "w")) {
+            let shortcut = event.keystroke.modifiers.secondary();
+            if !(shortcut && matches!(key, "k" | "q" | "w")) {
                 cx.stop_propagation();
             }
             return;
@@ -2929,7 +2929,7 @@ mod shelf_scene_admission_tests {
         let tree: serde_json::Value = serde_json::from_str(&json).expect("tree JSON");
         assert!(tree["nodes"].as_object().expect("nodes").values().any(|node| node["aria"]["label"] == "Used by" && node["aria"]["selected"] == true), "native click selected the actual tab: {tree}");
         rig.go(Intent::Navigate(Route::World));
-        rig.keys("cmd-[");
+        rig.keys("secondary-[");
         assert_eq!(rig.route(), route);
         assert!(!shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&scope, cx)), "history can restore reading intent, never a retired native scene");
         let focused = rig.cx.update(|window, cx| window.focused(cx));
@@ -2941,7 +2941,7 @@ mod shelf_scene_admission_tests {
         assert!(shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&fresh, cx)));
         rig.cx.simulate_resize(gpui::size(px(360.0), px(900.0)));
         rig.settle();
-        rig.keys("cmd-\\");
+        rig.keys("secondary-\\");
         let drawer = shell.read_with(rig.cx, |shell, cx| shell.shelf_input_scope(true, cx).expect("current drawer"));
         assert!(shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&drawer, cx)));
         assert!(!shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&fresh, cx)), "drawer cannot borrow a docked callback");
@@ -3081,16 +3081,16 @@ mod responsive_shelf_scene_tests {
             rig.settle();
             assert!(selected_tab(&mut rig, "Rests on"), "new scene callbacks remain live");
             let column = scope(&mut rig, false);
-            rig.keys("cmd-\\");
+            rig.keys("secondary-\\");
             assert_eq!(scope(&mut rig, false).surface(), ShelfNativeSurface::Spine);
             assert!(!admitted(&mut rig, &column), "settings shelf close changes native surface");
-            rig.keys("cmd-\\");
+            rig.keys("secondary-\\");
             assert_eq!(scope(&mut rig, false).surface(), ShelfNativeSurface::Docked);
             assert!(!admitted(&mut rig, &column), "settings shelf reopen cannot revive its old column");
             let current = scope(&mut rig, false);
-            rig.keys("cmd-shift-.");
+            rig.keys("secondary-shift-.");
             assert!(!admitted(&mut rig, &current), "zen retires visible shelf ownership");
-            rig.keys("cmd-shift-.");
+            rig.keys("secondary-shift-.");
             assert!(!admitted(&mut rig, &current), "leaving zen cannot revive its predecessor");
         }
     }
@@ -3125,7 +3125,7 @@ mod responsive_shelf_scene_tests {
             assert!(after.route() != before.route() || after.session().reading.current.presentation != before.session().reading.current.presentation,
                 "actual Spine click must activate its typed row, not be rejected as hidden: {id}/{label}");
             resize(&mut rig, 360.0 * scale);
-            rig.keys("cmd-\\");
+            rig.keys("secondary-\\");
             let drawer = scope(&mut rig, true);
             let used = super::super::tests::native_bounds(&mut rig, "Tab", "Used by", true).expect("current drawer tab");
             rig.cx.simulate_click(used.center(), gpui::Modifiers::none());
@@ -3135,7 +3135,7 @@ mod responsive_shelf_scene_tests {
             resize(&mut rig, 1440.0 * scale);
             assert!(!admitted(&mut rig, &drawer), "responsive automatic close retires its drawer scene");
             resize(&mut rig, 360.0 * scale);
-            rig.keys("cmd-\\");
+            rig.keys("secondary-\\");
             assert!(!admitted(&mut rig, &drawer), "reopen cannot revive an automatically closed drawer");
             let fresh = scope(&mut rig, true);
             assert_eq!(fresh.surface(), ShelfNativeSurface::Drawer);

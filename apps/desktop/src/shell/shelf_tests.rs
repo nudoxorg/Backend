@@ -582,7 +582,7 @@ fn what_you_hold_sits_above_the_lenses_and_where_you_have_been_at_the_foot(cx: &
     let said = said(&mut rig);
     assert!(said.iter().any(|text| text == "TRAIL"), "the trail is at the foot: {said:#?}");
     assert!(!said.iter().any(|text| text == "⌘1"), "nothing is held yet: {said:#?}");
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     let said = self::said(&mut rig);
     assert!(said.iter().any(|text| text == "⌘1"), "the held card is a chip with its key: {said:#?}");
     assert!(at(&said, "⌘1") < at(&said, "Contents"), "chips are above the lenses: {said:#?}");
@@ -738,7 +738,7 @@ fn library_relationship_uncertainty_survives_native_paint_at_all_sizes(cx: &mut 
                     shell.frame().expect("responsive frame").shelf_overlays,
                     shell.chrome_words(cx).iter().any(|(key, value)| *key == "drawer" && value == "open"),
                 ));
-                if overlays && !drawer_open { rig.keys("cmd-\\"); }
+                if overlays && !drawer_open { rig.keys("secondary-\\"); }
                 for (lens, expected) in [
                     ("Rests on", "Library dependency relationships are not indexed. Choose a package to read its dependencies."),
                     ("Used by", "Library usage relationships are not indexed. Open a saved project's dependency tree to inspect its packages."),
@@ -793,11 +793,11 @@ fn native_used_by_lens_is_visit_local_and_forward_restores_the_mounted_tab(cx: &
     let selected = super::tests::native_bounds(&mut rig, "Tab", "Used by", true).expect("native Used by tab");
     assert!(selected.size.width > px(0.0));
     rig.go(Intent::Navigate(Route::World));
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert_eq!(rig.route(), toml());
     assert!(shelf_texts(&mut rig).iter().any(|text| text.0 == "toml_pin"), "Back restores actual dependent rows");
-    rig.keys("cmd-]");
-    rig.keys("cmd-[");
+    rig.keys("secondary-]");
+    rig.keys("secondary-[");
     assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id), before.id);
     assert!(shelf_texts(&mut rig).iter().any(|text| text.0 == "toml_pin"), "Forward/Back preserves Used by, not Contents");
     rig.go(Intent::Navigate(Route::Orbit(crate::navigation::OrbitRoute::Home)));

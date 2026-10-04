@@ -57,7 +57,7 @@ fn assert_dispatch_alive(rig: &mut Rig) {
         rig.cx.update(|window, cx| window.focused(cx).is_some()),
         "a mounted owner receives subsequent keys"
     );
-    rig.keys("cmd-k");
+    rig.keys("secondary-k");
     assert_eq!(overlay(rig), Some(Overlay::CommandPalette));
 }
 
@@ -109,11 +109,11 @@ fn settings_add_escape_and_pointer_cancel_restore_the_same_live_underlay(cx: &mu
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     enable(&mut rig);
     let route = rig.route();
-    rig.keys("cmd-,");
+    rig.keys("secondary-,");
     let settings = overlay(&mut rig);
     assert!(matches!(settings, Some(Overlay::Settings(_))));
     for pointer in [false, true] {
-        rig.keys("cmd-o");
+        rig.keys("secondary-o");
         assert_eq!(overlay(&mut rig), Some(Overlay::AddProject));
         if pointer {
             click_target(&mut rig, "add-folder-cancel");
@@ -134,7 +134,7 @@ fn inbox_is_the_painted_underlay_and_escape_returns_to_it(cx: &mut TestAppContex
     enable(&mut rig);
     click_target(&mut rig, "tb-inbox");
     let route = rig.route();
-    rig.keys("cmd-k");
+    rig.keys("secondary-k");
     assert_eq!(
         rig.graph
             .store
@@ -151,10 +151,10 @@ fn inbox_is_the_painted_underlay_and_escape_returns_to_it(cx: &mut TestAppContex
 fn drawer_click_handoff_and_escape_do_not_dismiss_settings(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 663.0, 900.0);
     enable(&mut rig);
-    rig.keys("cmd-,");
+    rig.keys("secondary-,");
     let settings = overlay(&mut rig);
     let route = rig.route();
-    rig.keys("cmd-\\");
+    rig.keys("secondary-\\");
     assert!(
         rig.shell
             .read_with(rig.cx, |shell, _| shell.shelf_input_owner(true))
@@ -179,10 +179,10 @@ fn drawer_click_handoff_and_escape_do_not_dismiss_settings(cx: &mut TestAppConte
 fn add_query_survives_ask_cover_and_returns_with_live_focus(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     enable(&mut rig);
-    rig.keys("cmd-o");
+    rig.keys("secondary-o");
     rig.cx.simulate_input("/not-a-real-project");
     rig.settle();
-    rig.keys("cmd-k");
+    rig.keys("secondary-k");
     assert_eq!(overlay(&mut rig), Some(Overlay::CommandPalette));
     rig.keys("escape");
     assert_eq!(overlay(&mut rig), Some(Overlay::AddProject));
@@ -209,7 +209,7 @@ fn drawer_narrowing_and_lens_clicks_keep_the_same_live_surface(cx: &mut TestAppC
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 663.0, 900.0);
     enable(&mut rig);
     let route = rig.route();
-    rig.keys("cmd-\\");
+    rig.keys("secondary-\\");
     for words in ["Versions", "Rests on", "Used by", "Contents"] {
         click_text(&mut rig, words);
         assert!(
@@ -219,7 +219,7 @@ fn drawer_narrowing_and_lens_clicks_keep_the_same_live_surface(cx: &mut TestAppC
         );
         assert_eq!(rig.route(), route);
     }
-    for key in ["cmd-up", "cmd-]", "ctrl-1"] {
+    for key in ["secondary-up", "secondary-]", "ctrl-1"] {
         rig.keys(key);
         assert_eq!(rig.route(), route, "{key} cannot navigate the covered page");
         assert!(
@@ -252,11 +252,11 @@ fn drawer_narrowing_and_lens_clicks_keep_the_same_live_surface(cx: &mut TestAppC
 fn rapid_ask_add_escape_does_not_revive_a_departed_visit(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 663.0, 900.0);
     enable(&mut rig);
-    rig.cx.simulate_keystrokes("cmd-k");
+    rig.cx.simulate_keystrokes("secondary-k");
     rig.frame(16);
     rig.cx.simulate_input("RelationLabel");
     rig.frame(16);
-    rig.cx.simulate_keystrokes("cmd-o");
+    rig.cx.simulate_keystrokes("secondary-o");
     rig.frame(16);
     assert_eq!(overlay(&mut rig), Some(Overlay::AddProject));
     rig.cx.simulate_keystrokes("escape");
@@ -297,11 +297,11 @@ fn native_hand_tab_and_shift_tab_follow_card_order_and_escape_keeps_dispatch(
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     super::anatomy_tests::install(&mut rig);
     enable(&mut rig);
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     rig.go(crate::navigation::Intent::Navigate(page_route(
         "relation_label",
     )));
-    rig.keys("cmd-d");
+    rig.keys("secondary-d");
     rig.go(crate::navigation::Intent::Navigate(
         crate::navigation::Route::Orbit(crate::navigation::OrbitRoute::Home),
     ));
@@ -416,7 +416,7 @@ fn drawer_backdrop_and_interrupted_pointer_never_activate_dimmed_settings(cx: &m
         for percent in [100, 200] {
             let mut rig = rig(cx, Some(page_route("RelationLabel")), width, 960.0);
             enable(&mut rig);
-            rig.keys("cmd-,");
+            rig.keys("secondary-,");
             // Set the size through the actual mounted native option; no seeded
             // Settings route or direct callback stands in for the gesture.
             let size = native_radio_point(&mut rig, &format!("{percent}%"));
@@ -431,7 +431,7 @@ fn drawer_backdrop_and_interrupted_pointer_never_activate_dimmed_settings(cx: &m
                     .read_with(rig.cx, |store, _| store.snapshot().settings().motion)
             };
             assert_eq!(motion(&mut rig), MotionPreference::System);
-            rig.keys("cmd-\\");
+            rig.keys("secondary-\\");
             let drawer = rig.shell.read_with(rig.cx, |shell, _| {
                 shell.frame().expect("painted drawer frame").drawer
             });
@@ -482,7 +482,7 @@ fn drawer_backdrop_and_interrupted_pointer_never_activate_dimmed_settings(cx: &m
                 covered_focus.is_some(),
                 "the drawer kept a native dispatch owner"
             );
-            rig.keys("cmd-\\");
+            rig.keys("secondary-\\");
             rig.cx
                 .simulate_mouse_down(at, gpui::MouseButton::Left, Modifiers::none());
             let inside = point(px(8.0), at.y);
@@ -508,7 +508,7 @@ fn drawer_backdrop_and_interrupted_pointer_never_activate_dimmed_settings(cx: &m
             let full = native_radio_point(&mut rig, "Full");
             rig.cx
                 .simulate_mouse_down(full, gpui::MouseButton::Left, Modifiers::none());
-            rig.keys("cmd-\\");
+            rig.keys("secondary-\\");
             rig.keys("escape");
             rig.cx
                 .simulate_mouse_up(full, gpui::MouseButton::Left, Modifiers::none());

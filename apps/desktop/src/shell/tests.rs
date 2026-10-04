@@ -1024,7 +1024,7 @@ fn native_tree_release_mounted(rig: &mut Rig) -> bool {
 fn mounted_tree_back_returns_focus_to_the_exact_release(cx: &mut TestAppContext) {
     let mut rig = native_tree_rig(cx, None);
     open_native_tree_release(&mut rig);
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert!(
         native_tree_release_mounted(&mut rig),
         "the exact release remounted after Back"
@@ -1039,7 +1039,7 @@ fn mounted_tree_back_returns_focus_to_the_exact_release(cx: &mut TestAppContext)
 fn mounted_tree_back_return_waits_for_settlement_and_tab_interrupts_it(cx: &mut TestAppContext) {
     let mut rig = native_tree_rig(cx, None);
     open_native_tree_release(&mut rig);
-    rig.cx.simulate_keystrokes("cmd-[");
+    rig.cx.simulate_keystrokes("secondary-[");
     rig.frame(16);
     assert!(matches!(
         rig.route(),
@@ -1061,7 +1061,7 @@ fn mounted_tree_back_return_waits_for_settlement_and_tab_interrupts_it(cx: &mut 
 fn mounted_tree_back_return_is_cancelled_by_a_new_navigation(cx: &mut TestAppContext) {
     let mut rig = native_tree_rig(cx, None);
     open_native_tree_release(&mut rig);
-    rig.cx.simulate_keystrokes("cmd-[");
+    rig.cx.simulate_keystrokes("secondary-[");
     rig.frame(16);
     let next = Route::Orbit(crate::navigation::OrbitRoute::Browse(
         crate::navigation::BrowseRoute::Tree(
@@ -1078,9 +1078,9 @@ fn mounted_tree_back_return_is_cancelled_by_a_new_navigation(cx: &mut TestAppCon
 fn mounted_tree_back_return_does_not_steal_ask_focus(cx: &mut TestAppContext) {
     let mut rig = native_tree_rig(cx, None);
     open_native_tree_release(&mut rig);
-    rig.cx.simulate_keystrokes("cmd-[");
+    rig.cx.simulate_keystrokes("secondary-[");
     rig.frame(16);
-    rig.cx.simulate_keystrokes("cmd-k");
+    rig.cx.simulate_keystrokes("secondary-k");
     rig.settle();
     assert!(
         rig.shell.read_with(rig.cx, |shell, _| shell.transients().0),
@@ -1113,7 +1113,7 @@ fn mounted_tree_back_return_does_not_steal_ask_focus(cx: &mut TestAppContext) {
 fn mounted_tree_back_return_does_not_resume_after_jump_menu(cx: &mut TestAppContext) {
     let mut rig = native_tree_rig(cx, None);
     open_native_tree_release(&mut rig);
-    rig.cx.simulate_keystrokes("cmd-[");
+    rig.cx.simulate_keystrokes("secondary-[");
     rig.frame(16);
     let ledger = crate::shell::anatomy_tests::painted(&mut rig);
     let back = ledger.targets.iter().find(|target| target.key == "jump-back")
@@ -1138,7 +1138,7 @@ fn mounted_tree_same_root_owner_replacement_cannot_revive_return_focus(cx: &mut 
     let gate = OwnerGate::ready(root, crate::model::ServiceMode::Attached);
     let mut rig = native_tree_rig(cx, Some(gate.clone()));
     open_native_tree_release(&mut rig);
-    rig.cx.simulate_keystrokes("cmd-[");
+    rig.cx.simulate_keystrokes("secondary-[");
     rig.frame(16);
     gate.publish(OwnerState::Starting);
     rig.draw();
@@ -1271,7 +1271,7 @@ fn library_tab_owns_mounted_native_controls_and_back_restores_the_opened_chip(cx
     rig.native_press("space");
     rig.settle();
     assert!(matches!(rig.route(), Route::Package(_)), "Space activates the focused native chip");
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert!(matches!(rig.route(), Route::Orbit(crate::navigation::OrbitRoute::Home)));
     let (zone, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(zone, super::focus::Zone::Reader);
@@ -1334,7 +1334,7 @@ fn an_interrupted_back_does_not_transfer_native_focus_late(cx: &mut TestAppConte
     assert!(matches!(rig.route(), Route::Package(_)));
     // Let Back install its pending return and begin closing the plate, then
     // dispatch a real Shell Tab before the transition settles.
-    rig.cx.simulate_keystrokes("cmd-[");
+    rig.cx.simulate_keystrokes("secondary-[");
     rig.draw();
     assert!(matches!(rig.route(), Route::Orbit(_)));
     rig.cx.simulate_keystrokes("tab");
@@ -1560,7 +1560,7 @@ fn failed_owner_settings_first_frame_paints_the_accessible_page(cx: &mut TestApp
         text.text.to_string().contains("The packages around your projects could not be read"))),
         "the first native frame really paints the failed Home body");
 
-    rig.cx.simulate_keystrokes("cmd-,");
+    rig.cx.simulate_keystrokes("secondary-,");
     rig.cx.run_until_parked();
     rig.draw_frame();
     assert!(matches!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().page_overlay()),
@@ -1661,12 +1661,12 @@ fn enter_descends_and_the_descent_plays_down_then_up(cx: &mut TestAppContext) {
     let (after, way) = rig.shell.read_with(rig.cx, |shell, cx| shell.descent(cx));
     assert_eq!((after, way), (before + 1, Some(super::reader::Way::Down)));
     // ⌘- surfaces one depth: the descent plays up.
-    rig.keys("cmd-up");
+    rig.keys("secondary-up");
     assert!(matches!(rig.route(), Route::Package(_)));
     let (_, way) = rig.shell.read_with(rig.cx, |shell, cx| shell.descent(cx));
     assert_eq!(way, Some(super::reader::Way::Up));
     // ⌘[ walks back along the thread.
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert!(matches!(rig.route(), Route::Symbol(_)));
 }
 
@@ -1762,10 +1762,7 @@ fn back_to_a_route_a_click_left_restores_focus_there(cx: &mut TestAppContext) {
 fn holding_command_shows_keys_only_after_the_hold_and_only_where_keys_are(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     let before = rig.counts();
-    rig.cx.simulate_modifiers_change(Modifiers {
-        platform: true,
-        ..Modifiers::default()
-    });
+    rig.cx.simulate_modifiers_change(Modifiers::secondary_key());
     rig.cx.run_until_parked();
     assert!(!rig.cx.update(|_, cx| facet::ActiveFacet::facet(cx).reveal.keys), "nothing shows before the hold");
     rig.cx.executor().advance_clock(super::reveal::HOLD + Duration::from_millis(10));
@@ -1780,11 +1777,8 @@ fn holding_command_shows_keys_only_after_the_hold_and_only_where_keys_are(cx: &m
     assert!(!rig.cx.update(|_, cx| facet::ActiveFacet::facet(cx).reveal.keys), "release hides them at once");
 
     // A chord never flashes caps.
-    rig.cx.simulate_modifiers_change(Modifiers {
-        platform: true,
-        ..Modifiers::default()
-    });
-    rig.cx.simulate_keystrokes("cmd-c");
+    rig.cx.simulate_modifiers_change(Modifiers::secondary_key());
+    rig.cx.simulate_keystrokes("secondary-c");
     rig.cx.executor().advance_clock(super::reveal::HOLD * 2);
     rig.cx.run_until_parked();
     assert!(!rig.cx.update(|_, cx| facet::ActiveFacet::facet(cx).reveal.keys), "⌘C is a chord");
@@ -1894,7 +1888,7 @@ fn escape_closes_the_topmost_transient_first(cx: &mut TestAppContext) {
     rig.keys("escape");
     let (_, peek, _) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
     assert!(!peek, "then the peek");
-    rig.keys("cmd-k");
+    rig.keys("secondary-k");
     let (ask, _, _) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
     assert!(ask, "⌘K opened Ask");
     rig.keys("escape");
@@ -1956,7 +1950,7 @@ fn keyboard_reaches_and_opens_every_settings_page(cx: &mut TestAppContext) {
         (SettingsPage::Help, "Keys"),
     ];
 
-    rig.keys("cmd-,");
+    rig.keys("secondary-,");
     for _ in 0..4 {
         let zone = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).0);
         if zone == super::focus::Zone::Shelf {
@@ -2062,7 +2056,7 @@ fn escape_closes_settings_from_the_page_and_from_a_control_in_it(cx: &mut TestAp
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     let overlay = |rig: &mut Rig| rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay());
     let drawn = |rig: &mut Rig, words: &str| super::fit_tests::painted(rig).texts.iter().any(|text| text.content == words);
-    rig.keys("cmd-,");
+    rig.keys("secondary-,");
     assert!(matches!(overlay(&mut rig), Some(Overlay::Settings(_))), "⌘, opened Settings");
     assert!(drawn(&mut rig, "Contrast"), "and Settings is drawn");
     rig.keys("escape");
@@ -2070,7 +2064,7 @@ fn escape_closes_settings_from_the_page_and_from_a_control_in_it(cx: &mut TestAp
     assert!(!drawn(&mut rig, "Contrast"), "and it is gone from the window");
     assert_eq!(rig.route(), page_route("RelationLabel"), "the page under it did not move");
 
-    rig.keys("cmd-,");
+    rig.keys("secondary-,");
     // A segmented choice paints its own label (it is not a probe text): find
     // it where gpui painted it.
     rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
@@ -2211,12 +2205,12 @@ fn a_storm_settles_to_exactly_what_a_fresh_window_shows(cx: &mut TestAppContext)
                 let name = names[next(names.len() as u64) as usize];
                 rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(page_route(name)), cx));
             }
-            2 => rig.cx.simulate_keystrokes("cmd-["),
-            3 => rig.cx.simulate_keystrokes("cmd-]"),
-            4 => rig.cx.simulate_keystrokes("cmd-up"),
+            2 => rig.cx.simulate_keystrokes("secondary-["),
+            3 => rig.cx.simulate_keystrokes("secondary-]"),
+            4 => rig.cx.simulate_keystrokes("secondary-up"),
             5 => rig.cx.simulate_keystrokes("j j k"),
             6 => rig.cx.simulate_resize(size(px(420.0 + next(2200) as f32), px(900.0))),
-            7 => rig.cx.simulate_keystrokes("cmd-\\"),
+            7 => rig.cx.simulate_keystrokes("secondary-\\"),
             8 => {
                 rig.cx.simulate_modifiers_change(Modifiers {
                     platform: next(2) == 0,
@@ -2225,10 +2219,10 @@ fn a_storm_settles_to_exactly_what_a_fresh_window_shows(cx: &mut TestAppContext)
                 });
             }
             9 => rig.cx.simulate_keystrokes("space"),
-            10 => rig.cx.simulate_keystrokes("cmd-k"),
+            10 => rig.cx.simulate_keystrokes("secondary-k"),
             12 => rig.cx.simulate_keystrokes("g"),
-            13 => rig.cx.simulate_keystrokes("cmd-."),
-            14 => rig.cx.simulate_keystrokes(if next(2) == 0 { "cmd-=" } else { "cmd--" }),
+            13 => rig.cx.simulate_keystrokes("secondary-."),
+            14 => rig.cx.simulate_keystrokes(if next(2) == 0 { "secondary-=" } else { "secondary--" }),
             15 => {
                 let release = crate::navigation::ReleaseId::new("9.9.9").expect("release");
                 rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::SetRelease(Some(release)), cx));
@@ -2243,7 +2237,7 @@ fn a_storm_settles_to_exactly_what_a_fresh_window_shows(cx: &mut TestAppContext)
     }
     // Put the window somewhere definite and let everything land.
     rig.cx.simulate_modifiers_change(Modifiers::default());
-    rig.cx.simulate_keystrokes("escape escape escape cmd-0");
+    rig.cx.simulate_keystrokes("escape escape escape secondary-0");
     rig.cx.simulate_resize(size(px(1440.0), px(900.0)));
     rig.go(Intent::Navigate(page_route("KindGlyph")));
     rig.settle();
@@ -2422,7 +2416,7 @@ fn a_view_switch_replaces_the_entry_mounts_the_real_map_and_back_leaves(cx: &mut
     assert!(rig.cx.debug_bounds("shell-root").is_some(), "the root paints its debug selector");
     assert!(rig.cx.debug_bounds("reader-scroll").is_some(), "the reader paints its debug selector");
     assert!(rig.cx.debug_bounds(selector).is_some(), "the page's hero gem carries the shared id: {:?}", rig.said().first());
-    rig.keys("cmd-.");
+    rig.keys("secondary-.");
     assert_eq!(rig.route(), view_route("RelationLabel", View::Code));
     assert!(rig.said().iter().any(|line| line.contains("pub enum RelationLabel {")), "the code view shows the source");
     rig.keys("g");
@@ -2441,7 +2435,7 @@ fn a_view_switch_replaces_the_entry_mounts_the_real_map_and_back_leaves(cx: &mut
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)), map_state,
         "the same map entity, focus and camera survive a page visit");
     rig.keys("g");
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert!(matches!(rig.route(), Route::Orbit(_)), "Back leaves the declaration: {:?}", rig.route());
     // G with nothing selected: the whole world.
     rig.keys("g");
@@ -2839,7 +2833,7 @@ fn graph_titlebar_unindexed_b_and_unfocused_world_stay_honest(cx: &mut TestAppCo
     assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-code", cx)).is_none());
     assert!(rig.cx.update(|window, _| window.painted_texts().iter().any(|text| text.text.to_string().contains("Choose a graph symbol"))),
         "the recovery is painted as text, not only an accessibility label");
-    for key in ["ctrl-3", "ctrl-4", "cmd-."] {
+    for key in ["ctrl-3", "ctrl-4", "secondary-."] {
         rig.keys(key);
         rig.settle();
         assert_eq!(rig.route(), Route::World, "{key} has no old symbol route to open");
@@ -2891,7 +2885,7 @@ fn modal_page_overlays_do_not_offer_or_run_retained_mode_controls(cx: &mut TestA
         assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().page_overlay()), Some(overlay));
         assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-code", cx)).is_none(),
             "the retained declaration's mode button is inactive while the modal page owns input");
-        rig.keys("cmd-.");
+        rig.keys("secondary-.");
         rig.keys("ctrl-4");
         assert_eq!(rig.route(), page_route("RelationLabel"));
         assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().page_overlay()), Some(overlay));
@@ -2906,7 +2900,7 @@ fn failed_owner_preserves_local_depth_navigation_but_denies_declaration_modes(cx
         &OwnerFault::Lost("owner unavailable during navigation".into()), cx,
     ));
     rig.settle();
-    rig.keys("cmd-.");
+    rig.keys("secondary-.");
     assert_eq!(rig.route(), view_route("RelationLabel", View::Code), "source/page actions still require the serving owner");
     rig.keys("ctrl-2");
     assert!(matches!(rig.route(), Route::Package(_)), "walking to an existing parent address does not require the index");
@@ -2930,12 +2924,12 @@ fn departing_settings_keeps_mode_input_with_the_painted_page_until_return_settle
     assert!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().page_overlay()).is_none());
     assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)),
         "clearing the snapshot overlay cannot activate the departing page early");
-    rig.cx.simulate_keystrokes("cmd-.");
+    rig.cx.simulate_keystrokes("secondary-.");
     rig.draw();
     assert_eq!(rig.route(), page_route("RelationLabel"));
     rig.settle();
     assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)));
-    rig.keys("cmd-.");
+    rig.keys("secondary-.");
     assert_eq!(rig.route(), view_route("RelationLabel", View::Code));
 }
 
@@ -3199,7 +3193,7 @@ fn graph_view_intents_survive_settings_but_reject_competing_content_bursts(cx: &
 #[gpui::test]
 fn every_graph_keyboard_page_or_code_command_uses_current_b(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
-    for (key, view) in [("g", View::Page), ("ctrl-3", View::Page), ("ctrl-4", View::Code), ("cmd-.", View::Code), ("s", View::Code)] {
+    for (key, view) in [("g", View::Page), ("ctrl-3", View::Page), ("ctrl-4", View::Code), ("secondary-.", View::Code), ("s", View::Code)] {
         rig.go(Intent::Navigate(view_route("RelationLabel", View::Graph)));
         rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
         rig.settle();
@@ -3229,11 +3223,11 @@ fn back_from_an_opened_page_restores_the_same_world_camera_and_focus(cx: &mut Te
     let before = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx));
     rig.keys("g");
     assert_eq!(rig.route(), indexed_view_route("RelationDirection", View::Page));
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert_eq!(rig.route(), Route::World);
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)), before,
         "the original World visit's map entity, focus and camera survive Back from its page");
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert!(matches!(rig.route(), Route::Orbit(_)));
     rig.keys("g");
     assert_eq!(rig.route(), Route::World);
@@ -3291,8 +3285,8 @@ fn the_zoom_keys_move_this_display_only_and_persist(cx: &mut TestAppContext) {
     let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
     let scale = |rig: &mut Rig| rig.cx.update(|_, cx| facet::ActiveFacet::facet(cx).text_scale);
     assert!((scale(&mut rig) - 1.0).abs() < 1e-6);
-    rig.keys("cmd-=");
-    rig.keys("cmd-=");
+    rig.keys("secondary-=");
+    rig.keys("secondary-=");
     assert!((scale(&mut rig) - 1.25).abs() < 1e-6, "{}", scale(&mut rig));
     let zoom = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().zoom.clone());
     assert_eq!(zoom.percent(&display), 125);
@@ -3301,9 +3295,9 @@ fn the_zoom_keys_move_this_display_only_and_persist(cx: &mut TestAppContext) {
     let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
     let persisted = crate::model::PersistentState::project(&snapshot);
     assert_eq!(persisted.zoom.get(display.as_ref()), Some(&2));
-    rig.keys("cmd--");
+    rig.keys("secondary--");
     assert!((scale(&mut rig) - 1.1).abs() < 1e-6);
-    rig.keys("cmd-0");
+    rig.keys("secondary-0");
     assert!((scale(&mut rig) - 1.0).abs() < 1e-6);
     // ⌘− no longer surfaces: the route stayed put.
     assert_eq!(rig.route(), page_route("RelationLabel"));

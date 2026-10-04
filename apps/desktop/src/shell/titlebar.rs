@@ -1035,7 +1035,7 @@ mod auxiliary_subject_tests {
         let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
         native(&mut rig);
         let route = rig.route();
-        rig.keys("cmd-,");
+        rig.keys("secondary-,");
         let settings = overlay(&mut rig);
         assert!(matches!(settings, Some(Overlay::Settings(_))));
         assert_auxiliary_capsule(&mut rig, "Settings");
@@ -1056,7 +1056,7 @@ mod auxiliary_subject_tests {
         click_target(&mut rig, "jump-seg-1", false);
         assert!(rig.cx.update(|window, cx| menu_open(window, cx)));
         let route = rig.route();
-        rig.keys("cmd-,");
+        rig.keys("secondary-,");
         let settings = overlay(&mut rig);
         assert!(matches!(settings, Some(Overlay::Settings(_))));
         assert!(rig.cx.update(|window, cx| menu_open(window, cx)), "the menu remains the top input owner");
@@ -1064,7 +1064,7 @@ mod auxiliary_subject_tests {
         assert!(!rig.cx.update(|window, cx| menu_open(window, cx)));
         assert_eq!(overlay(&mut rig), settings, "one native Escape must not also dismiss its underlay");
         assert_eq!(rig.route(), route);
-        rig.keys("cmd-k");
+        rig.keys("secondary-k");
         assert_eq!(overlay(&mut rig), Some(Overlay::CommandPalette), "popup focus return keeps native dispatch alive");
         rig.keys("escape");
         assert_eq!(overlay(&mut rig), settings);
@@ -1081,13 +1081,13 @@ mod auxiliary_subject_tests {
             } else { click_target(&mut rig, "jump-seg-1", false); }
             assert!(rig.cx.update(|window, cx| menu_open(window, cx)));
             let route = rig.route();
-            rig.keys("cmd-,");
+            rig.keys("secondary-,");
             let settings = overlay(&mut rig);
             assert!(matches!(settings, Some(Overlay::Settings(_))));
             rig.keys("enter");
             assert_eq!(overlay(&mut rig), settings, "a covered subject cannot admit a captured menu action");
             assert_eq!(rig.route(), route);
-            rig.keys("cmd-k");
+            rig.keys("secondary-k");
             assert_eq!(overlay(&mut rig), Some(Overlay::CommandPalette));
         }
     }
@@ -1098,13 +1098,13 @@ mod auxiliary_subject_tests {
         native(&mut rig);
         let history = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.clone());
         let route = rig.route();
-        rig.keys("cmd-,");
+        rig.keys("secondary-,");
         click_target(&mut rig, "jump-back", false);
         assert_eq!(overlay(&mut rig), None);
         assert_eq!(rig.route(), route);
         assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.clone()), history,
             "closing Settings cannot consume content history");
-        rig.keys("cmd-k");
+        rig.keys("secondary-k");
         assert_eq!(overlay(&mut rig), Some(Overlay::CommandPalette));
     }
 }

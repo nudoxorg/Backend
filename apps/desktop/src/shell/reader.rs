@@ -3328,7 +3328,7 @@ mod transit_tests {
         // `said`): what the page says includes what it painted.
         let opened = shoot(&mut rig, 0, 0);
         let page: Vec<String> = rig.said().into_iter().chain(reading(&opened).map(|text| text.text.to_string())).collect();
-        let shots = film(&mut rig, |rig| rig.cx.simulate_keystrokes("cmd-["), 1000);
+        let shots = film(&mut rig, |rig| rig.cx.simulate_keystrokes("secondary-["), 1000);
         assert!(matches!(rig.route(), Route::Package(_)), "back came home");
         // The package page's cards paint their words themselves (they are not
         // in `said`): what the parent says includes what it painted once home.
@@ -3434,7 +3434,7 @@ mod transit_tests {
         let _ = shoot(&mut rig, 0, 0);
         let open = film_at(&mut rig, |rig| rig.cx.simulate_click(link, gpui::Modifiers::none()), &[0, 40, 80, 120, 160, 240, 320, 400]);
         rig.settle();
-        let close = film_at(&mut rig, |rig| rig.cx.simulate_keystrokes("cmd-["), &[0, 40, 80, 120, 160, 240, 320, 700, 1000]);
+        let close = film_at(&mut rig, |rig| rig.cx.simulate_keystrokes("secondary-["), &[0, 40, 80, 120, 160, 240, 320, 700, 1000]);
         let frame = |shot: &Shot| {
             let rect = |b: Bounds<Pixels>| serde_json::json!([f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)]);
             serde_json::json!({
@@ -3629,7 +3629,7 @@ mod transit_tests {
         let mut shots = film(&mut rig, |rig| rig.cx.simulate_keystrokes("enter"), 112);
         let before = shots.last().and_then(|shot| shot.p).expect("opening");
         assert!(before > 0.6 && before < 0.8, "p(112) = {before}");
-        rig.cx.simulate_keystrokes("cmd-[");
+        rig.cx.simulate_keystrokes("secondary-[");
         shots.push(shoot(&mut rig, 128, 16));
         let turned = shots.last().and_then(|shot| shot.p).expect("the same driver");
         assert!((turned - before).abs() < 0.12, "no jump: {before:.3} then {turned:.3}");
@@ -3794,13 +3794,13 @@ mod transit_ledger {
         let acts: Vec<(&str, Act)> = vec![
             ("route-down orbit→package", navigate(package.clone())),
             ("route-down package→symbol (RelationLabel)", navigate(page_route("RelationLabel"))),
-            ("back symbol→package (⌘[)", key("cmd-[")),
-            ("forward package→symbol (⌘])", key("cmd-]")),
+            ("back symbol→package (⌘[)", key("secondary-[")),
+            ("forward package→symbol (⌘])", key("secondary-]")),
             ("across symbol→symbol (KindGlyph)", navigate(page_route("KindGlyph"))),
-            ("back across (⌘[)", key("cmd-[")),
-            ("view page→code (⌘.)", key("cmd-.")),
-            ("view code→page (⌘.)", key("cmd-.")),
-            ("route-up (⌘↑)", key("cmd-up")),
+            ("back across (⌘[)", key("secondary-[")),
+            ("view page→code (⌘.)", key("secondary-.")),
+            ("view code→page (⌘.)", key("secondary-.")),
+            ("route-up (⌘↑)", key("secondary-up")),
             ("route-down package→symbol (again)", navigate(page_route("RelationLabel"))),
             ("graph-enter (G)", key("g")),
             ("graph-exit (route view=page)", navigate(page_route("RelationLabel"))),

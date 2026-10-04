@@ -126,7 +126,7 @@ fn pressing_the_button_opens_the_dialog_with_the_cursor_in_the_field(cx: &mut Te
 fn command_o_opens_the_dialog_and_escape_closes_it_and_gives_focus_back(cx: &mut TestAppContext) {
     let mut rig = first_run(cx, 1440.0);
     let before = rig.cx.update(|window, cx| window.focused(cx));
-    rig.keys("cmd-o");
+    rig.keys("secondary-o");
     assert_eq!(overlay(&mut rig), Some(Overlay::AddProject), "⌘O reaches the same state the button does");
     assert!(dialog_open(&mut rig));
     rig.keys("escape");
@@ -140,7 +140,7 @@ fn typing_a_path_lists_the_folders_it_continues_to_and_a_project_says_what_it_is
     let (parent, folder) = project("typing");
     std::fs::create_dir_all(parent.join("toml_extra")).expect("sibling");
     let mut rig = first_run(cx, 1440.0);
-    rig.keys("cmd-o");
+    rig.keys("secondary-o");
     type_in(&mut rig, &format!("{}/tom", parent.display()));
     let words = drawn(&mut rig);
     for expected in ["toml_extra", "toml_pin", "Rust"] {
@@ -200,7 +200,7 @@ fn enter_adds_the_folder_and_lands_on_the_library_saying_what_it_is_doing(cx: &m
 fn a_path_that_names_no_folder_is_refused_in_place_and_the_refusal_goes_with_the_next_edit(cx: &mut TestAppContext) {
     let (parent, _) = project("refuse");
     let mut rig = first_run(cx, 1440.0);
-    rig.keys("cmd-o");
+    rig.keys("secondary-o");
     let missing = format!("{}/nowhere", parent.display());
     type_in(&mut rig, &missing);
     rig.keys("enter");
@@ -218,7 +218,7 @@ fn a_folder_already_on_the_shelf_is_gone_to_not_added_twice(cx: &mut TestAppCont
     let mut rig = first_run(cx, 1440.0);
     let id = crate::core::LocalProjectId::from_path(&folder).expect("identity");
     rig.go(Intent::AddProject { project: id.clone() });
-    rig.keys("cmd-o");
+    rig.keys("secondary-o");
     type_in(&mut rig, &format!("{}/toml_pin", parent.display()));
     assert!(
         drawn(&mut rig).iter().any(|line| line == "toml_pin is on your shelf already. ↵ goes to it."),
@@ -233,7 +233,7 @@ fn a_folder_already_on_the_shelf_is_gone_to_not_added_twice(cx: &mut TestAppCont
 fn tab_takes_the_folder_the_text_continues_to(cx: &mut TestAppContext) {
     let (parent, _) = project("tab");
     let mut rig = first_run(cx, 1440.0);
-    rig.keys("cmd-o");
+    rig.keys("secondary-o");
     type_in(&mut rig, &format!("{}/tom", parent.display()));
     rig.keys("tab");
     let field = rig.cx.update(|window, cx| super::field(window, cx)).expect("field");
@@ -244,7 +244,7 @@ fn tab_takes_the_folder_the_text_continues_to(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_dialog_fits_a_phone_and_says_the_same_things(cx: &mut TestAppContext) {
     let mut rig = first_run(cx, 320.0);
-    rig.keys("cmd-o");
+    rig.keys("secondary-o");
     let words = drawn(&mut rig);
     assert!(
         words.iter().any(|line| line == "Type or paste the path of a folder."),
@@ -394,13 +394,13 @@ fn native_second_folder_submit_has_one_accessible_focus_owner_through_pending_an
             window.set_a11y_forced(true);
         });
         rig.settle();
-        rig.keys("cmd-o"); type_in(&mut rig, &format!("{}/toml_pin", first_parent.display()));
+        rig.keys("secondary-o"); type_in(&mut rig, &format!("{}/toml_pin", first_parent.display()));
         rig.keys("enter");
         assert_eq!(phases(&mut rig), [ProjectPhase::Ready]);
         assert!(rig.cx.update(|window, cx| window.focused(cx).is_some()),
             "the submitted native field hands keyboard dispatch to a live window owner");
         release.set(false);
-        rig.keys("cmd-o");
+        rig.keys("secondary-o");
         assert_eq!(overlay(&mut rig), Some(Overlay::AddProject), "the second native shortcut reopens the folder dialog");
         let field = rig.cx.update(|window, cx| super::field(window, cx)).expect("mounted input");
         assert!(rig.cx.update(|window, cx| field.read(cx).focus_handle(cx).is_focused(window)),
@@ -432,7 +432,7 @@ fn native_second_folder_submit_has_one_accessible_focus_owner_through_pending_an
         release.set(true); rig.settle();
         assert_eq!(phases(&mut rig), [ProjectPhase::Ready, ProjectPhase::Ready]);
         assert_eq!(snapshot(&mut rig).workspace().active.as_ref(), Some(&crate::core::LocalProjectId::from_path(&second_folder).expect("identity")));
-        rig.keys("cmd-o");
+        rig.keys("secondary-o");
         assert_eq!(overlay(&mut rig), Some(Overlay::AddProject), "native keyboard remains usable after ready publication");
         rig.keys("escape");
         std::fs::remove_dir_all(first_parent).expect("clean first fixture");

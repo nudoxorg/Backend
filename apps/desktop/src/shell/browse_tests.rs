@@ -769,14 +769,14 @@ fn mounted_compare_native_choices_survive_back_forward_without_reusing_visit_act
     assert!(comparison.facts, "actual native facts toggle changes visit intent");
     assert!(rig.said().iter().any(|words| words.contains("Source")), "expanded facts paint");
     rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert_eq!(rig.route(), route);
     let restored = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     assert_eq!(restored.id, before.id);
     assert_eq!(restored.presentation, before.presentation);
     assert!(rig.said().iter().any(|words| words == "Hide package facts"), "Back remounts expanded native facts panel");
-    rig.keys("cmd-]");
+    rig.keys("secondary-]");
     assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Home));
-    rig.keys("cmd-[");
+    rig.keys("secondary-[");
     assert!(rig.said().iter().any(|words| words == "Hide package facts"));
 }
