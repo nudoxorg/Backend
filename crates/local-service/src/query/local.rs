@@ -3,7 +3,9 @@ use backend_extension_tantivy as lexical;
 use backend_extension_trustfall::{
     SemanticQueryCorpus, SemanticQueryEvidence, SemanticQueryFact, SemanticQueryPresentation,
 };
-use backend_semantic::{Entity, EntityId, Source, ir::SemanticCoreReader};
+use backend_semantic::{Entity, EntityId, Source};
+#[cfg(test)]
+use backend_semantic::ir::SemanticCoreReader;
 use backend_version::{CoverageWitness, RelationState};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
