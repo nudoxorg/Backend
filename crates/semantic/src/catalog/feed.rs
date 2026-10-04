@@ -3,9 +3,9 @@
 use crate::index_ingest::Checkpoint;
 
 /// Maximum UTF-8 byte length admitted for a durable feed identity.
-pub const MAX_FEED_ID_BYTES: usize = 160;
+pub(crate) const MAX_FEED_ID_BYTES: usize = 160;
 /// Maximum UTF-8 byte length admitted for an opaque registry cursor or validator.
-pub const MAX_FEED_TOKEN_BYTES: usize = 2_048;
+pub(crate) const MAX_FEED_TOKEN_BYTES: usize = 2_048;
 
 /// A validated stable identity for one independently polled registry feed.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

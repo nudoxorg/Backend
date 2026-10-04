@@ -8,9 +8,15 @@ use crate::vocabulary::{FrontendError, Language, NativeTool, Stage};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdapterRoute {
     /// The caller must invoke this concrete, already selected native adapter.
-    Native { tool: NativeTool },
+    Native {
+        /// Native compiler adapter selected for the language and stage.
+        tool: NativeTool,
+    },
     /// The selected adapter is intentionally unavailable in this build or host recipe.
-    ToolingUnavailable { tool: NativeTool },
+    ToolingUnavailable {
+        /// Adapter that the language and stage select but this build or host cannot invoke.
+        tool: NativeTool,
+    },
 }
 
 /// The single static language/stage dispatch boundary for compilation.

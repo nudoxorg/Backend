@@ -5,8 +5,8 @@
 
 use core::{cmp::Ordering, ops::Deref};
 
-use backend_version::{ContentHasher, FixedCanonicalRecord, IndexLexicalSegmentDomain};
 use crate::index_vocabulary::LexicalSegmentId;
+use backend_version::{ContentHasher, FixedCanonicalRecord, IndexLexicalSegmentDomain};
 
 use crate::index_core::document::{ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId};
 
@@ -29,7 +29,7 @@ pub const MAX_LEXICAL_ROWS: usize = 4096;
 pub const MAX_LEXICAL_PAYLOAD_BYTES: usize = MAX_LEXICAL_ROWS * MAX_LEXICAL_ROW_PAYLOAD_BYTES;
 
 /// Per-row term payload budget inside one lexical segment.
-pub const MAX_LEXICAL_ROW_PAYLOAD_BYTES: usize = 256;
+pub(crate) const MAX_LEXICAL_ROW_PAYLOAD_BYTES: usize = 256;
 
 const CANONICAL_CHUNK_BYTES: usize = 32;
 

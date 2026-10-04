@@ -14,7 +14,7 @@
 //! target**: sealing with and without dependencies loaded is byte-identical,
 //! so `display` is excluded from the key digest.
 
-use core::ops::Deref;
+use core::{mem::size_of, ops::Deref};
 
 use backend_version::{
     ContentId, DeclarationFamilyDomain, DeclarationKeyDomain, DeclarationVariantDomain,
@@ -273,11 +273,15 @@ pub enum DeclarationKeyFault {
 pub struct DeclarationFamilyId([u8; 16]);
 
 impl DeclarationFamilyId {
+    /// Reconstitutes the compact family identity from its raw 16-byte payload.
+    /// This does not hash or validate the supplied bytes.
     #[must_use]
     pub const fn from_raw(bytes: [u8; 16]) -> Self {
         Self(bytes)
     }
 
+    /// Hashes the canonical family preimage in `DeclarationFamilyDomain` and
+    /// retains its compact 16-byte identity payload.
     /// Narrows one dedicated declaration-family digest for the compact live
     /// IR lane. The domain remains present in the full content identity at
     /// the mint boundary; this compact value is never a source digest.
@@ -294,6 +298,7 @@ impl DeclarationFamilyId {
         Self(compact_identity_payload(value.as_ref()))
     }
 
+    /// Returns the compact 16-byte family payload, without a content-domain tag.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
@@ -306,17 +311,22 @@ impl DeclarationFamilyId {
 pub struct VariantFingerprint([u8; 16]);
 
 impl VariantFingerprint {
+    /// Reconstitutes the structural fingerprint from its raw 16-byte payload.
+    /// This does not hash or validate the supplied bytes.
     #[must_use]
     pub const fn from_raw(bytes: [u8; 16]) -> Self {
         Self(bytes)
     }
 
+    /// Hashes the canonical declaration-variant preimage in
+    /// `DeclarationVariantDomain` and retains its compact 16-byte payload.
     #[must_use]
     pub fn from_canonical_bytes(bytes: &[u8]) -> Self {
         let digest = ContentId::<DeclarationVariantDomain>::from_canonical_bytes(bytes);
         Self(compact_identity_payload(digest.as_ref()))
     }
 
+    /// Returns the compact 16-byte structural fingerprint payload.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
@@ -331,11 +341,15 @@ impl VariantFingerprint {
 pub struct ForeignDeclarationId([u8; 16]);
 
 impl ForeignDeclarationId {
+    /// Reconstitutes the unresolved foreign-key fingerprint from its raw
+    /// 16-byte payload, without deriving or validating it.
     #[must_use]
     pub const fn from_raw(bytes: [u8; 16]) -> Self {
         Self(bytes)
     }
 
+    /// Hashes the canonical foreign-key preimage in `ForeignDeclarationDomain`
+    /// and retains its compact 16-byte fingerprint.
     #[must_use]
     pub fn from_canonical_bytes(bytes: &[u8]) -> Self {
         Self::from_content_id(ContentId::<ForeignDeclarationDomain>::from_canonical_bytes(
@@ -350,6 +364,7 @@ impl ForeignDeclarationId {
         Self(compact_identity_payload(value.as_ref()))
     }
 
+    /// Returns the compact 16-byte foreign-key fingerprint payload.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
@@ -359,14 +374,18 @@ impl ForeignDeclarationId {
 /// Exact current-generation local declaration endpoint.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DeclarationIdentity {
+    /// Stable declaration family shared by structurally distinct instances such as overloads.
     pub family: DeclarationFamilyId,
+    /// Structural fingerprint distinguishing this exact declaration instance within its family.
     pub variant: VariantFingerprint,
 }
 
 /// Variant knowledge retained for an unresolved foreign declaration.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum VariantAvailability {
+    /// The foreign target's exact structural declaration fingerprint is known.
     Known(VariantFingerprint),
+    /// The target is unresolved and no variant fingerprint was available to record.
     Unavailable,
 }
 
@@ -375,6 +394,7 @@ pub enum VariantAvailability {
 pub struct ExternalDeclarationIdentity {
     /// Exact unresolved foreign-key fingerprint, never a local family.
     pub foreign: ForeignDeclarationId,
+    /// Known target variant, or an explicit marker that its variant is unavailable.
     pub variant: VariantAvailability,
 }
 
@@ -401,7 +421,7 @@ impl StableRef {
     pub const CANONICAL_BYTES: usize = 64;
 }
 
-const _: () = assert!(core::mem::size_of::<StableRef>() == StableRef::CANONICAL_BYTES);
+const _: () = assert!(size_of::<StableRef>() == StableRef::CANONICAL_BYTES);
 
 /// Where an unresolved foreign target lives.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

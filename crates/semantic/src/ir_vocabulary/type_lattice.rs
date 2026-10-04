@@ -131,8 +131,11 @@ pub enum SemanticTypeTag {
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum FunctionVariadicForm {
+    /// No variadic argument tail is present.
     None = 0,
+    /// The final parameter child is a typed rest parameter and retains its type.
     TypedLast = 1,
+    /// C-style `...` accepts additional arguments without a typed rest child.
     CUnbounded = 2,
 }
 
@@ -154,8 +157,11 @@ impl TryFrom<u32> for FunctionVariadicForm {
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ChannelDirection {
+    /// Values may be both sent to and received from the channel (`chan T`).
     Both = 0,
+    /// Values may be sent to the channel but not received (`chan<- T`).
     Send = 1,
+    /// Values may be received from the channel but not sent (`<-chan T`).
     Receive = 2,
 }
 

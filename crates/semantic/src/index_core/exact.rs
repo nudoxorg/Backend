@@ -5,8 +5,8 @@
 
 use core::ops::Deref;
 
-use backend_version::{ContentHasher, FixedCanonicalRecord, IndexExactSegmentDomain};
 use crate::index_vocabulary::ExactSegmentId;
+use backend_version::{ContentHasher, FixedCanonicalRecord, IndexExactSegmentDomain};
 
 /// Maximum number of rows admitted by one exact segment view.
 ///
@@ -31,7 +31,7 @@ pub const MAX_EXACT_ROWS: usize = 4096;
 pub const MAX_EXACT_PAYLOAD_BYTES: usize = MAX_EXACT_ROWS * MAX_EXACT_ROW_PAYLOAD_BYTES;
 
 /// Per-row key-plus-value payload budget inside one exact segment.
-pub const MAX_EXACT_ROW_PAYLOAD_BYTES: usize = 256;
+pub(crate) const MAX_EXACT_ROW_PAYLOAD_BYTES: usize = 256;
 
 const CANONICAL_CHUNK_BYTES: usize = 32;
 
