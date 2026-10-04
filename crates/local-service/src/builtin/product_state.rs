@@ -3515,7 +3515,8 @@ mod tests {
     use super::*;
     use backend_engine::registry::{
         DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryFact, DiscoveryObservedAt,
-        DiscoverySourceIdentity, DiscoveryStanding, RegistryEndpoint,
+        DiscoverySourceEvent, DiscoveryStanding, RegistryEndpoint,
+        discovery_source_identity,
     };
     use backend_engine::{
         AdvisoryPackageDto, DependencyAuthority, DependencyEvidence, DependencyFacts,
@@ -4641,16 +4642,18 @@ mod tests {
         let path = root.join("discovery.journal");
         let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://index.crates.io")
             .expect("Cargo discovery source");
-        let source = DiscoverySourceIdentity::from_endpoint(&endpoint);
+        let source = discovery_source_identity(&endpoint);
         let observed = DiscoveryObservedAt::from_unix_millis(discovery_now());
         let mut discovery = DiscoveryStore::open(path).expect("discovery journal");
         let discovery_coordinate =
             backend_engine::ProductPackageCoordinate::parse("pkg:cargo/needle@1.0.0")
                 .expect("discovered coordinate");
         let discovery_cursor = DiscoveryCursor::new(b"1".to_vec()).expect("cursor");
+        let expected_base_sequence = discovery.sequence(source).unwrap_or(0);
         discovery
             .commit(DiscoveryBatch {
                 source,
+                expected_base_sequence,
                 previous_cursor: DiscoveryCursor::default(),
                 next_cursor: discovery_cursor.clone(),
                 source_high_watermark: discovery_cursor,
@@ -4662,6 +4665,7 @@ mod tests {
                     coordinate: discovery_coordinate,
                     standing: DiscoveryStanding::Yanked,
                     observed_at: observed,
+                    source_event: DiscoverySourceEvent::Snapshot,
                     source_event_time: None,
                     proof: [0x51; 32],
                     metadata: backend_engine::registry::DiscoveryMetadata::default(),
@@ -4987,16 +4991,18 @@ mod tests {
         let path = root.join("discovery.journal");
         let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://index.crates.io")
             .expect("Cargo discovery source");
-        let source = DiscoverySourceIdentity::from_endpoint(&endpoint);
+        let source = discovery_source_identity(&endpoint);
         let observed = DiscoveryObservedAt::from_unix_millis(discovery_now());
         let coordinate =
             backend_engine::ProductPackageCoordinate::parse("pkg:cargo/rare-needle@2.0.0")
                 .expect("discovered coordinate");
         let cursor = |value: &str| DiscoveryCursor::new(value.as_bytes().to_vec()).expect("cursor");
         let mut discovery = DiscoveryStore::open(path.clone()).expect("discovery journal");
+        let expected_base_sequence = discovery.sequence(source).unwrap_or(0);
         discovery
             .commit(DiscoveryBatch {
                 source,
+                expected_base_sequence,
                 previous_cursor: DiscoveryCursor::default(),
                 next_cursor: cursor("1"),
                 source_high_watermark: cursor("1"),
@@ -5008,6 +5014,7 @@ mod tests {
                     coordinate,
                     standing: DiscoveryStanding::Yanked,
                     observed_at: observed,
+                    source_event: DiscoverySourceEvent::Snapshot,
                     source_event_time: None,
                     proof: [7; 32],
                     metadata: backend_engine::registry::DiscoveryMetadata::default(),
@@ -5110,7 +5117,7 @@ mod tests {
         let path = root.join("discovery.journal");
         let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://index.crates.io")
             .expect("Cargo discovery source");
-        let source = DiscoverySourceIdentity::from_endpoint(&endpoint);
+        let source = discovery_source_identity(&endpoint);
         let now = discovery_now();
         let old_observation = now.saturating_sub(DISCOVERY_FRESHNESS_MILLIS + 1);
         let old = DiscoveryObservedAt::from_unix_millis(old_observation);
@@ -5124,16 +5131,19 @@ mod tests {
             .expect("coordinate"),
             standing: DiscoveryStanding::Published,
             observed_at,
+            source_event: DiscoverySourceEvent::Snapshot,
             source_event_time: None,
             proof: [1; 32],
             metadata: backend_engine::registry::DiscoveryMetadata::default(),
         };
-        let batch = |previous_cursor: DiscoveryCursor,
+        let batch = |expected_base_sequence: u64,
+                     previous_cursor: DiscoveryCursor,
                      next_cursor: DiscoveryCursor,
                      observed_at: DiscoveryObservedAt,
                      facts: Vec<DiscoveryFact>| {
             DiscoveryBatch {
                 source,
+                expected_base_sequence,
                 previous_cursor,
                 next_cursor: next_cursor.clone(),
                 source_high_watermark: next_cursor,
@@ -5146,16 +5156,20 @@ mod tests {
         };
 
         let mut discovery = DiscoveryStore::open(path.clone()).expect("open discovery journal");
+        let expected_base_sequence = discovery.sequence(source).unwrap_or(0);
         discovery
             .commit(batch(
+                expected_base_sequence,
                 DiscoveryCursor::default(),
                 cursor("1"),
                 old,
                 vec![fact("alpha-widget", old), fact("beta-widget", old)],
             ))
             .expect("persist first complete observation");
+        let expected_base_sequence = discovery.sequence(source).unwrap_or(0);
         discovery
             .commit(batch(
+                expected_base_sequence,
                 cursor("1"),
                 cursor("2"),
                 current,

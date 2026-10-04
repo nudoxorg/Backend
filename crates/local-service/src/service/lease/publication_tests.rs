@@ -523,11 +523,19 @@ fn rewriting_wire(
         },
         rewrite: Box::new(rewrite),
     };
+    let accepted = Arc::new(AtomicUsize::new(0));
     let mut config = ListenerConfig::new(&endpoint);
     config.poll_interval = Duration::from_millis(1);
     config.idle_timeout = None;
     let service = LocaldService::new(owner, FrameLimits::default()).expect("service");
-    let mut listener = UnixListenerService::bind(service, config).expect("bind");
+    let mut listener = UnixListenerService::bind_with_peer_policy(
+        service,
+        config,
+        Arc::new(CountingPolicy {
+            accepted: Arc::clone(&accepted),
+        }),
+    )
+    .expect("bind");
     let shutdown = listener.shutdown_handle();
     let thread = std::thread::spawn(move || {
         let _ = listener.run();
@@ -535,6 +543,7 @@ fn rewriting_wire(
     RewritingWire {
         clock: Arc::clone(clock),
         ledger,
+        accepted,
         endpoint,
         shutdown,
         thread: Some(thread),
@@ -544,6 +553,7 @@ fn rewriting_wire(
 struct RewritingWire {
     clock: Arc<ManualClock>,
     ledger: Arc<Mutex<Ledger>>,
+    accepted: Arc<AtomicUsize>,
     endpoint: PathBuf,
     shutdown: ListenerShutdown,
     thread: Option<JoinHandle<()>>,
@@ -554,6 +564,26 @@ impl RewritingWire {
         LocalSubscriptionTransport::connect(&self.endpoint)
             .expect("an authenticated connection")
             .with_clock(self.clock.clone())
+    }
+
+    fn ledger(&self) -> Ledger {
+        *self.ledger.lock().expect("ledger")
+    }
+
+    /// Waits (in real time, bounded) for the owner thread to publish a state.
+    fn wait_until(&self, what: &str, reached: impl Fn(&Ledger) -> bool) -> Ledger {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let ledger = self.ledger();
+            if reached(&ledger) {
+                return ledger;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "owner never reached: {what}: {ledger:?}"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
 }
 

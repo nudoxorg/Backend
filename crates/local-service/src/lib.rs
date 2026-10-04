@@ -16,6 +16,9 @@ mod embedded;
 pub mod listener;
 pub mod process;
 pub mod protocol;
+/// Helpers for tests that exercise owner-controlled private state.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 /// Durable registry acquisition is an engine effect composed by local-service.
 pub use backend_engine::registry;
 pub(crate) mod reconcile;

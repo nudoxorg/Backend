@@ -1733,7 +1733,7 @@ mod tests {
         };
         let item = TreeItemInput {
             name: b"shape",
-            kind: ItemKind::Variable,
+            kind: ItemKind::Record,
             visibility: Visibility::Private,
             authority: EntityAuthorityFacts {
                 parentage: ParentageAuthority::Root,

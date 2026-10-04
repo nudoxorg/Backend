@@ -2423,7 +2423,7 @@ mod tests {
             RegistryEcosystem::Pypi => "pypi",
             RegistryEcosystem::Golang => "golang",
             RegistryEcosystem::Maven => "maven",
-            RegistryEcosystem::Generic => panic!("not a registry feed ecosystem"),
+            RegistryEcosystem::Cpp => "generic",
         };
         DiscoveryFact {
             source,
@@ -2947,22 +2947,28 @@ mod tests {
             Some("00000000000000000001"),
             DiscoveryStanding::Published,
         );
-        assert_eq!(
-            classify_fact_transition(&npm_snapshot, &npm_event),
-            Ok(DiscoveryFactTransition::Newer),
+        assert!(
+            matches!(
+                classify_fact_transition(&npm_snapshot, &npm_event),
+                Ok(DiscoveryFactTransition::Newer)
+            ),
             "a typed feed event may replace a local snapshot baseline under CAS"
         );
-        assert_eq!(
-            classify_fact_transition(&npm_event, &npm_snapshot),
-            Err(DiscoveryStoreError::Conflict),
+        assert!(
+            matches!(
+                classify_fact_transition(&npm_event, &npm_snapshot),
+                Err(DiscoveryStoreError::Conflict)
+            ),
             "typed provenance may never be downgraded to a snapshot"
         );
         let mut changed_snapshot = npm_snapshot.clone();
         changed_snapshot.metadata.description =
             DiscoveryFacet::Known("changed snapshot".to_owned());
-        assert_eq!(
-            classify_fact_transition(&npm_snapshot, &changed_snapshot),
-            Ok(DiscoveryFactTransition::Newer),
+        assert!(
+            matches!(
+                classify_fact_transition(&npm_snapshot, &changed_snapshot),
+                Ok(DiscoveryFactTransition::Newer)
+            ),
             "the accepted local sequence CAS orders successive unsequenced snapshots"
         );
 
@@ -2975,15 +2981,17 @@ mod tests {
         let mut changed_cargo_snapshot = cargo_snapshot.clone();
         changed_cargo_snapshot.metadata.description =
             DiscoveryFacet::Known("new snapshot body".to_owned());
-        assert_eq!(
-            classify_fact_transition(&cargo_snapshot, &changed_cargo_snapshot),
-            Ok(DiscoveryFactTransition::Newer),
+        assert!(
+            matches!(
+                classify_fact_transition(&cargo_snapshot, &changed_cargo_snapshot),
+                Ok(DiscoveryFactTransition::Newer)
+            ),
             "a genuine unsequenced snapshot source advances only under its accepted local CAS"
         );
-        assert_eq!(
+        assert!(matches!(
             classify_fact_transition(&cargo_snapshot, &cargo_snapshot),
             Ok(DiscoveryFactTransition::Identical)
-        );
+        ));
     }
 
     #[test]

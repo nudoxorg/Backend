@@ -12,7 +12,7 @@ use super::state::{LeasePhase, ReleaseReason};
 use super::tests::{SECOND, ScriptedSource, reset_reply, term};
 use crate::builtin::{EmptyOwner, open_empty_owner};
 use crate::listener::{ListenerConfig, UnixListenerService};
-use crate::protocol::{EngineRequest, EngineStatus, FrameLimits};
+use crate::protocol::{EngineRequest, EngineStatus, FrameLimits, ProtocolError};
 use crate::service::{CommandOutcome, DeferredCommands, LocaldService, OwnerService};
 use crate::test_support::socket_path;
 use backend_client::lease_contract::PUBLICATION_LEASE;
