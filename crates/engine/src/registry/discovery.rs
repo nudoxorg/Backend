@@ -17,12 +17,17 @@ use super::{PackageCoordinate, RegistryEndpoint};
 
 pub use backend_library::{
     CratesSparseDependency, CratesSparseFeature, CratesSparseMetadata, DiscoveryAdvisory,
-    DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryError, DiscoveryFacet,
-    DiscoveryFact, DiscoveryMetadata, DiscoveryObservedAt, DiscoveryPackageRetraction,
-    DiscoverySourceEvent, DiscoverySourceIdentity, DiscoveryStanding, DiscoveryTimestamp,
+    DiscoveryAdvisorySummary, DiscoveryBatch, DiscoveryBatchDraft, DiscoveryCargoDependencySummary,
+    DiscoveryCargoSparseSummary, DiscoveryCompleteness, DiscoveryCursor, DiscoveryError,
+    DiscoveryFacet, DiscoveryFact, DiscoveryFactCore, DiscoveryFactMetadataSummary,
+    DiscoveryMetadata, DiscoveryMetadataFacetState, DiscoveryMetadataPage,
+    DiscoveryMetadataPageCursor, DiscoveryMetadataRow, DiscoveryMetadataSection,
+    DiscoveryObservedAt, DiscoveryPackageRetraction, DiscoverySelectedHead, DiscoverySourceEvent,
+    DiscoverySourceIdentity, DiscoveryStanding, DiscoveryTimestamp,
     MAX_DISCOVERY_BATCH_ENCODED_BYTES, MAX_DISCOVERY_COMMIT_ID_BYTES, MAX_DISCOVERY_CURSOR_BYTES,
-    MAX_DISCOVERY_EVENT_TEXT_BYTES, MAX_DISCOVERY_PAGE_ITEMS, MAX_DISCOVERY_PROJECTS,
-    MAX_DISCOVERY_REVISION_BYTES,
+    MAX_DISCOVERY_EVENT_TEXT_BYTES, MAX_DISCOVERY_METADATA_PAGE_ENCODED_BYTES,
+    MAX_DISCOVERY_METADATA_PAGE_ROWS, MAX_DISCOVERY_PAGE_ITEMS, MAX_DISCOVERY_PROJECTS,
+    MAX_DISCOVERY_REVISION_BYTES, RegistryFactReadError, RegistryFactVersionId,
 };
 
 /// Derives the neutral discovery source identity from an admitted endpoint.
@@ -270,12 +275,10 @@ pub fn parse_npm_changes_page(
             (Vec::new(), false)
         } else if let Some(document) = document {
             let document_revision = document.get("_rev").and_then(serde_json::Value::as_str);
-            if let (Some(row_revision), Some(document_revision)) =
-                (revision.as_deref(), document_revision)
+            if let Some(row_revision) = revision.as_deref()
+                && document_revision != Some(row_revision)
             {
-                if row_revision != document_revision {
-                    return Err(DiscoveryError::Protocol);
-                }
+                return Err(DiscoveryError::Protocol);
             }
             let doc_name = document
                 .get("name")
@@ -640,7 +643,9 @@ pub fn parse_pypi_project_metadata(
             } else {
                 DiscoveryStanding::Published
             },
-            source_event_time: published_at,
+            // Upload time describes the release, not an ordered PyPI feed event.
+            // It remains available through metadata.published_at.
+            source_event_time: None,
             proof,
             metadata,
         });
@@ -663,31 +668,69 @@ fn parse_pypi_advisories(
         .iter()
         .map(|value| {
             let object = value.as_object().ok_or(DiscoveryError::Protocol)?;
-            let id = required_text(object, "id")?.to_owned();
-            let aliases = object
-                .get("aliases")
-                .and_then(serde_json::Value::as_array)
-                .map(|aliases| {
-                    aliases
-                        .iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default();
-            Ok(DiscoveryAdvisory {
-                id,
-                aliases,
-                summary: optional_text_facet(object, "details"),
-                severity: DiscoveryFacet::Unknown,
-                fixed_in: match object.get("fixed_in") {
-                    Some(serde_json::Value::Array(values)) => DiscoveryFacet::Known(
-                        values
+            let id = required_text(object, "id")?;
+            if id.len() > 256 {
+                return Err(DiscoveryError::Bounds);
+            }
+            let id = id.to_owned();
+            let aliases = match object.get("aliases") {
+                None => DiscoveryFacet::Unknown,
+                Some(serde_json::Value::Null) => DiscoveryFacet::Absent,
+                Some(serde_json::Value::Array(aliases)) => {
+                    if aliases.len() > 32
+                        || aliases.iter().any(|alias| {
+                            alias.as_str().is_none_or(|alias| {
+                                alias.is_empty() || alias.len() > 256 || alias.contains('\0')
+                            })
+                        })
+                    {
+                        return Err(DiscoveryError::Bounds);
+                    }
+                    DiscoveryFacet::Known(
+                        aliases
                             .iter()
                             .filter_map(serde_json::Value::as_str)
                             .map(str::to_owned)
                             .collect(),
-                    ),
+                    )
+                }
+                Some(_) => return Err(DiscoveryError::Protocol),
+            };
+            let summary = match object.get("details") {
+                None => DiscoveryFacet::Unknown,
+                Some(serde_json::Value::Null) => DiscoveryFacet::Absent,
+                Some(serde_json::Value::String(summary))
+                    if summary.len() <= 4096 && !summary.contains('\0') =>
+                {
+                    DiscoveryFacet::Known(summary.clone())
+                }
+                Some(serde_json::Value::String(_)) => return Err(DiscoveryError::Bounds),
+                Some(_) => DiscoveryFacet::Unknown,
+            };
+            Ok(DiscoveryAdvisory {
+                id,
+                aliases,
+                summary,
+                severity: DiscoveryFacet::Unknown,
+                fixed_in: match object.get("fixed_in") {
+                    Some(serde_json::Value::Array(values)) => {
+                        if values.len() > 128
+                            || values.iter().any(|value| {
+                                value.as_str().is_none_or(|value| {
+                                    value.is_empty() || value.len() > 256 || value.contains('\0')
+                                })
+                            })
+                        {
+                            return Err(DiscoveryError::Bounds);
+                        }
+                        DiscoveryFacet::Known(
+                            values
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .map(str::to_owned)
+                                .collect(),
+                        )
+                    }
                     Some(serde_json::Value::Null) => DiscoveryFacet::Absent,
                     Some(_) => DiscoveryFacet::Unknown,
                     None => DiscoveryFacet::Unknown,
@@ -1042,7 +1085,9 @@ pub fn parse_nuget_catalog_index(
             let timestamp = required_text(item, "commitTimeStamp")?.to_owned();
             let commit_id = required_text(item, "commitId")?.to_owned();
             let url = required_text(item, "@id")?.to_owned();
-            let timestamp_value = nuget_cursor(&timestamp, &commit_id)?.timestamp;
+            let timestamp_value = parse_nuget_cursor(&nuget_cursor(&timestamp, &commit_id)?)?
+                .ok_or(DiscoveryError::Protocol)?
+                .timestamp;
             let count = item
                 .get("count")
                 .and_then(serde_json::Value::as_u64)
@@ -2328,12 +2373,18 @@ mod tests {
             .find(|release| release.coordinate.as_str() == "pkg:pypi/my-pkg@1.0")
             .expect("older release");
         assert_eq!(old.standing, DiscoveryStanding::Yanked);
+        assert_eq!(old.source_event_time, None);
+        assert_eq!(
+            old.metadata.published_at,
+            DiscoveryFacet::Known("2025-01-01T00:00:00Z".to_owned())
+        );
         let latest = project
             .releases
             .iter()
             .find(|release| release.coordinate.as_str() == "pkg:pypi/my-pkg@2.0")
             .expect("latest release");
         assert_eq!(latest.standing, DiscoveryStanding::Published);
+        assert_eq!(latest.source_event_time, None);
         assert_eq!(
             latest.metadata.description,
             DiscoveryFacet::Known("Small parser".to_owned())
@@ -2343,9 +2394,26 @@ mod tests {
         };
         assert_eq!(advisories[0].id, "GHSA-abcd-1234");
         assert_eq!(
+            advisories[0].aliases,
+            DiscoveryFacet::Known(vec!["CVE-2026-12345".to_owned()])
+        );
+        assert_eq!(
             advisories[0].fixed_in,
             DiscoveryFacet::Known(vec!["2.0".to_owned()])
         );
+    }
+
+    #[test]
+    fn pypi_advisory_aliases_preserve_missing_null_and_known_empty() {
+        let advisories = parse_pypi_advisories(&[
+            serde_json::json!({"id":"unknown"}),
+            serde_json::json!({"id":"absent","aliases":null}),
+            serde_json::json!({"id":"empty","aliases":[]}),
+        ])
+        .expect("advisory alias facets");
+        assert_eq!(advisories[0].aliases, DiscoveryFacet::Unknown);
+        assert_eq!(advisories[1].aliases, DiscoveryFacet::Absent);
+        assert_eq!(advisories[2].aliases, DiscoveryFacet::Known(Vec::new()));
     }
 
     #[test]
@@ -2417,7 +2485,7 @@ mod tests {
                 coordinate,
                 standing: DiscoveryStanding::Published,
                 observed_at: DiscoveryObservedAt::from_unix_millis(10),
-                source_event: DiscoverySourceEvent::Unordered,
+                source_event: DiscoverySourceEvent::Snapshot,
                 source_event_time: None,
                 proof: [1; 32],
                 metadata: DiscoveryMetadata::default(),

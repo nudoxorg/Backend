@@ -194,12 +194,17 @@ pub use rich_graph::{
 };
 pub use source_discovery::{
     CratesSparseDependency, CratesSparseFeature, CratesSparseMetadata, DiscoveryAdvisory,
-    DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryError, DiscoveryFacet,
-    DiscoveryFact, DiscoveryMetadata, DiscoveryObservedAt, DiscoveryPackageRetraction,
-    DiscoverySourceEvent, DiscoverySourceIdentity, DiscoveryStanding, DiscoveryTimestamp,
+    DiscoveryAdvisorySummary, DiscoveryBatch, DiscoveryBatchDraft, DiscoveryCargoDependencySummary,
+    DiscoveryCargoSparseSummary, DiscoveryCompleteness, DiscoveryCursor, DiscoveryError,
+    DiscoveryFacet, DiscoveryFact, DiscoveryFactCore, DiscoveryFactMetadataSummary,
+    DiscoveryMetadata, DiscoveryMetadataFacetState, DiscoveryMetadataPage,
+    DiscoveryMetadataPageCursor, DiscoveryMetadataRow, DiscoveryMetadataSection,
+    DiscoveryObservedAt, DiscoveryPackageRetraction, DiscoverySelectedHead, DiscoverySourceEvent,
+    DiscoverySourceIdentity, DiscoveryStanding, DiscoveryTimestamp,
     MAX_DISCOVERY_BATCH_ENCODED_BYTES, MAX_DISCOVERY_COMMIT_ID_BYTES, MAX_DISCOVERY_CURSOR_BYTES,
-    MAX_DISCOVERY_EVENT_TEXT_BYTES, MAX_DISCOVERY_PAGE_ITEMS, MAX_DISCOVERY_PROJECTS,
-    MAX_DISCOVERY_REVISION_BYTES,
+    MAX_DISCOVERY_EVENT_TEXT_BYTES, MAX_DISCOVERY_METADATA_PAGE_ENCODED_BYTES,
+    MAX_DISCOVERY_METADATA_PAGE_ROWS, MAX_DISCOVERY_PAGE_ITEMS, MAX_DISCOVERY_PROJECTS,
+    MAX_DISCOVERY_REVISION_BYTES, RegistryFactReadError, RegistryFactVersionId,
 };
 pub use surface::{
     DeclarationChange, DeclarationRecord, DiffRecord, ForgeDiscoveryCandidate, ForgeFact,
