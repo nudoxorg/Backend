@@ -1,0 +1,35 @@
+{
+  "kind": "UNACCEPTED_SOURCE_RECOVERY_CHECKPOINT",
+  "created_utc": "2026-10-04T15:35:50.732380+00:00",
+  "label": "gui-scroll-intent-in-progress",
+  "branch": "codex/checkpoint-gui-scroll-intent-in-progress-20261004T153550Z",
+  "worktree": "/private/tmp/nudox-gui-shelf-reader-integration-20261004",
+  "parent": "8ee5951186d2f18106c2f3c3d63357322c37b90f",
+  "merge_parents": [],
+  "working_source_tree": "e94bd6c6f902dd7fc417fc844bb2717c12b1c5cc",
+  "description": "Frozen in-progress Reader scroll ownership and Ask native occlusion fixes, atop the committed Shelf/Reader composition and Root vendored list cursor repair. Source recovery only; new interleaving tests, full Root review, Rust/native GUI validation remain pending.",
+  "changed_paths": [
+    "apps/desktop/src/shell/reader.rs",
+    "apps/desktop/src/shell/root.rs"
+  ],
+  "source_sha256": {
+    "apps/desktop/src/shell/reader.rs": "9962d60725a05c2629663f53bb6c7714191a9027367c7f32a8dd2df0fde8d973",
+    "apps/desktop/src/shell/root.rs": "2f25013831ba393b84f9b2828005682cc039f7bf9b8d22ae91539a2e34de0d7d"
+  },
+  "untracked_source_paths": [],
+  "original_index_sha256": "700c8b72f51ed7a617a6139478b94fcb94793d553a99a97997570e358498f043",
+  "original_index_stages_sha256": "49eaba1dc31c8e8f68cd9444286e09634694b6c24083637843fb810d9abc8efd",
+  "original_status_sha256": "459aa2208ec70c902c37fd2128d6bf7a0289595cca8b17106f264dd70d685e72",
+  "preserved_index_blobs": [
+    "c7c4440b3dae404644f3f8344bc46124db2b85be",
+    "f0f52b059b514b31216fcf1ba8672db5a4f5e6ea"
+  ],
+  "related_slice_checkpoints": [],
+  "evidence": {},
+  "acceptance": {
+    "full_root_review": false,
+    "combined_cargo_validation": false,
+    "native_gui_validation": false,
+    "release_or_deployment": false
+  }
+}
