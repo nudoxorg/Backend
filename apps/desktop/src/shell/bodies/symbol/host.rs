@@ -431,6 +431,8 @@ mod doc_link_tests {
     use super::*;
     use std::sync::Arc;
 
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     fn link(target: &SymbolRef) -> DocFragment {
         DocFragment::Link {
             label: Arc::from("advance_signal"),
@@ -440,9 +442,9 @@ mod doc_link_tests {
     }
 
     #[test]
-    fn producer_target_disambiguates_same_named_function_and_reexport_without_a_path() {
-        let function = SymbolRef::new("/abs/project::semantic::00ff::advance_signal").unwrap();
-        let reexport = SymbolRef::new("/abs/project::semantic::11ff::advance_signal").unwrap();
+    fn producer_target_disambiguates_same_named_function_and_reexport_without_a_path() -> TestResult {
+        let function = SymbolRef::new("/abs/project::semantic::00ff::advance_signal")?;
+        let reexport = SymbolRef::new("/abs/project::semantic::11ff::advance_signal")?;
         assert!(function.identity().path().is_none());
         let mut links = DocLinks::default();
         links.fragments(&[link(&function), link(&reexport)]);
@@ -451,19 +453,20 @@ mod doc_link_tests {
                 panic!("producer coordinate must remain semantic")
             };
             assert_eq!(&actual, exact);
-            let route = symbol_route("/abs/project", &actual).unwrap();
+            let route = symbol_route("/abs/project", &actual).ok_or("producer declaration route")?;
             let crate::navigation::Route::Symbol(route) = route else {
                 panic!("declaration route")
             };
             assert_eq!(route.id.as_str(), exact.as_str());
             assert_eq!(route.package.as_str(), "/abs/project");
         }
+        Ok(())
     }
 
     #[test]
-    fn old_or_unresolved_coordinates_are_not_text_searches() {
-        let old = SymbolRef::new("/abs/project::semantic::00ff::advance_signal").unwrap();
-        let current = SymbolRef::new("/abs/project::semantic::22ff::advance_signal").unwrap();
+    fn old_or_unresolved_coordinates_are_not_text_searches() -> TestResult {
+        let old = SymbolRef::new("/abs/project::semantic::00ff::advance_signal")?;
+        let current = SymbolRef::new("/abs/project::semantic::22ff::advance_signal")?;
         let mut links = DocLinks::default();
         links.fragments(&[link(&current)]);
         assert!(links.resolve(old.as_str()).is_none());
@@ -498,17 +501,17 @@ mod doc_link_tests {
             );
         }
         assert!(ExternalUri::parse("javascript:alert(1)").is_none());
+        Ok(())
     }
 
     #[test]
-    fn displayed_coordinate_keeps_the_producers_alternate_release_receipt() {
-        let pinned = crate::model::pages::PackageRef::parse("pkg:cargo/demo@1.0.0").unwrap();
-        let alternate = crate::model::pages::PackageRef::parse("pkg:cargo/demo@2.0.0")
-            .unwrap()
+    fn displayed_coordinate_keeps_the_producers_alternate_release_receipt() -> TestResult {
+        let pinned = crate::model::pages::PackageRef::parse("pkg:cargo/demo@1.0.0")?;
+        let alternate = crate::model::pages::PackageRef::parse("pkg:cargo/demo@2.0.0")?
             .with_release_origin(&pinned);
         let symbol =
-            SymbolRef::new("pkg:cargo/demo@1.0.0::semantic::00ff::advance_signal").unwrap();
-        let target = symbol.rebased(&pinned, &alternate).unwrap();
+            SymbolRef::new("pkg:cargo/demo@1.0.0::semantic::00ff::advance_signal")?;
+        let target = symbol.rebased(&pinned, &alternate).ok_or("alternate-release symbol receipt")?;
         let mut links = DocLinks::default();
         links.fragments(&[link(&target)]);
         let Some(DocDestination::Declaration(actual)) = links.resolve(target.as_str()) else {
@@ -516,21 +519,22 @@ mod doc_link_tests {
         };
         assert_eq!(actual, target);
         assert_eq!(actual.release_origin(), Some(pinned.as_str()));
+        Ok(())
     }
 
     #[test]
-    fn identical_display_coordinates_with_conflicting_release_receipts_are_inert() {
-        let package = crate::model::pages::PackageRef::parse("pkg:cargo/demo@2.0.0").unwrap();
-        let first_pin = crate::model::pages::PackageRef::parse("pkg:cargo/demo@1.0.0").unwrap();
-        let second_pin = crate::model::pages::PackageRef::parse("pkg:cargo/demo@1.1.0").unwrap();
+    fn identical_display_coordinates_with_conflicting_release_receipts_are_inert() -> TestResult {
+        let package = crate::model::pages::PackageRef::parse("pkg:cargo/demo@2.0.0")?;
+        let first_pin = crate::model::pages::PackageRef::parse("pkg:cargo/demo@1.0.0")?;
+        let second_pin = crate::model::pages::PackageRef::parse("pkg:cargo/demo@1.1.0")?;
         let coordinate =
-            SymbolRef::new("pkg:cargo/demo@2.0.0::semantic::00ff::advance_signal").unwrap();
+            SymbolRef::new("pkg:cargo/demo@2.0.0::semantic::00ff::advance_signal")?;
         let first = coordinate
             .rebased(&package, &package.clone().with_release_origin(&first_pin))
-            .unwrap();
+            .ok_or("first release-origin receipt")?;
         let second = coordinate
             .rebased(&package, &package.clone().with_release_origin(&second_pin))
-            .unwrap();
+            .ok_or("second release-origin receipt")?;
         assert_eq!(first.as_str(), second.as_str());
         assert_ne!(
             first, second,
@@ -553,14 +557,21 @@ mod doc_link_tests {
             reversed.resolve(first.as_str()).is_none(),
             "producer order cannot choose authority"
         );
+        Ok(())
     }
 
     #[gpui::test]
     fn a_mounted_symbol_door_rejects_a_callback_from_the_previous_reader_visit(
         cx: &mut gpui::TestAppContext,
     ) {
-        let pool = crate::runtime::reads::ReadPool::start(2, |_| super::super::page_tests::Pinned)
-            .unwrap();
+        let result = check_mounted_symbol_door_rejects_previous_reader_visit(cx);
+        assert!(result.is_ok(), "mounted symbol door fixture failed: {result:?}");
+    }
+
+    fn check_mounted_symbol_door_rejects_previous_reader_visit(
+        cx: &mut gpui::TestAppContext,
+    ) -> TestResult {
+        let pool = crate::runtime::reads::ReadPool::start(2, |_| super::super::page_tests::Pinned)?;
         let mut rig = crate::shell::tests::rig_with_reads(
             cx,
             Some(super::super::page_tests::route("de.rs", 2709, "from_str")),
@@ -600,5 +611,6 @@ mod doc_link_tests {
             later,
             "a stale mounted door cannot replace the later Reader visit"
         );
+        Ok(())
     }
 }

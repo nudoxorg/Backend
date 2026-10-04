@@ -446,10 +446,9 @@ mod fragment_spacing_tests {
     use std::sync::Arc;
 
     #[test]
-    fn inline_fragment_boundaries_preserve_spaces_and_punctuation() {
+    fn inline_fragment_boundaries_preserve_spaces_and_punctuation() -> Result<(), crate::model::pages::KeyError> {
         let coordinate =
-            crate::model::pages::SymbolRef::new("/abs/project::semantic::00ff::advance_signal")
-                .unwrap();
+            crate::model::pages::SymbolRef::new("/abs/project::semantic::00ff::advance_signal")?;
         let fragments = [
             DocFragment::Text(Arc::from("Use ")),
             DocFragment::Link {
@@ -478,6 +477,7 @@ mod fragment_spacing_tests {
             DocFragment::plain_text(&fragments),
             "Use advance_signal, then wait()."
         );
+        Ok(())
     }
 
     #[test]

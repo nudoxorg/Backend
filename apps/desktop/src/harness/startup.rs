@@ -511,12 +511,14 @@ mod tests {
                 let panicked = threaded("test-panicking-worker", Progress::default(), cx.background_executor(), || -> Result<(), String> {
                     panic!("synthetic fixture panic");
                 }).await;
-                assert_eq!(panicked.unwrap_err(), "test-panicking-worker panicked during fixture preparation: synthetic fixture panic");
+                assert_eq!(panicked.err().as_deref(), Some("test-panicking-worker panicked during fixture preparation: synthetic fixture panic"));
 
                 let completion = Completion::default();
                 let progress = Progress::default();
                 fail_spawn::<()>("injected-worker", std::io::Error::new(std::io::ErrorKind::Other, "injected spawn failure"), progress.clone(), completion.clone());
-                assert_eq!(completion.0.lock().expect("completion lock").result.as_ref().unwrap().as_ref().unwrap_err(), "could not start injected-worker: injected spawn failure");
+                assert_eq!(completion.0.lock().expect("completion lock").result.as_ref()
+                    .and_then(|result| result.as_ref().err()).map(String::as_str),
+                    Some("could not start injected-worker: injected spawn failure"));
                 assert!(progress.0.lock().expect("progress lock").closed);
                 let _ = startup.update(cx, |startup, cx| { startup.loading = None; cx.notify(); });
             }));

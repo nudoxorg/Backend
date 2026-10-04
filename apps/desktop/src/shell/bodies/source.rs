@@ -1774,7 +1774,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_utf8_line_is_paged_without_omitting_a_character() {
+    fn a_long_utf8_line_is_paged_without_omitting_a_character() -> Result<(), Box<dyn std::error::Error>> {
         let original = format!("{}\ntail", "é".repeat(80_000));
         let source = text(original);
         let mut cursor = SourceCursor { line: 1, byte: 0 };
@@ -1785,10 +1785,13 @@ mod tests {
             assert!(!page.lines.is_empty());
             for line in &page.lines {
                 assert!(
-                    usize::try_from(line.span.end - line.span.start).unwrap()
+                    usize::try_from(line.span.end - line.span.start)?
                         <= MAX_SOURCE_LINE_BYTES
                 );
-                reconstructed.push_str(source.text().get(line.span.range()).unwrap());
+                reconstructed.push_str(
+                    source.text().get(line.span.range())
+                        .ok_or("paged source span must remain within UTF-8 boundaries")?,
+                );
                 if !line.more_in_line && line.number == 1 {
                     reconstructed.push('\n');
                 }
@@ -1800,6 +1803,7 @@ mod tests {
             cursor = next;
         }
         assert_eq!(reconstructed, source.text());
+        Ok(())
     }
 
     #[test]

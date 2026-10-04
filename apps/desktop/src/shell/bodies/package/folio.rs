@@ -687,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_and_reopen_retarget_the_retained_carry_without_a_pose_or_velocity_jump() {
+    fn escape_and_reopen_retarget_the_retained_carry_without_a_pose_or_velocity_jump() -> Result<(), &'static str> {
         let start = Instant::now();
         let stone = stone();
         let mut nav = Nav {
@@ -701,28 +701,31 @@ mod tests {
         };
 
         let close_at = at(start, 120);
-        let opening_pose = nav.flight.as_ref().unwrap().carry.sample(close_at);
+        let opening_pose = nav.flight.as_ref().ok_or("opening module carry")?.carry.sample(close_at);
         close_module(&mut nav, close_at);
-        let closing_pose = nav.flight.as_ref().unwrap().carry.sample(close_at);
+        let closing = nav.flight.as_ref().ok_or("closing module carry")?;
+        let closing_pose = closing.carry.sample(close_at);
         assert!((closing_pose.0 - opening_pose.0).abs() < 1e-5);
         assert!((closing_pose.1 - opening_pose.1).abs() < 1e-4);
-        assert_eq!(nav.flight.as_ref().unwrap().carry.target(), 0.0);
-        assert_eq!(nav.flight.as_ref().unwrap().stones[0], stone);
+        assert_eq!(closing.carry.target(), 0.0);
+        assert_eq!(closing.stones[0], stone);
 
         let reopen_at = at(start, 180);
-        let before_reopen = nav.flight.as_ref().unwrap().carry.sample(reopen_at);
+        let before_reopen = closing.carry.sample(reopen_at);
         request_module(&mut nav, "sync".into(), Some("Mutex".into()), reopen_at);
-        let after_reopen = nav.flight.as_ref().unwrap().carry.sample(reopen_at);
+        let reopened = nav.flight.as_ref().ok_or("reopened module carry")?;
+        let after_reopen = reopened.carry.sample(reopen_at);
         assert!((after_reopen.0 - before_reopen.0).abs() < 1e-5);
         assert!((after_reopen.1 - before_reopen.1).abs() < 1e-4);
-        assert_eq!(nav.flight.as_ref().unwrap().carry.target(), 1.0);
+        assert_eq!(reopened.carry.target(), 1.0);
         assert_eq!(nav.open.as_deref(), Some("sync"));
         assert_eq!(nav.lit.as_deref(), Some("Mutex"));
-        assert!(nav.flight.as_ref().unwrap().carry.value(at(start, 1200)) > 0.99);
+        assert!(reopened.carry.value(at(start, 1200)) > 0.99);
+        Ok(())
     }
 
     #[test]
-    fn changing_modules_finishes_the_old_return_before_starting_the_queued_carry() {
+    fn changing_modules_finishes_the_old_return_before_starting_the_queued_carry() -> Result<(), &'static str> {
         let start = Instant::now();
         let destination = stone();
         let mut nav = Nav {
@@ -740,17 +743,19 @@ mod tests {
         request_module(&mut nav, "io".into(), Some("Read".into()), changed_at);
         assert_eq!(nav.open, None);
         assert_eq!(nav.pending.as_ref().map(|pending| pending.module.as_ref()), Some("io"));
-        assert_eq!(nav.flight.as_ref().unwrap().carry.target(), 0.0);
+        assert_eq!(nav.flight.as_ref().ok_or("returning old module carry")?.carry.target(), 0.0);
 
         let landed_at = at(start, 1200);
         finish_carry(&mut nav, landed_at, false);
         assert_eq!(nav.open.as_deref(), Some("io"));
         assert_eq!(nav.lit.as_deref(), Some("Read"));
         assert!(nav.pending.is_none());
-        assert_eq!(nav.flight.as_ref().unwrap().module.as_ref(), "io");
-        assert_eq!(nav.flight.as_ref().unwrap().stones[0], destination);
-        assert_eq!(nav.flight.as_ref().unwrap().carry.target(), 1.0);
-        assert_eq!(nav.flight.as_ref().unwrap().carry.value(landed_at), 0.0);
+        let landed = nav.flight.as_ref().ok_or("queued destination module carry")?;
+        assert_eq!(landed.module.as_ref(), "io");
+        assert_eq!(landed.stones[0], destination);
+        assert_eq!(landed.carry.target(), 1.0);
+        assert_eq!(landed.carry.value(landed_at), 0.0);
+        Ok(())
     }
 
     #[test]
@@ -773,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn leaving_for_a_symbol_returns_the_module_carry_and_restores_it_on_back() {
+    fn leaving_for_a_symbol_returns_the_module_carry_and_restores_it_on_back() -> Result<(), &'static str> {
         let start = Instant::now();
         let mut nav = Nav {
             open: Some("sync".into()),
@@ -787,20 +792,21 @@ mod tests {
         };
 
         let left_at = at(start, 120);
-        let pose = nav.flight.as_ref().unwrap().carry.sample(left_at);
+        let pose = nav.flight.as_ref().ok_or("module carry before leaving for a symbol")?.carry.sample(left_at);
         leave_for_symbol(&mut nav, left_at);
         assert_eq!(nav.open, None);
         assert_eq!(nav.pending.as_ref().and_then(|pending| pending.lit.as_deref()), Some("Mutex"));
-        assert_eq!(nav.flight.as_ref().unwrap().carry.sample(left_at), pose);
+        assert_eq!(nav.flight.as_ref().ok_or("module carry after leaving for a symbol")?.carry.sample(left_at), pose);
 
         finish_carry(&mut nav, at(start, 1200), false);
         assert_eq!(nav.open.as_deref(), Some("sync"));
         assert_eq!(nav.lit.as_deref(), Some("Mutex"));
         assert!(nav.flight.is_none());
+        Ok(())
     }
 
     #[test]
-    fn changing_release_retargets_the_retained_carry_back_to_the_new_map() {
+    fn changing_release_retargets_the_retained_carry_back_to_the_new_map() -> Result<(), &'static str> {
         let start = Instant::now();
         let mut nav = Nav {
             open: Some("sync".into()),
@@ -814,16 +820,18 @@ mod tests {
         };
 
         let changed_at = at(start, 120);
-        let pose = nav.flight.as_ref().unwrap().carry.sample(changed_at);
+        let pose = nav.flight.as_ref().ok_or("module carry before changing release")?.carry.sample(changed_at);
         read_release(&mut nav, Some("2.0".into()), changed_at);
         assert_eq!(nav.open, None);
         assert_eq!(nav.reading_at.as_deref(), Some("2.0"));
-        assert_eq!(nav.flight.as_ref().unwrap().carry.target(), 0.0);
-        assert_eq!(nav.flight.as_ref().unwrap().carry.sample(changed_at).0, pose.0);
+        let returning = nav.flight.as_ref().ok_or("retained module carry after changing release")?;
+        assert_eq!(returning.carry.target(), 0.0);
+        assert_eq!(returning.carry.sample(changed_at).0, pose.0);
 
         finish_carry(&mut nav, at(start, 1200), false);
         assert!(nav.flight.is_none());
         assert!(nav.pending.is_none());
+        Ok(())
     }
 }
 

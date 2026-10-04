@@ -14,6 +14,13 @@ use std::sync::{Arc, Mutex};
 /// the chosen project's typed route, which Back can return from.
 #[gpui::test]
 fn two_project_tiles_offer_exact_tree_routes_and_back_returns_to_library(cx: &mut TestAppContext) {
+    let result = check_two_project_tiles_offer_exact_tree_routes_and_back_returns_to_library(cx);
+    assert!(result.is_ok(), "project tree route fixture failed: {result:?}");
+}
+
+fn check_two_project_tiles_offer_exact_tree_routes_and_back_returns_to_library(
+    cx: &mut TestAppContext,
+) -> Result<(), Box<dyn std::error::Error>> {
     use crate::core::LocalProjectId;
     use crate::model::{ProjectPhase, WorkspaceProject};
     use crate::navigation::{BrowseRoute, Intent};
@@ -21,17 +28,17 @@ fn two_project_tiles_offer_exact_tree_routes_and_back_returns_to_library(cx: &mu
 
     let mut rig = super::tests::rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1000.0, 800.0);
     rig.cx.update(|_, cx| facet::probe::enable(cx));
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?;
     let folders = [
         root.join("frontends/rust/fixtures/toml_pin"),
         root.join("apps/desktop/tests/fixtures/browse_tree"),
     ];
     let projects = folders.iter().map(|path| {
-        let id = LocalProjectId::from_path(path).unwrap();
+        let id = LocalProjectId::from_path(path)?;
         let mut project = WorkspaceProject::indexing_with_id(id);
         project.phase = ProjectPhase::Ready;
-        project
-    }).collect::<Vec<_>>();
+        Ok(project)
+    }).collect::<Result<Vec<_>, crate::core::IdentityError>>()?;
     let chosen = projects[1].id.clone();
     let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
     let mut workspace = snapshot.workspace().clone();
@@ -44,13 +51,15 @@ fn two_project_tiles_offer_exact_tree_routes_and_back_returns_to_library(cx: &mu
     let targets: Vec<_> = ledger.targets.iter().filter(|target| target.key.starts_with("orbit-tree-")).collect();
     assert_eq!(targets.len(), 2, "both real folders have a tree route: {targets:#?}");
     let wanted = format!("orbit-tree-{}", chosen.as_str());
-    let target = targets.iter().find(|target| target.key == wanted).unwrap();
+    let target = targets.iter().find(|target| target.key == wanted)
+        .ok_or("chosen project's native tree target")?;
     let at = target.bounds.clone();
     rig.cx.simulate_click(point(px(at.x + at.width / 2.0), px(at.y + at.height / 2.0)), Modifiers::default());
     rig.settle();
     assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(chosen))));
     rig.go(Intent::Back);
     assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Home));
+    Ok(())
 }
 
 /// The fixture's pages, with a Library whose packages are what `packages`

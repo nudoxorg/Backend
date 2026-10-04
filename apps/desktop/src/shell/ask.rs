@@ -1089,7 +1089,7 @@ mod tests {
         assert_eq!(admitted.query().map(|query| query.text.as_ref()),
             Some(at_limit.as_str()));
         assert_eq!(QueryDraft::parse(&"🧭".repeat(257)), QueryDraft::Rejected(QueryReject::TooLong));
-        assert!(QueryDraft::parse(&"🧭".repeat(257)).status().unwrap().len() < 80);
+        assert!(QueryDraft::parse(&"🧭".repeat(257)).status().is_some_and(|status| status.len() < 80));
     }
 
     #[test]

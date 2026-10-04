@@ -1340,14 +1340,14 @@ fn package_card_reading_names_and_native_actions_follow_the_current_owner_attach
             && node["aria"]["label"].as_str() == Some("RelationLabel")
     }).expect("the actual existing card control owns the name");
     assert!(node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action.as_str() == Some("Click"))));
-    assert!(!tree["nodes"].as_object().unwrap().values().any(|node| {
+    assert!(tree["nodes"].as_object().is_some_and(|nodes| !nodes.values().any(|node| {
         matches!(node["aria"]["role"].as_str(), Some("Label" | "Heading"))
             && node["aria"]["label"].as_str() == Some("RelationLabel")
-    }), "the painted card name must not become a duplicate reading label");
-    assert!(rig.cx.update(|window, _| window.a11y_tree().unwrap().nodes.iter().any(|(_, node)| {
+    })), "the painted card name must not become a duplicate reading label");
+    assert!(rig.cx.update(|window, _| window.a11y_tree().is_some_and(|tree| tree.nodes.iter().any(|(_, node)| {
         node.role() == gpui::Role::Label && node.label() == Some("enum")
             && !node.supports_action(gpui::AccessibleAction::SetValue)
-    })), "the actual card kind word is noneditable native reading");
+    }))), "the actual card kind word is noneditable native reading");
     let old = gpui::accesskit::NodeId(node_id.parse().expect("native node id"));
     // No UI watcher, repaint or new typed read may run between publication
     // of the new real attachment and delivery to the old mounted handler.
