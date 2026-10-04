@@ -1,0 +1,130 @@
+{
+  "all_five_packet_file_hashes_verified_remotely": true,
+  "all_six_review_script_hashes_verified_remotely": true,
+  "alternate_runtime_inventory": "read-only; Nix Python3.14.6 and Apple/Xcode Python3.9.6 found; no substitute/retry used",
+  "candidate_build_receipt_absent": true,
+  "candidate_commit": "9a896bf197aed9028e9dbf14f0532eb00daad077",
+  "candidate_release_absent": true,
+  "captured_utc": "2026-10-04T10:41Z through 10:44Z",
+  "files": {
+    "local-preflight.txt": {
+      "bytes": 1654,
+      "mode": "0o600",
+      "sha256": "f448f6d54e59182dd3eba732a50b8e6038d0153a44cd3d8bc65e910ff4d3472a"
+    },
+    "python-executable.exit": {
+      "bytes": 2,
+      "mode": "0o600",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    "python-executable.stderr": {
+      "bytes": 0,
+      "mode": "0o600",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "python-executable.stdout": {
+      "bytes": 567,
+      "mode": "0o600",
+      "sha256": "f72c90f6b69a9fbeb79e9eb8ff04b17c0ad8efe3f38ca55ffe6a574ff4756ec1"
+    },
+    "python-runtime-details.exit": {
+      "bytes": 2,
+      "mode": "0o600",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    "python-runtime-details.stderr": {
+      "bytes": 0,
+      "mode": "0o600",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "python-runtime-details.stdout": {
+      "bytes": 3212,
+      "mode": "0o600",
+      "sha256": "8f1e41818962edebc6e59ed0b07c033a0c54ca50e8f625e8d1451ed9df9a8e26"
+    },
+    "python-runtime-inventory.exit": {
+      "bytes": 2,
+      "mode": "0o600",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    "python-runtime-inventory.stderr": {
+      "bytes": 110,
+      "mode": "0o600",
+      "sha256": "6764c8af03d5c49c114954a4681f80a2c8d2ce7497b940e68a90312ba2d72217"
+    },
+    "python-runtime-inventory.stdout": {
+      "bytes": 249,
+      "mode": "0o600",
+      "sha256": "556cd4ac5b8ada8dc38bd850d4a651350c2a58ef018f942e42e78b4652121df1"
+    },
+    "remote-directory-setup.exit": {
+      "bytes": 2,
+      "mode": "0o600",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    "remote-input-hashes.exit": {
+      "bytes": 2,
+      "mode": "0o600",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    "remote-input-hashes.stderr": {
+      "bytes": 22,
+      "mode": "0o600",
+      "sha256": "d234a590a113d9e4d198eb2fc367de515833ef7d3aebb5ce3e5525dccf2176c7"
+    },
+    "remote-input-hashes.stdout": {
+      "bytes": 2039,
+      "mode": "0o600",
+      "sha256": "baf503472e0ae29d95e381c855538b33c949a0a5af6216e6973043b7e16cb269"
+    },
+    "scp-packet.exit": {
+      "bytes": 2,
+      "mode": "0o600",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    "scp-packet.stderr": {
+      "bytes": 0,
+      "mode": "0o600",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "scp-packet.stdout": {
+      "bytes": 0,
+      "mode": "0o600",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "scp-review.exit": {
+      "bytes": 2,
+      "mode": "0o600",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    "scp-review.stderr": {
+      "bytes": 0,
+      "mode": "0o600",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "scp-review.stdout": {
+      "bytes": 0,
+      "mode": "0o600",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "source-stage.exit": {
+      "bytes": 4,
+      "mode": "0o600",
+      "sha256": "743c7850cccfba5e53a9002663ec1ddd1079315a98bdbfdde10e6044f56abefe"
+    },
+    "source-stage.stderr": {
+      "bytes": 113,
+      "mode": "0o600",
+      "sha256": "b25fb9535bd74d1512ceb522282ad7e4d33a318166ff59d737232cf4b3d600bd"
+    },
+    "source-stage.stdout": {
+      "bytes": 0,
+      "mode": "0o600",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "remote": "h16001mac",
+  "source_base_modified": false,
+  "source_staging": "not_started; pinned shell bin/python3 was absent; attempted command exit 127 before invoking prepare_candidate.py",
+  "transfer": "completed"
+}

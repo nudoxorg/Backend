@@ -446,6 +446,44 @@ impl CandidateAttemptRetirementReason {
     pub(super) const fn sql_code(self) -> i64 {
         self as i64
     }
+
+    /// Reads a persisted terminal code; an unknown code is corruption, never a
+    /// default reason.
+    pub(super) const fn from_sql_code(code: i64) -> Option<Self> {
+        match code {
+            1 => Some(Self::Cancelled),
+            2 => Some(Self::Refused),
+            3 => Some(Self::Failed),
+            4 => Some(Self::Superseded),
+            _ => None,
+        }
+    }
+}
+
+/// What the authority durably knows about one exact compiler attempt.
+///
+/// An owner that dies between selecting a generation, projecting it and telling
+/// its client has only the attempt's recovery claim after restart. This is the
+/// authoritative answer to "what happened to that attempt": it is read from one
+/// transactional snapshot, bound to every fence field of the claim, and never
+/// guessed from the presence of a package or from a failed re-submission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AttemptDisposition {
+    /// The attempt is still the latest one for its observation and selected
+    /// head. Nothing terminal has happened; it may be reopened with
+    /// [`super::TursoAuthority::recover_candidate_attempt`] and completed.
+    Pending,
+    /// A newer attempt, a newer source observation or a moved selected head
+    /// fenced the attempt, so it can never publish. No terminal record exists
+    /// yet; retiring it records [`CandidateAttemptRetirementReason::Superseded`].
+    Fenced,
+    /// The attempt's candidate was selected. This is the exact immutable
+    /// history entry written in the same transaction that consumed the attempt.
+    Published(SelectedGeneration),
+    /// The attempt ended without publishing, for the recorded reason.
+    Retired(CandidateAttemptRetirementReason),
+    /// The authority has no record of this attempt identity.
+    Unrecorded,
 }
 
 impl CandidateAttemptRecoveryClaim {

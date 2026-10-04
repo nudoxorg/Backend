@@ -75,6 +75,7 @@ impl TursoProjection {
         request: &PackageGraphPageRequest,
     ) -> Result<PackageGraphPage, PackageGraphReadError> {
         request.admit()?;
+        let _operation_guard = self.operation_guard()?;
         let tx = self.connection.unchecked_transaction().await?;
         let Some(metadata) = crate::graph::package_graph_metadata_from(&tx).await? else {
             tx.rollback().await?;
@@ -84,6 +85,14 @@ impl TursoProjection {
                 Err(ProjectionError::StaleTransition.into())
             };
         };
+        if !crate::graph::graph_root_matches_selected_view(&tx, &metadata).await? {
+            tx.rollback().await?;
+            return if request.cursor.is_some() {
+                Err(PackageGraphReadError::StaleCursor)
+            } else {
+                Err(ProjectionError::StaleTransition.into())
+            };
+        }
         let view_root = fixed_root(&metadata)?;
         if let Some(cursor) = &request.cursor
             && (cursor.schema != backend_library::PACKAGE_GRAPH_PAGE_SCHEMA
@@ -794,7 +803,6 @@ mod tests {
     use super::*;
     use backend_library::{
         DependencyFacts, PackageDependencySourceFacts, RegistryAuthorityId, RegistryEcosystem,
-        view_state_root,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -809,6 +817,10 @@ mod tests {
     }
 
     fn remove_database(path: &std::path::Path) {
+        if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+            let namespace = path.with_file_name(format!("{name}.namespace-v1"));
+            let _ = std::fs::remove_dir_all(namespace);
+        }
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(std::path::PathBuf::from(format!(
                 "{}{suffix}",
@@ -846,7 +858,7 @@ mod tests {
     fn first_and_keyset_pages_use_turso_edge_indexes_without_sorting() {
         futures_executor::block_on(async {
             let path = database_path();
-            let projection = TursoProjection::open(&path).await.expect("projection");
+            let projection = crate::tests::open_test(&path).await.expect("projection");
             let coordinate = "pkg:cargo/toml@0.8.23";
             let authority = [0x31; 32];
             let after = [0x72; 32];
@@ -947,12 +959,21 @@ mod tests {
         root_byte: u8,
     ) -> (std::path::PathBuf, TursoProjection) {
         let path = database_path();
-        let mut projection = TursoProjection::open(&path).await.expect("open projection");
+        let mut projection = crate::tests::open_test(&path)
+            .await
+            .expect("open projection");
+        let row_revision = projection.revision().await.expect("selected row revision");
+        let view = crate::tests::view_with_label(&format!("package-graph-{root_byte}"));
         projection
-            .synchronize_package_graph(
-                view_state_root(&[("package-graph".to_owned(), root_byte.to_string())]),
-                facts,
-            )
+            .synchronize_from(row_revision, &view)
+            .await
+            .expect("advance selected row view");
+        let graph_revision = projection
+            .package_graph_revision()
+            .await
+            .expect("graph revision before fact selection");
+        projection
+            .synchronize_package_graph_from(graph_revision, view.root(), facts)
             .await
             .expect("project package graph snapshot");
         (path, projection)
@@ -1442,6 +1463,16 @@ mod tests {
                 PackageGraphSourceKey::new(package("pkg:cargo/unknown@1.0.0"), authority);
             let unavailable_key =
                 PackageGraphSourceKey::new(package("pkg:cargo/unavailable@1.0.0"), authority);
+            let row_revision = projection.revision().await.expect("selected row revision");
+            let next_view = crate::tests::view_with_label("package-graph-state-update");
+            projection
+                .synchronize_from(row_revision, &next_view)
+                .await
+                .expect("advance selected row view");
+            let graph_revision = projection
+                .package_graph_revision()
+                .await
+                .expect("graph revision before state fact selection");
             let states = [
                 (
                     unknown_key.clone(),
@@ -1455,10 +1486,7 @@ mod tests {
                 ),
             ];
             projection
-                .synchronize_package_graph(
-                    view_state_root(&[("package-graph".to_owned(), "5".to_owned())]),
-                    &states,
-                )
+                .synchronize_package_graph_from(graph_revision, next_view.root(), &states)
                 .await
                 .expect("advance graph snapshot");
             let stale = projection

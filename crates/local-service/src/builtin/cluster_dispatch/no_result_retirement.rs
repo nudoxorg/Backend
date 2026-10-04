@@ -738,13 +738,11 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir(&path).expect("create test directory");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
-                .expect("make test directory private");
-        }
-        path.join("outbox.v1")
+        crate::test_support::make_private(&path).expect("make test directory private");
+        // The journal ensures its own parent, which must itself sit under a
+        // private directory: the temporary directory is shared, so the journal
+        // lives one level down.
+        path.join("state").join("outbox.v1")
     }
 
     fn scope(attempt: u64) -> AssignmentScope {

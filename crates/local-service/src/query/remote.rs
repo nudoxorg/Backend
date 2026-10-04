@@ -6,7 +6,9 @@
 //! an observable unavailable state and never prevents local lexical queries.
 
 use super::embedding_cache::EmbeddingCacheFile;
-use super::projection_state::ProjectionState;
+use super::projection_state::{
+    Descriptor as ProjectionDescriptor, ProjectionOperation, ProjectionPin, ProjectionState,
+};
 use super::{
     LocalAnswer, QueryCoordinator, QueryError, QueryResult, SemanticAcceleration, SemanticDocument,
 };
@@ -406,7 +408,6 @@ pub struct ConfiguredQdrant {
     projection_uncertain: bool,
     active_embedding_identities: BTreeMap<String, DocumentEmbeddingId>,
     active: Option<ActiveQdrant>,
-    retired: Option<RetiredQdrant>,
 }
 
 /// Resource envelope derived from the configured coordinate representation.
@@ -524,7 +525,6 @@ impl ConfiguredQdrant {
             projection_uncertain: false,
             active_embedding_identities: BTreeMap::new(),
             active: None,
-            retired: None,
         }))
     }
 
@@ -541,73 +541,21 @@ impl ConfiguredQdrant {
     ///
     /// Returns a typed [`RemoteConfigError`] when owner coverage, row
     /// identity, vector admission, transport, or projection verification fails.
-    pub fn activate(
+    #[cfg(test)]
+    fn activate(
         &self,
         coordinator: &QueryCoordinator,
         coverage: CoverageWitness,
         documents: Vec<QdrantDocument>,
     ) -> Result<ActiveQdrant, RemoteConfigError> {
-        if !matches!(coverage, CoverageWitness::Complete(_)) {
-            return Err(RemoteConfigError::IncompleteCoverage);
-        }
-        let envelope = ProjectionEnvelope::for_recipe(self.recipe)?.admit(documents.len())?;
-        let writes = documents
-            .iter()
-            .map(|document| document.write)
-            .collect::<Vec<_>>();
-        let rows = documents
-            .iter()
-            .map(|document| document.row)
-            .collect::<Vec<_>>();
-        let row_keys = rows.iter().map(|row| row.stable_key()).collect::<Vec<_>>();
-        let vectors = self.admit_documents(coordinator, documents)?;
-        let (binding, facts) =
-            vector_facts(coordinator, coverage, self.recipe, &vectors, envelope)?;
-        let mut residences = Vec::with_capacity(rows.len());
-        let mut seen = BTreeSet::new();
-        for row in rows {
-            let residence = qdrant::PointResidence::for_row(
-                coordinator.corpus.workspace,
-                binding.recipe,
-                &row.stable_key(),
-            )
-            .map_err(RemoteConfigError::Provider)?;
-            if !seen.insert(residence) {
-                return Err(RemoteConfigError::StaleRow);
-            }
-            residences.push(residence);
-        }
-        let resident = residences
-            .iter()
-            .zip(vectors.iter())
-            .zip(writes)
-            .map(|((residence, document), write)| qdrant::ResidentDocument {
-                residence: *residence,
-                write,
-                document,
-            })
-            .collect::<Vec<_>>();
-        let base = qdrant::AnnBase::from_facts(&facts, qdrant::SearchQuality::Exact, envelope.0)
-            .map_err(RemoteConfigError::Extension)?;
-        self.client
-            .ensure_collection()
-            .map_err(RemoteConfigError::Provider)?;
-        self.client
-            .upsert_resident(binding, &resident)
-            .map_err(RemoteConfigError::Provider)?;
-        let source = self
-            .client
-            .clone()
-            .verify_projection(binding, coverage, vectors.len())
-            .map_err(RemoteConfigError::Provider)?;
-        let index =
-            qdrant::VectorIndex::new(base, facts, source).map_err(RemoteConfigError::Extension)?;
-        Ok(ActiveQdrant {
-            recipe: self.recipe,
-            index,
-            residences: residences.into_boxed_slice(),
-            row_keys: row_keys.into_boxed_slice(),
-        })
+        activate_projection(
+            &self.client,
+            self.recipe,
+            coordinator,
+            coverage,
+            documents,
+            None,
+        )
     }
 
     fn reconcile(
@@ -615,26 +563,39 @@ impl ConfiguredQdrant {
         coordinator: &QueryCoordinator,
         coverage: CoverageWitness,
     ) -> Result<(), RemoteConfigError> {
-        let workspace = coordinator.workspace_root();
-        let recipe = self.recipe.version();
-        if self
-            .projection_state
-            .as_ref()
-            .is_none_or(|state| state.workspace() != workspace || state.recipe() != recipe)
-        {
-            self.projection_state = ProjectionState::open(workspace, recipe, self.projection_scope);
+        if self.projection_state.is_none() {
+            self.projection_state = Some(
+                ProjectionState::open(self.projection_scope)
+                    .map_err(RemoteConfigError::ProjectionStateIo)?,
+            );
         }
         if self
             .active
             .as_ref()
             .is_some_and(|active| !self.projection_uncertain && active.matches(coordinator))
         {
-            return self.retire_pending();
+            let mut operation = self
+                .projection_state
+                .as_mut()
+                .expect("state initialized")
+                .begin_operation()
+                .map_err(RemoteConfigError::ProjectionStateIo)?;
+            let target = self
+                .active
+                .as_ref()
+                .map(|active| &active.pin)
+                .ok_or_else(|| {
+                    RemoteConfigError::ProjectionStateIo(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "active Qdrant source has no durable owner pin",
+                    ))
+                })?
+                .descriptor();
+            return retire_under_operation(&self.client, &mut operation, target).map_err(|error| {
+                self.projection_uncertain = true;
+                error
+            });
         }
-        // A failed retirement is retried before another generation can be
-        // admitted. This keeps cleanup debt bounded to one fully identified
-        // projection even while the remote service is unhealthy.
-        self.retire_pending()?;
         let document_count = coordinator.semantic_document_count();
         ProjectionEnvelope::for_recipe(self.recipe)?.admit(document_count)?;
         let page_size = NonZeroUsize::new(MAX_EMBEDDING_BATCH_ITEMS)
@@ -673,16 +634,10 @@ impl ConfiguredQdrant {
         if target_inputs.len() != document_count {
             return Err(RemoteConfigError::ProducerProtocol);
         }
-        let target_rows = target_inputs.keys().cloned().collect::<Vec<_>>();
         // Only this view's unique vectors may stay resident. Old durable cache
         // entries remain available for later exact-identity reuse.
         self.document_embeddings
             .retain(|identity, _| live_identities.contains(identity));
-        if let Some(state) = self.projection_state.as_mut() {
-            state
-                .stage(&target_rows)
-                .map_err(RemoteConfigError::ProjectionStateIo)?;
-        }
         // A failed upsert can leave a mixed remote projection. Keep the last
         // active source unavailable until a later complete verification.
         self.projection_uncertain = true;
@@ -708,66 +663,38 @@ impl ConfiguredQdrant {
         if documents.len() != document_count {
             return Err(RemoteConfigError::ProducerProtocol);
         }
-        let replacement = self.activate(coordinator, coverage, documents)?;
-        if let Some(previous) = self.active.replace(replacement) {
-            debug_assert!(self.retired.is_none());
-            self.retired = Some(previous.into_retired());
-        }
+        let mut operation = self
+            .projection_state
+            .as_mut()
+            .expect("state initialized")
+            .begin_operation()
+            .map_err(RemoteConfigError::ProjectionStateIo)?;
+        let replacement = activate_projection(
+            &self.client,
+            self.recipe,
+            coordinator,
+            coverage,
+            documents,
+            Some(&mut operation),
+        )?;
+        drop(self.active.replace(replacement));
         self.active_embedding_identities = target_inputs;
-        self.projection_uncertain = false;
-        self.retire_pending()
-    }
-
-    fn retire_pending(&mut self) -> Result<(), RemoteConfigError> {
-        let live = self
+        let target = self
             .active
             .as_ref()
-            .map(|active| active.residences.iter().copied().collect::<BTreeSet<_>>());
-        if let Some(retired) = self.retired.as_ref() {
-            let stale = retired
-                .residences
-                .iter()
-                .copied()
-                .filter(|residence| live.as_ref().is_none_or(|live| !live.contains(residence)))
-                .collect::<Vec<_>>();
-            if !stale.is_empty() {
-                self.client
-                    .delete_residences(retired.workspace, retired.recipe, &stale)
-                    .map_err(RemoteConfigError::Provider)?;
+            .map(|active| &active.pin)
+            .expect("guarded activation returns an owner pin")
+            .descriptor();
+        match retire_under_operation(&self.client, &mut operation, target) {
+            Ok(()) => {
+                self.projection_uncertain = false;
+                Ok(())
             }
-            self.retired = None;
-        }
-
-        let active_state = self.active.as_ref().map(|active| {
-            let binding = active.index.binding();
-            (
-                binding.workspace,
-                binding.recipe,
-                active.residences.iter().copied().collect::<BTreeSet<_>>(),
-                active.row_keys.to_vec(),
-            )
-        });
-        if let (Some(state), Some((workspace, recipe, live, row_keys))) =
-            (self.projection_state.as_mut(), active_state)
-            && state.workspace() == workspace
-            && state.recipe() == recipe
-        {
-            let stale = state
-                .residences()
-                .map_err(RemoteConfigError::Provider)?
-                .into_iter()
-                .filter(|residence| !live.contains(residence))
-                .collect::<Vec<_>>();
-            if !stale.is_empty() {
-                self.client
-                    .delete_residences(workspace, recipe, &stale)
-                    .map_err(RemoteConfigError::Provider)?;
+            Err(error) => {
+                self.projection_uncertain = true;
+                Err(error)
             }
-            state
-                .commit(&row_keys)
-                .map_err(RemoteConfigError::ProjectionStateIo)?;
         }
-        Ok(())
     }
 
     fn embed_documents(
@@ -892,23 +819,6 @@ impl ConfiguredQdrant {
         };
         active.accelerate(local, coordinates)
     }
-
-    fn admit_documents(
-        &self,
-        coordinator: &QueryCoordinator,
-        documents: Vec<QdrantDocument>,
-    ) -> Result<Vec<qdrant::DocumentVector>, RemoteConfigError> {
-        documents
-            .into_iter()
-            .map(|document| {
-                let id = coordinator
-                    .semantic_candidate(document.row)
-                    .ok_or(RemoteConfigError::StaleRow)?;
-                qdrant::DocumentVector::from_shared(self.recipe, id, document.coordinates)
-                    .map_err(RemoteConfigError::Extension)
-            })
-            .collect()
-    }
 }
 
 fn vector_facts(
@@ -937,10 +847,164 @@ fn vector_facts(
     Ok((binding, facts))
 }
 
+/// Runs a complete activation while optionally holding the collection-wide
+/// publication fence. The guarded path stages before the first remote call,
+/// attests the exact full-binding projection, and publishes its owner pin
+/// before the returned ActiveQdrant can replace an older source.
+fn activate_projection(
+    client: &qdrant::QdrantHttpClient,
+    recipe: qdrant::EmbeddingRecipe,
+    coordinator: &QueryCoordinator,
+    coverage: CoverageWitness,
+    documents: Vec<QdrantDocument>,
+    mut operation: Option<&mut ProjectionOperation<'_>>,
+) -> Result<ActiveQdrant, RemoteConfigError> {
+    if !matches!(coverage, CoverageWitness::Complete(_)) {
+        return Err(RemoteConfigError::IncompleteCoverage);
+    }
+    let envelope = ProjectionEnvelope::for_recipe(recipe)?.admit(documents.len())?;
+    let row_keys = documents
+        .iter()
+        .map(|document| document.row.stable_key())
+        .collect::<Vec<_>>();
+    let writes = documents
+        .iter()
+        .map(|document| document.write)
+        .collect::<Vec<_>>();
+    let vectors = documents
+        .into_iter()
+        .map(|document| {
+            let id = coordinator
+                .semantic_candidate(document.row)
+                .ok_or(RemoteConfigError::StaleRow)?;
+            qdrant::DocumentVector::from_shared(recipe, id, document.coordinates)
+                .map_err(RemoteConfigError::Extension)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let (binding, facts) = vector_facts(coordinator, coverage, recipe, &vectors, envelope)?;
+    let projection = qdrant::ProjectionBinding::new(binding);
+    let descriptor: Option<ProjectionDescriptor> = operation
+        .as_deref_mut()
+        .map(|operation| operation.stage(projection, &row_keys))
+        .transpose()
+        .map_err(RemoteConfigError::ProjectionStateIo)?;
+    let mut residences = Vec::with_capacity(row_keys.len());
+    let mut seen = BTreeSet::new();
+    for key in &row_keys {
+        let residence = qdrant::PointResidence::for_row(projection.identity(), key)
+            .map_err(RemoteConfigError::Provider)?;
+        if !seen.insert(residence) {
+            return Err(RemoteConfigError::StaleRow);
+        }
+        residences.push(residence);
+    }
+    let resident = residences
+        .iter()
+        .zip(vectors.iter())
+        .zip(writes)
+        .map(|((residence, document), write)| qdrant::ResidentDocument {
+            residence: *residence,
+            write,
+            document,
+        })
+        .collect::<Vec<_>>();
+    let base = qdrant::AnnBase::from_facts(&facts, qdrant::SearchQuality::Exact, envelope.0)
+        .map_err(RemoteConfigError::Extension)?;
+    if let Some(operation) = operation.as_deref() {
+        operation
+            .validate_fence()
+            .map_err(RemoteConfigError::ProjectionStateIo)?;
+    }
+    client
+        .ensure_collection()
+        .map_err(RemoteConfigError::Provider)?;
+    if let Some(operation) = operation.as_deref() {
+        operation
+            .validate_fence()
+            .map_err(RemoteConfigError::ProjectionStateIo)?;
+    }
+    client
+        .upsert_resident(projection, &resident)
+        .map_err(RemoteConfigError::Provider)?;
+    if let Some(operation) = operation.as_deref() {
+        operation
+            .validate_fence()
+            .map_err(RemoteConfigError::ProjectionStateIo)?;
+    }
+    let source = client
+        .clone()
+        .verify_projection(projection, coverage, vectors.len())
+        .map_err(RemoteConfigError::Provider)?;
+    if let Some(operation) = operation.as_deref() {
+        operation
+            .validate_fence()
+            .map_err(RemoteConfigError::ProjectionStateIo)?;
+    }
+    let index =
+        qdrant::VectorIndex::new(base, facts, source).map_err(RemoteConfigError::Extension)?;
+    let pin = match (operation, descriptor) {
+        (Some(operation), Some(descriptor)) => operation
+            .replace_owner_pin(descriptor)
+            .map_err(RemoteConfigError::ProjectionStateIo)?,
+        (None, None) => {
+            #[cfg(test)]
+            {
+                ProjectionPin::test_only(binding)
+            }
+            #[cfg(not(test))]
+            {
+                return Err(RemoteConfigError::ProjectionStateIo(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Qdrant activation requires a collection publication fence",
+                )));
+            }
+        }
+        _ => {
+            return Err(RemoteConfigError::ProjectionStateIo(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Qdrant publication guard lost its staged descriptor",
+            )));
+        }
+    };
+    Ok(ActiveQdrant { recipe, index, pin })
+}
+
+fn retire_under_operation(
+    client: &qdrant::QdrantHttpClient,
+    operation: &mut ProjectionOperation<'_>,
+    target: ProjectionDescriptor,
+) -> Result<(), RemoteConfigError> {
+    for (identity, residences) in operation
+        .stale_residences(target)
+        .map_err(RemoteConfigError::ProjectionStateIo)?
+    {
+        if !residences.is_empty() {
+            operation
+                .validate_fence()
+                .map_err(RemoteConfigError::ProjectionStateIo)?;
+            client
+                .delete_residences(identity, &residences)
+                .map_err(RemoteConfigError::Provider)?;
+            operation
+                .validate_fence()
+                .map_err(RemoteConfigError::ProjectionStateIo)?;
+        }
+    }
+    operation
+        .commit_verified(target)
+        .map_err(RemoteConfigError::ProjectionStateIo)
+}
+
 fn qdrant_projection_scope(endpoint: &str, collection: &str) -> [u8; 32] {
     let mut hasher =
         blake3::Hasher::new_derive_key("backend.local-service.qdrant-projection-scope.v1");
-    for value in [endpoint.as_bytes(), collection.as_bytes()] {
+    // Match QdrantHttpConfig::validate, which removes trailing endpoint
+    // slashes before issuing requests. Otherwise two spellings of the same
+    // collection would acquire independent operation fences.
+    for value in [
+        endpoint.trim_end_matches('/').as_bytes(),
+        collection.as_bytes(),
+    ] {
         let length = u64::try_from(value.len()).unwrap_or(u64::MAX);
         hasher.update(&length.to_be_bytes());
         hasher.update(value);
@@ -1614,8 +1678,8 @@ pub struct QdrantDocument {
 pub struct ActiveQdrant {
     recipe: qdrant::EmbeddingRecipe,
     index: qdrant::VectorIndex<qdrant::QdrantHttpSource>,
-    residences: Box<[qdrant::PointResidence]>,
-    row_keys: Box<[String]>,
+    // A live OS pin is mandatory for every published source.
+    pin: ProjectionPin,
 }
 
 impl ActiveQdrant {
@@ -1625,15 +1689,6 @@ impl ActiveQdrant {
 
     fn coverage(&self) -> CoverageWitness {
         self.index.facts().coverage()
-    }
-
-    fn into_retired(self) -> RetiredQdrant {
-        let binding = self.index.binding();
-        RetiredQdrant {
-            workspace: binding.workspace,
-            recipe: binding.recipe,
-            residences: self.residences,
-        }
     }
 
     /// Accelerates an already complete local answer using a query-side
@@ -1654,12 +1709,6 @@ impl ActiveQdrant {
     pub const fn recipe(&self) -> qdrant::EmbeddingRecipe {
         self.recipe
     }
-}
-
-struct RetiredQdrant {
-    workspace: backend_version::WorkspaceRoot,
-    recipe: qdrant::Recipe,
-    residences: Box<[qdrant::PointResidence]>,
 }
 
 fn optional(name: &'static str) -> Result<Option<String>, RemoteConfigError> {
@@ -1835,6 +1884,10 @@ mod tests {
             configured,
             qdrant_projection_scope("https://qdrant.example", "semantic")
         );
+        assert_eq!(
+            configured,
+            qdrant_projection_scope("https://qdrant.example///", "semantic")
+        );
         assert_ne!(
             configured,
             qdrant_projection_scope("https://other.example", "semantic")
@@ -1877,99 +1930,101 @@ mod tests {
     }
 
     #[test]
-    fn projection_membership_recovers_staged_union_then_commits_changed_view() {
-        let (coordinator, _, documents, _, recipe) = http_projection_inputs();
-        let workspace = coordinator.workspace_root();
-        let mut target = documents
+    fn collection_pins_protect_full_binding_residences_across_owner_replacement() {
+        let (coordinator, coverage, documents, _, recipe) = http_projection_inputs();
+        let vectors = documents
+            .iter()
+            .map(|document| {
+                let candidate = coordinator
+                    .semantic_candidate(document.row)
+                    .expect("selected candidate");
+                qdrant::DocumentVector::from_shared(
+                    recipe,
+                    candidate,
+                    Arc::clone(&document.coordinates),
+                )
+                .expect("document vector")
+            })
+            .collect::<Vec<_>>();
+        let envelope = ProjectionEnvelope::for_recipe(recipe)
+            .expect("projection envelope")
+            .admit(vectors.len())
+            .expect("bounded vectors");
+        let (first_binding, _) = vector_facts(&coordinator, coverage, recipe, &vectors, envelope)
+            .expect("first binding");
+        let mut second_binding =
+            first_binding.with_frontier(qdrant::Frontier::from_value(&[0xA5; 32]));
+        second_binding.recipe = qdrant::Recipe::from_value(&[0x5A; 32]);
+        let keys = documents
             .iter()
             .map(|document| document.row.stable_key())
             .collect::<Vec<_>>();
-        target.sort_unstable();
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("fixture clock")
             .as_nanos();
         let directory = std::env::temp_dir().join(format!(
-            "backend-qdrant-membership-{}-{stamp}",
+            "backend-qdrant-owner-pins-{}-{stamp}",
             std::process::id()
         ));
         fs::create_dir(&directory).expect("fixture directory");
         let scope = qdrant_projection_scope("https://qdrant.example", "semantic");
-        let mut state =
-            ProjectionState::open_in_directory(&directory, workspace, recipe.version(), scope)
-                .expect("open membership state");
-        assert!(state.row_keys().is_empty());
-        state.stage(&target).expect("stage complete target");
-        drop(state);
+        let mut first_state =
+            ProjectionState::open_in_directory(&directory, scope).expect("first collection state");
+        let first_pin = {
+            let mut operation = first_state
+                .begin_operation()
+                .expect("first operation fence");
+            let descriptor = operation
+                .stage(qdrant::ProjectionBinding::new(first_binding), &keys)
+                .expect("durable first staged union");
+            let pin = operation
+                .replace_owner_pin(descriptor)
+                .expect("first active pin");
+            operation
+                .commit_verified(descriptor)
+                .expect("commit first exact target");
+            pin
+        };
 
-        let mut recovered =
-            ProjectionState::open_in_directory(&directory, workspace, recipe.version(), scope)
-                .expect("recover staged membership");
-        assert_eq!(recovered.row_keys().len(), target.len());
+        let mut second_state =
+            ProjectionState::open_in_directory(&directory, scope).expect("second owner state");
+        let second_pin = {
+            let mut operation = second_state
+                .begin_operation()
+                .expect("second operation fence");
+            let descriptor = operation
+                .stage(qdrant::ProjectionBinding::new(second_binding), &keys)
+                .expect("stage new full binding beside live first view");
+            let pin = operation
+                .replace_owner_pin(descriptor)
+                .expect("second active pin");
+            let stale = operation
+                .stale_residences(descriptor)
+                .expect("retirement inventory");
+            assert!(stale.is_empty(), "the first live view remains protected");
+            operation
+                .commit_verified(descriptor)
+                .expect("commit second exact target");
+            pin
+        };
+
+        drop(first_pin);
+        let mut operation = second_state.begin_operation().expect("cleanup fence");
+        let target = second_pin.descriptor();
+        let stale = operation
+            .stale_residences(target)
+            .expect("stale old-recipe view membership");
+        assert_eq!(stale.len(), 1);
         assert_eq!(
-            recovered.residences().expect("typed residences").len(),
-            target.len()
+            stale[0].0,
+            qdrant::ProjectionIdentity::from_binding(first_binding)
         );
-
-        let changed = target.iter().take(1).cloned().collect::<Vec<_>>();
-        recovered
-            .stage(&changed)
-            .expect("persist old and changed rows before upsert");
-        assert_eq!(recovered.row_keys().len(), target.len());
-        recovered
-            .commit(&changed)
-            .expect("commit verified current membership");
-        assert_eq!(recovered.row_keys(), changed.as_slice());
-        drop(recovered);
-
-        let other_scope =
-            ProjectionState::open_in_directory(&directory, workspace, recipe.version(), [0xA5; 32])
-                .expect("open distinct collection scope");
-        assert!(other_scope.row_keys().is_empty());
-        drop(other_scope);
-        fs::remove_dir_all(directory).expect("remove fixture directory");
-    }
-
-    #[test]
-    fn disjoint_maximum_views_survive_staged_membership_restart() {
-        let (coordinator, _, _, _, recipe) = http_projection_inputs();
-        let workspace = coordinator.workspace_root();
-        let count = MAX_REMOTE_SEMANTIC_DOCUMENTS;
-        let previous = (0..count)
-            .map(|index| format!("symbol:{index:064x}"))
-            .collect::<Vec<_>>();
-        let target = (count..count * 2)
-            .map(|index| format!("symbol:{index:064x}"))
-            .collect::<Vec<_>>();
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("fixture clock")
-            .as_nanos();
-        let directory = std::env::temp_dir().join(format!(
-            "backend-qdrant-large-membership-{}-{stamp}",
-            std::process::id()
-        ));
-        fs::create_dir(&directory).expect("fixture directory");
-        let scope = qdrant_projection_scope("https://qdrant.example", "large-semantic");
-        let mut state =
-            ProjectionState::open_in_directory(&directory, workspace, recipe.version(), scope)
-                .expect("open membership state");
-        state.commit(&previous).expect("commit previous full view");
-        state
-            .stage(&target)
-            .expect("stage both maximum-sized disjoint views");
-        assert_eq!(state.row_keys().len(), count * 2);
-        drop(state);
-
-        let mut recovered =
-            ProjectionState::open_in_directory(&directory, workspace, recipe.version(), scope)
-                .expect("recover maximum staged union");
-        assert_eq!(recovered.row_keys().len(), count * 2);
-        recovered
-            .commit(&target)
-            .expect("commit replacement after remote verification");
-        assert_eq!(recovered.row_keys(), target.as_slice());
-        drop(recovered);
+        assert_eq!(stale[0].1.len(), keys.len());
+        drop(operation);
+        drop(second_pin);
+        drop(second_state);
+        drop(first_state);
         fs::remove_dir_all(directory).expect("remove fixture directory");
     }
 
@@ -2053,7 +2108,6 @@ printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
             projection_uncertain: false,
             active_embedding_identities: BTreeMap::new(),
             active: None,
-            retired: None,
         };
         let first = DocumentEmbeddingId::new(recipe.version(), manifest, "same semantic text")
             .expect("first identity");
@@ -2122,7 +2176,6 @@ printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
             projection_uncertain: false,
             active_embedding_identities: BTreeMap::new(),
             active: None,
-            retired: None,
         };
         let recovered = restarted
             .embed_documents(&documents)
@@ -2257,7 +2310,6 @@ for identity in items:
             projection_uncertain: false,
             active_embedding_identities: BTreeMap::new(),
             active: None,
-            retired: None,
         };
         let documents = [
             SemanticDocument {
@@ -2534,7 +2586,6 @@ for identity in items:
             projection_uncertain: false,
             active_embedding_identities: BTreeMap::new(),
             active: None,
-            retired: None,
         };
         configured.active = Some(
             configured
@@ -2621,7 +2672,6 @@ for identity in items:
             projection_uncertain: false,
             active_embedding_identities: BTreeMap::new(),
             active: None,
-            retired: None,
         };
         let active = configured
             .activate(&coordinator, coverage, documents)
@@ -2733,7 +2783,6 @@ for identity in items:
             projection_uncertain: false,
             active_embedding_identities: BTreeMap::new(),
             active: None,
-            retired: None,
         };
         let expected_points = u64::try_from(documents.len()).expect("point count");
         let error = match configured.activate(&coordinator, coverage, documents) {
@@ -2780,7 +2829,6 @@ for identity in items:
             projection_uncertain: false,
             active_embedding_identities: BTreeMap::new(),
             active: None,
-            retired: None,
         };
         let active = configured
             .activate(&coordinator, coverage, documents)
@@ -2827,7 +2875,6 @@ for identity in items:
             projection_uncertain: false,
             active_embedding_identities: BTreeMap::new(),
             active: None,
-            retired: None,
         };
         configured
             .activate(&coordinator, coverage, documents.clone())
@@ -2870,7 +2917,6 @@ for identity in items:
             projection_uncertain: false,
             active_embedding_identities: BTreeMap::new(),
             active: None,
-            retired: None,
         };
         configured
             .activate(&coordinator, coverage, documents.clone())
@@ -2912,7 +2958,6 @@ for identity in items:
             projection_uncertain: false,
             active_embedding_identities: BTreeMap::new(),
             active: None,
-            retired: None,
         };
         configured
             .activate(&coordinator, coverage, documents.clone())
@@ -2967,85 +3012,6 @@ for identity in items:
         assert!(events[9].bytes > 0);
     }
 
-    #[test]
-    fn dropping_a_row_deletes_only_that_residence() {
-        let (coordinator, coverage, documents, _, recipe) = http_projection_inputs();
-        assert!(
-            documents.len() > 1,
-            "the fixture view has more than one document"
-        );
-        let (workspace, view) = super::super::tests::selected_view();
-        let (endpoint, server) = serve_resident(11);
-        let client =
-            qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
-        let mut configured = ConfiguredQdrant {
-            client,
-            recipe,
-            projection_scope: [0; 32],
-            producer: None,
-            producer_health: ProducerHealth::Ready,
-            document_embeddings: BTreeMap::new(),
-            embedding_cache: None,
-            projection_state: None,
-            projection_uncertain: false,
-            active_embedding_identities: BTreeMap::new(),
-            active: None,
-            retired: None,
-        };
-        let first = configured
-            .activate(&coordinator, coverage, documents.clone())
-            .expect("first projection");
-        let removed = documents.last().expect("document").row;
-        let kept_documents = documents
-            .iter()
-            .filter(|document| document.row != removed)
-            .cloned()
-            .collect::<Vec<_>>();
-        let kept_rows = view
-            .rows()
-            .iter()
-            .filter(|row| row.id != removed)
-            .cloned()
-            .collect::<Vec<_>>();
-        let next_view = backend_engine::ViewRoot::new_checked(
-            view.recipe(),
-            view.basis(),
-            view.frontier(),
-            kept_rows,
-            view.coverage().to_vec(),
-            view.capability().expect("view capability"),
-        )
-        .expect("smaller view");
-        let next_evidence = super::super::tests::semantic_evidence(workspace, &next_view);
-        let next = QueryCoordinator::new(
-            workspace,
-            next_view.clone(),
-            next_view.capability().expect("view capability"),
-            coverage,
-            next_evidence,
-        )
-        .expect("next coordinator");
-        let second = configured
-            .activate(&next, coverage, kept_documents)
-            .expect("rebound survivors");
-        configured.retired = Some(first.into_retired());
-        configured.active = Some(second);
-        configured.retire_pending().expect("delete the dropped row");
-        let events = server.join().expect("fixture server");
-        assert_eq!(
-            events.iter().map(|event| event.kind).collect::<Vec<_>>(),
-            [
-                "get", "get", "retrieve", "put", "count", "get", "get", "retrieve", "payload",
-                "count", "delete"
-            ]
-        );
-        assert_eq!(events[8].points, documents.len() - 1);
-        assert!(!events[8].carries_vector);
-        assert!(events[8].bytes > 0);
-        assert_eq!(events[10].points, 1);
-        assert!(events[10].bytes > 0);
-    }
-
     fn http_projection_inputs() -> (
         QueryCoordinator,
         CoverageWitness,
@@ -3092,72 +3058,6 @@ for identity in items:
             .expect("selected semantic document pages")
             .flat_map(|page| page)
             .collect()
-    }
-
-    #[test]
-    fn retired_projection_is_deleted_by_binding_scoped_physical_identity() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener");
-        let address = listener.local_addr().expect("fixture address");
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("fixture connection");
-            let request = read_request(&mut stream);
-            let body = r#"{"result":{"status":"completed"}}"#;
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            )
-            .expect("fixture response");
-            String::from_utf8(request).expect("request text")
-        });
-        let (workspace, view) = super::super::tests::selected_view();
-        let coverage = crate::builtin::admitted_coverage().expect("coverage");
-        let evidence = super::super::tests::semantic_evidence(workspace, &view);
-        let coordinator = QueryCoordinator::new(
-            workspace,
-            view.clone(),
-            view.capability().expect("view capability"),
-            coverage,
-            evidence,
-        )
-        .expect("coordinator");
-        let row = collect_semantic_documents(&coordinator)
-            .first()
-            .expect("semantic document")
-            .row;
-        let candidate = coordinator.semantic_candidate(row).expect("candidate");
-        let recipe = test_recipe();
-        let residence =
-            qdrant::PointResidence::for_row(workspace, recipe.version(), &row.stable_key())
-                .expect("residence");
-        let client =
-            qdrant::QdrantHttpClient::new(test_transport(format!("http://{address}")), recipe)
-                .expect("HTTP client");
-        let mut configured = ConfiguredQdrant {
-            client,
-            recipe,
-            projection_scope: [0; 32],
-            producer: None,
-            producer_health: ProducerHealth::Ready,
-            document_embeddings: BTreeMap::new(),
-            embedding_cache: None,
-            projection_state: None,
-            projection_uncertain: false,
-            active_embedding_identities: BTreeMap::new(),
-            active: None,
-            retired: Some(RetiredQdrant {
-                workspace,
-                recipe: recipe.version(),
-                residences: vec![residence].into_boxed_slice(),
-            }),
-        };
-
-        configured.retire_pending().expect("retire projection");
-        assert!(configured.retired.is_none());
-        let request = server.join().expect("fixture server");
-        assert!(request.starts_with("POST /collections/backend-test/points/delete"));
-        assert!(request.contains(r#""points":["#));
-        assert!(!request.contains(&format!(r#""points":[{}]"#, candidate.0)));
     }
 
     fn test_recipe() -> qdrant::EmbeddingRecipe {

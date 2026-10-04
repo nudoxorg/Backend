@@ -37,9 +37,9 @@ pub use http::{
 };
 pub use identity::{
     Authority, AuthoritySchema, Binding, CandidateId, CandidateRelation, Frontier, FrontierSchema,
-    Limits, ModelSchema, ModelVersion, QuerySchema, QueryVersion, ReadManifest, ReadManifestSchema,
-    Recipe, RecipeSchema, Root, SchemaVersion, TokenizerSchema, TokenizerVersion, Tombstones,
-    TreatmentSchema, TreatmentVersion,
+    Limits, ModelSchema, ModelVersion, ProjectionBinding, ProjectionIdentity, QuerySchema,
+    QueryVersion, ReadManifest, ReadManifestSchema, Recipe, RecipeSchema, Root, SchemaVersion,
+    TokenizerSchema, TokenizerVersion, Tombstones, TreatmentSchema, TreatmentVersion,
 };
 pub use incremental::{
     AnnBase, AnnCursor, AnnPage, AnnSource, DocumentVector, EmbeddingEncoding,

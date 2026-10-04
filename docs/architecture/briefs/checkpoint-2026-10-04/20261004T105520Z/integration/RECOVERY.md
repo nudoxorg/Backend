@@ -1,0 +1,7 @@
+# Recovery checkpoint
+
+Exact unfinished integration working source and original merge index, including strict control protocol admission, 37 independently passing selected Python protocol tests and the formatted Source accessibility regression. The Rust regression is unrun. Older candidate13 passed platform 70 tests; its client compile failed with four errors. Those repairs are captured in unrun candidate9a. The isolated typed-library, typed-Turso, flat-graph and Shelf slices are preserved on four linked recovery branches and are not integrated. Remote candidate materialization did not run: the launcher exited127 because the configured Nix shell omitted Python; an installed interpreter has since been located. No new deploy or live ingest backup occurred. Native GUI observations are of the older Run19 binary. Corrected af83 motion recorder permissions remain pending; earlier c440 permission confirmation does not cover af83.
+
+This preserves frozen working source, not an accepted integration or release. No real worktree index, HEAD, branch, or merge state was changed. The default canonical branch was not moved.
+
+`merge-index-stages.nul` and `index-objects/` preserve staged-only content. To reconstruct the index, use a separate checkout and temporary GIT_INDEX_FILE; feed the NUL records to git update-index -z --index-info after git read-tree --empty. Do not overwrite the existing integration index.

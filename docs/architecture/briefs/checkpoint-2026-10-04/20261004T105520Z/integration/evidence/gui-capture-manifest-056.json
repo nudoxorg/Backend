@@ -1,0 +1,397 @@
+{
+  "qualification": "Exact current digests only; no global historical immutability claim",
+  "captures": [
+    {
+      "capture": "001-bound-initial",
+      "utc": "2026-10-04T10:21:09.059Z",
+      "metadata_sha256": "7c0252da034b8ea61db4ee045c602c49d4b614a4a1775192f9780c05808e44f1",
+      "ax_sha256": "61c5c0496be422ed1639fe6d1112d42ce74f44d7e7c140b516a4899f1e140d51",
+      "png_sha256": "4b5b73d5e5d63e49dd77ffc07de071068bd223568c056aab5bd92bbe9eec4045"
+    },
+    {
+      "capture": "002-library-versions",
+      "utc": "2026-10-04T10:21:17.469Z",
+      "metadata_sha256": "a6c9e9ae96db57f23a135a9b826f7cea26132a09c76ccf27177e53386fc68eee",
+      "ax_sha256": "388af11dc7609620f4d658e467cfcea3d633b9c338231684c8828c93c7d5d0f4",
+      "png_sha256": "4e9bf026c47eae977251c99cbd74f72d359cbf62c3be922d6efbbcde96b83cb9"
+    },
+    {
+      "capture": "003-library-rests-on",
+      "utc": "2026-10-04T10:21:26.232Z",
+      "metadata_sha256": "770f80b66bcf1bd461d810447c198d1573b101c44684b658f249c928853b3513",
+      "ax_sha256": "3bf842d52e44cf9f0b18fbbbc3fdb047a4b77d646601d17592649fcfe8bf60c2",
+      "png_sha256": "9c67f7e54040df5c72d26933fee92dc69b1d10e58b2f7c585855d8a152d1d2dd"
+    },
+    {
+      "capture": "004-library-used-by",
+      "utc": "2026-10-04T10:21:35.863Z",
+      "metadata_sha256": "9b21d93cae5a559b9600be7b6b68193c10cfa14e76755679922b397e2d36c8a9",
+      "ax_sha256": "e7886e1e8c534a550c6264e3ce91fc71608daa91057725dcb7fb970e49e4725c",
+      "png_sha256": "92ca537e3ad515e7a1a87161c5a0596c11dbf65f64a5fb8ee45e4d124f9b636d"
+    },
+    {
+      "capture": "005-used-by-project-dependency-tree",
+      "utc": "2026-10-04T10:21:43.370Z",
+      "metadata_sha256": "bd9e1570160728e3a0db6e21052626bc84eb77e46658275817cfff7435c68a33",
+      "ax_sha256": "84ef5ac8311aea5e083eedeb39afd4b2382891e1a3378bbcb7d083f6f1ba98c1",
+      "png_sha256": "f40f4c927ac5749c83ac83cc1bf07c4f807d10574ff6eaecc6f45341094f4156"
+    },
+    {
+      "capture": "006-dependency-fault-keyboard-tab",
+      "utc": "2026-10-04T10:21:51.940Z",
+      "metadata_sha256": "f70f508daaad999815dc793b4b40fdb8f34c41372ceea53fcb7780ae4ceb4bb1",
+      "ax_sha256": "a3b8537a5d81e05fee8cade7361519415d68278e7a44b7b84e7c1dbfc906abf2",
+      "png_sha256": "1313c558a93a01f3c69577f5104205e6c0e55cda600696f6f74d839be8ce2c64"
+    },
+    {
+      "capture": "007-dependency-back-reader",
+      "utc": "2026-10-04T10:22:51.537Z",
+      "metadata_sha256": "301a69b2aefe4c4a1de66a19c50cd49870c08a57594e6016c658b5058cd8b23c",
+      "ax_sha256": "7894bc84862659259e9671653b36c83e7021cf39f8be85a9bc12c88becc3b294",
+      "png_sha256": "5a5f2dae86fb30b36474eff410751c9ec3da432dd80a862b941b1c64a6666b5c"
+    },
+    {
+      "capture": "008-reader-package-breadcrumb",
+      "utc": "2026-10-04T10:22:59.233Z",
+      "metadata_sha256": "c121f0fdc15835bf992baa31da2a1edce5010d3b316c6f28752cdba0fa3967c9",
+      "ax_sha256": "30a65ab1979f212d1b60d01189b8a06914e547015de60ed80dfba9216520fc0e",
+      "png_sha256": "bced09f2ad346cc035e25e1f2b60b59db7e174955a45c855d4f21cdacc428d8b"
+    },
+    {
+      "capture": "009-package-lower-content",
+      "utc": "2026-10-04T10:23:14.828Z",
+      "metadata_sha256": "a4f17ecc8a0a45d29764c6d730c1858ce3fd8a71c8554e320ed5a7876fcbf060",
+      "ax_sha256": "30a65ab1979f212d1b60d01189b8a06914e547015de60ed80dfba9216520fc0e",
+      "png_sha256": "c4f3d6dcc393a7e82208a205944540c47ea5677ea2c0dbd6b5c1eee4e5ecc593"
+    },
+    {
+      "capture": "010-package-cadence-module-tile",
+      "utc": "2026-10-04T10:23:24.570Z",
+      "metadata_sha256": "90545da0db968094e9134a0b4d35560a32e4ecd80a0e4419405ab82c1c17be18",
+      "ax_sha256": "30a65ab1979f212d1b60d01189b8a06914e547015de60ed80dfba9216520fc0e",
+      "png_sha256": "3ae256c8d5d7bf824ae5a33685af3845eba0d0a6500eeada753ab69acc9afe5c"
+    },
+    {
+      "capture": "011-module-keyboard-tab",
+      "utc": "2026-10-04T10:23:34.035Z",
+      "metadata_sha256": "5ffd6c3a3d1d2a9a037231f30a94e3e0ce0d2504f77ea07eeebcb62e9cabc29d",
+      "ax_sha256": "4e8642f08baa2dd2d970b159b350826aebf0f6e1c51df906575a5813180edc6a",
+      "png_sha256": "cb662ed28e0151f12e7feda928ffe12855b58d3a77a9e521f6485f9b44afb7f1"
+    },
+    {
+      "capture": "012-module-function-expansion",
+      "utc": "2026-10-04T10:23:48.112Z",
+      "metadata_sha256": "34b7996cfe9d3beb5c1fc05753521a0beda7e2afea187d0a28381a40dd548980",
+      "ax_sha256": "f6bec74ba0bebea895963e8e81bc7ea7f3d33ad7be53d9d1701fe0e150545a8b",
+      "png_sha256": "e6648b27709ab42cfc9ea62516e17b667a317a92a299833e25ce20856f694a2d"
+    },
+    {
+      "capture": "013-advance-signal-code-file",
+      "utc": "2026-10-04T10:23:56.485Z",
+      "metadata_sha256": "85331fa6e96495acbbb1c7638d5e744ca11d9b24f61e990b8196dcd30d28f7cb",
+      "ax_sha256": "4941190f7c3e359c42bedd00d1812f78a57c6cb8d03372b14124087078a251e2",
+      "png_sha256": "a2076c4abf68a725f303d935ade365740b8c1b742840571a192d49fe807e90c3"
+    },
+    {
+      "capture": "014-code-reference-morning-signal",
+      "utc": "2026-10-04T10:24:11.358Z",
+      "metadata_sha256": "09db84de0ad082259493c90925aae5932a1086fe4ead2c2616233e3a58ea1e2a",
+      "ax_sha256": "c86898a7c07048ad4286d8d54629511fa972180754905fa53fbd4b33ce2f6cd7",
+      "png_sha256": "596a7774c4c0713b77668f17a0c1b7bafb5363729e23a1159966043f2f8caefb"
+    },
+    {
+      "capture": "015-reader-settings-open",
+      "utc": "2026-10-04T10:24:55.156Z",
+      "metadata_sha256": "0626188e8789e8edef58d1f4e1efb4ebd0253b81802129b63544df9bf576a844",
+      "ax_sha256": "4fae1f55846c13bc514b32ee642ecbe4feb85f622260dd80cdc6017763e27208",
+      "png_sha256": "764b351a553d125516d0a7684c3d8e312c5678d3cfd29763c90167d2fce01b5f"
+    },
+    {
+      "capture": "016-settings-keys-top",
+      "utc": "2026-10-04T10:25:04.021Z",
+      "metadata_sha256": "1affacfabcdbf7f62b6792f9e4e21d67f400a4c1db9f1e5622ff22808d6758a3",
+      "ax_sha256": "138bf1e23e4f1a587d88cacaaf038c5dd84c3cc8020920e0c927e6474e34cca2",
+      "png_sha256": "18b9fc9fffbd359f47931fc0a7781377bd7926cca6db418b30fd97a40327d3ca"
+    },
+    {
+      "capture": "017-settings-escape-return",
+      "utc": "2026-10-04T10:25:21.836Z",
+      "metadata_sha256": "e9ae00f48669daae7f872fa597d4e4b99cca653c1cfa63f6dcf9fc46b492027c",
+      "ax_sha256": "3722312d8bd9a792c8438bb836746cc09a9e1ab7f49d7b6aa4b163e47f410e01",
+      "png_sha256": "943b2c0717558e267b4b125a3140d94928a531384ef141a3ac00f5b3a2da3415"
+    },
+    {
+      "capture": "018-reader-keyboard-package",
+      "utc": "2026-10-04T10:25:31.178Z",
+      "metadata_sha256": "14ff7f906534120d0b077ca3068212860ca1deffb270f55a214640776e79ed4e",
+      "ax_sha256": "95512aac3812d68bdb8210cc1a36df3cab89584c70eaeefefa6d0ed465a85c38",
+      "png_sha256": "98ff0cb67a09c980c29f689a18ee2ab0f9fc2452fea45bbded3c2aa1b65a136d"
+    },
+    {
+      "capture": "019-reader-keyboard-source-s",
+      "utc": "2026-10-04T10:25:42.973Z",
+      "metadata_sha256": "c15c01833b0fd72539f4a9015a7fba0378a14fefb9960835f5ec9515bc59c8ed",
+      "ax_sha256": "95512aac3812d68bdb8210cc1a36df3cab89584c70eaeefefa6d0ed465a85c38",
+      "png_sha256": "fd0ac86fdaf856e43bd0b49014b310ec62abe91956fa3af1550752d3db9c40ee"
+    },
+    {
+      "capture": "020-reader-source-after-pointer-focus",
+      "utc": "2026-10-04T10:25:53.511Z",
+      "metadata_sha256": "9b199400bff5150adf6e16505afd888f07866b4e11883cece1743992232d5da2",
+      "ax_sha256": "9c3b6c69273936bba93885b8a9ae89568135d40c4d63bee2dc1d4dfe7c11c9f3",
+      "png_sha256": "bbd0c1a222cde9f8867a89601aefc306dd398692f41f34b3e87445b0aa5df80d"
+    },
+    {
+      "capture": "021-settings-return-control-before-escape",
+      "utc": "2026-10-04T10:26:10.755Z",
+      "metadata_sha256": "ad7f997ded68e78e7c40a1928a9d1eb0aa9fe799dc73918424b95816d154f1f2",
+      "ax_sha256": "4fae1f55846c13bc514b32ee642ecbe4feb85f622260dd80cdc6017763e27208",
+      "png_sha256": "f4bb7e75925d42390eb55c01231cebf8da624a82f2ae0692f9423909457642ee"
+    },
+    {
+      "capture": "022-settings-escape-s-no-click-control",
+      "utc": "2026-10-04T10:26:27.944Z",
+      "metadata_sha256": "d36dd4b80711bb289ec426f589cbe921f47330fc528812256ab5813cb74d2122",
+      "ax_sha256": "3722312d8bd9a792c8438bb836746cc09a9e1ab7f49d7b6aa4b163e47f410e01",
+      "png_sha256": "300604eefc2ff5991aeba5a4b73ef91b090a37b29b6b0d319c5c65d82ba8242e"
+    },
+    {
+      "capture": "023-keyboard-history-back",
+      "utc": "2026-10-04T10:27:25.030Z",
+      "metadata_sha256": "663e31a65978328c3e8d3d163e202987e90da701212f3e11c5e241bab87337da",
+      "ax_sha256": "38504d2c67df4f860163e32542bad0a858cd6cb7b0bab480b0ef6a8c2a09892b",
+      "png_sha256": "043ddc6c4d52a2f837ccc37596e197a7181b8cee9c4f6ba7ede82357a34dcfd9"
+    },
+    {
+      "capture": "024-keyboard-history-forward",
+      "utc": "2026-10-04T10:27:34.733Z",
+      "metadata_sha256": "4825dcf5440b0d551748d72f87869873249341d288476f40fb572f0885adc93b",
+      "ax_sha256": "c86898a7c07048ad4286d8d54629511fa972180754905fa53fbd4b33ce2f6cd7",
+      "png_sha256": "77acfb7c787bd4d155572e8f0c6b185a69dea490e6dfc4f8f5a5fb017489e2d0"
+    },
+    {
+      "capture": "025-native-window-zoom-survey",
+      "utc": "2026-10-04T10:27:53.574Z",
+      "metadata_sha256": "563082ade8ee4c680dd174a734118e5c4d00a5b85ea3d2fea5dd95bba56ce188",
+      "ax_sha256": "2adcf9cd76773a5c3666198eed907bacbd191e2200299f6f31570931fd7bfcae",
+      "png_sha256": "8ddd68f32c6979c651ea96147f5de120cff958e3d37ae0e9d0f81039fc4e05d8"
+    },
+    {
+      "capture": "026-settings-200-percent-wide",
+      "utc": "2026-10-04T10:28:30.764Z",
+      "metadata_sha256": "b9a0a53c1a25d476cbae210519ca56ee7438ba64f2ac7cc9ef14ba3bb4fd6ad9",
+      "ax_sha256": "84ef5ac8311aea5e083eedeb39afd4b2382891e1a3378bbcb7d083f6f1ba98c1",
+      "png_sha256": "33a3529ff039cb678f94ded02949a394f3b9bad91c83fa2d300c6f21f26b6f11"
+    },
+    {
+      "capture": "027-reader-200-percent-restored-window",
+      "utc": "2026-10-04T10:28:55.744Z",
+      "metadata_sha256": "8c8ce06f94feaf230c4bcb66c9d1d912f422f50aa0f6502859d177418ce3f07a",
+      "ax_sha256": "ad3a26e520bf92972b4b07ec8a817c2e792c0bd0387c747a0b15202104488f18",
+      "png_sha256": "6d2a2efa4dfe4101de3ffc04237e7c28eac54e8502bc9160c69fdad24857d72f"
+    },
+    {
+      "capture": "028-reader-200-percent-focus-tab",
+      "utc": "2026-10-04T10:29:09.202Z",
+      "metadata_sha256": "fd9b329b5138130d787e58ad8a04b99bceaff8017ffda99a2d9821958633c816",
+      "ax_sha256": "41ef115446d6feb4a960200c746a40c5410c63b57318c3b8e942efd8c606ea31",
+      "png_sha256": "d0c0b1a2f23ea2d4ea3e29fbad5282d62ae6d4c5d1cb53015f82d0c6ff90bd95"
+    },
+    {
+      "capture": "029-restore-100-percent-reader",
+      "utc": "2026-10-04T10:29:28.613Z",
+      "metadata_sha256": "2272e0a15cc4fdd069f0f2c88dbcbb205f04575d2a111d4c39341cb4a39956bc",
+      "ax_sha256": "41ef115446d6feb4a960200c746a40c5410c63b57318c3b8e942efd8c606ea31",
+      "png_sha256": "d0c0b1a2f23ea2d4ea3e29fbad5282d62ae6d4c5d1cb53015f82d0c6ff90bd95"
+    },
+    {
+      "capture": "030-restore-settings-after-pointer-focus",
+      "utc": "2026-10-04T10:29:53.312Z",
+      "metadata_sha256": "83c62c060e5f2420bd3b281442d37a3aa7c1926efb837a28d558eced7bf4e11d",
+      "ax_sha256": "3d3295c3f33d88046d77b00b83d40a8f9a37e53387cd516d86fbe1376ccd3137",
+      "png_sha256": "779e09d03008181b92590ff9dc9a93b92c8916b195a1600d4a08e62b670f2e45"
+    },
+    {
+      "capture": "031-restored-100-percent-settings",
+      "utc": "2026-10-04T10:30:09.534Z",
+      "metadata_sha256": "8842d98388f11f0b39644e3e1f359ea0351743169e8bbc456962c51514b70155",
+      "ax_sha256": "f76d315de5bb7fd6fab20323c734dd358392b3bced082a2fea0e0d6648374a18",
+      "png_sha256": "eb2cefbdf7c1f5a989b478df8d9ba3a2dec8469ada693a9b9bab1526bd637026"
+    },
+    {
+      "capture": "032-original-preferences-restoration-proof",
+      "utc": "2026-10-04T10:30:19.628Z",
+      "metadata_sha256": "d8d11e5684b6838429288d72dd23df6fb91d1baa496024ca136f5d36d88a99b1",
+      "ax_sha256": "84ef5ac8311aea5e083eedeb39afd4b2382891e1a3378bbcb7d083f6f1ba98c1",
+      "png_sha256": "17e93d5358dd7bb08f4b22eb94064cde541b428e12aad1e1ac3e6196971c3a23"
+    },
+    {
+      "capture": "033-inbox-current-operation",
+      "utc": "2026-10-04T10:34:11.410Z",
+      "metadata_sha256": "04f14444b27500928ae561e57e2c263e43a0cd2792c25989bc670d30532ef277",
+      "ax_sha256": "f73f7882c75ae49a571b89f273c2e30cc5e4618b2947fe58da016c8cc5bbb10b",
+      "png_sha256": "0887858a8fd1467b36040cd55a867db740183791fce632586875b81a59e430dc"
+    },
+    {
+      "capture": "034-settings-diagnostics-owner-state",
+      "utc": "2026-10-04T10:34:42.125Z",
+      "metadata_sha256": "6d89fb7447c071ee8ffa3b59797204d437904c140e060e08beed0481ea56c3f1",
+      "ax_sha256": "159fa0a5295c38d1efe7b6fbc344838f1d7aa9ee9aad20387df44f27e3e3dd63",
+      "png_sha256": "4c59405bac5067b25fbef47a19b7a1e9bf3e5d988911f07bd066e1ccbdb0b81c"
+    },
+    {
+      "capture": "035-settings-index-capabilities",
+      "utc": "2026-10-04T10:34:54.724Z",
+      "metadata_sha256": "017bfe0faabb025c9fa8f7f82bfe2175e0d03ba607f4ef6f9f10698046f2ebce",
+      "ax_sha256": "1d2c4015eb0babc7236f00c8dfef2d66e581d7699cba986c45258eaa33d2083f",
+      "png_sha256": "acc12f432c50270ebef3a213688f8ff86cddabaccee8b3f9d18a67bdbd0805b2"
+    },
+    {
+      "capture": "036-settings-connections-no-probe",
+      "utc": "2026-10-04T10:35:08.949Z",
+      "metadata_sha256": "53fb51649e9cbbc382f9908c78dbad7a230d3e07f960e863fa4a381f28da35e7",
+      "ax_sha256": "802286784020b961483821f6cbfb1538228dc4f4f922c2c38ca04cde1c24d664",
+      "png_sha256": "b2037eb56f79030c5ae68a42989050b98cc6c72fc6c7e72d0e7f5076330aa192"
+    },
+    {
+      "capture": "037-settings-agent-client-setup",
+      "utc": "2026-10-04T10:35:21.881Z",
+      "metadata_sha256": "c76113cf893daa5005c0f146c2329d8ce59f36de54f4a30eb80ba60233b5a40a",
+      "ax_sha256": "2dc7ab3d35ca74ef3ad6d7561faca7722e649b087a89e4ee458fe7c16a0d90e4",
+      "png_sha256": "b0ac606a27f692c7d0db4abfa8bc470ef596fb0cb6ab935570992ccef15c61c5"
+    },
+    {
+      "capture": "038-local-library-return",
+      "utc": "2026-10-04T10:36:03.255Z",
+      "metadata_sha256": "af45a1cafe6b173fb0df73f837745e6a1a49c31e66fe19e3f378b444a1d8e8cf",
+      "ax_sha256": "2da3a651cdbb963936aa06650a47bd89779dd42e58a7ea81f643dfa440733616",
+      "png_sha256": "23f6147d268e0005989b98ff8800d58b10c483c1e2f54964ee3a4a24ec285ab1"
+    },
+    {
+      "capture": "039-reader-100-after-zoom-header",
+      "utc": "2026-10-04T10:36:25.111Z",
+      "metadata_sha256": "aefe5a1f67ec4930d4f4e448dedce46297f772bfdca08727a19ed220bbf5c12b",
+      "ax_sha256": "ab86e14124c394175dc35cc4c4af520cd09e1c7be482ef8c7b1fce759e80d82c",
+      "png_sha256": "447aa82ab1970f1aa13fc2940d7f350c6a6422719d1a59c65d68ac5d3129dd06"
+    },
+    {
+      "capture": "040-native-file-menu",
+      "utc": "2026-10-04T10:37:07.057Z",
+      "metadata_sha256": "2794607e4beb9186945200579d0811aee36f92ae624977b37fc4d976f19671c0",
+      "ax_sha256": "4558ea5dedad406baf845b30d440344cf093093581529c3090898eb104c6b396",
+      "png_sha256": null
+    },
+    {
+      "capture": "041-native-menu-add-prompt",
+      "utc": "2026-10-04T10:37:18.626Z",
+      "metadata_sha256": "e45d0a6854c4d995cd0b07f69464acb7c157ac9f2e19eb9e931e255ea6c983c4",
+      "ax_sha256": "233952fba27185d127615d5efe2f25489058bd3dcc7887ad8425f0939cc1e69f",
+      "png_sha256": "b75ba7b3982da6a22cf412af85c16693fffd97f9c213ced8bdb98fea98de41b7"
+    },
+    {
+      "capture": "042-add-path-completion-no-submit",
+      "utc": "2026-10-04T10:37:44.067Z",
+      "metadata_sha256": "35742988b188910b6038c4d7d52a76c0a6d1e775646772276a3c731d7bc6667f",
+      "ax_sha256": "80b23082dabca46fd13076395c78ac4e0c63cfbd628a4772b678b5d7d3df87ea",
+      "png_sha256": "ef702aff7d1934ca45fc3aa4d3a98ca1d5944fa80c6a0aca182304870f1080b4"
+    },
+    {
+      "capture": "043-add-settled-completion-control",
+      "utc": "2026-10-04T10:38:10.679Z",
+      "metadata_sha256": "f7e3f8c74267fb8a07d0f745470c959c46959ab879bf271f73f806de41c6f5ba",
+      "ax_sha256": "80b23082dabca46fd13076395c78ac4e0c63cfbd628a4772b678b5d7d3df87ea",
+      "png_sha256": "747ce7e65b18708af161aaed2ae72249bcaa9d635357e612593ae65a5af9dee2"
+    },
+    {
+      "capture": "044-add-path-suggestion-selection",
+      "utc": "2026-10-04T10:38:21.311Z",
+      "metadata_sha256": "165e07532e8ddbac948b5c1d3202584a96e672339284dad7ea54f152a89d7bd2",
+      "ax_sha256": "80b23082dabca46fd13076395c78ac4e0c63cfbd628a4772b678b5d7d3df87ea",
+      "png_sha256": "85c0576e523a824447efac88aceb263d7f952ee44029ecc1d3c3540e6d4fb0c1"
+    },
+    {
+      "capture": "045-add-selected-suggestion-tab-completion",
+      "utc": "2026-10-04T10:38:34.562Z",
+      "metadata_sha256": "aff57857cf51e408831411e7f73b69ffe624bb322fbc1bca391758d0289aa0f5",
+      "ax_sha256": "80b23082dabca46fd13076395c78ac4e0c63cfbd628a4772b678b5d7d3df87ea",
+      "png_sha256": "751de221c7a1f8b2bd16d5a06802a7afd12130e5fd5a1d3a71d7072f5dd415ae"
+    },
+    {
+      "capture": "046-add-cancel-no-submission",
+      "utc": "2026-10-04T10:41:53.693Z",
+      "metadata_sha256": "4228015dbbacfad13b94638f6840bc7fd13572cbd6175079baa9448df7661be9",
+      "ax_sha256": "34c09cf018c6384699aa7aa6c7751be4263777efd8627efe3a2db48fb4ae6b3e",
+      "png_sha256": "f53f7c854c7e324b26d750d42a31996e07340da5c3a50077acec9bfd6dca3207"
+    },
+    {
+      "capture": "047-find-from-library-fresh",
+      "utc": "2026-10-04T10:42:50.745Z",
+      "metadata_sha256": "2823c8c7f524d693ed29c85c47e60bc73bc950ce3d3da56ec6e64e57c971b49e",
+      "ax_sha256": "84ef5ac8311aea5e083eedeb39afd4b2382891e1a3378bbcb7d083f6f1ba98c1",
+      "png_sha256": "e4229ed487b087d03f88373b8be61c2e03b87a3f30a22dc21cc692fda08621ec"
+    },
+    {
+      "capture": "048-find-real-field-tick",
+      "utc": "2026-10-04T10:43:01.656Z",
+      "metadata_sha256": "2388e599510cd2547b90a3e9b4db335b8d0d61ef30ca7b457d723150f04775a4",
+      "ax_sha256": "cfa90d4320d44604795a2cd767d6351275f59cf9fe7bc8360fe0d1cd5f89ceb7",
+      "png_sha256": "298ce69dbab319ba4463d8ee634ab6612cfde7343678406afd7e8f47a3628f5e"
+    },
+    {
+      "capture": "049-find-tick-settled-no-input",
+      "utc": "2026-10-04T10:43:10.510Z",
+      "metadata_sha256": "08fbc2ef0ad96c7beb98f8b2b5ed63f509feccfd9c3aa54084a4df752fb2530d",
+      "ax_sha256": "1f200582272f894a72abf640c035a1fa0d9dad8ee1ae37f8e9369cf530ad623d",
+      "png_sha256": "556dd8aea707ec85df565a463236bda19b9f9a720eb1a96b57e36ce830c833db"
+    },
+    {
+      "capture": "050-find-field-tick-inspect",
+      "utc": "2026-10-04T10:43:21.884Z",
+      "metadata_sha256": "0f241c80f5d67802009e3ab83a11bc1fce2e2192c6f354fd6d50a08675b73a8b",
+      "ax_sha256": "529c880a49f927f8e27ae0bb177798e6f9cbfa26f8e6b21ab7271dd60a37d0e3",
+      "png_sha256": "f764b65e16e5636f0998d4849b7dc6ac97333a8b89de4fefb57d04afee2a3b21"
+    },
+    {
+      "capture": "051-find-tick-open-code",
+      "utc": "2026-10-04T10:43:28.926Z",
+      "metadata_sha256": "7090e9cfafa9ffb204078729882cf65158a587f3879fb849f64f07b08c0c52c3",
+      "ax_sha256": "65ef11bb28fa51cdc9eed0a801704d204cf774ad445e4c4044c893e661fecc6f",
+      "png_sha256": "76f7f1b513526fdc2cab8c7374b7bc62a4cfeb738b9e31dce70b649cecb93fa7"
+    },
+    {
+      "capture": "052-find-tick-source-action-current-ax",
+      "utc": "2026-10-04T10:43:37.054Z",
+      "metadata_sha256": "b3480f8fc51a1dcb2a4f33459e68730fb26b4877a523c0014c62afdbda6001c1",
+      "ax_sha256": "65ef11bb28fa51cdc9eed0a801704d204cf774ad445e4c4044c893e661fecc6f",
+      "png_sha256": "35b5863c4610d0a270c7576932049dc8f9d3cf2a80b59e2534e330391c0e8e0c"
+    },
+    {
+      "capture": "053-find-tick-preview-scroll",
+      "utc": "2026-10-04T10:43:45.324Z",
+      "metadata_sha256": "3aa8a3e88b9f0e17ada5cfe72d72cbc1d1455b0d94d9ce9fb3b7383dbb5747fe",
+      "ax_sha256": "65ef11bb28fa51cdc9eed0a801704d204cf774ad445e4c4044c893e661fecc6f",
+      "png_sha256": "fe0ce874b9e22a9d817036a3246dfa555c39fc26c8ba79b6106dbce2905468ef"
+    },
+    {
+      "capture": "054-find-tick-visible-code-action",
+      "utc": "2026-10-04T10:43:54.067Z",
+      "metadata_sha256": "a1e699ff1cb7311de5029e955502ee92374c3a46b12807baa430f798ed7d3d7e",
+      "ax_sha256": "0343c1f00daa2caace61d771f4a565ae5a86e6dfaf04be8570194f19f0a36382",
+      "png_sha256": "0955595e89bd07227a7a633b179e658183b21b6d7e44a212d17a5dd4c3fd734b"
+    },
+    {
+      "capture": "055-source-line-zero-refusal",
+      "utc": "2026-10-04T10:44:20.720Z",
+      "metadata_sha256": "c604161cf0cadb02e56abdf8e59dd1425b74f41e762520633277a0366c70d1ab",
+      "ax_sha256": "fb1c7a95eea0a2cd54f2dab157b6e380760545373c96c70fdd964ccf4147ea14",
+      "png_sha256": "7ed3631334b23871975c93e45b5e196aee4ee66d821b176daac99ba4e9970611"
+    },
+    {
+      "capture": "056-source-line-seventeen-keyboard",
+      "utc": "2026-10-04T10:44:29.099Z",
+      "metadata_sha256": "11da54eb3b26ad73e6adb21fcf7c83e0bd42a058bcbad545514eead514630169",
+      "ax_sha256": "4b1c67d8d7a43b21079a034a1df39dea6cf84374f7ead06056686a7b22c90d21",
+      "png_sha256": "5d82bbe4c64fb297dc33a43cdfd684034406b90753ebf96dd4c1809471e066dd"
+    }
+  ]
+}
