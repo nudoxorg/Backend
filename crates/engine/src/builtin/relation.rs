@@ -115,7 +115,8 @@ fn format_version(format: &[u8]) -> Option<u8> {
         b'A' => 10,
         b'B' => 11,
         b'C' => 12,
-        digit => digit.checked_sub(b'0')?,
+        digit if digit.is_ascii_digit() => digit.checked_sub(b'0')?,
+        _ => return None,
     };
     (2..=SOURCE_RECORD_VERSION)
         .contains(&version)
@@ -2055,6 +2056,64 @@ mod tests {
         let mut reencoded = Vec::new();
         ProductSourceRelation::encode_value(&decoded, &mut reencoded);
         assert_eq!(reencoded, encoded);
+    }
+
+    #[test]
+    fn source_record_format_version_accepts_only_canonical_tags() {
+        for version in 2..=9_u8 {
+            let tag = b'0' + version;
+            assert_eq!(
+                super::format_version(&[b'P', b'S', b'R', tag]),
+                Some(version),
+                "PSR{} remains a supported decimal version",
+                version
+            );
+        }
+        for (tag, version) in [(b'A', 10_u8), (b'B', 11_u8), (b'C', 12_u8)] {
+            assert_eq!(
+                super::format_version(&[b'P', b'S', b'R', tag]),
+                Some(version),
+                "the named alphabetic version remains supported"
+            );
+        }
+
+        for tag in [b'0', b'1', b':', b';', b'<', b'D', b'?', 0xff] {
+            assert_eq!(
+                super::format_version(&[b'P', b'S', b'R', tag]),
+                None,
+                "tag byte {tag:?} is not a canonical supported format"
+            );
+        }
+    }
+
+    #[test]
+    fn source_record_decoder_rejects_punctuation_alias_tag_and_keeps_psr8() {
+        let legacy = ProductSourceRecord::project("fixture", [7; 32], Vec::new())
+            .expect("legacy project");
+        let mut legacy_bytes = Vec::new();
+        ProductSourceRelation::encode_value(&legacy, &mut legacy_bytes);
+        assert_eq!(legacy_bytes.get(..4), Some(b"PSR8".as_slice()));
+        let decoded_legacy =
+            ProductSourceRelation::decode_value(&legacy_bytes).expect("decode legacy PSR8");
+        assert_eq!(decoded_legacy, legacy);
+
+        let aliased = ProductSourceRecord::project_with_cargo_aliases(
+            "fixture",
+            [7; 32],
+            Vec::new(),
+            cargo_alias_evidence(),
+        )
+        .expect("valid Cargo alias project");
+        let mut valid_bytes = Vec::new();
+        ProductSourceRelation::encode_value(&aliased, &mut valid_bytes);
+        assert_eq!(valid_bytes.get(..4), Some(b"PSRC".as_slice()));
+        let decoded_aliases =
+            ProductSourceRelation::decode_value(&valid_bytes).expect("decode valid PSRC");
+        assert_eq!(decoded_aliases, aliased);
+
+        let mut punctuation_tagged = valid_bytes;
+        punctuation_tagged[..4].copy_from_slice(b"PSR<");
+        assert!(ProductSourceRelation::decode_value(&punctuation_tagged).is_err());
     }
 
     #[test]
