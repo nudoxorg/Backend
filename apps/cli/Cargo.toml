@@ -26,5 +26,9 @@ backend-semantic = { path = "../../crates/semantic" }
 serde.workspace = true
 serde_json.workspace = true
 
+# The FIFO-refusal test (Linux only) makes its FIFO with mkfifoat.
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["fs", "std"] }
+
 [lints]
 workspace = true
