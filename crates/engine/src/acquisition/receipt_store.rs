@@ -21,12 +21,13 @@ use backend_platform::directory::{DirectoryCapability, DirectoryRenameError};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use super::identity::ID_BYTES;
 use super::lease::AcquisitionLease;
 #[cfg(test)]
 use super::lease::LeaseGuard;
 use super::{
     AcquisitionDelta, AcquisitionReceipt, AcquisitionRecordId, AcquisitionRequest, DeltaChange,
-    ID_BYTES, NegativeFact, NegativeFactKind, RawArchiveObjectId, SourceSnapshot, SourceSnapshotId,
+    NegativeFact, NegativeFactKind, RawArchiveObjectId, SourceSnapshot, SourceSnapshotId,
 };
 
 const FORMAT_VERSION: u16 = 1;
