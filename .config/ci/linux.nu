@@ -6,6 +6,8 @@
 # MachineConfigurations only schedules this file; what the lane runs lives
 # here so a Backend PR can change it.
 
+use lib.nu *
+
 # Prints the process output the CLI captured for a failed step. The CLI keeps
 # a child's stdout/stderr out of the log (process-require writes them beside a
 # manifest instead), and the CI worktree is deleted with the container, so
@@ -136,21 +138,6 @@ def warm-registry-cache []: nothing -> nothing {
     }
 }
 
-# Runs one named step, streaming its output, and returns whether it passed.
-def step [name: string, body: closure]: nothing -> bool {
-    print $"== linux: ($name) =="
-    let started = (date now)
-    let passed = (try {
-        do $body
-        true
-    } catch {|error|
-        print $error.msg
-        false
-    })
-    print $"== linux: ($name) (if $passed { 'passed' } else { 'FAILED' }) in ((date now) - $started) =="
-    $passed
-}
-
 def main [
     --skip-flake-check # run only the test step (the flake check is already cached on the host store)
 ]: nothing -> nothing {
@@ -162,14 +149,9 @@ def main [
     let flake = if $skip_flake_check {
         true
     } else {
-        # `nix develop` points TMPDIR at its own /tmp/nix-shell.* directory.
-        # A local (preferLocalBuild) check derivation then gets a build dir
-        # under it that its sandbox cannot see, and nushell builders fail
-        # with "$env.PWD points to a non-existent directory". Check with the
-        # plain /tmp the flake check always had outside the shell.
-        step "root flake check" {|| with-env {TMPDIR: "/tmp", TMP: "/tmp", TEMP: "/tmp", TEMPDIR: "/tmp"} {
-                run-external "nix" "flake" "check" "-L" "--keep-going" "path:."
-            } }
+        ci-step "linux" "root flake check" {||
+            with-plain-tmp {|| run-external "nix" "flake" "check" "-L" "--keep-going" "path:." }
+        }
     }
 
     # "private-debug" makes the CLI write the child's stdout/stderr beside its
@@ -193,9 +175,10 @@ def main [
     # machine's Cargo cache, as they do on a developer's Mac. A fresh CI
     # container has none, so fetch (download and unpack) them first: what
     # the two fixture projects pin, plus the releases tests name directly.
-    step "warm the Cargo cache for registry tests" {|| warm-registry-cache } | ignore
+    ci-step "linux" "warm the Cargo cache for registry tests" {|| warm-registry-cache } | ignore
+    stop-if-superseded "linux"
     let tests = (with-env $test_env {
-        step "backend test pr" {|| run-external "sh" "-c" "umask 077 && exec backend test pr" }
+        ci-step "linux" "backend test pr" {|| run-external "sh" "-c" "umask 077 && exec backend test pr" }
     })
     if not $tests { print-captured-failures }
 

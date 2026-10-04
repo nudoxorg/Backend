@@ -1,13 +1,16 @@
 # Emulated test lanes, invoked as `nu .config/ci/emulated.nu windows` inside
 # the `.#windows-wine` dev shell or `nu .config/ci/emulated.nu arm64` inside
-# `.#arm64-emu`. The shell names the target's linker and the runner Cargo puts
-# in front of each test binary (Wine, or QEMU user mode), so the tests run
-# unchanged and do not know they are emulated.
+# `.#arm64-emu` (the `windows-wine.nu` and `arm64-emu.nu` lanes do this). The
+# shell names the target's linker and the runner Cargo puts in front of each
+# test binary (Wine, or QEMU user mode), so the tests run unchanged and do not
+# know they are emulated.
 #
 # Only the `platform` selection runs here: the crates that own processes,
 # storage, transport and the runtime, where a platform difference shows up.
 # Emulation is several times slower than native, so the whole workspace stays
 # in the Linux lane. Each exclusion below names the limit it works around.
+
+use lib.nu [platform-packages]
 
 def lanes []: nothing -> record {
     {
@@ -34,23 +37,6 @@ def lanes []: nothing -> record {
             )
         }
     }
-}
-
-# The crates a platform difference lives in (B7 `platform`): process
-# supervision, durable storage, the cluster transport and the runtime.
-#
-# Not backend-flow: it pulls in backend-engine and the language frontends
-# (rust-analyzer, oxc), which take over an hour to build for Windows on their
-# own, for tests that exercise no platform code.
-def platform-packages []: nothing -> list<string> {
-    [
-        "backend-version"
-        "backend-platform"
-        "backend-store"
-        "backend-runtime"
-        "backend-cluster-transport"
-        "backend-compile"
-    ]
 }
 
 # Prints each failed test case from the run's JUnit report, with the first
