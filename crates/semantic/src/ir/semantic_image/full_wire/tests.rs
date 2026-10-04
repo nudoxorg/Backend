@@ -869,6 +869,54 @@ fn signature_binding_cursor_is_exact_size_and_fused() -> Result<(), crate::ir::B
     assert_eq!(bindings.size_hint(), (0, Some(0)));
     assert_eq!(bindings.next(), None);
     assert_eq!(bindings.next(), None);
+
+    let bytes = encoded(&ir)?;
+    let view = SemanticImageView::reopen(&bytes).expect("owned image reopens canonically");
+    let canonical_entity = |name: &[u8], kind: ItemKind| {
+        view.canonical_entities().find_map(|entity| {
+            (entity.kind == kind && view.atom(entity.name) == Some(name)).then_some(entity.id)
+        })
+    };
+    let reopened_bind = canonical_entity(b"bind", ItemKind::Function)
+        .expect("canonical remapped binding owner");
+    let reopened_carrier = canonical_entity(b"carrier", ItemKind::Parameter)
+        .expect("canonical remapped carrier");
+    let Some(SignatureCarrierBindingsObservation::Captured(mut reopened)) =
+        SemanticReader::signature_carrier_bindings(&view, reopened_bind)
+    else {
+        panic!("canonical borrowed reader exposes captured bindings");
+    };
+    assert_fused(&reopened);
+    let expected = [
+        SignatureCarrierBinding {
+            owner: reopened_bind,
+            role: SignatureCarrierBindingRole::Parameter,
+            position: 0,
+            carrier: reopened_carrier,
+        },
+        SignatureCarrierBinding {
+            owner: reopened_bind,
+            role: SignatureCarrierBindingRole::Parameter,
+            position: 1,
+            carrier: reopened_carrier,
+        },
+        SignatureCarrierBinding {
+            owner: reopened_bind,
+            role: SignatureCarrierBindingRole::Result,
+            position: 0,
+            carrier: reopened_carrier,
+        },
+    ];
+    for (index, binding) in expected.into_iter().enumerate() {
+        let remaining = 3 - index;
+        assert_eq!(reopened.len(), remaining);
+        assert_eq!(reopened.size_hint(), (remaining, Some(remaining)));
+        assert_eq!(reopened.next(), Some(binding));
+    }
+    assert_eq!(reopened.len(), 0);
+    assert_eq!(reopened.size_hint(), (0, Some(0)));
+    assert_eq!(reopened.next(), None);
+    assert_eq!(reopened.next(), None);
     Ok(())
 }
 

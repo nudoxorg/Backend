@@ -8736,6 +8736,137 @@ mod lane_tests {
         }
         Ok(())
     }
+
+    /// Distinct overloads with the same symbol retain their own exact
+    /// parameter and result entities. The expected rows are selected from
+    /// their native declaration extents and result-alias declarations.
+    #[test]
+    fn overloads_keep_exact_owner_local_parameter_and_result_carriers() -> Result<(), LaneError> {
+        let source = concat!(
+            "type TextResult = string;\n",
+            "type CountResult = number;\n",
+            "declare function decode(value: string): TextResult;\n",
+            "declare function decode(value: number): CountResult;\n",
+        );
+        let ir = owned_ir(source, None)?;
+        let span = |needle: &str| -> Result<(u32, u32), LaneError> {
+            let start = u32::try_from(
+                source
+                    .find(needle)
+                    .ok_or(LaneError::Missing("native declaration text"))?,
+            )?;
+            let end = start + u32::try_from(needle.len())?;
+            Ok((start, end))
+        };
+        let exact_item = |name: &[u8], kind, declaration: &str| {
+            let (start, end) = span(declaration).ok()?;
+            ir.items().find(|item| {
+                item.name() == name
+                    && item.kind() == kind
+                    && item
+                        .source()
+                        .is_some_and(|source| source.start() == start && source.end() == end)
+            })
+        };
+        let text_declaration = "declare function decode(value: string): TextResult;";
+        let count_declaration = "declare function decode(value: number): CountResult;";
+        let text_owner = exact_item(b"decode", EntityKind::Function, text_declaration)
+            .ok_or(LaneError::Missing("string overload at its exact source range"))?;
+        let count_owner = exact_item(b"decode", EntityKind::Function, count_declaration)
+            .ok_or(LaneError::Missing("number overload at its exact source range"))?;
+        let text_parameter_start = u32::try_from(
+            source.find("value: string").ok_or(LaneError::Missing(
+                "string overload parameter source range",
+            ))?,
+        )?;
+        let count_parameter_start = u32::try_from(
+            source.find("value: number").ok_or(LaneError::Missing(
+                "number overload parameter source range",
+            ))?,
+        )?;
+        let parameter_end = u32::try_from("value".len())?;
+        let parameter_at = |start, owner| {
+            ir.items().find(|item| {
+                item.name() == b"value"
+                    && item.kind() == EntityKind::Parameter
+                    && item
+                        .source()
+                        .is_some_and(|source| {
+                            source.start() == start && source.end() == start + parameter_end
+                        })
+                    && item.parent() == Some(owner)
+            })
+        };
+        let text_parameter = parameter_at(text_parameter_start, text_owner.id())
+            .ok_or(LaneError::Missing("string overload's exact parameter carrier"))?;
+        let count_parameter = parameter_at(count_parameter_start, count_owner.id())
+            .ok_or(LaneError::Missing("number overload's exact parameter carrier"))?;
+        let text_result = exact_item(
+            b"TextResult",
+            EntityKind::Alias,
+            "type TextResult = string;",
+        )
+        .ok_or(LaneError::Missing("TextResult alias at its source range"))?;
+        let count_result = exact_item(
+            b"CountResult",
+            EntityKind::Alias,
+            "type CountResult = number;",
+        )
+        .ok_or(LaneError::Missing("CountResult alias at its source range"))?;
+        let text_type = text_owner
+            .semantic_type()
+            .ok_or(LaneError::Missing("string overload function type"))?;
+        let count_type = count_owner
+            .semantic_type()
+            .ok_or(LaneError::Missing("number overload function type"))?;
+        if text_type == count_type || ir.ty(text_type) == ir.ty(count_type) {
+            return Err(LaneError::Missing(
+                "overload-specific function parameter/result types",
+            ));
+        }
+        let bindings = |owner| match ir.signature_carrier_bindings(owner) {
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(
+                bindings,
+            )) => Some(bindings.collect::<Vec<_>>()),
+            _ => None,
+        };
+        if bindings(text_owner.id())
+            != Some(vec![
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: text_owner.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    position: 0,
+                    carrier: text_parameter.id(),
+                },
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: text_owner.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                    position: 0,
+                    carrier: text_result.id(),
+                },
+            ])
+            || bindings(count_owner.id())
+                != Some(vec![
+                    backend_semantic::ir::SignatureCarrierBinding {
+                        owner: count_owner.id(),
+                        role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                        position: 0,
+                        carrier: count_parameter.id(),
+                    },
+                    backend_semantic::ir::SignatureCarrierBinding {
+                        owner: count_owner.id(),
+                        role: backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                        position: 0,
+                        carrier: count_result.id(),
+                    },
+                ])
+        {
+            return Err(LaneError::Missing(
+                "overload-specific parameter and result carrier identities",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// The closed primitive record of one checker literal base.

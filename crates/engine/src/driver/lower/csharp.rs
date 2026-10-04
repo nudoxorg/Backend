@@ -4045,7 +4045,7 @@ mod tests {
     fn signatures_lower_parameter_and_result_carriers_with_reference_kinds() -> Result<(), TestError>
     {
         let source = concat!(
-            "class Widget { int brew(string count) { return 0; } ",
+            "class Widget { int brew(ref string count) { return 0; } ",
             "long brew() { return 1; } void tick() { } }",
         )
         .as_bytes();
