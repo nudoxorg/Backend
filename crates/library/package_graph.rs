@@ -1930,23 +1930,21 @@ mod tests {
         let mut one_source = exact_limits;
         one_source.max_sources = 1;
         assert_eq!(
-            IndexedCheckedPackageGraph::from_borrowed_facts(sources.iter(), one_source)
-                .unwrap_err(),
-            PackageGraphAdmissionError::SourceLimit {
+            IndexedCheckedPackageGraph::from_borrowed_facts(sources.iter(), one_source).err(),
+            Some(PackageGraphAdmissionError::SourceLimit {
                 observed: 2,
                 maximum: 1,
-            }
+            })
         );
 
         let mut short_keys = exact_limits;
         short_keys.max_index_key_bytes -= 1;
         assert_eq!(
-            IndexedCheckedPackageGraph::from_borrowed_facts(sources.iter(), short_keys)
-                .unwrap_err(),
-            PackageGraphAdmissionError::IndexKeyByteLimit {
+            IndexedCheckedPackageGraph::from_borrowed_facts(sources.iter(), short_keys).err(),
+            Some(PackageGraphAdmissionError::IndexKeyByteLimit {
                 observed: key_bytes,
                 maximum: key_bytes - 1,
-            }
+            })
         );
 
         let one_row = [fact(
@@ -1960,21 +1958,20 @@ mod tests {
         let mut no_rows = generous_graph_limits();
         no_rows.max_total_rows = 0;
         assert_eq!(
-            IndexedCheckedPackageGraph::from_borrowed_facts(one_row.iter(), no_rows).unwrap_err(),
-            PackageGraphAdmissionError::RowLimit {
+            IndexedCheckedPackageGraph::from_borrowed_facts(one_row.iter(), no_rows).err(),
+            Some(PackageGraphAdmissionError::RowLimit {
                 observed: 1,
                 maximum: 0,
-            }
+            })
         );
         let mut no_reverse_edges = generous_graph_limits();
         no_reverse_edges.max_reverse_edges = 0;
         assert_eq!(
-            IndexedCheckedPackageGraph::from_borrowed_facts(one_row.iter(), no_reverse_edges)
-                .unwrap_err(),
-            PackageGraphAdmissionError::ReverseEdgeLimit {
+            IndexedCheckedPackageGraph::from_borrowed_facts(one_row.iter(), no_reverse_edges).err(),
+            Some(PackageGraphAdmissionError::ReverseEdgeLimit {
                 observed: 1,
                 maximum: 0,
-            }
+            })
         );
     }
 
@@ -1992,11 +1989,11 @@ mod tests {
         limits.max_sources = 1;
 
         assert_eq!(
-            IndexedCheckedPackageGraph::from_borrowed_facts(iterator, limits).unwrap_err(),
-            PackageGraphAdmissionError::SourceLimit {
+            IndexedCheckedPackageGraph::from_borrowed_facts(iterator, limits).err(),
+            Some(PackageGraphAdmissionError::SourceLimit {
                 observed: 2,
                 maximum: 1,
-            }
+            })
         );
         assert_eq!(
             clone_count.get(),
@@ -2028,12 +2025,11 @@ mod tests {
 
         reason_limits.max_fact_bytes -= 1;
         assert_eq!(
-            CheckedPackageGraphFacts::from_borrowed_facts(reason_facts.iter(), reason_limits)
-                .unwrap_err(),
-            PackageGraphAdmissionError::FactByteLimit {
+            CheckedPackageGraphFacts::from_borrowed_facts(reason_facts.iter(), reason_limits).err(),
+            Some(PackageGraphAdmissionError::FactByteLimit {
                 observed: reason_fact_bytes,
                 maximum: reason_fact_bytes - 1,
-            }
+            })
         );
 
         let row_source =
@@ -2082,11 +2078,11 @@ mod tests {
         requirement_limits.max_fact_bytes -= 1;
         assert_eq!(
             IndexedCheckedPackageGraph::from_borrowed_facts(row_facts.iter(), requirement_limits)
-                .unwrap_err(),
-            PackageGraphAdmissionError::FactByteLimit {
+                .err(),
+            Some(PackageGraphAdmissionError::FactByteLimit {
                 observed: requirement_fact_bytes,
                 maximum: requirement_fact_bytes - 1,
-            }
+            })
         );
     }
 
@@ -2118,11 +2114,11 @@ mod tests {
         limits.max_fact_bytes = preflight_fact_bytes;
 
         assert_eq!(
-            CheckedPackageGraphFacts::from_borrowed_facts(iterator, limits).unwrap_err(),
-            PackageGraphAdmissionError::FactByteLimit {
+            CheckedPackageGraphFacts::from_borrowed_facts(iterator, limits).err(),
+            Some(PackageGraphAdmissionError::FactByteLimit {
                 observed: grown_fact_bytes,
                 maximum: preflight_fact_bytes,
-            }
+            })
         );
         assert_eq!(
             clone_count.get(),
@@ -2231,31 +2227,31 @@ mod tests {
         let mut limits = generous_graph_limits();
         limits.max_sources = 0;
         assert_eq!(
-            IndexedCheckedPackageGraph::new(facts.clone(), limits).unwrap_err(),
-            PackageGraphAdmissionError::SourceLimit {
+            IndexedCheckedPackageGraph::new(facts.clone(), limits).err(),
+            Some(PackageGraphAdmissionError::SourceLimit {
                 observed: 1,
                 maximum: 0,
-            }
+            })
         );
 
         let mut limits = generous_graph_limits();
         limits.max_total_rows = 0;
         assert_eq!(
-            IndexedCheckedPackageGraph::new(facts.clone(), limits).unwrap_err(),
-            PackageGraphAdmissionError::RowLimit {
+            IndexedCheckedPackageGraph::new(facts.clone(), limits).err(),
+            Some(PackageGraphAdmissionError::RowLimit {
                 observed: 1,
                 maximum: 0,
-            }
+            })
         );
 
         let mut limits = generous_graph_limits();
         limits.max_reverse_edges = 0;
         assert_eq!(
-            IndexedCheckedPackageGraph::new(facts.clone(), limits).unwrap_err(),
-            PackageGraphAdmissionError::ReverseEdgeLimit {
+            IndexedCheckedPackageGraph::new(facts.clone(), limits).err(),
+            Some(PackageGraphAdmissionError::ReverseEdgeLimit {
                 observed: 1,
                 maximum: 0,
-            }
+            })
         );
 
         let mut limits = generous_graph_limits();
@@ -2728,16 +2724,16 @@ mod tests {
                 source.clone(),
                 DependencyFacts::Known(vec![stale].into_boxed_slice()),
             )])
-            .unwrap_err(),
-            ProductAdmissionError::DependencyShape
+            .err(),
+            Some(ProductAdmissionError::DependencyShape)
         );
         assert_eq!(
             CheckedPackageGraphFacts::new(vec![(
                 source.clone(),
                 DependencyFacts::Known(vec![valid.clone(), valid.clone()].into_boxed_slice()),
             )])
-            .unwrap_err(),
-            ProductAdmissionError::DependencyShape
+            .err(),
+            Some(ProductAdmissionError::DependencyShape)
         );
         let other_source = PackageGraphSourceKey::unattributed(
             PackageReference::parse("pkg:cargo/other@1.0.0").expect("other"),
@@ -2747,8 +2743,8 @@ mod tests {
                 other_source,
                 DependencyFacts::Known(vec![valid].into_boxed_slice()),
             )])
-            .unwrap_err(),
-            ProductAdmissionError::DependencyShape
+            .err(),
+            Some(ProductAdmissionError::DependencyShape)
         );
     }
 
@@ -2778,8 +2774,8 @@ mod tests {
 
         assert_ne!(legacy.facts_version, legacy.recomputed_version());
         assert_eq!(
-            admit_dependency_rows(vec![legacy.clone()]).unwrap_err(),
-            ProductAdmissionError::DependencyShape
+            admit_dependency_rows(vec![legacy.clone()]).err(),
+            Some(ProductAdmissionError::DependencyShape)
         );
         let source_key = PackageGraphSourceKey::unattributed(legacy.source.clone());
         assert_eq!(
@@ -2787,8 +2783,8 @@ mod tests {
                 source_key,
                 DependencyFacts::Known(vec![legacy].into_boxed_slice()),
             )])
-            .unwrap_err(),
-            ProductAdmissionError::DependencyShape
+            .err(),
+            Some(ProductAdmissionError::DependencyShape)
         );
     }
 
@@ -3033,8 +3029,8 @@ mod tests {
             DependencyFacts::Known(vec![local_resolved_row.clone()].into_boxed_slice()),
         )];
         assert_eq!(
-            CheckedPackageGraphFacts::new(local_resolved_facts.clone()).unwrap_err(),
-            ProductAdmissionError::PackageReference,
+            CheckedPackageGraphFacts::new(local_resolved_facts.clone()).err(),
+            Some(ProductAdmissionError::PackageReference),
             "checked graph admission must enforce the target constructor's PURL contract"
         );
         assert_eq!(
@@ -3072,8 +3068,8 @@ mod tests {
                 DependencyFacts::Known(vec![row].into_boxed_slice()),
             )];
             assert_eq!(
-                CheckedPackageGraphFacts::new(facts).unwrap_err(),
-                ProductAdmissionError::PackageReference,
+                CheckedPackageGraphFacts::new(facts).err(),
+                Some(ProductAdmissionError::PackageReference),
                 "checked graph admission rejects resolved PURLs with the wrong target contract"
             );
         }
@@ -3479,8 +3475,8 @@ mod tests {
                 PackageGraphSourceKey::new(coordinate, registry_a),
                 DependencyFacts::Known(vec![forged].into_boxed_slice()),
             )])
-            .unwrap_err(),
-            ProductAdmissionError::DependencyShape
+            .err(),
+            Some(ProductAdmissionError::DependencyShape)
         );
     }
 

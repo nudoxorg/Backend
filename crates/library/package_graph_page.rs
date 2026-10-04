@@ -1682,8 +1682,8 @@ mod tests {
         );
         let cross_kind_reverse = local_reverse.with_cursor(reverse_cursor);
         assert_eq!(
-            expected_page(&cross_kind_reverse, view_root, &graph).unwrap_err(),
-            PackageGraphPageError::CursorMismatch
+            expected_page(&cross_kind_reverse, view_root, &graph).err(),
+            Some(PackageGraphPageError::CursorMismatch)
         );
     }
 

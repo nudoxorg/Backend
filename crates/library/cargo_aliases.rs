@@ -805,6 +805,15 @@ mod tests {
     use backend_semantic::vocabulary::RustEdition;
     use std::path::PathBuf;
 
+    fn observation(
+        evidence: &CargoPackageAliasEvidenceV1,
+        profile: LanguageProfile,
+    ) -> Result<&CargoPackageAliasObservationV1, String> {
+        evidence
+            .observation(profile)
+            .ok_or_else(|| format!("missing observation for {profile:?}"))
+    }
+
     fn facts(
         target_names: &[String],
         selected_package_id: Option<&str>,
@@ -867,7 +876,7 @@ mod tests {
     }
 
     #[test]
-    fn aliases_are_bound_to_each_exact_profile_observation() {
+    fn aliases_are_bound_to_each_exact_profile_observation() -> Result<(), String> {
         let profile_2021 = LanguageProfile::Rust(RustEdition::Rust2021);
         let profile_2024 = LanguageProfile::Rust(RustEdition::Rust2024);
         let admitted = CargoPackageAliasEvidenceV1::from_workspace_facts(
@@ -890,26 +899,21 @@ mod tests {
             .expect("sorted independent profile observations");
 
         assert_eq!(
-            merged
-                .observation(profile_2021)
-                .unwrap()
-                .source_observation_revision(),
+            observation(&merged, profile_2021)?.source_observation_revision(),
             [21; 32]
         );
         assert_eq!(
-            merged
-                .observation(profile_2024)
-                .unwrap()
-                .source_observation_revision(),
+            observation(&merged, profile_2024)?.source_observation_revision(),
             [22; 32]
         );
         assert!(merged.admits_for_profile(profile_2021, "fixture"));
         assert!(merged.admits_for_profile(profile_2021, "fixture_lib"));
         assert!(!merged.admits_for_profile(profile_2024, "fixture"));
+        Ok(())
     }
 
     #[test]
-    fn virtual_workspace_root_does_not_guess_a_member_alias() {
+    fn virtual_workspace_root_does_not_guess_a_member_alias() -> Result<(), String> {
         let profile = LanguageProfile::Rust(RustEdition::Rust2024);
         let root_facts = facts(&["fixture_lib".to_owned()], None);
         let evidence = CargoPackageAliasEvidenceV1::from_workspace_facts(
@@ -922,15 +926,16 @@ mod tests {
 
         assert!(evidence.aliases().is_empty());
         assert_eq!(
-            evidence.observation(profile).unwrap().coverage(),
+            observation(&evidence, profile)?.coverage(),
             CargoPackageAliasCoverageV1::Unavailable(
                 CargoPackageAliasUnavailableV1::NoExactWorkspaceMember
             )
         );
+        Ok(())
     }
 
     #[test]
-    fn selected_member_is_not_reused_for_a_different_requested_manifest() {
+    fn selected_member_is_not_reused_for_a_different_requested_manifest() -> Result<(), String> {
         let profile = LanguageProfile::Rust(RustEdition::Rust2024);
         let facts = facts(
             &["fixture_lib".to_owned()],
@@ -946,15 +951,16 @@ mod tests {
 
         assert!(evidence.aliases().is_empty());
         assert_eq!(
-            evidence.observation(profile).unwrap().coverage(),
+            observation(&evidence, profile)?.coverage(),
             CargoPackageAliasCoverageV1::Unavailable(
                 CargoPackageAliasUnavailableV1::SelectedManifestMismatch
             )
         );
+        Ok(())
     }
 
     #[test]
-    fn alias_bounds_report_truncation_and_reject_orphaned_wire_names() {
+    fn alias_bounds_report_truncation_and_reject_orphaned_wire_names() -> Result<(), String> {
         let profile = LanguageProfile::Rust(RustEdition::Rust2024);
         let names = (0..70)
             .map(|index| format!("target_{index:02}"))
@@ -969,7 +975,7 @@ mod tests {
         .expect("alias set is truncated at its fixed bound");
         assert_eq!(evidence.aliases().len(), MAX_CARGO_PACKAGE_ALIASES);
         assert_eq!(
-            evidence.observation(profile).unwrap().coverage(),
+            observation(&evidence, profile)?.coverage(),
             CargoPackageAliasCoverageV1::Truncated {
                 retained: MAX_CARGO_PACKAGE_ALIASES as u8,
                 omitted: 7,
@@ -978,8 +984,14 @@ mod tests {
 
         let orphan = CargoPackageAliasEvidenceV1::from_wire_parts(
             vec![
-                CargoPackageAliasV1::CargoPackageName(CargoPackageNameV1::new("orphan").unwrap()),
-                CargoPackageAliasV1::CargoTargetName(CargoTargetNameV1::new("used").unwrap()),
+                CargoPackageAliasV1::CargoPackageName(
+                    CargoPackageNameV1::new("orphan")
+                        .map_err(|error| format!("invalid fixture package alias: {error:?}"))?,
+                ),
+                CargoPackageAliasV1::CargoTargetName(
+                    CargoTargetNameV1::new("used")
+                        .map_err(|error| format!("invalid fixture target alias: {error:?}"))?,
+                ),
             ],
             vec![
                 CargoPackageAliasObservationV1::from_wire_parts(
@@ -996,7 +1008,8 @@ mod tests {
                 .expect("shape is locally consistent"),
             ],
         );
-        assert_eq!(orphan, Err(CargoPackageAliasErrorV1::Shape));
+        assert_eq!(orphan.err(), Some(CargoPackageAliasErrorV1::Shape));
+        Ok(())
     }
 
     #[test]
