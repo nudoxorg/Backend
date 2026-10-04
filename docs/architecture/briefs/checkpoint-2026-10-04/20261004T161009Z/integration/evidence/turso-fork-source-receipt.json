@@ -1,0 +1,21 @@
+{
+  "commit": "6086e91d2608b0db7dcaa59e0ef47a92d6fc2b77",
+  "tree": "f750a99ffd72b2663243ce0562163b9926930276",
+  "branch": "codex/vacuum-snapshot-path-literals-20261004",
+  "parent": "052ad81a7dbb6efed34ea482ae6c7e2e6f6682e0",
+  "worktree": "/private/tmp/nudox-turso-vacuum-path-20261004",
+  "changed_paths": [
+    "core/translate/vacuum.rs",
+    "tests/integration/query_processing/test_vacuum.rs"
+  ],
+  "source_sha256": {
+    "core/translate/vacuum.rs": "73de9d8a05ae56a8365b7edcde0d974f3b86a3200d92431086f841e467d1797a",
+    "tests/integration/query_processing/test_vacuum.rs": "8bb26e3f0844b63aac9df621580672b317edcca890f1f99a76d31919d740494e"
+  },
+  "patch_sha256": "ecf41f8168aa264288d8a15cd315018ef81a3e1d3a7bd867c0bc27e0509cf092",
+  "root_source_review": true,
+  "parse_and_diff_check": "PASS",
+  "rust_runtime_validation": "UNRUN",
+  "backend_gitlink_changed": false,
+  "pushed": false
+}

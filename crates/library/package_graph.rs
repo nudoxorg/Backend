@@ -59,6 +59,91 @@ pub fn discover_source_files(
 /// Maximum dependency rows in one package graph answer.
 pub const MAX_PACKAGE_GRAPH_ROWS: usize = 2_048;
 
+/// Caller-selected aggregate bounds for admitting a package graph index.
+///
+/// Per-source row limits are fixed by [`MAX_PACKAGE_GRAPH_ROWS`]. Aggregate
+/// limits are required because registry catalog and local-workspace policies
+/// have different source populations; this type intentionally has no
+/// `Default` implementation. `max_fact_bytes` bounds logical occupied bytes
+/// for admitted fact values: inline source tuples and dependency records plus
+/// the UTF-8 text owned by their coordinates, target names, requirements,
+/// resolved coordinates, or unknown/unavailable reasons. `ProductText` owns a
+/// `String`; a PURL coordinate owns one `Box<str>` with parsed ranges stored
+/// inline, so text is measured by `as_str().len()` without hidden dynamic
+/// component arrays. It excludes allocator slack, `Arc` control blocks,
+/// map/vector node overhead, and process RSS. `max_index_key_bytes` separately
+/// bounds the additional UTF-8 payloads copied into source, coordinate, and
+/// reverse lookup keys. Source, row, and reverse-edge counts independently
+/// bound those containers' cardinality.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackageGraphIndexLimits {
+    /// Maximum number of source/authority facts in the immutable snapshot.
+    pub max_sources: usize,
+    /// Maximum logical occupied bytes retained by source facts and their
+    /// owned text, measured as inline tuple/record sizes plus UTF-8 text
+    /// lengths. This is not an allocator or resident-set estimate.
+    pub max_fact_bytes: usize,
+    /// Maximum number of dependency rows across all known sources.
+    pub max_total_rows: usize,
+    /// Maximum runtime/optional reverse postings retained by the index.
+    pub max_reverse_edges: usize,
+    /// Maximum additional owned UTF-8 bytes used by lookup-key payloads.
+    pub max_index_key_bytes: usize,
+}
+
+/// Why checked package graph facts could not be admitted to an indexed view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageGraphAdmissionError {
+    /// A source or dependency row failed the existing shape and identity
+    /// checks performed by [`CheckedPackageGraphFacts`].
+    InvalidFacts(ProductAdmissionError),
+    /// The checked facts exceeded the source-fact bound.
+    SourceLimit { observed: usize, maximum: usize },
+    /// The logical occupied source/row payload exceeded its byte bound.
+    FactByteLimit { observed: usize, maximum: usize },
+    /// The checked facts exceeded the aggregate dependency-row bound.
+    RowLimit { observed: usize, maximum: usize },
+    /// The checked facts exceeded the reverse-posting bound.
+    ReverseEdgeLimit { observed: usize, maximum: usize },
+    /// The checked facts exceeded the lookup-key byte-payload bound.
+    IndexKeyByteLimit { observed: usize, maximum: usize },
+    /// A checked aggregate count overflowed `usize` while it was measured.
+    CountOverflow,
+}
+
+impl std::fmt::Display for PackageGraphAdmissionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidFacts(error) => {
+                write!(formatter, "invalid package graph facts: {error:?}")
+            }
+            Self::SourceLimit { observed, maximum } => write!(
+                formatter,
+                "package graph has {observed} sources; admission limit is {maximum}"
+            ),
+            Self::FactByteLimit { observed, maximum } => write!(
+                formatter,
+                "package graph facts occupy at least {observed} logical bytes; admission limit is {maximum}"
+            ),
+            Self::RowLimit { observed, maximum } => write!(
+                formatter,
+                "package graph has {observed} dependency rows; admission limit is {maximum}"
+            ),
+            Self::ReverseEdgeLimit { observed, maximum } => write!(
+                formatter,
+                "package graph has {observed} reverse edges; admission limit is {maximum}"
+            ),
+            Self::IndexKeyByteLimit { observed, maximum } => write!(
+                formatter,
+                "package graph index needs {observed} lookup-key bytes; admission limit is {maximum}"
+            ),
+            Self::CountOverflow => formatter.write_str("package graph admission count overflowed"),
+        }
+    }
+}
+
+impl std::error::Error for PackageGraphAdmissionError {}
+
 /// Stable, typed identity of a configured registry authority.
 ///
 /// The bytes are the source identity assigned by registry configuration. A
@@ -246,6 +331,48 @@ impl CheckedPackageGraphFacts {
         })
     }
 
+    /// Validates and canonicalizes graph facts after checking aggregate bounds.
+    ///
+    /// Aggregate source, row, fact-payload, and index-key limits are evaluated
+    /// before source-key uniqueness sets, witness arrays, or index maps are
+    /// allocated. Callers that will build an index should pass the same limits to
+    /// [`IndexedCheckedPackageGraph::from_checked_facts`], or use
+    /// [`IndexedCheckedPackageGraph::new`] to admit and index in one call.
+    pub fn new_with_limits(
+        facts: Vec<PackageDependencySourceFacts>,
+        limits: PackageGraphIndexLimits,
+    ) -> Result<Self, PackageGraphAdmissionError> {
+        admit_package_graph_index(facts.iter(), limits)?;
+        Self::new(facts).map_err(PackageGraphAdmissionError::InvalidFacts)
+    }
+
+    /// Admits a cloneable borrowed source iterator before deep-cloning its
+    /// facts into this owned checked snapshot.
+    ///
+    /// The first pass checks aggregate source, fact-payload, row, reverse-edge,
+    /// and index-key limits. The collection pass checks each yielded source
+    /// again before cloning it, so a stateful iterator cannot use a different
+    /// second-pass sequence to clone beyond the same policy. The admitted facts
+    /// then use the existing validation, canonicalization, and witness
+    /// construction without building a lookup index.
+    pub fn from_borrowed_facts<'a, I>(
+        facts: I,
+        limits: PackageGraphIndexLimits,
+    ) -> Result<Self, PackageGraphAdmissionError>
+    where
+        I: Iterator<Item = &'a PackageDependencySourceFacts> + Clone,
+    {
+        admit_package_graph_index(facts.clone(), limits)?;
+
+        let mut admission = PackageGraphAdmission::new(limits);
+        let mut owned = Vec::new();
+        for fact in facts {
+            admission.admit_source(fact)?;
+            owned.push((*fact).clone());
+        }
+        Self::new(owned).map_err(PackageGraphAdmissionError::InvalidFacts)
+    }
+
     /// Borrows facts in canonical coordinate/authority order without exposing
     /// mutable access to the snapshot.
     #[must_use]
@@ -268,6 +395,178 @@ impl CheckedPackageGraphFacts {
     pub const fn witness(&self) -> [u8; 32] {
         self.witness
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PackageGraphAdmission {
+    limits: PackageGraphIndexLimits,
+    sources: usize,
+    fact_bytes: usize,
+    total_rows: usize,
+    reverse_edges: usize,
+    lookup_key_bytes: usize,
+}
+
+impl PackageGraphAdmission {
+    const fn new(limits: PackageGraphIndexLimits) -> Self {
+        Self {
+            limits,
+            sources: 0,
+            fact_bytes: 0,
+            total_rows: 0,
+            reverse_edges: 0,
+            lookup_key_bytes: 0,
+        }
+    }
+
+    fn admit_source(
+        &mut self,
+        (source, state): &PackageDependencySourceFacts,
+    ) -> Result<(), PackageGraphAdmissionError> {
+        self.sources = self
+            .sources
+            .checked_add(1)
+            .ok_or(PackageGraphAdmissionError::CountOverflow)?;
+        if self.sources > self.limits.max_sources {
+            return Err(PackageGraphAdmissionError::SourceLimit {
+                observed: self.sources,
+                maximum: self.limits.max_sources,
+            });
+        }
+
+        let source_coordinate_bytes = source.coordinate.as_str().len();
+        self.add_fact_bytes(std::mem::size_of::<PackageDependencySourceFacts>())?;
+        self.add_fact_bytes(source_coordinate_bytes)?;
+
+        // The index later owns a by-source key and a coordinate lookup key;
+        // source-key admission also temporarily owns a uniqueness key. Count
+        // all three spellings conservatively. B-tree node/allocator overhead
+        // is not byte-estimated; source and row ceilings bound its cardinality.
+        self.lookup_key_bytes = self
+            .lookup_key_bytes
+            .checked_add(
+                source_coordinate_bytes
+                    .checked_mul(3)
+                    .ok_or(PackageGraphAdmissionError::CountOverflow)?,
+            )
+            .ok_or(PackageGraphAdmissionError::CountOverflow)?;
+        if self.lookup_key_bytes > self.limits.max_index_key_bytes {
+            return Err(PackageGraphAdmissionError::IndexKeyByteLimit {
+                observed: self.lookup_key_bytes,
+                maximum: self.limits.max_index_key_bytes,
+            });
+        }
+
+        match state {
+            DependencyFacts::Known(rows) => {
+                if rows.len() > MAX_PACKAGE_GRAPH_ROWS {
+                    return Err(PackageGraphAdmissionError::InvalidFacts(
+                        ProductAdmissionError::RowBound,
+                    ));
+                }
+                self.total_rows = self
+                    .total_rows
+                    .checked_add(rows.len())
+                    .ok_or(PackageGraphAdmissionError::CountOverflow)?;
+                if self.total_rows > self.limits.max_total_rows {
+                    return Err(PackageGraphAdmissionError::RowLimit {
+                        observed: self.total_rows,
+                        maximum: self.limits.max_total_rows,
+                    });
+                }
+
+                let row_storage_bytes = std::mem::size_of::<PackageDependencyRecord>()
+                    .checked_mul(rows.len())
+                    .ok_or(PackageGraphAdmissionError::CountOverflow)?;
+                self.add_fact_bytes(row_storage_bytes)?;
+
+                for row in rows.iter() {
+                    let row_source_bytes = row.source.as_str().len();
+                    let target_name_bytes = row.target.name.as_str().len();
+                    let requirement_bytes = row.target.requirement.as_str().len();
+                    let resolved_bytes = row
+                        .target
+                        .resolved
+                        .as_ref()
+                        .map_or(0, |resolved| resolved.as_str().len());
+                    let row_text_bytes = row_source_bytes
+                        .checked_add(target_name_bytes)
+                        .and_then(|bytes| bytes.checked_add(requirement_bytes))
+                        .and_then(|bytes| bytes.checked_add(resolved_bytes))
+                        .ok_or(PackageGraphAdmissionError::CountOverflow)?;
+                    self.add_fact_bytes(row_text_bytes)?;
+
+                    if !matches!(
+                        row.scope,
+                        DependencyScope::Runtime | DependencyScope::Optional
+                    ) {
+                        continue;
+                    }
+                    self.reverse_edges = self
+                        .reverse_edges
+                        .checked_add(1)
+                        .ok_or(PackageGraphAdmissionError::CountOverflow)?;
+                    if self.reverse_edges > self.limits.max_reverse_edges {
+                        return Err(PackageGraphAdmissionError::ReverseEdgeLimit {
+                            observed: self.reverse_edges,
+                            maximum: self.limits.max_reverse_edges,
+                        });
+                    }
+
+                    // The reverse map owns a lineage-name key and, for a
+                    // resolved edge, a second exact-target key. Charge every
+                    // posting, even when keys repeat.
+                    let reverse_key_bytes = target_name_bytes
+                        .checked_add(resolved_bytes)
+                        .ok_or(PackageGraphAdmissionError::CountOverflow)?;
+                    self.add_index_key_bytes(reverse_key_bytes)?;
+                }
+            }
+            DependencyFacts::Unknown(reason) | DependencyFacts::Unavailable(reason) => {
+                self.add_fact_bytes(reason.as_str().len())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn add_fact_bytes(&mut self, bytes: usize) -> Result<(), PackageGraphAdmissionError> {
+        self.fact_bytes = self
+            .fact_bytes
+            .checked_add(bytes)
+            .ok_or(PackageGraphAdmissionError::CountOverflow)?;
+        if self.fact_bytes > self.limits.max_fact_bytes {
+            return Err(PackageGraphAdmissionError::FactByteLimit {
+                observed: self.fact_bytes,
+                maximum: self.limits.max_fact_bytes,
+            });
+        }
+        Ok(())
+    }
+
+    fn add_index_key_bytes(&mut self, bytes: usize) -> Result<(), PackageGraphAdmissionError> {
+        self.lookup_key_bytes = self
+            .lookup_key_bytes
+            .checked_add(bytes)
+            .ok_or(PackageGraphAdmissionError::CountOverflow)?;
+        if self.lookup_key_bytes > self.limits.max_index_key_bytes {
+            return Err(PackageGraphAdmissionError::IndexKeyByteLimit {
+                observed: self.lookup_key_bytes,
+                maximum: self.limits.max_index_key_bytes,
+            });
+        }
+        Ok(())
+    }
+}
+
+fn admit_package_graph_index<'a>(
+    facts: impl IntoIterator<Item = &'a PackageDependencySourceFacts>,
+    limits: PackageGraphIndexLimits,
+) -> Result<(), PackageGraphAdmissionError> {
+    let mut admission = PackageGraphAdmission::new(limits);
+    for fact in facts {
+        admission.admit_source(fact)?;
+    }
+    Ok(())
 }
 
 fn package_dependency_source_facts_witness(
@@ -720,13 +1019,139 @@ pub fn admit_dependency_rows(
 /// requirement matches every version of that lineage; a resolved edge matches
 /// only that exact package URL. Development, build, and peer edges are omitted
 /// because dependent answers do not count them.
-#[derive(Clone, Debug, Default)]
-pub struct PackageGraphIndex {
+#[derive(Debug, Default)]
+struct PackageGraphIndex {
     by_source: BTreeMap<PackageGraphSourceKey, usize>,
     by_coordinate: BTreeMap<String, Vec<usize>>,
     reverse: BTreeMap<RegistryEcosystem, BTreeMap<String, ReverseEdges>>,
-    first_gap: Option<ProductText>,
-    checked_witness: Option<[u8; 32]>,
+    first_incomplete_source: Option<usize>,
+}
+
+/// An immutable checked graph whose lookup index cannot be paired with a
+/// different fact slice.
+///
+/// The index stores only source/row positions. This owner keeps the exact
+/// checked facts those positions address, and all public queries borrow from
+/// that same snapshot. Construct it with caller-selected aggregate limits;
+/// no aggregate policy is guessed from registry or workspace defaults.
+#[derive(Debug)]
+pub struct IndexedCheckedPackageGraph {
+    checked: CheckedPackageGraphFacts,
+    index: PackageGraphIndex,
+}
+
+impl IndexedCheckedPackageGraph {
+    /// Checks, canonicalizes, and indexes one admitted graph snapshot.
+    pub fn new(
+        facts: Vec<PackageDependencySourceFacts>,
+        limits: PackageGraphIndexLimits,
+    ) -> Result<Self, PackageGraphAdmissionError> {
+        let checked = CheckedPackageGraphFacts::new_with_limits(facts, limits)?;
+        Ok(Self::from_admitted(checked))
+    }
+
+    /// Admits a cloneable borrowed source iterator before deep-cloning its
+    /// facts into this owned graph.
+    ///
+    /// The first pass checks aggregate source, fact-payload, row, reverse-edge,
+    /// and index-key limits. The collection pass checks each yielded source
+    /// again before cloning it, so a stateful iterator cannot use a different
+    /// second-pass sequence to clone beyond the same policy. The admitted facts
+    /// then use the existing validation, canonicalization, and witness
+    /// construction.
+    pub fn from_borrowed_facts<'a, I>(
+        facts: I,
+        limits: PackageGraphIndexLimits,
+    ) -> Result<Self, PackageGraphAdmissionError>
+    where
+        I: Iterator<Item = &'a PackageDependencySourceFacts> + Clone,
+    {
+        let checked = CheckedPackageGraphFacts::from_borrowed_facts(facts, limits)?;
+        Ok(Self::from_admitted(checked))
+    }
+
+    /// Moves an already checked snapshot into an index after aggregate
+    /// admission. This is useful when a checked witness is also used by a
+    /// projection owner; the index and facts remain one unbreakable value.
+    pub fn from_checked_facts(
+        checked: CheckedPackageGraphFacts,
+        limits: PackageGraphIndexLimits,
+    ) -> Result<Self, PackageGraphAdmissionError> {
+        admit_package_graph_index(checked.facts().iter(), limits)?;
+        Ok(Self::from_admitted(checked))
+    }
+
+    fn from_admitted(checked: CheckedPackageGraphFacts) -> Self {
+        let index = PackageGraphIndex::from_facts(checked.facts());
+        Self { checked, index }
+    }
+
+    /// Borrows the immutable facts and their cached witness.
+    #[must_use]
+    pub const fn checked_facts(&self) -> &CheckedPackageGraphFacts {
+        &self.checked
+    }
+
+    /// Borrows canonical source facts without exposing mutable access.
+    #[must_use]
+    pub fn facts(&self) -> &[PackageDependencySourceFacts] {
+        self.checked.facts()
+    }
+
+    /// Returns the cached canonical graph witness.
+    #[must_use]
+    pub const fn witness(&self) -> [u8; 32] {
+        self.checked.witness()
+    }
+
+    /// Returns the unique source fact for `package`, or exact authority
+    /// choices if several sources publish that coordinate.
+    #[must_use]
+    pub fn dependencies(&self, package: &PackageReference) -> PackageDependencyLookup<'_> {
+        self.index.dependencies(self.checked.facts(), package)
+    }
+
+    /// Returns the facts for one exact package and authority key.
+    #[must_use]
+    pub fn dependencies_for_source(
+        &self,
+        source: &PackageGraphSourceKey,
+    ) -> Option<&DependencyFacts<Box<[PackageDependencyRecord]>>> {
+        self.index
+            .dependencies_for_source(self.checked.facts(), source)
+    }
+
+    /// Returns packages that depend on `package` under the counted scopes.
+    #[must_use]
+    pub fn dependent_sources(&self, package: &PackageReference) -> DependentSources {
+        self.index.dependent_sources(self.checked.facts(), package)
+    }
+
+    /// Returns the first recorded reverse-lookup coverage state, borrowing its
+    /// reason from the exact checked snapshot paired with this index.
+    pub(crate) fn reverse_coverage(&self) -> ReverseCoverage<'_> {
+        self.index.reverse_coverage(self.checked.facts())
+    }
+
+    /// Returns reverse-lookup coverage with the qualified-target limitation
+    /// applied when unresolved name-only edges cannot prove registry identity.
+    pub(crate) fn dependent_coverage(
+        &self,
+        target: &crate::PackageCoordinate,
+    ) -> ReverseCoverage<'_> {
+        self.index.dependent_coverage(self.checked.facts(), target)
+    }
+
+    /// Returns one bounded reverse-edge page from this exact snapshot.
+    pub(crate) fn dependent_edges_page(
+        &self,
+        package: &PackageReference,
+        after: Option<[u8; 32]>,
+        limit: u16,
+    ) -> (Vec<&PackageDependencyRecord>, bool) {
+        self.index
+            .dependent_edges_page(self.checked.facts(), package, after, limit)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -758,6 +1183,34 @@ pub enum DependentSources {
     },
 }
 
+/// Reverse-query completeness borrowed from the same checked snapshot as its
+/// private index. Unknown and unavailable retain their distinct provenance;
+/// qualified unresolved edges are a semantic limitation even when every
+/// source otherwise supplied known facts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReverseCoverage<'a> {
+    /// Every source recorded a complete dependency set, or the snapshot is empty.
+    Known,
+    /// The first source in canonical source order did not publish metadata.
+    Unknown(&'a ProductText),
+    /// The first source in canonical source order could not supply metadata.
+    Unavailable(&'a ProductText),
+    /// A qualified target cannot be established by name-only dependency rows.
+    QualifiedUnresolved,
+}
+
+impl ReverseCoverage<'_> {
+    pub(crate) fn into_gap(self) -> Option<ProductText> {
+        match self {
+            Self::Known => None,
+            Self::Unknown(reason) | Self::Unavailable(reason) => Some(reason.clone()),
+            Self::QualifiedUnresolved => Some(ProductText::from_static(
+                "name-only dependency edges do not establish this registry authority",
+            )),
+        }
+    }
+}
+
 /// Result of a coordinate-only forward graph lookup.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PackageDependencyLookup<'a> {
@@ -776,20 +1229,6 @@ pub enum PackageDependencyLookup<'a> {
 }
 
 impl PackageGraphIndex {
-    /// Builds an index whose reverse postings are bound to this checked
-    /// immutable facts snapshot.
-    #[must_use]
-    pub fn from_checked_facts(facts: &CheckedPackageGraphFacts) -> Self {
-        let mut index = Self::from_facts(facts.facts());
-        index.checked_witness = Some(facts.witness());
-        index
-    }
-
-    /// Whether this index was built for the supplied immutable graph facts.
-    pub(crate) fn is_bound_to(&self, facts: &CheckedPackageGraphFacts) -> bool {
-        self.checked_witness == Some(facts.witness())
-    }
-
     /// Builds forward and reverse adjacency from source/authority order.
     ///
     /// Multiple registries may publish the same coordinate. Their facts stay
@@ -797,7 +1236,7 @@ impl PackageGraphIndex {
     /// disagrees with the containing key are ignored by this convenience
     /// index and rejected by [`CheckedPackageGraphFacts::new`].
     #[must_use]
-    pub fn from_facts(facts: &[PackageDependencySourceFacts]) -> Self {
+    fn from_facts(facts: &[PackageDependencySourceFacts]) -> Self {
         let mut index = Self::default();
         for (source_index, (source, state)) in facts.iter().enumerate() {
             if !index.by_source.contains_key(source) {
@@ -840,9 +1279,9 @@ impl PackageGraphIndex {
                         }
                     }
                 }
-                DependencyFacts::Unknown(reason) | DependencyFacts::Unavailable(reason) => {
-                    if index.first_gap.is_none() {
-                        index.first_gap = Some(reason.clone());
+                DependencyFacts::Unknown(_) | DependencyFacts::Unavailable(_) => {
+                    if index.first_incomplete_source.is_none() {
+                        index.first_incomplete_source = Some(source_index);
                     }
                 }
             }
@@ -915,12 +1354,12 @@ impl PackageGraphIndex {
         let Some(ecosystem) = target.package_type().registry() else {
             return DependentSources::Matched {
                 sources: BTreeSet::new(),
-                gap: self.first_gap.clone(),
+                gap: self.reverse_coverage(facts).into_gap(),
             };
         };
         let mut sources = BTreeSet::new();
         let qualified = target.qualifiers().is_some() || target.subpath().is_some();
-        let gap = self.dependent_coverage_gap(target);
+        let gap = self.dependent_coverage(facts, target).into_gap();
         if let Some(edges) = self
             .reverse
             .get(&ecosystem)
@@ -943,26 +1382,49 @@ impl PackageGraphIndex {
         DependentSources::Matched { sources, gap }
     }
 
-    /// Returns the coverage limitation for a reverse read without materializing
-    /// every matching source. A qualified target cannot inherit name-only
-    /// edges from a different registry authority.
-    pub(crate) fn dependent_coverage_gap(
+    /// Returns the first incomplete state by its cached canonical source
+    /// position. The borrow is tied to `facts`, which is the snapshot paired
+    /// with this private index by `IndexedCheckedPackageGraph`.
+    fn reverse_coverage<'a>(
         &self,
+        facts: &'a [PackageDependencySourceFacts],
+    ) -> ReverseCoverage<'a> {
+        let Some(source_index) = self.first_incomplete_source else {
+            return ReverseCoverage::Known;
+        };
+        match &facts
+            .get(source_index)
+            .expect("cached incomplete source belongs to the paired checked facts")
+            .1
+        {
+            DependencyFacts::Unknown(reason) => ReverseCoverage::Unknown(reason),
+            DependencyFacts::Unavailable(reason) => ReverseCoverage::Unavailable(reason),
+            DependencyFacts::Known(_) => {
+                unreachable!("cached incomplete source must retain its checked state")
+            }
+        }
+    }
+
+    /// Returns target-specific reverse coverage. A qualified target cannot
+    /// inherit name-only edges from a different registry authority; otherwise
+    /// the cached first incomplete source supplies the coverage state.
+    fn dependent_coverage<'a>(
+        &self,
+        facts: &'a [PackageDependencySourceFacts],
         target: &crate::PackageCoordinate,
-    ) -> Option<ProductText> {
+    ) -> ReverseCoverage<'a> {
         let qualified = target.qualifiers().is_some() || target.subpath().is_some();
         let unresolved = qualified
-            && self
-                .reverse
-                .get(&target.package_type().registry()?)
-                .and_then(|names| names.get(target.lineage_name()))
-                .is_some_and(|edges| !edges.unresolved.is_empty());
+            && target.package_type().registry().is_some_and(|ecosystem| {
+                self.reverse
+                    .get(&ecosystem)
+                    .and_then(|names| names.get(target.lineage_name()))
+                    .is_some_and(|edges| !edges.unresolved.is_empty())
+            });
         if unresolved {
-            Some(ProductText::from_static(
-                "name-only dependency edges do not establish this registry authority",
-            ))
+            ReverseCoverage::QualifiedUnresolved
         } else {
-            self.first_gap.clone()
+            self.reverse_coverage(facts)
         }
     }
 
@@ -1117,9 +1579,12 @@ pub fn linear_dependent_sources(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MAX_PRODUCT_TEXT_BYTES;
     use std::{
+        cell::Cell,
         fs,
         path::PathBuf,
+        rc::Rc,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -1140,6 +1605,496 @@ mod tests {
                 provenance: [frontier.saturating_add(1); 32],
             },
         )
+    }
+
+    fn generous_graph_limits() -> PackageGraphIndexLimits {
+        PackageGraphIndexLimits {
+            max_sources: 10_000,
+            max_fact_bytes: 256 * 1024 * 1024,
+            max_total_rows: 100_000,
+            max_reverse_edges: 100_000,
+            max_index_key_bytes: 64 * 1024 * 1024,
+        }
+    }
+
+    fn empty_source_facts(name: &str) -> PackageDependencySourceFacts {
+        let coordinate =
+            PackageReference::parse(&format!("pkg:cargo/{name}@1.0.0")).expect("source coordinate");
+        (
+            PackageGraphSourceKey::unattributed(coordinate),
+            DependencyFacts::Known(Vec::new().into_boxed_slice()),
+        )
+    }
+
+    #[derive(Debug)]
+    struct StatefulCloneFacts<'a> {
+        facts: &'a [PackageDependencySourceFacts],
+        position: usize,
+        visible_sources: usize,
+        clone_count: Rc<Cell<usize>>,
+    }
+
+    impl Clone for StatefulCloneFacts<'_> {
+        fn clone(&self) -> Self {
+            let clone_count = self.clone_count.get() + 1;
+            self.clone_count.set(clone_count);
+            Self {
+                facts: self.facts,
+                position: 0,
+                // Make the preflight clone appear within a one-source limit;
+                // the actual collection iterator still yields both sources.
+                visible_sources: 1,
+                clone_count: Rc::clone(&self.clone_count),
+            }
+        }
+    }
+
+    impl<'a> Iterator for StatefulCloneFacts<'a> {
+        type Item = &'a PackageDependencySourceFacts;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            if self.position >= self.visible_sources {
+                return None;
+            }
+            let fact = self.facts.get(self.position)?;
+            self.position += 1;
+            Some(fact)
+        }
+    }
+
+    #[derive(Debug)]
+    struct StatefulPayloadFacts<'a> {
+        preflight_fact: &'a PackageDependencySourceFacts,
+        collection_fact: &'a PackageDependencySourceFacts,
+        use_preflight_fact: bool,
+        emitted: bool,
+        clone_count: Rc<Cell<usize>>,
+    }
+
+    impl Clone for StatefulPayloadFacts<'_> {
+        fn clone(&self) -> Self {
+            self.clone_count.set(self.clone_count.get() + 1);
+            Self {
+                preflight_fact: self.preflight_fact,
+                collection_fact: self.collection_fact,
+                use_preflight_fact: true,
+                emitted: false,
+                clone_count: Rc::clone(&self.clone_count),
+            }
+        }
+    }
+
+    impl<'a> Iterator for StatefulPayloadFacts<'a> {
+        type Item = &'a PackageDependencySourceFacts;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            if std::mem::replace(&mut self.emitted, true) {
+                return None;
+            }
+            Some(if self.use_preflight_fact {
+                self.preflight_fact
+            } else {
+                self.collection_fact
+            })
+        }
+    }
+
+    #[test]
+    fn borrowed_graph_admission_handles_chained_source_boundaries() {
+        let sources = [empty_source_facts("z-last"), empty_source_facts("a-first")];
+        let key_bytes = sources
+            .iter()
+            .map(|(source, _)| source.coordinate.as_str().len() * 3)
+            .sum();
+        let fact_bytes = sources
+            .iter()
+            .map(|(source, _)| {
+                std::mem::size_of::<PackageDependencySourceFacts>()
+                    + source.coordinate.as_str().len()
+            })
+            .sum();
+        let exact_limits = PackageGraphIndexLimits {
+            max_sources: 2,
+            max_fact_bytes: fact_bytes,
+            max_total_rows: 0,
+            max_reverse_edges: 0,
+            max_index_key_bytes: key_bytes,
+        };
+        let borrowed = IndexedCheckedPackageGraph::from_borrowed_facts(
+            sources[..1].iter().chain(sources[1..].iter()),
+            exact_limits,
+        )
+        .expect("borrowed chained sources fit their exact limits");
+        let owned = IndexedCheckedPackageGraph::new(sources.to_vec(), exact_limits)
+            .expect("owned facts fit the same limits");
+        assert_eq!(borrowed.witness(), owned.witness());
+        assert_eq!(borrowed.facts().len(), 2);
+        assert_eq!(
+            borrowed.facts()[0].0.as_str(),
+            "pkg:cargo/a-first@1.0.0",
+            "the borrowed constructor preserves canonical source order"
+        );
+
+        let checked_borrowed = CheckedPackageGraphFacts::from_borrowed_facts(
+            sources[..1].iter().chain(sources[1..].iter()),
+            exact_limits,
+        )
+        .expect("checked-only borrowed sources fit their exact limits");
+        let checked_owned =
+            CheckedPackageGraphFacts::new_with_limits(sources.to_vec(), exact_limits)
+                .expect("checked-only owned facts fit the same limits");
+        assert_eq!(checked_borrowed.facts(), checked_owned.facts());
+        assert_eq!(checked_borrowed.witness(), checked_owned.witness());
+        assert_eq!(
+            checked_borrowed.source_witnesses(),
+            checked_owned.source_witnesses()
+        );
+
+        let mut one_source = exact_limits;
+        one_source.max_sources = 1;
+        assert_eq!(
+            IndexedCheckedPackageGraph::from_borrowed_facts(sources.iter(), one_source)
+                .unwrap_err(),
+            PackageGraphAdmissionError::SourceLimit {
+                observed: 2,
+                maximum: 1,
+            }
+        );
+
+        let mut short_keys = exact_limits;
+        short_keys.max_index_key_bytes -= 1;
+        assert_eq!(
+            IndexedCheckedPackageGraph::from_borrowed_facts(sources.iter(), short_keys)
+                .unwrap_err(),
+            PackageGraphAdmissionError::IndexKeyByteLimit {
+                observed: key_bytes,
+                maximum: key_bytes - 1,
+            }
+        );
+
+        let one_row = [fact(
+            "pkg:cargo/one-row@1.0.0",
+            DependencyScope::Runtime,
+            "serde",
+            RegistryEcosystem::Cargo,
+            None,
+            17,
+        )];
+        let mut no_rows = generous_graph_limits();
+        no_rows.max_total_rows = 0;
+        assert_eq!(
+            IndexedCheckedPackageGraph::from_borrowed_facts(one_row.iter(), no_rows).unwrap_err(),
+            PackageGraphAdmissionError::RowLimit {
+                observed: 1,
+                maximum: 0,
+            }
+        );
+        let mut no_reverse_edges = generous_graph_limits();
+        no_reverse_edges.max_reverse_edges = 0;
+        assert_eq!(
+            IndexedCheckedPackageGraph::from_borrowed_facts(one_row.iter(), no_reverse_edges)
+                .unwrap_err(),
+            PackageGraphAdmissionError::ReverseEdgeLimit {
+                observed: 1,
+                maximum: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn borrowed_graph_admission_rechecks_stateful_clone_iterator_before_each_clone() {
+        let facts = [empty_source_facts("first"), empty_source_facts("second")];
+        let clone_count = Rc::new(Cell::new(0));
+        let iterator = StatefulCloneFacts {
+            facts: &facts,
+            position: 0,
+            visible_sources: facts.len(),
+            clone_count: Rc::clone(&clone_count),
+        };
+        let mut limits = generous_graph_limits();
+        limits.max_sources = 1;
+
+        assert_eq!(
+            IndexedCheckedPackageGraph::from_borrowed_facts(iterator, limits).unwrap_err(),
+            PackageGraphAdmissionError::SourceLimit {
+                observed: 2,
+                maximum: 1,
+            }
+        );
+        assert_eq!(
+            clone_count.get(),
+            1,
+            "only the preflight iterator was cloned"
+        );
+    }
+
+    #[test]
+    fn fact_byte_admission_bounds_reasons_and_requirements_at_the_exact_limit() {
+        let source_coordinate =
+            PackageReference::parse("pkg:cargo/reason-source@1.0.0").expect("source coordinate");
+        let reason_source = PackageGraphSourceKey::unattributed(source_coordinate.clone());
+        let reason = ProductText::new("r".repeat(MAX_PRODUCT_TEXT_BYTES)).expect("reason");
+        let reason_facts = [(
+            reason_source.clone(),
+            DependencyFacts::Unavailable(reason.clone()),
+        )];
+        let reason_fact_bytes = std::mem::size_of::<PackageDependencySourceFacts>()
+            + source_coordinate.as_str().len()
+            + reason.as_str().len();
+        let mut reason_limits = generous_graph_limits();
+        reason_limits.max_sources = 1;
+        reason_limits.max_fact_bytes = reason_fact_bytes;
+        let reason_checked =
+            CheckedPackageGraphFacts::from_borrowed_facts(reason_facts.iter(), reason_limits)
+                .expect("large unavailable reason fits the exact fact-byte limit");
+        assert_eq!(reason_checked.facts(), &reason_facts[..]);
+
+        reason_limits.max_fact_bytes -= 1;
+        assert_eq!(
+            CheckedPackageGraphFacts::from_borrowed_facts(reason_facts.iter(), reason_limits)
+                .unwrap_err(),
+            PackageGraphAdmissionError::FactByteLimit {
+                observed: reason_fact_bytes,
+                maximum: reason_fact_bytes - 1,
+            }
+        );
+
+        let row_source =
+            PackageReference::parse("pkg:cargo/long-requirement-source@1.0.0").expect("row source");
+        let resolved = PackageReference::parse("pkg:cargo/serde@1.0.0").expect("resolved");
+        let requirement = "q".repeat(MAX_PRODUCT_TEXT_BYTES);
+        let row = PackageDependencyRecord::new(
+            row_source.clone(),
+            PackageDependencyTarget::new(
+                RegistryEcosystem::Cargo,
+                "serde",
+                requirement,
+                Some(resolved.clone()),
+            )
+            .expect("long requirement target"),
+            DependencyScope::Runtime,
+            false,
+            DependencyEvidence {
+                authority: DependencyAuthority::RegistryMetadata,
+                frontier: [0x91; 32],
+                provenance: [0x92; 32],
+            },
+        );
+        let row_source_key = PackageGraphSourceKey::unattributed(row_source.clone());
+        let row_facts = [(
+            row_source_key,
+            DependencyFacts::Known(vec![row.clone()].into_boxed_slice()),
+        )];
+        let requirement_fact_bytes = std::mem::size_of::<PackageDependencySourceFacts>()
+            + row_source.as_str().len()
+            + std::mem::size_of::<PackageDependencyRecord>()
+            + row.source.as_str().len()
+            + row.target.name.as_str().len()
+            + row.target.requirement.as_str().len()
+            + resolved.as_str().len();
+        let mut requirement_limits = generous_graph_limits();
+        requirement_limits.max_sources = 1;
+        requirement_limits.max_total_rows = 1;
+        requirement_limits.max_reverse_edges = 1;
+        requirement_limits.max_fact_bytes = requirement_fact_bytes;
+        let indexed =
+            IndexedCheckedPackageGraph::from_borrowed_facts(row_facts.iter(), requirement_limits)
+                .expect("long requirement fits the exact fact-byte limit");
+        assert_eq!(indexed.facts(), &row_facts[..]);
+
+        requirement_limits.max_fact_bytes -= 1;
+        assert_eq!(
+            IndexedCheckedPackageGraph::from_borrowed_facts(row_facts.iter(), requirement_limits)
+                .unwrap_err(),
+            PackageGraphAdmissionError::FactByteLimit {
+                observed: requirement_fact_bytes,
+                maximum: requirement_fact_bytes - 1,
+            }
+        );
+    }
+
+    #[test]
+    fn borrowed_checked_admission_rechecks_second_pass_payload_growth() {
+        let coordinate =
+            PackageReference::parse("pkg:cargo/stateful@1.0.0").expect("source coordinate");
+        let source = PackageGraphSourceKey::unattributed(coordinate.clone());
+        let small_fact = (
+            source.clone(),
+            DependencyFacts::Known(Vec::new().into_boxed_slice()),
+        );
+        let large_reason = ProductText::new("g".repeat(MAX_PRODUCT_TEXT_BYTES)).expect("reason");
+        let grown_fact = (source, DependencyFacts::Unavailable(large_reason.clone()));
+        let facts = [small_fact, grown_fact.clone()];
+        let preflight_fact_bytes =
+            std::mem::size_of::<PackageDependencySourceFacts>() + coordinate.as_str().len();
+        let grown_fact_bytes = preflight_fact_bytes + large_reason.as_str().len();
+        let clone_count = Rc::new(Cell::new(0));
+        let iterator = StatefulPayloadFacts {
+            preflight_fact: &facts[0],
+            collection_fact: &facts[1],
+            use_preflight_fact: false,
+            emitted: false,
+            clone_count: Rc::clone(&clone_count),
+        };
+        let mut limits = generous_graph_limits();
+        limits.max_sources = 1;
+        limits.max_fact_bytes = preflight_fact_bytes;
+
+        assert_eq!(
+            CheckedPackageGraphFacts::from_borrowed_facts(iterator, limits).unwrap_err(),
+            PackageGraphAdmissionError::FactByteLimit {
+                observed: grown_fact_bytes,
+                maximum: preflight_fact_bytes,
+            }
+        );
+        assert_eq!(
+            clone_count.get(),
+            1,
+            "only the preflight iterator was cloned"
+        );
+    }
+
+    #[test]
+    fn indexed_checked_graph_queries_match_independent_forward_and_linear_oracles() {
+        let facts = vec![
+            fact(
+                "pkg:cargo/exact@1.0.0",
+                DependencyScope::Runtime,
+                "serde",
+                RegistryEcosystem::Cargo,
+                Some("pkg:cargo/serde@1.0.0"),
+                1,
+            ),
+            fact(
+                "pkg:cargo/unresolved@1.0.0",
+                DependencyScope::Optional,
+                "serde",
+                RegistryEcosystem::Cargo,
+                None,
+                2,
+            ),
+            fact(
+                "pkg:cargo/dev-only@1.0.0",
+                DependencyScope::Development,
+                "serde",
+                RegistryEcosystem::Cargo,
+                None,
+                3,
+            ),
+            (
+                PackageGraphSourceKey::unattributed(
+                    PackageReference::parse("pkg:cargo/unknown@1.0.0").expect("source"),
+                ),
+                DependencyFacts::Unavailable(
+                    ProductText::new("metadata unavailable").expect("gap"),
+                ),
+            ),
+        ];
+        let graph = IndexedCheckedPackageGraph::new(facts, generous_graph_limits())
+            .expect("admitted checked graph");
+        let target = PackageReference::parse("pkg:cargo/serde@1.0.0").expect("target");
+
+        assert_eq!(
+            graph.dependent_sources(&target),
+            linear_dependent_sources(graph.facts(), &target)
+        );
+        assert_eq!(
+            graph.dependent_sources(&PackageReference::parse("local-query").expect("local")),
+            DependentSources::NotPurl
+        );
+
+        let coordinate = PackageReference::parse("pkg:cargo/exact@1.0.0").expect("coordinate");
+        let expected = graph
+            .facts()
+            .iter()
+            .filter(|(source, _)| source.coordinate == coordinate)
+            .collect::<Vec<_>>();
+        let expected = match expected.as_slice() {
+            [] => PackageDependencyLookup::Missing,
+            [(source, state)] => PackageDependencyLookup::Exact {
+                source,
+                facts: state,
+            },
+            many => PackageDependencyLookup::Ambiguous(
+                many.iter()
+                    .map(|(source, _)| (*source).clone())
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            ),
+        };
+        assert_eq!(graph.dependencies(&coordinate), expected);
+    }
+
+    #[test]
+    fn graph_index_admission_rejects_each_aggregate_without_truncating_facts() {
+        let source = PackageReference::parse("pkg:cargo/admitted@1.0.0").expect("source");
+        let facts = vec![(
+            PackageGraphSourceKey::unattributed(source.clone()),
+            DependencyFacts::Known(
+                vec![PackageDependencyRecord::new(
+                    source.clone(),
+                    PackageDependencyTarget::new(
+                        RegistryEcosystem::Cargo,
+                        "serde",
+                        "^1",
+                        Some(PackageReference::parse("pkg:cargo/serde@1.0.0").expect("resolved")),
+                    )
+                    .expect("target"),
+                    DependencyScope::Runtime,
+                    false,
+                    DependencyEvidence {
+                        authority: DependencyAuthority::RegistryMetadata,
+                        frontier: [8; 32],
+                        provenance: [9; 32],
+                    },
+                )]
+                .into_boxed_slice(),
+            ),
+        )];
+        let mut limits = generous_graph_limits();
+        limits.max_sources = 0;
+        assert_eq!(
+            IndexedCheckedPackageGraph::new(facts.clone(), limits).unwrap_err(),
+            PackageGraphAdmissionError::SourceLimit {
+                observed: 1,
+                maximum: 0,
+            }
+        );
+
+        let mut limits = generous_graph_limits();
+        limits.max_total_rows = 0;
+        assert_eq!(
+            IndexedCheckedPackageGraph::new(facts.clone(), limits).unwrap_err(),
+            PackageGraphAdmissionError::RowLimit {
+                observed: 1,
+                maximum: 0,
+            }
+        );
+
+        let mut limits = generous_graph_limits();
+        limits.max_reverse_edges = 0;
+        assert_eq!(
+            IndexedCheckedPackageGraph::new(facts.clone(), limits).unwrap_err(),
+            PackageGraphAdmissionError::ReverseEdgeLimit {
+                observed: 1,
+                maximum: 0,
+            }
+        );
+
+        let mut limits = generous_graph_limits();
+        limits.max_index_key_bytes = 0;
+        assert!(matches!(
+            IndexedCheckedPackageGraph::new(facts.clone(), limits),
+            Err(PackageGraphAdmissionError::IndexKeyByteLimit {
+                observed,
+                maximum: 0,
+            }) if observed >= source.as_str().len() * 3
+        ));
+
+        let admitted = IndexedCheckedPackageGraph::new(facts.clone(), generous_graph_limits())
+            .expect("untruncated facts fit the supplied limits");
+        assert_eq!(admitted.facts()[0].1, facts[0].1);
+        assert_eq!(admitted.facts()[0].0, facts[0].0);
     }
 
     #[test]

@@ -91,6 +91,7 @@ fn land(store: &mut DataStore, key: &PageKey, value: PageValue) {
     let generation = store
         .pages
         .begin(key, store.snapshot().key())
+        .expect("page generation admission")
         .expect("fresh selected read");
     assert_eq!(
         store.pages.land(key, generation, Ok(value)),
@@ -102,6 +103,7 @@ pub(crate) fn force_land(store: &mut DataStore, key: &PageKey, value: PageValue)
     let generation = store
         .pages
         .begin_forced(key, store.snapshot().key())
+        .expect("page generation admission")
         .expect("new selected fixture read");
     assert_eq!(
         store.pages.land(key, generation, Ok(value)),
@@ -145,6 +147,7 @@ fn current_tree_admits_exact_package_without_semantic_dossier_or_history() {
     let generation = store
         .pages
         .begin(&dossier_key, root())
+        .expect("page generation admission")
         .expect("dossier read");
     store.pages.land(
         &dossier_key,
@@ -580,6 +583,7 @@ fn required_tree_refusal_is_visible_for_every_optional_dossier_phase() {
         let generation = store
             .pages
             .begin(&dossier_key, root())
+            .expect("page generation admission")
             .expect("optional read");
         match optional {
             0 => {} // Pending optional metadata must not hide a finished refusal.
@@ -640,7 +644,11 @@ fn required_symbol_fault_wins_over_pending_source_and_optional_package_fault() {
     .expect("code address");
     let mut store = DataStore::new(Arc::new(at(route.clone())), None);
     let key = PageKey::Symbol(symbol.clone());
-    let generation = store.pages.begin(&key, root()).expect("symbol request");
+    let generation = store
+        .pages
+        .begin(&key, root())
+        .expect("page generation admission")
+        .expect("symbol request");
     store.pages.land(
         &key,
         generation,
@@ -653,6 +661,7 @@ fn required_symbol_fault_wins_over_pending_source_and_optional_package_fault() {
     let generation = store
         .pages
         .begin(&optional, root())
+        .expect("page generation admission")
         .expect("optional dossier request");
     store.pages.land(
         &optional,
@@ -693,10 +702,19 @@ fn current_code_display_does_not_wait_for_a_failed_symbol_pane() {
     };
     land(&mut store, &PageKey::Source(symbol.clone()), PageValue::Source(source));
     let key = PageKey::Symbol(symbol);
-    let generation = store.pages.begin(&key, root()).expect("symbol request");
-    store.pages.land(&key, generation, Err(ReadFailure::Fault(ErrorValue::new(
-        FaultCode::Missing, "symbol unavailable",
-    ))));
+    let generation = store
+        .pages
+        .begin(&key, root())
+        .expect("page generation admission")
+        .expect("symbol request");
+    store.pages.land(
+        &key,
+        generation,
+        Err(ReadFailure::Fault(ErrorValue::new(
+            FaultCode::Missing,
+            "symbol unavailable",
+        ))),
+    );
     assert_eq!(plan.display_phase(&store), crate::core::ReadPhase::Ready);
     assert_eq!(plan.content_phase(&store), crate::core::ReadPhase::Terminal);
 }
@@ -712,10 +730,19 @@ fn current_dossier_display_does_not_wait_for_a_failed_cargo_sibling() {
         crate::shell::tests::registry_dossier(&package),
     ));
     let key = PageKey::Browse(BrowseKey::Tree(requested));
-    let generation = store.pages.begin(&key, root()).expect("Tree request");
-    store.pages.land(&key, generation, Err(ReadFailure::Fault(ErrorValue::new(
-        FaultCode::Transport, "Tree unavailable",
-    ))));
+    let generation = store
+        .pages
+        .begin(&key, root())
+        .expect("page generation admission")
+        .expect("Tree request");
+    store.pages.land(
+        &key,
+        generation,
+        Err(ReadFailure::Fault(ErrorValue::new(
+            FaultCode::Transport,
+            "Tree unavailable",
+        ))),
+    );
     assert_eq!(plan.display_phase(&store), crate::core::ReadPhase::Ready);
     assert_eq!(plan.content_phase(&store), crate::core::ReadPhase::Terminal);
     assert!(plan.current_cargo_package(&store, &package).is_none());
@@ -729,6 +756,7 @@ fn local_library_and_settings_survive_failed_optional_catalog_reads() {
         let generation = store
             .pages
             .begin(&key, root())
+            .expect("page generation admission")
             .expect("optional owner read");
         store.pages.land(
             &key,
@@ -796,6 +824,7 @@ fn owner_readme_is_independent_of_semantic_dossier_but_requires_exact_current_lo
     let generation = store
         .pages
         .begin(&dossier, root())
+        .expect("page generation admission")
         .expect("optional semantic read");
     store.pages.land(
         &dossier,
@@ -907,6 +936,7 @@ fn readme_owner_replacement_retains_inert_bytes_and_fences_late_digest_then_admi
         store
             .pages
             .begin_forced(&key, root())
+            .expect("page generation admission")
             .expect("old owner's replacement read")
     });
     gate.publish(OwnerState::Starting);

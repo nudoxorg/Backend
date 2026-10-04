@@ -1,0 +1,135 @@
+diff --git a/core/translate/vacuum.rs b/core/translate/vacuum.rs
+index 9b47adcb5..4e3571cd2 100644
+--- a/core/translate/vacuum.rs
++++ b/core/translate/vacuum.rs
+@@ -1,9 +1,10 @@
+ //! Translation of VACUUM statements to VDBE bytecode.
+ 
++use crate::translate::expr::sanitize_string;
+ use crate::vdbe::builder::ProgramBuilder;
+ use crate::vdbe::insn::Insn;
+-use crate::{bail_parse_error, Connection, Result};
+-use crate::{sync::Arc, LimboError};
++use crate::{Connection, Result, bail_parse_error};
++use crate::{LimboError, sync::Arc};
+ use turso_parser::ast::{Expr, Literal, Name};
+ 
+ /// Translate a VACUUM statement into VDBE bytecode.
+@@ -83,12 +84,18 @@ pub fn translate_vacuum(
+ fn extract_path_from_expr(expr: &Expr) -> Result<String> {
+     match expr {
+         Expr::Literal(Literal::String(s)) => {
+-            // Remove surrounding quotes if present
+-            let path = s.trim_matches('\'').trim_matches('"');
++            // SQL string literals are single-quoted tokens. Strip only their
++            // matching outer delimiters and decode doubled apostrophes; other
++            // quote characters can be part of the filename.
++            let path = if s.len() >= 2 && s.starts_with('\'') && s.ends_with('\'') {
++                sanitize_string(s)
++            } else {
++                s.clone()
++            };
+             if path.is_empty() {
+                 bail_parse_error!("VACUUM INTO path cannot be empty");
+             }
+-            Ok(path.to_string())
++            Ok(path)
+         }
+         Expr::Id(name) => {
+             // Allow identifier as path (unusual but valid)
+@@ -113,9 +120,44 @@ mod tests {
+ 
+     #[test]
+     fn test_extract_path_from_string_literal_double_quotes() {
+-        let expr = Expr::Literal(Literal::String("\"test.db\"".to_string()));
++        let expr = Expr::Literal(Literal::String("'\"test.db\"'".to_string()));
+         let path = extract_path_from_expr(&expr).unwrap();
+-        assert_eq!(path, "test.db");
++        assert_eq!(path, "\"test.db\"");
++    }
++
++    #[test]
++    fn test_extract_path_decodes_repeated_and_trailing_apostrophes() {
++        let expr = Expr::Literal(Literal::String(
++            "'nested/one''two/three''four/trailing'''".to_string(),
++        ));
++        let path = extract_path_from_expr(&expr).unwrap();
++        assert_eq!(path, "nested/one'two/three'four/trailing'");
++    }
++
++    #[test]
++    fn test_extract_path_preserves_unicode_and_backslashes() {
++        let expr = Expr::Literal(Literal::String(
++            "'unicode/雪\\literal\\tail.db'".to_string(),
++        ));
++        let path = extract_path_from_expr(&expr).unwrap();
++        assert_eq!(path, "unicode/雪\\literal\\tail.db");
++    }
++
++    #[test]
++    fn test_extract_path_from_double_quoted_path_parsed_as_identifier() {
++        use turso_parser::ast::{Cmd, Stmt};
++        use turso_parser::parser::Parser;
++
++        let Cmd::Stmt(Stmt::Vacuum {
++            into: Some(expr), ..
++        }) = Parser::new(b"VACUUM INTO \"double-quoted.db\"")
++            .next_cmd()
++            .unwrap()
++            .unwrap()
++        else {
++            panic!("double-quoted VACUUM path parses as an identifier");
++        };
++        assert_eq!(extract_path_from_expr(&expr).unwrap(), "double-quoted.db");
+     }
+ 
+     #[test]
+diff --git a/tests/integration/query_processing/test_vacuum.rs b/tests/integration/query_processing/test_vacuum.rs
+index 7feb451d1..a0ff4c6f8 100644
+--- a/tests/integration/query_processing/test_vacuum.rs
++++ b/tests/integration/query_processing/test_vacuum.rs
+@@ -629,6 +629,44 @@ fn test_vacuum_into_basic(tmp_db: TempDatabase) -> anyhow::Result<()> {
+     Ok(())
+ }
+ 
++#[turso_macros::test(mvcc, init_sql = "CREATE TABLE t (a INTEGER, b TEXT);")]
++fn test_vacuum_into_decodes_apostrophe_in_destination_path(
++    tmp_db: TempDatabase,
++) -> anyhow::Result<()> {
++    let conn = tmp_db.connect_limbo();
++    conn.execute("INSERT INTO t VALUES (1, 'preserved')")?;
++
++    let dest_dir = TempDir::new()?;
++    let dest_path = dest_dir.path().join("vacuum'snapshot.db");
++    let sql_path = dest_path.to_str().unwrap().replace('\'', "''");
++    conn.execute(format!("VACUUM INTO '{sql_path}'"))?;
++
++    assert!(
++        dest_path.is_file(),
++        "the exact decoded path should be created"
++    );
++    let overescaped_path = dest_dir.path().join("vacuum''snapshot.db");
++    assert!(
++        !overescaped_path.exists(),
++        "the doubled SQL escape must not remain in the filename"
++    );
++
++    let dest_db = TempDatabase::builder()
++        .with_db_path(&dest_path)
++        .with_opts(tmp_db.db_opts)
++        .with_flags(turso_core::OpenFlags::default() | turso_core::OpenFlags::ReadOnly)
++        .build();
++    let dest_conn = dest_db.connect_limbo();
++    assert_eq!(run_integrity_check(&dest_conn), "ok");
++    let rows: Vec<(i64, String)> = dest_conn.exec_rows("SELECT a, b FROM t ORDER BY a");
++    assert_eq!(rows, vec![(1, "preserved".to_string())]);
++    assert!(matches!(
++        dest_conn.execute("INSERT INTO t VALUES (2, 'read only')"),
++        Err(LimboError::ReadOnly)
++    ));
++    Ok(())
++}
++
+ /// Test VACUUM INTO error cases: plain VACUUM, existing file, within
+ /// transaction, and query_only mode.
+ #[turso_macros::test(mvcc)]

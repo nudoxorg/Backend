@@ -1,0 +1,80 @@
+{
+  "base_commit": "f85fb905ddc499bcfe701812ab68e971f7aad097",
+  "base_manifest_sha256": "9d5858a15d59b1a002aae465e77c0cd40626e3920b9863049dc82a1ac7a63dd3",
+  "base_reverified_after_overlay": {
+    "cargo_lock_sha256": "5f997f548c3f47161dd044b441381936a51cb3db35d7ae699c46473769d5467f",
+    "commit": "f85fb905ddc499bcfe701812ab68e971f7aad097",
+    "entries": 9233,
+    "gitlink_entries": 4108,
+    "manifest_kind": "base",
+    "manifest_sha256": "9d5858a15d59b1a002aae465e77c0cd40626e3920b9863049dc82a1ac7a63dd3",
+    "parent_entries": 5125,
+    "status": "verified",
+    "tree": "23d57113d614edc95ee60de3f7a394f4baba3ad6"
+  },
+  "base_verified": {
+    "cargo_lock_sha256": "5f997f548c3f47161dd044b441381936a51cb3db35d7ae699c46473769d5467f",
+    "commit": "f85fb905ddc499bcfe701812ab68e971f7aad097",
+    "entries": 9233,
+    "gitlink_entries": 4108,
+    "manifest_kind": "base",
+    "manifest_sha256": "9d5858a15d59b1a002aae465e77c0cd40626e3920b9863049dc82a1ac7a63dd3",
+    "parent_entries": 5125,
+    "status": "verified",
+    "tree": "23d57113d614edc95ee60de3f7a394f4baba3ad6"
+  },
+  "candidate_manifest_sha256": "29a94e89831913ac4b7a0a9b0723324a5e9f675e390be077f2a796409e63a8f3",
+  "candidate_receipt_sha256": "4b5b64d90eda9a90c8813433e96523f2e097657ea3e7f7dca1bc6af512b826bb",
+  "cargo_lock_sha256": "5f997f548c3f47161dd044b441381936a51cb3db35d7ae699c46473769d5467f",
+  "changed_paths": [
+    "crates/library/lib.rs",
+    "crates/library/package_graph.rs",
+    "crates/library/package_graph_page.rs",
+    "crates/library/semantic_shape.rs",
+    "crates/library/surface.rs",
+    "crates/library/tests/package_graph_source_witness_allocation.rs",
+    "extensions/turso/src/graph.rs",
+    "extensions/turso/src/package_graph_read.rs",
+    "extensions/turso/src/schema.rs",
+    "extensions/turso/src/tests.rs"
+  ],
+  "clone_verified_without_shared_inodes": {
+    "cargo_lock_sha256": "5f997f548c3f47161dd044b441381936a51cb3db35d7ae699c46473769d5467f",
+    "commit": "f85fb905ddc499bcfe701812ab68e971f7aad097",
+    "entries": 9233,
+    "gitlink_entries": 4108,
+    "manifest_kind": "base",
+    "manifest_sha256": "9d5858a15d59b1a002aae465e77c0cd40626e3920b9863049dc82a1ac7a63dd3",
+    "parent_entries": 5125,
+    "status": "verified",
+    "tree": "23d57113d614edc95ee60de3f7a394f4baba3ad6"
+  },
+  "delta_bytes": 135303,
+  "delta_sha256": "453dd60d7f8543332855cd3259adf8a1d8b0b73b88bca6eb11feb2ae8c420966",
+  "entry_count": 9234,
+  "final_verified_without_shared_inodes": {
+    "cargo_lock_sha256": "5f997f548c3f47161dd044b441381936a51cb3db35d7ae699c46473769d5467f",
+    "commit": "40abfeac823123ae752261e3eccffbaed978c994",
+    "entries": 9234,
+    "gitlink_entries": 4108,
+    "manifest_kind": "final",
+    "manifest_sha256": "29a94e89831913ac4b7a0a9b0723324a5e9f675e390be077f2a796409e63a8f3",
+    "parent_entries": 5126,
+    "status": "verified",
+    "tree": "cab3284ce01237a15268c90936f01930ed6d4c35"
+  },
+  "gitlink_commit": "052ad81a7dbb6efed34ea482ae6c7e2e6f6682e0",
+  "gitlink_entries": 4108,
+  "helper_sha256": {
+    "prepare_candidate.py": "448904f83e70fc63349f74486695042580b31e692d07eccf316b5edd579fa25e",
+    "verify_source_manifest.py": "fc13263fddad797774d832e4bdd3e6e029f788e1b588769c3427459fa811b96e"
+  },
+  "no_cargo_or_remote_service_action": true,
+  "package_receipt_sha256": "93785f37cad9ae0e11dd1e537e34714d50ac2dba4a158354f5f7083b79f0f2ac",
+  "parent_entries": 5126,
+  "source_commit": "40abfeac823123ae752261e3eccffbaed978c994",
+  "source_delta_patch_sha256": "89ca1b4787675084b42f37ca73af69a90d092facf3343c959b8f0e93157fbb38",
+  "source_receipt_sha256": "63842e36d61e39e386e839a3252b8e647d5ed92541e9942457952de60faa30a7",
+  "source_tree": "cab3284ce01237a15268c90936f01930ed6d4c35",
+  "status": "source_staged_verified"
+}

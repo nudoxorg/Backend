@@ -42,8 +42,10 @@ mod tests {
 
     #[test]
     fn local_socket_connect_timeout_reaches_the_named_listener() {
+        // The name stays short: macOS refuses a socket path of 104 bytes or more, and a
+        // per-session temporary directory already spends about half of them.
         let path = std::env::temp_dir().join(format!(
-            "backend-platform-local-connect-{}-{}",
+            "bplc-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

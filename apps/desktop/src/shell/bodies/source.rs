@@ -1479,6 +1479,89 @@ mod tests {
     }
 
     #[gpui::test]
+    fn mounted_invalid_go_line_has_one_native_fault_and_valid_go_clears_it(
+        cx: &mut TestAppContext,
+    ) {
+        let route = crate::shell::tests::view_route("RelationLabel", View::Code);
+        let pool = ReadPool::start(2, |_| crate::shell::tests::Fixture).expect("source read pool");
+        let mut rig = crate::shell::tests::rig_with_reads(cx, Some(route), 900.0, 700.0, pool);
+        rig.cx.update(|window, cx| {
+            cx.set_global(gpui::TextTrace);
+            window.set_a11y_forced(true);
+        });
+
+        let field = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+            .bounds_of("source-jump-field")
+            .expect("mounted line input");
+        rig.cx
+            .simulate_click(field.center(), gpui::Modifiers::none());
+        rig.keys("0");
+        let go = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+            .bounds_of("source-jump-go")
+            .expect("mounted Go control");
+        rig.cx.simulate_click(go.center(), gpui::Modifiers::none());
+        rig.settle();
+        rig.repaint();
+        let json = rig
+            .cx
+            .update(|window, _| window.debug_a11y_tree_json())
+            .expect("native Source tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native JSON");
+        let faults: Vec<_> = tree["nodes"]
+            .as_object()
+            .expect("native nodes")
+            .values()
+            .filter(|node| {
+                node["aria"]["role"] == "Status"
+                    && node["aria"]["label"] == "Enter a line from 137 to 141"
+            })
+            .collect();
+        assert_eq!(
+            faults.len(),
+            1,
+            "the painted invalid-Go message must be a single native status: {json}"
+        );
+
+        let field = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+            .bounds_of("source-jump-field")
+            .expect("line input remains mounted");
+        rig.cx
+            .simulate_click(field.center(), gpui::Modifiers::none());
+        rig.keys("backspace 1 3 8");
+        let go = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+            .bounds_of("source-jump-go")
+            .expect("Go control remains mounted");
+        rig.cx.simulate_click(go.center(), gpui::Modifiers::none());
+        rig.settle();
+        rig.repaint();
+        let json = rig
+            .cx
+            .update(|window, _| window.debug_a11y_tree_json())
+            .expect("valid Source tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native JSON");
+        assert!(
+            !tree["nodes"]
+                .as_object()
+                .expect("native nodes")
+                .values()
+                .any(|node| node["aria"]["label"] == "Enter a line from 137 to 141"),
+            "a valid jump must remove the obsolete native fault: {json}"
+        );
+        assert!(
+            rig.said().iter().any(|word| word.contains("Lines 138")),
+            "the valid jump must actually page Source to line 138"
+        );
+    }
+
+    #[gpui::test]
     fn mounted_source_copy_requires_current_owner_before_pointer_focus(cx: &mut TestAppContext) {
         let root = crate::core::VersionedRoot::synthetic(
             backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4,

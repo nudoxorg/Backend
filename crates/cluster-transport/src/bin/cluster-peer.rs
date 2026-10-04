@@ -6,7 +6,7 @@ use std::{
 };
 
 use backend_cluster_transport::{Capability, TransferScope, VerifiedCoverage, bind_direct};
-use iroh::{EndpointAddr, EndpointId, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -38,6 +38,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let input: FetchInput = serde_json::from_slice(&input)?;
     let endpoint =
         bind_direct(SecretKey::from_bytes(&input.client_secret), input.bind_addr).await?;
+    // The endpoint closes on every path. A process that exits without flushing its connection
+    // close leaves the server waiting out its confirmation timeout for a peer that is gone, on
+    // any platform that does not report a vanished UDP peer (macOS and Linux; Windows does).
+    let outcome = transfer(&endpoint, input).await;
+    endpoint.close().await;
+    outcome
+}
+
+async fn transfer(
+    endpoint: &Endpoint,
+    input: FetchInput,
+) -> Result<(), Box<dyn std::error::Error>> {
     let report_timings = std::env::var_os("BACKEND_CLUSTER_MEASURE_TIMINGS").is_some();
     let had_checkpoint = input.checkpoint.exists();
     if input.capabilities.is_empty() {
@@ -49,7 +61,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         for (index, capability) in input.capabilities.into_iter().enumerate() {
             let open_started = Instant::now();
             let mut verified = VerifiedCoverage::open(
-                &endpoint,
+                endpoint,
                 &input.server_addr,
                 input.trusted_issuer,
                 &capability,
@@ -67,7 +79,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let range = capability.claims.range;
             let range_started = Instant::now();
             verified
-                .fetch_range(&endpoint, input.server_addr.clone(), capability)
+                .fetch_range(endpoint, input.server_addr.clone(), capability)
                 .await?;
             add_validation_metrics(&mut validation, verified.verification_metrics());
             if report_timings {
@@ -85,7 +97,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let open_started = Instant::now();
         let first = input.capabilities.first().ok_or("missing first range")?;
         let mut verified = VerifiedCoverage::open(
-            &endpoint,
+            endpoint,
             &input.server_addr,
             input.trusted_issuer,
             first,
@@ -104,7 +116,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let range = capability.claims.range;
             let range_started = Instant::now();
             verified
-                .fetch_range(&endpoint, input.server_addr.clone(), capability)
+                .fetch_range(endpoint, input.server_addr.clone(), capability)
                 .await?;
             if report_timings {
                 eprintln!(
@@ -131,7 +143,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         validation.whole_hash_bytes(),
     );
     println!("complete={}", state.is_complete());
-    endpoint.close().await;
     Ok(())
 }
 

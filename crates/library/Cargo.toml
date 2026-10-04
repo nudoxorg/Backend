@@ -25,6 +25,10 @@ ureq.workspace = true
 allocation-counter.workspace = true
 thiserror.workspace = true
 
+[features]
+# Fixture helpers for the tests of dependent crates. Never part of a product build.
+test-support = []
+
 [lints]
 workspace = true
 

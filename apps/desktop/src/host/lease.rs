@@ -313,7 +313,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock after epoch")
             .as_nanos();
-        let root = PathBuf::from("/tmp").join(format!(
+        let root = crate::host::scratch_base().join(format!(
             "nudox-policy-restart-{}-{nonce}",
             std::process::id()
         ));
@@ -321,7 +321,7 @@ mod tests {
         let project = root.join("project");
         crate::host::private_dir(&project).expect("private project");
         let data = root.join("state");
-        let endpoint = PathBuf::from("/tmp").join(format!(
+        let endpoint = crate::host::scratch_base().join(format!(
             "nudox-policy-restart-{}-{nonce}.sock",
             std::process::id()
         ));
@@ -370,10 +370,10 @@ mod tests {
             .as_nanos();
         // `/tmp`, not `temp_dir()`: under nix the latter is long enough that
         // the socket path exceeds `sockaddr_un` and the owner refuses to bind.
-        let project = PathBuf::from("/tmp").join(format!("nudox-h-{}-{nonce}", std::process::id()));
+        let project = crate::host::scratch_base().join(format!("nudox-h-{}-{nonce}", std::process::id()));
         let data = project.join("state");
         let endpoint =
-            PathBuf::from("/tmp").join(format!("nudox-h-{}-{nonce}.sock", std::process::id()));
+            crate::host::scratch_base().join(format!("nudox-h-{}-{nonce}.sock", std::process::id()));
         crate::host::private_dir(&project.join("src")).expect("create project");
         fs::write(
             project.join("Cargo.toml"),

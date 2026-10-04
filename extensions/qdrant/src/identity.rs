@@ -317,6 +317,90 @@ pub struct Binding {
     pub frontier: Frontier,
 }
 
+/// Complete canonical identity of one bound semantic projection.
+///
+/// The digest commits to every field of [`Binding`], including the selected
+/// candidate root, authority, read manifest, frontier, workspace, and recipe.
+/// Residence identities use this scope so two admitted views that happen to
+/// contain the same stable row cannot overwrite one another in a shared
+/// collection.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ProjectionIdentity([u8; 32]);
+
+impl ProjectionIdentity {
+    /// Derives the versioned projection identity from the complete binding.
+    #[must_use]
+    pub fn from_binding(binding: Binding) -> Self {
+        Self::from_canonical_fields(
+            *binding.workspace.as_bytes(),
+            *binding.root.as_bytes(),
+            *binding.recipe.as_bytes(),
+            *binding.authority.as_bytes(),
+            *binding.read_manifest.as_bytes(),
+            *binding.frontier.as_bytes(),
+        )
+    }
+
+    /// Reconstructs the identity from its six fixed-width canonical fields.
+    ///
+    /// Durable projection metadata uses this to check that its stored digest
+    /// still matches the exact binding bytes without deserializing arbitrary
+    /// JSON or inventing a workspace-root constructor.
+    #[must_use]
+    pub fn from_canonical_fields(
+        workspace: [u8; 32],
+        root: [u8; 32],
+        recipe: [u8; 32],
+        authority: [u8; 32],
+        read_manifest: [u8; 32],
+        frontier: [u8; 32],
+    ) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"backend.qdrant.projection-identity.v2\0");
+        for field in [workspace, root, recipe, authority, read_manifest, frontier] {
+            hasher.update(&field);
+        }
+        Self(*hasher.finalize().as_bytes())
+    }
+
+    /// Returns the fixed-width canonical digest.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// A binding paired with the one identity computed for all of its remote
+/// residence operations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectionBinding {
+    binding: Binding,
+    identity: ProjectionIdentity,
+}
+
+impl ProjectionBinding {
+    /// Computes the projection identity once for a complete binding.
+    #[must_use]
+    pub fn new(binding: Binding) -> Self {
+        Self {
+            binding,
+            identity: ProjectionIdentity::from_binding(binding),
+        }
+    }
+
+    /// Returns the complete logical binding.
+    #[must_use]
+    pub const fn binding(self) -> Binding {
+        self.binding
+    }
+
+    /// Returns the canonical identity shared by all rows in the binding.
+    #[must_use]
+    pub const fn identity(self) -> ProjectionIdentity {
+        self.identity
+    }
+}
+
 impl Binding {
     /// Creates a complete query binding.
     #[must_use]
@@ -348,5 +432,35 @@ impl Binding {
     #[must_use]
     pub const fn frontier(self) -> Frontier {
         self.frontier
+    }
+}
+
+#[cfg(test)]
+mod projection_identity_tests {
+    use super::ProjectionIdentity;
+
+    #[test]
+    fn canonical_projection_identity_commits_to_each_binding_field() {
+        let fields = [[0_u8; 32]; 6];
+        let identity = ProjectionIdentity::from_canonical_fields(
+            fields[0], fields[1], fields[2], fields[3], fields[4], fields[5],
+        );
+        assert_eq!(
+            identity,
+            ProjectionIdentity::from_canonical_fields(
+                fields[0], fields[1], fields[2], fields[3], fields[4], fields[5],
+            )
+        );
+        for index in 0..fields.len() {
+            let mut changed = fields;
+            changed[index][0] = 1;
+            assert_ne!(
+                identity,
+                ProjectionIdentity::from_canonical_fields(
+                    changed[0], changed[1], changed[2], changed[3], changed[4], changed[5],
+                ),
+                "binding field {index} must fence physical residences"
+            );
+        }
     }
 }
