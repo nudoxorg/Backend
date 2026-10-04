@@ -81,7 +81,7 @@ fn item(ir: &Ir, name: &[u8], kind: ItemKind) -> Result<EntityId, io::Error> {
 }
 fn signature(ir: &Ir, name: &[u8], kind: ItemKind) -> Result<String, io::Error> {
     ir.signature(item(ir, name, kind)?)
-        .map(ToString::to_string)
+        .map(|signature| signature.to_string())
         .ok_or_else(|| io::Error::other(format!("missing Java fixture signature for {:?}", name)))
 }
 fn signatures(ir: &Ir, name: &[u8]) -> Result<Vec<String>, io::Error> {
@@ -89,7 +89,7 @@ fn signatures(ir: &Ir, name: &[u8]) -> Result<Vec<String>, io::Error> {
         .filter(|item| item.name() == name && item.kind() == ItemKind::Function)
         .map(|item| {
             ir.signature(item.id())
-                .map(ToString::to_string)
+                .map(|signature| signature.to_string())
                 .ok_or_else(|| {
                     io::Error::other(format!("missing Java fixture signature for {:?}", name))
                 })
@@ -106,7 +106,7 @@ fn primitive(ir: &Ir) -> Result<String, io::Error> {
         })
         .ok_or_else(|| io::Error::other("Java fixture has no parameter semantic type"))?;
     ir.display_type(ty)
-        .map(ToString::to_string)
+        .map(|display| display.to_string())
         .ok_or_else(|| io::Error::other("Java fixture parameter type has no display form"))
 }
 fn field_type(ir: &Ir, name: &[u8]) -> Result<String, io::Error> {
@@ -116,7 +116,7 @@ fn field_type(ir: &Ir, name: &[u8]) -> Result<String, io::Error> {
         .semantic_type()
         .ok_or_else(|| io::Error::other(format!("Java fixture field {:?} has no type", name)))?;
     ir.display_type(ty)
-        .map(ToString::to_string)
+        .map(|display| display.to_string())
         .ok_or_else(|| io::Error::other(format!("Java fixture field {:?} has no display type", name)))
 }
 
