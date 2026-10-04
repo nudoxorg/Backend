@@ -4773,8 +4773,11 @@ mod tests {
             scratch().join("cold-product-state.json"),
         )
         .expect("cold product state");
-        let dependency_facts: [backend_engine::PackageDependencySourceFacts; 0] = [];
-        let dependency_index = backend_library::PackageGraphIndex::from_facts(&dependency_facts);
+        let dependency_graph = backend_library::IndexedCheckedPackageGraph::new(
+            Vec::new(),
+            crate::process::default_package_graph_limits(),
+        )
+        .expect("admitted empty dependency graph");
         let view = empty_product_view();
 
         let package_reply = state
@@ -4785,8 +4788,7 @@ mod tests {
                 &view,
                 &catalog,
                 &catalog_index,
-                &dependency_facts,
-                &dependency_index,
+                &dependency_graph,
                 None,
             )
             .expect("package query");
@@ -4815,8 +4817,7 @@ mod tests {
                 &view,
                 &catalog,
                 &catalog_index,
-                &dependency_facts,
-                &dependency_index,
+                &dependency_graph,
                 None,
             )
             .expect("versions query");
@@ -4840,8 +4841,7 @@ mod tests {
                 &view,
                 &catalog,
                 &catalog_index,
-                &dependency_facts,
-                &dependency_index,
+                &dependency_graph,
                 None,
             )
             .expect("profile query");

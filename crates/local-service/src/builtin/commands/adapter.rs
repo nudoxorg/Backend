@@ -178,6 +178,7 @@ pub(in crate::builtin) struct CommandAdapter {
     owner_cluster: Option<Arc<super::super::cluster_dispatch::OwnerCompilerClusterRuntime>>,
     pending_stored_acks: Option<Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     dependencies: Option<ResidentDependencies>,
+    graph_limits: backend_library::PackageGraphIndexLimits,
     browse: super::super::browse::BrowseCache,
     browse_lane: BrowseLane,
     /// The index job whose compile runs off the owner loop, if one does.
@@ -325,8 +326,7 @@ struct ResidentDependencies {
 struct ResidentPackageGraph {
     local_witness: [u8; 32],
     registry_revision: Option<CatalogDependencyRevision>,
-    graph_facts: backend_library::CheckedPackageGraphFacts,
-    index: backend_library::PackageGraphIndex,
+    indexed: backend_library::IndexedCheckedPackageGraph,
     synced: Option<GraphProjectionStamp>,
 }
 
@@ -346,7 +346,10 @@ impl ResidentDependencies {
         catalog: ResidentCatalog,
         build_facts: impl FnOnce(
             &ResidentCatalog,
-        ) -> Result<backend_library::CheckedPackageGraphFacts, BuiltinModelError>,
+        ) -> Result<
+            backend_library::IndexedCheckedPackageGraph,
+            BuiltinModelError,
+        >,
     ) -> Result<(), BuiltinModelError> {
         let registry_revision = catalog.dependency_revision();
         if let Some(cached) = resident.as_mut()
@@ -356,16 +359,14 @@ impl ResidentDependencies {
             cached.catalog = catalog;
             return Ok(());
         }
-        let graph_facts = build_facts(&catalog)?;
-        let index = backend_library::PackageGraphIndex::from_checked_facts(&graph_facts);
+        let indexed = build_facts(&catalog)?;
         let synced = resident.as_ref().and_then(|cached| cached.graph.synced);
         *resident = Some(Self {
             catalog,
             graph: ResidentPackageGraph {
                 local_witness,
                 registry_revision,
-                graph_facts,
-                index,
+                indexed,
                 synced,
             },
         });
@@ -425,6 +426,7 @@ impl CommandAdapter {
         forge: ForgeGateway,
         discovery: Option<crate::discovery::DiscoveryGateway>,
         product_state: super::super::ProductState,
+        graph_limits: backend_library::PackageGraphIndexLimits,
         compiler: LocalCompilerClient,
         search_snapshots: super::super::query::SearchSnapshotOwner,
         remote_semantic: super::super::query::RemoteSemantic,
@@ -467,6 +469,7 @@ impl CommandAdapter {
             owner_cluster,
             pending_stored_acks,
             dependencies: None,
+            graph_limits,
             browse: super::super::browse::BrowseCache::default(),
             browse_lane,
             indexing: None,
@@ -3142,14 +3145,17 @@ impl CommandAdapter {
                         }),
                 };
                 let manifests = &self.manifests;
+                let graph_limits = self.graph_limits;
                 ResidentDependencies::select(
                     &mut self.dependencies,
                     local_witness,
                     catalog,
                     |catalog| {
-                        let mut facts = catalog.dependency_facts().to_vec();
-                        facts.extend(manifests.facts().cloned());
-                        backend_library::CheckedPackageGraphFacts::new(facts).map_err(|error| {
+                        backend_library::IndexedCheckedPackageGraph::from_borrowed_facts(
+                            catalog.dependency_facts().iter().chain(manifests.facts()),
+                            graph_limits,
+                        )
+                        .map_err(|error| {
                             BuiltinModelError(format!("check package dependency facts: {error}"))
                         })
                     },
@@ -3163,7 +3169,7 @@ impl CommandAdapter {
                 })?;
                 let target = GraphProjectionStamp {
                     root: view.root(),
-                    facts_witness: cached.graph.graph_facts.witness(),
+                    facts_witness: cached.graph.indexed.witness(),
                 };
                 if cached.graph.synced != Some(target) {
                     if let (Some(registry), Some(snapshot)) =
@@ -3177,7 +3183,10 @@ impl CommandAdapter {
                         ));
                     }
                     graph_base
-                        .synchronize(&mut self.sql_projection, &cached.graph.graph_facts)
+                        .synchronize(
+                            &mut self.sql_projection,
+                            cached.graph.indexed.checked_facts(),
+                        )
                         .map_err(|error| {
                             BuiltinModelError(format!("align package graph projection: {error}"))
                         })?;
@@ -3203,13 +3212,8 @@ impl CommandAdapter {
                                 self.sql_projection.read_package_graph_page(&request),
                             )
                             .map_err(|error| error.to_string())?;
-                            page.admit_against_checked_facts(
-                                &request,
-                                root,
-                                &cached.graph.graph_facts,
-                                &cached.graph.index,
-                            )
-                            .map_err(|error| error.to_string())?;
+                            page.admit_against_checked_facts(&request, root, &cached.graph.indexed)
+                                .map_err(|error| error.to_string())?;
                             Ok(backend_engine::SurfaceReply::PackageGraphPage(page))
                         }),
                     _ => self
@@ -3219,8 +3223,7 @@ impl CommandAdapter {
                             view,
                             cached.catalog.records(),
                             cached.catalog.index(),
-                            cached.graph.graph_facts.facts(),
-                            &cached.graph.index,
+                            &cached.graph.indexed,
                             workspace.as_deref(),
                             discovery_store,
                             cached.catalog.rows_snapshot(),
@@ -3599,9 +3602,9 @@ fn map_semantic_authority_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        ADD_TARGET_REQUIRED, AddTarget, CommandAdapter, Executed, IndexJob, IndexJobWork,
-        GraphProjectionStamp, MAX_WAITING_COMMANDS, ProductDaemon, ResidentCatalog,
-        ResidentDependencies, admitted_project_source_root, classify_add_target,
+        ADD_TARGET_REQUIRED, AddTarget, CommandAdapter, Executed, GraphProjectionStamp, IndexJob,
+        IndexJobWork, MAX_WAITING_COMMANDS, ProductDaemon, ResidentCatalog, ResidentDependencies,
+        admitted_project_source_root, classify_add_target,
     };
     use crate::builtin::{
         BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinProfile,
@@ -3626,19 +3629,22 @@ mod tests {
 
     use super::{Command, WireCertificate, WireClaim};
 
-    fn checked_resident_graph(reason: &'static str) -> backend_library::CheckedPackageGraphFacts {
-        backend_library::CheckedPackageGraphFacts::new(vec![(
-            backend_library::PackageGraphSourceKey::new(
-                backend_library::PackageReference::parse("pkg:cargo/resident-fixture@1.0.0")
-                    .expect("source coordinate"),
-                backend_library::PackageGraphSourceAuthority::Registry(
-                    backend_library::RegistryAuthorityId::from_configured_source([7; 32]),
+    fn checked_resident_graph(reason: &'static str) -> backend_library::IndexedCheckedPackageGraph {
+        backend_library::IndexedCheckedPackageGraph::new(
+            vec![(
+                backend_library::PackageGraphSourceKey::new(
+                    backend_library::PackageReference::parse("pkg:cargo/resident-fixture@1.0.0")
+                        .expect("source coordinate"),
+                    backend_library::PackageGraphSourceAuthority::Registry(
+                        backend_library::RegistryAuthorityId::from_configured_source([7; 32]),
+                    ),
                 ),
-            ),
-            backend_library::DependencyFacts::Unknown(backend_library::ProductText::from_static(
-                reason,
-            )),
-        )])
+                backend_library::DependencyFacts::Unknown(
+                    backend_library::ProductText::from_static(reason),
+                ),
+            )],
+            crate::process::default_package_graph_limits(),
+        )
         .expect("checked source facts")
     }
 
@@ -3654,7 +3660,7 @@ mod tests {
         })
         .expect("initial graph");
         let cached = resident.as_mut().expect("resident graph");
-        let original = cached.graph.graph_facts.clone();
+        let original = cached.graph.indexed.checked_facts().clone();
         let stamp = GraphProjectionStamp {
             root: backend_library::view_state_root(&[]),
             facts_witness: original.witness(),
@@ -3671,20 +3677,14 @@ mod tests {
         })
         .expect("select overlay without graph work");
         let cached = resident.as_ref().expect("retained graph");
-        assert!(std::ptr::eq(
-            cached.graph.graph_facts.facts(),
-            original.facts()
-        ));
+        assert!(std::ptr::eq(cached.graph.indexed.facts(), original.facts()));
         assert!(cached.graph.synced == Some(stamp));
         let ResidentCatalog::Unconfigured(actual_overlay) = &cached.catalog else {
             panic!("unconfigured overlay");
         };
         assert!(Arc::ptr_eq(actual_overlay, &expected_overlay));
         assert!(matches!(
-            cached.graph.index.dependencies(
-                cached.graph.graph_facts.facts(),
-                &original.facts()[0].0.coordinate
-            ),
+            cached.graph.indexed.dependencies(&original.facts()[0].0.coordinate),
             backend_library::PackageDependencyLookup::Exact {
                 facts: backend_library::DependencyFacts::Unknown(reason),
                 ..
@@ -3699,7 +3699,13 @@ mod tests {
             Ok(checked_resident_graph("original dependency evidence"))
         })
         .expect("initial graph");
-        let original = resident.as_ref().expect("resident graph").graph.graph_facts.clone();
+        let original = resident
+            .as_ref()
+            .expect("resident graph")
+            .graph
+            .indexed
+            .checked_facts()
+            .clone();
         let mut builds = 0;
         ResidentDependencies::select(&mut resident, [2; 32], unconfigured_catalog(), |_| {
             builds += 1;
@@ -3708,7 +3714,7 @@ mod tests {
         .expect("changed graph");
         assert_eq!(builds, 1);
         let cached = resident.as_mut().expect("changed graph residence");
-        let changed = cached.graph.graph_facts.clone();
+        let changed = cached.graph.indexed.checked_facts().clone();
         assert_ne!(changed.witness(), original.witness());
         assert!(!std::ptr::eq(changed.facts(), original.facts()));
         let stamp = GraphProjectionStamp {
@@ -3721,16 +3727,18 @@ mod tests {
         };
         let catalog_before_failure = Arc::clone(catalog_before_failure);
 
-        let failed = ResidentDependencies::select(
-            &mut resident,
-            [3; 32],
-            unconfigured_catalog(),
-            |_| Err(crate::builtin::BuiltinModelError("rebuild refused".to_owned())),
-        );
+        let failed =
+            ResidentDependencies::select(&mut resident, [3; 32], unconfigured_catalog(), |_| {
+                Err(crate::builtin::BuiltinModelError(
+                    "rebuild refused".to_owned(),
+                ))
+            });
         assert!(failed.is_err());
-        let cached = resident.as_ref().expect("prior successful residence retained");
+        let cached = resident
+            .as_ref()
+            .expect("prior successful residence retained");
         assert_eq!(cached.graph.local_witness, [2; 32]);
-        assert!(std::ptr::eq(cached.graph.graph_facts.facts(), changed.facts()));
+        assert!(std::ptr::eq(cached.graph.indexed.facts(), changed.facts()));
         assert!(cached.graph.synced == Some(stamp));
         let ResidentCatalog::Unconfigured(catalog_after_failure) = &cached.catalog else {
             panic!("unconfigured catalog");
@@ -3889,6 +3897,7 @@ mod tests {
                 forge,
                 None,
                 product_state,
+                crate::process::default_package_graph_limits(),
                 compiler,
                 super::super::super::query::SearchSnapshotOwner::default(),
                 remote,

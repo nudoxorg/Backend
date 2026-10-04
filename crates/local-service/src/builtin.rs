@@ -1697,11 +1697,11 @@ pub(crate) fn compose_owner(
                 "open registry catalog for graph projection: {error}"
             ))
         })?;
-        let facts =
-            backend_library::CheckedPackageGraphFacts::new(catalog.dependency_facts().to_vec())
-                .map_err(|error| {
-                    ProcessError::Profile(format!("check package graph seed: {error}"))
-                })?;
+        let facts = backend_library::CheckedPackageGraphFacts::from_borrowed_facts(
+            catalog.dependency_facts().iter(),
+            config.package_graph_limits,
+        )
+        .map_err(|error| ProcessError::Profile(format!("check package graph seed: {error}")))?;
         if !registry
             .validate_resident_projection(&catalog)
             .map_err(|error| {
@@ -1739,6 +1739,7 @@ pub(crate) fn compose_owner(
         forge,
         discovery,
         product_state,
+        config.package_graph_limits,
         compiler,
         search_snapshots,
         remote_semantic,

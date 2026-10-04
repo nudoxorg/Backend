@@ -52,7 +52,7 @@ impl LocalManifestResidence {
     }
 
     /// Facts from roots whose manifests parsed.
-    pub(crate) fn facts(&self) -> impl Iterator<Item = &PackageDependencySourceFacts> {
+    pub(crate) fn facts(&self) -> impl Iterator<Item = &PackageDependencySourceFacts> + Clone {
         self.entries
             .values()
             .filter_map(|entry| match &entry.outcome {

@@ -1,8 +1,8 @@
 //! Snapshot-bound, bounded package graph pages and opaque continuations.
 
 use crate::package_graph::{
-    CheckedPackageGraphFacts, DependencyFacts, PackageDependencyRecord, PackageGraphIndex,
-    PackageGraphSourceAuthority, PackageGraphSourceKey, RegistryAuthorityId,
+    CheckedPackageGraphFacts, DependencyFacts, IndexedCheckedPackageGraph, PackageDependencyRecord,
+    PackageGraphSourceAuthority, PackageGraphSourceKey, RegistryAuthorityId, ReverseCoverage,
 };
 use crate::{PackageReference, ProductText};
 use serde::{Deserialize, Serialize};
@@ -479,20 +479,17 @@ impl PackageGraphPage {
     ///
     /// The forward path seeks directly to the selected canonical source and
     /// edge cursor. The reverse path reads only the matching sorted postings
-    /// from `index`, bounded to one page plus its continuation probe.
+    /// from the paired resident index, bounded to one page plus its
+    /// continuation probe.
     pub fn admit_against_checked_facts(
         &self,
         request: &PackageGraphPageRequest,
         expected_view_root: [u8; 32],
-        facts: &CheckedPackageGraphFacts,
-        index: &PackageGraphIndex,
+        graph: &IndexedCheckedPackageGraph,
     ) -> Result<(), PackageGraphPageError> {
         request.admit()?;
         self.admit_for(request)?;
-        if !index.is_bound_to(facts) {
-            return Err(PackageGraphPageError::FactsMismatch);
-        }
-        let expected = expected_page(request, expected_view_root, facts, index)?;
+        let expected = expected_page(request, expected_view_root, graph)?;
         if self != &expected {
             return Err(PackageGraphPageError::FactsMismatch);
         }
@@ -512,9 +509,9 @@ enum CheckedSourceSelection<'a> {
 fn expected_page(
     request: &PackageGraphPageRequest,
     view_root: [u8; 32],
-    facts: &CheckedPackageGraphFacts,
-    index: &PackageGraphIndex,
+    graph: &IndexedCheckedPackageGraph,
 ) -> Result<PackageGraphPage, PackageGraphPageError> {
+    let facts = graph.checked_facts();
     let facts_witness = facts.witness();
     if let Some(cursor) = &request.cursor
         && (cursor.schema != PACKAGE_GRAPH_PAGE_SCHEMA
@@ -619,8 +616,7 @@ fn expected_page(
             },
         },
         PackageGraphDirection::Dependents => {
-            let (rows, more) = index.dependent_edges_page(
-                facts.facts(),
+            let (rows, more) = graph.dependent_edges_page(
                 &request.package,
                 request.cursor.as_ref().map(|cursor| cursor.after_edge_id),
                 request.limit,
@@ -633,34 +629,44 @@ fn expected_page(
                     )),
                 },
                 PackageReference::Purl(target) if target.package_type().registry().is_none() => {
-                    checked_reverse_knowledge(facts.facts())
+                    reverse_coverage_knowledge(graph.reverse_coverage())
                 }
                 PackageReference::Purl(target) => {
-                    let coverage = checked_reverse_knowledge(facts.facts());
+                    // Preserve canonical first-gap precedence. Only when all
+                    // sources are complete can unresolved name-only postings
+                    // introduce the target-specific qualified-coordinate gap.
+                    let coverage = match graph.reverse_coverage() {
+                        ReverseCoverage::Known => graph.dependent_coverage(target),
+                        incomplete => incomplete,
+                    };
                     match coverage {
-                        PackageGraphKnowledge::Known => index
-                            .dependent_coverage_gap(target)
-                            .map_or(PackageGraphKnowledge::Known, |reason| {
-                                PackageGraphKnowledge::Partial {
-                                    reason,
-                                    unavailable: false,
-                                }
-                            }),
-                        PackageGraphKnowledge::Unknown {
-                            reason: Some(reason),
-                        } if !rows.is_empty() || more => PackageGraphKnowledge::Partial {
-                            reason,
+                        ReverseCoverage::Known => PackageGraphKnowledge::Known,
+                        ReverseCoverage::QualifiedUnresolved => PackageGraphKnowledge::Partial {
+                            reason: coverage
+                                .into_gap()
+                                .expect("qualified reverse coverage carries a reason"),
                             unavailable: false,
                         },
-                        PackageGraphKnowledge::Unavailable { reason }
-                            if !rows.is_empty() || more =>
-                        {
+                        ReverseCoverage::Unknown(reason) if !rows.is_empty() || more => {
                             PackageGraphKnowledge::Partial {
-                                reason,
+                                reason: reason.clone(),
+                                unavailable: false,
+                            }
+                        }
+                        ReverseCoverage::Unavailable(reason) if !rows.is_empty() || more => {
+                            PackageGraphKnowledge::Partial {
+                                reason: reason.clone(),
                                 unavailable: true,
                             }
                         }
-                        other => other,
+                        ReverseCoverage::Unknown(reason) => PackageGraphKnowledge::Unknown {
+                            reason: Some(reason.clone()),
+                        },
+                        ReverseCoverage::Unavailable(reason) => {
+                            PackageGraphKnowledge::Unavailable {
+                                reason: reason.clone(),
+                            }
+                        }
                     }
                 }
             };
@@ -748,21 +754,22 @@ fn select_checked_source<'a>(
     }
 }
 
-fn checked_reverse_knowledge(
-    facts: &[crate::package_graph::PackageDependencySourceFacts],
-) -> PackageGraphKnowledge {
-    facts
-        .iter()
-        .find_map(|(_, state)| match state {
-            DependencyFacts::Unknown(reason) => Some(PackageGraphKnowledge::Unknown {
-                reason: Some(reason.clone()),
-            }),
-            DependencyFacts::Unavailable(reason) => Some(PackageGraphKnowledge::Unavailable {
-                reason: reason.clone(),
-            }),
-            DependencyFacts::Known(_) => None,
-        })
-        .unwrap_or(PackageGraphKnowledge::Known)
+fn reverse_coverage_knowledge(coverage: ReverseCoverage<'_>) -> PackageGraphKnowledge {
+    match coverage {
+        ReverseCoverage::Known => PackageGraphKnowledge::Known,
+        ReverseCoverage::Unknown(reason) => PackageGraphKnowledge::Unknown {
+            reason: Some(reason.clone()),
+        },
+        ReverseCoverage::Unavailable(reason) => PackageGraphKnowledge::Unavailable {
+            reason: reason.clone(),
+        },
+        ReverseCoverage::QualifiedUnresolved => PackageGraphKnowledge::Partial {
+            reason: coverage
+                .into_gap()
+                .expect("qualified reverse coverage carries a reason"),
+            unavailable: false,
+        },
+    }
 }
 
 fn product_text(value: &str) -> ProductText {
@@ -882,9 +889,9 @@ fn parse_hex(value: u8) -> Option<u8> {
 mod tests {
     use super::*;
     use crate::{
-        CheckedPackageGraphFacts, DependencyAuthority, DependencyEvidence, DependencyFacts,
-        DependencyScope, PackageDependencySourceFacts, PackageDependencyTarget, PackageGraphIndex,
-        RegistryEcosystem,
+        DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
+        IndexedCheckedPackageGraph, PackageDependencySourceFacts, PackageDependencyTarget,
+        PackageGraphIndexLimits, RegistryEcosystem,
     };
 
     fn package() -> PackageReference {
@@ -926,9 +933,85 @@ mod tests {
         )
     }
 
+    fn source_named(name: &str) -> PackageGraphSourceKey {
+        PackageGraphSourceKey::new(
+            PackageReference::parse(&format!("pkg:cargo/{name}@1.0.0")).expect("source coordinate"),
+            PackageGraphSourceAuthority::Registry(RegistryAuthorityId::from_configured_source(
+                [0x18; 32],
+            )),
+        )
+    }
+
+    fn known_source(name: &str, matching_edge: bool) -> PackageDependencySourceFacts {
+        let source = source_named(name);
+        let (target_name, target) = if matching_edge {
+            ("serde", "pkg:cargo/serde@1.0.0")
+        } else {
+            ("log", "pkg:cargo/log@1.0.0")
+        };
+        (
+            source.clone(),
+            DependencyFacts::Known(
+                vec![edge(&source, target_name, "^1", Some(target))].into_boxed_slice(),
+            ),
+        )
+    }
+
+    fn reverse_coverage_scan_oracle(
+        facts: &[PackageDependencySourceFacts],
+        target: &PackageReference,
+    ) -> PackageGraphKnowledge {
+        let first_gap = facts.iter().find_map(|(_, state)| match state {
+            DependencyFacts::Known(_) => None,
+            DependencyFacts::Unknown(reason) => Some((false, reason)),
+            DependencyFacts::Unavailable(reason) => Some((true, reason)),
+        });
+        let has_matching_rows = facts.iter().any(|(_, state)| match state {
+            DependencyFacts::Known(rows) => rows.iter().any(|row| {
+                matches!(
+                    row.scope,
+                    DependencyScope::Runtime | DependencyScope::Optional
+                ) && row.target.ecosystem == RegistryEcosystem::Cargo
+                    && row.target.name.as_str() == "serde"
+                    && row
+                        .target
+                        .resolved
+                        .as_ref()
+                        .is_none_or(|resolved| resolved == target)
+            }),
+            DependencyFacts::Unknown(_) | DependencyFacts::Unavailable(_) => false,
+        });
+        match (first_gap, has_matching_rows) {
+            (None, _) => PackageGraphKnowledge::Known,
+            (Some((false, reason)), true) => PackageGraphKnowledge::Partial {
+                reason: reason.clone(),
+                unavailable: false,
+            },
+            (Some((true, reason)), true) => PackageGraphKnowledge::Partial {
+                reason: reason.clone(),
+                unavailable: true,
+            },
+            (Some((false, reason)), false) => PackageGraphKnowledge::Unknown {
+                reason: Some(reason.clone()),
+            },
+            (Some((true, reason)), false) => PackageGraphKnowledge::Unavailable {
+                reason: reason.clone(),
+            },
+        }
+    }
+
+    fn test_limits() -> PackageGraphIndexLimits {
+        PackageGraphIndexLimits {
+            max_sources: 128,
+            max_fact_bytes: 256 * 1024 * 1024,
+            max_total_rows: 4_096,
+            max_reverse_edges: 4_096,
+            max_index_key_bytes: 8 * 1024 * 1024,
+        }
+    }
+
     fn checked_graph() -> (
-        CheckedPackageGraphFacts,
-        PackageGraphIndex,
+        IndexedCheckedPackageGraph,
         PackageGraphSourceKey,
         Vec<PackageDependencyRecord>,
     ) {
@@ -939,21 +1022,22 @@ mod tests {
             edge(&source, "serde", "^1.1", None),
             edge(&source, "serde", "^2", Some("pkg:cargo/serde@2.0.0")),
         ];
-        let checked = CheckedPackageGraphFacts::new(vec![(
-            source.clone(),
-            DependencyFacts::Known(rows.clone().into_boxed_slice()),
-        )])
+        let graph = IndexedCheckedPackageGraph::new(
+            vec![(
+                source.clone(),
+                DependencyFacts::Known(rows.clone().into_boxed_slice()),
+            )],
+            test_limits(),
+        )
         .expect("checked graph facts");
-        let index = PackageGraphIndex::from_checked_facts(&checked);
-        (checked, index, source, rows)
+        (graph, source, rows)
     }
 
     fn page_for(
         request: &PackageGraphPageRequest,
-        checked: &CheckedPackageGraphFacts,
-        index: &PackageGraphIndex,
+        graph: &IndexedCheckedPackageGraph,
     ) -> PackageGraphPage {
-        expected_page(request, [0xa1; 32], checked, index).expect("expected page")
+        expected_page(request, [0xa1; 32], graph).expect("expected page")
     }
 
     fn rewrite_more_cursor(page: &mut PackageGraphPage, edge_id: [u8; 32]) {
@@ -965,7 +1049,7 @@ mod tests {
 
     #[test]
     fn checked_facts_authenticate_forward_page_membership_state_and_source() {
-        let (checked, index, source, _) = checked_graph();
+        let (graph, source, _) = checked_graph();
         let request = PackageGraphPageRequest::new(
             source.coordinate.clone(),
             PackageGraphDirection::Dependencies,
@@ -973,9 +1057,9 @@ mod tests {
             1,
         )
         .expect("request");
-        let page = page_for(&request, &checked, &index);
+        let page = page_for(&request, &graph);
         assert_eq!(
-            page.admit_against_checked_facts(&request, [0xa1; 32], &checked, &index),
+            page.admit_against_checked_facts(&request, [0xa1; 32], &graph),
             Ok(())
         );
         assert!(matches!(page.terminal, PackageGraphPageTerminal::More(_)));
@@ -984,7 +1068,7 @@ mod tests {
         deleted.rows = Box::new([]);
         deleted.terminal = PackageGraphPageTerminal::Complete;
         assert_eq!(
-            deleted.admit_against_checked_facts(&request, [0xa1; 32], &checked, &index),
+            deleted.admit_against_checked_facts(&request, [0xa1; 32], &graph),
             Err(PackageGraphPageError::FactsMismatch)
         );
 
@@ -993,7 +1077,7 @@ mod tests {
         forged_insertion.rows = vec![inserted.clone()].into_boxed_slice();
         rewrite_more_cursor(&mut forged_insertion, inserted.facts_version);
         assert_eq!(
-            forged_insertion.admit_against_checked_facts(&request, [0xa1; 32], &checked, &index),
+            forged_insertion.admit_against_checked_facts(&request, [0xa1; 32], &graph),
             Err(PackageGraphPageError::FactsMismatch)
         );
 
@@ -1004,7 +1088,7 @@ mod tests {
         };
         forged_state.terminal = PackageGraphPageTerminal::Complete;
         assert_eq!(
-            forged_state.admit_against_checked_facts(&request, [0xa1; 32], &checked, &index),
+            forged_state.admit_against_checked_facts(&request, [0xa1; 32], &graph),
             Err(PackageGraphPageError::FactsMismatch)
         );
 
@@ -1014,14 +1098,43 @@ mod tests {
         missing_source.knowledge = PackageGraphKnowledge::Unknown { reason: None };
         missing_source.terminal = PackageGraphPageTerminal::Complete;
         assert_eq!(
-            missing_source.admit_against_checked_facts(&request, [0xa1; 32], &checked, &index),
+            missing_source.admit_against_checked_facts(&request, [0xa1; 32], &graph),
+            Err(PackageGraphPageError::FactsMismatch)
+        );
+    }
+
+    #[test]
+    fn page_from_another_indexed_snapshot_is_rejected_as_a_facts_mismatch() {
+        let (graph_a, source_key, _) = checked_graph();
+        let graph_b = IndexedCheckedPackageGraph::new(
+            vec![(
+                source_key.clone(),
+                DependencyFacts::Known(
+                    vec![edge(&source_key, "different", "^9", None)].into_boxed_slice(),
+                ),
+            )],
+            test_limits(),
+        )
+        .expect("second independent graph");
+        let request = PackageGraphPageRequest::new(
+            source_key.coordinate.clone(),
+            PackageGraphDirection::Dependencies,
+            Some(source_key.authority),
+            8,
+        )
+        .expect("request");
+        let page_b = page_for(&request, &graph_b);
+
+        assert_ne!(graph_a.witness(), graph_b.witness());
+        assert_eq!(
+            page_b.admit_against_checked_facts(&request, [0xa1; 32], &graph_a),
             Err(PackageGraphPageError::FactsMismatch)
         );
     }
 
     #[test]
     fn checked_facts_authenticate_reverse_pages_and_keyset_continuations() {
-        let (checked, index, _, rows) = checked_graph();
+        let (graph, _, rows) = checked_graph();
         let target = PackageReference::parse("pkg:cargo/serde@1.0.0").expect("target package");
         let first_request = PackageGraphPageRequest::new(
             target.clone(),
@@ -1030,9 +1143,9 @@ mod tests {
             1,
         )
         .expect("request");
-        let first = page_for(&first_request, &checked, &index);
+        let first = page_for(&first_request, &graph);
         assert_eq!(
-            first.admit_against_checked_facts(&first_request, [0xa1; 32], &checked, &index),
+            first.admit_against_checked_facts(&first_request, [0xa1; 32], &graph),
             Ok(())
         );
         let PackageGraphPageTerminal::More(cursor) = &first.terminal else {
@@ -1040,9 +1153,9 @@ mod tests {
         };
 
         let second_request = first_request.clone().with_cursor(cursor.clone());
-        let second = page_for(&second_request, &checked, &index);
+        let second = page_for(&second_request, &graph);
         assert_eq!(
-            second.admit_against_checked_facts(&second_request, [0xa1; 32], &checked, &index),
+            second.admit_against_checked_facts(&second_request, [0xa1; 32], &graph),
             Ok(())
         );
         assert_eq!(second.rows.len(), 1);
@@ -1051,7 +1164,7 @@ mod tests {
         deleted.rows = Box::new([]);
         deleted.terminal = PackageGraphPageTerminal::Complete;
         assert_eq!(
-            deleted.admit_against_checked_facts(&first_request, [0xa1; 32], &checked, &index),
+            deleted.admit_against_checked_facts(&first_request, [0xa1; 32], &graph),
             Err(PackageGraphPageError::FactsMismatch)
         );
 
@@ -1071,21 +1184,191 @@ mod tests {
         forged_insertion.rows = vec![matching.clone()].into_boxed_slice();
         rewrite_more_cursor(&mut forged_insertion, matching.facts_version);
         assert_eq!(
-            forged_insertion.admit_against_checked_facts(
-                &first_request,
-                [0xa1; 32],
-                &checked,
-                &index
-            ),
+            forged_insertion.admit_against_checked_facts(&first_request, [0xa1; 32], &graph),
             Err(PackageGraphPageError::FactsMismatch)
         );
 
-        let mut forged_source = first;
+        let mut forged_source = first.clone();
         forged_source.source = Some(source());
         assert_eq!(
-            forged_source.admit_against_checked_facts(&first_request, [0xa1; 32], &checked, &index),
+            forged_source.admit_against_checked_facts(&first_request, [0xa1; 32], &graph),
             Err(PackageGraphPageError::PageShape)
         );
+
+        // Independent linear scan oracle for the page's exact membership and
+        // canonical ordering; it does not consult the reverse postings.
+        let mut scanned = graph
+            .facts()
+            .iter()
+            .flat_map(|(source_key, state)| match state {
+                DependencyFacts::Known(rows) => rows
+                    .iter()
+                    .filter(|row| {
+                        matches!(
+                            row.scope,
+                            DependencyScope::Runtime | DependencyScope::Optional
+                        ) && row.target.ecosystem == RegistryEcosystem::Cargo
+                            && row.target.name.as_str() == "serde"
+                            && row
+                                .target
+                                .resolved
+                                .as_ref()
+                                .is_none_or(|resolved| resolved == &target)
+                    })
+                    .map(move |row| (row.facts_version, source_key.clone(), row.clone()))
+                    .collect::<Vec<_>>(),
+                DependencyFacts::Unknown(_) | DependencyFacts::Unavailable(_) => Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        scanned.sort_unstable_by_key(|(edge_id, _, _)| *edge_id);
+        assert_eq!(
+            first
+                .rows
+                .iter()
+                .map(|row| row.facts_version)
+                .collect::<Vec<_>>(),
+            scanned
+                .iter()
+                .take(1)
+                .map(|(edge_id, _, _)| *edge_id)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            second
+                .rows
+                .iter()
+                .map(|row| row.facts_version)
+                .collect::<Vec<_>>(),
+            scanned
+                .iter()
+                .skip(1)
+                .take(1)
+                .map(|(edge_id, _, _)| *edge_id)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            matches!(first.terminal, PackageGraphPageTerminal::More(_)),
+            scanned.len() > 1
+        );
+        assert_eq!(
+            matches!(second.terminal, PackageGraphPageTerminal::More(_)),
+            scanned.len() > 2
+        );
+    }
+
+    #[test]
+    fn reverse_page_coverage_matches_an_independent_canonical_scan() {
+        let target = PackageReference::parse("pkg:cargo/serde@1.0.0").expect("target");
+        let unknown = || {
+            (
+                source_named("z-unknown"),
+                DependencyFacts::Unknown(ProductText::new("unknown first gap").expect("reason")),
+            )
+        };
+        let unavailable = || {
+            (
+                source_named("z-unavailable"),
+                DependencyFacts::Unavailable(
+                    ProductText::new("unavailable first gap").expect("reason"),
+                ),
+            )
+        };
+        let cases = vec![
+            ("empty", vec![]),
+            (
+                "all known without a match",
+                vec![known_source("a-known", false)],
+            ),
+            (
+                "all known with a match",
+                vec![known_source("a-known", true)],
+            ),
+            ("unknown without a match", vec![unknown()]),
+            ("unavailable without a match", vec![unavailable()]),
+            (
+                "late unknown after a matching row",
+                vec![known_source("a-known", true), unknown()],
+            ),
+            (
+                "late unavailable after a matching row",
+                vec![known_source("a-known", true), unavailable()],
+            ),
+            (
+                "late unavailable without a matching row",
+                vec![known_source("a-known", false), unavailable()],
+            ),
+            (
+                "early unknown before a later matching row",
+                vec![
+                    (
+                        source_named("a-unknown"),
+                        DependencyFacts::Unknown(
+                            ProductText::new("unknown first gap").expect("reason"),
+                        ),
+                    ),
+                    known_source("z-known", true),
+                ],
+            ),
+            (
+                "early unavailable before a later nonmatching row",
+                vec![
+                    (
+                        source_named("a-unavailable"),
+                        DependencyFacts::Unavailable(
+                            ProductText::new("unavailable first gap").expect("reason"),
+                        ),
+                    ),
+                    known_source("z-known", false),
+                ],
+            ),
+            (
+                "authority tie uses canonical source ordering",
+                vec![
+                    (
+                        PackageGraphSourceKey::new(
+                            PackageReference::parse("pkg:cargo/shared@1.0.0")
+                                .expect("shared coordinate"),
+                            PackageGraphSourceAuthority::Registry(
+                                RegistryAuthorityId::from_configured_source([0x22; 32]),
+                            ),
+                        ),
+                        DependencyFacts::Unknown(
+                            ProductText::new("unknown later authority").expect("reason"),
+                        ),
+                    ),
+                    (
+                        PackageGraphSourceKey::new(
+                            PackageReference::parse("pkg:cargo/shared@1.0.0")
+                                .expect("shared coordinate"),
+                            PackageGraphSourceAuthority::Registry(
+                                RegistryAuthorityId::from_configured_source([0x11; 32]),
+                            ),
+                        ),
+                        DependencyFacts::Unavailable(
+                            ProductText::new("unavailable earlier authority").expect("reason"),
+                        ),
+                    ),
+                ],
+            ),
+        ];
+
+        for (name, facts) in cases {
+            let graph = IndexedCheckedPackageGraph::new(facts, test_limits())
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            let request = PackageGraphPageRequest::new(
+                target.clone(),
+                PackageGraphDirection::Dependents,
+                None,
+                8,
+            )
+            .expect("request");
+            let page = page_for(&request, &graph);
+            assert_eq!(
+                page.knowledge,
+                reverse_coverage_scan_oracle(graph.facts(), &target),
+                "coverage mismatch for {name}"
+            );
+        }
     }
 
     #[test]
@@ -1095,23 +1378,25 @@ mod tests {
             "pkg:cargo/serde@1.0.0?repository_url=https%3A%2F%2Fother.example",
         )
         .expect("qualified target");
-        let checked = CheckedPackageGraphFacts::new(vec![(
-            source.clone(),
-            DependencyFacts::Known(
-                vec![
-                    edge(&source, "serde", "^1", Some(qualified.as_str())),
-                    edge(&source, "serde", "^1", Some("pkg:cargo/serde@1.0.0")),
-                    edge(&source, "serde", "^1", None),
-                ]
-                .into_boxed_slice(),
-            ),
-        )])
+        let graph = IndexedCheckedPackageGraph::new(
+            vec![(
+                source.clone(),
+                DependencyFacts::Known(
+                    vec![
+                        edge(&source, "serde", "^1", Some(qualified.as_str())),
+                        edge(&source, "serde", "^1", Some("pkg:cargo/serde@1.0.0")),
+                        edge(&source, "serde", "^1", None),
+                    ]
+                    .into_boxed_slice(),
+                ),
+            )],
+            test_limits(),
+        )
         .expect("checked facts");
-        let index = PackageGraphIndex::from_checked_facts(&checked);
         let request =
             PackageGraphPageRequest::new(qualified, PackageGraphDirection::Dependents, None, 8)
                 .expect("request");
-        let page = page_for(&request, &checked, &index);
+        let page = page_for(&request, &graph);
         assert_eq!(page.rows.len(), 1);
         assert_eq!(
             page.rows[0].target.resolved.as_ref(),
@@ -1125,7 +1410,7 @@ mod tests {
             }
         ));
         assert_eq!(
-            page.admit_against_checked_facts(&request, [0xa1; 32], &checked, &index),
+            page.admit_against_checked_facts(&request, [0xa1; 32], &graph),
             Ok(())
         );
     }
