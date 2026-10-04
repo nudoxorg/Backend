@@ -1,0 +1,140 @@
+{
+  "base": "f85fb905ddc499bcfe701812ab68e971f7aad097",
+  "base_manifest_sha256": "9d5858a15d59b1a002aae465e77c0cd40626e3920b9863049dc82a1ac7a63dd3",
+  "base_tree": "23d57113d614edc95ee60de3f7a394f4baba3ad6",
+  "candidate": "40abfeac823123ae752261e3eccffbaed978c994",
+  "candidate_receipt_sha256": "4b5b64d90eda9a90c8813433e96523f2e097657ea3e7f7dca1bc6af512b826bb",
+  "cargo_lock_sha256": "5f997f548c3f47161dd044b441381936a51cb3db35d7ae699c46473769d5467f",
+  "changed_files": [
+    {
+      "base_git_blob": "41b8ece017b86fe305dd737f8b1acc9ee0c183e1",
+      "base_sha256": "cbcdd75e689c34bc2f7cc9da7c22835e1e3f2242f1962f990348dfb597f62eb5",
+      "bytes": 16883,
+      "git_blob": "62f3c3ebfd89b025b2cef140dd71e90830049ecd",
+      "mode": "0o644",
+      "path": "crates/library/lib.rs",
+      "source_sha256": "b3a72b5c40848707a56d549d3e1a10268086a1e0d71318acbbff637a291e2c22",
+      "status": "replaced"
+    },
+    {
+      "base_git_blob": "4eb880efb1fd5c66184c348347f0083e25dc4e86",
+      "base_sha256": "b4d8d494a6c9a9b5b1ee57c3f1d55e2dd913fba68428ce127d8e126430604913",
+      "bytes": 146474,
+      "git_blob": "65f37c13c9663801379bb8ef18e8f099d1319d11",
+      "mode": "0o644",
+      "path": "crates/library/package_graph.rs",
+      "source_sha256": "26f20123dad72e26045fa2bbc5b8ee597c37b95f8ab9f06813c84251e3f45c2b",
+      "status": "replaced"
+    },
+    {
+      "base_git_blob": "56466aaa8c61821b9cb4c22f0a6fdc21180eb868",
+      "base_sha256": "557443f02a193a5f6f49aa3dee4fe68f6bf01b0319e17ca2b27c4661c92be5b6",
+      "bytes": 75577,
+      "git_blob": "deed9203b50eed4fdb13aeca033316ee8f419409",
+      "mode": "0o644",
+      "path": "crates/library/package_graph_page.rs",
+      "source_sha256": "68246c25e5aac8cdfc7a29ca1d5dc0a93d2a1c6ddf4039f79b68c0fa9b31819c",
+      "status": "replaced"
+    },
+    {
+      "base_git_blob": "d787f4cabc109492433f340534e41e33cef8f7fa",
+      "base_sha256": "e0e98c9e977d78e6cc950eb455f3f2d215f6ba1cf890eb7ea83f0dd615b736f4",
+      "bytes": 73144,
+      "git_blob": "37cf8e39b27d7923eea67a5f9158cc96e659db7e",
+      "mode": "0o644",
+      "path": "crates/library/semantic_shape.rs",
+      "source_sha256": "9547faa2503babfd1b603555ba1613a9f8f180346cbf43cc7e5b6c2132a96296",
+      "status": "replaced"
+    },
+    {
+      "base_git_blob": "7c42b557c97f0c00f8b605ab5c648c45f4914140",
+      "base_sha256": "2fe4886026cdb206ed8362b7c65d78d138dd94ff40188a2c98a405d987ad8e78",
+      "bytes": 170220,
+      "git_blob": "01d69d9f1cbd568f4974ec635f2d8d68d78e3da7",
+      "mode": "0o644",
+      "path": "crates/library/surface.rs",
+      "source_sha256": "2b5bfffdb0f0cb141be40b03b23ec2399c330709e2801a6f46e4040ec59f707c",
+      "status": "replaced"
+    },
+    {
+      "base_git_blob": null,
+      "base_sha256": null,
+      "bytes": 2219,
+      "git_blob": "47e912fbf6932f8609d924589ae06c17b16d1b49",
+      "mode": "0o644",
+      "path": "crates/library/tests/package_graph_source_witness_allocation.rs",
+      "source_sha256": "b8e0925c10d2be15e329991b593fdbb143a3ba90d761ad99fb0a1c5ca6948fa7",
+      "status": "added"
+    },
+    {
+      "base_git_blob": "10d85b1da87e940065734a812db23146fc283144",
+      "base_sha256": "3c00316e9bceda031bf2f0652e11abdbbd91ad3c282ac7e9f69ae49ce9ddd3c6",
+      "bytes": 57236,
+      "git_blob": "9cc73051c95119a0dda712a1f21d9addde4f23b9",
+      "mode": "0o644",
+      "path": "extensions/turso/src/graph.rs",
+      "source_sha256": "628a9411ba2ec12c7e4391edebc1ec30d070f0d6458a90db812d0a9603922846",
+      "status": "replaced"
+    },
+    {
+      "base_git_blob": "a18d364604abb10a0710d8b7926b92a5e6661c46",
+      "base_sha256": "1aaa0ccda878b47b63599807f624216873e4a4e768c45534c952438c7e0a1dba",
+      "bytes": 66774,
+      "git_blob": "4760b5d4f9fb39b59f1d9f70bce9e0016bd831d5",
+      "mode": "0o644",
+      "path": "extensions/turso/src/package_graph_read.rs",
+      "source_sha256": "904227a7cc885a07cc5eb9a19506c0e43c229840f4d63fd66b2666d1f125854e",
+      "status": "replaced"
+    },
+    {
+      "base_git_blob": "916200b50a3e1590feb49424da38d0c835f2ab80",
+      "base_sha256": "5e2440743ef2fda410ac00f09cda5f1c107ba71729a064851f65e4a56f9eec94",
+      "bytes": 5818,
+      "git_blob": "47bf5ae9a379760f4e9ddaf51ad3501282902012",
+      "mode": "0o644",
+      "path": "extensions/turso/src/schema.rs",
+      "source_sha256": "919ab00251f1aafd97833b7f501b6c10b5e6ef73e26ee4270c9016cba4cfcb82",
+      "status": "replaced"
+    },
+    {
+      "base_git_blob": "d54e6d925e01b7e1bb078f14da627715b272a184",
+      "base_sha256": "9374b300f3048d24a4d35999bf8b4bf728f64da48442c6aa7fdc996e07f19a72",
+      "bytes": 142958,
+      "git_blob": "d9379239e98d8ddf998235acd9c634250601827b",
+      "mode": "0o644",
+      "path": "extensions/turso/src/tests.rs",
+      "source_sha256": "4ca3129a9890048bc101fc6ebc5cb4dac923eb8c94c745cdcde175b0224ed2a7",
+      "status": "replaced"
+    }
+  ],
+  "changed_paths": [
+    "crates/library/lib.rs",
+    "crates/library/package_graph.rs",
+    "crates/library/package_graph_page.rs",
+    "crates/library/semantic_shape.rs",
+    "crates/library/surface.rs",
+    "crates/library/tests/package_graph_source_witness_allocation.rs",
+    "extensions/turso/src/graph.rs",
+    "extensions/turso/src/package_graph_read.rs",
+    "extensions/turso/src/schema.rs",
+    "extensions/turso/src/tests.rs"
+  ],
+  "delta_bytes": 135303,
+  "delta_sha256": "453dd60d7f8543332855cd3259adf8a1d8b0b73b88bca6eb11feb2ae8c420966",
+  "format": "source-delta-packet-v1",
+  "gitlink_blob_entries": 4108,
+  "gitlink_commit": "052ad81a7dbb6efed34ea482ae6c7e2e6f6682e0",
+  "gitlink_tree": "8f51914241b19bb815e49fe1c4ba56fc46da6ea2",
+  "manifest_sha256": "29a94e89831913ac4b7a0a9b0723324a5e9f675e390be077f2a796409e63a8f3",
+  "new_paths": [
+    "crates/library/tests/package_graph_source_witness_allocation.rs"
+  ],
+  "no_cargo_or_build_or_layout": true,
+  "no_transfer_or_remote_mutation": true,
+  "parent_blob_entries": 5126,
+  "source_delta_patch_sha256": "89ca1b4787675084b42f37ca73af69a90d092facf3343c959b8f0e93157fbb38",
+  "source_receipt_sha256": "63842e36d61e39e386e839a3252b8e647d5ed92541e9942457952de60faa30a7",
+  "total_entries": 9234,
+  "tree": "cab3284ce01237a15268c90936f01930ed6d4c35",
+  "verifier_sha256": "fc13263fddad797774d832e4bdd3e6e029f788e1b588769c3427459fa811b96e"
+}

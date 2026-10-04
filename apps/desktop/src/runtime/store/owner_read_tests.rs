@@ -392,7 +392,10 @@ fn even_an_equal_new_landing_is_required_to_restore_current_read_admission() {
     let package = crate::shell::tests::dossier().package;
     let key = PageKey::Package(package.clone());
     let mut pages = PageStore::default();
-    let first = pages.begin(&key, root()).expect("first read");
+    let first = pages
+        .begin(&key, root())
+        .expect("page generation admission")
+        .expect("first read");
     assert_eq!(
         pages.land(
             &key,
@@ -416,7 +419,10 @@ fn even_an_equal_new_landing_is_required_to_restore_current_read_admission() {
         admit_resource(&revoked, root(), true),
         ResourceAdmission::Retained { .. }
     ));
-    let next = pages.begin(&key, root()).expect("same-root renewal");
+    let next = pages
+        .begin(&key, root())
+        .expect("page generation admission")
+        .expect("same-root renewal");
     assert_eq!(
         pages.land(&key, next, Err(ReadFailure::Cancelled)),
         Landing::Applied
@@ -424,6 +430,7 @@ fn even_an_equal_new_landing_is_required_to_restore_current_read_admission() {
     assert!(!admit_resource(&pages.package(&package), root(), true).allows_actions());
     let next = pages
         .begin(&key, root())
+        .expect("page generation admission")
         .expect("renewal after cancellation");
     assert_eq!(
         pages.land(

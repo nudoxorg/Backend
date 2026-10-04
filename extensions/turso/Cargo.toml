@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 backend-library = { path = "../../crates/library" }
+backend-platform = { path = "../../crates/platform" }
 backend-semantic = { path = "../../crates/semantic" }
 backend-store = { path = "../../crates/store" }
 backend-version = { path = "../../crates/version" }

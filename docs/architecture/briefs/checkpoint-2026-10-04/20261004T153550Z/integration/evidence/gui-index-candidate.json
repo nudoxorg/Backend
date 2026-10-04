@@ -1,0 +1,77 @@
+{
+  "created_utc": "2026-10-04T15:16:47.729133+00:00",
+  "artifact_dir": "/private/tmp/nudox-gui-index-composition-20261004T151646Z",
+  "base": "f85fb905ddc499bcfe701812ab68e971f7aad097",
+  "java": {
+    "commit": "0e18c888f70de46c410ddb7333391d661a94d650",
+    "tree": "bd5a9802d89661d1fa43a10fa3336d3a7ab33146",
+    "branch": "codex/semantic-java-fixture-20261004"
+  },
+  "gui": {
+    "commit": "8ee5951186d2f18106c2f3c3d63357322c37b90f",
+    "tree": "6a12ec6713f97d13f013029291df4167724bc62c",
+    "branch": "codex/gui-shelf-reader-integration-20261004"
+  },
+  "graph_java": {
+    "commit": "40abfeac823123ae752261e3eccffbaed978c994",
+    "tree": "cab3284ce01237a15268c90936f01930ed6d4c35",
+    "parent": "d5a19a02268e45b9b0543240e50946708ba628cd"
+  },
+  "combined": {
+    "commit": "4bd52167a74f204eab943ddfb50dad2bebad2bd6",
+    "tree": "db54b98e9ab016f2a0de6cba865acb9efa8d0a9c",
+    "branch": "codex/gui-index-validation-20261004T151646Z",
+    "changed_paths": [
+      "apps/desktop/src/navigation/presentation.rs",
+      "apps/desktop/src/shell/keys.rs",
+      "apps/desktop/src/shell/mod.rs",
+      "apps/desktop/src/shell/reader.rs",
+      "apps/desktop/src/shell/reader_scroll_tests.rs",
+      "apps/desktop/src/shell/root.rs",
+      "apps/desktop/src/shell/shelf_tests.rs",
+      "apps/desktop/src/shell/side/mod.rs",
+      "apps/desktop/src/shell/side/view.rs",
+      "apps/desktop/src/shell/titlebar.rs",
+      "apps/facet/src/probe.rs",
+      "crates/library/lib.rs",
+      "crates/library/package_graph.rs",
+      "crates/library/package_graph_page.rs",
+      "crates/library/semantic_shape.rs",
+      "crates/library/surface.rs",
+      "crates/library/tests/package_graph_source_witness_allocation.rs",
+      "extensions/turso/src/graph.rs",
+      "extensions/turso/src/package_graph_read.rs",
+      "extensions/turso/src/schema.rs",
+      "extensions/turso/src/tests.rs",
+      "vendor/gpui-ce/NUDOX-PATCHES.md",
+      "vendor/gpui-ce/src/elements/list.rs"
+    ],
+    "source_sha256": {
+      "apps/desktop/src/navigation/presentation.rs": "16933213316572b7e876a914c2eedc740557920a18c99305f31d7b33493d5965",
+      "apps/desktop/src/shell/keys.rs": "da657759c6c03d4a43657f1c288bd9d530cba7dc044e6860ec7a9441bca3c52f",
+      "apps/desktop/src/shell/mod.rs": "25e2e5d1f8bed2ef2cd8bf03ee272f18c807c5aa6ff02827ae953c721274cad1",
+      "apps/desktop/src/shell/reader.rs": "f749e7b0658ab85ede2d7dd1c307d05d2285873384ea24f7920a91586544d35f",
+      "apps/desktop/src/shell/reader_scroll_tests.rs": "66af668efd4ffe0f7bc488a2ded59224110b90b8853d437ce5ba4d929f88a109",
+      "apps/desktop/src/shell/root.rs": "e36a424f6a9fdecf5e18ad50dc8ef165f93da88a709ef7620927333bbaf7c246",
+      "apps/desktop/src/shell/shelf_tests.rs": "a7e6eb7dbcca65e6e0d4cc6891bf23d2a6853c149f484e9b139597a52191d3d7",
+      "apps/desktop/src/shell/side/mod.rs": "4d40d3d36a8ada9920319dfc1c0087af10300f25798f3e5d7c73e03a44a27f99",
+      "apps/desktop/src/shell/side/view.rs": "b6a37fed6ccf91157323f4787089c43890e10ce9e0405de302bdc9bd1b444bdd",
+      "apps/desktop/src/shell/titlebar.rs": "bb0c759ba642456e8a2cc9a6256ec4b60ceb5c87b49e2a6cdcada2094fa6747a",
+      "apps/facet/src/probe.rs": "e1b8a45343cec12c3a321689e0aa5d7413e9d230dbb99b89f19066f179c6c6b7",
+      "crates/library/lib.rs": "b3a72b5c40848707a56d549d3e1a10268086a1e0d71318acbbff637a291e2c22",
+      "crates/library/package_graph.rs": "26f20123dad72e26045fa2bbc5b8ee597c37b95f8ab9f06813c84251e3f45c2b",
+      "crates/library/package_graph_page.rs": "68246c25e5aac8cdfc7a29ca1d5dc0a93d2a1c6ddf4039f79b68c0fa9b31819c",
+      "crates/library/semantic_shape.rs": "9547faa2503babfd1b603555ba1613a9f8f180346cbf43cc7e5b6c2132a96296",
+      "crates/library/surface.rs": "2b5bfffdb0f0cb141be40b03b23ec2399c330709e2801a6f46e4040ec59f707c",
+      "crates/library/tests/package_graph_source_witness_allocation.rs": "b8e0925c10d2be15e329991b593fdbb143a3ba90d761ad99fb0a1c5ca6948fa7",
+      "extensions/turso/src/graph.rs": "628a9411ba2ec12c7e4391edebc1ec30d070f0d6458a90db812d0a9603922846",
+      "extensions/turso/src/package_graph_read.rs": "904227a7cc885a07cc5eb9a19506c0e43c229840f4d63fd66b2666d1f125854e",
+      "extensions/turso/src/schema.rs": "919ab00251f1aafd97833b7f501b6c10b5e6ef73e26ee4270c9016cba4cfcb82",
+      "extensions/turso/src/tests.rs": "4ca3129a9890048bc101fc6ebc5cb4dac923eb8c94c745cdcde175b0224ed2a7",
+      "vendor/gpui-ce/NUDOX-PATCHES.md": "8f8bfc106fefcc92ba16824e22a0d2f8877fe4ae3a586e05fc90ee9105ebc7b6",
+      "vendor/gpui-ce/src/elements/list.rs": "f24104fac107cb5c7ab237228ca4c343a912090258936ba45c170292e8ba43d2"
+    }
+  },
+  "main_merge_index_preserved": true,
+  "validation": "Root source review and parse only; actual Rust/GPUI/allocation gates pending; owner-snapshot NOT included"
+}

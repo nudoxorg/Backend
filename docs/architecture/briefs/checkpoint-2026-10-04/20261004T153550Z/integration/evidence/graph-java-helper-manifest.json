@@ -1,0 +1,195 @@
+{
+  "acceptance_limits": [
+    "The positive overlay uses a disposable fixture containing only the ten changed targets; it is not full source-tree verification.",
+    "No APFS clone or source-release layout/staging was run.",
+    "No Rust compiler, Cargo, Nix, integration/runtime, or deployment validation was run."
+  ],
+  "archive_members": [
+    {
+      "bytes": 16883,
+      "mode": "0o644",
+      "path": "source/crates/library/lib.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 146474,
+      "mode": "0o644",
+      "path": "source/crates/library/package_graph.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 75577,
+      "mode": "0o644",
+      "path": "source/crates/library/package_graph_page.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 73144,
+      "mode": "0o644",
+      "path": "source/crates/library/semantic_shape.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 170220,
+      "mode": "0o644",
+      "path": "source/crates/library/surface.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 2219,
+      "mode": "0o644",
+      "path": "source/crates/library/tests/package_graph_source_witness_allocation.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 57236,
+      "mode": "0o644",
+      "path": "source/extensions/turso/src/graph.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 66774,
+      "mode": "0o644",
+      "path": "source/extensions/turso/src/package_graph_read.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 5818,
+      "mode": "0o644",
+      "path": "source/extensions/turso/src/schema.rs",
+      "type": "regular"
+    },
+    {
+      "bytes": 142958,
+      "mode": "0o644",
+      "path": "source/extensions/turso/src/tests.rs",
+      "type": "regular"
+    }
+  ],
+  "candidate": {
+    "base_commit": "f85fb905ddc499bcfe701812ab68e971f7aad097",
+    "base_tree": "23d57113d614edc95ee60de3f7a394f4baba3ad6",
+    "commit": "40abfeac823123ae752261e3eccffbaed978c994",
+    "java_fixture_commit": "0e18c888f70de46c410ddb7333391d661a94d650",
+    "java_fixture_tree": "bd5a9802d89661d1fa43a10fa3336d3a7ab33146",
+    "parent": "d5a19a02268e45b9b0543240e50946708ba628cd",
+    "parent_candidate_tree": "e6623f06263037a5beff115746c8baa2464cee51",
+    "selected_receipt_sha256": "4b5b64d90eda9a90c8813433e96523f2e097657ea3e7f7dca1bc6af512b826bb",
+    "selected_section": "graph_java",
+    "semantic_shape_git_blob": "37cf8e39b27d7923eea67a5f9158cc96e659db7e",
+    "source_receipt_input": "/private/tmp/nudox-latest-gui-index-candidate.json",
+    "source_receipt_sha256": "63842e36d61e39e386e839a3252b8e647d5ed92541e9942457952de60faa30a7",
+    "tree": "cab3284ce01237a15268c90936f01930ed6d4c35"
+  },
+  "changed_paths": [
+    "crates/library/lib.rs",
+    "crates/library/package_graph.rs",
+    "crates/library/package_graph_page.rs",
+    "crates/library/semantic_shape.rs",
+    "crates/library/surface.rs",
+    "crates/library/tests/package_graph_source_witness_allocation.rs",
+    "extensions/turso/src/graph.rs",
+    "extensions/turso/src/package_graph_read.rs",
+    "extensions/turso/src/schema.rs",
+    "extensions/turso/src/tests.rs"
+  ],
+  "counts": {
+    "base_parent_entries": 5125,
+    "base_total_entries": 9233,
+    "candidate_parent_entries": 5126,
+    "candidate_total_entries": 9234,
+    "gitlink_entries": 4108,
+    "new_regular_file": 1,
+    "replaced_regular_files": 9
+  },
+  "cross_pin_audit": "PASS: selected receipt SHA/blob maps match direct Git candidate blobs; Java fixture semantic_shape blob matches candidate; selected section/parent/tree/counts and stager/verifier/package/archive/patch pins agree.",
+  "format": "graph-java-local-validation-packet-v2",
+  "helper_derivation": {
+    "adaptation_notes": "See ../README.md. This packet contains only the selected graph_java ten-path source delta; no GUI candidate files or GUI delta are included.",
+    "copied_from": "/private/tmp/nudox-borrowed-typed-candidate-20261004T144100Z/packet-preparation-v2"
+  },
+  "helper_files": [
+    {
+      "bytes": 18409,
+      "mode": "0o600",
+      "path": "build_candidate_packet.py",
+      "sha256": "4ef3e47f10c73491771a7202c4b62f3f797ded814ef200c48ecfe990d4477611"
+    },
+    {
+      "bytes": 26984,
+      "mode": "0o600",
+      "path": "prepare_candidate.py",
+      "sha256": "448904f83e70fc63349f74486695042580b31e692d07eccf316b5edd579fa25e"
+    },
+    {
+      "bytes": 19919,
+      "mode": "0o600",
+      "path": "verify_source_manifest.py",
+      "sha256": "fc13263fddad797774d832e4bdd3e6e029f788e1b588769c3427459fa811b96e"
+    }
+  ],
+  "local_python_protocol_tests": {
+    "ast_parse": "PASS for all four Python files",
+    "method_names": [
+      "test_positive_packet_and_private_overlay_protocol",
+      "test_unknown_new_path_is_rejected",
+      "test_new_path_cannot_be_reclassified_as_base_content",
+      "test_new_file_type_and_mode_are_pinned",
+      "test_third_source_change_is_rejected",
+      "test_lock_and_gitlink_mismatches_are_rejected",
+      "test_archive_path_traversal_is_rejected",
+      "test_unknown_archive_path_is_rejected",
+      "test_duplicate_archive_path_is_rejected",
+      "test_archive_symlink_is_rejected"
+    ],
+    "methods": 10,
+    "result": "PASS"
+  },
+  "packet_files": [
+    {
+      "bytes": 2625539,
+      "mode": "0o600",
+      "path": "base-source-verification.json",
+      "sha256": "9d5858a15d59b1a002aae465e77c0cd40626e3920b9863049dc82a1ac7a63dd3"
+    },
+    {
+      "bytes": 3430,
+      "mode": "0o600",
+      "path": "candidate-receipt.json",
+      "sha256": "4b5b64d90eda9a90c8813433e96523f2e097657ea3e7f7dca1bc6af512b826bb"
+    },
+    {
+      "bytes": 6244,
+      "mode": "0o600",
+      "path": "package-receipt.json",
+      "sha256": "93785f37cad9ae0e11dd1e537e34714d50ac2dba4a158354f5f7083b79f0f2ac"
+    },
+    {
+      "bytes": 174902,
+      "mode": "0o600",
+      "path": "source-delta.patch",
+      "sha256": "89ca1b4787675084b42f37ca73af69a90d092facf3343c959b8f0e93157fbb38"
+    },
+    {
+      "bytes": 135303,
+      "mode": "0o600",
+      "path": "source-delta.tar.gz",
+      "sha256": "453dd60d7f8543332855cd3259adf8a1d8b0b73b88bca6eb11feb2ae8c420966"
+    },
+    {
+      "bytes": 2626270,
+      "mode": "0o600",
+      "path": "source-verification.json",
+      "sha256": "29a94e89831913ac4b7a0a9b0723324a5e9f675e390be077f2a796409e63a8f3"
+    }
+  ],
+  "scope": "LOCAL ONLY. No transfer, remote mutation, source-worktree edit, APFS clone, release layout/staging, Cargo/build/Nix/native action. Rust acceptance remains unverified.",
+  "test_files": [
+    {
+      "bytes": 10664,
+      "mode": "0o600",
+      "path": "test_candidate_packet.py",
+      "sha256": "e4ae39c790bb026b8b679bcbb9883bcfcf295496ac7d73496d0ca60acee88465"
+    }
+  ]
+}

@@ -7,7 +7,7 @@ use crate::model::local_package::{LocalPackage, LocalPackageLoader};
 use crate::model::snapshot::{DeltaId, ObjectId, PackageSummary, ProjectState};
 use crate::navigation::RequestId;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 /// Cheap cancellation handle shared by a request and the worker.
@@ -16,29 +16,77 @@ pub struct CancellationToken(Arc<CancellationState>);
 
 struct CancellationState {
     cancelled: AtomicBool,
-    next: AtomicU64,
-    waiters: Mutex<Vec<(u64, Arc<dyn Fn() + Send + Sync>)>>,
+    waiters: Mutex<Vec<Arc<CancellationRegistration>>>,
+}
+
+// One allocation per registered wait, as before; the Arc itself supplies
+// exact registration identity without numeric IDs or another wrapper allocation.
+type CancellationRegistration = dyn Fn() + Send + Sync;
+
+/// Isolate each faulty notification, retaining the installed panic hook's
+/// diagnostic. A callback must not make cancellation reversible or strand
+/// another registered wait. Keep the registration outside the callback's
+/// unwind boundary so its capture cannot double-panic during that unwind.
+fn notify_cancellation(registration: Arc<CancellationRegistration>) {
+    isolate_cancellation_panic(|| registration());
+    isolate_cancellation_panic(|| drop(registration));
+}
+
+fn isolate_cancellation_panic(action: impl FnOnce()) {
+    if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(action)) {
+        super::trace::mark(
+            "cancel.callback.panicked",
+            "notification isolated; panic hook retained",
+        );
+        // panic_any can carry a value whose destructor itself panics. Do not
+        // let that second unwind abort the remaining notifications either.
+        if let Err(secondary) =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(payload)))
+        {
+            super::trace::mark(
+                "cancel.payload.panicked",
+                "secondary panic payload retained",
+            );
+            // Only this exceptional secondary payload is leaked: dropping it
+            // could repeat the hostile destructor indefinitely. Ordinary panic
+            // payloads and successful registrations are always released.
+            #[allow(
+                clippy::mem_forget,
+                reason = "a secondary panic payload destructor can panic indefinitely; ordinary payloads are dropped"
+            )]
+            std::mem::forget(secondary);
+        }
+    }
 }
 
 impl std::fmt::Debug for CancellationToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CancellationToken").field("cancelled", &self.is_cancelled()).finish()
+        f.debug_struct("CancellationToken")
+            .field("cancelled", &self.is_cancelled())
+            .finish()
     }
 }
 
-/// A worker wait removes its wakeup when it ends. A token held through a
-/// long page composition therefore cannot accumulate one callback per probe.
+/// A worker wait removes its exact registration when it ends. A token held
+/// through a long page composition cannot accumulate one callback per probe.
 pub(crate) struct CancellationWake {
     state: Weak<CancellationState>,
-    id: u64,
+    registration: Arc<CancellationRegistration>,
 }
 
 impl Drop for CancellationWake {
     fn drop(&mut self) {
-        if let Some(state) = self.state.upgrade() {
-            state.waiters.lock().unwrap_or_else(PoisonError::into_inner)
-                .retain(|(id, _)| *id != self.id);
-        }
+        let removed = self.state.upgrade().and_then(|state| {
+            let mut waiters = state.waiters.lock().unwrap_or_else(PoisonError::into_inner);
+            let position = waiters
+                .iter()
+                .position(|candidate| Arc::ptr_eq(candidate, &self.registration))?;
+            Some(waiters.remove(position))
+        });
+        // Both the removed Vec reference and this handle's own reference are
+        // released after the token mutex is unlocked. Captured destructors
+        // and callbacks may reenter registration without holding that mutex.
+        drop(removed);
     }
 }
 
@@ -48,17 +96,27 @@ impl CancellationToken {
     pub fn new() -> Self {
         Self(Arc::new(CancellationState {
             cancelled: AtomicBool::new(false),
-            next: AtomicU64::new(1),
             waiters: Mutex::new(Vec::new()),
         }))
     }
 
-    /// Requests cancellation without waiting for the worker.
+    /// Irrevocably requests cancellation without joining the worker.
+    /// Every registered callback is attempted outside the token mutex, even
+    /// if another callback panics. The installed panic hook reports failures;
+    /// callback unwinds are isolated. Callbacks must not block indefinitely.
     pub fn cancel(&self) {
         if !self.0.cancelled.swap(true, Ordering::AcqRel) {
-            let waiters = self.0.waiters.lock().unwrap_or_else(PoisonError::into_inner)
-                .iter().map(|(_, wake)| Arc::clone(wake)).collect::<Vec<_>>();
-            for wake in waiters { wake(); }
+            let waiters = {
+                let mut waiters = self
+                    .0
+                    .waiters
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                std::mem::take(&mut *waiters)
+            };
+            for registration in waiters {
+                notify_cancellation(registration);
+            }
         }
     }
 
@@ -68,25 +126,246 @@ impl CancellationToken {
         self.0.cancelled.load(Ordering::Acquire)
     }
 
-    /// Registers one condition-variable wakeup for a worker wait. The
-    /// callback fires immediately when cancellation already happened.
+    /// The flag itself, for blocking platform work that polls an atomic
+    /// (bounded child capture). Setting it directly would skip the waiters:
+    /// cancel through [`Self::cancel`].
+    pub(crate) fn flag(&self) -> &AtomicBool {
+        &self.0.cancelled
+    }
+
+    /// Registers one condition-variable wakeup for a worker wait. The same
+    /// isolated notification fires immediately after cancellation. Dropping
+    /// the handle withdraws only this exact registration before cancellation
+    /// takes it; it does not revoke a notification already taken by cancel.
     pub(crate) fn on_cancel(&self, wake: impl Fn() + Send + Sync + 'static) -> CancellationWake {
-        let id = self.0.next.fetch_add(1, Ordering::Relaxed);
-        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
-        let mut waiters = self.0.waiters.lock().unwrap_or_else(PoisonError::into_inner);
-        if self.is_cancelled() {
-            drop(waiters);
-            wake();
-        } else {
-            waiters.push((id, wake));
+        let registration: Arc<CancellationRegistration> = Arc::new(wake);
+        let notify_now = {
+            let mut waiters = self
+                .0
+                .waiters
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if self.is_cancelled() {
+                true
+            } else {
+                waiters.push(Arc::clone(&registration));
+                false
+            }
+        };
+        if notify_now {
+            notify_cancellation(Arc::clone(&registration));
         }
-        CancellationWake { state: Arc::downgrade(&self.0), id }
+        CancellationWake {
+            state: Arc::downgrade(&self.0),
+            registration,
+        }
     }
 }
 
 impl Default for CancellationToken {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod cancellation_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn callback_panic_does_not_skip_later_waits_or_repeat_cancellation() {
+        let token = CancellationToken::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let failing_calls = Arc::clone(&calls);
+        let failing = token.on_cancel(move || {
+            failing_calls.fetch_add(1, Ordering::AcqRel);
+            panic!("deliberate cancellation callback failure");
+        });
+        let (sent, seen) = mpsc::channel();
+        let weak = Arc::downgrade(&token.0);
+        let later = token.on_cancel(move || {
+            let state = weak.upgrade().expect("token alive");
+            let unlocked = state.waiters.try_lock().is_ok();
+            sent.send((state.cancelled.load(Ordering::Acquire), unlocked))
+                .expect("observation");
+        });
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| token.cancel())).is_ok());
+        assert_eq!(
+            seen.recv_timeout(Duration::from_secs(1))
+                .expect("later notification"),
+            (true, true)
+        );
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        assert!(token.0.waiters.lock().expect("waiters").is_empty());
+        token.cancel();
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        assert!(matches!(seen.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        drop((failing, later));
+    }
+
+    #[test]
+    fn already_cancelled_registration_uses_the_same_isolation_contract() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            token.on_cancel(|| panic!("already-cancelled callback failure"))
+        }));
+        let failing = result.expect("registration returns despite callback failure");
+        let (sent, seen) = mpsc::channel();
+        let later = token.on_cancel(move || {
+            sent.send(()).expect("immediate notification");
+        });
+        seen.recv_timeout(Duration::from_secs(1))
+            .expect("later immediate callback");
+        assert!(token.is_cancelled());
+        assert!(token.0.waiters.lock().expect("waiters").is_empty());
+        drop((failing, later));
+    }
+
+    struct ReentrantCaptureDrop {
+        state: Weak<CancellationState>,
+        observations: mpsc::Sender<bool>,
+    }
+
+    impl Drop for ReentrantCaptureDrop {
+        fn drop(&mut self) {
+            let unlocked = self
+                .state
+                .upgrade()
+                .is_some_and(|state| state.waiters.try_lock().is_ok());
+            let _ = self.observations.send(unlocked);
+        }
+    }
+
+    #[test]
+    fn withdrawing_exact_registration_releases_its_capture_outside_the_mutex() {
+        let token = CancellationToken::new();
+        let (sent, seen) = mpsc::channel();
+        let capture = ReentrantCaptureDrop {
+            state: Arc::downgrade(&token.0),
+            observations: sent,
+        };
+        let first = token.on_cancel(move || {
+            let _ = &capture;
+        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let second = token.on_cancel(move || {
+            observed.fetch_add(1, Ordering::AcqRel);
+        });
+        let identity = Arc::clone(&second.registration);
+        drop(first);
+        assert!(
+            seen.recv_timeout(Duration::from_secs(1))
+                .expect("capture destruction")
+        );
+        {
+            let waiters = token.0.waiters.lock().expect("waiters");
+            assert_eq!(waiters.len(), 1);
+            assert!(Arc::ptr_eq(
+                waiters.first().expect("second registration"),
+                &identity
+            ));
+        }
+        token.cancel();
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        drop((second, identity));
+    }
+
+    #[test]
+    fn concurrent_registration_and_cancellation_deliver_exactly_once() {
+        let token = CancellationToken::new();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let registering = token.clone();
+        let start = Arc::clone(&barrier);
+        let observed = Arc::clone(&calls);
+        let (sent, seen) = mpsc::channel();
+        let registration = std::thread::spawn(move || {
+            start.wait();
+            registering.on_cancel(move || {
+                observed.fetch_add(1, Ordering::AcqRel);
+                sent.send(()).expect("racing notification");
+            })
+        });
+        let cancelling = token.clone();
+        let start = Arc::clone(&barrier);
+        let cancellation = std::thread::spawn(move || {
+            start.wait();
+            cancelling.cancel();
+        });
+        barrier.wait();
+        seen.recv_timeout(Duration::from_secs(1))
+            .expect("either lock ordering delivers");
+        let guard = registration.join().expect("registration thread");
+        cancellation.join().expect("cancellation thread");
+        token.cancel();
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        drop(guard);
+    }
+
+    #[test]
+    fn reentrant_registration_and_withdrawal_cannot_revoke_a_taken_notification() {
+        let token = CancellationToken::new();
+        let holder = Arc::new(Mutex::new(None));
+        let captured = Arc::clone(&holder);
+        let weak = Arc::downgrade(&token.0);
+        let (sent, seen) = mpsc::channel();
+        let nested_sent = sent.clone();
+        let first = token.on_cancel(move || {
+            let state = weak.upgrade().expect("token alive");
+            let nested_sent = nested_sent.clone();
+            let nested = CancellationToken(state).on_cancel(move || {
+                nested_sent.send(3).expect("nested immediate wait");
+            });
+            drop(nested);
+            let withdrawn = captured.lock().expect("test handle holder").take();
+            drop(withdrawn);
+        });
+        let second = token.on_cancel(move || {
+            sent.send(2).expect("already-taken wait");
+        });
+        *holder.lock().expect("test handle holder") = Some(second);
+        token.cancel();
+        assert_eq!(
+            seen.recv_timeout(Duration::from_secs(1))
+                .expect("reentrant callback ran"),
+            3
+        );
+        assert_eq!(
+            seen.recv_timeout(Duration::from_secs(1))
+                .expect("taken callback survives withdrawal"),
+            2
+        );
+        assert!(holder.lock().expect("test handle holder").is_none());
+        assert!(token.0.waiters.lock().expect("waiters").is_empty());
+        drop(first);
+    }
+
+    struct PanickingPayload;
+    impl Drop for PanickingPayload {
+        fn drop(&mut self) {
+            panic!("deliberate panic payload destructor failure");
+        }
+    }
+
+    #[test]
+    fn panicking_panic_payload_destructor_cannot_skip_the_next_notification() {
+        let token = CancellationToken::new();
+        let failing = token.on_cancel(|| std::panic::panic_any(PanickingPayload));
+        let (sent, seen) = mpsc::channel();
+        let later = token.on_cancel(move || {
+            sent.send(()).expect("surviving notification");
+        });
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| token.cancel())).is_ok());
+        seen.recv_timeout(Duration::from_secs(1))
+            .expect("notification after both isolated unwinds");
+        assert!(token.is_cancelled());
+        drop((failing, later));
     }
 }
 
@@ -764,7 +1043,7 @@ fn run_local_reads(
         let result = if read.cancel.is_cancelled() {
             Err(EngineFault::Cancelled)
         } else {
-            let package = loader.load_with_cancel(&read.project, &|| read.cancel.is_cancelled());
+            let package = loader.load_with_cancel(&read.project, read.cancel.flag());
             match package {
                 Some(package) if !read.cancel.is_cancelled() => Ok(EngineDto::LocalPackage {
                     request: read.request,

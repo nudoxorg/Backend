@@ -1498,9 +1498,10 @@ mod tests {
         use backend_frontend_go::legacy::{GoOracle, GoOracleConfiguration};
         use std::path::PathBuf;
 
-        let configuration =
-            GoOracleConfiguration::oracle_binary(PathBuf::from("/opt/compiler/go-oracle"))
-                .expect("absolute test oracle path");
+        let configuration = GoOracleConfiguration::oracle_binary(
+            crate::test_support::host_absolute("/opt/compiler/go-oracle"),
+        )
+        .expect("absolute test oracle path");
         let oracle = GoOracle::default().with_configuration(configuration);
         assert_eq!(
             PortableOptionSnapshotV2::from_go_oracle_options(oracle.portable_invocation_options()),

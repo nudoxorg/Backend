@@ -1,0 +1,53 @@
+{
+  "base": "f85fb905ddc499bcfe701812ab68e971f7aad097",
+  "base_tree": "23d57113d614edc95ee60de3f7a394f4baba3ad6",
+  "format": "selected-source-candidate-v1",
+  "graph_candidate_commit": "d5a19a02268e45b9b0543240e50946708ba628cd",
+  "graph_candidate_tree": "e6623f06263037a5beff115746c8baa2464cee51",
+  "graph_java_commit": "40abfeac823123ae752261e3eccffbaed978c994",
+  "graph_java_parent": "d5a19a02268e45b9b0543240e50946708ba628cd",
+  "graph_java_tree": "cab3284ce01237a15268c90936f01930ed6d4c35",
+  "java_fixture_commit": "0e18c888f70de46c410ddb7333391d661a94d650",
+  "java_fixture_semantic_shape_blob": "37cf8e39b27d7923eea67a5f9158cc96e659db7e",
+  "java_fixture_tree": "bd5a9802d89661d1fa43a10fa3336d3a7ab33146",
+  "main_merge_index_preserved": true,
+  "paths": [
+    "crates/library/lib.rs",
+    "crates/library/package_graph.rs",
+    "crates/library/package_graph_page.rs",
+    "crates/library/semantic_shape.rs",
+    "crates/library/surface.rs",
+    "crates/library/tests/package_graph_source_witness_allocation.rs",
+    "extensions/turso/src/graph.rs",
+    "extensions/turso/src/package_graph_read.rs",
+    "extensions/turso/src/schema.rs",
+    "extensions/turso/src/tests.rs"
+  ],
+  "selected_section": "graph_java",
+  "source_delta_patch_sha256": "89ca1b4787675084b42f37ca73af69a90d092facf3343c959b8f0e93157fbb38",
+  "source_git_blob": {
+    "crates/library/lib.rs": "62f3c3ebfd89b025b2cef140dd71e90830049ecd",
+    "crates/library/package_graph.rs": "65f37c13c9663801379bb8ef18e8f099d1319d11",
+    "crates/library/package_graph_page.rs": "deed9203b50eed4fdb13aeca033316ee8f419409",
+    "crates/library/semantic_shape.rs": "37cf8e39b27d7923eea67a5f9158cc96e659db7e",
+    "crates/library/surface.rs": "01d69d9f1cbd568f4974ec635f2d8d68d78e3da7",
+    "crates/library/tests/package_graph_source_witness_allocation.rs": "47e912fbf6932f8609d924589ae06c17b16d1b49",
+    "extensions/turso/src/graph.rs": "9cc73051c95119a0dda712a1f21d9addde4f23b9",
+    "extensions/turso/src/package_graph_read.rs": "4760b5d4f9fb39b59f1d9f70bce9e0016bd831d5",
+    "extensions/turso/src/schema.rs": "47bf5ae9a379760f4e9ddaf51ad3501282902012",
+    "extensions/turso/src/tests.rs": "d9379239e98d8ddf998235acd9c634250601827b"
+  },
+  "source_receipt_sha256": "63842e36d61e39e386e839a3252b8e647d5ed92541e9942457952de60faa30a7",
+  "source_sha256": {
+    "crates/library/lib.rs": "b3a72b5c40848707a56d549d3e1a10268086a1e0d71318acbbff637a291e2c22",
+    "crates/library/package_graph.rs": "26f20123dad72e26045fa2bbc5b8ee597c37b95f8ab9f06813c84251e3f45c2b",
+    "crates/library/package_graph_page.rs": "68246c25e5aac8cdfc7a29ca1d5dc0a93d2a1c6ddf4039f79b68c0fa9b31819c",
+    "crates/library/semantic_shape.rs": "9547faa2503babfd1b603555ba1613a9f8f180346cbf43cc7e5b6c2132a96296",
+    "crates/library/surface.rs": "2b5bfffdb0f0cb141be40b03b23ec2399c330709e2801a6f46e4040ec59f707c",
+    "crates/library/tests/package_graph_source_witness_allocation.rs": "b8e0925c10d2be15e329991b593fdbb143a3ba90d761ad99fb0a1c5ca6948fa7",
+    "extensions/turso/src/graph.rs": "628a9411ba2ec12c7e4391edebc1ec30d070f0d6458a90db812d0a9603922846",
+    "extensions/turso/src/package_graph_read.rs": "904227a7cc885a07cc5eb9a19506c0e43c229840f4d63fd66b2666d1f125854e",
+    "extensions/turso/src/schema.rs": "919ab00251f1aafd97833b7f501b6c10b5e6ef73e26ee4270c9016cba4cfcb82",
+    "extensions/turso/src/tests.rs": "4ca3129a9890048bc101fc6ebc5cb4dac923eb8c94c745cdcde175b0224ed2a7"
+  }
+}
