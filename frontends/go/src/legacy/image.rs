@@ -92,7 +92,6 @@ const MAGIC: [u8; 4] = *b"NGAI";
 /// The image versions this reader admits: version 5, the complete
 /// zero-copy layout, and version 6, which widens three rows additively
 /// (declaration name extents and bound flags; typed reference rows).
-const VERSION: u16 = 6;
 const SUPPORTED_VERSIONS: [u16; 2] = [5, 6];
 const HEADER_BYTES: usize = 136;
 const MODULE_BYTES: usize = 32;
@@ -2250,7 +2249,7 @@ impl<'image> GoImage<'image> {
 }
 
 /// Child flag bit marking a tilde (`~T`) union term.
-pub const CHILD_TILDE_FLAG: u32 = 1;
+pub(super) const CHILD_TILDE_FLAG: u32 = 1;
 
 /// Exact image rejection returned before a Go fact is admitted.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]

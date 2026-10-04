@@ -1132,8 +1132,8 @@ impl GoOracle {
     }
 
     /// Runs the override executable, or `go run . <module>` in the vendored directory.
-    pub fn run(&self, module: &std::path::Path) -> Result<Output, OracleError> {
-        let oracle_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/legacy/oracle");
+    pub fn run(&self, module: &Path) -> Result<Output, OracleError> {
+        let oracle_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/legacy/oracle");
         let override_bin = std::env::var("NUDOX_GO_ORACLE_BIN");
         let mut command = if let Ok(binary) = override_bin {
             let mut command = std::process::Command::new(binary);
@@ -1161,11 +1161,7 @@ impl GoOracle {
     /// (invoked as `<bin> --authority-image <source> <module>`) or
     /// `go run . --authority-image <source> <module>` in the vendored
     /// directory.
-    pub fn authority_image(
-        &self,
-        source: &std::path::Path,
-        module: &std::path::Path,
-    ) -> Result<Vec<u8>, OracleError> {
+    pub fn authority_image(&self, source: &Path, module: &Path) -> Result<Vec<u8>, OracleError> {
         self.authority_image_with_mode("--authority-image", source, module)
     }
 
@@ -1177,8 +1173,8 @@ impl GoOracle {
     /// selected package's image.
     pub fn authority_image_for_package(
         &self,
-        source: &std::path::Path,
-        module: &std::path::Path,
+        source: &Path,
+        module: &Path,
     ) -> Result<Vec<u8>, OracleError> {
         self.authority_image_with_mode("--authority-image-package", source, module)
     }
@@ -1186,10 +1182,10 @@ impl GoOracle {
     fn authority_image_with_mode(
         &self,
         mode: &str,
-        source: &std::path::Path,
-        module: &std::path::Path,
+        source: &Path,
+        module: &Path,
     ) -> Result<Vec<u8>, OracleError> {
-        let oracle_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/legacy/oracle");
+        let oracle_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/legacy/oracle");
         let override_bin = std::env::var("NUDOX_GO_ORACLE_BIN");
         let mut command = if let Ok(binary) = override_bin {
             let mut command = std::process::Command::new(binary);

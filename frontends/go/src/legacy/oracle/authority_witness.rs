@@ -605,7 +605,7 @@ fn capture_manifest_file(path: &Path, module_directory: Option<&Path>) -> Captur
         Err(_) => return unavailable(resolved),
     };
     let mut bytes = Vec::new();
-    if std::io::Read::by_ref(&mut file)
+    if Read::by_ref(&mut file)
         .take((GO_AUTHORITY_MANIFEST_BYTES_LIMIT + 1) as u64)
         .read_to_end(&mut bytes)
         .is_err()
@@ -1060,7 +1060,7 @@ fn walk_local_tree(
             return false;
         }
         let mut bytes = Vec::with_capacity(length as usize);
-        if std::io::Read::by_ref(&mut file)
+        if Read::by_ref(&mut file)
             .take((GO_LOCAL_TREE_FILE_BYTES_LIMIT + 1) as u64)
             .read_to_end(&mut bytes)
             .is_err()
@@ -1118,7 +1118,7 @@ fn walk_local_tree(
             }
         };
         let mut bytes = Vec::with_capacity(length as usize);
-        if std::io::Read::by_ref(&mut file)
+        if Read::by_ref(&mut file)
             .take((GO_LOCAL_TREE_FILE_BYTES_LIMIT + 1) as u64)
             .read_to_end(&mut bytes)
             .is_err()
