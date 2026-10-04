@@ -21,7 +21,9 @@ use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticPublicat
 use backend_semantic::ir::{
     ArrayShape, ConcreteType, DeclarationIdentity, ExternalTarget, ExternalTargetIdentity,
     FunctionVariadicForm, ItemKind, LanguageProfile, LiteralType, ObjectMember, PropertyKey,
-    SemanticImageView, SemanticReader, TupleElementKind, TypeExpr, TypeId,
+    SemanticImageView, SemanticReader, SignatureCarrierBindingRole,
+    SignatureCarrierBindingsObservation, SignatureCarrierRole, SignatureCarrierRoleObservation,
+    TupleElementKind, TypeExpr, TypeId,
 };
 use std::collections::BTreeSet;
 
@@ -61,22 +63,35 @@ impl ProjectionMeter {
     }
 
     fn node(&mut self, bytes: usize) -> Result<(), SemanticShapeUnavailable> {
-        let nodes = self
+        self.nodes_bytes(1, bytes)
+    }
+
+    fn preflight_nodes_bytes(
+        &self,
+        nodes: usize,
+        bytes: usize,
+    ) -> Result<(usize, usize), SemanticShapeUnavailable> {
+        let total_nodes = self
             .nodes
-            .checked_add(1)
+            .checked_add(nodes)
             .ok_or(SemanticShapeUnavailable::NodeBudget)?;
-        let total = self
+        let total_bytes = self
             .bytes
             .checked_add(bytes)
             .ok_or(SemanticShapeUnavailable::ByteBudget)?;
-        if nodes > self.max_nodes {
+        if total_nodes > self.max_nodes {
             return Err(SemanticShapeUnavailable::NodeBudget);
         }
-        if total > self.max_bytes {
+        if total_bytes > self.max_bytes {
             return Err(SemanticShapeUnavailable::ByteBudget);
         }
-        self.nodes = nodes;
-        self.bytes = total;
+        Ok((total_nodes, total_bytes))
+    }
+
+    fn nodes_bytes(&mut self, nodes: usize, bytes: usize) -> Result<(), SemanticShapeUnavailable> {
+        let (total_nodes, total_bytes) = self.preflight_nodes_bytes(nodes, bytes)?;
+        self.nodes = total_nodes;
+        self.bytes = total_bytes;
         Ok(())
     }
 
@@ -473,29 +488,36 @@ fn project_declaration(
         let go = image.go_extension(entity.id);
         let shape = match entity.kind {
             ItemKind::Function => {
-                let callable = if let Some((parameters, results, abi, variadic, unsafe_)) =
-                    function_type
-                {
-                    project_callable(
-                        image, parameters, results, abi, variadic, unsafe_, package, view, meter,
-                    )?
-                } else if let Some(go) = go {
-                    project_type_list_callable(image, go.signature, package, view, meter)?
-                } else if let Some((type_id, _)) = semantic_type.as_ref() {
-                    SemanticDeclarationShape::Typed(project_type_id(
-                        image,
-                        *type_id,
-                        package,
-                        view,
-                        meter,
-                        &mut BTreeSet::new(),
-                        0,
-                    )?)
-                } else {
-                    SemanticDeclarationShape::Typed(SemanticTypeFact::Unavailable(
-                        SemanticTypeUnavailable::MissingTypeCoordinate,
-                    ))
-                };
+                let callable =
+                    if let Some((parameters, results, abi, variadic, unsafe_)) = function_type {
+                        project_callable(
+                            image, entity.id, parameters, results, abi, variadic, unsafe_, package,
+                            view, meter,
+                        )?
+                    } else if let Some(go) = go {
+                        project_type_list_callable(
+                            image,
+                            entity.id,
+                            go.signature,
+                            package,
+                            view,
+                            meter,
+                        )?
+                    } else if let Some((type_id, _)) = semantic_type.as_ref() {
+                        SemanticDeclarationShape::Typed(project_type_id(
+                            image,
+                            *type_id,
+                            package,
+                            view,
+                            meter,
+                            &mut BTreeSet::new(),
+                            0,
+                        )?)
+                    } else {
+                        SemanticDeclarationShape::Typed(SemanticTypeFact::Unavailable(
+                            SemanticTypeUnavailable::MissingTypeCoordinate,
+                        ))
+                    };
                 callable
             }
             ItemKind::Record
@@ -734,8 +756,128 @@ fn python_language_facts(
     }
 }
 
+fn project_callable_carrier_bindings(
+    image: &SemanticImageView<'_>,
+    owner: backend_semantic::ir::EntityId,
+    parameter_count: usize,
+    result_count: usize,
+    meter: &mut ProjectionMeter,
+) -> Result<SemanticCallableCarrierBindings, SemanticShapeUnavailable> {
+    let observation = image
+        .signature_carrier_bindings(owner)
+        .ok_or(SemanticShapeUnavailable::MissingImageFact)?;
+    let SignatureCarrierBindingsObservation::Captured(mut bindings) = observation else {
+        return Ok(SemanticCallableCarrierBindings::Unavailable);
+    };
+
+    let parameter_count_u32 =
+        u32::try_from(parameter_count).map_err(|_| SemanticShapeUnavailable::MissingImageFact)?;
+    let result_count_u32 =
+        u32::try_from(result_count).map_err(|_| SemanticShapeUnavailable::MissingImageFact)?;
+    let expected_count = parameter_count
+        .checked_add(result_count)
+        .ok_or(SemanticShapeUnavailable::MissingImageFact)?;
+    parameter_count_u32
+        .checked_add(result_count_u32)
+        .ok_or(SemanticShapeUnavailable::MissingImageFact)?;
+    if bindings.len() != expected_count {
+        return Err(SemanticShapeUnavailable::MissingImageFact);
+    }
+
+    let identity_bytes = expected_count
+        .checked_mul(backend_library::SEMANTIC_SHAPE_CARRIER_IDENTITY_BYTES)
+        .ok_or(SemanticShapeUnavailable::ByteBudget)?;
+    meter.preflight_nodes_bytes(expected_count, identity_bytes)?;
+
+    let mut parameters = Vec::new();
+    parameters
+        .try_reserve_exact(parameter_count)
+        .map_err(|_| SemanticShapeUnavailable::ByteBudget)?;
+    let mut results = Vec::new();
+    results
+        .try_reserve_exact(result_count)
+        .map_err(|_| SemanticShapeUnavailable::ByteBudget)?;
+
+    for position in 0..parameter_count_u32 {
+        let binding = bindings
+            .next()
+            .ok_or(SemanticShapeUnavailable::MissingImageFact)?;
+        let identity = callable_carrier_identity(
+            image,
+            owner,
+            binding,
+            SignatureCarrierBindingRole::Parameter,
+            position,
+        )?;
+        parameters.push(identity);
+    }
+    for position in 0..result_count_u32 {
+        let binding = bindings
+            .next()
+            .ok_or(SemanticShapeUnavailable::MissingImageFact)?;
+        let identity = callable_carrier_identity(
+            image,
+            owner,
+            binding,
+            SignatureCarrierBindingRole::Result,
+            position,
+        )?;
+        results.push(identity);
+    }
+    if bindings.next().is_some() {
+        return Err(SemanticShapeUnavailable::MissingImageFact);
+    }
+    meter.nodes_bytes(expected_count, identity_bytes)?;
+
+    Ok(SemanticCallableCarrierBindings::Captured {
+        parameters: parameters.into_boxed_slice(),
+        results: results.into_boxed_slice(),
+    })
+}
+
+fn callable_carrier_identity(
+    image: &SemanticImageView<'_>,
+    owner: backend_semantic::ir::EntityId,
+    binding: backend_semantic::ir::SignatureCarrierBinding,
+    expected_role: SignatureCarrierBindingRole,
+    expected_position: u32,
+) -> Result<backend_library::SemanticDeclarationIdentity, SemanticShapeUnavailable> {
+    if binding.owner != owner
+        || binding.role != expected_role
+        || binding.position != expected_position
+    {
+        return Err(SemanticShapeUnavailable::MissingImageFact);
+    }
+    let target = image
+        .entity(binding.carrier)
+        .filter(|entity| entity.kind == ItemKind::Parameter)
+        .ok_or(SemanticShapeUnavailable::MissingImageFact)?;
+    let observed_role = image
+        .signature_carrier_role(binding.carrier)
+        .ok_or(SemanticShapeUnavailable::MissingImageFact)?;
+    let role_matches = matches!(
+        (expected_role, observed_role),
+        (
+            SignatureCarrierBindingRole::Parameter,
+            SignatureCarrierRoleObservation::Captured(
+                SignatureCarrierRole::Input | SignatureCarrierRole::Both
+            )
+        ) | (
+            SignatureCarrierBindingRole::Result,
+            SignatureCarrierRoleObservation::Captured(
+                SignatureCarrierRole::Result | SignatureCarrierRole::Both
+            )
+        )
+    );
+    if !role_matches {
+        return Err(SemanticShapeUnavailable::MissingImageFact);
+    }
+    Ok(identity_from_compiler(target.version.identity()))
+}
+
 fn project_callable(
     image: &SemanticImageView<'_>,
+    owner: backend_semantic::ir::EntityId,
     parameters: backend_semantic::ir::TupleElementListId,
     results: backend_semantic::ir::TupleElementListId,
     abi: Option<backend_semantic::ir::AtomId>,
@@ -745,6 +887,16 @@ fn project_callable(
     view: &backend_engine::ViewRoot,
     meter: &mut ProjectionMeter,
 ) -> Result<SemanticDeclarationShape, SemanticShapeUnavailable> {
+    let parameter_count = image
+        .tuple_elements(parameters)
+        .ok_or(SemanticShapeUnavailable::MissingImageFact)?
+        .len();
+    let result_count = image
+        .tuple_elements(results)
+        .ok_or(SemanticShapeUnavailable::MissingImageFact)?
+        .len();
+    let carrier_bindings =
+        project_callable_carrier_bindings(image, owner, parameter_count, result_count, meter)?;
     let parameters = tuple_elements_with_context(
         image,
         parameters,
@@ -767,7 +919,7 @@ fn project_callable(
     Ok(SemanticDeclarationShape::Callable(SemanticCallableShape {
         parameters,
         results,
-        carrier_bindings: SemanticCallableCarrierBindings::Unavailable,
+        carrier_bindings,
         abi,
         variadic,
         unsafe_,
@@ -776,11 +928,22 @@ fn project_callable(
 
 fn project_type_list_callable(
     image: &SemanticImageView<'_>,
+    owner: backend_semantic::ir::EntityId,
     signature: backend_semantic::ir::GoSignature,
     package: backend_engine::PackageKey,
     view: &backend_engine::ViewRoot,
     meter: &mut ProjectionMeter,
 ) -> Result<SemanticDeclarationShape, SemanticShapeUnavailable> {
+    let parameter_count = image
+        .types(signature.parameters)
+        .ok_or(SemanticShapeUnavailable::MissingImageFact)?
+        .len();
+    let result_count = image
+        .types(signature.results)
+        .ok_or(SemanticShapeUnavailable::MissingImageFact)?
+        .len();
+    let carrier_bindings =
+        project_callable_carrier_bindings(image, owner, parameter_count, result_count, meter)?;
     let project = |list, meter: &mut ProjectionMeter| {
         let Some(types) = image.types(list) else {
             return Err(SemanticShapeUnavailable::MissingImageFact);
@@ -801,7 +964,7 @@ fn project_type_list_callable(
     Ok(SemanticDeclarationShape::Callable(SemanticCallableShape {
         parameters,
         results,
-        carrier_bindings: SemanticCallableCarrierBindings::Unavailable,
+        carrier_bindings,
         abi: None,
         variadic: if signature.variadic {
             FunctionVariadicForm::TypedLast
@@ -1300,16 +1463,20 @@ fn identity_from_compiler(
 
 #[cfg(test)]
 mod tests {
-    use super::{ItemKind, ProjectionMeter, atom_text, python_language_facts};
+    use super::{
+        ItemKind, ProjectionMeter, SemanticCallableCarrierBindings, SemanticDeclarationShape,
+        SemanticTypeExpr, atom_text, python_language_facts,
+    };
     use backend_semantic::{
         ir::{
             AtomListId, BorrowedTree, ConcreteType, Confidence, CorePayloadHash,
             DeclarationFamilyId, EntityAuthorityFacts, EntityId, EntityVersion, FactAvailability,
-            IrBuilder, LiteralType, ObjectMember, ParentageAuthority, PropertyKey, PythonFacts,
-            PythonParameterKind, SemanticImageView, SemanticReader, TreeItemInput, TypeExpr,
-            VariantFingerprint, Visibility, encode_full_semantic_image, full_semantic_image_len,
+            FunctionVariadicForm, IrBuilder, LiteralType, ObjectMember, ParentageAuthority,
+            PropertyKey, PythonFacts, PythonParameterKind, SemanticImageView, SemanticReader,
+            SignatureCarrierOwnerInput, TreeItemInput, TypeExpr, VariantFingerprint, Visibility,
+            encode_full_semantic_image, full_semantic_image_len,
         },
-        vocabulary::{LanguageProfile, PythonVersion},
+        vocabulary::{LanguageProfile, PythonVersion, RustEdition},
     };
     use std::collections::BTreeSet;
 
@@ -1339,6 +1506,177 @@ mod tests {
         assert_eq!(
             python_language_facts(ItemKind::Parameter, None, profile),
             backend_library::SemanticShapeLanguageFacts::Unavailable { profile },
+        );
+    }
+
+    #[test]
+    fn owned_callable_binding_is_captured_empty_but_nested_function_is_unavailable() {
+        let mut builder = IrBuilder::new();
+        let parameters = builder
+            .intern_tuple_elements(&[])
+            .expect("empty function parameter list interns");
+        let results = builder
+            .intern_tuple_elements(&[])
+            .expect("empty function result list interns");
+        let function_type = builder
+            .intern_type(TypeExpr::Concrete(ConcreteType::Function {
+                parameters,
+                results,
+                abi: None,
+                variadic: FunctionVariadicForm::None,
+                unsafe_: false,
+            }))
+            .expect("function type interns");
+        let version = EntityVersion {
+            family: DeclarationFamilyId::from_raw([61; 16]),
+            variant: VariantFingerprint::from_raw([62; 16]),
+            core_payload: CorePayloadHash::from_raw([63; 16]),
+        };
+        let legacy_version = EntityVersion {
+            family: DeclarationFamilyId::from_raw([64; 16]),
+            variant: VariantFingerprint::from_raw([65; 16]),
+            core_payload: CorePayloadHash::from_raw([66; 16]),
+        };
+        let item = TreeItemInput {
+            name: b"zero",
+            kind: ItemKind::Function,
+            visibility: Visibility::Private,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Root,
+                semantic_type: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
+            parent: None,
+            semantic_type: Some(function_type),
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        };
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &[version, legacy_version],
+                items: &[
+                    item,
+                    TreeItemInput {
+                        name: b"unavailable",
+                        ..item
+                    },
+                ],
+                links: &[],
+            })
+            .expect("function owner enters the image");
+        builder
+            .capture_signature_carrier_bindings(
+                &[
+                    SignatureCarrierOwnerInput::captured(EntityId::new(0), 0, 0),
+                    SignatureCarrierOwnerInput::unavailable(EntityId::new(1)),
+                ],
+                &[],
+            )
+            .expect("capture distinguishes known-empty and unavailable owners");
+        let ir = builder.finish().expect("compiler image finalizes");
+        let image_length = full_semantic_image_len(&ir).expect("image length is bounded");
+        let mut bytes = vec![0; image_length];
+        encode_full_semantic_image(&ir, &mut bytes).expect("function image encodes");
+        let image = SemanticImageView::reopen(&bytes).expect("encoded image reopens");
+
+        let package = backend_engine::package_key("semantic-callable-carrier-test");
+        let basis = backend_engine::Basis::new(
+            backend_engine::view_state_root(&[]),
+            backend_engine::object_version(b"semantic-callable-carrier-test"),
+        );
+        let frontier =
+            backend_engine::Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0);
+        let view = backend_engine::ViewRoot::new_incomplete(
+            backend_engine::view_key(b"semantic-callable-carrier-test"),
+            basis,
+            frontier,
+            vec![],
+            vec![],
+        )
+        .expect("empty projection view is coherent");
+        let mut meter = ProjectionMeter {
+            nodes: 0,
+            bytes: 0,
+            max_nodes: backend_library::MAX_SEMANTIC_SHAPE_NODES,
+            max_bytes: backend_library::MAX_SEMANTIC_SHAPE_BYTES,
+            proof_symbols: BTreeSet::new(),
+            proof_packages: BTreeSet::new(),
+            omitted_proof_symbols: BTreeSet::new(),
+        };
+        let owner = image.entity(EntityId::new(0)).expect("owner entity exists");
+        let fact = super::project_declaration(
+            &image,
+            owner,
+            package,
+            &view,
+            LanguageProfile::Rust(RustEdition::Rust2021),
+            &mut meter,
+        );
+        let backend_library::SemanticShapeFact::Available { shape, .. } = fact else {
+            panic!("owner projection retains the complete callable");
+        };
+        let SemanticDeclarationShape::Callable(callable) = shape else {
+            panic!("Function owner projects to a callable shape");
+        };
+        assert_eq!(
+            callable.carrier_bindings,
+            SemanticCallableCarrierBindings::Captured {
+                parameters: Box::new([]),
+                results: Box::new([]),
+            }
+        );
+
+        let unavailable_owner = image
+            .entity(EntityId::new(1))
+            .expect("second function owner exists");
+        let unavailable_fact = super::project_declaration(
+            &image,
+            unavailable_owner,
+            package,
+            &view,
+            LanguageProfile::Rust(RustEdition::Rust2021),
+            &mut meter,
+        );
+        let backend_library::SemanticShapeFact::Available {
+            shape: SemanticDeclarationShape::Callable(unavailable_callable),
+            ..
+        } = unavailable_fact
+        else {
+            panic!("unavailable capture preserves the callable's type shape");
+        };
+        assert_eq!(
+            unavailable_callable.carrier_bindings,
+            SemanticCallableCarrierBindings::Unavailable,
+            "an unproven owner does not become captured-empty"
+        );
+
+        let nested = super::project_type_id(
+            &image,
+            function_type,
+            package,
+            &view,
+            &mut meter,
+            &mut BTreeSet::new(),
+            0,
+        )
+        .expect("nested function type projects");
+        let backend_library::SemanticTypeFact::Known(SemanticTypeExpr::Function(nested)) = nested
+        else {
+            panic!("function type projects to a nested callable expression");
+        };
+        assert_eq!(
+            nested.carrier_bindings,
+            SemanticCallableCarrierBindings::Unavailable,
+            "a structural function type has no direct declaration owner"
+        );
+
+        assert_eq!(
+            super::project_callable_carrier_bindings(&image, EntityId::new(99), 0, 0, &mut meter,),
+            Err(backend_library::SemanticShapeUnavailable::MissingImageFact),
+            "an invalid owner cannot be reported as unavailable capture"
         );
     }
 

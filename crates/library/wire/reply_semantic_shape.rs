@@ -997,11 +997,10 @@ fn callable_from_wire(
     callable: &SemanticCallableShapeWire,
     certificate: &WireCertificate,
 ) -> Result<SemanticCallableShape, String> {
-    let carrier_bindings = carrier_bindings_from_wire(&callable.carrier_bindings);
-    if let SemanticCallableCarrierBindings::Captured {
+    if let SemanticCallableCarrierBindingsWire::Captured {
         parameters,
         results,
-    } = &carrier_bindings
+    } = &callable.carrier_bindings
     {
         if parameters.len() != callable.parameters.len() || results.len() != callable.results.len()
         {
@@ -1011,6 +1010,7 @@ fn callable_from_wire(
             );
         }
     }
+    let carrier_bindings = carrier_bindings_from_wire(&callable.carrier_bindings);
     Ok(SemanticCallableShape {
         parameters: callable
             .parameters

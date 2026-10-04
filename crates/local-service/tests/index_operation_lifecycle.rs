@@ -7,10 +7,10 @@
 
 use backend_client::{ClientError, Session};
 use backend_library::{
-    CommandFailure, CommandReply, CompileExecutionIntent, IndexOperationKey,
-    IndexOperationObservation, IndexOperationPublicationReceipt, IndexOperationState,
-    PackageReference, RowId, SemanticDeclarationShape, SemanticShapeBudget, SemanticTypeExpr,
-    SemanticTypeFact,
+    CommandFailure, CommandReply, CompileExecutionIntent, DeclarationKind, IndexOperationKey,
+    IndexOperationObservation, IndexOperationPublicationReceipt, IndexOperationState, PackageKey,
+    PackageReference, RowId, SemanticCallableCarrierBindings, SemanticDeclarationShape,
+    SemanticShapeBudget, SemanticTypeExpr, SemanticTypeFact,
 };
 use backend_local_service::{
     EmbeddedLocalService, FrameLimits, ListenerError, LocalHostVariable, ProcessConfig,
@@ -215,6 +215,21 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
 
     let cadence = selected_symbol_by_name(&mut session, "cadence8")?;
     let signal = selected_symbol_by_name(&mut session, "MorningSignal")?;
+    let cadence_package = selected_package_by_symbol(&mut session, "cadence8", cadence)?;
+    // Resolve the fixture's carrier declarations through separate public name
+    // queries so the callable result is checked against independent stable IDs.
+    let parameter_carrier = selected_symbol_by_name_and_kind(
+        &mut session,
+        "take",
+        DeclarationKind::Variable,
+        cadence_package,
+    )?;
+    let result_carrier = selected_symbol_by_name_and_kind(
+        &mut session,
+        "cadence8",
+        DeclarationKind::Variable,
+        cadence_package,
+    )?;
     let selected_source = session
         .semantic_versions(package.clone())?
         .into_vec()
@@ -267,6 +282,20 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
         )
         .into());
     }
+    let carrier_shapes = session.semantic_shapes(
+        selected_source.clone(),
+        &[parameter_carrier, result_carrier],
+        shape_budget,
+    )?;
+    assert_eq!(carrier_shapes.entries.len(), 2);
+    let parameter_identity = carrier_shapes.entries[0]
+        .identity
+        .ok_or_else(|| io::Error::other("take carrier has no stable image identity"))?;
+    let result_identity = carrier_shapes.entries[1]
+        .identity
+        .ok_or_else(|| io::Error::other("result carrier has no stable image identity"))?;
+    assert_ne!(parameter_identity, result_identity);
+
     let shapes = session.semantic_shapes(selected_source, &[cadence, signal], shape_budget)?;
     assert_eq!(shapes.entries.len(), 2);
     let cadence_shape = &shapes.entries[0];
@@ -305,6 +334,15 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
         return Err(io::Error::other("cadence8 result lost its nominal compiler identity").into());
     };
     assert_eq!(parameter_type, result_type);
+    let SemanticCallableCarrierBindings::Captured {
+        parameters: parameter_bindings,
+        results: result_bindings,
+    } = &callable.carrier_bindings
+    else {
+        return Err(io::Error::other("cadence8 carrier bindings are not captured").into());
+    };
+    assert_eq!(parameter_bindings.as_ref(), &[parameter_identity]);
+    assert_eq!(result_bindings.as_ref(), &[result_identity]);
     let backend_library::SemanticShapeFact::Available { shape, .. } = &signal_shape.fact else {
         return Err(
             io::Error::other("MorningSignal did not return an available compiler shape").into(),
@@ -480,6 +518,57 @@ fn selected_symbol_by_name(
             RowId::Package(_) | RowId::Object(_) => None,
         })
         .ok_or_else(|| io::Error::other(format!("name lookup did not return {name}")).into())
+}
+
+fn selected_package_by_symbol(
+    session: &mut Session,
+    name: &str,
+    symbol: backend_library::SymbolKey,
+) -> Result<PackageKey, Box<dyn Error>> {
+    let reply = session.names(name, 200)?;
+    let CommandReply::Names(snapshot) = reply.reply else {
+        return Err(io::Error::other("name lookup returned another reply shape").into());
+    };
+    snapshot
+        .root
+        .rows()
+        .iter()
+        .find(|row| row.id == RowId::Symbol(symbol))
+        .and_then(|row| row.package)
+        .ok_or_else(|| io::Error::other(format!("symbol {name} has no package row")).into())
+}
+
+fn selected_symbol_by_name_and_kind(
+    session: &mut Session,
+    name: &str,
+    kind: DeclarationKind,
+    package: PackageKey,
+) -> Result<backend_library::SymbolKey, Box<dyn Error>> {
+    let reply = session.names(name, 200)?;
+    let CommandReply::Names(snapshot) = reply.reply else {
+        return Err(io::Error::other("name lookup returned another reply shape").into());
+    };
+    let semantic_name_suffix = format!("::{name}");
+    snapshot
+        .root
+        .rows()
+        .iter()
+        .find(|row| {
+            (row.label == name || row.label.ends_with(&semantic_name_suffix))
+                && row.kind == Some(kind)
+                && row.package == Some(package)
+                && matches!(row.id, RowId::Symbol(_))
+        })
+        .and_then(|row| match row.id {
+            RowId::Symbol(symbol) => Some(symbol),
+            RowId::Package(_) | RowId::Object(_) => None,
+        })
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "name lookup did not return {name} with kind {kind:?}"
+            ))
+            .into()
+        })
 }
 
 #[derive(Debug)]

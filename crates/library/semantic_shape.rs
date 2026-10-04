@@ -26,6 +26,9 @@ pub const MAX_SEMANTIC_SHAPE_BATCH: usize = 32;
 pub const MAX_SEMANTIC_SHAPE_NODES: usize = 4096;
 /// Maximum conservative wire-size estimate for one response.
 pub const MAX_SEMANTIC_SHAPE_BYTES: usize = 256 * 1024;
+/// Conservative product and projection byte charge for one callable carrier
+/// declaration identity.
+pub const SEMANTIC_SHAPE_CARRIER_IDENTITY_BYTES: usize = 192;
 /// Maximum structural depth admitted in one type expression.
 ///
 /// The wire vocabulary represents recursive edges through nested tagged JSON
@@ -1092,10 +1095,7 @@ impl SemanticShapeWalker {
                 return Err(SemanticShapeError::OutputBound);
             }
             for _ in parameters.iter().chain(results.iter()) {
-                // Stable identities serialize as two fixed 16-byte arrays.
-                // 192 bytes conservatively covers their JSON arrays, field
-                // names, delimiters, and the corresponding wire node.
-                self.node(192)?;
+                self.node(SEMANTIC_SHAPE_CARRIER_IDENTITY_BYTES)?;
             }
         }
         for element in callable.parameters.iter().chain(callable.results.iter()) {
