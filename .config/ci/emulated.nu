@@ -85,10 +85,30 @@ def wine-bin [tool: string]: nothing -> string {
 # Without it, each test's `wine` starts a server that outlives the test and
 # holds nextest's output pipes open, so every test reads as a timeout. The
 # server is started detached from this process's output for the same reason.
-def start-wine []: nothing -> nothing {
+def --env start-wine []: nothing -> nothing {
     ^sh -c $"'(wine-bin wineboot)' --init </dev/null >/dev/null 2>&1"
     ^sh -c $"'(wine-bin wineserver)' -p </dev/null >/dev/null 2>&1 &"
     sleep 2sec
+    # Code under test finds its state root through LOCALAPPDATA (then
+    # USERPROFILE). On CI the job runs as root and Wine handed Windows
+    # programs neither ("LocalAppData directory is unavailable"). Say what
+    # Wine provides, and when it is missing, name the profile wineboot made:
+    # Wine passes other variables through to Windows programs unchanged.
+    let seen = (do { ^(wine-bin wine) cmd /c "echo %USERPROFILE%^|%LOCALAPPDATA%" } | complete | get stdout | str trim)
+    print $"   wine profile: ($seen)"
+    let local = ($seen | split row "|" | get --optional 1 | default "" | str trim)
+    if ($local | is-empty) or ($local | str starts-with "%") {
+        let users = ($env.WINEPREFIX | path join "drive_c" "users")
+        let profiles = (try { ls $users | where type == dir | get name | path basename | where {|name| $name != "Public" } } catch { [] })
+        if ($profiles | is-empty) {
+            print $"   no Wine user profile under ($users)"
+        } else {
+            let profile = $"C:\\users\\($profiles | first)"
+            $env.USERPROFILE = $profile
+            $env.LOCALAPPDATA = $"($profile)\\AppData\\Local"
+            print $"   set USERPROFILE=($env.USERPROFILE) LOCALAPPDATA=($env.LOCALAPPDATA)"
+        }
+    }
 }
 
 def stop-wine []: nothing -> nothing {

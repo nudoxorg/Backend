@@ -150,7 +150,7 @@ def main [
         # plain /tmp the flake check always had outside the shell.
         step "root flake check" {||
             with-env {TMPDIR: "/tmp", TMP: "/tmp", TEMP: "/tmp", TEMPDIR: "/tmp"} {
-                run-external "nix" "flake" "check" "-L" "path:."
+                run-external "nix" "flake" "check" "-L" "--keep-going" "path:."
             }
         }
     }
