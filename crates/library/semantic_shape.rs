@@ -1409,7 +1409,8 @@ pub fn semantic_shape_source_preimage(origin: &SemanticShapeSourceOrigin) -> Vec
 pub fn semantic_shape_source_key(
     origin: &SemanticShapeSourceOrigin,
 ) -> ObjectKey<crate::SemanticShapeSourceSchema> {
-    ObjectKey::from_value(&semantic_shape_source_preimage(origin))
+    let preimage = semantic_shape_source_preimage(origin);
+    ObjectKey::<crate::SemanticShapeSourceSchema>::from_value(preimage.as_slice())
 }
 
 #[cfg(test)]

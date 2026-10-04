@@ -11,7 +11,8 @@
 /// Shared filesystem source-selection policy used by local and package
 /// discovery adapters.
 pub use backend_discovery::{
-    DEFAULT_IGNORED_DIRECTORIES, DiscoveredEntry, DiscoveryError, DiscoveryPolicy, EntryKind,
+    DEFAULT_IGNORED_DIRECTORIES, DiscoveredEntry, DiscoveryError as FilesystemDiscoveryError,
+    DiscoveryPolicy, EntryKind,
     HARD_IGNORED_DIRECTORIES, is_hard_ignored_directory, is_hard_ignored_path,
 };
 
