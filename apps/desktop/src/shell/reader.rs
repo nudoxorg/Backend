@@ -424,6 +424,21 @@ struct MountedFindQuery {
 }
 
 /// The reader region.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ViewportScroll {
+    PageDown,
+    PageUp,
+    Top,
+    Bottom,
+}
+
+/// Exactly the Reader branch that mounts the shared GPUI scroll container.
+/// A Settings/Inbox page replaces even a Graph route, and a retained World
+/// body uses the Reader when there is no live Graph to paint.
+pub(crate) fn mounts_scroll_body(store: &DataStore, route: &Route, page_overlay: Option<Overlay>) -> bool {
+    !bodies::graph::is_graph(route) || page_overlay.is_some() || bodies::saved_world(store, route, page_overlay)
+}
+
 pub(crate) struct Reader {
     core: RegionCore,
     /// The shell's occupied Ask rectangle for this frame, if results show.
@@ -437,6 +452,9 @@ pub(crate) struct Reader {
     pub(crate) targets: Targets,
     hover: HoverIntent,
     scroll: ScrollHandle,
+    /// The visit whose actual scroll container completed prepaint. A route
+    /// render alone cannot make the previous body's measured extent current.
+    scroll_mounted: Rc<Cell<Option<u64>>>,
     /// Bounded source cursor/history memory keyed by exact code route and owner revision.
     source_paging: SourcePagingMemory,
     /// Shared empty handle for non-code bodies; they never write paging state.
@@ -529,6 +547,7 @@ impl Reader {
             targets: Targets::named("reader"),
             hover: HoverIntent::default(),
             scroll: ScrollHandle::new(),
+            scroll_mounted: Rc::new(Cell::new(None)),
             source_paging: SourcePagingMemory::default(),
             empty_source_paging: Rc::new(RefCell::new(None)),
             library_state: LibraryStateMemory::default(),
@@ -795,6 +814,56 @@ impl Reader {
     /// frame that draws the walk, from that frame's layout).
     pub(crate) fn reveal_focused(&self) {
         self.reveal.set(true);
+    }
+
+    /// A Reader child may own native focus even while the Shell's logical
+    /// zone has not caught up with a pointer or accessibility focus move.
+    pub(crate) fn owns_keyboard_scroll_focus(&self, window: &Window, cx: &App) -> bool {
+        let snapshot = self.links.snapshot(cx);
+        mounts_scroll_body(self.links.store.read(cx), snapshot.route(), snapshot.page_overlay())
+            && self.native_input_for(snapshot.route(), snapshot.page_overlay())
+            && self.targets.native_focused(window).is_some()
+    }
+
+    /// Scroll the one persistent Reader scroller using GPUI's last mounted
+    /// viewport and content extent. This applies to every ordinary body,
+    /// including local Settings, package, documentation and source pages.
+    pub(crate) fn keyboard_scroll(&mut self, command: ViewportScroll, cx: &mut Context<Self>) -> bool {
+        let snapshot = self.links.snapshot(cx);
+        if !mounts_scroll_body(self.links.store.read(cx), snapshot.route(), snapshot.page_overlay())
+            || !self.native_input_for(snapshot.route(), snapshot.page_overlay())
+            || RouteDependencies::new(snapshot.route(), snapshot.page_overlay())
+                .display_phase(self.links.store.read(cx)) == DestinationState::Pending
+            || self.pending_scroll_restore.is_some()
+            || self.places.last().is_none_or(|place| self.scroll_mounted.get() != Some(place.key))
+        {
+            return false;
+        }
+        let height = f32::from(self.scroll.bounds().size.height);
+        let max = f32::from(self.scroll.max_offset().y);
+        let offset = self.scroll.offset();
+        let current = f32::from(offset.y);
+        if !height.is_finite() || height <= 0.0 || !max.is_finite() || max < 0.0 || !current.is_finite() {
+            return false;
+        }
+        let current = current.clamp(-max, 0.0);
+        let next = match command {
+            ViewportScroll::PageDown => current - height,
+            ViewportScroll::PageUp => current + height,
+            ViewportScroll::Top => 0.0,
+            ViewportScroll::Bottom => -max,
+        }.clamp(-max, 0.0);
+        // Even a boundary command is an explicit viewport choice. Consume a
+        // queued target reveal before prepaint can undo Home or End.
+        let canceled_reveal = self.reveal.replace(false);
+        let moved = next != f32::from(offset.y);
+        if moved {
+            self.scroll.set_offset(point(offset.x, px(next)));
+        }
+        if canceled_reveal || moved {
+            cx.notify();
+        }
+        true
     }
 
     /// A neutral view handle, not a focus capability. The Graph validates its
@@ -1109,11 +1178,17 @@ impl Reader {
     }
 
     #[cfg(test)]
+    pub(crate) fn mounted_scroll_geometry(&self) -> (Pixels, Pixels, Option<u64>) {
+        (self.scroll.bounds().size.height, self.scroll.max_offset().y, self.scroll_mounted.get())
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_scroll_offset(&self, offset: Point<Pixels>) {
         self.scroll.set_offset(offset);
     }
 
     fn arrive(&mut self, next: &Route, overlay: Option<Overlay>, reading: &crate::navigation::presentation::ReadingVisit) {
+        self.scroll_mounted.set(None);
         // The first Tree departure records the opened release. A later
         // departure from its returning visit abandons that pending focus,
         // even when no virtual row mounted to schedule a deferred callback.
@@ -2430,8 +2505,7 @@ impl Render for Reader {
         if self.pending_page_focus.as_ref().is_some_and(|focus| focus.place != requested.key || !focus.root.same_authority(snapshot.key())) {
             self.pending_page_focus = None;
         }
-        let on_graph = bodies::graph::is_graph(&current.route) && current.overlay.is_none()
-            && !bodies::saved_world(self.links.store.read(cx), &current.route, current.overlay);
+        let on_graph = !mounts_scroll_body(self.links.store.read(cx), &current.route, current.overlay);
         let layout = self.layout(&current.route, current.overlay, &measure, &facet);
         let Layout { pad, right_pad, top, folio, beside, content, .. } = layout;
         let scale = measure.scale();
@@ -2546,6 +2620,7 @@ impl Render for Reader {
                 frame: Rc::clone(&self.frame),
                 land: Vec::new(),
                 reading: None,
+                scroll_mount: None,
                 child: div().size_full().child(map.clone()).into_any_element(),
             };
             let mut root = div().relative().size_full()
@@ -2701,6 +2776,7 @@ impl Render for Reader {
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
+            .key_context(super::keys::READER_VIEWPORT)
             .child(div().w_full().pl(pad).pr(right_pad).pt(top).pb(px(96.0 * scale)).child(stack));
         // A reflow that scrolls to keep the focus in view lands the page's
         // moving parts: a flight from where they were would carry the focus
@@ -2722,6 +2798,7 @@ impl Render for Reader {
             land,
             reading: (!waiting && self.pending_scroll_restore.is_none() && self.native_input_for(snapshot.route(), snapshot.page_overlay()) && snapshot.page_overlay().is_none())
                 .then(|| (snapshot.session().reading.current.id, snapshot.session().reading.current.presentation.controls().offset, self.links.clone())),
+            scroll_mount: Some((Rc::clone(&self.scroll_mounted), current.key)),
             child: scroller.into_any_element(),
         });
         let scroller = scroller.into_any_element();
@@ -2949,6 +3026,7 @@ struct Reveal {
     /// The page's flows, landed when a reflow scrolls to the focus.
     land: Vec<facet::motion::Flow>,
     reading: Option<(crate::navigation::presentation::VisitId, crate::navigation::presentation::ReadingOffset, Links)>,
+    scroll_mount: Option<(Rc<Cell<Option<u64>>>, u64)>,
     child: gpui::AnyElement,
 }
 
@@ -3018,6 +3096,9 @@ impl gpui::Element for Reveal {
             }
         }
         self.child.prepaint(window, cx);
+        if let Some((mounted, visit)) = &self.scroll_mount {
+            mounted.set(Some(*visit));
+        }
         if let Some((visit, remembered, links)) = &self.reading {
             let actual = self.scroll.offset();
             if let Some(offset) = crate::navigation::presentation::ReadingOffset::new(f32::from(actual.x), f32::from(actual.y))
