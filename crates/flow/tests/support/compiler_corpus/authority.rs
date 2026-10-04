@@ -1208,14 +1208,16 @@ mod go_manifest_tests {
 
         // The replaced module itself requires two modules: one the corpus
         // pins at the exact version, one it does not provision at all.
-        let tool = corpus.path().join("host.example/tool@v0.30.0");
+        // Component-wise joins: the code under test renders checkouts with the host separator, and
+        // a single "a/b" component would spell the same directory with mixed separators on Windows.
+        let tool = corpus.path().join("host.example").join("tool@v0.30.0");
         fs::create_dir_all(&tool).expect("tool checkout");
         fs::write(
             tool.join("go.mod"),
             "module host.example/tool\n\ngo 1.23\n\nrequire (\n\tdep.example/sync v0.1.0 // indirect\n\tabsent.example/gone v9.9.9\n)\n",
         )
         .expect("tool go.mod");
-        let sync = corpus.path().join("dep.example/sync@v0.1.0");
+        let sync = corpus.path().join("dep.example").join("sync@v0.1.0");
         fs::create_dir_all(&sync).expect("sync checkout");
         fs::write(sync.join("go.mod"), "module dep.example/sync\n\ngo 1.23\n")
             .expect("sync go.mod");

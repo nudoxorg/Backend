@@ -1,14 +1,21 @@
 //! Package dependency projection and graph query decoding.
 
+use crate::projection_namespace::ProjectionGenerationId;
+use crate::read::metadata_from;
 use crate::schema::PackageGraphMetadata;
 use crate::{ProjectionError, ProjectionUpdate, TursoProjection};
 use backend_library::{
     CheckedPackageGraphFacts, DependencyAuthority, DependencyFacts, DependencyScope,
-    PackageDependencyRecord, PackageDependencySourceFacts, PackageGraphSourceAuthority,
-    PackageGraphSourceKey, PackageReference,
+    MAX_PACKAGE_GRAPH_AUTHORITIES, MAX_PACKAGE_GRAPH_ROWS, PackageDependencyRecord,
+    PackageDependencySourceFacts, PackageGraphSourceAuthority, PackageGraphSourceKey,
+    PackageReference,
 };
+use backend_platform::FileIdentity;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
+
+const MAX_UNPAGED_GRAPH_EDGE_READ_LIMIT: i64 = MAX_PACKAGE_GRAPH_ROWS as i64 + 1;
+const MAX_GRAPH_SOURCE_AUTHORITY_READ_LIMIT: i64 = MAX_PACKAGE_GRAPH_AUTHORITIES as i64 + 1;
 
 /// A graph query result fenced to the immutable root that supplied its facts.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,16 +61,107 @@ pub enum PackageGraphSourceSelection {
     Ambiguous(Box<[PackageGraphSourceKey]>),
 }
 
+/// Opaque graph compare-and-swap token captured before a caller reads source
+/// facts. A graph replacement must present this exact generation, selected
+/// view root, and previous graph witness so delayed facts cannot replace a
+/// graph commit made after capture. The owner must obtain the graph root, facts
+/// and their authority provenance from one exact current source observation.
+/// This token proves only the cache-side base; it does not prove that supplied
+/// facts are the source authority's newest snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackageGraphRevision {
+    generation: ProjectionGenerationId,
+    marker_identity: FileIdentity,
+    view_root: [u8; 32],
+    view_version: [u8; 32],
+    graph_root: Option<[u8; 32]>,
+    facts_witness: Option<[u8; 32]>,
+}
+
+impl PackageGraphRevision {
+    /// Exact selected generation whose graph state was captured.
+    #[must_use]
+    pub const fn generation(self) -> ProjectionGenerationId {
+        self.generation
+    }
+
+    /// Exact selected view root when this graph revision was captured.
+    #[must_use]
+    pub const fn view_root(self) -> [u8; 32] {
+        self.view_root
+    }
+
+    /// Exact selected view version when this graph revision was captured.
+    #[must_use]
+    pub const fn view_version(self) -> [u8; 32] {
+        self.view_version
+    }
+
+    /// Previous graph facts witness, or `None` when no graph snapshot was
+    /// published at capture time.
+    #[must_use]
+    pub const fn facts_witness(self) -> Option<[u8; 32]> {
+        self.facts_witness
+    }
+}
+
 impl TursoProjection {
-    /// Replaces the package graph projection for one immutable view root.
+    /// Captures the selected row root and current graph witness before the
+    /// caller reads or admits replacement facts.
     ///
-    /// The graph is deliberately fenced independently from the UI row
-    /// projection: package metadata can arrive in a different ingest batch,
-    /// while every query still returns the exact root that supplied its facts.
-    /// An identical root and facts witness perform no writes. Otherwise the
-    /// projection reconciles edge identities and state rows transactionally,
-    /// then updates the selected root and witness in one metadata row. This
-    /// also handles changed facts whose selected view root did not change.
+    /// The owning source must then read its authoritative graph root and facts
+    /// as one current observation and pass that exact result to a `_from`
+    /// method. The returned token cannot certify freshness if the caller
+    /// already holds stale facts, and it carries no registry/source proof.
+    pub async fn package_graph_revision(&self) -> Result<PackageGraphRevision, ProjectionError> {
+        if self.staging {
+            return Err(ProjectionError::StaleTransition);
+        }
+        let _operation_guard = self.operation_guard()?;
+        let tx = self.connection.unchecked_transaction().await?;
+        let Some(view) = metadata_from(&tx).await? else {
+            tx.rollback().await?;
+            return Err(ProjectionError::StaleTransition);
+        };
+        let graph = package_graph_metadata_from(&tx).await?;
+        tx.rollback().await?;
+        let view_root = view
+            .root
+            .as_slice()
+            .try_into()
+            .map_err(|_| ProjectionError::CorruptMetadata { field: "root" })?;
+        let view_version = view.view_version.as_slice().try_into().map_err(|_| {
+            ProjectionError::CorruptMetadata {
+                field: "view_version",
+            }
+        })?;
+        let (graph_root, facts_witness) = match graph {
+            Some(graph) => (
+                Some(graph.root.as_slice().try_into().map_err(|_| {
+                    ProjectionError::CorruptMetadata {
+                        field: "graph_root",
+                    }
+                })?),
+                Some(graph.facts_witness),
+            ),
+            None => (None, None),
+        };
+        Ok(PackageGraphRevision {
+            generation: self.generation,
+            marker_identity: self.marker_identity,
+            view_root,
+            view_version,
+            graph_root,
+            facts_witness,
+        })
+    }
+
+    /// Reuses an already selected, exact graph snapshot.
+    ///
+    /// This compatibility method does not replace facts in a selected
+    /// generation. Use [`Self::synchronize_package_graph_from`] with a graph
+    /// revision captured before source facts are read. Private staging
+    /// generations may be initialized here because they are not yet visible.
     pub async fn synchronize_package_graph(
         &mut self,
         root: backend_library::ViewStateRoot,
@@ -74,24 +172,70 @@ impl TursoProjection {
                 "invalid or duplicate package graph source facts".to_owned(),
             ))
         })?;
-        self.synchronize_checked_package_graph(root, &checked).await
+        self.synchronize_package_graph_witness(None, root, &checked)
+            .await
     }
 
-    /// Synchronizes a previously checked immutable graph snapshot without
-    /// recomputing its canonical facts witness.
+    /// Reconciles graph facts only if the selected root and previous graph
+    /// witness still equal `expected`, captured before source fact admission.
+    /// `root` and `facts` must come from the same authoritative source
+    /// observation that the caller reads after capturing `expected`.
+    pub async fn synchronize_package_graph_from(
+        &mut self,
+        expected: PackageGraphRevision,
+        root: backend_library::ViewStateRoot,
+        facts: &[PackageDependencySourceFacts],
+    ) -> Result<ProjectionUpdate, ProjectionError> {
+        let checked = CheckedPackageGraphFacts::new(facts.to_vec()).map_err(|_| {
+            ProjectionError::Database(turso::Error::Misuse(
+                "invalid or duplicate package graph source facts".to_owned(),
+            ))
+        })?;
+        self.synchronize_package_graph_witness(Some(expected), root, &checked)
+            .await
+    }
+
+    /// Reuses a previously checked graph snapshot without recomputing its
+    /// canonical facts witness. Replacement requires
+    /// [`Self::synchronize_checked_package_graph_from`].
     pub async fn synchronize_checked_package_graph(
         &mut self,
         root: backend_library::ViewStateRoot,
         facts: &CheckedPackageGraphFacts,
     ) -> Result<ProjectionUpdate, ProjectionError> {
-        self.synchronize_package_graph_witness(root, facts).await
+        self.synchronize_package_graph_witness(None, root, facts)
+            .await
+    }
+
+    /// Reconciles a checked graph snapshot against an exact prior view root and
+    /// graph witness captured before source fact admission. The checked facts
+    /// validate canonical shape and content identity, not currentness; the
+    /// caller must obtain `root` and `facts` from one authoritative current
+    /// source observation after capturing `expected`.
+    pub async fn synchronize_checked_package_graph_from(
+        &mut self,
+        expected: PackageGraphRevision,
+        root: backend_library::ViewStateRoot,
+        facts: &CheckedPackageGraphFacts,
+    ) -> Result<ProjectionUpdate, ProjectionError> {
+        self.synchronize_package_graph_witness(Some(expected), root, facts)
+            .await
     }
 
     async fn synchronize_package_graph_witness(
         &mut self,
+        expected: Option<PackageGraphRevision>,
         root: backend_library::ViewStateRoot,
         checked: &CheckedPackageGraphFacts,
     ) -> Result<ProjectionUpdate, ProjectionError> {
+        if let Some(expected) = expected
+            && (self.staging
+                || expected.generation != self.generation
+                || expected.marker_identity != self.marker_identity)
+        {
+            return Err(ProjectionError::StaleTransition);
+        }
+        let _operation_guard = self.operation_guard()?;
         let facts = checked.facts();
         let facts_witness = checked.witness();
         let root_bytes = root.as_bytes();
@@ -102,18 +246,51 @@ impl TursoProjection {
             .connection
             .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
             .await?;
+        let Some(view) = metadata_from(&tx).await? else {
+            tx.rollback().await?;
+            return Err(ProjectionError::StaleTransition);
+        };
         let current = package_graph_metadata_from(&tx).await?;
+        if let Some(current) = current.as_ref()
+            && current.facts_witness == facts_witness
+            && current.root.as_slice() == root_bytes
+        {
+            let rows = u64::try_from(current.edge_count)
+                .map_err(|_| ProjectionError::GraphRowCountOverflow)?;
+            tx.rollback().await?;
+            return Ok(ProjectionUpdate::Reused { rows });
+        }
+        if let Some(expected) = expected {
+            let graph_matches = match (
+                current.as_ref(),
+                expected.graph_root,
+                expected.facts_witness,
+            ) {
+                (None, None, None) => true,
+                (Some(current), Some(root), Some(witness)) => {
+                    current.root.as_slice() == root && current.facts_witness == witness
+                }
+                _ => false,
+            };
+            if view.root.as_slice() != expected.view_root
+                || view.view_version.as_slice() != expected.view_version
+                || !graph_matches
+            {
+                tx.rollback().await?;
+                return Err(ProjectionError::StaleTransition);
+            }
+        } else if !self.staging {
+            tx.rollback().await?;
+            return Err(ProjectionError::StaleTransition);
+        }
         if let Some(current) = current.as_ref()
             && current.facts_witness == facts_witness
         {
             let rows = u64::try_from(current.edge_count)
                 .map_err(|_| ProjectionError::GraphRowCountOverflow)?;
-            if current.root.as_slice() == root_bytes {
-                tx.rollback().await?;
-                return Ok(ProjectionUpdate::Reused { rows });
-            }
             // The complete facts witness already names every edge and state.
-            // Moving only the selected view root must not scan the edge table.
+            // Moving only the graph root is permitted after the expected
+            // graph revision and selected row root both pass their fences.
             tx.execute(
                 "UPDATE backend_projection_package_graph_meta SET root=?1 WHERE singleton=1",
                 [root_bytes.as_slice()],
@@ -281,10 +458,15 @@ impl TursoProjection {
     }
 
     /// Returns the forward edges for `source`, fenced to one graph root.
+    ///
+    /// This compatibility read is capped at the checked per-source row limit.
+    /// Use [`Self::read_package_graph_page`] when the result spans multiple
+    /// pages.
     pub async fn package_dependencies(
         &self,
         source: &PackageReference,
     ) -> Result<RootedPackageGraph, ProjectionError> {
+        let _operation_guard = self.operation_guard()?;
         let tx = self.connection.unchecked_transaction().await?;
         let metadata = package_graph_metadata_from(&tx)
             .await?
@@ -293,12 +475,19 @@ impl TursoProjection {
             .query(
                 "SELECT source_authority_kind, source_authority_id \
                  FROM backend_projection_package_sources WHERE source=?1 \
-                 ORDER BY source_authority_kind, source_authority_id",
-                [source.as_str()],
+                 ORDER BY source_authority_kind, source_authority_id LIMIT ?2",
+                turso::params![source.as_str(), MAX_GRAPH_SOURCE_AUTHORITY_READ_LIMIT],
             )
             .await?;
         let mut keys = Vec::new();
         while let Some(row) = source_rows.next().await? {
+            if keys.len() == MAX_PACKAGE_GRAPH_AUTHORITIES {
+                drop(source_rows);
+                tx.rollback().await?;
+                return Err(ProjectionError::ReadLimitExceeded {
+                    maximum: MAX_PACKAGE_GRAPH_AUTHORITIES,
+                });
+            }
             keys.push(PackageGraphSourceKey::new(
                 source.clone(),
                 decode_source_authority(row.get(0)?, row.get(1)?)?,
@@ -335,18 +524,16 @@ impl TursoProjection {
                  authority, frontier, provenance, facts_version \
                  FROM backend_projection_package_edges WHERE source=?1 \
                  AND source_authority_kind=?2 AND source_authority_id=?3 \
-                 ORDER BY edge_id",
+                 ORDER BY edge_id LIMIT ?4",
                 turso::params![
                     selected.coordinate.as_str(),
                     selected.authority.kind_tag(),
-                    selected.authority.id_bytes().as_slice()
+                    selected.authority.id_bytes().as_slice(),
+                    MAX_UNPAGED_GRAPH_EDGE_READ_LIMIT
                 ],
             )
             .await?;
-        let mut edges = Vec::new();
-        while let Some(row) = rows.next().await? {
-            edges.push(decode_package_edge(&row)?);
-        }
+        let edges = read_unpaged_edges(&mut rows).await?;
         drop(rows);
         let root = metadata.root.clone().into_boxed_slice();
         let state = package_state_from(&tx, &selected).await?;
@@ -360,11 +547,14 @@ impl TursoProjection {
         })
     }
 
-    /// Returns edges for one exact coordinate/authority pair.
+    /// Returns edges for one exact coordinate/authority pair, capped at the
+    /// checked per-source row limit. Use [`Self::read_package_graph_page`] for
+    /// a larger paged result.
     pub async fn package_dependencies_for_source(
         &self,
         source: &PackageGraphSourceKey,
     ) -> Result<RootedPackageGraph, ProjectionError> {
+        let _operation_guard = self.operation_guard()?;
         let tx = self.connection.unchecked_transaction().await?;
         let metadata = package_graph_metadata_from(&tx)
             .await?
@@ -399,18 +589,17 @@ impl TursoProjection {
                  target_ecosystem, target_name, requirement, resolved, scope, optional, \
                  authority, frontier, provenance, facts_version \
                  FROM backend_projection_package_edges WHERE source=?1 \
-                 AND source_authority_kind=?2 AND source_authority_id=?3 ORDER BY edge_id",
+                 AND source_authority_kind=?2 AND source_authority_id=?3 \
+                 ORDER BY edge_id LIMIT ?4",
                 turso::params![
                     source.coordinate.as_str(),
                     source.authority.kind_tag(),
-                    source.authority.id_bytes().as_slice()
+                    source.authority.id_bytes().as_slice(),
+                    MAX_UNPAGED_GRAPH_EDGE_READ_LIMIT
                 ],
             )
             .await?;
-        let mut edges = Vec::new();
-        while let Some(row) = rows.next().await? {
-            edges.push(decode_package_edge(&row)?);
-        }
+        let edges = read_unpaged_edges(&mut rows).await?;
         drop(rows);
         let state = package_state_from(&tx, source).await?;
         let root = metadata.root.into_boxed_slice();
@@ -428,11 +617,14 @@ impl TursoProjection {
     ///
     /// Resolution is retained in the predicate: a resolved exact edge matches
     /// only that version, while an unresolved requirement remains visible for
-    /// all versions of the target package.
+    /// all versions of the target package. Results are capped at the checked
+    /// per-source row limit; use [`Self::read_package_graph_page`] when a
+    /// reverse lookup spans multiple pages.
     pub async fn package_dependents(
         &self,
         target: &PackageReference,
     ) -> Result<RootedPackageGraph, ProjectionError> {
+        let _operation_guard = self.operation_guard()?;
         let tx = self.connection.unchecked_transaction().await?;
         let metadata = package_graph_metadata_from(&tx)
             .await?
@@ -454,7 +646,8 @@ impl TursoProjection {
                  target_ecosystem, target_name, requirement, resolved, scope, optional, \
                  authority, frontier, provenance, facts_version \
                  FROM backend_projection_package_edges WHERE target_ecosystem=?1 \
-                 AND target_name=?2 AND (resolved IS NULL OR resolved=?3) ORDER BY edge_id",
+                 AND target_name=?2 AND (resolved IS NULL OR resolved=?3) \
+                 ORDER BY edge_id LIMIT ?4",
                 turso::params![
                     i64::from(
                         target_url
@@ -463,14 +656,12 @@ impl TursoProjection {
                             .map_or(0, |value| value as u8)
                     ),
                     target_url.lineage_name(),
-                    target.as_str()
+                    target.as_str(),
+                    MAX_UNPAGED_GRAPH_EDGE_READ_LIMIT
                 ],
             )
             .await?;
-        let mut edges = Vec::new();
-        while let Some(row) = rows.next().await? {
-            edges.push(decode_package_edge(&row)?);
-        }
+        let edges = read_unpaged_edges(&mut rows).await?;
         drop(rows);
         let root = metadata.root.into_boxed_slice();
         tx.rollback().await?;
@@ -482,6 +673,21 @@ impl TursoProjection {
             state: None,
         })
     }
+}
+
+async fn read_unpaged_edges(
+    rows: &mut turso::Rows,
+) -> Result<Vec<PackageDependencyRecord>, ProjectionError> {
+    let mut edges = Vec::with_capacity(MAX_PACKAGE_GRAPH_ROWS.min(128));
+    while let Some(row) = rows.next().await? {
+        if edges.len() == MAX_PACKAGE_GRAPH_ROWS {
+            return Err(ProjectionError::ReadLimitExceeded {
+                maximum: MAX_PACKAGE_GRAPH_ROWS,
+            });
+        }
+        edges.push(decode_package_edge(&row)?);
+    }
+    Ok(edges)
 }
 
 pub(crate) async fn package_graph_metadata_from(

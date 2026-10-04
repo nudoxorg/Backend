@@ -825,9 +825,8 @@ mod tests {
                     .expect("discovery")
                     .path()
                     .strip_prefix(&scratch.0)
+                    .map(slash_path)
                     .expect("relative")
-                    .to_string_lossy()
-                    .into_owned()
             })
             .filter(|path| path.ends_with(".ts"))
             .collect::<Vec<_>>();
@@ -974,9 +973,8 @@ mod tests {
                     .expect("discovery")
                     .path()
                     .strip_prefix(&scratch.0)
+                    .map(slash_path)
                     .expect("relative")
-                    .to_string_lossy()
-                    .into_owned()
             })
             .filter(|path| path.ends_with(".ts"))
             .collect::<Vec<_>>();
@@ -1004,9 +1002,8 @@ mod tests {
                     .expect("discovery")
                     .path()
                     .strip_prefix(&scratch.0)
+                    .map(slash_path)
                     .expect("relative")
-                    .to_string_lossy()
-                    .into_owned()
             })
             .filter(|path| path.ends_with(".rs"))
             .collect::<Vec<_>>();
@@ -1045,9 +1042,8 @@ mod tests {
                     .expect("discovery")
                     .path()
                     .strip_prefix(&scratch.0)
+                    .map(slash_path)
                     .expect("relative")
-                    .to_string_lossy()
-                    .into_owned()
             })
             .filter(|path| path.ends_with(".rs"))
             .collect::<Vec<_>>();

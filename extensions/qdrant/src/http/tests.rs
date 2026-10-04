@@ -46,6 +46,14 @@ fn upsert_binding() -> Binding {
     binding.with_frontier(Frontier::from_value(&[3; 32]))
 }
 
+fn projection(binding: Binding) -> ProjectionBinding {
+    ProjectionBinding::new(binding)
+}
+
+fn residence_for(binding: Binding, row_key: &str) -> Result<PointResidence, HttpProviderError> {
+    PointResidence::for_row(projection(binding).identity(), row_key)
+}
+
 fn test_config(endpoint: String) -> QdrantHttpConfig {
     QdrantHttpConfig {
         endpoint,
@@ -113,7 +121,7 @@ fn physical_point_identity_is_scoped_by_the_complete_binding() {
     assert!(!payload.matches_binding(next));
     let bound = BindingText::from_binding(binding);
     let candidate_prefix = PhysicalPointId::candidate_prefix(binding);
-    let residence_prefix = PhysicalPointId::residence_prefix(binding.workspace, binding.recipe);
+    let residence_prefix = PhysicalPointId::residence_prefix(projection(binding).identity());
     assert!(payload.matches_text(&bound));
     assert_eq!(
         payload.physical_id_with(&candidate_prefix, &residence_prefix, candidate),
@@ -130,7 +138,7 @@ fn admitted_hit_check_reuses_the_binding_text_and_point_prefix() {
     let (binding, _) = crate::tests::binding(&[]);
     let bound = BindingText::from_binding(binding);
     let candidate_prefix = PhysicalPointId::candidate_prefix(binding);
-    let residence_prefix = PhysicalPointId::residence_prefix(binding.workspace, binding.recipe);
+    let residence_prefix = PhysicalPointId::residence_prefix(projection(binding).identity());
     let payloads = (0..512_u64)
         .map(|index| {
             let candidate = CandidateId::new(index + 1).expect("candidate");
@@ -331,12 +339,10 @@ fn upsert_skips_put_when_retrieved_coordinate_key_matches() {
     let address = listener.local_addr().expect("address");
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("connection");
-        let mut request = Vec::new();
-        let mut byte = [0_u8; 1];
-        while !request.ends_with(b"\r\n\r\n") {
-            stream.read_exact(&mut byte).expect("request byte");
-            request.push(byte[0]);
-        }
+        // Consume the whole request, body included. A server that closes with
+        // unread request bytes makes Windows reset the connection, which
+        // discards the response the client has not read yet.
+        drop(read_http(&mut stream));
         write!(
             stream,
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -378,15 +384,11 @@ fn upsert_puts_missing_points_after_empty_retrieve() {
     let server = thread::spawn(move || {
         for (index, body) in [retrieve_body, put_body].into_iter().enumerate() {
             let (mut stream, _) = listener.accept().expect("connection");
-            let mut request = Vec::new();
-            let mut byte = [0_u8; 1];
-            while !request.ends_with(b"\r\n\r\n") {
-                stream.read_exact(&mut byte).expect("request byte");
-                request.push(byte[0]);
-            }
-            let text = String::from_utf8(request).expect("HTTP request");
+            // Consume the whole request, body included; see the retrieve-only
+            // fixture above.
+            let (header, _body) = read_http(&mut stream);
             if index == 1 {
-                assert!(text.starts_with("PUT "));
+                assert!(header.starts_with("PUT "));
             }
             write!(
                 stream,
@@ -605,39 +607,43 @@ fn upsert_writes_only_the_point_missing_from_retrieve() {
 }
 
 #[test]
-fn residence_identity_survives_a_frontier_move_and_changes_with_the_row() {
+fn residence_identity_is_scoped_by_complete_binding_and_row() {
     use crate::Frontier;
 
     let binding = upsert_binding();
-    let residence =
-        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:alpha").expect("row");
+    let residence = residence_for(binding, "symbol:alpha").expect("row");
     let mut moved = binding;
     moved.frontier = Frontier::from_value(&[9; 32]);
-    let stable = PhysicalPointId::for_residence(binding.workspace, binding.recipe, residence);
-    assert_eq!(
-        stable,
-        PhysicalPointId::for_residence(moved.workspace, moved.recipe, residence)
-    );
-    let other =
-        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:beta").expect("other");
+    let moved_projection = projection(moved);
+    let moved_residence =
+        PointResidence::for_row(moved_projection.identity(), "symbol:alpha").expect("moved row");
+    let stable = PhysicalPointId::for_residence(projection(binding).identity(), residence);
+    let moved_id = PhysicalPointId::for_residence(moved_projection.identity(), moved_residence);
+    assert_ne!(stable, moved_id);
+    let other = residence_for(binding, "symbol:beta").expect("other");
     assert_ne!(
         stable,
-        PhysicalPointId::for_residence(binding.workspace, binding.recipe, other)
+        PhysicalPointId::for_residence(projection(binding).identity(), other)
     );
     let other_recipe = crate::Recipe::from_value(&[9; 32]);
+    let mut other_recipe_binding = binding;
+    other_recipe_binding.recipe = other_recipe;
+    let other_recipe_projection = projection(other_recipe_binding);
+    let other_recipe_residence =
+        PointResidence::for_row(other_recipe_projection.identity(), "symbol:alpha")
+            .expect("other recipe row");
     assert_ne!(
         stable,
-        PhysicalPointId::for_residence(binding.workspace, other_recipe, residence)
+        PhysicalPointId::for_residence(other_recipe_projection.identity(), other_recipe_residence)
     );
-    assert!(PointResidence::for_row(binding.workspace, binding.recipe, "").is_err());
+    assert!(residence_for(binding, "").is_err());
 }
 
 #[test]
 fn resident_upsert_rejects_a_duplicated_row_before_network_io() {
     let binding = upsert_binding();
     let recipe = upsert_test_recipe();
-    let residence =
-        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:alpha").expect("row");
+    let residence = residence_for(binding, "symbol:alpha").expect("row");
     let document = DocumentVector::new(
         recipe,
         CandidateId::new(7).expect("candidate"),
@@ -652,19 +658,18 @@ fn resident_upsert_rejects_a_duplicated_row_before_network_io() {
     let client = QdrantHttpClient::new(test_config("http://127.0.0.1:1".to_owned()), recipe)
         .expect("client");
     let error = client
-        .upsert_resident(binding, &[resident, resident])
+        .upsert_resident(projection(binding), &[resident, resident])
         .expect_err("duplicate residence");
     assert!(matches!(error, HttpProviderError::BindingMismatch));
 }
 
 #[test]
-fn resident_frontier_rebind_writes_payload_and_keeps_the_vector() {
+fn resident_frontier_move_writes_to_a_distinct_physical_identity() {
     use crate::Frontier;
 
     let binding = upsert_binding();
     let recipe = upsert_test_recipe();
-    let residence =
-        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:alpha").expect("row");
+    let residence = residence_for(binding, "symbol:alpha").expect("row");
     let document = DocumentVector::new(
         recipe,
         CandidateId::new(7).expect("candidate"),
@@ -678,7 +683,7 @@ fn resident_frontier_rebind_writes_payload_and_keeps_the_vector() {
     let client = QdrantHttpClient::new(test_config(endpoint), recipe).expect("client");
     let cold = client
         .upsert_resident(
-            binding,
+            projection(binding),
             &[ResidentDocument {
                 residence,
                 write: CoordinateWrite::Replace,
@@ -697,6 +702,8 @@ fn resident_frontier_rebind_writes_payload_and_keeps_the_vector() {
     );
     let mut moved = binding;
     moved.frontier = Frontier::from_value(&[9; 32]);
+    let moved_projection = projection(moved);
+    let moved_residence = residence_for(moved, "symbol:alpha").expect("moved row");
     let reminted = DocumentVector::new(
         recipe,
         CandidateId::new(99).expect("candidate"),
@@ -705,19 +712,19 @@ fn resident_frontier_rebind_writes_payload_and_keeps_the_vector() {
     .expect("reminted");
     let warm = client
         .upsert_resident(
-            moved,
+            moved_projection,
             &[ResidentDocument {
-                residence,
+                residence: moved_residence,
                 write: CoordinateWrite::Hold,
                 document: &reminted,
             }],
         )
-        .expect("payload rebind");
+        .expect("write separately bound residence");
     assert_eq!(
         warm,
         ResidentMutationReceipt {
-            vectors: 0,
-            payloads: 1,
+            vectors: 1,
+            payloads: 0,
             unchanged: 0,
             batches: 1,
         }
@@ -725,7 +732,7 @@ fn resident_frontier_rebind_writes_payload_and_keeps_the_vector() {
     let transcript = server.join().expect("server");
     assert_eq!(
         transcript,
-        [("retrieve", 0), ("put", 1), ("retrieve", 0), ("payload", 1)]
+        [("retrieve", 0), ("put", 1), ("retrieve", 0), ("put", 1)]
     );
 }
 
@@ -733,8 +740,7 @@ fn resident_frontier_rebind_writes_payload_and_keeps_the_vector() {
 fn resident_hold_rejects_a_rewritten_coordinate_before_any_write() {
     let binding = upsert_binding();
     let recipe = upsert_test_recipe();
-    let residence =
-        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:alpha").expect("row");
+    let residence = residence_for(binding, "symbol:alpha").expect("row");
     let document = DocumentVector::new(
         recipe,
         CandidateId::new(7).expect("candidate"),
@@ -748,7 +754,7 @@ fn resident_hold_rejects_a_rewritten_coordinate_before_any_write() {
     let client = QdrantHttpClient::new(test_config(endpoint), recipe).expect("client");
     client
         .upsert_resident(
-            binding,
+            projection(binding),
             &[ResidentDocument {
                 residence,
                 write: CoordinateWrite::Hold,
@@ -758,7 +764,7 @@ fn resident_hold_rejects_a_rewritten_coordinate_before_any_write() {
         .expect("cold upsert");
     let error = client
         .upsert_resident(
-            binding,
+            projection(binding),
             &[ResidentDocument {
                 residence,
                 write: CoordinateWrite::Hold,
@@ -772,15 +778,13 @@ fn resident_hold_rejects_a_rewritten_coordinate_before_any_write() {
 }
 
 #[test]
-fn resident_replace_rewrites_one_vector_and_rebinds_the_sibling() {
+fn resident_frontier_move_keeps_old_vectors_under_their_original_ids() {
     use crate::Frontier;
 
     let binding = upsert_binding();
     let recipe = upsert_test_recipe();
-    let alpha =
-        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:alpha").expect("alpha");
-    let beta =
-        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:beta").expect("beta");
+    let alpha = residence_for(binding, "symbol:alpha").expect("alpha");
+    let beta = residence_for(binding, "symbol:beta").expect("beta");
     let alpha_document = DocumentVector::new(
         recipe,
         CandidateId::new(7).expect("candidate"),
@@ -800,7 +804,7 @@ fn resident_replace_rewrites_one_vector_and_rebinds_the_sibling() {
     let client = QdrantHttpClient::new(test_config(endpoint), recipe).expect("client");
     client
         .upsert_resident(
-            binding,
+            projection(binding),
             &[
                 ResidentDocument {
                     residence: alpha,
@@ -817,6 +821,9 @@ fn resident_replace_rewrites_one_vector_and_rebinds_the_sibling() {
         .expect("cold upsert");
     let mut moved = binding;
     moved.frontier = Frontier::from_value(&[9; 32]);
+    let moved_projection = projection(moved);
+    let moved_alpha = residence_for(moved, "symbol:alpha").expect("moved alpha");
+    let moved_beta = residence_for(moved, "symbol:beta").expect("moved beta");
     let revised = DocumentVector::new(
         recipe,
         CandidateId::new(70).expect("candidate"),
@@ -831,15 +838,15 @@ fn resident_replace_rewrites_one_vector_and_rebinds_the_sibling() {
     .expect("sibling");
     let delta = client
         .upsert_resident(
-            moved,
+            moved_projection,
             &[
                 ResidentDocument {
-                    residence: alpha,
+                    residence: moved_alpha,
                     write: CoordinateWrite::Replace,
                     document: &revised,
                 },
                 ResidentDocument {
-                    residence: beta,
+                    residence: moved_beta,
                     write: CoordinateWrite::Hold,
                     document: &sibling,
                 },
@@ -849,21 +856,15 @@ fn resident_replace_rewrites_one_vector_and_rebinds_the_sibling() {
     assert_eq!(
         delta,
         ResidentMutationReceipt {
-            vectors: 1,
-            payloads: 1,
+            vectors: 2,
+            payloads: 0,
             unchanged: 0,
-            batches: 2,
+            batches: 1,
         }
     );
     let transcript = server.join().expect("server");
     assert_eq!(
         transcript,
-        [
-            ("retrieve", 0),
-            ("put", 2),
-            ("retrieve", 0),
-            ("put", 1),
-            ("payload", 1)
-        ]
+        [("retrieve", 0), ("put", 2), ("retrieve", 0), ("put", 2)]
     );
 }

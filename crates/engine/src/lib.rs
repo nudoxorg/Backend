@@ -60,6 +60,8 @@ pub mod retrieval;
 pub mod schema;
 pub mod tcp;
 pub mod telemetry;
+#[cfg(test)]
+mod test_support;
 pub mod worker;
 pub mod workspace;
 

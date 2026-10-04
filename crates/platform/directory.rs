@@ -12,7 +12,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[cfg(unix)]
+use crate::file_identity::FileIdentity;
+use crate::linkage::{IfUnlinked, Linkage, open_admitted};
+
+#[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
+
+const MAX_DIRECTORY_CLEANUP_ENTRIES: usize = 1_000_000;
 
 /// Kind of one direct child reported by a pinned directory capability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,6 +102,285 @@ impl std::error::Error for DirectoryRenameError {
     }
 }
 
+/// Failure when publishing a child through its creation receipt.
+#[derive(Debug)]
+pub enum CreatedDirectoryRenameError {
+    /// The recorded source name no longer resolves to the held child.
+    NameChanged(io::Error),
+    /// The no-replace rename failed or committed without a confirmed flush.
+    Rename(DirectoryRenameError),
+}
+
+impl CreatedDirectoryRenameError {
+    /// Returns the underlying filesystem or identity-fence error.
+    #[must_use]
+    pub fn cause(&self) -> &io::Error {
+        match self {
+            Self::NameChanged(error) => error,
+            Self::Rename(error) => error.cause(),
+        }
+    }
+
+    /// Returns whether the namespace rename committed before the error.
+    #[must_use]
+    pub const fn committed(&self) -> bool {
+        matches!(self, Self::Rename(error) if error.committed())
+    }
+}
+
+impl std::fmt::Display for CreatedDirectoryRenameError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NameChanged(error) => write!(
+                formatter,
+                "created directory identity changed before publication: {error}"
+            ),
+            Self::Rename(error) => std::fmt::Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl std::error::Error for CreatedDirectoryRenameError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(match self {
+            Self::NameChanged(error) => error,
+            Self::Rename(error) => error,
+        })
+    }
+}
+
+/// Ownership outcome of an exclusive private-directory creation.
+///
+/// A `NotCreated` error carries no authority to inspect or remove the requested
+/// name. `CreatedButUnready` carries a pinned child receipt for cleanup. On
+/// Windows, that receipt retains the handle returned by `FILE_CREATE`. On
+/// Unix, `mkdirat` does not return a handle; the receipt binds the private
+/// direct child observed by the following `openat`. Callers must exclude
+/// same-user namespace mutation across that interval when they require the
+/// observed child to be the object created by `mkdirat`.
+#[derive(Debug)]
+pub enum DirectoryCreateFailure {
+    /// The exclusive creation did not create an entry.
+    NotCreated(io::Error),
+    /// Creation succeeded and a pinned child receipt is retained for rollback.
+    /// The strength of its create-time identity guarantee is platform-specific;
+    /// see the enum documentation.
+    CreatedButUnready {
+        /// Receipt for the exclusively created child.
+        directory: CreatedDirectory,
+        /// The setup operation that failed after creation.
+        source: io::Error,
+    },
+    /// Creation succeeded, but the new child could not be pinned safely.
+    /// No cleanup authority is carried, and the caller must treat this as
+    /// terminal rather than probing the name and guessing ownership.
+    CreatedButUnpinned(io::Error),
+}
+
+impl std::fmt::Display for DirectoryCreateFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotCreated(source) => {
+                write!(formatter, "private directory was not created: {source}")
+            }
+            Self::CreatedButUnready { source, .. } => write!(
+                formatter,
+                "private directory was created but setup failed: {source}"
+            ),
+            Self::CreatedButUnpinned(source) => write!(
+                formatter,
+                "created directory could not be pinned; refusing name-based cleanup: {source}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DirectoryCreateFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotCreated(source)
+            | Self::CreatedButUnpinned(source)
+            | Self::CreatedButUnready { source, .. } => Some(source),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DirectoryCreateRollbackFailure {
+    create: io::Error,
+    cleanup: io::Error,
+}
+
+impl std::fmt::Display for DirectoryCreateRollbackFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "private directory setup failed ({}); receipt-authorized rollback failed ({})",
+            self.create, self.cleanup
+        )
+    }
+}
+
+impl std::error::Error for DirectoryCreateRollbackFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.create)
+    }
+}
+
+/// Receipt tying one exclusive child creation attempt to its parent handle,
+/// direct name, and held child identity. Windows retains the exact object
+/// returned by exclusive `FILE_CREATE`. Unix pins the private direct occupant
+/// observed after `mkdirat`; because `mkdirat` returns no handle, this does not
+/// prove inode continuity against same-user mutation before that open. After
+/// pinning, identity checks prevent this receipt from traversing a replacement
+/// observed at its direct name.
+#[derive(Debug)]
+pub struct CreatedDirectory {
+    parent: DirectoryCapability,
+    child: DirectoryCapability,
+    name: String,
+    cleanup: CreatedDirectoryCleanup,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CreatedDirectoryCleanup {
+    /// Windows child handle pins the name and can remove the empty child itself.
+    PinnedHandle,
+    /// The handle allows the publication rename; cleanup reopens and compares identity.
+    RenameableHandle,
+    /// Windows FILE_CREATE returned this exact handle before setup completed;
+    /// cleanup may delete only that still-empty object through the handle.
+    #[cfg(windows)]
+    CreatedHandle,
+}
+
+impl CreatedDirectory {
+    /// Returns the requested direct-child name recorded by this receipt.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the held child capability recorded by this receipt.
+    #[must_use]
+    pub fn capability(&self) -> &DirectoryCapability {
+        &self.child
+    }
+
+    /// Transfers the pinned child handle to a compatibility caller.
+    #[must_use]
+    pub fn into_capability(self) -> DirectoryCapability {
+        self.child
+    }
+
+    /// Verifies that the requested direct name still resolves through the
+    /// retained parent to the held child identity.
+    ///
+    /// This is an identity fence for cooperating namespace users. The check
+    /// and a later path operation are separate system calls, so it does not
+    /// exclude a same-user process that ignores the caller's namespace lock.
+    pub fn verify_named(&self) -> io::Result<()> {
+        let named = self.parent.open_private_dir(&self.name)?;
+        if !named.same_object_as(&self.child)? {
+            return Err(invalid(
+                "created directory name now refers to another object",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Renames this receipt's direct child to an unused direct name, preserving
+    /// the rename's commit status. The identity check and rename are separate
+    /// calls; callers must hold their cooperative namespace guard throughout.
+    pub fn rename_noreplace(
+        &self,
+        destination: &str,
+    ) -> Result<(), CreatedDirectoryRenameError> {
+        self.verify_named()
+            .map_err(CreatedDirectoryRenameError::NameChanged)?;
+        self.parent
+            .rename_with_outcome(&self.name, destination, false)
+            .map_err(CreatedDirectoryRenameError::Rename)
+    }
+
+    /// Verifies that a raw path resolves to the retained parent and child
+    /// capabilities. This catches replacement of either the parent path or
+    /// the child name before and after path-based operations.
+    ///
+    /// The identity checks bracket a path operation but cannot lock out a
+    /// same-user process that bypasses the caller's cooperative namespace
+    /// protocol. Use capability-relative operations when they are available.
+    pub fn verify_path(&self, path: &Path) -> io::Result<()> {
+        let parent_path = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let path_parent = DirectoryCapability::open(parent_path)?;
+        if !path_parent.same_object_as(&self.parent)? {
+            return Err(invalid(
+                "created directory path resolves through another parent",
+            ));
+        }
+        let path_child = DirectoryCapability::open(path)?;
+        if !path_child.same_object_as(&self.child)? {
+            return Err(invalid(
+                "created directory path resolves to another object",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Removes this created directory using only the cleanup authority carried
+    /// by the receipt. Once setup succeeded, cleanup checks that the direct name
+    /// still refers to the held child identity before traversing it.
+    ///
+    /// On Unix, the final `unlinkat` is name-based: the identity is checked
+    /// immediately before unlink, but Unix has no unlink-by-open-directory-handle
+    /// operation, so a same-user rename in that final syscall window cannot be
+    /// excluded by this API. This API also cannot prove that the observed child
+    /// is the inode originally made by `mkdirat` if a same-user process changed
+    /// the name before the initial pin. No replacement is traversed after an
+    /// identity mismatch is observed.
+    pub fn remove_all(&self, maximum_entries: usize) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            let _ = self.cleanup;
+            let expected = FileIdentity::of_file(self.child.handle.as_ref())?;
+            let child = self.parent.open_private_dir(&self.name)?;
+            if FileIdentity::of_file(child.handle.as_ref())? != expected {
+                return Err(invalid(
+                    "created directory name now refers to another object",
+                ));
+            }
+            let mut visited = 0_usize;
+            child.remove_contents(0, &mut visited, maximum_entries)?;
+            let current = self.parent.open_private_dir(&self.name)?;
+            if FileIdentity::of_file(current.handle.as_ref())? != expected {
+                return Err(invalid("created directory name changed during cleanup"));
+            }
+            self.parent.remove_dir(&self.name)
+        }
+        #[cfg(windows)]
+        {
+            match self.cleanup {
+                CreatedDirectoryCleanup::PinnedHandle
+                | CreatedDirectoryCleanup::CreatedHandle => {
+                    self.child.handle.remove_created_empty_self()
+                }
+                CreatedDirectoryCleanup::RenameableHandle => self
+                    .parent
+                    .handle
+                    .remove_created_child_if_same(&self.name, &self.child.handle, maximum_entries),
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = maximum_entries;
+            Err(unsupported())
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CapabilityPurpose {
     PrivateState,
@@ -122,6 +407,40 @@ impl std::fmt::Debug for DirectoryCapability {
 }
 
 impl DirectoryCapability {
+    fn same_object_as(&self, other: &Self) -> io::Result<bool> {
+        #[cfg(unix)]
+        {
+            return Ok(FileIdentity::of_file(self.handle.as_ref())?
+                == FileIdentity::of_file(other.handle.as_ref())?);
+        }
+        #[cfg(windows)]
+        {
+            return self.handle.same_object_as(&other.handle);
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = other;
+            Err(unsupported())
+        }
+    }
+
+    /// Verifies that a raw path still resolves to this held directory object.
+    ///
+    /// This identity check does not pin the pathname for a later operation;
+    /// callers using path-based APIs must keep their cooperative namespace
+    /// guard for the operation's full duration.
+    pub fn verify_path(&self, path: &Path) -> io::Result<()> {
+        let observed = if self.purpose == CapabilityPurpose::ReadOnlySource {
+            Self::open_read_only_source(path)?
+        } else {
+            Self::open(path)?
+        };
+        if !observed.same_object_as(self)? {
+            return Err(invalid("directory path resolves to another object"));
+        }
+        Ok(())
+    }
+
     /// Creates or opens a private directory at a local path, then retains a
     /// handle to the resulting directory. The parent must already exist; a
     /// missing final component is created relative to the pinned parent so a
@@ -327,33 +646,147 @@ impl DirectoryCapability {
     }
 
     /// Creates one direct private directory and returns its pinned handle.
+    /// This compatibility entrypoint delegates to the tracked create path and
+    /// rolls back a post-create setup failure through its pinned-child receipt.
     pub fn create_private_dir(&self, name: &str) -> io::Result<Self> {
-        self.ensure_writable()?;
-        validate_component(name)?;
+        match self.create_private_dir_with_policy(
+            name,
+            CreatedDirectoryCleanup::PinnedHandle,
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+        ) {
+            Ok(created) => Ok(created.into_capability()),
+            Err(DirectoryCreateFailure::NotCreated(source)) => Err(source),
+            Err(DirectoryCreateFailure::CreatedButUnpinned(source)) => {
+                Err(io::Error::other(DirectoryCreateFailure::CreatedButUnpinned(
+                    source,
+                )))
+            }
+            Err(DirectoryCreateFailure::CreatedButUnready { directory, source }) => {
+                match directory.remove_all(MAX_DIRECTORY_CLEANUP_ENTRIES) {
+                    Ok(()) => Err(source),
+                    Err(cleanup) => Err(io::Error::other(DirectoryCreateRollbackFailure {
+                        create: source,
+                        cleanup,
+                    })),
+                }
+            }
+        }
+    }
+
+    /// Creates one direct private child while retaining a pinned-child receipt
+    /// for cleanup and publication. A pre-create error carries no authority
+    /// over the requested name. Unix receipts observe the occupant after
+    /// `mkdirat`; see [`CreatedDirectory`] for the same-user mutation boundary.
+    pub fn create_private_dir_tracked(
+        &self,
+        name: &str,
+    ) -> Result<CreatedDirectory, DirectoryCreateFailure> {
+        self.create_private_dir_with_policy(
+            name,
+            CreatedDirectoryCleanup::RenameableHandle,
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+        )
+    }
+
+    fn create_private_dir_with_policy(
+        &self,
+        name: &str,
+        cleanup: CreatedDirectoryCleanup,
+        before_create: impl FnOnce() -> io::Result<()>,
+        after_create: impl FnOnce() -> io::Result<()>,
+        after_pin: impl FnOnce() -> io::Result<()>,
+    ) -> Result<CreatedDirectory, DirectoryCreateFailure> {
+        self.ensure_writable()
+            .map_err(DirectoryCreateFailure::NotCreated)?;
+        validate_component(name).map_err(DirectoryCreateFailure::NotCreated)?;
+        before_create().map_err(DirectoryCreateFailure::NotCreated)?;
         #[cfg(unix)]
         {
             use rustix::fs::{Mode, mkdirat};
-            mkdirat(self.handle.as_ref(), name, Mode::from_bits_truncate(0o700))?;
-            let child = self.open_dir(name)?;
-            set_unix_private_directory(child.handle.as_ref())?;
-            child.validate_private()?;
-            self.sync_all()?;
-            return Ok(child);
+            mkdirat(self.handle.as_ref(), name, Mode::from_bits_truncate(0o700))
+                .map_err(|error| DirectoryCreateFailure::NotCreated(io::Error::from(error)))?;
+            if let Err(source) = after_create() {
+                return Err(DirectoryCreateFailure::CreatedButUnpinned(source));
+            }
+            let child = match self.open_dir(name) {
+                Ok(child) => child,
+                Err(source) => {
+                    return Err(DirectoryCreateFailure::CreatedButUnpinned(source));
+                }
+            };
+            let created = CreatedDirectory {
+                parent: self.clone(),
+                child,
+                name: name.to_owned(),
+                cleanup,
+            };
+            if let Err(source) = after_pin()
+                .and_then(|()| set_unix_private_directory(created.child.handle.as_ref()))
+                .and_then(|()| created.child.validate_private())
+                .and_then(|()| self.sync_all())
+            {
+                return Err(DirectoryCreateFailure::CreatedButUnready {
+                    directory: created,
+                    source,
+                });
+            }
+            Ok(created)
         }
         #[cfg(windows)]
         {
-            return self
-                .handle
-                .create_child_dir_exclusive(name)
-                .map(|handle| Self {
-                    handle: Arc::new(handle),
+            use crate::win32::workspace_fs::WorkspaceDirectoryCreateFailure;
+            let child = match self.handle.create_child_dir_exclusive_tracked(
+                name,
+                cleanup == CreatedDirectoryCleanup::RenameableHandle,
+            ) {
+                Ok(child) => child,
+                Err(WorkspaceDirectoryCreateFailure::NotCreated(source)) => {
+                    return Err(DirectoryCreateFailure::NotCreated(source));
+                }
+                Err(WorkspaceDirectoryCreateFailure::Created { directory, source }) => {
+                    let created = CreatedDirectory {
+                        parent: self.clone(),
+                        child: Self {
+                            handle: Arc::new(directory),
+                            purpose: CapabilityPurpose::PrivateState,
+                        },
+                        name: name.to_owned(),
+                        // This handle is the one returned by exclusive FILE_CREATE.
+                        // Setup did not complete, so rollback uses that exact
+                        // handle and never reopens the not-yet-admitted ACL by name.
+                        cleanup: CreatedDirectoryCleanup::CreatedHandle,
+                    };
+                    return Err(DirectoryCreateFailure::CreatedButUnready {
+                        directory: created,
+                        source,
+                    });
+                }
+            };
+            let created = CreatedDirectory {
+                parent: self.clone(),
+                child: Self {
+                    handle: Arc::new(child),
                     purpose: CapabilityPurpose::PrivateState,
+                },
+                name: name.to_owned(),
+                cleanup,
+            };
+            if let Err(source) = after_create().and_then(|()| after_pin()) {
+                return Err(DirectoryCreateFailure::CreatedButUnready {
+                    directory: created,
+                    source,
                 });
+            }
+            Ok(created)
         }
         #[cfg(not(any(unix, windows)))]
         {
-            let _ = name;
-            Err(unsupported())
+            let _ = (name, cleanup, after_create, after_pin);
+            Err(DirectoryCreateFailure::NotCreated(unsupported()))
         }
     }
 
@@ -391,14 +824,18 @@ impl DirectoryCapability {
     }
 
     /// Opens a direct regular file and validates owner-only permissions.
+    ///
+    /// A writer that publishes with a replacing rename may unlink the file between this open and
+    /// its checks. The reader keeps the complete generation it opened instead of failing or
+    /// chasing the name: see [`IfUnlinked::Keep`].
     pub fn open_private_file(&self, name: &str) -> io::Result<File> {
         validate_component(name)?;
-        #[cfg(windows)]
-        let file = self.handle.open_file_read_checked(&[name])?;
-        #[cfg(not(windows))]
-        let file = self.open_file_read(name)?;
-        validate_private_file(&file)?;
-        Ok(file)
+        open_private(IfUnlinked::Keep, || {
+            #[cfg(windows)]
+            return self.handle.open_file_read_checked(&[name]);
+            #[cfg(not(windows))]
+            return self.open_file_read(name);
+        })
     }
 
     /// Opens or creates a direct regular file for reading and writing. New
@@ -435,10 +872,13 @@ impl DirectoryCapability {
     }
 
     /// Opens or creates a direct private file for reading and writing.
+    ///
+    /// A writer must act on the file the name refers to now, so a file unlinked between the open
+    /// and its checks is discarded and the name is opened again: see [`IfUnlinked::Reopen`].
     pub fn open_private_file_read_write(&self, name: &str, create: bool) -> io::Result<File> {
-        let file = self.open_file_read_write(name, create)?;
-        validate_private_file(&file)?;
-        Ok(file)
+        open_private(IfUnlinked::Reopen, || {
+            self.open_file_read_write(name, create)
+        })
     }
 
     /// Creates one direct regular file exclusively with owner-only mode or ACL.
@@ -456,7 +896,7 @@ impl DirectoryCapability {
             )?;
             let file = File::from(file);
             rustix::fs::fchmod(&file, Mode::from_bits_truncate(0o600))?;
-            validate_private_file(&file)?;
+            validate_private_file(&file, Linkage::Named)?;
             return Ok(file);
         }
         #[cfg(windows)]
@@ -880,23 +1320,27 @@ fn validate_regular_file(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
-fn validate_regular_file(file: &File) -> io::Result<()> {
-    if !file.metadata()?.is_file() {
-        return Err(invalid("child is not a regular file"));
-    }
-    Ok(())
+/// Opens a private file and admits it, applying `if_unlinked` when a replacing rename removes its
+/// last name between the open and the checks.
+fn open_private(if_unlinked: IfUnlinked, open: impl Fn() -> io::Result<File>) -> io::Result<File> {
+    open_admitted(
+        if_unlinked,
+        open,
+        validate_private_file,
+        file_is_unlinked,
+        std::thread::sleep,
+    )
 }
 
 #[cfg(unix)]
-fn validate_private_file(file: &File) -> io::Result<()> {
+fn validate_private_file(file: &File, linkage: Linkage) -> io::Result<()> {
     use rustix::process::geteuid;
     use std::os::unix::fs::MetadataExt;
     let metadata = file.metadata()?;
     if !metadata.is_file()
         || metadata.uid() != geteuid().as_raw()
         || metadata.mode() & 0o077 != 0
-        || metadata.nlink() != 1
+        || !linkage.admits(metadata.nlink())
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -906,12 +1350,26 @@ fn validate_private_file(file: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether the file's last name was removed since it was opened.
+#[cfg(unix)]
+fn file_is_unlinked(file: &File) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    file.metadata().is_ok_and(|metadata| metadata.nlink() == 0)
+}
+
+/// The Windows workspace opens admit link counts and ownership on the handle themselves.
 #[cfg(windows)]
-fn validate_private_file(file: &File) -> io::Result<()> {
+fn validate_private_file(file: &File, _linkage: Linkage) -> io::Result<()> {
     if !file.metadata()?.is_file() {
         return Err(invalid("child is not a regular file"));
     }
     Ok(())
+}
+
+/// The Windows workspace opens reopen a replaced name themselves.
+#[cfg(windows)]
+fn file_is_unlinked(_file: &File) -> bool {
+    false
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -920,13 +1378,18 @@ fn validate_regular_file(_file: &File) -> io::Result<()> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn validate_private_file(_file: &File) -> io::Result<()> {
+fn validate_private_file(_file: &File, _linkage: Linkage) -> io::Result<()> {
     Err(unsupported())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_is_unlinked(_file: &File) -> bool {
+    false
 }
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::DirectoryCapability;
+    use super::{CreatedDirectoryCleanup, DirectoryCapability, DirectoryCreateFailure};
     use std::fs;
     use std::os::unix::fs::symlink;
     use std::path::PathBuf;
@@ -966,6 +1429,226 @@ mod tests {
         );
 
         fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exclusive_creation_refusal_carries_no_authority_over_existing_child() {
+        let root = scratch();
+        let existing = root.join("occupied");
+        fs::create_dir(&existing).expect("create existing child");
+        fs::write(existing.join("payload"), b"preserve me").expect("existing payload");
+        let parent = DirectoryCapability::open(&root).expect("pin parent");
+
+        let failure = parent
+            .create_private_dir_tracked("occupied")
+            .expect_err("exclusive create must refuse the existing child");
+        assert!(matches!(
+            failure,
+            DirectoryCreateFailure::NotCreated(ref error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+        ));
+        assert_eq!(
+            fs::read(existing.join("payload")).expect("existing bytes remain"),
+            b"preserve me"
+        );
+
+        drop(parent);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn postcreate_setup_failure_cleans_only_the_receipted_child() {
+        let root = scratch();
+        let parent = DirectoryCapability::open(&root).expect("pin parent");
+        let result = parent.create_private_dir_with_policy(
+            "new-child",
+            CreatedDirectoryCleanup::RenameableHandle,
+            || Ok(()),
+            || Ok(()),
+            || {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected setup refusal after pinning the child",
+                ))
+            },
+        );
+        let DirectoryCreateFailure::CreatedButUnready { directory, source } =
+            result.expect_err("post-create failure must retain its receipt")
+        else {
+            panic!("post-create failure lost its ownership category");
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+        directory
+            .remove_all(8)
+            .expect("receipt removes its pinned child");
+        assert!(!root.join("new-child").exists());
+
+        drop(parent);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mkdir_success_without_a_pinned_child_grants_no_cleanup_authority() {
+        let root = scratch();
+        let parent = DirectoryCapability::open(&root).expect("pin parent");
+        let result = parent.create_private_dir_with_policy(
+            "unresolved-child",
+            CreatedDirectoryCleanup::RenameableHandle,
+            || Ok(()),
+            || {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected failure after mkdirat and before openat",
+                ))
+            },
+            || Ok(()),
+        );
+        let DirectoryCreateFailure::CreatedButUnpinned(source) =
+            result.expect_err("the name must not be reopened after injected pin failure")
+        else {
+            panic!("post-mkdir failure must not claim a pinned creation receipt");
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(root.join("unresolved-child").is_dir());
+        assert_eq!(
+            fs::read_dir(root.join("unresolved-child"))
+                .expect("unresolved child remains untouched")
+                .count(),
+            0
+        );
+
+        drop(parent);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_create_receipt_binds_the_private_occupant_observed_at_pin_time() {
+        use crate::file_identity::FileIdentity;
+        use std::cell::Cell;
+
+        let root = scratch();
+        let parent = DirectoryCapability::open(&root).expect("pin parent");
+        let original_identity = Cell::new(None);
+        let replacement_identity = Cell::new(None);
+        let result = parent.create_private_dir_with_policy(
+            "child",
+            CreatedDirectoryCleanup::RenameableHandle,
+            || Ok(()),
+            || {
+                let original = root.join("child");
+                original_identity.set(Some(
+                    FileIdentity::of_path_nofollow(&original).expect("original identity"),
+                ));
+                fs::rename(&original, root.join("moved-original"))
+                    .expect("move mkdirat result before openat");
+                let replacement = parent
+                    .create_private_dir("child")
+                    .expect("install private replacement");
+                replacement_identity.set(Some(
+                    FileIdentity::of_file(replacement.handle.as_ref())
+                        .expect("replacement identity"),
+                ));
+                drop(replacement);
+                Ok(())
+            },
+            || Ok(()),
+        );
+        let created = result.expect("openat pins the occupant currently at the direct name");
+        let pinned_identity = FileIdentity::of_file(created.child.handle.as_ref())
+            .expect("receipt child identity");
+        assert_ne!(
+            original_identity.get().expect("record original identity"),
+            pinned_identity,
+            "Unix mkdirat returns no handle, so this receipt cannot prove inode continuity"
+        );
+        assert_eq!(
+            replacement_identity.get().expect("record replacement identity"),
+            pinned_identity,
+            "the receipt identifies the private child observed by openat"
+        );
+        created
+            .remove_all(8)
+            .expect("receipt cleans the child it actually pinned");
+        drop(created);
+        drop(parent);
+        fs::remove_dir_all(root.join("moved-original")).expect("remove moved original");
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn created_child_receipt_refuses_a_replacement_and_keeps_its_bytes() {
+        let root = scratch();
+        let parent = DirectoryCapability::open(&root).expect("pin parent");
+        let created = parent
+            .create_private_dir_tracked("child")
+            .expect("create tracked child");
+        fs::rename(root.join("child"), root.join("original-created-object"))
+            .expect("move original child aside");
+        let replacement = parent
+            .create_private_dir("child")
+            .expect("install private replacement directory");
+        fs::write(root.join("child/payload"), b"replacement bytes")
+            .expect("replacement payload");
+        drop(replacement);
+
+        let failure = created
+            .remove_all(8)
+            .expect_err("receipt must reject the replacement at its original name");
+        assert_eq!(failure.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            fs::read(root.join("child/payload")).expect("replacement is untouched"),
+            b"replacement bytes"
+        );
+
+        drop(created);
+        drop(parent);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn created_child_cleanup_stays_with_a_renamed_parent_capability() {
+        let root = scratch();
+        let moved = root.with_file_name(format!(
+            "{}-moved",
+            root.file_name()
+                .and_then(|name| name.to_str())
+                .expect("scratch name")
+        ));
+        let parent = DirectoryCapability::open(&root).expect("pin parent");
+        let created = parent
+            .create_private_dir_tracked("child")
+            .expect("create tracked child");
+        fs::rename(&root, &moved).expect("rename pinned parent directory");
+        fs::create_dir(&root).expect("install a replacement at the old parent path");
+        let replacement_parent =
+            DirectoryCapability::open(&root).expect("pin replacement parent");
+        let replacement = replacement_parent
+            .create_private_dir("child")
+            .expect("install a private replacement child");
+        fs::write(root.join("child/payload"), b"replacement parent bytes")
+            .expect("replacement payload");
+        drop(replacement);
+        drop(replacement_parent);
+
+        created
+            .remove_all(8)
+            .expect("receipt remains relative to the pinned original parent");
+        assert!(!moved.join("child").exists());
+        assert_eq!(
+            fs::read(root.join("child/payload")).expect("old-path replacement survives"),
+            b"replacement parent bytes"
+        );
+
+        drop(created);
+        drop(parent);
+        fs::remove_dir_all(root).expect("remove replacement fixture");
+        fs::remove_dir_all(moved).expect("remove moved original parent");
     }
 
     #[cfg(all(unix, not(target_vendor = "apple")))]
@@ -1170,7 +1853,7 @@ mod tests {
 
 #[cfg(all(test, windows))]
 mod windows_tests {
-    use super::DirectoryCapability;
+    use super::{CreatedDirectoryCleanup, DirectoryCapability, DirectoryCreateFailure};
     use std::fs;
     use std::io::Read as _;
     use std::path::PathBuf;
@@ -1186,6 +1869,14 @@ mod windows_tests {
             "backend-platform-source-{label}-{}-{tick}",
             std::process::id()
         ))
+    }
+
+    fn private_parent(label: &str) -> (PathBuf, DirectoryCapability) {
+        let path = scratch(label);
+        crate::win32::workspace_fs::WorkspaceRoot::create(&path)
+            .expect("create private test parent");
+        let directory = DirectoryCapability::open(&path).expect("open private test parent");
+        (path, directory)
     }
 
     #[test]
@@ -1214,9 +1905,96 @@ mod windows_tests {
     }
 
     #[test]
+    fn tracked_creation_refusal_preserves_existing_child_bytes() {
+        let (path, parent) = private_parent("tracked-collision");
+        let existing = parent
+            .create_private_dir("occupied")
+            .expect("create existing child");
+        fs::write(path.join("occupied/payload"), b"preserve me")
+            .expect("existing payload");
+        drop(existing);
+
+        let failure = parent
+            .create_private_dir_tracked("occupied")
+            .expect_err("exclusive create refuses the existing child");
+        assert!(matches!(
+            failure,
+            DirectoryCreateFailure::NotCreated(ref error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+        ));
+        assert_eq!(
+            fs::read(path.join("occupied/payload")).expect("existing bytes remain"),
+            b"preserve me"
+        );
+
+        drop(parent);
+        fs::remove_dir_all(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn postcreate_setup_failure_uses_the_held_created_handle_for_cleanup() {
+        let (path, parent) = private_parent("tracked-setup-failure");
+        let result = parent.create_private_dir_with_policy(
+            "new-child",
+            CreatedDirectoryCleanup::RenameableHandle,
+            || Ok(()),
+            || Ok(()),
+            || {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected post-create setup refusal",
+                ))
+            },
+        );
+        let DirectoryCreateFailure::CreatedButUnready { directory, source } =
+            result.expect_err("post-create failure retains the exclusive-create handle")
+        else {
+            panic!("post-create failure lost its ownership category");
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+        directory
+            .remove_all(8)
+            .expect("receipt removes the held created child");
+        assert!(!path.join("new-child").exists());
+
+        drop(parent);
+        fs::remove_dir_all(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn created_handle_refuses_a_replacement_and_leaves_it_untouched() {
+        let (path, parent) = private_parent("tracked-replacement");
+        let created = parent
+            .create_private_dir_tracked("child")
+            .expect("create tracked child");
+        fs::rename(path.join("child"), path.join("original-created-object"))
+            .expect("move original child aside");
+        let replacement = parent
+            .create_private_dir("child")
+            .expect("create replacement at the same name");
+        fs::write(path.join("child/payload"), b"replacement bytes")
+            .expect("replacement payload");
+        drop(replacement);
+
+        let failure = created
+            .remove_all(8)
+            .expect_err("receipt must reject a different file identity");
+        assert_eq!(failure.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            fs::read(path.join("child/payload")).expect("replacement remains untouched"),
+            b"replacement bytes"
+        );
+
+        drop(created);
+        drop(parent);
+        fs::remove_dir_all(path).expect("remove fixture");
+    }
+
+    #[test]
     fn concurrent_entries_use_independent_handles_for_large_listings() {
         const FILES: usize = 1_300;
         let root = scratch("large-listing");
+        fs::create_dir(&root).expect("create listing fixture with inherited temp ACL");
         for index in 0..FILES {
             let name = format!("entry-{index:05}-{}", "x".repeat(64));
             fs::write(root.join(name), b"x").expect("create listing member");

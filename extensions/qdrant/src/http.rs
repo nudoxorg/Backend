@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AnnCursor, AnnPage, AnnSource, Binding, CandidateId, DocumentVector, EmbeddingEncoding,
-    EmbeddingRecipe, Recipe, SchemaVersion, SearchQuality, VectorSearchRequest,
+    EmbeddingRecipe, ProjectionBinding, ProjectionIdentity, Recipe, SchemaVersion, SearchQuality,
+    VectorSearchRequest,
 };
-use backend_version::WorkspaceRoot;
 
 /// Qdrant API key whose debug representation never exposes credential bytes.
 #[derive(Clone, Eq, PartialEq)]
@@ -140,13 +140,16 @@ pub struct QdrantMutationReceipt {
     pub batches: usize,
 }
 
-/// Stable residence of one document row inside a workspace and embedding recipe.
+/// Stable residence of one row under one complete, immutable projection binding.
 ///
-/// The view frontier, authority, read manifest, and candidate id travel in the
-/// point payload. A fence move can restamp that payload without uploading the
-/// vector again. Two workspaces, or two recipes, never share a residence.
+/// The collection-global ID includes the full binding identity, so views with
+/// the same workspace, recipe, and row but different root, authority, read
+/// manifest, or frontier cannot overwrite one another.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PointResidence([u8; 16]);
+pub struct PointResidence {
+    projection: ProjectionIdentity,
+    digest: [u8; 16],
+}
 
 impl PointResidence {
     /// Derives the residence of one stable row key.
@@ -155,8 +158,7 @@ impl PointResidence {
     /// Returns [`HttpProviderError::BindingMismatch`] for an empty row key and
     /// [`HttpProviderError::SizeLimit`] when a component cannot be length-prefixed.
     pub fn for_row(
-        workspace: WorkspaceRoot,
-        recipe: Recipe,
+        projection: ProjectionIdentity,
         row_key: &str,
     ) -> Result<Self, HttpProviderError> {
         if row_key.is_empty() {
@@ -164,18 +166,32 @@ impl PointResidence {
         }
         let row_len = u64::try_from(row_key.len()).map_err(|_| HttpProviderError::SizeLimit)?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"backend.qdrant.point-residence.v1\0");
-        hash_component(&mut hasher, workspace.as_bytes())?;
-        hash_component(&mut hasher, recipe.as_bytes())?;
+        hasher.update(b"backend.qdrant.point-residence.v2\0");
+        hasher.update(projection.as_bytes());
         hasher.update(&row_len.to_be_bytes());
         hasher.update(row_key.as_bytes());
         let digest = hasher.finalize();
         let mut bytes = [0_u8; 16];
         bytes.copy_from_slice(&digest.as_bytes()[..16]);
-        Ok(Self(bytes))
+        Ok(Self {
+            projection,
+            digest: bytes,
+        })
     }
 
-    fn parse(value: &str) -> Option<Self> {
+    /// Returns the complete binding identity committed by this residence.
+    #[must_use]
+    pub const fn projection(self) -> ProjectionIdentity {
+        self.projection
+    }
+
+    /// Returns the row-specific digest within its projection identity.
+    #[must_use]
+    pub const fn digest(self) -> [u8; 16] {
+        self.digest
+    }
+
+    fn parse_digest(value: &str) -> Option<[u8; 16]> {
         if value.len() != 32 {
             return None;
         }
@@ -184,15 +200,8 @@ impl PointResidence {
             let text = std::str::from_utf8(chunk).ok()?;
             bytes[index] = u8::from_str_radix(text, 16).ok()?;
         }
-        Some(Self(bytes))
+        Some(bytes)
     }
-}
-
-fn hash_component(hasher: &mut blake3::Hasher, bytes: &[u8]) -> Result<(), HttpProviderError> {
-    let len = u64::try_from(bytes.len()).map_err(|_| HttpProviderError::SizeLimit)?;
-    hasher.update(&len.to_be_bytes());
-    hasher.update(bytes);
-    Ok(())
 }
 
 /// Whether a resident point may replace stored coordinates.
@@ -478,8 +487,8 @@ impl QdrantHttpClient {
     /// Publishes document vectors under a stable residence.
     ///
     /// Missing points are written with their vectors. A point that already
-    /// stores the same coordinate key keeps that vector and receives a payload
-    /// update when the binding or candidate moved. [`CoordinateWrite::Hold`]
+    /// stores the exact binding and coordinate key is left unchanged.
+    /// [`CoordinateWrite::Hold`]
     /// refuses the whole call before any write when a stored coordinate key
     /// disagrees. [`CoordinateWrite::Replace`] uploads only the vectors whose
     /// keys changed.
@@ -490,13 +499,15 @@ impl QdrantHttpClient {
     /// and leaves the collection unchanged by this call.
     pub fn upsert_resident(
         &self,
-        binding: Binding,
+        projection: ProjectionBinding,
         documents: &[ResidentDocument<'_>],
     ) -> Result<ResidentMutationReceipt, HttpProviderError> {
+        let binding = projection.binding();
         if binding.recipe != self.recipe.version()
-            || documents
-                .iter()
-                .any(|document| document.document.recipe() != self.recipe)
+            || documents.iter().any(|document| {
+                document.document.recipe() != self.recipe
+                    || document.residence.projection() != projection.identity()
+            })
         {
             return Err(HttpProviderError::BindingMismatch);
         }
@@ -509,7 +520,7 @@ impl QdrantHttpClient {
             });
         }
         let bound = BindingText::from_binding(binding);
-        let identity = PhysicalPointId::residence_prefix(binding.workspace, binding.recipe);
+        let identity = PhysicalPointId::residence_prefix(projection.identity());
         let mut scratch = Vec::new();
         let mut seen = HashSet::with_capacity(documents.len());
         let mut probes = Vec::with_capacity(documents.len());
@@ -520,7 +531,7 @@ impl QdrantHttpClient {
             let values = document.document.point().values();
             let candidate = document.document.point().id();
             probes.push(ResidenceProbe {
-                id: PhysicalPointId::from_residence_prefix(&identity, document.residence),
+                id: PhysicalPointId::from_residence_prefix(&identity, document.residence.digest()),
                 residence: document.residence,
                 write: document.write,
                 candidate,
@@ -542,12 +553,11 @@ impl QdrantHttpClient {
             match observed.get(&probe.id) {
                 None => write_vectors.push(probe),
                 Some(stored) => {
-                    let Some(stored_residence) = PointResidence::parse(&stored.residence) else {
+                    let Some(stored_residence) = PointResidence::parse_digest(&stored.residence)
+                    else {
                         return Err(HttpProviderError::BindingMismatch);
                     };
-                    if stored_residence != probe.residence
-                        || stored.workspace != bound.workspace
-                        || stored.recipe != bound.recipe
+                    if stored_residence != probe.residence.digest() || !stored.matches_text(&bound)
                     {
                         return Err(HttpProviderError::BindingMismatch);
                     }
@@ -658,31 +668,36 @@ impl QdrantHttpClient {
         Ok(observed)
     }
 
-    /// Deletes stable residences in independently bounded, idempotent batches.
+    /// Deletes residences for one exact projection identity in independently
+    /// bounded, idempotent batches.
     ///
-    /// The physical id does not include the view fence, so a caller must pass
-    /// only residences that are no longer live. Deleting a residence that was
-    /// just rebound removes the current vector.
+    /// A residence from another binding is rejected before any request is sent.
     ///
     /// # Errors
     /// Returns a typed binding, transport, response, or size error.
     pub fn delete_residences(
         &self,
-        workspace: WorkspaceRoot,
         recipe: Recipe,
+        projection: ProjectionIdentity,
         residences: &[PointResidence],
     ) -> Result<QdrantMutationReceipt, HttpProviderError> {
-        if recipe != self.recipe.version() {
+        if recipe != self.recipe.version()
+            || residences
+                .iter()
+                .any(|residence| residence.projection() != projection)
+        {
             return Err(HttpProviderError::BindingMismatch);
         }
-        let identity = PhysicalPointId::residence_prefix(workspace, recipe);
+        let identity = PhysicalPointId::residence_prefix(projection);
         let mut batches = 0;
         for batch in residences.chunks(self.transport.config.max_batch_points) {
             let body = DeleteRequest {
                 points: batch
                     .iter()
                     .copied()
-                    .map(|residence| PhysicalPointId::from_residence_prefix(&identity, residence))
+                    .map(|residence| {
+                        PhysicalPointId::from_residence_prefix(&identity, residence.digest())
+                    })
                     .collect(),
             };
             let response = require_success(
@@ -709,10 +724,11 @@ impl QdrantHttpClient {
     /// Returns a typed error unless binding, authorized coverage, and actual row count agree.
     pub fn verify_projection(
         self,
-        binding: Binding,
+        projection: ProjectionBinding,
         coverage: CoverageWitness,
         expected_points: usize,
     ) -> Result<QdrantHttpSource, HttpProviderError> {
+        let binding = projection.binding();
         if binding.recipe != self.recipe.version()
             || !matches!(coverage, CoverageWitness::Complete(_))
         {
@@ -744,7 +760,7 @@ impl QdrantHttpClient {
             binding,
             bound: BindingText::from_binding(binding),
             candidate_prefix: PhysicalPointId::candidate_prefix(binding),
-            residence_prefix: PhysicalPointId::residence_prefix(binding.workspace, binding.recipe),
+            residence_prefix: PhysicalPointId::residence_prefix(projection.identity()),
             coverage,
         })
     }
@@ -1229,7 +1245,7 @@ impl PointPayload {
         scratch: &mut Vec<u8>,
     ) -> Self {
         let mut payload = Self::for_bound(bound, candidate, values, scratch);
-        payload.residence = hex(&residence.0);
+        payload.residence = hex(&residence.digest());
         payload
     }
 
@@ -1238,9 +1254,10 @@ impl PointPayload {
     }
 
     fn physical_id(&self, binding: Binding, candidate: CandidateId) -> PhysicalPointId {
+        let projection = ProjectionIdentity::from_binding(binding);
         self.physical_id_with(
             &PhysicalPointId::candidate_prefix(binding),
-            &PhysicalPointId::residence_prefix(binding.workspace, binding.recipe),
+            &PhysicalPointId::residence_prefix(projection),
             candidate,
         )
     }
@@ -1251,7 +1268,7 @@ impl PointPayload {
         residence_prefix: &blake3::Hasher,
         candidate: CandidateId,
     ) -> PhysicalPointId {
-        match PointResidence::parse(&self.residence) {
+        match PointResidence::parse_digest(&self.residence) {
             Some(residence) => PhysicalPointId::from_residence_prefix(residence_prefix, residence),
             None => PhysicalPointId::from_candidate_prefix(candidate_prefix, candidate),
         }
@@ -1361,21 +1378,20 @@ impl PhysicalPointId {
         format_point_id(hasher.finalize())
     }
 
-    fn residence_prefix(workspace: WorkspaceRoot, recipe: Recipe) -> blake3::Hasher {
+    fn residence_prefix(projection: ProjectionIdentity) -> blake3::Hasher {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"backend.qdrant.physical-residence.v1\0");
-        hasher.update(workspace.as_bytes());
-        hasher.update(recipe.as_bytes());
+        hasher.update(b"backend.qdrant.physical-residence.v2\0");
+        hasher.update(projection.as_bytes());
         hasher
     }
 
-    fn for_residence(workspace: WorkspaceRoot, recipe: Recipe, residence: PointResidence) -> Self {
-        Self::from_residence_prefix(&Self::residence_prefix(workspace, recipe), residence)
+    fn for_residence(projection: ProjectionIdentity, residence: PointResidence) -> Self {
+        Self::from_residence_prefix(&Self::residence_prefix(projection), residence.digest())
     }
 
-    fn from_residence_prefix(prefix: &blake3::Hasher, residence: PointResidence) -> Self {
+    fn from_residence_prefix(prefix: &blake3::Hasher, residence: [u8; 16]) -> Self {
         let mut hasher = prefix.clone();
-        hasher.update(&residence.0);
+        hasher.update(&residence);
         format_point_id(hasher.finalize())
     }
 }

@@ -177,7 +177,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 expected: LocalHostPathKind::File,
             });
         }
-        canonicalize_existing(role, &path)
+        canonicalize_executable_existing(role, &path)
     }
 
     pub(super) fn validate_directory(
@@ -393,7 +393,7 @@ fn first_existing(
     for path in candidates {
         match fs::metadata(&path) {
             Ok(metadata) if metadata.is_file() => {
-                return canonicalize_existing(role, &path).map(Some);
+                return canonicalize_executable_existing(role, &path).map(Some);
             }
             Ok(_) => continue,
             Err(source) if source.kind() == io::ErrorKind::NotFound => continue,
@@ -430,6 +430,24 @@ fn first_existing_directory(
         }
     }
     Ok(None)
+}
+
+/// Resolves a selected executable file to the path a child process should execute.
+///
+/// Links are resolved to a real file except for a rustup proxy, which must keep its own name:
+/// resolving `rustc` to the `rustup` binary it links to starts the toolchain manager, which
+/// rejects `--print sysroot` and reports its own version for `--version`.
+pub(super) fn canonicalize_executable_existing(
+    role: LocalHostPathRole,
+    path: &Path,
+) -> Result<PathBuf, LocalCompilerHostError> {
+    backend_frontend_rust::legacy::canonical_executable(path).map_err(|source| {
+        LocalCompilerHostError::Canonicalize {
+            role,
+            path: path.to_path_buf().into_boxed_path(),
+            source,
+        }
+    })
 }
 
 pub(super) fn canonicalize_existing(

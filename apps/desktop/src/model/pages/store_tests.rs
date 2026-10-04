@@ -32,20 +32,43 @@ fn cargo_file_slots_keep_exact_authority_and_drop_stale_landings() {
     let mut store = PageStore::default();
     let first_key = PageKey::CargoSource(first.clone());
     let second_key = PageKey::CargoSource(second.clone());
-    let stale = store.begin(&first_key, root()).expect("first owner read");
-    let second_generation = store.begin(&second_key, root()).expect("other authority read");
-    let source = SourceText::new(Arc::from("[package]\nname = \"demo\"\n"), 1, SourceOrigin::LocalFile, true)
-        .expect("valid source");
+    let stale = store
+        .begin(&first_key, root())
+        .expect("page generation admission")
+        .expect("first owner read");
+    let second_generation = store
+        .begin(&second_key, root())
+        .expect("page generation admission")
+        .expect("other authority read");
+    let source = SourceText::new(
+        Arc::from("[package]\nname = \"demo\"\n"),
+        1,
+        SourceOrigin::LocalFile,
+        true,
+    )
+    .expect("valid source");
     let page = |key: &CargoSourceKey| CargoSourcePage {
         package: key.package.clone(), request_binding: key.context.request_binding(), target: key.target.clone(), source: source.clone(),
         content_digest: [7; 32], source_revision: [9; 32],
     };
     assert_eq!(store.land(&second_key, second_generation, Ok(PageValue::CargoSource(page(&second)))), Landing::Applied);
     assert!(store.cargo_source(&first).loaded_value().is_none());
-    assert_eq!(store.land(&first_key, stale, Ok(PageValue::CargoSource(page(&first)))), Landing::Applied);
-    let newer = store.begin_forced(&first_key, root()).expect("new read");
-    assert_eq!(store.land(&first_key, stale, Ok(PageValue::CargoSource(page(&first)))), Landing::Superseded);
-    assert_eq!(store.land(&first_key, newer, Ok(PageValue::CargoSource(page(&first)))), Landing::Unchanged);
+    assert_eq!(
+        store.land(&first_key, stale, Ok(PageValue::CargoSource(page(&first)))),
+        Landing::Applied
+    );
+    let newer = store
+        .begin_forced(&first_key, root())
+        .expect("page generation admission")
+        .expect("new read");
+    assert_eq!(
+        store.land(&first_key, stale, Ok(PageValue::CargoSource(page(&first)))),
+        Landing::Superseded
+    );
+    assert_eq!(
+        store.land(&first_key, newer, Ok(PageValue::CargoSource(page(&first)))),
+        Landing::Unchanged
+    );
     assert_ne!(first, second);
     let other_project = CargoSourceKey {
         context: crate::navigation::cargo_browse::fixture_context(crate::core::LocalProjectId::new("/tmp/nudox-cargo-source-store-other").expect("other tree")),
@@ -55,13 +78,38 @@ fn cargo_file_slots_keep_exact_authority_and_drop_stale_landings() {
     assert_ne!(first, other_project, "a cold owner rehydrates against the selected tree, not an arbitrary matching package");
     assert!(store.cargo_source(&other_project).loaded_value().is_none());
 
-    let lost = store.begin_forced(&first_key, root()).expect("owner revalidation");
-    assert_eq!(store.land(&first_key, lost, Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Missing, "source authority changed")))), Landing::Applied);
-    assert!(store.cargo_source(&first).loaded_value().is_none(), "a stale file cannot remain visible as current source");
+    let lost = store
+        .begin_forced(&first_key, root())
+        .expect("page generation admission")
+        .expect("owner revalidation");
+    assert_eq!(
+        store.land(
+            &first_key,
+            lost,
+            Err(ReadFailure::Fault(ErrorValue::new(
+                FaultCode::Missing,
+                "source authority changed"
+            )))
+        ),
+        Landing::Applied
+    );
+    assert!(
+        store.cargo_source(&first).loaded_value().is_none(),
+        "a stale file cannot remain visible as current source"
+    );
     assert!(store.cargo_source(&second).is_loaded());
     store.revoke_all_cargo_sources();
-    assert!(store.cargo_source(&second).loaded_value().is_none(), "owner restart revokes every retained file");
-    assert!(store.begin(&second_key, root()).is_some(), "the same indexed root must still recheck Cargo file bytes");
+    assert!(
+        store.cargo_source(&second).loaded_value().is_none(),
+        "owner restart revokes every retained file"
+    );
+    assert!(
+        store
+            .begin(&second_key, root())
+            .expect("page generation admission")
+            .is_some(),
+        "the same indexed root must still recheck Cargo file bytes"
+    );
 }
 
 #[test]
@@ -78,7 +126,10 @@ fn cargo_inventory_is_revoked_separately_from_file_bytes() {
     });
     let page_key = PageKey::Browse(key.clone());
     let mut store = PageStore::default();
-    let generation = store.begin(&page_key, root()).expect("inventory read");
+    let generation = store
+        .begin(&page_key, root())
+        .expect("page generation admission")
+        .expect("inventory read");
     let model = CargoSourceInventoryModel {
         package,
         request_binding: context.request_binding(),
@@ -92,7 +143,13 @@ fn cargo_inventory_is_revoked_separately_from_file_bytes() {
     let BrowseKey::CargoSourceInventory(inventory) = &key else { panic!("inventory key") };
     store.revoke_cargo_source_inventory(inventory);
     assert!(store.browse(&key).loaded_value().is_none());
-    assert!(store.begin(&page_key, root()).is_some(), "reentry must schedule another owner observation");
+    assert!(
+        store
+            .begin(&page_key, root())
+            .expect("page generation admission")
+            .is_some(),
+        "reentry must schedule another owner observation"
+    );
     store.revoke_all_cargo_source_inventories();
     assert!(store.browse(&key).loaded_value().is_none());
 }
@@ -109,7 +166,10 @@ fn read(request: &ReadRequest) -> PageValue {
 /// slot that is already current fetches again) and lands `value` in the slot
 /// that asked.
 fn land(store: &mut PageStore, key: &PageKey, value: PageValue) -> Landing {
-    let generation = store.begin_forced(key, root()).expect("the slot starts a fetch");
+    let generation = store
+        .begin_forced(key, root())
+        .expect("page generation admission")
+        .expect("the slot starts a fetch");
     store.land(key, generation, Ok(value))
 }
 
@@ -117,18 +177,45 @@ fn land(store: &mut PageStore, key: &PageKey, value: PageValue) -> Landing {
 fn a_partial_page_is_visible_while_its_generation_reads_and_stale_stages_are_dropped() {
     let mut store = PageStore::default();
     let key = PageKey::Symbol(symbol("RelationLabel"));
-    let PageValue::Symbol(page) = read(&ReadRequest::for_key(&key)) else { panic!("symbol page") };
-    let first = store.begin(&key, root()).expect("first read");
-    assert_eq!(store.stage(&key, first, PageValue::Symbol(page.clone())), Landing::Applied);
-    assert_eq!(store.symbol(&symbol("RelationLabel")).loaded_value(), Some(&page));
-    assert_eq!(store.symbol(&symbol("RelationLabel")).terminal(), &ResourceTerminal::Partial);
-    assert!(!store.symbol(&symbol("RelationLabel")).is_loaded(), "a staged value is not a complete snapshot page");
-    assert_eq!(store.inflight(&key), Some(first), "the worker still owns the read");
-    assert_eq!(store.stage(&key, first, PageValue::Symbol(page.clone())), Landing::Unchanged);
+    let PageValue::Symbol(page) = read(&ReadRequest::for_key(&key)) else {
+        panic!("symbol page")
+    };
+    let first = store
+        .begin(&key, root())
+        .expect("page generation admission")
+        .expect("first read");
+    assert_eq!(
+        store.stage(&key, first, PageValue::Symbol(page.clone())),
+        Landing::Applied
+    );
+    assert_eq!(
+        store.symbol(&symbol("RelationLabel")).loaded_value(),
+        Some(&page)
+    );
+    assert_eq!(
+        store.symbol(&symbol("RelationLabel")).terminal(),
+        &ResourceTerminal::Partial
+    );
+    assert!(
+        !store.symbol(&symbol("RelationLabel")).is_loaded(),
+        "a staged value is not a complete snapshot page"
+    );
+    assert_eq!(
+        store.inflight(&key),
+        Some(first),
+        "the worker still owns the read"
+    );
+    assert_eq!(
+        store.stage(&key, first, PageValue::Symbol(page.clone())),
+        Landing::Unchanged
+    );
     assert_eq!(store.cancel(&key), Some(first));
     assert_eq!(store.symbol(&symbol("RelationLabel")).terminal(), &ResourceTerminal::Partial, "cancellation must retain partial provenance");
     assert!(!store.symbol(&symbol("RelationLabel")).is_loaded());
-    let second = store.begin(&key, root()).expect("return to page");
+    let second = store
+        .begin(&key, root())
+        .expect("page generation admission")
+        .expect("return to page");
     assert_ne!(first, second);
     assert_eq!(store.stage(&key, first, PageValue::Symbol(page.clone())), Landing::Superseded);
     assert_eq!(store.land(&key, second, Ok(PageValue::Symbol(page))), Landing::Applied);
@@ -139,10 +226,28 @@ fn a_partial_page_is_visible_while_its_generation_reads_and_stale_stages_are_dro
 fn a_failed_read_drops_an_intermediate_page_and_says_why_it_stopped() {
     let mut store = PageStore::default();
     let key = PageKey::Symbol(symbol("RelationLabel"));
-    let PageValue::Symbol(page) = read(&ReadRequest::for_key(&key)) else { panic!("symbol page") };
-    let generation = store.begin(&key, root()).expect("read");
-    assert_eq!(store.stage(&key, generation, PageValue::Symbol(page)), Landing::Applied);
-    assert_eq!(store.land(&key, generation, Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Transport, "owner disconnected")))), Landing::Applied);
+    let PageValue::Symbol(page) = read(&ReadRequest::for_key(&key)) else {
+        panic!("symbol page")
+    };
+    let generation = store
+        .begin(&key, root())
+        .expect("page generation admission")
+        .expect("read");
+    assert_eq!(
+        store.stage(&key, generation, PageValue::Symbol(page)),
+        Landing::Applied
+    );
+    assert_eq!(
+        store.land(
+            &key,
+            generation,
+            Err(ReadFailure::Fault(ErrorValue::new(
+                FaultCode::Transport,
+                "owner disconnected"
+            )))
+        ),
+        Landing::Applied
+    );
     let resource = store.symbol(&symbol("RelationLabel"));
     assert!(resource.loaded_value().is_none(), "an incomplete value is not a last good page");
     assert!(matches!(resource.terminal(), ResourceTerminal::Fault(error) if error.message() == "owner disconnected"));
@@ -195,6 +300,7 @@ fn quiet_source_revalidation_replaces_saved_unverified_coverage() {
     let next_root = root().with_generation(2);
     let generation = store
         .begin(&key, next_root)
+        .expect("page generation admission")
         .expect("new authority quietly revalidates the snapshot source");
     assert_eq!(
         store.stamp(&key),
@@ -258,8 +364,13 @@ fn a_search_continuation_is_appended_to_the_page_before_it_and_a_first_page_repl
 fn a_result_from_another_family_is_a_typed_fault_and_never_lands_in_the_slot() {
     let mut store = PageStore::default();
     let key = PageKey::Symbol(symbol("RelationLabel"));
-    let PageValue::Orbit(orbit) = read(&ReadRequest::Orbit) else { panic!("an orbit read answers the orbit model") };
-    let generation = store.begin(&key, root()).expect("the slot starts a fetch");
+    let PageValue::Orbit(orbit) = read(&ReadRequest::Orbit) else {
+        panic!("an orbit read answers the orbit model")
+    };
+    let generation = store
+        .begin(&key, root())
+        .expect("page generation admission")
+        .expect("the slot starts a fetch");
     // The orbit model lands in a declaration's slot: the store must refuse it in words, not show it as a page.
     assert_eq!(store.land(&key, generation, Ok(PageValue::Orbit(orbit))), Landing::Applied, "the failure is the landing");
     let resource = store.symbol(&symbol("RelationLabel"));
@@ -275,13 +386,222 @@ fn a_result_from_another_family_is_a_typed_fault_and_never_lands_in_the_slot() {
 fn a_result_for_a_generation_that_was_superseded_lands_nowhere() {
     let mut store = PageStore::default();
     let key = PageKey::Symbol(symbol("RelationLabel"));
-    let PageValue::Symbol(page) = read(&ReadRequest::for_key(&key)) else { panic!("a symbol read answers a symbol page") };
-    let old = store.begin(&key, root()).expect("first fetch");
+    let PageValue::Symbol(page) = read(&ReadRequest::for_key(&key)) else {
+        panic!("a symbol read answers a symbol page")
+    };
+    let old = store
+        .begin(&key, root())
+        .expect("page generation admission")
+        .expect("first fetch");
     // A retry supersedes the running fetch.
-    let new = store.begin_forced(&key, root()).expect("forced fetch");
+    let new = store
+        .begin_forced(&key, root())
+        .expect("page generation admission")
+        .expect("forced fetch");
     assert_ne!(old, new, "a new generation owns the slot");
     assert_eq!(store.land(&key, old, Ok(PageValue::Symbol(page.clone()))), Landing::Superseded, "the old fetch's answer is dropped");
     assert!(store.symbol(&symbol("RelationLabel")).loaded_value().is_none(), "and shows nothing");
     assert_eq!(store.land(&key, new, Ok(PageValue::Symbol(page.clone()))), Landing::Applied);
     assert_eq!(store.symbol(&symbol("RelationLabel")).loaded_value(), Some(&page));
+}
+
+#[test]
+fn numeric_generations_reject_zero_and_keep_the_optional_niche() {
+    assert_eq!(Generation::new(0), None);
+    assert_eq!(std::mem::size_of::<Generation>(), 8);
+    assert_eq!(std::mem::size_of::<Option<Generation>>(), 8);
+    assert_eq!(
+        Generation::new(u64::MAX)
+            .expect("final nonzero generation")
+            .next(),
+        None
+    );
+}
+
+#[test]
+fn the_final_generation_mints_once_and_refusal_leaves_model_ownership_unchanged() {
+    let mut store = PageStore::default();
+    let key = PageKey::Symbol(symbol("last-generation"));
+    let other = PageKey::Symbol(symbol("cannot-start"));
+    let last = Generation::new(u64::MAX).expect("final generation");
+    store.test_advance_generation_to(last);
+    assert_eq!(store.begin(&key, root()), Ok(Some(last)));
+    assert_eq!(store.next_generation, None);
+    assert_eq!(
+        store.begin(&key, root()),
+        Ok(None),
+        "inflight needs no mint"
+    );
+    let clock = store.clock;
+    let before = store.symbol(&symbol("last-generation"));
+    let stamp = store.stamp(&key);
+    assert_eq!(store.begin_forced(&key, root()), Err(GenerationExhausted));
+    assert_eq!(store.begin(&other, root()), Err(GenerationExhausted));
+    assert_eq!(store.clock, clock, "refusal does not touch LRU time");
+    assert_eq!(store.symbol(&symbol("last-generation")), before);
+    assert_eq!(store.stamp(&key), stamp);
+    assert_eq!(store.inflight(&key), Some(last));
+    assert!(
+        !store.symbols.map.contains_key(&symbol("cannot-start")),
+        "no refused slot insertion"
+    );
+    assert_eq!(
+        store.land(&key, last, Ok(read(&ReadRequest::for_key(&key)))),
+        Landing::Applied
+    );
+    assert_eq!(
+        store.begin(&key, root()),
+        Ok(None),
+        "current page remains current after exhaustion"
+    );
+    assert_eq!(store.begin_forced(&key, root()), Err(GenerationExhausted));
+    assert_eq!(
+        store.next_generation, None,
+        "completion cannot reopen minting"
+    );
+}
+
+#[test]
+fn generation_refusal_preserves_complete_bytes_and_is_a_stable_terminal_fault() {
+    let mut store = PageStore::default();
+    let reference = symbol("retained-generation");
+    let key = PageKey::Symbol(reference.clone());
+    assert_eq!(
+        land(&mut store, &key, read(&ReadRequest::for_key(&key))),
+        Landing::Applied
+    );
+    let retained = store
+        .symbol(&reference)
+        .loaded_arc()
+        .expect("complete bytes")
+        .clone();
+    let retained_root = store.symbol(&reference).value_root();
+    store.test_advance_generation_to(Generation::new(u64::MAX).expect("last"));
+    let last = store
+        .begin_forced(&key, root())
+        .expect("admission")
+        .expect("fetch");
+    assert_eq!(store.begin_forced(&key, root()), Err(GenerationExhausted));
+    assert!(store.refuse_generation_exhaustion(&key, root(), Some(last)));
+    let resource = store.symbol(&reference);
+    assert!(Arc::ptr_eq(
+        resource.loaded_arc().expect("retained bytes"),
+        &retained
+    ));
+    assert_eq!(
+        resource.value_root(),
+        retained_root,
+        "a refusal does not rebase old bytes"
+    );
+    assert_eq!(resource.activity(), Activity::Stopped);
+    assert!(
+        !crate::core::admit_resource(&resource, root(), true).allows_actions(),
+        "retained bytes cannot make a failed destination current"
+    );
+    assert_eq!(
+        resource.terminal(),
+        &ResourceTerminal::Fault(GenerationExhausted.fault())
+    );
+    assert_eq!(store.inflight(&key), None);
+    let stamp = store.stamp(&key);
+    assert!(!store.refuse_generation_exhaustion(&key, root(), None));
+    assert_eq!(store.stamp(&key), stamp);
+    assert_eq!(
+        store.begin(&key, root()),
+        Ok(None),
+        "render ensures cannot loop on permanent refusal"
+    );
+    assert_eq!(
+        store.land(&key, last, Ok(read(&ReadRequest::for_key(&key)))),
+        Landing::Superseded
+    );
+}
+
+#[test]
+fn an_exhaustion_refusal_cannot_clear_a_different_generation_or_keep_a_partial_as_good() {
+    let mut store = PageStore::default();
+    let reference = symbol("fenced-refusal");
+    let key = PageKey::Symbol(reference.clone());
+    let old = store
+        .begin(&key, root())
+        .expect("admission")
+        .expect("old fetch");
+    store.test_advance_generation_to(Generation::new(u64::MAX).expect("last"));
+    let last = store
+        .begin_forced(&key, root())
+        .expect("admission")
+        .expect("last fetch");
+    assert!(!store.refuse_generation_exhaustion(&key, root(), Some(old)));
+    assert_eq!(store.inflight(&key), Some(last));
+    assert_eq!(
+        store.stage(&key, last, read(&ReadRequest::for_key(&key))),
+        Landing::Applied
+    );
+    assert!(store.refuse_generation_exhaustion(&key, root(), Some(last)));
+    assert!(
+        store.symbol(&reference).loaded_value().is_none(),
+        "partial bytes are not complete retained bytes"
+    );
+    assert_eq!(store.inflight(&key), None);
+    assert_eq!(
+        store.land(&key, old, Ok(read(&ReadRequest::for_key(&key)))),
+        Landing::Superseded
+    );
+    assert_eq!(
+        store.land(&key, last, Ok(read(&ReadRequest::for_key(&key)))),
+        Landing::Superseded
+    );
+}
+
+#[test]
+fn settled_fault_observation_requires_idle_exact_content_and_current_authority() {
+    let mut store = PageStore::default();
+    let reference = symbol("settled-fault");
+    let key = PageKey::Symbol(reference.clone());
+    let at = root();
+    let fault = ErrorValue::new(FaultCode::Transport, "owner failed");
+    let changed = ErrorValue::new(FaultCode::Transport, "different failure");
+    assert!(!store.idle_fault_at(&key, at, &fault));
+    land(&mut store, &key, read(&ReadRequest::for_key(&key)));
+    let retained = store
+        .symbol(&reference)
+        .loaded_arc()
+        .expect("retained")
+        .clone();
+    let generation = store
+        .begin_forced(&key, at)
+        .expect("admission")
+        .expect("fetch");
+    assert!(!store.idle_fault_at(&key, at, &fault));
+    assert_eq!(
+        store.land(&key, generation, Err(ReadFailure::Fault(fault.clone()))),
+        Landing::Applied
+    );
+    assert!(store.idle_fault_at(&key, at, &fault));
+    assert!(!store.idle_fault_at(&key, at, &changed));
+    let other = VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("other".into(), "authority".into())]),
+        2,
+    );
+    assert!(!store.idle_fault_at(&key, other, &fault));
+    let stamp = store.stamp(&key);
+    assert!(store.idle_fault_at(&key, at, &fault));
+    assert_eq!(
+        store.stamp(&key),
+        stamp,
+        "observation cannot mutate publication"
+    );
+    assert!(Arc::ptr_eq(
+        store.symbol(&reference).loaded_arc().expect("old bytes"),
+        &retained
+    ));
+    let running = store
+        .begin_forced(&key, at)
+        .expect("admission")
+        .expect("running fetch");
+    assert!(
+        !store.idle_fault_at(&key, at, &fault),
+        "active ownership cannot be preserved as idle"
+    );
+    assert_eq!(store.inflight(&key), Some(running));
 }
