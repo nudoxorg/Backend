@@ -18,11 +18,12 @@ use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Palette, Space};
 use gpui::{
     AnyElement, ClickEvent, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
-    ListOffset, SharedString, StatefulInteractiveElement, Styled, Transformation, Window, div, list,
-    px, radians,
+    ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Transformation, Window, div, px,
+    radians, uniform_list,
 };
 use std::collections::HashSet;
 use std::f32::consts::{FRAC_PI_2, PI};
+use std::ops::Range;
 use std::rc::Rc;
 
 /// The narrowing line's caret: its width and its height at 100 % text.
@@ -97,25 +98,17 @@ impl Shelf {
                 .child(self.lens_strip(counts, measure, palette, cx))
                 .child(self.narrow_line(measure, palette, cx));
         }
-        let top = self.layout.scroll.logical_scroll_top().item_ix;
-        let viewport = self.layout.scroll.viewport_bounds();
-        let ordinary = f32::from(measure.row() + measure.space(Space::Tight)).max(1.0);
-        let capacity = (f32::from(viewport.size.height) / ordinary).ceil() as usize + 32;
-        let from = top.saturating_sub(16);
-        let through = top.saturating_add(capacity).min(self.layout.rows.len());
-        let visible: HashSet<SharedString> = self.layout.rows.get(from..through).unwrap_or(&[])
-            .iter().filter_map(Row::item).map(|item| item.key.clone())
-            .chain(self.layout.rows.iter().filter_map(Row::item)
-                .filter(|item| item.depth == 0 || item.current).take(24)
-                .map(|item| SharedString::from(format!("spine-{}", item.key))))
-            .collect();
-        self.targets.retain_native_handles(|key| visible.contains(key));
+        let count = self.rows.len();
         let row_measure = *measure;
-        let list = list(self.layout.scroll.clone(),
-            cx.processor(move |shelf: &mut Self, index: usize, window, cx| {
-                shelf.render_row(index, &row_measure, window, cx)
-            }))
-            .size_full();
+        let list = uniform_list(
+            "shelf-rows",
+            count,
+            cx.processor(move |shelf: &mut Self, range: Range<usize>, window, cx| {
+                shelf.render_rows(range, &row_measure, window, cx)
+            }),
+        )
+        .size_full()
+        .track_scroll(&self.scroll);
         column
             .child(
                 facet::probe::scroll_scope(
@@ -128,9 +121,9 @@ impl Shelf {
                         .children(self.sticky(measure, palette, cx)),
                 ),
             )
-            .child(facet::probe::list_scroll_probe(
+            .child(facet::probe::scroll_probe(
                 "shelf-rows",
-                self.layout.scroll.clone(),
+                self.scroll.0.borrow().base_handle.clone(),
             ))
             .children(
                 (!head.trail.is_empty())
@@ -149,13 +142,19 @@ impl Shelf {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let height = measure.row() + measure.space(Space::Tight);
-        let first = self.layout.scroll.logical_scroll_top().item_ix;
-        let Some(Row::Item(row)) = self.layout.rows.get(first) else {
+        let scrolled = -self.scroll.0.borrow().base_handle.offset().y;
+        let mut first = 0usize;
+        let mut top = px(0.0);
+        while top + height <= scrolled && first < self.rows.len() {
+            top += height;
+            first += 1;
+        }
+        let Some(Row::Item(row)) = self.rows.get(first) else {
             return None;
         };
         let mut wanted = row.depth;
         let mut chain: Vec<(usize, &Item)> = Vec::new();
-        for (index, line) in self.layout.rows[..first].iter().enumerate().rev() {
+        for (index, line) in self.rows[..first].iter().enumerate().rev() {
             if wanted == 0 {
                 break;
             }
@@ -203,7 +202,7 @@ impl Shelf {
                     )
                     .on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
                         if !guard(cx) { return; }
-                        shelf.layout.scroll.scroll_to(ListOffset { item_ix: index, offset_in_item: px(0.0) });
+                        shelf.scroll.scroll_to_item(index, ScrollStrategy::Top);
                         cx.notify();
                     })),
             );
@@ -582,16 +581,24 @@ impl Shelf {
         line.into_any_element()
     }
 
-    fn render_row(
+    fn render_rows(
         &mut self,
-        index: usize,
+        range: Range<usize>,
         measure: &Measure,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> Vec<AnyElement> {
         let palette = cx.facet().palette();
-        let row = self.layout.rows.get(index).cloned().expect("list item belongs to row layout");
-        self.line(index, &row, measure, palette, window, cx)
+        let rows = Rc::clone(&self.rows);
+        let visible: HashSet<SharedString> = rows.get(range.clone()).unwrap_or(&[]).iter()
+            .filter_map(Row::item).map(|item| item.key.clone())
+            .chain(rows.iter().filter_map(Row::item).filter(|item| item.depth == 0 || item.current)
+                .take(24).map(|item| SharedString::from(format!("spine-{}", item.key)))).collect();
+        self.targets.retain_native_handles(|key| visible.contains(key));
+        range
+            .filter_map(|index| rows.get(index).map(|row| (index, row)))
+            .map(|(index, row)| self.line(index, row, measure, palette, window, cx))
+            .collect()
     }
 
     fn line(
@@ -635,17 +642,17 @@ impl Shelf {
                 .id(SharedString::from(format!("shelf-note-{index}")))
                 .role(gpui::Role::Label)
                 .aria_label(words.clone())
-                .min_h(height)
+                .h(height)
                 .w_full()
                 .flex()
                 .items_center()
                 .px(measure.space(Space::Roomy))
-                .py(measure.space(Space::Base))
                 .child(
                     text(ty::CAPTION, measure, palette.ink3)
                         .min_w(px(0.0))
-                        .w_full()
-                        .whitespace_normal()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
                         .child(words.clone()),
                 )
                 .into_any_element(),
@@ -864,7 +871,7 @@ impl Shelf {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let visible_spine: HashSet<SharedString> = self.layout.rows.iter().filter_map(Row::item)
+        let visible_spine: HashSet<SharedString> = self.rows.iter().filter_map(Row::item)
             .filter(|item| item.depth == 0 || item.current).take(24)
             .map(|item| SharedString::from(format!("spine-{}", item.key))).collect();
         self.targets.retain_native_handles(|key| !key.starts_with("spine-") || visible_spine.contains(key));
@@ -879,7 +886,7 @@ impl Shelf {
             .pt(measure.space(Space::Roomy))
             .overflow_hidden();
         for item in self
-            .layout.rows
+            .rows
             .iter()
             .filter_map(Row::item)
             .filter(|item| item.depth == 0 || item.current)
