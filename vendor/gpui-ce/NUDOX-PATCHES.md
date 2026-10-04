@@ -123,6 +123,34 @@ repaint its lines, so they are not traced in the replayed frame.
 | `src/elements/list.rs` `set_item_focus_handle` | preserve the prefix with the fresh cursor's `slice` before replacing one entry's native focus handle; preserve measured heights, hints and logical top | seeking before slicing discarded preceding rows. `replacing_focus_preserves_every_row_and_scroll_geometry` covers count, order, measurements, handles, deferred scroll and reveal, scroll extent, boundary rows and invalid indices. A Shelf row remains mounted outside overdraw for keyboard continuation (`focused_item_keeps_native_keyboard_when_parked_outside_the_viewport`); runtime gates pending |
 | `src/elements/list.rs` `set_user_scroll_handler` | report native wheel and scrollbar displacement separately from programmatic restore/measurement | a user scroll supersedes a pending Shelf restore or reveal (`user_scroll_observer_distinguishes_wheel_and_scrollbar_from_programmatic_position`, `loading_wait_keeps_the_same_reveal_until_ready_but_native_input_retires_it`); source oracles written, runtime gate pending |
 
+## Painted text-input ownership (2026-10-04)
+
+The Reader's viewport keys must defer to a focused native text input. GPUI
+moves a painted handler wrapper into the platform window, leaving a reserved
+paint slot for cached reuse. Platform IME and key dispatch temporarily take and
+restore that wrapper. In native QA builds, a text callback can eagerly repaint
+and install editor B while the backend still holds editor A's wrapper; stock
+Mac, Linux and Windows backends then restore A. A platform `Option` probe and
+a boolean mirror both miss this handoff.
+
+GPUI now owns one per-window handler slot. Each platform wrapper delegates to
+the slot's current painted entry, so an older restored wrapper reaches B.
+Callbacks take the entry out of the `RefCell` before invoking application code
+and restore it only if its generation is unchanged; a reentrant paint can
+replace or revoke it without recursive borrowing. Each frame's handler slot
+retains its focus ID after its wrapper is moved, so only a cached registration
+for the same mounted focus can retain ownership while the native backend holds
+the wrapper. Selection walks registrations in paint order, so a later cached
+selected slot still wins over an earlier freshly offered handler with the same
+focus. Focus handoff, an inert cover, unmount and skipped paint retire it.
+
+| Site | Change | Why |
+|---|---|---|
+| `src/window.rs` `Window::input_handler_owner`, `FrameInputHandler`, `draw`, `handle_input`, `has_input_handler` | select and activate the latest painted entry; preserve an exact focused cached registration while native code holds its wrapper; revoke on other draws | one logical input owner across platform wrapper extraction and cached paint |
+| `src/platform.rs` `InputHandlerOwner`, `InputHandlerLease`, `PlatformInputHandler` | platform wrappers delegate through the shared typed owner slot; leases release the `RefCell` before callbacks and discard an older entry after a reentrant replacement; generation increments are checked rather than wrapping | a stale native wrapper restored after B paints delivers subsequent text to B without backend-specific changes or generation ABA |
+| `src/platform.rs`, `src/platform/test/window.rs`, `vendor/gpui_ce_macos/src/window.rs` | remove the added required `PlatformWindow::has_input_handler` method and its two local implementations | stock Linux, Windows, and Web backends implement the existing set/take contract but cannot satisfy a new required trait method |
+| `src/elements/inert.rs` mounted ownership tests | fresh focus, cached paint, extraction, focus handoff, inert cover, stale restoration after unmount, A's native callback repainting B before restoring A, and a later cached B beating earlier fresh A while B is held | the Reader's key gate and text delivery follow the current painted owner and paint order |
+
 ## gpui_ce_macos 0.1.0 (vendored 2026-09-25, `vendor/gpui_ce_macos`)
 
 Copied verbatim from crates.io, wired through `[patch.crates-io]`. Patched

@@ -6,7 +6,8 @@ use crate::{
     BoxShadow, Capslock, ColorExt, Context, Corners, CursorHideMode, CursorStyle, Decorations,
     DevicePixels, DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, DrawResult,
     Edges, Effect, Entity, EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary, FontId,
-    Global, GlobalElementId, GlyphId, GpuSpecs, InputHandler, IsZero, KeyBinding, KeyContext,
+    Global, GlobalElementId, GlyphId, GpuSpecs, InputHandler, InputHandlerOwner, IsZero,
+    KeyBinding, KeyContext,
     KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayerTransform, LayoutId, Lerp,
     LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, Motion, MouseButton,
     MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay,
@@ -1804,7 +1805,7 @@ pub(crate) struct Frame {
     inert_hitbox_ids: Vec<HitboxId>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
-    pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
+    pub(crate) input_handlers: Vec<FrameInputHandler>,
     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
     #[cfg(any(test, feature = "test-support"))]
@@ -1814,6 +1815,14 @@ pub(crate) struct Frame {
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub(crate) inspector_hitboxes: FxHashMap<HitboxId, crate::InspectorElementId>,
     pub(crate) tab_stops: TabStopMap,
+}
+
+/// NUDOX: a painted input registration keeps its exact selected/focus identity
+/// even after its platform wrapper has been taken out of a cached frame.
+pub(crate) struct FrameInputHandler {
+    focus: Option<FocusId>,
+    handler: Option<PlatformInputHandler>,
+    selected: bool,
 }
 
 #[derive(Clone, Default)]
@@ -2051,6 +2060,10 @@ pub struct Window {
     pub(crate) image_cache_stack: Vec<AnyImageCache>,
     pub(crate) rendered_frame: Frame,
     pub(crate) next_frame: Frame,
+    /// NUDOX: the current painted text-input owner. All platform wrappers for
+    /// this window delegate here, including a stale wrapper restored after a
+    /// reentrant native text-input callback.
+    input_handler_owner: Rc<RefCell<InputHandlerOwner>>,
     /// Correlates an accessibility draw with later submission attempts.
     frame_sequence: u64,
     next_hitbox_id: HitboxId,
@@ -2878,6 +2891,7 @@ impl Window {
                 DispatchTree::new(cx.keymap.clone(), cx.actions.clone()),
                 element_owner_path_operations.clone(),
             ),
+            input_handler_owner: Rc::new(RefCell::new(InputHandlerOwner::default())),
             frame_sequence: 0,
             next_frame_callbacks,
             frame_callback_wake,
@@ -3150,10 +3164,11 @@ impl Window {
             .is_some()
     }
 
-    /// Whether the rendered frame installed an input handler on the platform.
-    /// This does not change macOS input-context or IME state.
+    /// Whether the most recently painted frame has a native input-handler owner.
+    /// This remains true while a callback temporarily holds the handler and
+    /// does not change the platform's input-context or IME state.
     pub fn has_input_handler(&self) -> bool {
-        self.platform_window.has_input_handler()
+        self.input_handler_owner.borrow().has_handler()
     }
 
     /// Remove focus from all elements within this context's window.
@@ -4146,17 +4161,26 @@ impl Window {
         // Place it back into a None slot (left by a previous .take()) so that
         // cached paint_range indices in reuse_paint find the handler at the
         // expected position.
-        if let Some(input_handler) = self.platform_window.take_input_handler() {
+        let previous_input_handler = self.platform_window.take_input_handler();
+        let previous_handler_temporarily_extracted =
+            self.input_handler_owner.borrow().has_handler() && previous_input_handler.is_none();
+        if let Some(input_handler) = previous_input_handler {
             if let Some(slot) = self
                 .rendered_frame
                 .input_handlers
                 .iter_mut()
                 .rev()
-                .find(|h| h.is_none())
+                .find(|slot| slot.selected && slot.handler.is_none())
             {
-                *slot = Some(input_handler);
+                slot.handler = Some(input_handler);
             } else {
-                self.rendered_frame.input_handlers.push(Some(input_handler));
+                // An external platform wrapper may outlive the paint slot that
+                // produced it. It still delegates to this window's current owner.
+                self.rendered_frame.input_handlers.push(FrameInputHandler {
+                    focus: self.rendered_frame.focus,
+                    handler: Some(input_handler),
+                    selected: false,
+                });
             }
         }
         if !cx.mode.skip_drawing() {
@@ -4168,16 +4192,51 @@ impl Window {
         // Register requested input handler with the platform window.
         // Use .take() instead of .pop() to preserve Vec length, so that cached
         // paint_range indices remain valid for reuse_paint on the next frame.
-        // Search backwards to find the last Some entry, since reuse_paint may
-        // have copied None slots from the previous frame. (Fixes #50456)
-        if let Some(input_handler) = self
+        // NUDOX: the last eligible painted registration wins. A later cached
+        // registration can have no wrapper while native code temporarily holds
+        // it; an earlier fresh Some must not replace that later input owner.
+        let retained_focus = if previous_handler_temporarily_extracted
+            && self.next_frame.focus.is_some()
+            && self.next_frame.focus == self.rendered_frame.focus
+        {
+            self.next_frame.focus
+        } else {
+            None
+        };
+        let selected_index = self
             .next_frame
             .input_handlers
-            .iter_mut()
-            .rev()
-            .find_map(|h| h.take())
-        {
+            .iter()
+            .rposition(|slot| {
+                slot.handler.is_some()
+                    || (retained_focus.is_some()
+                        && slot.selected
+                        && slot.focus == retained_focus)
+            });
+        let retained_extracted_handler = selected_index.is_some_and(|index| {
+            self.next_frame.input_handlers[index].handler.is_none()
+        });
+        let input_handler = selected_index
+            .and_then(|index| self.next_frame.input_handlers[index].handler.take());
+        for (index, slot) in self.next_frame.input_handlers.iter_mut().enumerate() {
+            slot.selected = Some(index) == selected_index;
+            if !slot.selected {
+                slot.handler = None;
+            }
+        }
+        // NUDOX: the committed paint owns this answer. Frame slots are consumed
+        // by the transfer above, while platform handlers may be temporarily
+        // taken for IME or key dispatch. Reset even when drawing was skipped.
+        // A native IME callback may hold the previous handler across an eager
+        // draw. Cached paint then replays its reserved None slot, while the
+        // callback still owns the object. Retain ownership only when that same
+        // focused subtree was painted again; a new focus, cover, or unmount
+        // releases it even if the callback has not returned yet.
+        if let Some(mut input_handler) = input_handler {
+            input_handler.activate();
             self.platform_window.set_input_handler(input_handler);
+        } else if !retained_extracted_handler {
+            self.input_handler_owner.borrow_mut().clear();
         }
 
         self.layout_engine.as_mut().unwrap().clear();
@@ -4995,7 +5054,11 @@ impl Window {
                 self.rendered_frame.input_handlers
                     [range.start.input_handlers_index..range.end.input_handlers_index]
                     .iter_mut()
-                    .map(|handler| handler.take()),
+                    .map(|slot| FrameInputHandler {
+                        focus: slot.focus,
+                        handler: slot.handler.take(),
+                        selected: slot.selected,
+                    }),
             );
             self.next_frame.mouse_listeners.extend(
                 self.rendered_frame.mouse_listeners
@@ -7077,7 +7140,15 @@ impl Window {
             let cx = self.to_async(cx);
             self.next_frame
                 .input_handlers
-                .push(Some(PlatformInputHandler::new(cx, Box::new(input_handler))));
+                .push(FrameInputHandler {
+                    focus: Some(focus_handle.id),
+                    handler: Some(PlatformInputHandler::pending(
+                        self.input_handler_owner.clone(),
+                        cx,
+                        Box::new(input_handler),
+                    )),
+                    selected: false,
+                });
         }
     }
 

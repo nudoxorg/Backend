@@ -136,9 +136,10 @@ mod tests {
     use crate::{
         self as gpui, AnyElement, App, AppContext as _, Bounds, Context, Element, ElementId,
         Entity, FocusHandle, HitboxBehavior, HitboxId, InputHandler, InteractiveElement,
-        IntoElement, LayoutId, MouseButton, MouseMoveEvent, ParentElement, Pixels, Point, Render,
-        StatefulInteractiveElement, Style, StyleRefinement, TestAppContext, UTF16Selection, Window,
-        accesskit, deferred, div, point, px, size, styled::Styled,
+        IntoElement, LayoutId, MouseButton, MouseMoveEvent, ParentElement, Pixels, PlatformWindow,
+        Point, Render, StatefulInteractiveElement, Style, StyleRefinement, TestAppContext,
+        UTF16Selection, VisualContext as _, Window, accesskit, deferred, div, point, px, size,
+        styled::Styled,
     };
     use std::{
         cell::{Cell, RefCell},
@@ -155,6 +156,7 @@ mod tests {
         actions: Cell<usize>,
         a11y_actions: Cell<usize>,
         ime_insertions: Cell<usize>,
+        input_handoff: RefCell<Option<FocusHandle>>,
         animation_frames: Cell<usize>,
         callback_order: RefCell<Vec<&'static str>>,
         nested_clicks: Cell<usize>,
@@ -601,6 +603,331 @@ mod tests {
         }
     }
 
+    struct PaintedInputView {
+        focus: FocusHandle,
+        events: Rc<Events>,
+        renders: Rc<Cell<usize>>,
+    }
+
+    impl Render for PaintedInputView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.renders.set(self.renders.get() + 1);
+            div().track_focus(&self.focus).child(InputProbe {
+                focus: self.focus.clone(),
+                events: self.events.clone(),
+            })
+        }
+    }
+
+    struct PaintedInputRoot {
+        child: Entity<PaintedInputView>,
+        mounted: Rc<Cell<bool>>,
+        covered: Rc<Cell<bool>>,
+        sibling: FocusHandle,
+    }
+
+    impl Render for PaintedInputRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let child = self
+                .child
+                .clone()
+                .cached(StyleRefinement::default().w(px(100.)).h(px(30.)));
+            let child: AnyElement = if !self.mounted.get() {
+                div().into_any_element()
+            } else if self.covered.get() {
+                inert("covered-input", "The input is covered", child).into_any_element()
+            } else {
+                child.into_any_element()
+            };
+            div().child(child).child(div().track_focus(&self.sibling))
+        }
+    }
+
+    /// A handler belongs to the last painted input owner, even while a native
+    /// callback temporarily extracts the platform object. A new paint retires
+    /// that ownership when the focused input is covered or leaves the tree.
+    #[gpui::test]
+    fn painted_input_ownership_survives_extraction_and_follows_mount(cx: &mut TestAppContext) {
+        let events = Rc::new(Events::default());
+        let renders = Rc::new(Cell::new(0));
+        let mounted = Rc::new(Cell::new(true));
+        let covered = Rc::new(Cell::new(false));
+        let input_focus = Rc::new(RefCell::new(None));
+        let sibling_focus = Rc::new(RefCell::new(None));
+
+        let (_root, cx) = cx.add_window_view({
+            let events = events.clone();
+            let renders = renders.clone();
+            let mounted = mounted.clone();
+            let covered = covered.clone();
+            let input_focus = input_focus.clone();
+            let sibling_focus = sibling_focus.clone();
+            move |_, cx| {
+                let input = cx.focus_handle();
+                let sibling = cx.focus_handle();
+                *input_focus.borrow_mut() = Some(input.clone());
+                *sibling_focus.borrow_mut() = Some(sibling.clone());
+                PaintedInputRoot {
+                    child: cx.new(|_| PaintedInputView {
+                        focus: input,
+                        events,
+                        renders,
+                    }),
+                    mounted,
+                    covered,
+                    sibling,
+                }
+            }
+        });
+        let input_focus = input_focus.borrow().clone().unwrap();
+        let sibling_focus = sibling_focus.borrow().clone().unwrap();
+
+        cx.update(|window, cx| {
+            assert!(
+                !window.has_input_handler(),
+                "the initial unfocused paint has no owner"
+            );
+            window.focus(&input_focus, cx);
+            assert!(
+                !window.has_input_handler(),
+                "focus alone is not a painted handler"
+            );
+            window.draw(cx).clear(cx);
+            assert!(
+                window.has_input_handler(),
+                "the focused input registered in paint"
+            );
+
+            let rendered = renders.get();
+            window.draw(cx).clear(cx);
+            assert_eq!(renders.get(), rendered, "unchanged child paint was cached");
+            assert!(
+                window.has_input_handler(),
+                "cached paint retained its handler"
+            );
+        });
+
+        let mut platform = cx.test_window(cx.window_handle());
+        let handler = platform
+            .take_input_handler()
+            .expect("paint installed a handler");
+        cx.update(|window, _| {
+            assert!(
+                window.has_input_handler(),
+                "native extraction does not release ownership"
+            );
+        });
+        let rendered = renders.get();
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(
+                window.has_input_handler(),
+                "a cached paint during native extraction retains its focused handler"
+            );
+        });
+        assert_eq!(renders.get(), rendered, "the extracted handler was cached");
+        platform.set_input_handler(handler);
+
+        cx.update(|window, cx| {
+            window.focus(&sibling_focus, cx);
+            assert!(
+                window.has_input_handler(),
+                "focus handoff awaits the next paint"
+            );
+            window.draw(cx).clear(cx);
+            assert!(
+                !window.has_input_handler(),
+                "the sibling has no input handler"
+            );
+
+            window.focus(&input_focus, cx);
+            window.draw(cx).clear(cx);
+            assert!(window.has_input_handler());
+        });
+
+        covered.set(true);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            assert!(
+                !window.has_input_handler(),
+                "an inert cover retires the handler"
+            );
+        });
+
+        covered.set(false);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            assert!(!window.has_input_handler());
+            window.focus(&input_focus, cx);
+            window.draw(cx).clear(cx);
+            assert!(window.has_input_handler());
+        });
+
+        let mut platform = cx.test_window(cx.window_handle());
+        let stale_after_unmount = platform.take_input_handler().unwrap();
+        mounted.set(false);
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            assert!(!window.has_input_handler(), "unmount retires the handler");
+        });
+        platform.set_input_handler(stale_after_unmount);
+        let mut stale_after_unmount = platform.take_input_handler().unwrap();
+        stale_after_unmount.replace_text_in_range(None, "z");
+        assert_eq!(events.ime_insertions.get(), 0, "retired input cannot edit");
+    }
+
+    struct TwoPaintedInputs {
+        first: Entity<PaintedInputView>,
+        second: Entity<PaintedInputView>,
+    }
+
+    impl Render for TwoPaintedInputs {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().child(self.first.clone()).child(self.second.clone())
+        }
+    }
+
+    /// Native backends restore the wrapper they took before calling into GPUI.
+    /// A text callback can repaint and install another focused editor before
+    /// that restore; the old wrapper must then delegate to the new owner.
+    #[gpui::test]
+    fn stale_native_wrapper_delivers_to_reentrant_painted_owner(cx: &mut TestAppContext) {
+        let first_events = Rc::new(Events::default());
+        let second_events = Rc::new(Events::default());
+        let first_focus = Rc::new(RefCell::new(None));
+        let second_focus = Rc::new(RefCell::new(None));
+        let (_root, cx) = cx.add_window_view({
+            let first_events = first_events.clone();
+            let second_events = second_events.clone();
+            let first_focus = first_focus.clone();
+            let second_focus = second_focus.clone();
+            move |_, cx| {
+                let first = cx.focus_handle();
+                let second = cx.focus_handle();
+                *first_focus.borrow_mut() = Some(first.clone());
+                *second_focus.borrow_mut() = Some(second.clone());
+                TwoPaintedInputs {
+                    first: cx.new(|_| PaintedInputView {
+                        focus: first,
+                        events: first_events,
+                        renders: Rc::new(Cell::new(0)),
+                    }),
+                    second: cx.new(|_| PaintedInputView {
+                        focus: second,
+                        events: second_events,
+                        renders: Rc::new(Cell::new(0)),
+                    }),
+                }
+            }
+        });
+        let first_focus = first_focus.borrow().clone().unwrap();
+        let second_focus = second_focus.borrow().clone().unwrap();
+        cx.update(|window, cx| {
+            window.focus(&first_focus, cx);
+            window.draw(cx).clear(cx);
+            assert!(window.has_input_handler());
+        });
+
+        first_events
+            .input_handoff
+            .replace(Some(second_focus.clone()));
+        let mut platform = cx.test_window(cx.window_handle());
+        let mut old_wrapper = platform.take_input_handler().unwrap();
+        old_wrapper.replace_text_in_range(None, "a");
+        cx.update(|window, _| {
+            assert!(second_focus.is_focused(window));
+            assert!(window.has_input_handler());
+        });
+        // This is what Mac, Linux, and Windows native callbacks do after
+        // returning from GPUI: the held old wrapper overwrites the new one.
+        platform.set_input_handler(old_wrapper);
+        let mut restored_old_wrapper = platform.take_input_handler().unwrap();
+        restored_old_wrapper.replace_text_in_range(None, "b");
+        platform.set_input_handler(restored_old_wrapper);
+        assert_eq!(first_events.ime_insertions.get(), 1);
+        assert_eq!(second_events.ime_insertions.get(), 1);
+    }
+
+    struct MixedCachedInputRoot {
+        focus: FocusHandle,
+        earlier_events: Rc<Events>,
+        later_cached: Entity<PaintedInputView>,
+    }
+
+    impl Render for MixedCachedInputRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .child(InputProbe {
+                    focus: self.focus.clone(),
+                    events: self.earlier_events.clone(),
+                })
+                .child(
+                    self.later_cached
+                        .clone()
+                        .cached(StyleRefinement::default().w(px(100.)).h(px(30.))),
+                )
+        }
+    }
+
+    /// Both registrations use one focus. During native extraction the first
+    /// handler paints fresh, but the later, selected handler is cached and its
+    /// wrapper is still held by the callback. Paint order still chooses later.
+    #[gpui::test]
+    fn later_cached_input_beats_earlier_fresh_input_during_extraction(cx: &mut TestAppContext) {
+        let earlier_events = Rc::new(Events::default());
+        let later_events = Rc::new(Events::default());
+        let later_renders = Rc::new(Cell::new(0));
+        let focus_slot = Rc::new(RefCell::new(None));
+        let (_root, cx) = cx.add_window_view({
+            let earlier_events = earlier_events.clone();
+            let later_events = later_events.clone();
+            let later_renders = later_renders.clone();
+            let focus_slot = focus_slot.clone();
+            move |_, cx| {
+                let focus = cx.focus_handle();
+                *focus_slot.borrow_mut() = Some(focus.clone());
+                MixedCachedInputRoot {
+                    focus: focus.clone(),
+                    earlier_events,
+                    later_cached: cx.new(|_| PaintedInputView {
+                        focus,
+                        events: later_events,
+                        renders: later_renders,
+                    }),
+                }
+            }
+        });
+        let focus = focus_slot.borrow().clone().unwrap();
+        cx.update(|window, cx| {
+            window.focus(&focus, cx);
+            window.draw(cx).clear(cx);
+            assert!(window.has_input_handler());
+        });
+
+        let mut platform = cx.test_window(cx.window_handle());
+        let held_later_wrapper = platform.take_input_handler().unwrap();
+        let rendered = later_renders.get();
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(window.has_input_handler());
+        });
+        assert_eq!(
+            later_renders.get(),
+            rendered,
+            "later input reused cached paint"
+        );
+        platform.set_input_handler(held_later_wrapper);
+
+        let mut restored_later_wrapper = platform.take_input_handler().unwrap();
+        restored_later_wrapper.replace_text_in_range(None, "x");
+        platform.set_input_handler(restored_later_wrapper);
+        assert_eq!(earlier_events.ime_insertions.get(), 0);
+        assert_eq!(later_events.ime_insertions.get(), 1);
+    }
+
     struct FrameProbe {
         events: Rc<Events>,
         once: Option<Rc<Cell<bool>>>,
@@ -792,12 +1119,17 @@ mod tests {
             &mut self,
             _: Option<Range<usize>>,
             _: &str,
-            _: &mut Window,
-            _: &mut App,
+            window: &mut Window,
+            cx: &mut App,
         ) {
             self.insertions
                 .ime_insertions
                 .set(self.insertions.ime_insertions.get() + 1);
+            let next_focus = self.insertions.input_handoff.borrow_mut().take();
+            if let Some(next_focus) = next_focus {
+                window.focus(&next_focus, cx);
+                window.draw(cx).clear(cx);
+            }
         }
 
         fn replace_and_mark_text_in_range(

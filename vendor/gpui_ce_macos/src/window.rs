@@ -1504,10 +1504,6 @@ impl PlatformWindow for MacWindow {
         lock.input_handler.take()
     }
 
-    fn has_input_handler(&self) -> bool {
-        self.0.as_ref().lock().input_handler.is_some()
-    }
-
     fn prompt(
         &self,
         level: PromptLevel,
