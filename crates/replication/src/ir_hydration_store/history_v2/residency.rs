@@ -813,7 +813,14 @@ impl TypedV2HistoryResidencyCache {
                 let insertion = self.objects.binary_search_by(|candidate| {
                     candidate.id.as_bytes().cmp(member.id.as_bytes())
                 });
-                let index = insertion.unwrap_err();
+                let index = match insertion {
+                    Err(index) => index,
+                    Ok(_) => {
+                        return Err(
+                            "typed V2 resident object appeared after admission preflight".to_owned(),
+                        );
+                    }
+                };
                 self.objects.insert(
                     index,
                     TypedV2ResidentObject {
