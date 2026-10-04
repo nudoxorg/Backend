@@ -424,12 +424,17 @@ async fn verify_selected(
     );
     assert_eq!(forward.edges.len(), EDGES_PER_SOURCE, "forward edge count");
     assert!(forward.edges.iter().any(|edge| {
-        edge.target.name.as_str() == "dep0" && edge.target.requirement.as_str() == first_requirement
+        edge.target.name.as_str() == "dep0"
+            && edge.target.requirement.as_str() == first_requirement
+            && edge.target.resolved.is_none()
     }));
 
+    // The reverse API selects a package coordinate, not a dependency
+    // declaration. Unresolved edges for this ecosystem/name remain visible
+    // when querying a concrete target release; their exact requirement is
+    // still retained on each returned edge.
     let target =
-        PackageDependencyTarget::new(RegistryEcosystem::Cargo, "dep0", first_requirement, None)
-            .expect("reverse query target");
+        PackageReference::parse("pkg:cargo/dep0@1.0.0").expect("reverse query package coordinate");
     let reverse = projection
         .package_dependents(&target)
         .await
@@ -445,7 +450,11 @@ async fn verify_selected(
         "reverse facts witness"
     );
     assert_eq!(reverse.edges.len(), 1, "reverse edge count");
-    assert_eq!(reverse.edges.first().expect("reverse edge").source, source);
+    let reverse_edge = reverse.edges.first().expect("reverse edge");
+    assert_eq!(reverse_edge.source, source);
+    assert_eq!(reverse_edge.target.name.as_str(), "dep0");
+    assert_eq!(reverse_edge.target.requirement.as_str(), first_requirement);
+    assert!(reverse_edge.target.resolved.is_none());
 }
 
 fn percentile(samples: &mut [u128], rank: usize) -> u128 {

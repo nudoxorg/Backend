@@ -3,8 +3,8 @@ use super::*;
 fn throughput_row(
     lane: String,
     size_class: String,
-    bytes: usize,
-    reused_bytes: usize,
+    bytes: Option<usize>,
+    reused_bytes: Option<usize>,
     elapsed_ns: u128,
 ) -> ThroughputMeasurement {
     let elapsed_seconds = elapsed_ns as f64 / 1_000_000_000.0;
@@ -14,17 +14,12 @@ fn throughput_row(
         size_class,
         bytes,
         reused_bytes,
-        reuse_ratio: if bytes == 0 {
-            0.0
-        } else {
-            reused_bytes as f64 / bytes as f64
-        },
+        reuse_ratio: bytes.zip(reused_bytes).and_then(|(bytes, reused_bytes)| {
+            (bytes > 0).then(|| reused_bytes as f64 / bytes as f64)
+        }),
         elapsed_ns,
-        bytes_per_second: if elapsed_seconds == 0.0 {
-            0.0
-        } else {
-            bytes as f64 / elapsed_seconds
-        },
+        bytes_per_second: bytes
+            .and_then(|bytes| (elapsed_seconds > 0.0).then(|| bytes as f64 / elapsed_seconds)),
     }
 }
 
@@ -41,8 +36,8 @@ pub(super) fn throughput_measurements(
         measurements.push(throughput_row(
             format!("ingest/{}", item.phase),
             item.size_class.clone(),
-            item.source_bytes,
-            item.cas_reused_bytes,
+            Some(item.source_bytes),
+            Some(item.cas_reused_bytes),
             elapsed,
         ));
     }
@@ -51,8 +46,8 @@ pub(super) fn throughput_measurements(
         measurements.push(throughput_row(
             format!("delta/{}", item.phase),
             item.size_class.clone(),
-            item.bytes_read,
-            item.cas_reused_bytes,
+            Some(item.bytes_read),
+            Some(item.cas_reused_bytes),
             elapsed,
         ));
     }
@@ -61,8 +56,8 @@ pub(super) fn throughput_measurements(
         measurements.push(throughput_row(
             format!("search/{}/{}", item.mode, item.cache),
             item.size_class.clone(),
-            item.bytes_read,
-            0,
+            Some(item.bytes_read),
+            Some(0),
             elapsed,
         ));
     }
@@ -71,7 +66,7 @@ pub(super) fn throughput_measurements(
         let reused = if item.operation.contains("warm") || item.operation.contains("restart") {
             item.database_bytes
         } else {
-            0
+            Some(0)
         };
         measurements.push(throughput_row(
             format!("catalog/{}", item.operation),
@@ -86,8 +81,8 @@ pub(super) fn throughput_measurements(
         measurements.push(throughput_row(
             format!("acquisition/{}", item.operation),
             "large".to_owned(),
-            item.downloaded_bytes.saturating_add(item.reused_bytes),
-            item.reused_bytes,
+            Some(item.downloaded_bytes.saturating_add(item.reused_bytes)),
+            Some(item.reused_bytes),
             elapsed,
         ));
     }
@@ -154,6 +149,10 @@ pub(super) fn compare_backend_1(
 
 fn format_ns(value: Option<u128>) -> String {
     value.map_or_else(|| "unavailable".to_owned(), |ns| ns.to_string())
+}
+
+fn format_bytes(value: Option<usize>) -> String {
+    value.map_or_else(|| "unavailable".to_owned(), |bytes| bytes.to_string())
 }
 
 pub(super) fn markdown_report(report: &Report) -> String {
@@ -261,7 +260,7 @@ pub(super) fn markdown_report(report: &Report) -> String {
             item.operation,
             format_ns(item.wall.p50_ns),
             item.rows,
-            item.database_bytes
+            format_bytes(item.database_bytes)
         );
     }
     let _ = writeln!(

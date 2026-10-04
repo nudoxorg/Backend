@@ -380,11 +380,11 @@ struct ThroughputMeasurement {
     schema: &'static str,
     lane: String,
     size_class: String,
-    bytes: usize,
-    reused_bytes: usize,
-    reuse_ratio: f64,
+    bytes: Option<usize>,
+    reused_bytes: Option<usize>,
+    reuse_ratio: Option<f64>,
     elapsed_ns: u128,
-    bytes_per_second: f64,
+    bytes_per_second: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2158,6 +2158,7 @@ fn run_concurrent_projection(
     drop(initial);
     let changed_row = next_view
         .rows()
+        .iter()
         .find(|row| view.row_ref(row.id) != Some(*row))
         .ok_or("concurrent fixture has no changed row relative to its admitted base")?;
     let changed_label = changed_row.label.clone();
@@ -3726,7 +3727,33 @@ fn run_gui(gui_bin: Option<&Path>) -> GuiMeasurement {
             },
         };
     };
-    let output_parent = temp_root("gui-output")?;
+    let setup_started = Instant::now();
+    let output_parent = match temp_root("gui-output") {
+        Ok(path) => path,
+        Err(error) => {
+            return GuiMeasurement {
+                schema: JSON_SCHEMA,
+                status: "failed",
+                cold: true,
+                warm_navigation: None,
+                model_to_first_semantic_frame: None,
+                source_open_search: None,
+                graph_incremental_delta: None,
+                full_harness_wall: Some(stats(&mut vec![setup_started.elapsed().as_nanos()])),
+                requested_viewport: "1440x1000@1".to_owned(),
+                requested_state: "package".to_owned(),
+                captured_captures: None,
+                captured_frames: None,
+                verified_frames: None,
+                verified_artifacts: None,
+                deterministic_seven_frame_capture: false,
+                correctness: Correctness {
+                    passed: false,
+                    assertions: vec![format!("could not create GUI output directory: {error}")],
+                },
+            };
+        }
+    };
     let output = output_parent.join("capture");
     let started = Instant::now();
     let status = Command::new(gui_bin)
@@ -4026,7 +4053,11 @@ fn main() -> BenchResult<()> {
     for item in &report.catalog {
         println!(
             "catalog op={} p50_ns={:?} rows={} db_bytes={}",
-            item.operation, item.wall.p50_ns, item.rows, item.database_bytes
+            item.operation,
+            item.wall.p50_ns,
+            item.rows,
+            item.database_bytes
+                .map_or_else(|| "unavailable".to_owned(), |bytes| bytes.to_string())
         );
     }
     if require_complete && !report.gate.promotion_ready {

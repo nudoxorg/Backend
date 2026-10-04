@@ -444,7 +444,7 @@ fn main() {
             );
             assert_eq!(target.rows().len(), ROWS, "edit fixture row count");
             let edited_id = RowId::Symbol(symbol_key("bench::symbol_01023"));
-            for row in edit_stable.rows() {
+            for row in edit_stable.iter() {
                 if row.id == edited_id {
                     assert_eq!(row.label, "symbol_last");
                     assert_eq!(
