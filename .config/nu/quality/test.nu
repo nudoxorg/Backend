@@ -84,6 +84,49 @@ def nextest-invocation [profile: string]: nothing -> record {
     }
 }
 
+# Names the tests nextest counted but never finished. nextest reports only
+# "N tests were not run" once any test fails, which cannot be acted on.
+def report-unfinished-tests [cargo: string, filter: string, invocation: record]: nothing -> nothing {
+    let junit = $invocation.evidence | path join "junit.xml"
+    if not ($junit | path exists) {
+        print --stderr $"no JUnit report at ($junit); cannot name unfinished tests"
+        return
+    }
+    let listed = (
+        process-result $cargo [
+            "nextest"
+            "list"
+            "--locked"
+            "--workspace"
+            "--config-file" $invocation.config
+            "--profile" "pr"
+            "--message-format" "oneline"
+            "-E" $filter
+        ]
+    )
+    if $listed.status != 0 {
+        print --stderr $"nextest list exited ($listed.status); cannot name unfinished tests"
+        return
+    }
+    let expected = $listed.stdout | lines | where {|line| $line | is-not-empty }
+    let finished = (
+        open $junit
+        | get content
+        | where tag == "testsuite"
+        | each {|suite|
+            $suite.content
+            | where tag == "testcase"
+            | each {|case| $"($case.attributes.classname) ($case.attributes.name)" }
+        }
+        | flatten
+    )
+    let unfinished = $expected | where {|test| $test not-in $finished }
+    print --stderr $"== ($unfinished | length) of ($expected | length) listed tests never finished =="
+    for test in $unfinished {
+        print --stderr $"NOT FINISHED ($test)"
+    }
+}
+
 # Runs unit tests for packages selected by changed paths.
 # @class verification
 def "main test changed" [--base: string]: nothing -> record {
@@ -164,4 +207,141 @@ def "main test workspace" []: nothing -> record {
         run: $invocation.id
         evidence: $invocation.evidence
     }
+}
+
+# Required PR workspace lane. Three diagnostic corpus sweeps remain in the
+# deep lane (`test workspace`): the 1,000-package sequential fleet audit, the
+# 210-case semantic-gap census, and the 20-crate Rust feature/publication
+# census. They report product-roadmap gaps, not platform build/runtime health.
+# Keep every exclusion exact so new tests join the required gate by default.
+# @class closure
+def "main test pr" []: nothing -> record {
+    require-command "test-workspace"
+    let cargo = $env.BACKEND_PARALLEL_CARGO? | default $env.BACKEND_STABLE_CARGO
+    # A test compile is not a product build. Require every shipped process
+    # surface explicitly before running the platform's behavioral closure.
+    process-require $cargo [
+        "build"
+        "--locked"
+        "--package" "backend-cli"
+        "--package" "backend-mcp"
+        "--package" "backend-locald"
+        "--package" "backend-worker"
+        "--package" "backend-desktop"
+    ] | ignore
+    # The PR lane proves the product works: every shipped binary builds, and
+    # unit, MCP, CLI, locald, desktop, journey, storage, and crash tests pass.
+    # Deep engine-accuracy suites (real-package corpora, pinned reference and
+    # render snapshots, native-compiler probes, timing budgets) are slow and
+    # platform-sensitive; they stay in `backend test workspace` and do not
+    # gate a PR. The semantic-history journey joins them: on the Linux worker
+    # its real rust-analyzer publication reads back "rejected" with no daemon
+    # diagnostic (builds 2411, 2469), and it needs its own investigation.
+    let deep_accuracy = "binary_id(/^backend-engine::.*(corpus|repro|snapshot|terminals|golden|fleet|lane|render|image|lifecycle|packaging|identity_regressions)/) or binary_id(/^backend-flow::(compiler|system)_corpus$/) or binary_id(/^backend-semantic::render_snapshot_corpus$/) or package(backend-performance-tests)"
+    let quarantined = pr-quarantine | each {|entry| $"\(($entry.filter)\)" }
+    let quarantine = if ($quarantined | is-empty) { "" } else { $" and not \(($quarantined | str join ' or ')\)" }
+    let filter = $"not \(($deep_accuracy)\)($quarantine) and not test\(real_package_inventory_keeps_source_provenance_and_closed_terminals\) and not test\(all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render\) and not test\(twenty_real_crates_compile_with_decoded_lanes\) and not test\(semantic_version_selection_is_exact_and_durable_across_restart\)"
+    # Contention proofs (dozens of writers, thousands of keys) starve the
+    # timing-sensitive tests beside them (build 2397), and the nextest group
+    # that once throttled them never started any of them on Linux (builds
+    # 2321-2390). Run them in their own pass, two at a time, after the rest;
+    # both passes always run so one red run reports every failure.
+    let contention = "test(/loom|contention|concurrent/)"
+    let passes = [
+        {
+            filter: $"($filter) and not \(($contention)\)"
+            threads: null
+        }
+        {
+            filter: $"($filter) and \(($contention)\)"
+            threads: "2"
+        }
+    ]
+    let results = $passes | each {|pass| run-pr-pass $cargo $pass.filter $pass.threads }
+    let failures = $results | where failure != null
+    if not ($failures | is-empty) {
+        error make {
+            msg: ($failures | get failure.msg | str join "; ")
+        }
+    }
+    {
+        level: "pr"
+        owner: (active-role)
+        run: ($results | get invocation.id)
+        evidence: ($results | get invocation.evidence)
+    }
+}
+
+# Tests held out of the PR lane, each with the error that put it here. Every
+# entry still runs in `backend test workspace`. Remove an entry as soon as
+# its cause is fixed; this list is debt, not policy.
+def pr-quarantine []: nothing -> list<record<filter: string, reason: string>> {
+    # The Linux worker's headless GPUI has no direct offscreen renderer
+    # (Metal only; see tools/gui-harness/src/gpui_driver.rs), and its native
+    # geometry and timings differ from the macOS values these tests pin.
+    # Exact names, not a module regex: other marks::tests paint without a
+    # capture and still run here.
+    let facet_captures = [
+        "gallery::compose::tests::more_labels_than_one_texture_holds_come_back_one_per_line"
+        "marks::tests::a_dependency_link_goes_to_the_package_it_names"
+        "marks::tests::a_dependency_without_a_resolved_target_is_drawn_as_text_not_a_link"
+        "marks::tests::a_known_project_license_reads_the_real_copyleft_consequence"
+        "marks::tests::a_license_choice_names_the_option_it_assumed_and_the_card_ends_with_the_hedge"
+        "marks::tests::a_marks_card_hangs_from_the_mark_and_flips_to_its_end_at_the_window_edge"
+        "marks::tests::an_unknown_project_license_omits_the_fit_line_rather_than_guess"
+        "marks::tests::a_quiet_mark_never_opens_a_card_where_its_loud_twin_does"
+        "marks::tests::dragging_the_rider_scrubs_and_escape_brings_it_home"
+        "marks::tests::enter_or_space_on_a_focused_mark_opens_its_card"
+        "marks::tests::every_license_card_on_the_board_reads_the_tree_and_hedges"
+        "marks::tests::mono_runs_render_exactly_as_written"
+        "marks::tests::the_copy_never_lies_over_the_line_it_came_from"
+        "marks::tests::the_ecosystem_card_says_what_it_is_where_it_lives_and_how_to_install_it"
+        "marks::tests::the_fold_shows_what_fits_and_counts_the_rest"
+        "marks::tests::the_version_cards_read_the_history_honestly"
+        "marks::tests::what_is_not_known_is_said_as_unknown_never_invented"
+    ] | each {|name| $"test\(=($name)\)" } | str join " or "
+    let linux_platform = [
+        {
+            filter: $"package\(backend-facet\) and \(($facet_captures)\)"
+            reason: "gallery and marks captures need the macOS offscreen renderer: 'the current GPUI platform has no direct offscreen renderer'"
+        }
+        {filter: "package(backend-journeys) and test(=cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf)", reason: "its GUI first-launch journey needs the macOS offscreen renderer: 'backend-journey-gui: the current GPUI platform has no direct offscreen renderer'"}
+        {filter: "package(backend-desktop) and (test(=host::embedded_owner_tests::a_finder_launch_compiles_rust_with_the_rust_the_person_installed) or test(=host::embedded_owner_tests::a_finder_launch_reads_a_projects_packages_as_cargo_resolves_them))", reason: "macOS Finder-launch journeys: they need a Rust a person installed through rustup or Homebrew, and the worker has Rust only through the Nix shell: 'this machine has no Rust a person installed (rustup or Homebrew)'"}
+        {filter: "package(backend-facet) and (test(/^graph::gallery::/) or test(=data::tests::harness_storms_over_the_marks_find_nothing) or test(=overlay::float::storm::float_storm_keeps_every_invariant_and_settles_to_a_fresh_boot))", reason: "pixel captures need the macOS offscreen renderer: 'the current GPUI platform has no direct offscreen renderer'"}
+        {filter: "package(backend-facet) and (test(=motion::tests::a_class_change_mid_drag_springs_from_the_painted_position_and_keeps_following) or test(=graph::view::tests::brief_hover_handoff_preserves_the_stronger_departing_envelope) or test(=graph::view::tests::cold_discovery_completion_after_blur_cannot_restart_search))", reason: "exact float and native-timing values recorded on macOS (spring jumps, native input blur)"}
+        {filter: "package(backend-desktop) and test(=shell::tests::native_graph_handoff_uses_the_scaled_translated_canvas_and_rejects_absent_sources)", reason: "composited bounds differ by sub-pixel snapping (734.75 vs 734.6)"}
+        {filter: "package(backend-gui-harness) and test(=session::tests::concurrent_sessions_do_not_bleed_frame_timings)", reason: "opens a real harness session, which needs the macOS offscreen renderer: 'session opens: NoRenderer'"}
+        {filter: "package(backend-desktop) and test(=shell::jump_tests::ctrl_1_to_4_move_through_the_depths)", reason: "the ctrl-3/ctrl-4 depth keymap conflicts on Linux and Windows, a product decision deferred (Robert, 2026-10-01): pressing ctrl-4 lands on the page view instead of the code view, '⌃4: the code: Symbol(SymbolRoute { .. view: Page .. })'"}
+    ]
+    if $nu.os-info.name == "linux" { $linux_platform } else { [] }
+}
+
+# Runs one nextest pass of the PR lane with its own JUnit evidence, and names
+# any listed test that never finished when the pass fails.
+def run-pr-pass [cargo: string, filter: string, threads]: nothing -> record {
+    let invocation = (nextest-invocation "pr")
+    let thread_arguments = if $threads == null { [] } else { ["--test-threads" $threads] }
+    let failure = (
+        try {
+            process-require $cargo (
+                [
+                    "nextest"
+                    "run"
+                    "--locked"
+                    "--no-tests=fail"
+                    "--workspace"
+                    "--no-fail-fast"
+                    "--config-file" $invocation.config
+                    "--profile" "pr"
+                ]
+                | append $thread_arguments
+                | append ["-E" $filter]
+            ) | ignore
+            null
+        } catch {|error| $error }
+    )
+    if $failure != null {
+        report-unfinished-tests $cargo $filter $invocation
+    }
+    {invocation: $invocation, failure: $failure}
 }

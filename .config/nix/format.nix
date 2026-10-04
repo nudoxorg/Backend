@@ -5,6 +5,7 @@
   inputs,
   pkgs,
   toolchains,
+  workspaceRoot,
 }:
 let
   evaluated = inputs.treefmt-nix.lib.evalModule pkgs {
@@ -18,6 +19,23 @@ let
       global.excludes = [
         ".local/**"
         ".git/**"
+        # A separate Cargo workspace (the index and compiler-worker programs,
+        # not a member of the root [workspace]; see plan.md Track R). rustfmt
+        # invoked per-file can't resolve its `mod` declarations against a
+        # crate root it was never given.
+        "workspace/**"
+        # Third-party, patched in vendor/; not ours to reformat, and rustfmt
+        # per-file can't resolve its `mod` declarations either.
+        "vendor/**"
+        # Raw parsing-corpus fixtures (vendored snapshots of real crates'
+        # source, synthetic "repo" trees) for the language frontends' and
+        # semantics engine's tests. They are test input data, not source we
+        # maintain: some are deliberately malformed, and the renamed/flat
+        # ones (e.g. `serde-1.0.228-core-crate_root.rs`) break rustfmt's
+        # per-file `mod` resolution the same way vendor/ and workspace/ do.
+        "apps/facet/src/semantics/tests/fixtures/**"
+        "frontends/*/fixtures/**"
+        "frontends/*/tests/fixtures/**"
       ];
       formatter = {
         nushell = {
@@ -30,7 +48,7 @@ let
             "--edition"
             "2024"
             "--config-path"
-            (toString ../rustfmt.toml)
+            "${workspaceRoot}/.config/rustfmt.toml"
           ];
           includes = [ "*.rs" ];
         };
@@ -40,5 +58,10 @@ let
 in
 {
   inherit (evaluated.config.build) configFile wrapper;
-  check = evaluated.config.build.check ../.;
+  # Gate only .config/, as canonical does. The rest of the workspace has never
+  # been held to this formatter (about 750 files would change), so widening
+  # this waits for a one-time `backend fmt` on canonical. .config/ also has no
+  # .git: under `nix flake check path:.` a workspace-root source carries the
+  # checkout's own, and the check's `git commit` then fails before formatting.
+  check = evaluated.config.build.check (workspaceRoot + "/.config");
 }

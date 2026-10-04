@@ -23,8 +23,13 @@ let
       corpus
       ;
   };
-  common = corpusEnv // {
+  # Linux software GPU drivers for the desktop window journeys; empty elsewhere.
+  baseEnv = corpusEnv // tools.linuxGraphicsEnvironment;
+  common = baseEnv // {
     BACKEND_STABLE_CARGO = toolchains.stableCargo;
+    # PR build/test commands opt into the leased wrapper; general tooling keeps
+    # raw Cargo so immutable Nix checks do not require a mutable Git worktree.
+    BACKEND_PARALLEL_CARGO = "${tools.parallelCargo}/bin/cargo";
     BACKEND_RUSTFMT = toolchains.rustfmt;
     BACKEND_CONFIG_SNAPSHOT = toString ../.;
     BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
@@ -47,6 +52,9 @@ let
     NUDOX_GUI_ENCODER_VERSION = pkgs.ffmpeg.version;
     NUDOX_GUI_TOOL_CLOSURE = "${gui.toolsBundle}";
     NUDOX_GUI_HARNESS = "nix shell .#gui-harness .#gui-tools .#gui-runtime";
+    # Cargo test executables do not receive Nix's fixup/RPATH pass. On Linux,
+    # nextest needs the declared GUI shared libraries even to list tests.
+    LD_LIBRARY_PATH = tools.linuxDesktopRuntimePath;
     shellHook = ''
       export CARGO_TARGET_DIR="$PWD/.local/target"
       export CLIPPY_CONF_DIR="$PWD/.config"
@@ -156,7 +164,10 @@ let
       # zig reads the host's Nix compiler variables to find system headers;
       # every target here is foreign, so none of the host's may leak in.
       unset NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS SDKROOT
-      exec ${pkgs.zig}/bin/zig cc -target ${target} "''${arguments[@]}"
+      # zig turns on UBSan for unoptimised C (Cargo's dev profile). Its own
+      # linker supplies the runtime; the emulated lanes link with the
+      # target's GCC, which does not (`__ubsan_handle_*` undefined in ring).
+      exec ${pkgs.zig}/bin/zig cc -target ${target} -fno-sanitize=undefined "''${arguments[@]}"
     '';
   zigAr = pkgs.writeShellScriptBin "ar-zig" ''
     exec ${pkgs.zig}/bin/zig ar "$@"
@@ -189,33 +200,113 @@ let
     mingwWindres
   ];
   # Compile-checks every shipped platform: `cargo check --workspace
-  # --all-targets --target <triple>` for each of `toolchains.crossTargets`.
-  cross = pkgs.mkShell (
-    common
-    // {
-      packages = [ toolchains.cross ] ++ crossCompilers ++ [ pkgs.zig ];
-      # `common` pins RUSTC to the host-only toolchain; the cross check must use
-      # the rustc that carries the target standard libraries.
-      RUSTC = "${toolchains.cross}/bin/rustc";
-      NUDOX_CROSS_TARGETS = builtins.concatStringsSep " " toolchains.crossTargets;
-      # Compile checks have no Linux sysroot for pkg-config to search; the
-      # dlopen configuration of fontconfig-sys compiles without one.
-      RUST_FONTCONFIG_DLOPEN = "on";
-      CC_x86_64_pc_windows_gnu = "cc-x86_64-windows-gnu";
-      CC_x86_64_unknown_linux_gnu = "cc-x86_64-linux-gnu";
-      CC_aarch64_unknown_linux_gnu = "cc-aarch64-linux-gnu";
-      AR_x86_64_pc_windows_gnu = "ar-zig";
-      # `embed_resource` (gpui) identifies its compiler by probing it; llvm-rc
-      # is a variant it recognises and preprocesses through the target CC.
-      RC_x86_64_pc_windows_gnu = "${llvmRc}/bin/llvm-rc";
-      AR_x86_64_unknown_linux_gnu = "ar-zig";
-      AR_aarch64_unknown_linux_gnu = "ar-zig";
-      shellHook = common.shellHook + ''
-        export ZIG_GLOBAL_CACHE_DIR="$PWD/.local/zig-cache"
-        export ZIG_LOCAL_CACHE_DIR="$PWD/.local/zig-cache"
-      '';
-    }
-  );
+  # --all-targets --target <triple>` for each of `toolchains.crossCheckTargets`.
+  # Deliberately does NOT spread `common`: a compile-only lane needs neither the
+  # seven-language corpus, the native compiler authorities, nor the GUI capture
+  # closure, and importing them would drag `tools.complete` (Qdrant included)
+  # into every cross run. `nushell` runs the standalone lane runner at
+  # `.config/ci/cross-check.nu`; nothing here closes over the `backend` command.
+  crossAttrs = {
+    packages = [
+      toolchains.cross
+      pkgs.nushell
+    ]
+    ++ crossCompilers
+    ++ [ pkgs.zig ];
+    # The cross rustc carries every target's standard library; the host-only
+    # stable toolchain cannot `--target` a foreign triple.
+    RUSTC = "${toolchains.cross}/bin/rustc";
+    NUDOX_CROSS_TARGETS = builtins.concatStringsSep " " toolchains.crossTargets;
+    # The subset this lane compiles on a Linux host; the rest are gated on their
+    # own native/emulated lanes (see `toolchains.crossCheckTargets`).
+    NUDOX_CROSS_CHECK_TARGETS = builtins.concatStringsSep " " toolchains.crossCheckTargets;
+    # Compile checks have no Linux sysroot for pkg-config to search; the
+    # dlopen configuration of fontconfig-sys compiles without one.
+    RUST_FONTCONFIG_DLOPEN = "on";
+    CC_x86_64_pc_windows_gnu = "cc-x86_64-windows-gnu";
+    CC_x86_64_unknown_linux_gnu = "cc-x86_64-linux-gnu";
+    CC_aarch64_unknown_linux_gnu = "cc-aarch64-linux-gnu";
+    AR_x86_64_pc_windows_gnu = "ar-zig";
+    # `embed_resource` (gpui) identifies its compiler by probing it; llvm-rc
+    # is a variant it recognises and preprocesses through the target CC.
+    RC_x86_64_pc_windows_gnu = "${llvmRc}/bin/llvm-rc";
+    AR_x86_64_unknown_linux_gnu = "ar-zig";
+    AR_aarch64_unknown_linux_gnu = "ar-zig";
+    # Host build scripts (blake3, ring) link libiconv/zlib through LIBRARY_PATH,
+    # which `common` used to provide.
+    LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+      pkgs.libiconv
+      pkgs.zlib
+    ];
+    shellHook = ''
+      export CARGO_TARGET_DIR="$PWD/.local/target"
+      export ZIG_GLOBAL_CACHE_DIR="$PWD/.local/zig-cache"
+      export ZIG_LOCAL_CACHE_DIR="$PWD/.local/zig-cache"
+    '';
+  };
+  cross = pkgs.mkShell crossAttrs;
+  # Emulated test lanes: the `cross` shell plus what running a test needs that
+  # a compile check does not. Each target gets a real linker and C library
+  # (zig compiles the C sources; the target's GCC links), and a runner Cargo
+  # and nextest put in front of every test binary, so tests do not know they
+  # are emulated. Linux hosts only: neither runner builds on Darwin.
+  mingw = pkgs.pkgsCross.mingwW64;
+  arm64 = pkgs.pkgsCross.aarch64-multiplatform;
+  emulatedLanes = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+    # Windows (x86_64-pc-windows-gnu) test binaries under Wine (WoW64).
+    windows-wine = pkgs.mkShell (
+      crossAttrs
+      // {
+        packages = crossAttrs.packages ++ [
+          pkgs.cargo-nextest
+          pkgs.wineWow64Packages.stable
+        ];
+        CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = "${mingw.stdenv.cc}/bin/x86_64-w64-mingw32-gcc";
+        # std's windows-gnu runtime links winpthread. iroh declares a cdylib,
+        # and GNU ld auto-exports every symbol of a DLL with no explicit
+        # exports, past PE's 65535-ordinal limit ("export ordinal too large").
+        CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS = "-L native=${mingw.windows.pthreads}/lib -C link-arg=-Wl,--exclude-all-symbols";
+        # See arm64-emu: lean debug info for throwaway emulated test trees.
+        CARGO_PROFILE_DEV_DEBUG = "line-tables-only";
+        CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER = "${pkgs.wineWow64Packages.stable}/bin/wine";
+        WINEDEBUG = "-all";
+        # A new prefix would offer to install Wine Mono and Gecko and wait
+        # for an answer no one is there to give; tests need neither.
+        WINEDLLOVERRIDES = "mscoree=;mshtml=";
+        # raw-dylib imports (windows-sys) need MinGW's dlltool. It goes after
+        # the shell's own tools so the llvm windres wrapper above still wins.
+        shellHook = crossAttrs.shellHook + ''
+          export PATH="$PATH:${mingw.stdenv.cc.bintools}/bin"
+          export WINEPREFIX="$PWD/.local/wine-prefix"
+        '';
+      }
+    );
+    # aarch64 Linux test binaries under QEMU user-mode emulation. The Nix
+    # cross GCC links against an absolute store glibc, so qemu-aarch64 needs
+    # no sysroot and the host needs no binfmt registration.
+    arm64-emu = pkgs.mkShell (
+      crossAttrs
+      // {
+        packages = crossAttrs.packages ++ [
+          pkgs.cargo-nextest
+          pkgs.qemu-user
+          # Process tests run host tools as children (the embedding fixtures
+          # are Python scripts); an emulated test execs them natively.
+          pkgs.python3
+          pkgs.coreutils
+        ];
+        # The pinned process tools the Linux lane's shell exports (corpus-env):
+        # without them, tests that clear their environment exit 127.
+        NUDOX_TEST_COREUTILS_BIN = corpusEnv.NUDOX_TEST_COREUTILS_BIN;
+        NUDOX_PROCESS_SHELL = "${pkgs.bash}/bin/sh";
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = "${arm64.stdenv.cc}/bin/aarch64-unknown-linux-gnu-gcc";
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER = "${pkgs.qemu-user}/bin/qemu-aarch64";
+        # Emulated test trees are built once per run and thrown away; full
+        # DWARF only costs disk and link time. Backtraces keep line numbers.
+        CARGO_PROFILE_DEV_DEBUG = "line-tables-only";
+      }
+    );
+  };
 in
 {
   default = development;
@@ -229,3 +320,4 @@ in
     verification
     ;
 }
+// emulatedLanes
