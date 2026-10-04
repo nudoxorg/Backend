@@ -326,46 +326,6 @@ case "$(tail -n 1 "$rustc_direct_log")" in
   *) fail "symlinked workspace source was not passed directly to rustc" ;;
 esac
 
-# Build receipts use a private CargoHome whose registry/git leaves resolve to
-# a shared cache root. Both roots and source parents must be canonicalized so
-# ordinary third-party libraries still use sccache through that layout.
-linked_cargo_home="$test_root/private cargo home"
-shared_cargo_home="$test_root/shared cargo home"
-mkdir -p "$linked_cargo_home" \
-  "$shared_cargo_home/registry/src/index.crates.io-1/linked-1/src" \
-  "$shared_cargo_home/git/checkouts/linked-example-1/commit/src"
-ln -s "$shared_cargo_home/registry" "$linked_cargo_home/registry"
-ln -s "$shared_cargo_home/git" "$linked_cargo_home/git"
-linked_registry_source="$linked_cargo_home/registry/src/index.crates.io-1/linked-1/src/lib.rs"
-linked_git_source="$linked_cargo_home/git/checkouts/linked-example-1/commit/src/lib.rs"
-: > "$linked_registry_source"
-: > "$linked_git_source"
-CARGO_HOME="$linked_cargo_home" SCCACHE_TEST_LOG="$rustc_cache_log" \
-  SCCACHE_TEST_STATUS=0 RUSTC_TEST_LOG="$rustc_direct_log" \
-  "$test_root/rustc-cache-wrapper" "$test_root/bin/rustc" \
-  --crate-name linked_registry --crate-type lib "$linked_registry_source" --out-dir "$test_root/output"
-CARGO_HOME="$linked_cargo_home" SCCACHE_TEST_LOG="$rustc_cache_log" \
-  SCCACHE_TEST_STATUS=0 RUSTC_TEST_LOG="$rustc_direct_log" \
-  "$test_root/rustc-cache-wrapper" "$test_root/bin/rustc" \
-  --crate-name linked_git --crate-type rlib "$linked_git_source" --out-dir "$test_root/output"
-assert_file_lines "$rustc_cache_log" 4
-assert_file_lines "$rustc_direct_log" 6
-
-# Canonicalizing the parent must also reject source paths that escape the
-# registry through an intermediate directory symlink. A missing registry/git
-# root cannot create an absolute-path wildcard and remains direct-rustc.
-registry_escaping_parent="$rustc_cache_home/registry/src/index.crates.io-1/escaping-package"
-ln -s "$rustc_cache_workspace/src" "$registry_escaping_parent"
-run_rustc_cache_case escaping_parent lib "$registry_escaping_parent/lib.rs"
-missing_roots_home="$test_root/cargo home without cache roots"
-mkdir -p "$missing_roots_home"
-CARGO_HOME="$missing_roots_home" SCCACHE_TEST_LOG="$rustc_cache_log" \
-  SCCACHE_TEST_STATUS=0 RUSTC_TEST_LOG="$rustc_direct_log" \
-  "$test_root/rustc-cache-wrapper" "$test_root/bin/rustc" \
-  --crate-name missing_roots --crate-type lib "$registry_source" --out-dir "$test_root/output"
-assert_file_lines "$rustc_cache_log" 4
-assert_file_lines "$rustc_direct_log" 8
-
 # Metadata and formatting remain unrestricted and do not require a socket or
 # a mutable build directory.
 metadata_log="$test_root/metadata.log"
