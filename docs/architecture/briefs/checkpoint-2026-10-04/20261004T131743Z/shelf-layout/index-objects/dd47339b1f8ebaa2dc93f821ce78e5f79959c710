@@ -532,9 +532,6 @@ impl ListState {
         focus_handles: impl IntoIterator<Item = Option<FocusHandle>>,
     ) {
         let state = &mut *self.0.borrow_mut();
-        // NUDOX: a declared baseline applies to newly inserted offscreen rows too.
-        // Keep existing measured rows intact; their real heights replace hints.
-        let size_hint = state.uniform_item_height.map(|height| Size { width: px(0.), height });
 
         let mut old_items = state.items.cursor::<Count>(());
         let mut new_items = old_items.slice(&Count(old_range.start), Bias::Right);
@@ -545,7 +542,7 @@ impl ListState {
             focus_handles.into_iter().map(|focus_handle| {
                 spliced_count += 1;
                 ListItem::Unmeasured {
-                    size_hint,
+                    size_hint: None,
                     focus_handle,
                 }
             }),
@@ -689,35 +686,6 @@ impl ListState {
 
         state.rebase_pending_scroll(scroll_top);
         state.logical_scroll_top = Some(scroll_top);
-    }
-
-    /// Position an item at a fractional offset after its next measurement.
-    /// This is applied during the list's own prepaint, before the item layout
-    /// and paint for that frame are fixed. Offscreen estimates never stand in
-    /// for the measured height of the requested item.
-    pub fn scroll_to_proportional(&self, item_ix: usize, fraction: f32) {
-        let state = &mut *self.0.borrow_mut();
-        let count = state.items.summary().count;
-        let item_ix = item_ix.min(count);
-        if item_ix < count {
-            state.follow_state.stop_following();
-            state.pending_scroll = Some(PendingScroll::Proportional(PendingScrollFraction {
-                item_ix,
-                fraction: if fraction.is_finite() { fraction.clamp(0.0, 1.0) } else { 0.0 },
-            }));
-        } else {
-            state.pending_scroll = None;
-        }
-        state.logical_scroll_top = Some(ListOffset {
-            item_ix,
-            offset_in_item: px(0.0),
-        });
-    }
-
-    /// Retire a measurement adjustment when the owner has accepted newer
-    /// direct input. The logical offset produced by that input remains intact.
-    pub fn clear_pending_scroll_adjustment(&self) {
-        self.0.borrow_mut().pending_scroll = None;
     }
 
     /// Scroll the list to the given item, such that the item is fully visible.
@@ -1797,32 +1765,6 @@ mod test {
         assert_eq!(items.items.iter().nth(7).and_then(|item| item.focus_handle()), Some(focus));
     }
 
-    #[gpui::test]
-    fn proportional_target_is_measured_before_its_first_paint(cx: &mut TestAppContext) {
-        let cx = cx.add_empty_window();
-        let state = ListState::new(50, crate::ListAlignment::Top, px(0.))
-            .with_uniform_item_height(px(20.));
-        struct TestView(ListState);
-        impl Render for TestView {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                list(self.0.clone(), |index, _, _| {
-                    let row = div().h(if index == 20 { px(80.) } else { px(20.) }).w_full();
-                    if index == 20 { row.id("target").into_any() } else { row.into_any() }
-                }).w_full().h_full()
-            }
-        }
-        state.scroll_to_proportional(20, 0.25);
-        let view = cx.update(|_, cx| cx.new(|_| TestView(state.clone())));
-        cx.draw(point(px(0.), px(0.)), size(px(100.), px(60.)), |_, _| {
-            view.into_any_element()
-        });
-        let top = state.logical_scroll_top();
-        assert_eq!(top.item_ix, 20);
-        assert_eq!(top.offset_in_item, px(20.), "the 80px row, not its 20px hint, determines the first-frame fraction");
-        let painted = cx.debug_bounds("target").expect("the target mounted in the first list paint");
-        assert_eq!(painted.top(), px(-20.), "the first painted row uses the corrected offset");
-    }
-
     /// NUDOX: a declared uniform height outlives the first layout and a width
     /// change (both invalidate measured heights). 100 rows are declared 30 px
     /// and render 20 px; a 60 px viewport measures a handful of them.
@@ -1856,43 +1798,6 @@ mod test {
         // A scroll beyond the measured rows lands among the hinted ones.
         state.scroll_by(px(600.));
         assert!(state.logical_scroll_top().item_ix >= 20, "{:?}", state.logical_scroll_top());
-    }
-
-    #[gpui::test]
-    fn offscreen_splice_keeps_measured_rows_and_extends_the_hinted_scroll_range(cx: &mut TestAppContext) {
-        let cx = cx.add_empty_window();
-        let hinted = ListState::new(100, crate::ListAlignment::Top, px(0.))
-            .with_uniform_item_height(px(30.));
-        let plain = ListState::new(100, crate::ListAlignment::Top, px(0.));
-
-        struct TestView(ListState);
-        impl Render for TestView {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                list(self.0.clone(), |_, _, _| div().h(px(20.)).w_full().into_any())
-                    .w_full().h_full()
-            }
-        }
-
-        for state in [&hinted, &plain] {
-            cx.draw(point(px(0.), px(0.)), size(px(100.), px(60.)), |_, cx| {
-                cx.new(|_| TestView(state.clone())).into_any_element()
-            });
-        }
-        let before = hinted.max_offset_for_scrollbar().y;
-        let plain_before = plain.max_offset_for_scrollbar().y;
-        let measured_before = hinted.0.borrow().items.iter().filter(|item| item.size().is_some()).count();
-        assert!(measured_before > 0 && measured_before < 100);
-        hinted.splice(50..50, 10);
-        plain.splice(50..50, 10);
-        assert_eq!(hinted.item_count(), 110);
-        assert_eq!(plain.item_count(), 110);
-        assert_eq!(hinted.max_offset_for_scrollbar().y, before + px(300.));
-        assert_eq!(plain.max_offset_for_scrollbar().y, plain_before,
-            "callers without a declared baseline keep the old estimated extent");
-        assert_eq!(hinted.0.borrow().items.iter().filter(|item| item.size().is_some()).count(), measured_before);
-        assert!(plain.0.borrow().items.iter().skip(50).take(10).all(|item| item.size_hint().is_none()));
-        hinted.scroll_by(px(1_500.));
-        assert!(hinted.logical_scroll_top().item_ix >= 40);
     }
 
     #[gpui::test]
