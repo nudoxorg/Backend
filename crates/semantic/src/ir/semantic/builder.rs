@@ -31,9 +31,9 @@ use super::type_model::{
 };
 use crate::ir::{
     AnnotationKind, AtomId, AtomInterner, AtomTable, AtomTableView, AuthorityFactFault,
-    AuthorityFactPlane, CapacityError, ChannelDirection, DeclarationFamilyId, DeclarationIdentity,
-    DeclarationKey, DenseId, EntityAuthorityColumns, EntityAuthorityFacts, EntityId,
-    ExternalDeclarationIdentity, ExternalEntityRef, FactAvailability, ImageProvenance,
+    AuthorityFactPlane, CapacityError, CapacitySpace, ChannelDirection, DeclarationFamilyId,
+    DeclarationIdentity, DeclarationKey, DenseId, EntityAuthorityColumns, EntityAuthorityFacts,
+    EntityId, ExternalDeclarationIdentity, ExternalEntityRef, FactAvailability, ImageProvenance,
     ImageProvenanceClaim, Interner, ListId, ListInterner, ListTable, ListTableView,
     OccurrenceAuthorityColumns, OccurrenceAuthorityFacts, PackageLineage, ParentageAuthority,
     PreimageOverflow, SemanticScopeClaim, SemanticScopeFacts, SignatureCarrierBindingRole,

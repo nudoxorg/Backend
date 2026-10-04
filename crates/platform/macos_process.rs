@@ -580,8 +580,10 @@ mod tests {
                 .read_complete_pid()
                 .expect("read the exact owned descendant marker")
             {
-                Some(raw_pid) if let Some(pid) = Pid::from_raw(raw_pid) => break pid,
-                Some(_) => panic!("descendant marker contained an invalid PID"),
+                Some(raw_pid) => {
+                    break Pid::from_raw(raw_pid)
+                        .expect("descendant marker contained an invalid PID");
+                }
                 None => {}
             }
             assert!(

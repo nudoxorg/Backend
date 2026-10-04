@@ -3147,10 +3147,9 @@ impl CommandAdapter {
                     local_witness,
                     catalog,
                     |catalog| {
-                    let mut facts = catalog.dependency_facts().to_vec();
-                    facts.extend(manifests.facts().cloned());
-                    backend_library::CheckedPackageGraphFacts::new(facts)
-                        .map_err(|error| {
+                        let mut facts = catalog.dependency_facts().to_vec();
+                        facts.extend(manifests.facts().cloned());
+                        backend_library::CheckedPackageGraphFacts::new(facts).map_err(|error| {
                             BuiltinModelError(format!("check package dependency facts: {error}"))
                         })
                     },
@@ -3601,7 +3600,8 @@ fn map_semantic_authority_error(
 mod tests {
     use super::{
         ADD_TARGET_REQUIRED, AddTarget, CommandAdapter, Executed, IndexJob, IndexJobWork,
-        MAX_WAITING_COMMANDS, ProductDaemon, admitted_project_source_root, classify_add_target,
+        GraphProjectionStamp, MAX_WAITING_COMMANDS, ProductDaemon, ResidentCatalog,
+        ResidentDependencies, admitted_project_source_root, classify_add_target,
     };
     use crate::builtin::{
         BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinProfile,
@@ -3625,6 +3625,118 @@ mod tests {
     use std::time::Duration;
 
     use super::{Command, WireCertificate, WireClaim};
+
+    fn checked_resident_graph(reason: &'static str) -> backend_library::CheckedPackageGraphFacts {
+        backend_library::CheckedPackageGraphFacts::new(vec![(
+            backend_library::PackageGraphSourceKey::new(
+                backend_library::PackageReference::parse("pkg:cargo/resident-fixture@1.0.0")
+                    .expect("source coordinate"),
+                backend_library::PackageGraphSourceAuthority::Registry(
+                    backend_library::RegistryAuthorityId::from_configured_source([7; 32]),
+                ),
+            ),
+            backend_library::DependencyFacts::Unknown(backend_library::ProductText::from_static(
+                reason,
+            )),
+        )])
+        .expect("checked source facts")
+    }
+
+    fn unconfigured_catalog() -> ResidentCatalog {
+        ResidentCatalog::Unconfigured(Arc::new(super::CatalogLookupIndex::from_catalog(&[])))
+    }
+
+    #[test]
+    fn unchanged_graph_inputs_skip_fact_builder_and_retain_selected_snapshot() {
+        let mut resident = None;
+        ResidentDependencies::select(&mut resident, [1; 32], unconfigured_catalog(), |_| {
+            Ok(checked_resident_graph("original dependency evidence"))
+        })
+        .expect("initial graph");
+        let cached = resident.as_mut().expect("resident graph");
+        let original = cached.graph.graph_facts.clone();
+        let stamp = GraphProjectionStamp {
+            root: backend_library::view_state_root(&[]),
+            facts_witness: original.witness(),
+        };
+        cached.graph.synced = Some(stamp);
+        let overlay = unconfigured_catalog();
+        let ResidentCatalog::Unconfigured(expected_overlay) = &overlay else {
+            panic!("unconfigured overlay");
+        };
+        let expected_overlay = Arc::clone(expected_overlay);
+
+        ResidentDependencies::select(&mut resident, [1; 32], overlay, |_| {
+            panic!("unchanged graph inputs must never rebuild facts");
+        })
+        .expect("select overlay without graph work");
+        let cached = resident.as_ref().expect("retained graph");
+        assert!(std::ptr::eq(
+            cached.graph.graph_facts.facts(),
+            original.facts()
+        ));
+        assert!(cached.graph.synced == Some(stamp));
+        let ResidentCatalog::Unconfigured(actual_overlay) = &cached.catalog else {
+            panic!("unconfigured overlay");
+        };
+        assert!(Arc::ptr_eq(actual_overlay, &expected_overlay));
+        assert!(matches!(
+            cached.graph.index.dependencies(
+                cached.graph.graph_facts.facts(),
+                &original.facts()[0].0.coordinate
+            ),
+            backend_library::PackageDependencyLookup::Exact {
+                facts: backend_library::DependencyFacts::Unknown(reason),
+                ..
+            } if reason.as_str() == "original dependency evidence"
+        ));
+    }
+
+    #[test]
+    fn changed_graph_inputs_rebuild_once_and_failed_rebuild_preserves_resident() {
+        let mut resident = None;
+        ResidentDependencies::select(&mut resident, [1; 32], unconfigured_catalog(), |_| {
+            Ok(checked_resident_graph("original dependency evidence"))
+        })
+        .expect("initial graph");
+        let original = resident.as_ref().expect("resident graph").graph.graph_facts.clone();
+        let mut builds = 0;
+        ResidentDependencies::select(&mut resident, [2; 32], unconfigured_catalog(), |_| {
+            builds += 1;
+            Ok(checked_resident_graph("updated dependency evidence"))
+        })
+        .expect("changed graph");
+        assert_eq!(builds, 1);
+        let cached = resident.as_mut().expect("changed graph residence");
+        let changed = cached.graph.graph_facts.clone();
+        assert_ne!(changed.witness(), original.witness());
+        assert!(!std::ptr::eq(changed.facts(), original.facts()));
+        let stamp = GraphProjectionStamp {
+            root: backend_library::view_state_root(&[]),
+            facts_witness: changed.witness(),
+        };
+        cached.graph.synced = Some(stamp);
+        let ResidentCatalog::Unconfigured(catalog_before_failure) = &cached.catalog else {
+            panic!("unconfigured catalog");
+        };
+        let catalog_before_failure = Arc::clone(catalog_before_failure);
+
+        let failed = ResidentDependencies::select(
+            &mut resident,
+            [3; 32],
+            unconfigured_catalog(),
+            |_| Err(crate::builtin::BuiltinModelError("rebuild refused".to_owned())),
+        );
+        assert!(failed.is_err());
+        let cached = resident.as_ref().expect("prior successful residence retained");
+        assert_eq!(cached.graph.local_witness, [2; 32]);
+        assert!(std::ptr::eq(cached.graph.graph_facts.facts(), changed.facts()));
+        assert!(cached.graph.synced == Some(stamp));
+        let ResidentCatalog::Unconfigured(catalog_after_failure) = &cached.catalog else {
+            panic!("unconfigured catalog");
+        };
+        assert!(Arc::ptr_eq(catalog_after_failure, &catalog_before_failure));
+    }
 
     struct TempTree(PathBuf);
 
