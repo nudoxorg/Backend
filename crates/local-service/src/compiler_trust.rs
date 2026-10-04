@@ -399,6 +399,20 @@ impl TrustedCompilerWorkerPolicy {
             .filter(move |grant| grant.authorizes(grant.peer, scope))
     }
 
+    /// Confirms that a previously selected grant row still exists and authorizes the same peer
+    /// and scope in this persisted policy snapshot.
+    #[must_use]
+    pub(crate) fn contains_exact_authorizing_grant(
+        &self,
+        expected: &TrustedCompilerWorkerGrant,
+        peer: EndpointId,
+        scope: &CompilerTrustScope,
+    ) -> bool {
+        self.grants
+            .iter()
+            .any(|current| current == expected && current.authorizes(peer, scope))
+    }
+
     /// Adds one grant. A peer cannot be silently rebound to a different
     /// address; revoke it first, then explicitly enroll the replacement.
     pub fn add(&mut self, grant: TrustedCompilerWorkerGrant) -> Result<(), CompilerTrustError> {
@@ -940,6 +954,30 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(selected, [&exact]);
+    }
+
+    #[test]
+    fn replaced_exact_grant_row_does_not_satisfy_probe_snapshot() {
+        let worker = peer(7);
+        let selected_before_probe = grant(
+            worker,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 38_221),
+        );
+        let replacement = grant(
+            worker,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 38_222),
+        );
+        let mut current_policy = TrustedCompilerWorkerPolicy::default();
+        current_policy
+            .add(replacement)
+            .expect("current policy contains the replacement row");
+
+        assert!(current_policy.authorizes_scope(worker, &scope()));
+        assert!(!current_policy.contains_exact_authorizing_grant(
+            &selected_before_probe,
+            worker,
+            &scope(),
+        ));
     }
 
     #[test]
