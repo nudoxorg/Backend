@@ -6,13 +6,31 @@
   roleRunners,
   roles,
 }:
+let
+  # nuenv starts each script with `#!/usr/bin/env -S <nu> --stdin`, and a
+  # sandboxed builder has no /usr/bin/env: the control-plane check runs these
+  # tools and failed with "Could not spawn foreground child". As for the
+  # `backend` command (commands.nix), `<nu> --stdin` is one interpreter
+  # argument that a direct shebang carries on Linux and macOS alike.
+  directShebang =
+    name: app:
+    pkgs.runCommand name { } ''
+      cp -R ${app} "$out"
+      chmod -R u+w "$out"
+      sed -i '1s|^#!/usr/bin/env -S |#!|' "$out/bin/${name}"
+      head -1 "$out/bin/${name}" | grep -q '^#!/nix/store/' || {
+        echo "${name} shebang is not a store path: $(head -1 "$out/bin/${name}")" >&2
+        exit 1
+      }
+    '';
+in
 pkgs.lib.mapAttrs (
   roleId: role:
   pkgs.buildEnv {
     name = "backend-${roleId}-tools";
     paths = pkgs.lib.mapAttrsToList (
       tool: commandId:
-      pkgs.nuenv.writeShellApplication {
+      directShebang tool (pkgs.nuenv.writeShellApplication {
         name = tool;
         runtimeEnv = {
           BACKEND_AGENT_TOOL = tool;
@@ -82,7 +100,7 @@ pkgs.lib.mapAttrs (
             run-external "${roleRunners.${roleId}}/bin/backend" ...$arguments ...$extra
           }
         '';
-      }
+      })
     ) role.tools;
   }
 ) roles

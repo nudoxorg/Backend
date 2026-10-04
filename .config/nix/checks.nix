@@ -195,6 +195,17 @@ in
         map (rule: rule.id) (builtins.filter (rule: rule.engine == "dylint") control.lint.rules)
       );
       BACKEND_NIGHTLY_CARGO = toolchains.nightlyCargo;
+      # The nested Cargo build runs in the build sandbox, which has no
+      # network (on Linux; Darwin builds unsandboxed by default): its
+      # dependencies come vendored from the lint crate's own lockfile, plus
+      # the pinned graph of the rustc driver Dylint builds on first use.
+      BACKEND_DYLINT_VENDOR = "${pkgs.symlinkJoin {
+        name = "backend-dylint-vendor";
+        paths = map (lockFile: pkgs.rustPlatform.importCargoLock { inherit lockFile; }) [
+          ../dylint/Cargo.lock
+          ../dylint/driver/Cargo.lock
+        ];
+      }}";
       # nuenv only adds packages to PATH; it does not run stdenv setup hooks
       # that would discover OpenSSL's .pc file automatically.
       PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";

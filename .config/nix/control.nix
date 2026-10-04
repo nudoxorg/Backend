@@ -764,7 +764,12 @@ in
             # can be killed on the 45s budget. backend-laws is the proptest
             # suite. The three raw_property names are the store bolero tests.
             # Store integration tests whose names contain "native" stay here.
-            filter = "test(/corpus|multilingual|native|real_package/) & !binary(backend_laws) & !test(/bolero_combines_structural_byte_mutations|every_byte_value_has_exact_structural_provenance|hostile_ordering_truncation_and_correlated_boundaries_are_exact/)";
+            # No backend-laws test name matches the pattern today. A
+            # `!binary(backend_laws)` guard is not usable: nextest rejects a
+            # `binary()` matcher (exact or regex) that names no binary (exit
+            # 96), as in the control-plane check's fixture workspace, so a
+            # laws test that ever matches has to be named here instead.
+            filter = "test(/corpus|multilingual|native|real_package/) & !test(/bolero_combines_structural_byte_mutations|every_byte_value_has_exact_structural_provenance|hostile_ordering_truncation_and_correlated_boundaries_are_exact/)";
             test-group = "native-compiler";
             threads-required = 2;
             slow-timeout = {
