@@ -2,7 +2,8 @@
 
 use crate::discovery::{DiscoverySearchDocument, DiscoveryStore};
 use backend_engine::registry::{
-    DiscoveryFacet, DiscoveryMetadata, DiscoverySourceIdentity, RegistryEcosystem,
+    DiscoveryFacet, DiscoveryMetadata, DiscoverySourceEvent, DiscoverySourceIdentity,
+    RegistryEcosystem, discovery_source_identity,
 };
 use backend_engine::{
     CommittedViewDelta, DependencyFacts, ForgeAcquisitionResult, ForgeCoordinate, ForgeFact,
@@ -5605,7 +5606,7 @@ mod tests {
 
     fn source(ecosystem: RegistryEcosystem, endpoint: &str) -> DiscoverySourceIdentity {
         let endpoint = RegistryEndpoint::new(ecosystem, endpoint).expect("endpoint");
-        DiscoverySourceIdentity::from_endpoint(&endpoint)
+        discovery_source_identity(&endpoint)
     }
 
     fn key(source: DiscoverySourceIdentity, coordinate: &str) -> DiscoverySearchKey {
@@ -6220,6 +6221,7 @@ mod tests {
                     coordinate: ProductPackageCoordinate::parse(*coordinate).expect("coordinate"),
                     standing: *standing,
                     observed_at: DiscoveryObservedAt::from_unix_millis(observed_at),
+                    source_event: DiscoverySourceEvent::Unordered,
                     source_event_time: Some((*event_time).to_owned()),
                     proof: [*proof; 32],
                     metadata: DiscoveryMetadata::default(),

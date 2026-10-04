@@ -41,6 +41,7 @@ mod registry_forge;
 mod registry_native;
 mod rich_graph;
 mod source_atom;
+mod source_discovery;
 mod surface;
 mod view;
 mod wire;
@@ -198,6 +199,15 @@ pub use rich_graph::{
     RichGraphSnapshot,
 };
 pub use source_atom::SourceAtomText;
+pub use source_discovery::{
+    CratesSparseDependency, CratesSparseFeature, CratesSparseMetadata, DiscoveryAdvisory,
+    DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryError, DiscoveryFacet,
+    DiscoveryFact, DiscoveryMetadata, DiscoveryObservedAt, DiscoveryPackageRetraction,
+    DiscoverySourceEvent, DiscoverySourceIdentity, DiscoveryStanding, DiscoveryTimestamp,
+    MAX_DISCOVERY_BATCH_ENCODED_BYTES, MAX_DISCOVERY_COMMIT_ID_BYTES, MAX_DISCOVERY_CURSOR_BYTES,
+    MAX_DISCOVERY_EVENT_TEXT_BYTES, MAX_DISCOVERY_PAGE_ITEMS, MAX_DISCOVERY_PROJECTS,
+    MAX_DISCOVERY_REVISION_BYTES,
+};
 pub use surface::{
     DeclarationChange, DeclarationRecord, DiffRecord, ForgeDiscoveryCandidate, ForgeFact,
     ForgeManifestRecord, ForgePackageDetailRecord, ForgePackageManifestDetail, ForgePackagePin,
