@@ -993,20 +993,18 @@ impl ProcessConfig {
     /// Applies preferences read by a desktop before it starts its embedded
     /// service. Existing operator-level offline settings remain restrictive;
     /// user preferences can narrow service behavior but cannot enable a
-    /// network path that the process configuration disabled.
+    /// network path that the process configuration disabled, re-enable a
+    /// refresh path already disabled, or widen an explicit cache horizon.
     pub fn apply_registry_user_policy(&mut self, policy: RegistryUserPolicy) {
-        if !policy.allow_remote_metadata {
-            self.registry.policy = AcquisitionPolicy::Offline;
-            self.registry.sources = self.registry.sources.clone().offline();
-            self.advisory.offline = true;
-        } else if matches!(self.registry.policy, AcquisitionPolicy::Offline) {
-            self.registry.sources = self.registry.sources.clone().offline();
-        }
-        if matches!(self.registry.policy, AcquisitionPolicy::Offline) {
-            self.discovery.offline = true;
-        }
-        self.advisory.refresh_enabled = policy.refresh_advisories;
-        self.registry.cache_max_age_millis = Some(policy.cache_max_age_millis());
+        let runtime_policy = LocaldRuntimePolicy::new(
+            policy.allow_remote_metadata,
+            policy.allow_remote_metadata,
+            policy.allow_remote_metadata,
+            policy.refresh_advisories,
+            Some(policy.cache_max_age_millis()),
+        )
+        .expect("registry user policy clamps cache age to the shared runtime bound");
+        self.apply_runtime_policy(runtime_policy);
     }
 
     /// Parses bounded process arguments and environment fallbacks.
@@ -1870,15 +1868,19 @@ mod tests {
     }
 
     #[test]
-    fn saved_preferences_cannot_reenable_an_operator_offline_registry() {
+    fn saved_preferences_cannot_reopen_disabled_paths_or_widen_cache_age() {
         let mut config = ProcessConfig::parse([
             "--endpoint".to_owned(),
             "/tmp/backend-locald-policy-offline.sock".to_owned(),
             "--workspace".to_owned(),
             "/tmp/backend-locald-policy-offline".to_owned(),
             "--registry-offline".to_owned(),
+            "--advisory-offline".to_owned(),
         ])
         .expect("offline owner configuration");
+        config.advisory.refresh_enabled = false;
+        let tighter_cache_age = 7 * RegistryUserPolicy::MILLIS_PER_DAY;
+        config.registry.cache_max_age_millis = Some(tighter_cache_age);
         config.apply_registry_user_policy(RegistryUserPolicy {
             allow_remote_metadata: true,
             refresh_advisories: true,
@@ -1895,8 +1897,18 @@ mod tests {
                 .sources()
                 .all(|source| { source.policy() == AcquisitionPolicy::Offline })
         );
-        assert!(config.advisory.refresh_enabled);
-        assert_eq!(config.registry.cache_max_age_millis, Some(90 * 86_400_000));
+        assert!(config.advisory.offline);
+        assert!(!config.advisory.refresh_enabled);
+        assert_eq!(config.registry.cache_max_age_millis, Some(tighter_cache_age));
+
+        config.registry.cache_max_age_millis = Some(0);
+        config.apply_registry_user_policy(RegistryUserPolicy {
+            allow_remote_metadata: true,
+            refresh_advisories: true,
+            cache_enabled: true,
+            cache_max_age_days: 30,
+        });
+        assert_eq!(config.registry.cache_max_age_millis, Some(0));
     }
 
     #[test]
