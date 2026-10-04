@@ -8,6 +8,7 @@
 mod envelope;
 mod error;
 mod schema;
+mod schema_preflight;
 mod types;
 mod versioned;
 
@@ -66,15 +67,41 @@ impl fmt::Debug for TursoAuthority {
 }
 
 impl TursoAuthority {
-    /// Opens or creates the greenfield authority tables at `path`.
+    /// Opens a current authority file or initializes an empty file at `path`.
     ///
     /// Keep this file separate from [`crate::TursoProjection`]: the latter is
     /// disposable and may be removed when its projection schema changes.
+    /// The read-only preflight plus in-transaction recheck prevents issued DDL
+    /// or data writes on a classified refusal. A filesystem path replacement
+    /// between those opens still requires an external interlock.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, AuthorityError> {
         let path = path.as_ref();
         let text = path
             .to_str()
             .ok_or_else(|| AuthorityError::NonUtf8Path(path.to_path_buf()))?;
+        let initial_state = if path.try_exists().map_err(AuthorityError::PathIo)? {
+            let database = turso::Builder::new_local(text)
+                .read_only(true)
+                .experimental_multiprocess_wal(true)
+                .experimental_index_method(true)
+                .build()
+                .await?;
+            let connection = database.connect()?;
+            connection.busy_timeout(BUSY_TIMEOUT)?;
+            let state = schema_preflight::classify(&connection).await?;
+            drop(connection);
+            drop(database);
+            state
+        } else {
+            schema_preflight::DatabaseState::Fresh
+        };
+
+        // Generate the in-memory canonical witness before taking the disk
+        // writer lane. A current file already generated it during preflight.
+        if initial_state == schema_preflight::DatabaseState::Fresh {
+            let _ = schema_preflight::expected_schema().await?;
+        }
+
         let database = turso::Builder::new_local(text)
             .experimental_multiprocess_wal(true)
             .experimental_index_method(true)
@@ -82,30 +109,33 @@ impl TursoAuthority {
             .await?;
         let mut connection = database.connect()?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
-        connection.execute_batch(AUTHORITY_SCHEMA).await?;
         let tx = connection
             .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
             .await?;
-        tx.execute(
-            "INSERT OR IGNORE INTO backend_index_authority_meta(singleton, schema_version) VALUES (1, ?1)",
-            [AUTHORITY_SCHEMA_VERSION],
-        )
-        .await?;
-        let mut rows = tx
-            .query(
-                "SELECT schema_version FROM backend_index_authority_meta WHERE singleton=1",
-                (),
-            )
-            .await?;
-        let row = rows
-            .next()
-            .await?
-            .ok_or(AuthorityError::CorruptRecord("schema_version"))?;
-        let found: i64 = row.get(0)?;
-        drop(rows);
-        if found != AUTHORITY_SCHEMA_VERSION {
+        let initialization = async {
+            match schema_preflight::classify(&tx).await? {
+                schema_preflight::DatabaseState::Current => {}
+                schema_preflight::DatabaseState::Fresh => {
+                    tx.execute_batch(AUTHORITY_SCHEMA).await?;
+                    tx.execute(
+                        "INSERT INTO backend_index_authority_meta(singleton, schema_version) \
+                         VALUES (1, ?1)",
+                        [AUTHORITY_SCHEMA_VERSION],
+                    )
+                    .await?;
+                    if schema_preflight::classify(&tx).await?
+                        != schema_preflight::DatabaseState::Current
+                    {
+                        return Err(AuthorityError::SchemaIntegrity);
+                    }
+                }
+            }
+            Ok::<(), AuthorityError>(())
+        }
+        .await;
+        if let Err(error) = initialization {
             tx.rollback().await?;
-            return Err(AuthorityError::Schema { found });
+            return Err(error);
         }
         tx.commit().await?;
         Ok(Self {
