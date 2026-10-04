@@ -8,16 +8,17 @@
 
 use crate::process::RegistryDiscoveryConfig;
 use backend_engine::registry::{
-    DiscoveryBatch, DiscoveryBatchDraft, DiscoveryCompleteness, DiscoveryCursor, DiscoveryError,
-    DiscoveryFacet, DiscoveryFact, DiscoveryMetadata, DiscoveryObservedAt,
-    DiscoveryPackageRetraction, DiscoveryReleaseObservation, DiscoverySourceEvent,
-    DiscoverySourceIdentity, DiscoveryStanding, DiscoveryTimestamp, MAX_DISCOVERY_PAGE_ITEMS,
-    NugetCatalogEvent, RegistryEcosystem, RegistryEndpoint, crates_sparse_index_path,
-    discovery_source_identity, parse_conan_recipe_tree, parse_conan_recipe_versions,
-    parse_crates_recent_page, parse_crates_sparse_package, parse_go_module_index_page,
-    parse_maven_search_page, parse_npm_changes_page, parse_npm_packument_document,
-    parse_nuget_catalog_index, parse_nuget_catalog_leaf, parse_nuget_catalog_page,
-    parse_pypi_project_list, parse_pypi_project_metadata,
+    DISCOVERY_BATCH_ENVELOPE_VERSION, DiscoveryBatch, DiscoveryBatchDraft, DiscoveryCompleteness,
+    DiscoveryCursor, DiscoveryError, DiscoveryFacet, DiscoveryFact, DiscoveryMetadata,
+    DiscoveryObservedAt, DiscoveryPackageRetraction, DiscoveryReleaseObservation,
+    DiscoverySourceEvent, DiscoverySourceIdentity, DiscoveryStanding, DiscoveryTimestamp,
+    MAX_DISCOVERY_BATCH_ENCODED_BYTES, MAX_DISCOVERY_PAGE_ITEMS, NugetCatalogEvent,
+    RegistryEcosystem, RegistryEndpoint, crates_sparse_index_path, discovery_source_identity,
+    parse_conan_recipe_tree, parse_conan_recipe_versions, parse_crates_recent_page,
+    parse_crates_sparse_package, parse_go_module_index_page, parse_maven_search_page,
+    parse_npm_changes_page, parse_npm_packument_document, parse_nuget_catalog_index,
+    parse_nuget_catalog_leaf, parse_nuget_catalog_page, parse_pypi_project_list,
+    parse_pypi_project_metadata,
 };
 use backend_platform::durable;
 use base64::Engine as _;
@@ -34,8 +35,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const JOURNAL_MAGIC: &[u8; 8] = b"DISCOV01";
-const JOURNAL_VERSION: u16 = 1;
-const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
+const JOURNAL_VERSION: u16 = DISCOVERY_BATCH_ENVELOPE_VERSION;
+const MAX_FRAME_BYTES: usize = MAX_DISCOVERY_BATCH_ENCODED_BYTES;
 const MAX_FACTS_PER_SOURCE: usize = 2_000_000;
 const MAX_SEARCH_DELTA_ROWS: usize = 8192;
 const MAX_SOURCE_BODY_BYTES: usize = 32 * 1024 * 1024;
@@ -61,6 +62,7 @@ pub(crate) enum DiscoveryStoreError {
     Io(io::Error),
     Decode,
     Corrupt,
+    UnsupportedVersion(u16),
     Conflict,
     Busy,
     Bounds,
@@ -110,12 +112,41 @@ struct SourceProgress {
     package_releases: BTreeMap<String, BTreeSet<String>>,
 }
 
+enum MaterializedDiscoveryBatch<'a> {
+    Borrowed(&'a DiscoveryBatch),
+    Owned(DiscoveryBatch),
+}
+
+struct PreparedFactAction {
+    fact_index: usize,
+    key: String,
+    transition: DiscoveryFactTransition,
+    package_name: Option<String>,
+    package_release_key: Option<String>,
+    search_document: Option<DiscoverySearchDocument>,
+}
+
+struct PreparedDiscoveryApply {
+    next_sequence: u64,
+    actions: Vec<PreparedFactAction>,
+    search_update_count: usize,
+    search_documents: Vec<DiscoverySearchDocument>,
+}
+
+impl MaterializedDiscoveryBatch<'_> {
+    fn as_ref(&self) -> &DiscoveryBatch {
+        match self {
+            Self::Borrowed(batch) => batch,
+            Self::Owned(batch) => batch,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DiscoverySearchDocument {
     pub(crate) source: DiscoverySourceIdentity,
     pub(crate) coordinate: backend_engine::registry::PackageCoordinate,
     pub(crate) lineage: String,
-    pub(crate) metadata: DiscoveryMetadata,
 }
 
 #[derive(Clone, Debug)]
@@ -1282,7 +1313,6 @@ fn search_document(
         source,
         coordinate: fact.coordinate.clone(),
         lineage: coordinate.qualified_name().as_str().to_owned(),
-        metadata: fact.metadata.clone(),
     })
 }
 
@@ -1535,7 +1565,7 @@ impl DiscoveryStore {
         if self.poisoned {
             return Err(DiscoveryStoreError::Corrupt);
         }
-        batch.admit()?;
+        let transaction_payload_bytes = batch.admitted_transaction_encoded_len()?;
         let input_fingerprint = batch_fingerprint(&batch)?;
         if self
             .sources
@@ -1554,10 +1584,13 @@ impl DiscoveryStore {
             return Err(DiscoveryStoreError::Conflict);
         }
         let materialized = self.materialize_package_retractions(&batch)?;
-        let new_documents = self.validate_fact_transition(&materialized)?;
+        let prepared_apply = self.validate_fact_transition(materialized.as_ref())?;
         let next_search_revision = self
             .search_revision
-            .checked_add(u64::try_from(new_documents).map_err(|_| DiscoveryStoreError::Bounds)?)
+            .checked_add(
+                u64::try_from(prepared_apply.search_update_count)
+                    .map_err(|_| DiscoveryStoreError::Bounds)?,
+            )
             .ok_or(DiscoveryStoreError::Bounds)?;
         let next_observation_revision = self
             .observation_revision
@@ -1565,30 +1598,34 @@ impl DiscoveryStore {
             .ok_or(DiscoveryStoreError::Bounds)?;
         let previous_search_revision = self.search_revision;
 
-        let batch_encoded_len = batch.encoded_len_bounded()?;
-        let transaction_capacity = batch_encoded_len
-            .checked_add(64)
-            .filter(|capacity| *capacity <= MAX_FRAME_BYTES)
-            .ok_or(DiscoveryStoreError::Bounds)?;
-        let mut encoded = Vec::with_capacity(transaction_capacity);
-        serde_json::to_writer(
-            &mut encoded,
-            &JournalWriteTransaction {
-                version: JOURNAL_VERSION,
-                batch: &batch,
-            },
-        )
-        .map_err(|_| DiscoveryStoreError::Decode)?;
-        if encoded.len() > MAX_FRAME_BYTES {
+        if transaction_payload_bytes > MAX_FRAME_BYTES {
             return Err(DiscoveryStoreError::Bounds);
         }
-        let frame = encode_frame(&encoded)?;
+        let frame_payload_length = u32::try_from(transaction_payload_bytes)
+            .map_err(|_| DiscoveryStoreError::Bounds)?
+            .to_be_bytes();
         let start = self.journal.seek(SeekFrom::End(0))?;
-        let durable_result = self
-            .journal
-            .write_all(&frame)
-            .and_then(|()| self.journal.sync_all())
-            .and_then(|()| durable::sync_parent(&self.path));
+        let durable_result = (|| -> Result<(), DiscoveryStoreError> {
+            self.journal.write_all(JOURNAL_MAGIC)?;
+            self.journal.write_all(&JOURNAL_VERSION.to_be_bytes())?;
+            self.journal.write_all(&frame_payload_length)?;
+            let checksum = {
+                let mut payload_writer = FramePayloadWriter::new(&mut self.journal);
+                serde_json::to_writer(
+                    &mut payload_writer,
+                    &JournalWriteTransaction {
+                        version: JOURNAL_VERSION,
+                        batch: &batch,
+                    },
+                )
+                .map_err(map_json_write_error)?;
+                payload_writer.finish()
+            };
+            self.journal.write_all(&checksum)?;
+            self.journal.sync_all()?;
+            durable::sync_parent(&self.path)?;
+            Ok(())
+        })();
         if let Err(error) = durable_result {
             if self.journal.set_len(start).is_err()
                 || self.journal.sync_all().is_err()
@@ -1599,7 +1636,11 @@ impl DiscoveryStore {
             }
             return Err(error.into());
         }
-        let search_documents = self.apply(materialized, input_fingerprint)?;
+        let applied_batch = match materialized {
+            MaterializedDiscoveryBatch::Borrowed(_) => batch,
+            MaterializedDiscoveryBatch::Owned(batch) => batch,
+        };
+        let search_documents = self.apply(applied_batch, input_fingerprint, prepared_apply);
         self.search_revision = next_search_revision;
         self.observation_revision = next_observation_revision;
         self.record_search_changes(search_documents, previous_search_revision);
@@ -1613,7 +1654,9 @@ impl DiscoveryStore {
             .map_or_else(DiscoveryCursor::default, |state| state.cursor.clone())
     }
 
-    fn sequence(&self, source: DiscoverySourceIdentity) -> Option<u64> {
+    /// Local monotonic source progress captured before starting another feed
+    /// request. Cursors remain adapter-owned hints and do not replace this CAS.
+    pub(crate) fn sequence(&self, source: DiscoverySourceIdentity) -> Option<u64> {
         self.sources.get(&source).map(|state| state.sequence)
     }
 
@@ -1733,10 +1776,12 @@ impl DiscoveryStore {
                 Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(offset),
                 Err(error) => return Err(error.into()),
             }
-            if &header[..8] != JOURNAL_MAGIC
-                || u16::from_be_bytes([header[8], header[9]]) != JOURNAL_VERSION
-            {
+            if &header[..8] != JOURNAL_MAGIC {
                 return Err(DiscoveryStoreError::Corrupt);
+            }
+            let version = u16::from_be_bytes([header[8], header[9]]);
+            if version != JOURNAL_VERSION {
+                return Err(DiscoveryStoreError::UnsupportedVersion(version));
             }
             let length =
                 u32::from_be_bytes([header[10], header[11], header[12], header[13]]) as usize;
@@ -1756,7 +1801,7 @@ impl DiscoveryStore {
             let transaction: JournalTransaction =
                 serde_json::from_slice(&payload).map_err(|_| DiscoveryStoreError::Corrupt)?;
             if transaction.version != JOURNAL_VERSION {
-                return Err(DiscoveryStoreError::Corrupt);
+                return Err(DiscoveryStoreError::UnsupportedVersion(transaction.version));
             }
             transaction
                 .batch
@@ -1781,17 +1826,24 @@ impl DiscoveryStore {
         }
         let input_fingerprint = batch_fingerprint(&batch)?;
         let materialized = self.materialize_package_retractions(&batch)?;
-        let new_documents = self.validate_fact_transition(&materialized)?;
+        let prepared_apply = self.validate_fact_transition(materialized.as_ref())?;
         let next_search_revision = self
             .search_revision
-            .checked_add(u64::try_from(new_documents).map_err(|_| DiscoveryStoreError::Bounds)?)
+            .checked_add(
+                u64::try_from(prepared_apply.search_update_count)
+                    .map_err(|_| DiscoveryStoreError::Bounds)?,
+            )
             .ok_or(DiscoveryStoreError::Bounds)?;
         let next_observation_revision = self
             .observation_revision
             .checked_add(1)
             .ok_or(DiscoveryStoreError::Bounds)?;
         let previous_search_revision = self.search_revision;
-        let search_documents = self.apply(materialized, input_fingerprint)?;
+        let applied_batch = match materialized {
+            MaterializedDiscoveryBatch::Borrowed(_) => batch,
+            MaterializedDiscoveryBatch::Owned(batch) => batch,
+        };
+        let search_documents = self.apply(applied_batch, input_fingerprint, prepared_apply);
         self.search_revision = next_search_revision;
         self.observation_revision = next_observation_revision;
         self.record_search_changes(search_documents, previous_search_revision);
@@ -1802,32 +1854,48 @@ impl DiscoveryStore {
         &mut self,
         batch: DiscoveryBatch,
         fingerprint: [u8; 32],
-    ) -> Result<Vec<DiscoverySearchDocument>, DiscoveryStoreError> {
+        prepared: PreparedDiscoveryApply,
+    ) -> Vec<DiscoverySearchDocument> {
+        let PreparedDiscoveryApply {
+            next_sequence,
+            actions,
+            mut search_documents,
+            ..
+        } = prepared;
         let source_identity = batch.source;
-        let expected_base_sequence = batch.expected_base_sequence;
         let source = self.sources.entry(source_identity).or_default();
-        let next_sequence = expected_base_sequence
-            .checked_add(1)
-            .ok_or(DiscoveryStoreError::Bounds)?;
-        let mut search_documents = Vec::new();
-        for fact in batch.facts {
-            let key = fact.coordinate.as_str().to_owned();
-            if let Some(previous) = source.facts.get(&key) {
-                if is_newer(previous, &fact)? {
-                    if !same_search_projection(&previous.metadata, &fact.metadata) {
-                        search_documents.push(search_document(source_identity, &fact)?);
+        let mut actions = actions.into_iter().peekable();
+        for (fact_index, fact) in batch.facts.into_iter().enumerate() {
+            if actions
+                .peek()
+                .is_some_and(|action| action.fact_index == fact_index)
+            {
+                let Some(action) = actions.next() else {
+                    continue;
+                };
+                match action.transition {
+                    DiscoveryFactTransition::Newer => {
+                        if let (Some(package_name), Some(release_key)) =
+                            (action.package_name, action.package_release_key)
+                        {
+                            source
+                                .package_releases
+                                .entry(package_name)
+                                .or_default()
+                                .insert(release_key);
+                        }
+                        source.facts.insert(action.key, fact);
                     }
-                    source.facts.insert(key, fact);
+                    DiscoveryFactTransition::Identical => {
+                        if let Some(selected) = source.facts.get_mut(&action.key) {
+                            selected.observed_at = fact.observed_at;
+                        }
+                    }
+                    DiscoveryFactTransition::Stale => {}
                 }
-            } else {
-                search_documents.push(search_document(source_identity, &fact)?);
-                let package_name = discovered_package_qualified_name(&fact)?;
-                source
-                    .package_releases
-                    .entry(package_name)
-                    .or_default()
-                    .insert(key.clone());
-                source.facts.insert(key, fact);
+                if let Some(document) = action.search_document {
+                    search_documents.push(document);
+                }
             }
         }
         source.sequence = next_sequence;
@@ -1839,23 +1907,24 @@ impl DiscoveryStore {
         source.historical = false;
         source.refresh_failed = false;
         source.last_batch_fingerprint = Some(fingerprint);
-        Ok(search_documents)
+        search_documents
     }
 
-    fn materialize_package_retractions(
+    fn materialize_package_retractions<'batch>(
         &self,
-        batch: &DiscoveryBatch,
-    ) -> Result<DiscoveryBatch, DiscoveryStoreError> {
+        batch: &'batch DiscoveryBatch,
+    ) -> Result<MaterializedDiscoveryBatch<'batch>, DiscoveryStoreError> {
         if batch.package_retractions.is_empty() {
-            return Ok(batch.clone());
+            return Ok(MaterializedDiscoveryBatch::Borrowed(batch));
         }
+        self.preflight_package_retraction_materialization(batch)?;
         if batch.source.ecosystem() != backend_engine::RegistryEcosystem::Npm {
             return Err(DiscoveryStoreError::Decode);
         }
         let mut materialized = batch.clone();
         let Some(source) = self.sources.get(&batch.source) else {
             materialized.package_retractions.clear();
-            return Ok(materialized);
+            return Ok(MaterializedDiscoveryBatch::Owned(materialized));
         };
         for retraction in &batch.package_retractions {
             let Some(coordinates) = source.package_releases.get(&retraction.package_name) else {
@@ -1881,7 +1950,64 @@ impl DiscoveryStore {
         }
         materialized.package_retractions.clear();
         materialized.admit().map_err(DiscoveryStoreError::from)?;
-        Ok(materialized)
+        Ok(MaterializedDiscoveryBatch::Owned(materialized))
+    }
+
+    fn preflight_package_retraction_materialization(
+        &self,
+        batch: &DiscoveryBatch,
+    ) -> Result<(), DiscoveryStoreError> {
+        let input_bytes = batch.admitted_transaction_encoded_len()?;
+        let Some(source) = self.sources.get(&batch.source) else {
+            return Ok(());
+        };
+        let mut expanded_upper_bound = input_bytes;
+        let mut expanded_facts = 0usize;
+        for retraction in &batch.package_retractions {
+            let Some(coordinates) = source.package_releases.get(&retraction.package_name) else {
+                continue;
+            };
+            expanded_facts = expanded_facts
+                .checked_add(coordinates.len())
+                .ok_or(DiscoveryStoreError::Bounds)?;
+            if batch.facts.len().saturating_add(expanded_facts) > MAX_DISCOVERY_PAGE_ITEMS {
+                return Err(DiscoveryStoreError::Bounds);
+            }
+            let event_bytes = serialized_value_len_bounded(&retraction.source_event)?;
+            let event_time_bytes = serialized_value_len_bounded(&retraction.source_event_time)?;
+            for coordinate in coordinates {
+                let previous = source
+                    .facts
+                    .get(coordinate)
+                    .ok_or(DiscoveryStoreError::Corrupt)?;
+                let previous_fact_bytes = serialized_value_len_bounded(previous)?;
+                // The expanded fact preserves all bounded metadata from its
+                // prior selected version. The new event and exact source-time
+                // spelling replace old fields; counting both complete values
+                // and a fixed JSON/array margin is deliberately conservative.
+                let addition = previous_fact_bytes
+                    .checked_add(event_bytes)
+                    .and_then(|bytes| bytes.checked_add(event_time_bytes))
+                    .and_then(|bytes| bytes.checked_add(128))
+                    .ok_or(DiscoveryStoreError::Bounds)?;
+                expanded_upper_bound = expanded_upper_bound
+                    .checked_add(addition)
+                    .ok_or(DiscoveryStoreError::Bounds)?;
+                if expanded_upper_bound > MAX_FRAME_BYTES {
+                    return Err(DiscoveryStoreError::Bounds);
+                }
+            }
+        }
+        // `batch` remains live while the materialized copy is built and later
+        // written. Both encoded-size upper bounds are checked before either
+        // the batch clone or any retained metadata clone is allocated.
+        let aggregate_upper_bound = input_bytes
+            .checked_add(expanded_upper_bound)
+            .ok_or(DiscoveryStoreError::Bounds)?;
+        if aggregate_upper_bound > MAX_FRAME_BYTES.saturating_mul(2) {
+            return Err(DiscoveryStoreError::Bounds);
+        }
+        Ok(())
     }
 
     fn record_search_changes(
@@ -1904,20 +2030,25 @@ impl DiscoveryStore {
     fn validate_fact_transition(
         &self,
         batch: &DiscoveryBatch,
-    ) -> Result<usize, DiscoveryStoreError> {
+    ) -> Result<PreparedDiscoveryApply, DiscoveryStoreError> {
+        let next_sequence = batch
+            .expected_base_sequence
+            .checked_add(1)
+            .ok_or(DiscoveryStoreError::Bounds)?;
         let existing = self.sources.get(&batch.source);
-        let mut pending = BTreeMap::<String, DiscoveryFact>::new();
-        for fact in &batch.facts {
-            let key = fact.coordinate.as_str().to_owned();
+        let mut pending = BTreeMap::<&str, (usize, &DiscoveryFact)>::new();
+        for (fact_index, fact) in batch.facts.iter().enumerate() {
+            let key = fact.coordinate.as_str();
             let previous = pending
-                .get(&key)
-                .or_else(|| existing.and_then(|state| state.facts.get(&key)));
-            let accept = match previous {
-                Some(previous) => is_newer(previous, fact)?,
-                None => true,
+                .get(key)
+                .map(|(_, fact)| *fact)
+                .or_else(|| existing.and_then(|state| state.facts.get(key)));
+            let transition = match previous {
+                Some(previous) => classify_fact_transition(previous, fact)?,
+                None => DiscoveryFactTransition::Newer,
             };
-            if accept {
-                pending.insert(key, fact.clone());
+            if transition != DiscoveryFactTransition::Stale {
+                pending.insert(key, (fact_index, fact));
             }
         }
         let new_coordinates = pending
@@ -1931,17 +2062,48 @@ impl DiscoveryStore {
         {
             return Err(DiscoveryStoreError::Bounds);
         }
-        let search_updates = pending
+        let mut actions = Vec::with_capacity(pending.len());
+        for (key, (fact_index, incoming)) in pending {
+            let previous = existing.and_then(|state| state.facts.get(key));
+            let transition = match previous {
+                Some(previous) => classify_fact_transition(previous, incoming)?,
+                None => DiscoveryFactTransition::Newer,
+            };
+            if transition == DiscoveryFactTransition::Stale {
+                continue;
+            }
+            let search_document = if previous.is_none_or(|previous| {
+                !same_search_projection(&previous.metadata, &incoming.metadata)
+            }) {
+                Some(search_document(batch.source, incoming)?)
+            } else {
+                None
+            };
+            let package_name = if previous.is_none() {
+                Some(discovered_package_qualified_name(incoming)?)
+            } else {
+                None
+            };
+            actions.push(PreparedFactAction {
+                fact_index,
+                key: key.to_owned(),
+                transition,
+                package_name,
+                package_release_key: previous.is_none().then(|| key.to_owned()),
+                search_document,
+            });
+        }
+        actions.sort_by_key(|action| action.fact_index);
+        let search_update_count = actions
             .iter()
-            .filter(|(key, incoming)| {
-                existing
-                    .and_then(|state| state.facts.get(*key))
-                    .is_none_or(|previous| {
-                        !same_search_projection(&previous.metadata, &incoming.metadata)
-                    })
-            })
+            .filter(|action| action.search_document.is_some())
             .count();
-        Ok(search_updates)
+        Ok(PreparedDiscoveryApply {
+            next_sequence,
+            actions,
+            search_update_count,
+            search_documents: Vec::with_capacity(search_update_count),
+        })
     }
 }
 
@@ -1958,10 +2120,95 @@ struct JournalWriteTransaction<'a> {
     batch: &'a DiscoveryBatch,
 }
 
-fn is_newer(
+struct FramePayloadWriter<'a> {
+    journal: &'a mut File,
+    hasher: backend_engine::blake3::Hasher,
+}
+
+struct BoundedCountingWriter {
+    bytes: usize,
+    limit: usize,
+}
+
+impl Write for BoundedCountingWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let Some(bytes) = self.bytes.checked_add(buffer.len()) else {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "discovery serialization bound",
+            ));
+        };
+        if bytes > self.limit {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "discovery serialization bound",
+            ));
+        }
+        self.bytes = bytes;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialized_value_len_bounded<T: Serialize>(value: &T) -> Result<usize, DiscoveryStoreError> {
+    let mut writer = BoundedCountingWriter {
+        bytes: 0,
+        limit: MAX_FRAME_BYTES,
+    };
+    match serde_json::to_writer(&mut writer, value) {
+        Ok(()) => Ok(writer.bytes),
+        Err(error) if error.io_error_kind() == Some(io::ErrorKind::WriteZero) => {
+            Err(DiscoveryStoreError::Bounds)
+        }
+        Err(_) => Err(DiscoveryStoreError::Decode),
+    }
+}
+
+impl<'a> FramePayloadWriter<'a> {
+    fn new(journal: &'a mut File) -> Self {
+        let mut hasher = backend_engine::blake3::Hasher::new();
+        hasher.update(b"backend.registry.discovery.transaction.v2\0");
+        Self { journal, hasher }
+    }
+
+    fn finish(self) -> [u8; 32] {
+        *self.hasher.finalize().as_bytes()
+    }
+}
+
+impl Write for FramePayloadWriter<'_> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.journal.write_all(buffer)?;
+        self.hasher.update(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.journal.flush()
+    }
+}
+
+fn map_json_write_error(error: serde_json::Error) -> DiscoveryStoreError {
+    match error.io_error_kind() {
+        Some(kind) => DiscoveryStoreError::Io(io::Error::new(kind, error)),
+        None => DiscoveryStoreError::Decode,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DiscoveryFactTransition {
+    Identical,
+    Stale,
+    Newer,
+}
+
+fn classify_fact_transition(
     previous: &DiscoveryFact,
     incoming: &DiscoveryFact,
-) -> Result<bool, DiscoveryStoreError> {
+) -> Result<DiscoveryFactTransition, DiscoveryStoreError> {
     let same_content = || {
         previous.source == incoming.source
             && previous.coordinate == incoming.coordinate
@@ -1972,10 +2219,14 @@ fn is_newer(
             && previous.metadata == incoming.metadata
     };
     match (&previous.source_event, &incoming.source_event) {
-        (
-            DiscoverySourceEvent::Unordered | DiscoverySourceEvent::Snapshot,
-            DiscoverySourceEvent::Unordered | DiscoverySourceEvent::Snapshot,
-        ) => Ok(true),
+        (DiscoverySourceEvent::Snapshot, DiscoverySourceEvent::NpmChange { .. })
+        | (DiscoverySourceEvent::Snapshot, DiscoverySourceEvent::NugetCatalog { .. }) => {
+            Ok(DiscoveryFactTransition::Newer)
+        }
+        (DiscoverySourceEvent::NpmChange { .. }, DiscoverySourceEvent::Snapshot)
+        | (DiscoverySourceEvent::NugetCatalog { .. }, DiscoverySourceEvent::Snapshot) => {
+            Err(DiscoveryStoreError::Conflict)
+        }
         (
             DiscoverySourceEvent::NugetCatalog {
                 timestamp: old_timestamp,
@@ -1990,11 +2241,11 @@ fn is_newer(
                 if old_timestamp != new_timestamp || !same_content() {
                     return Err(DiscoveryStoreError::Conflict);
                 }
-                return Ok(false);
+                return Ok(DiscoveryFactTransition::Identical);
             }
             match new_timestamp.cmp(old_timestamp) {
-                std::cmp::Ordering::Greater => Ok(true),
-                std::cmp::Ordering::Less => Ok(false),
+                std::cmp::Ordering::Greater => Ok(DiscoveryFactTransition::Newer),
+                std::cmp::Ordering::Less => Ok(DiscoveryFactTransition::Stale),
                 std::cmp::Ordering::Equal => Err(DiscoveryStoreError::Conflict),
             }
         }
@@ -2008,15 +2259,30 @@ fn is_newer(
                 ..
             },
         ) => match new_sequence.cmp(old_sequence) {
-            std::cmp::Ordering::Greater => Ok(true),
-            std::cmp::Ordering::Less => Ok(false),
-            std::cmp::Ordering::Equal if same_content() => Ok(false),
+            std::cmp::Ordering::Greater => Ok(DiscoveryFactTransition::Newer),
+            std::cmp::Ordering::Less => Ok(DiscoveryFactTransition::Stale),
+            std::cmp::Ordering::Equal if same_content() => Ok(DiscoveryFactTransition::Identical),
             std::cmp::Ordering::Equal => Err(DiscoveryStoreError::Conflict),
         },
+        (
+            DiscoverySourceEvent::Unordered | DiscoverySourceEvent::Snapshot,
+            DiscoverySourceEvent::Unordered | DiscoverySourceEvent::Snapshot,
+        ) => {
+            if same_content() {
+                Ok(DiscoveryFactTransition::Identical)
+            } else if previous.source.ecosystem() == backend_engine::RegistryEcosystem::Npm
+                || previous.source.ecosystem() == backend_engine::RegistryEcosystem::Nuget
+            {
+                Err(DiscoveryStoreError::Conflict)
+            } else {
+                Ok(DiscoveryFactTransition::Newer)
+            }
+        }
         _ => Err(DiscoveryStoreError::Conflict),
     }
 }
 
+#[cfg(test)]
 fn encode_frame(payload: &[u8]) -> Result<Vec<u8>, DiscoveryStoreError> {
     let length = u32::try_from(payload.len()).map_err(|_| DiscoveryStoreError::Bounds)?;
     let mut frame = Vec::with_capacity(14 + payload.len() + 32);
@@ -2030,7 +2296,7 @@ fn encode_frame(payload: &[u8]) -> Result<Vec<u8>, DiscoveryStoreError> {
 
 fn frame_checksum(payload: &[u8]) -> [u8; 32] {
     let mut hasher = backend_engine::blake3::Hasher::new();
-    hasher.update(b"backend.registry.discovery.transaction.v1\0");
+    hasher.update(b"backend.registry.discovery.transaction.v2\0");
     hasher.update(payload);
     *hasher.finalize().as_bytes()
 }
@@ -2108,7 +2374,7 @@ mod tests {
                 standing: status,
                 observed_at: observed,
                 source_event: DiscoverySourceEvent::NugetCatalog {
-                    timestamp: DiscoveryTimestamp::parse_rfc3339(event_time)
+                    timestamp: DiscoveryTimestamp::parse_nuget_catalog_timestamp(event_time)
                         .expect("NuGet event timestamp"),
                     commit_id: format!("test-{event_time}"),
                 },
@@ -2117,6 +2383,57 @@ mod tests {
                 metadata: DiscoveryMetadata::default(),
             }],
             package_retractions: Vec::new(),
+        }
+    }
+
+    fn fence_batch(
+        mut batch: DiscoveryBatch,
+        expected_base_sequence: u64,
+        previous_cursor: DiscoveryCursor,
+        next_cursor: DiscoveryCursor,
+        observed_at: u64,
+    ) -> DiscoveryBatch {
+        let observed_at = DiscoveryObservedAt::from_unix_millis(observed_at);
+        batch.expected_base_sequence = expected_base_sequence;
+        batch.previous_cursor = previous_cursor;
+        batch.next_cursor = next_cursor.clone();
+        batch.source_high_watermark = next_cursor;
+        batch.caught_up = true;
+        batch.observed_at = observed_at;
+        for fact in &mut batch.facts {
+            fact.observed_at = observed_at;
+        }
+        batch
+    }
+
+    fn event_fact(
+        ecosystem: RegistryEcosystem,
+        event: DiscoverySourceEvent,
+        source_event_time: Option<&str>,
+        standing: DiscoveryStanding,
+    ) -> DiscoveryFact {
+        let source = DiscoverySourceIdentity::from_parts(ecosystem, [31; 32]);
+        let package_type = match ecosystem {
+            RegistryEcosystem::Npm => "npm",
+            RegistryEcosystem::Nuget => "nuget",
+            RegistryEcosystem::Cargo => "cargo",
+            RegistryEcosystem::Pypi => "pypi",
+            RegistryEcosystem::Golang => "golang",
+            RegistryEcosystem::Maven => "maven",
+            RegistryEcosystem::Generic => panic!("not a registry feed ecosystem"),
+        };
+        DiscoveryFact {
+            source,
+            coordinate: backend_engine::ProductPackageCoordinate::parse(format!(
+                "pkg:{package_type}/example@1.0.0"
+            ))
+            .expect("coordinate"),
+            standing,
+            observed_at: DiscoveryObservedAt::from_unix_millis(10),
+            source_event: event,
+            source_event_time: source_event_time.map(str::to_owned),
+            proof: [7; 32],
+            metadata: DiscoveryMetadata::default(),
         }
     }
 
@@ -2264,6 +2581,359 @@ mod tests {
         assert_eq!(store.search_revision(), 1);
         drop(store);
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn same_coordinate_events_fold_against_the_provisional_selected_head() {
+        let path = temp_path("provisional-head-fold");
+        let cursor_one = cursor("position-1");
+        let cursor_two = cursor("position-2");
+        let initial = batch(
+            DiscoveryCursor::default(),
+            cursor_one.clone(),
+            "1.0.0",
+            DiscoveryStanding::Published,
+            "2026-09-01T00:00:00Z",
+        );
+        let source = initial.source;
+        let mut store = DiscoveryStore::open(path.clone()).expect("open");
+        store.commit(initial).expect("commit initial head");
+        let initial_search_revision = store.search_revision();
+
+        let mut newest = batch(
+            cursor_one.clone(),
+            cursor_two.clone(),
+            "1.0.0",
+            DiscoveryStanding::Yanked,
+            "2026-09-03T00:00:00Z",
+        );
+        newest.expected_base_sequence = 1;
+        newest.facts[0].metadata.aliases = DiscoveryFacet::Known(vec!["newest".to_owned()]);
+        let mut older = batch(
+            cursor_one,
+            cursor_two.clone(),
+            "1.0.0",
+            DiscoveryStanding::Published,
+            "2026-09-02T00:00:00Z",
+        );
+        older.facts[0].metadata.aliases = DiscoveryFacet::Known(vec!["older".to_owned()]);
+        newest.facts.extend(older.facts);
+
+        store
+            .commit(newest)
+            .expect("fold source events in one CAS batch");
+        let selected = store
+            .fact(source, "pkg:nuget/Widget@1.0.0")
+            .expect("selected head");
+        assert_eq!(selected.standing, DiscoveryStanding::Yanked);
+        assert_eq!(
+            selected.source_event_time.as_deref(),
+            Some("2026-09-03T00:00:00Z")
+        );
+        assert_eq!(
+            selected.metadata.aliases,
+            DiscoveryFacet::Known(vec!["newest".to_owned()])
+        );
+        assert_eq!(store.search_revision(), initial_search_revision + 1);
+        assert_eq!(store.sequence(source), Some(2));
+
+        drop(store);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_journal_schema_is_refused_with_its_version_and_left_intact() {
+        let path = temp_path("unsupported-schema");
+        let legacy_batch = batch(
+            DiscoveryCursor::default(),
+            cursor("legacy-position"),
+            "1.0.0",
+            DiscoveryStanding::Published,
+            "2026-09-01T00:00:00Z",
+        );
+        let mut payload = Vec::new();
+        serde_json::to_writer(
+            &mut payload,
+            &JournalWriteTransaction {
+                version: 1,
+                batch: &legacy_batch,
+            },
+        )
+        .expect("serialize valid legacy-version transaction shape");
+        let mut hasher = backend_engine::blake3::Hasher::new();
+        hasher.update(b"backend.registry.discovery.transaction.v1\0");
+        hasher.update(&payload);
+        let checksum = *hasher.finalize().as_bytes();
+        let mut frame = Vec::new();
+        frame.extend_from_slice(JOURNAL_MAGIC);
+        frame.extend_from_slice(&1_u16.to_be_bytes());
+        frame.extend_from_slice(
+            &u32::try_from(payload.len())
+                .expect("small frame")
+                .to_be_bytes(),
+        );
+        frame.extend_from_slice(&payload);
+        frame.extend_from_slice(&checksum);
+        fs::write(&path, &frame).expect("write valid legacy-format frame");
+
+        assert!(matches!(
+            DiscoveryStore::open(path.clone()),
+            Err(DiscoveryStoreError::UnsupportedVersion(1))
+        ));
+        assert_eq!(
+            fs::metadata(&path).expect("legacy file remains").len(),
+            u64::try_from(frame.len()).expect("file length")
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejected_search_projection_does_not_leave_a_durable_commit() {
+        let path = temp_path("projection-preflight");
+        let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://index.crates.io")
+            .expect("admitted Cargo source");
+        let source = discovery_source_identity(&endpoint);
+        let mut store = DiscoveryStore::open(path.clone()).expect("open journal");
+        let before = store.journal.metadata().expect("journal metadata").len();
+        let observed_at = DiscoveryObservedAt::from_unix_millis(10);
+        let batch = DiscoveryBatch {
+            source,
+            expected_base_sequence: 0,
+            previous_cursor: DiscoveryCursor::default(),
+            next_cursor: DiscoveryCursor::new(b"cursor-1".to_vec()).expect("next cursor"),
+            source_high_watermark: DiscoveryCursor::new(b"cursor-1".to_vec())
+                .expect("high watermark"),
+            caught_up: true,
+            observed_at,
+            completeness: DiscoveryCompleteness::CompleteThroughCursor,
+            facts: vec![DiscoveryFact {
+                source,
+                coordinate: backend_engine::registry::PackageCoordinate::parse(
+                    "pkg:cargo/example%00name@1.0.0",
+                )
+                .expect("semantically parsed coordinate"),
+                standing: DiscoveryStanding::Published,
+                observed_at,
+                source_event: DiscoverySourceEvent::Unordered,
+                source_event_time: None,
+                proof: [3; 32],
+                metadata: DiscoveryMetadata::default(),
+            }],
+            package_retractions: Vec::new(),
+        };
+
+        assert!(matches!(
+            store.commit(batch),
+            Err(DiscoveryStoreError::Decode)
+        ));
+        assert_eq!(
+            store.journal.metadata().expect("journal metadata").len(),
+            before,
+            "all projection errors must be found before fsync"
+        );
+        assert_eq!(store.sequence(source), None);
+        assert_eq!(store.facts().count(), 0);
+
+        drop(store);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn same_typed_event_key_with_changed_fact_content_conflicts_atomically() {
+        for mutation in ["standing", "metadata"] {
+            let path = temp_path("same-event-conflict");
+            let cursor_one = cursor("position-1");
+            let cursor_two = cursor("position-2");
+            let first = batch(
+                DiscoveryCursor::default(),
+                cursor_one.clone(),
+                "1.0.0",
+                DiscoveryStanding::Published,
+                "2026-09-01T00:00:00Z",
+            );
+            let source = first.source;
+            let mut store = DiscoveryStore::open(path.clone()).expect("open");
+            store.commit(first).expect("commit first event");
+
+            let mut changed = fence_batch(
+                batch(
+                    cursor_one.clone(),
+                    cursor_two,
+                    "1.0.0",
+                    DiscoveryStanding::Published,
+                    "2026-09-01T00:00:00Z",
+                ),
+                1,
+                cursor_one.clone(),
+                cursor("position-2"),
+                200,
+            );
+            if mutation == "standing" {
+                changed.facts[0].standing = DiscoveryStanding::Yanked;
+            } else {
+                changed.facts[0].metadata.description =
+                    DiscoveryFacet::Known("changed on same event".to_owned());
+            }
+            assert!(matches!(
+                store.commit(changed),
+                Err(DiscoveryStoreError::Conflict)
+            ));
+            assert_eq!(store.sequence(source), Some(1));
+            assert_eq!(store.cursor(source), cursor_one);
+            assert_eq!(
+                store
+                    .fact(source, "pkg:nuget/Widget@1.0.0")
+                    .expect("original selected fact")
+                    .standing,
+                DiscoveryStanding::Published
+            );
+            assert_eq!(store.search_revision(), 1);
+            drop(store);
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn identical_events_refresh_by_local_sequence_while_stale_events_do_not() {
+        let path = temp_path("event-freshness");
+        let cursor_one = cursor("position-1");
+        let cursor_two = cursor("position-2");
+        let cursor_three = cursor("position-3");
+        let first = batch(
+            DiscoveryCursor::default(),
+            cursor_one.clone(),
+            "1.0.0",
+            DiscoveryStanding::Published,
+            "2026-09-02T00:00:00Z",
+        );
+        let source = first.source;
+        let mut store = DiscoveryStore::open(path.clone()).expect("open");
+        store.commit(first).expect("commit first event");
+        assert_eq!(store.search_revision(), 1);
+
+        let identical = fence_batch(
+            batch(
+                cursor_one.clone(),
+                cursor_two.clone(),
+                "1.0.0",
+                DiscoveryStanding::Published,
+                "2026-09-02T00:00:00Z",
+            ),
+            1,
+            cursor_one.clone(),
+            cursor_two.clone(),
+            50,
+        );
+        store.commit(identical).expect("identical event refresh");
+        assert_eq!(store.sequence(source), Some(2));
+        assert_eq!(
+            store
+                .fact(source, "pkg:nuget/Widget@1.0.0")
+                .expect("selected fact")
+                .observed_at
+                .as_unix_millis(),
+            50,
+            "accepted identical content refreshes even when wall time regresses"
+        );
+        assert_eq!(
+            store.search_revision(),
+            1,
+            "freshness does not rewrite search"
+        );
+
+        let stale = fence_batch(
+            batch(
+                cursor_two.clone(),
+                cursor_three.clone(),
+                "1.0.0",
+                DiscoveryStanding::Yanked,
+                "2026-09-01T00:00:00Z",
+            ),
+            2,
+            cursor_two,
+            cursor_three,
+            75,
+        );
+        store
+            .commit(stale)
+            .expect("stale event still advances source progress");
+        assert_eq!(store.sequence(source), Some(3));
+        assert_eq!(
+            store
+                .fact(source, "pkg:nuget/Widget@1.0.0")
+                .expect("selected fact")
+                .observed_at
+                .as_unix_millis(),
+            50,
+            "stale source history cannot refresh selected-head freshness"
+        );
+        assert_eq!(
+            store
+                .fact(source, "pkg:nuget/Widget@1.0.0")
+                .expect("selected fact")
+                .standing,
+            DiscoveryStanding::Published
+        );
+        assert_eq!(store.search_revision(), 1);
+        drop(store);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn snapshot_baselines_and_unsequenced_snapshot_updates_follow_source_contract() {
+        let npm_snapshot = event_fact(
+            RegistryEcosystem::Npm,
+            DiscoverySourceEvent::Snapshot,
+            None,
+            DiscoveryStanding::Published,
+        );
+        let npm_event = event_fact(
+            RegistryEcosystem::Npm,
+            DiscoverySourceEvent::NpmChange {
+                sequence: 1,
+                revision: Some("1-rev".to_owned()),
+                change_proof: [8; 32],
+            },
+            Some("00000000000000000001"),
+            DiscoveryStanding::Published,
+        );
+        assert_eq!(
+            classify_fact_transition(&npm_snapshot, &npm_event),
+            Ok(DiscoveryFactTransition::Newer),
+            "a typed feed event may replace a local snapshot baseline under CAS"
+        );
+        assert_eq!(
+            classify_fact_transition(&npm_event, &npm_snapshot),
+            Err(DiscoveryStoreError::Conflict),
+            "typed provenance may never be downgraded to a snapshot"
+        );
+        let mut changed_snapshot = npm_snapshot.clone();
+        changed_snapshot.metadata.description =
+            DiscoveryFacet::Known("changed snapshot".to_owned());
+        assert_eq!(
+            classify_fact_transition(&npm_snapshot, &changed_snapshot),
+            Err(DiscoveryStoreError::Conflict),
+            "npm snapshots are baseline-only, not an unordered update stream"
+        );
+
+        let cargo_snapshot = event_fact(
+            RegistryEcosystem::Cargo,
+            DiscoverySourceEvent::Snapshot,
+            None,
+            DiscoveryStanding::Published,
+        );
+        let mut changed_cargo_snapshot = cargo_snapshot.clone();
+        changed_cargo_snapshot.metadata.description =
+            DiscoveryFacet::Known("new snapshot body".to_owned());
+        assert_eq!(
+            classify_fact_transition(&cargo_snapshot, &changed_cargo_snapshot),
+            Ok(DiscoveryFactTransition::Newer),
+            "a genuine unsequenced snapshot source advances only under its accepted local CAS"
+        );
+        assert_eq!(
+            classify_fact_transition(&cargo_snapshot, &cargo_snapshot),
+            Ok(DiscoveryFactTransition::Identical)
+        );
     }
 
     #[test]
