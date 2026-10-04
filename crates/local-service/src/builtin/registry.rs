@@ -3411,6 +3411,14 @@ mod tests {
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
+    struct ScratchDirectory(PathBuf);
+
+    impl Drop for ScratchDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     fn scratch() -> PathBuf {
         for _ in 0..64 {
             let id = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -3536,9 +3544,10 @@ mod tests {
     }
 
     #[test]
-    fn advisory_304_without_a_sent_validator_cannot_refresh_prior_facts() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind local authority");
-        let endpoint = format!("http://{}/advisories.json", listener.local_addr().unwrap());
+    fn advisory_304_without_a_sent_validator_cannot_refresh_prior_facts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let endpoint = format!("http://{}/advisories.json", listener.local_addr()?);
         let body = br#"{"schema_version":"1.3.1","id":"OSV-NO-VALIDATOR-1","modified":"2026-01-02T00:00:00Z","affected":[{"package":{"ecosystem":"Cargo","name":"demo"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]}]}"#
             .to_vec();
         let server = thread::spawn(move || {
@@ -3580,22 +3589,26 @@ mod tests {
         let scope = Some(backend_engine::advisory::OsvFeedScope::All);
         let mut authority = backend_engine::advisory::AdvisoryAuthority::new(60_000);
         authority.configure_sources([source.source]);
-        let directory = scratch();
-        let first = refresh_authority_source(&authority, &source, scope, 1024 * 1024, &directory)
+        let directory = ScratchDirectory(scratch());
+        let first = refresh_authority_source(&authority, &source, scope, 1024 * 1024, &directory.0)
             .expect("initial body without validators");
         assert_eq!(first.freshness.etag, None);
         assert_eq!(first.freshness.last_modified, None);
         authority.apply(first).expect("select initial feed");
-        assert_eq!(authority.frontier(source.source).unwrap().etag, None);
+        let selected_frontier = authority
+            .frontier(source.source)
+            .ok_or_else(|| std::io::Error::other("initial feed retains its selected frontier"))?;
+        assert_eq!(selected_frontier.etag, None);
 
-        let error = refresh_authority_source(&authority, &source, scope, 1024 * 1024, &directory)
+        let error = refresh_authority_source(&authority, &source, scope, 1024 * 1024, &directory.0)
             .expect_err("unconditional 304 cannot refresh old facts");
         assert_eq!(
             error,
             "advisory source returned 304 without a conditional validator"
         );
         server.join().expect("authority server thread");
-        fs::remove_dir_all(directory).expect("remove fixture");
+        fs::remove_dir_all(&directory.0)?;
+        Ok(())
     }
 
     #[test]
@@ -5083,11 +5096,12 @@ mod tests {
     }
 
     #[test]
-    fn cargo_archive_gets_a_resolver_preserving_workspace_boundary() {
+    fn cargo_archive_gets_a_resolver_preserving_workspace_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
         const SERDE_BUILD_SCRIPT: &[u8] = include_bytes!(
             "../../../../frontends/rust/tests/fixtures/serde-1.0.228-build-script.txt"
         );
-        let root = scratch();
+        let root = ScratchDirectory(scratch());
         let coordinate = PackageCoordinate::parse("pkg:cargo/serde@1.0.228").expect("coordinate");
         let manifest = b"[package]\nname = \"serde\"\nversion = \"1.0.228\"\nedition = \"2021\"\nbuild = \"build.rs\"\n";
         let archive = tar_files(&[
@@ -5095,40 +5109,53 @@ mod tests {
             ("serde-1.0.228/build.rs", SERDE_BUILD_SCRIPT),
             ("serde-1.0.228/src/lib.rs", b"pub fn fixture() {}\n"),
         ]);
-        let staged = stage_archive(&coordinate, &archive, &root).expect("stage serde archive");
+        let staged = stage_archive(&coordinate, &archive, &root.0)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
 
+        let package_name = staged
+            .path()
+            .file_name()
+            .ok_or_else(|| std::io::Error::other("staged Cargo package path has a file name"))?;
         assert_eq!(
-            staged.path().file_name().unwrap().to_string_lossy(),
+            package_name.to_string_lossy(),
             "serde-1.0.228"
         );
         assert_eq!(
-            fs::read(staged.path().join("Cargo.toml")).expect("package manifest"),
+            fs::read(staged.path().join("Cargo.toml"))?,
             manifest
         );
         assert_eq!(
-            fs::read(staged.path().join("build.rs")).expect("serde build script"),
+            fs::read(staged.path().join("build.rs"))?,
             SERDE_BUILD_SCRIPT
         );
-        let workspace_manifest =
-            fs::read_to_string(staged.path().parent().unwrap().join("Cargo.toml"))
-                .expect("generated workspace manifest");
+        let workspace_root = staged
+            .path()
+            .parent()
+            .ok_or_else(|| std::io::Error::other("staged Cargo package has a workspace parent"))?;
+        let workspace_manifest = fs::read_to_string(workspace_root.join("Cargo.toml"))?;
         assert!(workspace_manifest.starts_with(GENERATED_CARGO_WORKSPACE_HEADER));
         let workspace: toml::Value = workspace_manifest
             .strip_prefix(GENERATED_CARGO_WORKSPACE_HEADER)
-            .expect("generated marker")
+            .ok_or_else(|| std::io::Error::other("generated workspace header is present"))?
             .parse()
-            .expect("workspace TOML");
+            ?;
+        let first_member = workspace["workspace"]["members"]
+            .as_array()
+            .and_then(|members| members.first())
+            .and_then(toml::Value::as_str);
         assert_eq!(
-            workspace["workspace"]["members"].as_array().unwrap()[0].as_str(),
-            Some("serde-1.0.228")
+            first_member,
+            Some("serde-1.0.228"),
+            "the generated workspace names the staged package as its first member"
         );
         assert_eq!(workspace["workspace"]["resolver"].as_str(), Some("2"));
-        let _ = fs::remove_dir_all(root);
+        Ok(())
     }
 
     #[test]
-    fn flat_cargo_archive_is_wrapped_without_overwriting_its_manifest() {
-        let root = scratch();
+    fn flat_cargo_archive_is_wrapped_without_overwriting_its_manifest()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = ScratchDirectory(scratch());
         let coordinate = PackageCoordinate::parse("pkg:cargo/flat-demo@1.0.0").expect("coordinate");
         let manifest =
             b"[package]\nname = \"flat-demo\"\nversion = \"1.0.0\"\nedition = \"2018\"\n";
@@ -5137,18 +5164,25 @@ mod tests {
             ("build.rs", b"fn main() {}\n"),
             ("src/lib.rs", b"pub fn fixture() {}\n"),
         ]);
-        let staged = stage_archive(&coordinate, &archive, &root).expect("stage flat crate");
+        let staged = stage_archive(&coordinate, &archive, &root.0)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
         assert_eq!(
-            fs::read(staged.path().join("Cargo.toml")).expect("package manifest"),
+            fs::read(staged.path().join("Cargo.toml"))?,
             manifest
         );
-        let member = staged.path().file_name().unwrap().to_string_lossy();
+        let member = staged
+            .path()
+            .file_name()
+            .ok_or_else(|| std::io::Error::other("staged Cargo wrapper path has a file name"))?
+            .to_string_lossy();
         assert!(member.starts_with("__nudox_registry_package_"));
-        let workspace_manifest =
-            fs::read_to_string(staged.path().parent().unwrap().join("Cargo.toml"))
-                .expect("generated workspace manifest");
+        let workspace_root = staged
+            .path()
+            .parent()
+            .ok_or_else(|| std::io::Error::other("staged Cargo wrapper has a workspace parent"))?;
+        let workspace_manifest = fs::read_to_string(workspace_root.join("Cargo.toml"))?;
         assert!(workspace_manifest.contains("resolver = \"1\""));
-        let _ = fs::remove_dir_all(root);
+        Ok(())
     }
 
     #[test]
@@ -5165,8 +5199,9 @@ mod tests {
     }
 
     #[test]
-    fn explicit_package_resolver_overrides_edition_default() {
-        let root = scratch();
+    fn explicit_package_resolver_overrides_edition_default()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = ScratchDirectory(scratch());
         let coordinate =
             PackageCoordinate::parse("pkg:cargo/resolver-demo@1.0.0").expect("coordinate");
         let archive = tar_files(&[
@@ -5176,12 +5211,15 @@ mod tests {
             ),
             ("src/lib.rs", b"pub fn fixture() {}\n"),
         ]);
-        let staged = stage_archive(&coordinate, &archive, &root).expect("stage explicit resolver");
-        let workspace_manifest =
-            fs::read_to_string(staged.path().parent().unwrap().join("Cargo.toml"))
-                .expect("generated workspace manifest");
+        let staged = stage_archive(&coordinate, &archive, &root.0)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let workspace_root = staged
+            .path()
+            .parent()
+            .ok_or_else(|| std::io::Error::other("staged Cargo package has a workspace parent"))?;
+        let workspace_manifest = fs::read_to_string(workspace_root.join("Cargo.toml"))?;
         assert!(workspace_manifest.contains("resolver = \"2\""));
-        let _ = fs::remove_dir_all(root);
+        Ok(())
     }
 
     #[test]

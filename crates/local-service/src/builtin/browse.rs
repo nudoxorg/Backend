@@ -6644,7 +6644,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn tool_identity_detects_same_size_same_mtime_executable_replacement() {
+    fn tool_identity_detects_same_size_same_mtime_executable_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
         struct Scratch(PathBuf);
         impl Drop for Scratch {
             fn drop(&mut self) {
@@ -6677,10 +6678,7 @@ mod tests {
         let before_metadata = std::fs::metadata(&tool).expect("initial metadata");
         let replacement_metadata = std::fs::metadata(&replacement).expect("replacement metadata");
         assert_eq!(before_metadata.len(), replacement_metadata.len());
-        assert_eq!(
-            before_metadata.modified().unwrap(),
-            replacement_metadata.modified().unwrap()
-        );
+        assert_eq!(before_metadata.modified()?, replacement_metadata.modified()?);
 
         let canonical = tool.canonicalize().expect("canonical fixture tool");
         let forged_reuse = CargoToolWitnessReuse {
@@ -6704,23 +6702,25 @@ mod tests {
             before.content_digest, after.content_digest,
             "executable content, not stat metadata, identifies the tool"
         );
+        Ok(())
     }
 
     #[test]
-    fn cargo_tool_config_preserves_selected_compiler_and_rejects_unmeasured_env_overrides() {
+    fn cargo_tool_config_preserves_selected_compiler_and_rejects_unmeasured_env_overrides()
+    -> Result<(), String> {
         let build = "[build]\nrustc = '/opt/custom/rustc'\nrustc-wrapper = 'sccache'\nrustc-workspace-wrapper = 'sccache'\n"
             .parse::<toml::Value>()
             .expect("valid Cargo config");
         assert_eq!(
-            cargo_config_build_value(&build, "rustc").unwrap(),
+            cargo_config_build_value(&build, "rustc")?,
             Some("/opt/custom/rustc")
         );
         assert_eq!(
-            cargo_config_build_value(&build, "rustc-wrapper").unwrap(),
+            cargo_config_build_value(&build, "rustc-wrapper")?,
             Some("sccache")
         );
         assert_eq!(
-            cargo_config_build_value(&build, "rustc-workspace-wrapper").unwrap(),
+            cargo_config_build_value(&build, "rustc-workspace-wrapper")?,
             Some("sccache")
         );
         assert!(!cargo_config_has_env_tool_override(&build));
@@ -6742,12 +6742,17 @@ mod tests {
         let ordinary = "[build]\ntarget = 'x86_64-unknown-linux-gnu'\n"
             .parse::<toml::Value>()
             .expect("ordinary config");
-        assert_eq!(cargo_config_build_value(&ordinary, "rustc").unwrap(), None);
+        assert_eq!(
+            cargo_config_build_value(&ordinary, "rustc")?,
+            None
+        );
         assert!(!cargo_config_has_env_tool_override(&ordinary));
+        Ok(())
     }
 
     #[test]
-    fn cargo_tool_environment_precedence_honors_empty_direct_wrapper_disable() {
+    fn cargo_tool_environment_precedence_honors_empty_direct_wrapper_disable()
+    -> Result<(), Box<dyn std::error::Error>> {
         struct Scratch(PathBuf);
         impl Drop for Scratch {
             fn drop(&mut self) {
@@ -6773,7 +6778,10 @@ mod tests {
         std::fs::write(workspace.join("nested/.cargo/bin/rustc"), b"wrong-origin")
             .expect("wrong-origin decoy tool");
         std::fs::write(workspace.join("nested/bin/rustc"), b"configured").expect("configured tool");
-        std::fs::create_dir_all(nested_config.parent().unwrap()).expect("nested config directory");
+        let config_directory = nested_config
+            .parent()
+            .ok_or_else(|| std::io::Error::other("nested Cargo config has a parent directory"))?;
+        std::fs::create_dir_all(config_directory).expect("nested config directory");
         // Cargo paths in a config file are relative to the parent directory
         // of the directory containing that config: two levels above this file.
         let config_document = "[build]\nrustc = 'bin/rustc'\n"
@@ -6847,6 +6855,7 @@ mod tests {
             )
             .is_err()
         );
+        Ok(())
     }
 
     #[test]
@@ -7019,7 +7028,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn nix_store_root_identity_ignores_unrelated_object_installation() {
+    fn nix_store_root_identity_ignores_unrelated_object_installation()
+    -> Result<(), Box<dyn std::error::Error>> {
         struct Scratch(PathBuf);
         impl Drop for Scratch {
             fn drop(&mut self) {
@@ -7041,9 +7051,7 @@ mod tests {
         std::fs::write(scratch.0.join("unrelated-object"), b"new object")
             .expect("unrelated store object");
         let after = std::fs::metadata(&scratch.0).expect("updated root metadata");
-        assert!(
-            before.len() != after.len() || before.modified().unwrap() != after.modified().unwrap()
-        );
+        assert!(before.len() != after.len() || before.modified()? != after.modified()?);
         let mut after_hash = blake3::Hasher::new();
         hash_unix_store_root_controls(&mut after_hash, &scratch.0, &after);
         assert_eq!(
@@ -7051,6 +7059,7 @@ mod tests {
             after_hash.finalize().as_bytes(),
             "unrelated store entries must not invalidate immutable tool content reuse"
         );
+        Ok(())
     }
 
     #[test]

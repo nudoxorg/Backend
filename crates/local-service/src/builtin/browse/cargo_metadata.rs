@@ -2645,10 +2645,10 @@ mod tests {
             |manifest, _limit| {
                 queries += 1;
                 let root = manifest.parent().expect("dependency manifest parent");
-                let id = format!(
-                    "{} 0.1.0 (fixture)",
-                    root.file_name().unwrap().to_string_lossy()
-                );
+                let root_name = root
+                    .file_name()
+                    .ok_or_else(|| "dependency root has a final path component".to_owned())?;
+                let id = format!("{} 0.1.0 (fixture)", root_name.to_string_lossy());
                 serde_json::to_vec(&serde_json::json!({
                     "workspace_root": root,
                     "workspace_members": [id.as_str()],

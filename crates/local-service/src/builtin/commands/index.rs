@@ -3992,7 +3992,8 @@ mod compiler_input_witness_tests {
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
     #[test]
-    fn a_recompile_without_staged_cargo_facts_clears_prior_alias_authority() {
+    fn a_recompile_without_staged_cargo_facts_clears_prior_alias_authority()
+    -> Result<(), &'static str> {
         use backend_library::{
             CargoPackageAliasCargoFactsV1, CargoPackageAliasCoverageV1,
             CargoPackageAliasEvidenceV1, CargoPackageAliasObservationV1,
@@ -4052,19 +4053,17 @@ mod compiler_input_witness_tests {
             .expect("new profile observation remains explicit");
         assert!(indexed.aliases().is_empty());
         assert!(!indexed.admits_for_profile(profile, "old-cargo-name"));
+        let observation = indexed
+            .observation(profile)
+            .ok_or("current profile observation remains explicit")?;
+        assert_eq!(observation.source_observation_revision(), [45; 32]);
         assert_eq!(
-            indexed
-                .observation(profile)
-                .unwrap()
-                .source_observation_revision(),
-            [45; 32]
-        );
-        assert_eq!(
-            indexed.observation(profile).unwrap().coverage(),
+            observation.coverage(),
             CargoPackageAliasCoverageV1::Unavailable(
                 CargoPackageAliasUnavailableV1::MetadataFactsUnavailable
             )
         );
+        Ok(())
     }
 
     fn scratch_directory() -> PathBuf {
