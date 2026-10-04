@@ -72,7 +72,7 @@ struct RootedGraphSession {
 
 impl RootedGraphSession {
     fn connect(
-        composition: &crate::host::registry::Composition,
+        composition: &crate::host::registry::ServingComposition,
         authority: ProducerAuthority,
     ) -> Result<Self, Arc<str>> {
         let session = Session::connect(&composition.endpoint).map_err(|error| {
@@ -90,7 +90,7 @@ impl RootedGraphSession {
     }
 
     fn confirm(&mut self, when: &str) -> Result<(), Arc<str>> {
-        if !crate::host::registry::composed().is_some_and(|current| {
+        if !crate::host::registry::serving_composed().is_some_and(|current| {
             current.endpoint == self.endpoint && current.generation == self.generation
         }) {
             return Err(Arc::from("the local service connection changed during the graph read"));
@@ -458,6 +458,8 @@ pub(crate) fn key<T: 'static>(
     preferred: Option<PackageRef>,
     cx: &mut Context<T>,
 ) -> Option<Key> {
+    // Owner-indexed graph facts do not require a Cargo source capability.
+    // The serving generation still separates replacements at the same endpoint.
     #[cfg(test)]
     let synthetic = cx
         .try_global::<TestProjection>()
@@ -468,12 +470,12 @@ pub(crate) fn key<T: 'static>(
     let owner = if let Some(synthetic) = synthetic.as_ref() {
         OwnerIdentity::Synthetic(synthetic.id)
     } else {
-        let composition = crate::host::registry::composed()?;
+        let composition = crate::host::registry::serving_composed()?;
         OwnerIdentity::Indexed { endpoint: composition.endpoint.clone(), generation: composition.generation }
     };
     #[cfg(not(test))]
     let owner = {
-        let composition = crate::host::registry::composed()?;
+        let composition = crate::host::registry::serving_composed()?;
         OwnerIdentity::Indexed { endpoint: composition.endpoint.clone(), generation: composition.generation }
     };
     if cx.try_global::<Reads>().is_none() {
@@ -546,7 +548,7 @@ async fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>,
             return Err(Arc::from("the synthetic graph owner is unsupported"));
         }
     };
-    let composition = crate::host::registry::composed()
+    let composition = crate::host::registry::serving_composed()
         .filter(|composition| composition.endpoint == *endpoint && composition.generation == *generation)
         .ok_or_else(|| {
             Arc::from("the local service connection changed before the graph was read")
@@ -1030,6 +1032,9 @@ fn module_path(file: Option<&str>) -> String {
     }
     components.join("::")
 }
+
+#[cfg(test)]
+mod serving_tests;
 
 #[cfg(test)]
 mod tests {
