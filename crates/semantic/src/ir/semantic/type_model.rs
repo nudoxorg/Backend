@@ -337,9 +337,10 @@ impl TypeState for UnknownState {
 
 /// Four-byte semantic type coordinate carrying a compile-time node-state proof.
 ///
-/// The constructor is intentionally private: only the matching interning path
-/// can manufacture a concrete, computed, or unknown proof. `erase()` is free
-/// when a heterogeneous type edge is required.
+/// The constructor is intentionally private. Matching interning paths and
+/// checked image projections establish the node state at that coordinate;
+/// typed reads recheck the destination image. `erase()` is free when a
+/// heterogeneous type edge is required.
 #[repr(transparent)]
 pub struct TypedTypeId<State> {
     erased: TypeId,
