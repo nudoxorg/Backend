@@ -1926,7 +1926,7 @@ fn resolve_and_ack_pending_rejected_compiler_result(
     journal
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .complete_ack(&receipt)
+        .complete_ack(&receipt, None)
         .map_err(|error| format!("complete pending rejection ACK: {error}"))?;
     Ok(true)
 }
@@ -1944,8 +1944,41 @@ fn resolve_and_ack_pending_compiler_result(
 
     let owner_endpoint_id = *owner.owner_id().as_bytes();
     let scope = match record.state {
-        pending_stored::PendingStoredAckState::StoredAwaitingRetirementConfirm
-        | pending_stored::PendingStoredAckState::SupersededAwaitingRetirementConfirm => {
+        pending_stored::PendingStoredAckState::StoredAwaitingRetirementConfirm => {
+            let Ok(key) = record.product_semantic_key() else {
+                return Ok(false);
+            };
+            if authority.is_none() {
+                match SemanticAuthority::open(authority_workspace) {
+                    Ok(opened) => *authority = Some(opened),
+                    Err(error) => {
+                        return Err(format!(
+                            "open semantic authority for Stored ACK confirmation proof: {error}"
+                        ));
+                    }
+                }
+            }
+            let Some(authority) = authority.as_ref() else {
+                return Ok(false);
+            };
+            let identity = record.authority_identity();
+            let Ok(proof) = authority.prove_pending_remote_result(&key, &identity) else {
+                return Ok(false);
+            };
+            let semantic_authority::PendingRemoteResultProof::SelectedHistory(selected) = proof
+            else {
+                return Ok(false);
+            };
+            let Ok(scope) = journal
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .selected_retirement_confirmation_scope(&record.id(), owner_endpoint_id, &selected)
+            else {
+                return Ok(false);
+            };
+            scope
+        }
+        pending_stored::PendingStoredAckState::SupersededAwaitingRetirementConfirm => {
             // The journal state is written only after a live authority proof
             // and an exact authenticated ResultRetired receipt. It authorizes
             // this confirmation only, so trust revocation cannot strand a
@@ -2013,10 +2046,25 @@ fn resolve_and_ack_pending_compiler_result(
     let Ok(receipt) = receipt else {
         return Ok(false);
     };
+    let recorded = if receipt.kind() == pending_stored::RecoveredAckKind::Stored {
+        let Some(completion) = receipt.completion_receipt() else {
+            return Ok(false);
+        };
+        let Some(authority) = authority.as_mut() else {
+            return Ok(false);
+        };
+        Some(
+            authority
+                .record_pending_stored_completion(record, completion)
+                .map_err(|error| format!("persist completed Stored ACK receipt: {error}"))?,
+        )
+    } else {
+        None
+    };
     journal
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .complete_ack(&receipt)
+        .complete_ack(&receipt, recorded.as_ref())
         .map_err(|error| format!("complete pending Stored ACK intent: {error}"))?;
     Ok(true)
 }

@@ -2301,12 +2301,30 @@ impl PendingStoredAckJournal {
     ) -> Result<RecoveredAckScope, PendingStoredAckError> {
         match self.rows.get(id).ok_or(PendingStoredAckError::MissingRow)? {
             PendingStoredAckEntry::Selection(row) => {
-                RecoveredAckScope::from_retirement_confirmation(row, owner_endpoint_id)
+                RecoveredAckScope::from_retirement_confirmation(row, owner_endpoint_id, None)
             }
             PendingStoredAckEntry::RejectedAdmission(row) => {
                 RecoveredAckScope::from_rejected_retirement_confirmation(row, owner_endpoint_id)
             }
             PendingStoredAckEntry::Reservation(_) => Err(PendingStoredAckError::TerminalState),
+        }
+    }
+
+    /// Mints a Stored confirmation scope only after reopening the same exact
+    /// selected-generation and compiler-metadata proof used for a fresh ACK.
+    pub(crate) fn selected_retirement_confirmation_scope(
+        &self,
+        id: &[u8; 32],
+        owner_endpoint_id: [u8; 32],
+        proof: &super::semantic_authority::SelectedRemoteResultProof,
+    ) -> Result<RecoveredAckScope, PendingStoredAckError> {
+        match self.rows.get(id).ok_or(PendingStoredAckError::MissingRow)? {
+            PendingStoredAckEntry::Selection(row) => {
+                RecoveredAckScope::from_retirement_confirmation(row, owner_endpoint_id, Some(proof))
+            }
+            PendingStoredAckEntry::Reservation(_) | PendingStoredAckEntry::RejectedAdmission(_) => {
+                Err(PendingStoredAckError::TerminalState)
+            }
         }
     }
 
@@ -2327,7 +2345,7 @@ impl PendingStoredAckJournal {
                 "selected cleanup requires immutable selection history",
             ));
         };
-        check_selected_history(&row.authority_identity(), selected)?;
+        check_selected_history(&row.authority_identity(), &selected.selected)?;
         match row.state {
             PendingStoredAckState::StoredAckPending => {}
             PendingStoredAckState::AwaitingSelection => {
@@ -2562,8 +2580,16 @@ impl PendingStoredAckJournal {
     pub(crate) fn complete_ack(
         &mut self,
         receipt: &super::cluster_dispatch::RecoveredAckReceipt,
+        recorded: Option<&backend_extension_turso::RecordedCompilerResultCompletion>,
     ) -> Result<(), PendingStoredAckError> {
         let id = receipt.journal_id();
+        if receipt.kind() != RecoveredAckKind::Stored
+            && (recorded.is_some() || receipt.completion_receipt().is_some())
+        {
+            return Err(PendingStoredAckError::Invalid(
+                "non-Stored completion carries a durable Stored receipt",
+            ));
+        }
         let current = match self
             .rows
             .get(&id)
@@ -2601,7 +2627,30 @@ impl PendingStoredAckJournal {
                 return Err(PendingStoredAckError::TerminalState);
             }
         };
-        let _ = current;
+        if receipt.kind() == RecoveredAckKind::Stored {
+            let completion = receipt
+                .completion_receipt()
+                .ok_or(PendingStoredAckError::CompletionProofUnavailable)?;
+            current.validate_completion_receipt(&completion)?;
+            let recorded = recorded.ok_or(PendingStoredAckError::CompletionProofUnavailable)?;
+            let product = current.product_semantic_key()?;
+            let expected_namespace = super::semantic_authority::SemanticAuthority::namespace(
+                product.package(),
+                product.coordinate(),
+                product.profile(),
+            )
+            .map_err(|_| PendingStoredAckError::Invalid("completion namespace"))?;
+            if recorded.sequence() == 0
+                || recorded.key() != completion.completion_key()
+                || recorded.receipt() != &completion
+                || recorded.namespace() != &expected_namespace
+                || recorded.namespace().namespace_id() != current.namespace_id
+            {
+                return Err(PendingStoredAckError::Invalid(
+                    "durable receipt differs from exact pending Stored result",
+                ));
+            }
+        }
         let mut replacement = self.rows.clone();
         if !matches!(
             replacement.remove(&id),
@@ -2654,6 +2703,7 @@ pub(crate) struct RecoveredAckScope {
     disposition: backend_engine::cluster_transport::ResultAckDisposition,
     awaiting_retirement_confirmation: bool,
     selected_stored_cleanup_only: bool,
+    completion_receipt: Option<backend_engine::CompilerResultCompletionReceipt>,
 }
 
 impl RecoveredAckScope {
@@ -2664,6 +2714,7 @@ impl RecoveredAckScope {
     fn from_retirement_confirmation(
         row: &PendingStoredAckRecord,
         owner_endpoint_id: [u8; 32],
+        selected_proof: Option<&super::semantic_authority::SelectedRemoteResultProof>,
     ) -> Result<Self, PendingStoredAckError> {
         row.validate()?;
         if owner_endpoint_id != row.owner_endpoint_id {
@@ -2687,6 +2738,19 @@ impl RecoveredAckScope {
             }
             RecoveredAckKind::RejectedAdmission => unreachable!("selection row kind"),
         };
+        let completion_receipt = match (kind, selected_proof) {
+            (RecoveredAckKind::Stored, Some(proof)) => Some(row.completion_receipt(proof)?),
+            (RecoveredAckKind::Stored, None) => {
+                return Err(PendingStoredAckError::CompletionProofUnavailable);
+            }
+            (RecoveredAckKind::Superseded, None) => None,
+            (RecoveredAckKind::Superseded, Some(_)) => {
+                return Err(PendingStoredAckError::Invalid(
+                    "superseded confirmation cannot carry Stored proof",
+                ));
+            }
+            (RecoveredAckKind::RejectedAdmission, _) => unreachable!("selection row kind"),
+        };
         let expected_peer = EndpointId::from_bytes(&row.worker_peer)
             .map_err(|_| PendingStoredAckError::Invalid("worker endpoint"))?;
         let scope = AssignmentScope::new(
@@ -2709,6 +2773,7 @@ impl RecoveredAckScope {
             disposition,
             awaiting_retirement_confirmation: true,
             selected_stored_cleanup_only: false,
+            completion_receipt,
         })
     }
 
@@ -2747,6 +2812,7 @@ impl RecoveredAckScope {
             ),
             awaiting_retirement_confirmation: true,
             selected_stored_cleanup_only: false,
+            completion_receipt: None,
         })
     }
 
@@ -2785,6 +2851,7 @@ impl RecoveredAckScope {
             ),
             awaiting_retirement_confirmation: false,
             selected_stored_cleanup_only: false,
+            completion_receipt: None,
         })
     }
 
@@ -2796,7 +2863,7 @@ impl RecoveredAckScope {
     fn from_selected_history_cleanup(
         row: &PendingStoredAckRecord,
         owner_endpoint_id: [u8; 32],
-        selected: &SelectedGeneration,
+        selected: &super::semantic_authority::SelectedRemoteResultProof,
     ) -> Result<Self, PendingStoredAckError> {
         row.validate()?;
         if owner_endpoint_id != row.owner_endpoint_id
@@ -2804,7 +2871,8 @@ impl RecoveredAckScope {
         {
             return Err(PendingStoredAckError::TerminalState);
         }
-        check_selected_history(&row.authority_identity(), selected)?;
+        check_selected_history(&row.authority_identity(), &selected.selected)?;
+        let completion_receipt = row.completion_receipt(selected)?;
         let expected_peer = EndpointId::from_bytes(&row.worker_peer)
             .map_err(|_| PendingStoredAckError::Invalid("worker endpoint"))?;
         let scope = AssignmentScope::new(
@@ -2827,6 +2895,7 @@ impl RecoveredAckScope {
             disposition: backend_engine::cluster_transport::ResultAckDisposition::Stored,
             awaiting_retirement_confirmation: false,
             selected_stored_cleanup_only: true,
+            completion_receipt: Some(completion_receipt),
         })
     }
 
@@ -2858,14 +2927,18 @@ impl RecoveredAckScope {
             ));
         }
         let identity = row.authority_identity();
-        let (kind, expected_closure) = match proof {
+        let (kind, expected_closure, completion_receipt) = match proof {
             PendingRemoteResultProof::SelectedHistory(selected) => {
-                check_selected_history(&identity, selected)?;
-                (RecoveredAckKind::Stored, row.worker_closure_id)
+                check_selected_history(&identity, &selected.selected)?;
+                (
+                    RecoveredAckKind::Stored,
+                    row.worker_closure_id,
+                    Some(row.completion_receipt(selected)?),
+                )
             }
             PendingRemoteResultProof::Superseded(superseded) => {
                 check_superseded_proof(&identity, superseded)?;
-                (RecoveredAckKind::Superseded, row.worker_closure_id)
+                (RecoveredAckKind::Superseded, row.worker_closure_id, None)
             }
         };
         let awaiting_retirement_confirmation = match (row.state, kind) {
@@ -2911,6 +2984,7 @@ impl RecoveredAckScope {
             },
             awaiting_retirement_confirmation,
             selected_stored_cleanup_only: false,
+            completion_receipt,
         })
     }
 
@@ -2988,6 +3062,15 @@ impl RecoveredAckScope {
     #[must_use]
     pub(crate) const fn selected_stored_cleanup_only(&self) -> bool {
         self.selected_stored_cleanup_only
+    }
+
+    /// Exact owner receipt scoped to the proof that authorized this Stored
+    /// ACK. Rejected and Superseded scopes never carry one.
+    #[must_use]
+    pub(crate) const fn completion_receipt(
+        &self,
+    ) -> Option<backend_engine::CompilerResultCompletionReceipt> {
+        self.completion_receipt
     }
 }
 
@@ -3095,6 +3178,83 @@ impl PendingStoredAckRecord {
         )
     }
 
+    /// Reconstructs the owner receipt only from this validated pending row and
+    /// the exact selected-generation/compiler-metadata proof admitted by locald.
+    fn completion_receipt(
+        &self,
+        proof: &super::semantic_authority::SelectedRemoteResultProof,
+    ) -> Result<backend_engine::CompilerResultCompletionReceipt, PendingStoredAckError> {
+        self.validate()?;
+        check_selected_history(&self.authority_identity(), &proof.selected)?;
+        let language_profile =
+            backend_semantic::vocabulary::LanguageProfile::try_from(self.trust.profile)
+                .map_err(|_| PendingStoredAckError::Invalid("completion profile"))?;
+        let binding = proof.claim.binding();
+        let manifest = proof.claim.manifest();
+        let receipt = backend_engine::CompilerResultCompletionReceipt {
+            assignment: backend_engine::CompilerResultAssignmentCommitment {
+                namespace_id: self.namespace_id,
+                work_id: self.work_id,
+                attempt: self.assignment_attempt,
+                fence: self.assignment_fence,
+                turso_attempt_id: self.turso_attempt_id,
+                turso_attempt_epoch: self.turso_attempt_epoch,
+            },
+            pending_journal_id: self.id(),
+            worker: backend_engine::CompilerWorkerResultCommitment {
+                owner_endpoint_id: self.owner_endpoint_id,
+                worker_peer_id: self.worker_peer,
+                result_closure_id: self.worker_closure_id,
+                object_count: self.worker_object_count,
+                payload_bytes: self.worker_payload_bytes,
+                bytes_verified: self.worker_bytes_verified,
+            },
+            input: backend_engine::CompilerResultInputCommitment {
+                package_lineage: self.captured_work.package_lineage,
+                target: self.captured_work.target,
+                recipe: self.captured_work.recipe,
+                input_root: self.captured_work.input_root,
+                read_manifest: self.captured_work.read_manifest,
+                workspace_snapshot_id: self.captured_work.workspace_snapshot_id,
+                input_closure_id: self.captured_work.input_closure_id,
+                manifest_object_id: self.captured_work.manifest_object_id,
+                source_fence_digest: self.captured_work.source_fence_digest,
+                profile: backend_engine::SemanticLanguageProfile::new(language_profile),
+                stage: self.trust.stage,
+                toolchain: self.trust.toolchain,
+                environment: self.trust.environment,
+                target_platform: self.trust.target_platform,
+            },
+            published: backend_engine::CompilerResultPublishedHeadCommitment {
+                turso_generation: proof.selected.generation(),
+                candidate_id: *proof.selected.candidate_id(),
+                target_root: *proof.selected.target_root(),
+                selected_closure_id: *proof.selected.closure_id(),
+                semantic_plane_manifest_root: proof.selected.semantic_catalog_root().copied(),
+                input_digest: *proof.selected.input_digest(),
+                semantic_generation: *binding.identity.as_ref(),
+                generation_root: *binding.generation.pinned_root.as_ref(),
+                dependency_set: *binding.generation.dep_set.as_ref(),
+                manifest: *manifest.identity.as_ref(),
+            },
+        };
+        receipt
+            .validate_shape()
+            .map_err(|_| PendingStoredAckError::Invalid("completion receipt shape"))?;
+        validate_completion_for_row(self, &receipt)?;
+        Ok(receipt)
+    }
+
+    /// Rechecks an owner receipt against every journaled assignment, worker,
+    /// source-capture, trust, and selected-head field before durable storage.
+    pub(crate) fn validate_completion_receipt(
+        &self,
+        receipt: &backend_engine::CompilerResultCompletionReceipt,
+    ) -> Result<(), PendingStoredAckError> {
+        self.validate()?;
+        validate_completion_for_row(self, receipt)
+    }
+
     pub(crate) fn assignment_identity(&self) -> PendingAckAssignmentIdentity {
         PendingAckAssignmentIdentity {
             owner_endpoint_id: self.owner_endpoint_id,
@@ -3164,6 +3324,58 @@ fn parse_profile_code(profile: &str) -> Result<[u8; 2], PendingStoredAckError> {
     Ok(code)
 }
 
+fn validate_completion_for_row(
+    row: &PendingStoredAckRecord,
+    receipt: &backend_engine::CompilerResultCompletionReceipt,
+) -> Result<(), PendingStoredAckError> {
+    receipt
+        .validate_shape()
+        .map_err(|_| PendingStoredAckError::Invalid("completion receipt shape"))?;
+    let assignment = receipt.assignment;
+    let worker = receipt.worker;
+    let input = receipt.input;
+    let published = receipt.published;
+    let captured = &row.captured_work;
+    if assignment.namespace_id != row.namespace_id
+        || receipt.pending_journal_id != row.id()
+        || assignment.work_id != row.work_id
+        || assignment.attempt != row.assignment_attempt
+        || assignment.fence != row.assignment_fence
+        || assignment.turso_attempt_id != row.turso_attempt_id
+        || assignment.turso_attempt_epoch != row.turso_attempt_epoch
+        || worker.owner_endpoint_id != row.owner_endpoint_id
+        || worker.worker_peer_id != row.worker_peer
+        || worker.result_closure_id != row.worker_closure_id
+        || worker.object_count != row.worker_object_count
+        || worker.payload_bytes != row.worker_payload_bytes
+        || worker.bytes_verified != row.worker_bytes_verified
+        || input.package_lineage != captured.package_lineage
+        || input.target != captured.target
+        || input.recipe != captured.recipe
+        || input.input_root != captured.input_root
+        || input.read_manifest != captured.read_manifest
+        || input.workspace_snapshot_id != captured.workspace_snapshot_id
+        || input.input_closure_id != captured.input_closure_id
+        || input.manifest_object_id != captured.manifest_object_id
+        || input.source_fence_digest != captured.source_fence_digest
+        || input.profile.to_bytes() != row.trust.profile
+        || input.stage != row.trust.stage
+        || input.toolchain != row.trust.toolchain
+        || input.environment != row.trust.environment
+        || input.target_platform != row.trust.target_platform
+        || published.turso_generation != row.turso_generation
+        || published.candidate_id != row.candidate_id
+        || published.target_root != row.target_root
+        || published.selected_closure_id != row.selected_closure_id
+        || published.input_digest != row.input_digest
+    {
+        return Err(PendingStoredAckError::Invalid(
+            "completion receipt differs from pending result identity",
+        ));
+    }
+    Ok(())
+}
+
 fn check_selected_history(
     expected: &super::semantic_authority::PendingRemoteResultIdentity,
     selected: &SelectedGeneration,
@@ -3172,6 +3384,7 @@ fn check_selected_history(
     let (scheduler_epoch, fence) = selected.scheduler_fence();
     if selected.namespace().namespace_id() != expected.namespace_id()
         || selected.generation() != expected.expected_generation()
+        || selected.selection_origin() != backend_extension_turso::SelectionOrigin::CompilerAttempt
         || attempt_id != expected.attempt_id()
         || epoch != expected.epoch()
         || scheduler_epoch != expected.epoch()
@@ -3219,6 +3432,8 @@ pub(crate) enum PendingStoredAckError {
     CapacityFull,
     /// A supplied pending result claim is internally invalid.
     Invalid(&'static str),
+    /// No fresh exact selected-history proof was available for a Stored ACK.
+    CompletionProofUnavailable,
     /// The requested journal identity is not present.
     MissingRow,
     /// A terminal ACK state was already selected and cannot be changed.
@@ -3243,6 +3458,9 @@ impl std::fmt::Display for PendingStoredAckError {
             Self::Invalid(field) => {
                 write!(formatter, "pending Stored ACK claim is invalid ({field})")
             }
+            Self::CompletionProofUnavailable => formatter.write_str(
+                "pending Stored ACK lacks a durable exact selected-history completion receipt",
+            ),
             Self::MissingRow => formatter.write_str("pending Stored ACK row is missing"),
             Self::TerminalState => {
                 formatter.write_str("pending Stored ACK disposition is terminal")
@@ -3683,6 +3901,7 @@ mod tests {
             },
             awaiting_retirement_confirmation: false,
             selected_stored_cleanup_only: false,
+            completion_receipt: None,
         }
     }
 
@@ -3702,6 +3921,80 @@ mod tests {
 
     fn captured_work(row: &PendingStoredAckRecord) -> PendingAckCapturedWork {
         row.captured_work.clone()
+    }
+
+    fn completion_for_row(
+        row: &PendingStoredAckRecord,
+    ) -> backend_engine::CompilerResultCompletionReceipt {
+        let profile = backend_semantic::vocabulary::LanguageProfile::try_from(row.trust.profile)
+            .expect("closed compiler profile");
+        backend_engine::CompilerResultCompletionReceipt {
+            assignment: backend_engine::CompilerResultAssignmentCommitment {
+                namespace_id: row.namespace_id,
+                work_id: row.work_id,
+                attempt: row.assignment_attempt,
+                fence: row.assignment_fence,
+                turso_attempt_id: row.turso_attempt_id,
+                turso_attempt_epoch: row.turso_attempt_epoch,
+            },
+            pending_journal_id: row.id(),
+            worker: backend_engine::CompilerWorkerResultCommitment {
+                owner_endpoint_id: row.owner_endpoint_id,
+                worker_peer_id: row.worker_peer,
+                result_closure_id: row.worker_closure_id,
+                object_count: row.worker_object_count,
+                payload_bytes: row.worker_payload_bytes,
+                bytes_verified: row.worker_bytes_verified,
+            },
+            input: backend_engine::CompilerResultInputCommitment {
+                package_lineage: row.captured_work.package_lineage,
+                target: row.captured_work.target,
+                recipe: row.captured_work.recipe,
+                input_root: row.captured_work.input_root,
+                read_manifest: row.captured_work.read_manifest,
+                workspace_snapshot_id: row.captured_work.workspace_snapshot_id,
+                input_closure_id: row.captured_work.input_closure_id,
+                manifest_object_id: row.captured_work.manifest_object_id,
+                source_fence_digest: row.captured_work.source_fence_digest,
+                profile: backend_engine::SemanticLanguageProfile::new(profile),
+                stage: row.trust.stage,
+                toolchain: row.trust.toolchain,
+                environment: row.trust.environment,
+                target_platform: row.trust.target_platform,
+            },
+            published: backend_engine::CompilerResultPublishedHeadCommitment {
+                turso_generation: row.turso_generation,
+                candidate_id: row.candidate_id,
+                target_root: row.target_root,
+                selected_closure_id: row.selected_closure_id,
+                semantic_plane_manifest_root: Some([27; 32]),
+                input_digest: row.input_digest,
+                semantic_generation: [28; 32],
+                generation_root: [29; 32],
+                dependency_set: [30; 32],
+                manifest: [31; 32],
+            },
+        }
+    }
+
+    #[test]
+    fn completion_receipt_must_match_every_pending_assignment_worker_and_input_fact() {
+        let row = record();
+        let receipt = completion_for_row(&row);
+        row.validate_completion_receipt(&receipt)
+            .expect("exact owner completion receipt");
+
+        let mut wrong_worker = receipt;
+        wrong_worker.worker.worker_peer_id[0] ^= 1;
+        assert!(row.validate_completion_receipt(&wrong_worker).is_err());
+
+        let mut wrong_capture = receipt;
+        wrong_capture.input.workspace_snapshot_id[0] ^= 1;
+        assert!(row.validate_completion_receipt(&wrong_capture).is_err());
+
+        let mut wrong_selection = receipt;
+        wrong_selection.published.turso_generation += 1;
+        assert!(row.validate_completion_receipt(&wrong_selection).is_err());
     }
 
     #[test]
@@ -3933,7 +4226,7 @@ mod tests {
     }
 
     #[test]
-    fn retirement_confirmation_survives_worker_trust_revocation() {
+    fn stored_retirement_confirmation_cannot_mint_without_fresh_selected_proof() {
         let root = TestRoot::new();
         let mut row = record();
         let peer = EndpointId::from_bytes(&row.worker_peer).expect("worker endpoint");
@@ -3983,9 +4276,9 @@ mod tests {
             Err(PendingStoredAckError::TerminalState)
         ));
 
-        // Revoke after the exact authenticated receipt has been persisted. A
-        // confirm-only scope remains available, while the live policy is now
-        // deny-all and cannot authorize another Stored ACK.
+        // Revoke after the worker receipt is persisted. The retry journal may
+        // retain the state, but it cannot mint Stored confirmation authority
+        // without a fresh selected-history and CAS reopen.
         trust.revoke_peer(peer).expect("revoke worker");
         assert!(trust.grants().is_empty());
         drop(journal);
@@ -4000,12 +4293,10 @@ mod tests {
             persisted.state,
             PendingStoredAckState::StoredAwaitingRetirementConfirm
         );
-        let confirm_only = reopened
-            .retirement_confirmation_scope(&row.id(), row.owner_endpoint_id)
-            .expect("revoke does not strand exact retirement confirmation");
-        assert!(confirm_only.awaiting_retirement_confirmation());
-        assert_eq!(confirm_only.kind(), RecoveredAckKind::Stored);
-        assert!(!confirm_only.is_currently_trusted(&trust));
+        assert!(matches!(
+            reopened.retirement_confirmation_scope(&row.id(), row.owner_endpoint_id),
+            Err(PendingStoredAckError::CompletionProofUnavailable)
+        ));
     }
 
     fn superseded_proof(root: &TestRoot) -> SupersededAttemptProof {

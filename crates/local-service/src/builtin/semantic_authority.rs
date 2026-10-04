@@ -24,9 +24,10 @@ use backend_extension_turso::{
     COMPILER_SEMANTIC_IMAGE_SCHEMA, CandidateAttempt, CandidateAttemptRecoveryClaim,
     CandidateAttemptRetirementReason, CompilerImageMember, CompilerPublicationEnvelope,
     CompilerPublicationMetadata, ExistingGenerationSelection, ProjectionKind,
-    ReopenedCompilerMetadata, SelectedGeneration, SourceObservation, SourceObservationReceipt,
-    SourceObservationValue, SupersededAttemptProof, TursoAuthority, VersionedPlaneArtifactMetadata,
-    VersionedPlaneMember, VersionedPlaneMetadata, reopen_selected_compiler_metadata,
+    ReopenedCompilerMetadata, SelectedGeneration, SelectionOrigin, SourceObservation,
+    SourceObservationReceipt, SourceObservationValue, SupersededAttemptProof, TursoAuthority,
+    VersionedPlaneArtifactMetadata, VersionedPlaneMember, VersionedPlaneMetadata,
+    reopen_selected_compiler_metadata,
 };
 use backend_library::interface::{SemanticImageAuthority, SemanticImageSnapshot};
 use backend_semantic::ir::{ImageProvenance, SemanticCoreReader};
@@ -192,9 +193,17 @@ impl PendingRemoteResultIdentity {
 pub(crate) enum PendingRemoteResultProof {
     /// Turso history proves that this exact candidate and closure were
     /// selected at the expected immutable generation.
-    SelectedHistory(SelectedGeneration),
+    SelectedHistory(SelectedRemoteResultProof),
     /// Turso proves this exact attempt was superseded before selection.
     Superseded(SupersededAttemptProof),
+}
+
+/// Exact selected history joined to the semantic binding reopened from its
+/// content-addressed compiler metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SelectedRemoteResultProof {
+    pub(crate) selected: SelectedGeneration,
+    pub(crate) claim: SemanticPublicationClaim,
 }
 
 /// Local implementation of the exact compiler semantic-image object schema.
@@ -1323,6 +1332,39 @@ impl SemanticAuthority {
         self.store.clone()
     }
 
+    /// Records a completed Stored ACK only after its sealed journal row has
+    /// been rechecked against the exact receipt carried by the ACK proof.
+    pub(crate) fn record_pending_stored_completion(
+        &mut self,
+        pending: &super::pending_stored::PendingStoredAckRecord,
+        receipt: backend_engine::CompilerResultCompletionReceipt,
+    ) -> Result<backend_extension_turso::RecordedCompilerResultCompletion, BuiltinModelError> {
+        pending
+            .validate_completion_receipt(&receipt)
+            .map_err(|error| {
+                BuiltinModelError(format!("validate pending Stored ACK receipt: {error}"))
+            })?;
+        let key = pending.product_semantic_key().map_err(|error| {
+            BuiltinModelError(format!("decode pending semantic namespace: {error}"))
+        })?;
+        let namespace = Self::namespace(key.package(), key.coordinate(), key.profile())?;
+        if namespace.namespace_id() != pending.namespace_id {
+            return Err(BuiltinModelError(
+                "pending Stored ACK namespace differs from its exact product key".to_owned(),
+            ));
+        }
+        futures_executor::block_on(self.authority.record_compiler_result_completion(
+            &self.store,
+            &namespace,
+            receipt,
+        ))
+        .map_err(|error| {
+            BuiltinModelError(format!(
+                "record durable compiler-result completion: {error}"
+            ))
+        })
+    }
+
     /// Creates the bounded semantic-plane range service over this authority's local CAS.
     #[must_use]
     pub(crate) fn versioned_plane_service(
@@ -2000,48 +2042,38 @@ impl SemanticAuthority {
             ));
         }
 
-        let mut after_generation = None;
-        loop {
-            let page = futures_executor::block_on(self.authority.selected_generations(
-                &namespace,
-                after_generation,
-                AUTHORITY_PAGE,
+        let selected = futures_executor::block_on(
+            self.authority
+                .selected_generation(&namespace, expected.expected_generation()),
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!(
+                "read exact selected history for pending ACK: {error}"
             ))
-            .map_err(|error| {
-                BuiltinModelError(format!("read selected history for pending ACK: {error}"))
-            })?;
-            if page.is_empty() {
-                break;
+        })?;
+        if let Some(selected) = selected {
+            let (attempt_id, attempt_epoch) = selected.attempt();
+            let (scheduler_epoch, scheduler_fence) = selected.scheduler_fence();
+            let exact = selected.generation() == expected.expected_generation()
+                && selected.selection_origin() == SelectionOrigin::CompilerAttempt
+                && attempt_id == expected.attempt_id()
+                && attempt_epoch == expected.epoch()
+                && scheduler_epoch == expected.epoch()
+                && scheduler_fence == *expected.fence()
+                && selected.input_digest() == expected.input_digest()
+                && selected.candidate_id() == expected.candidate_id()
+                && selected.target_root() == expected.target_root()
+                && selected.closure_id() == expected.selected_closure_id();
+            if !exact {
+                return Err(BuiltinModelError(
+                    "pending remote result conflicts with its immutable Turso selection history"
+                        .to_owned(),
+                ));
             }
-            for selected in page.iter() {
-                let (attempt_id, epoch) = selected.attempt();
-                if attempt_id != expected.attempt_id() || epoch != expected.epoch() {
-                    continue;
-                }
-                let (selected_epoch, selected_fence) = selected.scheduler_fence();
-                let exact = selected_epoch == expected.epoch()
-                    && selected_fence == *expected.fence()
-                    && selected.input_digest() == expected.input_digest()
-                    && selected.candidate_id() == expected.candidate_id()
-                    && selected.target_root() == expected.target_root()
-                    && selected.closure_id() == expected.selected_closure_id();
-                if !exact || selected.generation() != expected.expected_generation() {
-                    return Err(BuiltinModelError(
-                        "pending remote result conflicts with its immutable Turso selection history"
-                            .to_owned(),
-                    ));
-                }
-                reopen_selected_compiler_metadata(&self.store, selected).map_err(|error| {
-                    BuiltinModelError(format!(
-                        "verify pending selected compiler envelope and inventory: {error}"
-                    ))
-                })?;
-                return Ok(PendingRemoteResultProof::SelectedHistory(selected.clone()));
-            }
-            after_generation = page.last().map(SelectedGeneration::generation);
-            if page.len() < AUTHORITY_PAGE {
-                break;
-            }
+            let (claim, _) = reopen_compiler_claim(&self.store, &selected)?;
+            return Ok(PendingRemoteResultProof::SelectedHistory(
+                SelectedRemoteResultProof { selected, claim },
+            ));
         }
 
         let proof = futures_executor::block_on(self.authority.superseded_attempt_proof_for_fence(
@@ -3859,10 +3891,10 @@ impl SemanticAuthority {
     }
 }
 
-fn reopen_record(
+fn reopen_compiler_claim(
     store: &FileStore,
     selected: &SelectedGeneration,
-) -> Result<(SemanticPublicationClaim, ProductSemanticPublicationRecord), BuiltinModelError> {
+) -> Result<(SemanticPublicationClaim, u32), BuiltinModelError> {
     let reopened = reopen_selected_compiler_metadata(store, selected)
         .map_err(|error| BuiltinModelError(format!("reopen selected semantic history: {error}")))?;
     let metadata = reopened.metadata();
@@ -3883,9 +3915,17 @@ fn reopen_record(
     .map_err(|error| BuiltinModelError(format!("validate reopened semantic binding: {error}")))?;
     let claim = SemanticPublicationClaim::admit(*manifest, *binding)
         .map_err(|error| BuiltinModelError(error.to_owned()))?;
+    Ok((claim, manifest.fragment_count))
+}
+
+fn reopen_record(
+    store: &FileStore,
+    selected: &SelectedGeneration,
+) -> Result<(SemanticPublicationClaim, ProductSemanticPublicationRecord), BuiltinModelError> {
+    let (claim, artifact_count) = reopen_compiler_claim(store, selected)?;
     let coverage = recovered_publication_coverage(
         selected.observation().observation().value(),
-        manifest.fragment_count,
+        artifact_count,
     )?;
     Ok((
         claim,

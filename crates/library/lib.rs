@@ -24,6 +24,7 @@ mod cargo_source;
 mod catalog;
 mod command;
 mod command_registry;
+mod compiler_result_completion;
 mod cursor;
 mod delta;
 mod error;
@@ -131,6 +132,13 @@ pub use command::{
 };
 pub use command_registry::{
     COMMANDS, CommandDomain, CommandMutation, CommandSpec, command_spec, command_spec_named,
+};
+pub use compiler_result_completion::{
+    CompilerResultAssignmentCommitment, CompilerResultCompletionKey,
+    CompilerResultCompletionReceipt, CompilerResultInputCommitment,
+    CompilerResultPublishedHeadCommitment, CompilerWorkerResultCommitment,
+    MAX_COMPILER_RESULT_COMPLETION_BYTES, MAX_COMPILER_RESULT_COMPLETION_OBJECTS,
+    MAX_COMPILER_RESULT_COMPLETION_PAYLOAD_BYTES,
 };
 pub use cursor::{
     CURSOR_CONTROL_BYTES, CURSOR_QUERY_BYTES, CURSOR_SCHEMA, Cursor, CursorError, CursorEvent,
