@@ -65,6 +65,7 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version; version 14 requires explicit callable
-/// carrier capture and preserves stable compiler declaration identities.
-pub const DTO_VERSION: u16 = 14;
+/// Current transport DTO version; version 15 preserves nested registry-
+/// advisory alias coverage. See `docs/operations/registry-discovery-dto-v15.md`
+/// for the compatibility and persisted-view refusal contract.
+pub const DTO_VERSION: u16 = 15;

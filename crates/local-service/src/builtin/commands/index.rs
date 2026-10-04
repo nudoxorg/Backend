@@ -1080,10 +1080,11 @@ pub(super) fn finish_deferred_profile<E: std::fmt::Display>(
         claim,
         &mut job.semantic_changes,
     )?;
+    let selected_profile = profile.profile();
     job.selected.push((profile.key, claim));
     if let Some(evidence) = cargo_alias_evidence {
         job.cargo_alias_observations
-            .insert(profile.profile(), evidence);
+            .insert(selected_profile, evidence);
     }
     job.completed_profiles += 1;
     // `staged` owns the compiler output credit lease. It is dropped here,

@@ -18,7 +18,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
     fs::File,
-    io::Read,
+    io::{self, Read},
     path::Path,
     sync::atomic::Ordering as AtomicOrdering,
 };

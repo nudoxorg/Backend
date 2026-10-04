@@ -837,7 +837,7 @@ impl LocalSubscriptionTransport {
                             next.as_deref(),
                             &payload,
                             peer,
-                            observer.clock(self.clock.as_ref()),
+                            observer.clock(self.monotonic_clock().as_ref()),
                         )
                         .map_err(|failure| match failure {
                             ResetHydrationError::Budget(fault) => observer.budget_error(fault),

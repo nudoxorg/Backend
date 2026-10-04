@@ -60,6 +60,38 @@ fn roundtrip_retains_nonempty_view_and_exact_owner_binding() {
 }
 
 #[test]
+fn v14_view_snapshot_is_refused_by_v15_and_left_unchanged() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test clock")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("backend-locald-view-v14-{stamp}.journal"));
+    let head = super::super::genesis().expect("checked builtin genesis");
+    let capability = super::super::test_builtin_view_capability().expect("coverage");
+    let (view, cursor) = super::super::initial_view().expect("checked initial view");
+    let payload = encode_envelope(head.root(), cursor, &view, None).expect("view envelope");
+    let mut envelope: serde_json::Value =
+        serde_json::from_slice(&payload).expect("current envelope json");
+    envelope["view"]["version"] = serde_json::json!(14);
+    let legacy_payload = serde_json::to_vec(&envelope).expect("v14 envelope json");
+    let journal = ViewJournal::open(&path).expect("open view journal");
+    journal
+        .append(SNAPSHOT, &legacy_payload)
+        .expect("seed a complete v14 snapshot frame");
+    let before = fs::read(&path).expect("read seeded v14 journal");
+
+    assert!(journal
+        .load_for_workspace(head.root(), &capability)
+        .is_err());
+    let refusal = journal
+        .written_by_another_build()
+        .expect("identify old wire version");
+    assert!(refusal.contains("wire version 14"));
+    assert_eq!(fs::read(&path).expect("read refused v14 journal"), before);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn roundtrip_re_admits_occurrence_disambiguated_row_identity() {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)

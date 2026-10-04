@@ -397,15 +397,19 @@ impl PrivateNamespace {
             };
         }
         if let Err(error) = lease_file.try_lock() {
+            let create = match error {
+                std::fs::TryLockError::WouldBlock => io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "new stage lease could not be locked",
+                ),
+                std::fs::TryLockError::Error(error) => error,
+            };
             drop(lease_file);
             let cleanup = self.remove_stage_and_lease(&created, &lease_name, lease_identity);
             return match cleanup {
-                Ok(()) => Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    format!("new stage lease could not be locked: {error}"),
-                )),
+                Ok(()) => Err(create),
                 Err(cleanup) => Err(io::Error::other(StageCreateRollbackFailure {
-                    create: error,
+                    create,
                     cleanup,
                 })),
             };

@@ -2053,6 +2053,7 @@ impl DiscoveryStore {
         }
         let new_coordinates = pending
             .keys()
+            .copied()
             .filter(|key| existing.is_none_or(|state| !state.facts.contains_key(*key)))
             .count();
         if existing

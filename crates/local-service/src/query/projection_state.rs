@@ -443,8 +443,8 @@ impl ProjectionOperation<'_> {
             )?;
             match lifecycle_lock {
                 Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                Err(error) => return Err(error),
+                Err(std::fs::TryLockError::WouldBlock) => {}
+                Err(std::fs::TryLockError::Error(error)) => return Err(error),
             }
             let pin_name = owner_pin_lock_name(owner);
             let pin_lock = self
@@ -465,8 +465,8 @@ impl ProjectionOperation<'_> {
             verify_identity(&self.state.owners, &pin_name, &pin_lock, pin_identity)?;
             let active_pin = match pin_lock_result {
                 Ok(()) => false,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => true,
-                Err(error) => return Err(error),
+                Err(std::fs::TryLockError::WouldBlock) => true,
+                Err(std::fs::TryLockError::Error(error)) => return Err(error),
             };
             if active_pin {
                 let pin = read_bounded(&self.state.owners, &owner_pin_name(owner), PIN_BYTES)?
@@ -571,8 +571,8 @@ impl ProjectionOperation<'_> {
                     }
                     self.state.owners.remove_file(&pin_name)?;
                 }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                Err(error) => return Err(error),
+                Err(std::fs::TryLockError::WouldBlock) => {}
+                Err(std::fs::TryLockError::Error(error)) => return Err(error),
             }
         }
         Ok(())
@@ -814,7 +814,7 @@ fn encode_membership(members: &[Member]) -> io::Result<Vec<u8>> {
     for member in members {
         output.extend_from_slice(&member.digest);
     }
-    append_checksum(b"backend.local-service.qdrant-membership.v2", &mut output);
+    append_checksum("backend.local-service.qdrant-membership.v2", &mut output);
     Ok(output)
 }
 
@@ -864,7 +864,7 @@ fn decode_membership(bytes: &[u8]) -> io::Result<Membership<'_>> {
     {
         return Err(invalid_data("invalid Qdrant membership header"));
     }
-    check_checksum(b"backend.local-service.qdrant-membership.v2", bytes)?;
+    check_checksum("backend.local-service.qdrant-membership.v2", bytes)?;
     let count = usize::try_from(u32::from_be_bytes(
         bytes[9..13]
             .try_into()
@@ -1023,7 +1023,7 @@ fn encode_ledger(descriptors: &[Descriptor], scope: [u8; 32]) -> io::Result<Vec<
     for descriptor in descriptors {
         encode_descriptor(descriptor, &mut bytes);
     }
-    append_checksum(b"backend.local-service.qdrant-ledger.v2", &mut bytes);
+    append_checksum("backend.local-service.qdrant-ledger.v2", &mut bytes);
     Ok(bytes)
 }
 
@@ -1034,7 +1034,7 @@ fn decode_ledger(bytes: &[u8], scope: [u8; 32]) -> io::Result<Vec<Descriptor>> {
     {
         return Err(invalid_data("invalid Qdrant ledger header"));
     }
-    check_checksum(b"backend.local-service.qdrant-ledger.v2", bytes)?;
+    check_checksum("backend.local-service.qdrant-ledger.v2", bytes)?;
     let count = usize::try_from(u32::from_be_bytes(
         bytes[9..13]
             .try_into()
@@ -1066,7 +1066,7 @@ fn encode_pin(scope: [u8; 32], owner: [u8; 16], descriptor: Descriptor) -> Vec<u
     bytes.push(VERSION);
     bytes.extend_from_slice(&owner);
     encode_descriptor(descriptor, &mut bytes);
-    append_checksum(b"backend.local-service.qdrant-pin.v2", &mut bytes);
+    append_checksum("backend.local-service.qdrant-pin.v2", &mut bytes);
     debug_assert_eq!(bytes.len(), PIN_BYTES);
     debug_assert_eq!(descriptor.scope, scope);
     bytes
@@ -1080,7 +1080,7 @@ fn decode_pin(bytes: &[u8], scope: [u8; 32], owner: [u8; 16]) -> io::Result<Desc
     {
         return Err(invalid_data("invalid Qdrant pin header"));
     }
-    check_checksum(b"backend.local-service.qdrant-pin.v2", bytes)?;
+    check_checksum("backend.local-service.qdrant-pin.v2", bytes)?;
     let descriptor = decode_descriptor(&bytes[25..25 + DESCRIPTOR_BYTES])?;
     if descriptor.scope != scope {
         return Err(invalid_data("Qdrant pin provider mismatch"));
@@ -1264,13 +1264,13 @@ fn claim_owner_slot(
         verify_identity(owners, &lifecycle_name, &lifecycle, lifecycle_identity)?;
         match lifecycle_lock {
             Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            Err(std::fs::TryLockError::WouldBlock) => {
                 if !pin_lock_ids.contains(&owner) {
                     return Err(invalid_data("live Qdrant owner has no stable pin lock"));
                 }
                 continue;
             }
-            Err(error) => return Err(error),
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
         }
         let pin_name = owner_pin_lock_name(owner);
         let (pin_file, pin_identity) = match owners.open_private_file_read_write(&pin_name, false) {
@@ -1293,8 +1293,8 @@ fn claim_owner_slot(
                 verify_identity(owners, &lifecycle_name, &lifecycle, lifecycle_identity)?;
                 return Ok((owner, lifecycle_identity, pin_identity, lifecycle));
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
-            Err(error) => return Err(error),
+            Err(std::fs::TryLockError::WouldBlock) => continue,
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
         }
     }
     if entries

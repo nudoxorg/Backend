@@ -2156,12 +2156,13 @@ fn registry_discovery_metadata(
             for value in values {
                 records.push(RegistryDiscoveryAdvisory {
                     id: discovery_product_text(&value.id)?,
-                    aliases: value
-                        .aliases
-                        .iter()
-                        .map(|alias| discovery_product_text(alias))
-                        .collect::<Result<Vec<_>, _>>()?
-                        .into_boxed_slice(),
+                    aliases: discovery_product_facet(&value.aliases, |aliases| {
+                        aliases
+                            .iter()
+                            .map(|alias| discovery_product_text(alias))
+                            .collect::<Result<Vec<_>, _>>()
+                            .map(Vec::into_boxed_slice)
+                    })?,
                     summary: discovery_product_facet(&value.summary, |text| {
                         discovery_product_text(text)
                     })?,

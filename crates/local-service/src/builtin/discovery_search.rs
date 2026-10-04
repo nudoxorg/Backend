@@ -4417,13 +4417,7 @@ fn discovery_search_text(metadata: &DiscoveryMetadata) -> SearchDocumentText<'_>
             if !advisory.id.is_empty() {
                 advisories_text.push(advisory.id.as_str());
             }
-            advisories_text.extend(
-                advisory
-                    .aliases
-                    .iter()
-                    .map(String::as_str)
-                    .filter(|value| !value.is_empty()),
-            );
+            append_known_list(&mut advisories_text, &advisory.aliases);
             append_known_list(&mut advisories_text, &advisory.fixed_in);
             append_known_text(&mut advisories_text, &advisory.summary);
             append_known_text(&mut advisories_text, &advisory.severity);

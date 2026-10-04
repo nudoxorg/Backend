@@ -6,22 +6,25 @@
 
 use super::super::view_build;
 use super::super::{
-    BuiltinModel, BuiltinModelError, BuiltinSemanticRelation, CommandFailure, CommandReply,
-    SemanticArrayShape, SemanticCallableCarrierBindings, SemanticCallableShape,
-    SemanticDeclarationShape, SemanticLiteral, SemanticObjectMember, SemanticPropertyKey,
-    SemanticShapeBatch, SemanticShapeEntry, SemanticShapeFact, SemanticShapeImageOrigin,
-    SemanticShapeLanguageFact, SemanticShapeLanguageFacts, SemanticShapeMember,
-    SemanticShapeRequest, SemanticShapeSelection, SemanticShapeSourceOrigin,
-    SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr, SemanticTypeFact,
-    SemanticTypeUnavailable, SymbolAddress, activate_semantic_publication, read_package_sources,
+    BuiltinModel, BuiltinModelError, BuiltinSemanticRelation, activate_semantic_publication,
+    read_package_sources,
 };
 use super::semantic_query::for_package_publications;
 use backend_engine::application::LocalCompilerClient;
 use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticPublicationCoverage};
+use backend_library::{
+    CommandFailure, CommandReply, SemanticArrayShape, SemanticCallableCarrierBindings,
+    SemanticCallableShape, SemanticDeclarationShape, SemanticLiteral, SemanticObjectMember,
+    SemanticPropertyKey, SemanticShapeBatch, SemanticShapeEntry, SemanticShapeFact,
+    SemanticShapeImageOrigin, SemanticShapeLanguageFact, SemanticShapeLanguageFacts,
+    SemanticShapeMember, SemanticShapeRequest, SemanticShapeSelection, SemanticShapeSourceOrigin,
+    SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr, SemanticTypeFact,
+    SemanticTypeUnavailable, SymbolAddress,
+};
 use backend_semantic::ir::{
     ArrayShape, ConcreteType, DeclarationIdentity, ExternalTarget, ExternalTargetIdentity,
     FunctionVariadicForm, ItemKind, LanguageProfile, LiteralType, ObjectMember, PropertyKey,
-    SemanticImageView, SemanticReader, SignatureCarrierBindingRole,
+    SemanticCoreReader, SemanticImageView, SemanticReader, SignatureCarrierBindingRole,
     SignatureCarrierBindingsObservation, SignatureCarrierRole, SignatureCarrierRoleObservation,
     TupleElementKind, TypeExpr, TypeId,
 };
@@ -528,7 +531,7 @@ fn project_declaration(
             | ItemKind::Implementation
                 if image
                     .entity_list(entity.members)
-                    .is_some_and(|members| !members.is_empty())
+                    .is_some_and(|mut members| members.next().is_some())
                     || matches!(
                         entity.kind,
                         ItemKind::Record

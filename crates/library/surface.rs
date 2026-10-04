@@ -2250,8 +2250,8 @@ impl<T> Default for RegistryEvidenceFacet<T> {
 pub struct RegistryDiscoveryAdvisory {
     /// Source-native advisory identifier.
     pub id: ProductText,
-    /// Alternate source-provided advisory identifiers.
-    pub aliases: Box<[ProductText]>,
+    /// Alternate source-provided advisory identifiers, with source coverage.
+    pub aliases: RegistryEvidenceFacet<Box<[ProductText]>>,
     /// Source-provided short summary.
     pub summary: RegistryEvidenceFacet<ProductText>,
     /// Source-provided severity label, without inferred scoring.
@@ -2330,7 +2330,9 @@ fn admit_registry_discovery_metadata(
         return Err(ProductAdmissionError::RegistryDiscoveryMetadata);
     }
     for advisory in advisories.iter() {
-        if advisory.aliases.len() > 32 {
+        if matches!(&advisory.aliases, RegistryEvidenceFacet::Known(values)
+            if values.len() > 32 || values.iter().any(|value| value.as_str().len() > MAX_PRODUCT_TEXT_BYTES))
+        {
             return Err(ProductAdmissionError::RegistryDiscoveryMetadata);
         }
         for facet in [&advisory.summary, &advisory.severity] {
@@ -3810,6 +3812,79 @@ mod tests {
         let decoded: SurfaceReply = serde_json::from_slice(&encoded).expect("partial wire decode");
         assert_eq!(decoded, reply);
         assert!(reply.encoded_size_bound() >= encoded.len());
+    }
+
+    #[test]
+    fn registry_advisory_alias_coverage_survives_wire_and_admission_bounds() {
+        let aliases_states: [RegistryEvidenceFacet<Box<[ProductText]>>; 3] = [
+            RegistryEvidenceFacet::Known(Vec::new().into_boxed_slice()),
+            RegistryEvidenceFacet::Absent,
+            RegistryEvidenceFacet::Unknown,
+        ];
+        for aliases in aliases_states {
+            let metadata = RegistryDiscoveryMetadata {
+                advisories: RegistryEvidenceFacet::Known(
+                    vec![RegistryDiscoveryAdvisory {
+                        id: ProductText::new("CVE-2026-1").expect("advisory id"),
+                        aliases,
+                        summary: RegistryEvidenceFacet::Unknown,
+                        severity: RegistryEvidenceFacet::Absent,
+                        fixed_in: RegistryEvidenceFacet::Unknown,
+                    }]
+                    .into_boxed_slice(),
+                ),
+                ..RegistryDiscoveryMetadata::default()
+            };
+            admit_registry_discovery_metadata(&metadata).expect("bounded advisory facets");
+            let encoded = serde_json::to_vec(&metadata).expect("metadata encoding");
+            let decoded: RegistryDiscoveryMetadata =
+                serde_json::from_slice(&encoded).expect("metadata decoding");
+            assert_eq!(decoded, metadata);
+        }
+
+        let aliases = (0..=32)
+            .map(|index| ProductText::new(format!("CVE-ALIAS-{index}")))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("bounded fixture aliases")
+            .into_boxed_slice();
+        let oversized = RegistryDiscoveryMetadata {
+            advisories: RegistryEvidenceFacet::Known(
+                vec![RegistryDiscoveryAdvisory {
+                    id: ProductText::new("CVE-2026-2").expect("advisory id"),
+                    aliases: RegistryEvidenceFacet::Known(aliases),
+                    summary: RegistryEvidenceFacet::Unknown,
+                    severity: RegistryEvidenceFacet::Unknown,
+                    fixed_in: RegistryEvidenceFacet::Unknown,
+                }]
+                .into_boxed_slice(),
+            ),
+            ..RegistryDiscoveryMetadata::default()
+        };
+        assert_eq!(
+            admit_registry_discovery_metadata(&oversized),
+            Err(ProductAdmissionError::RegistryDiscoveryMetadata)
+        );
+
+        let oversized_text = RegistryDiscoveryMetadata {
+            advisories: RegistryEvidenceFacet::Known(
+                vec![RegistryDiscoveryAdvisory {
+                    id: ProductText::new("CVE-2026-3").expect("advisory id"),
+                    aliases: RegistryEvidenceFacet::Known(
+                        vec![ProductText("x".repeat(MAX_PRODUCT_TEXT_BYTES + 1))]
+                            .into_boxed_slice(),
+                    ),
+                    summary: RegistryEvidenceFacet::Unknown,
+                    severity: RegistryEvidenceFacet::Unknown,
+                    fixed_in: RegistryEvidenceFacet::Unknown,
+                }]
+                .into_boxed_slice(),
+            ),
+            ..RegistryDiscoveryMetadata::default()
+        };
+        assert_eq!(
+            admit_registry_discovery_metadata(&oversized_text),
+            Err(ProductAdmissionError::RegistryDiscoveryMetadata)
+        );
     }
 
     #[test]
