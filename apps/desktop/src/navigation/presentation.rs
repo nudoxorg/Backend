@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 pub const MAX_READING_TEXT: usize = 1024;
 pub const MAX_READING_FOLDS: usize = 128;
+pub const MAX_SOURCE_LINE_DRAFT: usize = 16;
 
 /// Checked monotonic identity; zero is reserved for route-only cold history.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -33,6 +34,20 @@ impl ReadingText {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// The unsubmitted Code/Cargo source line input for one reading visit.
+/// Editing rejects characters the line control cannot persist, rather than
+/// showing a value that Back would silently restore only in part.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SourceLineDraft(String);
+impl SourceLineDraft {
+    pub fn new(text: impl Into<String>) -> Option<Self> {
+        let text = text.into();
+        (text.len() <= MAX_SOURCE_LINE_DRAFT && text.bytes().all(|byte| byte.is_ascii_digit()))
+            .then_some(Self(text))
+    }
+    pub fn as_str(&self) -> &str { &self.0 }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -147,6 +162,7 @@ pub struct ReadingControls {
     pub lens: ReaderLens,
     pub offset: ReadingOffset,
     pub focus: Option<ReadingFocus>,
+    pub source_line_draft: SourceLineDraft,
 }
 
 /// Closed route-kind state: comparison preferences cannot be applied to a
@@ -317,6 +333,7 @@ pub enum ReadingChange {
     ReaderLens(ReaderLens),
     ReaderOffset(ReadingOffset),
     Focus(Option<ReadingFocus>),
+    SourceLineDraft(SourceLineDraft),
 }
 impl ReadingPresentation {
     pub fn apply(&mut self, change: ReadingChange) -> bool {
@@ -330,6 +347,16 @@ impl ReadingPresentation {
             }
             return false;
         }
+        let change = match change {
+            ReadingChange::SourceLineDraft(draft) => return match self {
+                Self::Declaration(controls) | Self::Source(controls) => {
+                    controls.source_line_draft = draft;
+                    true
+                }
+                _ => false,
+            },
+            other => other,
+        };
         let controls = self.controls_mut();
         match change {
             ReadingChange::Comparison(_) => unreachable!("handled above"),
@@ -352,6 +379,7 @@ impl ReadingPresentation {
             ReadingChange::ReaderLens(lens) => controls.lens = lens,
             ReadingChange::ReaderOffset(offset) => controls.offset = offset,
             ReadingChange::Focus(focus) => controls.focus = focus,
+            ReadingChange::SourceLineDraft(_) => unreachable!("handled above"),
         }
         true
     }

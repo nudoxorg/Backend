@@ -349,6 +349,12 @@ impl Ctx<'_> {
         self.active.then(|| self.targets.native_handle(id, cx))
     }
 
+    /// The line input is already a focusable native editor. Register its
+    /// handle in Reader order instead of allocating a focusable outer plate.
+    pub(crate) fn native_input_handle(&self, id: &SharedString, handle: FocusHandle) {
+        if self.active { self.targets.bind_native_handle(id, handle); }
+    }
+
     /// Records a string the body puts on screen.
     /// The one line a page says when its route reads no declaration.
     pub(crate) fn unread(&mut self, unread: &crate::runtime::store::Unread) -> Vec<Leaf> {

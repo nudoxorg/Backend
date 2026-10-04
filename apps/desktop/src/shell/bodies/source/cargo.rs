@@ -1,6 +1,6 @@
 //! Current Cargo file bytes with no inferred indexed-symbol links.
 
-use super::{Pager, PagingState, SourceCursor, SourcePage, initial_cursor, pager_controls};
+use super::{DraftOwner, Pager, PagingState, SourceCursor, SourcePage, initial_cursor, pager_controls};
 use crate::model::browse::{BrowseKey, BrowseValue};
 use crate::model::document_identity::{DocumentIdentity, DocumentPaintIdentity};
 use crate::model::pages::{PackageRef, PageKey, SourceText};
@@ -309,8 +309,9 @@ fn code(
     let painted_row_id = Rc::clone(&row_id);
     let first = range.first;
     let last = range.last;
+    let (draft_owner, draft) = DraftOwner::from_ctx(Route::CargoSource(route.clone()), ctx, cx);
     let pager = window.use_keyed_state(pager_key, cx, move |window, cx| {
-        Pager::new(memory, first, last, recall, reveal, row_id, window, cx)
+        Pager::new(memory, first, last, recall, reveal, row_id, draft_owner, draft, window, cx)
     });
     *pager.read(cx).admission.borrow_mut() = Some(Rc::clone(source_guard));
     let cursor = paging

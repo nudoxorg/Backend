@@ -440,6 +440,15 @@ impl Targets {
         handle.clone()
     }
 
+    /// A native editor already owns its GPUI handle. Bind that same handle
+    /// to the Reader target so Tab, target walking, and text input agree on
+    /// one focus owner; do not create a second handle for its outer plate.
+    pub(crate) fn bind_native_handle(&self, id: &SharedString, handle: FocusHandle) {
+        let mut native = self.native.borrow_mut();
+        let frame = native.frame;
+        native.handles.insert(id.clone(), (handle, frame));
+    }
+
     /// A hint can focus only the exact target list frame that supplied it.
     /// Reader redraws may reuse ids while replacing actions and evidence.
     pub(crate) fn hint_frame(&self) -> u64 {

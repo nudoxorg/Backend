@@ -18,9 +18,11 @@ use crate::model::pages::{
     DocFragment, PageKey, RelationKind, SourceCoverage, SourceOrigin, SourceText, SourceView, SymbolRef,
 };
 use crate::navigation::{Intent, Route, SymbolRoute};
+use crate::navigation::presentation::{ReadingChange, SourceLineDraft, VisitId};
 use crate::shell::focus::{Recall, Target, TargetAction};
 use crate::shell::kit::{gap_words, quiet, symbol_route, text};
 use crate::shell::reader::Reader;
+use crate::shell::region::Links;
 use facet::tokens::ty;
 use facet::{Control, Set as _, Space};
 use gpui::{
@@ -81,7 +83,40 @@ struct Pager {
     reveal: Rc<Cell<bool>>,
     row_id: Rc<dyn Fn(u32) -> SharedString>,
     admission: RefCell<Option<Rc<dyn Fn(&mut App) -> bool>>>,
+    draft_owner: DraftOwner,
     _subscription: Subscription,
+}
+
+struct DraftOwner {
+    visit: VisitId,
+    route: Route,
+    links: Links,
+}
+
+impl DraftOwner {
+    fn from_ctx(route: Route, ctx: &Ctx<'_>, cx: &App) -> (Self, SourceLineDraft) {
+        let snapshot = ctx.links.snapshot(cx);
+        let reading = &snapshot.session().reading.current;
+        let draft = if ctx.active && snapshot.route() == &route {
+            reading.presentation.controls().source_line_draft.clone()
+        } else {
+            SourceLineDraft::default()
+        };
+        (Self { visit: reading.id, route, links: ctx.links.clone() }, draft)
+    }
+
+    fn save(&self, draft: SourceLineDraft, cx: &mut App) {
+        let snapshot = self.links.snapshot(cx);
+        if snapshot.route() == &self.route && snapshot.session().reading.current.id == self.visit
+            && snapshot.overlay().is_none() && snapshot.page_overlay().is_none()
+            && snapshot.session().preview.is_none()
+        {
+            self.links.dispatch(Intent::SetReading {
+                visit: self.visit,
+                change: ReadingChange::SourceLineDraft(draft),
+            }, cx);
+        }
+    }
 }
 
 impl Pager {
@@ -92,17 +127,34 @@ impl Pager {
         recall: Recall,
         reveal: Rc<Cell<bool>>,
         row_id: Rc<dyn Fn(u32) -> SharedString>,
+        draft_owner: DraftOwner,
+        draft: SourceLineDraft,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Line number"));
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Line number")
+                .validate(|text, _| SourceLineDraft::new(text).is_some())
+        });
+        if !draft.as_str().is_empty() {
+            input.update(cx, |input, cx| input.set_value(draft.as_str().to_owned(), window, cx));
+        }
         let subscription = cx.subscribe_in(
             &input,
             window,
             |pager, input, event: &InputEvent, _window, cx| {
-                if matches!(event, InputEvent::PressEnter { .. })
-                    && pager.admission.borrow().as_ref().is_some_and(|admit| admit(cx)) {
-                    pager.jump(&input.read(cx).value().to_string(), cx);
+                match event {
+                    InputEvent::Change => {
+                        if let Some(draft) = SourceLineDraft::new(input.read(cx).value().to_string()) {
+                            pager.draft_owner.save(draft, cx);
+                        }
+                    }
+                    InputEvent::PressEnter { .. } => {
+                        let admitted = pager.admission.borrow().as_ref().is_some_and(|admit| admit(cx));
+                        if admitted { pager.jump(&input.read(cx).value().to_string(), cx); }
+                    }
+                    _ => {}
                 }
             },
         );
@@ -116,6 +168,7 @@ impl Pager {
             reveal,
             row_id,
             admission: RefCell::new(None),
+            draft_owner,
             _subscription: subscription,
         }
     }
@@ -530,6 +583,7 @@ fn code(
     let recall = ctx.targets.recall();
     let reveal = Rc::clone(&ctx.reader_reveal);
     let pager_memory = Rc::clone(&paging);
+    let (draft_owner, draft) = DraftOwner::from_ctx(leaving.clone(), ctx, cx);
     let pager = window.use_keyed_state(pager_key, cx, move |window, cx| {
         Pager::new(
             pager_memory,
@@ -538,6 +592,8 @@ fn code(
             recall,
             reveal,
             Rc::new(crate::shell::reader::source_line_shared_id),
+            draft_owner,
+            draft,
             window,
             cx,
         )
@@ -1158,6 +1214,7 @@ fn pager_controls(
         let input = pager.read(cx).input.clone();
         let error = pager.read(cx).error.clone();
         let field_id: SharedString = "source-jump-field".into();
+        ctx.native_input_handle(&field_id, input.read(cx).focus_handle(cx));
         let focus_input = input.clone();
         let focus: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |window, app| {
             focus_input.update(app, |input, cx| input.focus(window, cx));
@@ -1338,6 +1395,9 @@ fn margin(
     }
     Some(column.into_any_element())
 }
+
+#[cfg(test)]
+mod code_input_history_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1819,7 +1879,7 @@ mod tests {
         }
     }
 
-    struct LongSource;
+    pub(super) struct LongSource;
 
     impl PageReader for LongSource {
         fn read(
