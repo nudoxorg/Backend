@@ -264,26 +264,38 @@ pub enum TypeTree {
     },
     /// A conditional type with its four source-level operands.
     Conditional {
+        /// Type tested by the conditional's `extends` relation.
         check: Box<TypeTree>,
+        /// Constraint compared against `check`.
         extends: Box<TypeTree>,
         #[serde(rename = "thenType")]
+        /// Result type when `check` satisfies `extends`.
         then_type: Box<TypeTree>,
         #[serde(rename = "elseType")]
+        /// Result type when `check` does not satisfy `extends`.
         else_type: Box<TypeTree>,
     },
     /// A mapped type with its key constraint, optional `as` remap, and value type.
     Mapped {
+        /// Name introduced by the mapped type's key parameter.
         parameter: String,
+        /// Type constraint from the mapped type's `in` clause.
         constraint: Box<TypeTree>,
         /// The optional key remap written after `as`.
         #[serde(rename = "nameAs", default)]
         name_as: Option<Box<TypeTree>>,
+        /// Value type produced for each mapped key.
         value: Box<TypeTree>,
+        /// Readonly modifier applied to mapped properties.
         readonly: MappedModifier,
+        /// Optionality modifier applied to mapped properties.
         optional: MappedModifier,
     },
     /// One part of a template-literal type, in source order.
-    TemplateLiteral { parts: Vec<TemplatePart> },
+    TemplateLiteral {
+        /// Literal text and placeholders in original source order.
+        parts: Vec<TemplatePart>,
+    },
     /// A tuple with positional elements.
     Tuple {
         /// The tuple elements, in declared order.
@@ -338,9 +350,15 @@ pub enum MappedModifier {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum TemplatePart {
     /// Literal source text.
-    Text { text: String },
+    Text {
+        /// Exact literal segment between template placeholders.
+        text: String,
+    },
     /// A placeholder type.
-    Type { r#type: Box<TypeTree> },
+    Type {
+        /// Type expression represented by this interpolation.
+        r#type: Box<TypeTree>,
+    },
 }
 
 /// One named or positional parameter in a callable signature.
