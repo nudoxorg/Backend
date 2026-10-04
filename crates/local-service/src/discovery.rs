@@ -2270,11 +2270,11 @@ fn classify_fact_transition(
         ) => {
             if same_content() {
                 Ok(DiscoveryFactTransition::Identical)
-            } else if previous.source.ecosystem() == backend_engine::RegistryEcosystem::Npm
-                || previous.source.ecosystem() == backend_engine::RegistryEcosystem::Nuget
-            {
-                Err(DiscoveryStoreError::Conflict)
             } else {
+                // Unsequenced snapshots do not establish source-event order.
+                // Their only freshness fence is the exact local source CAS
+                // checked by `commit`, so a later accepted observation may
+                // replace any prior unsequenced snapshot for every ecosystem.
                 Ok(DiscoveryFactTransition::Newer)
             }
         }
@@ -2434,6 +2434,53 @@ mod tests {
             source_event_time: source_event_time.map(str::to_owned),
             proof: [7; 32],
             metadata: DiscoveryMetadata::default(),
+        }
+    }
+
+    fn snapshot_batch(
+        ecosystem: RegistryEcosystem,
+        expected_base_sequence: u64,
+        previous_cursor: DiscoveryCursor,
+        next_cursor: DiscoveryCursor,
+        observed_at: u64,
+        standing: DiscoveryStanding,
+        description: &str,
+    ) -> DiscoveryBatch {
+        let (endpoint, coordinate) = match ecosystem {
+            RegistryEcosystem::Npm => ("https://registry.npmjs.org", "pkg:npm/example@1.0.0"),
+            RegistryEcosystem::Nuget => (
+                "https://api.nuget.org/v3/index.json",
+                "pkg:nuget/Widget@1.0.0",
+            ),
+            _ => panic!("snapshot fixture requires npm or NuGet"),
+        };
+        let endpoint = RegistryEndpoint::new(ecosystem, endpoint).expect("admitted source");
+        let source = discovery_source_identity(&endpoint);
+        let observed_at = DiscoveryObservedAt::from_unix_millis(observed_at);
+        DiscoveryBatch {
+            source,
+            expected_base_sequence,
+            previous_cursor,
+            next_cursor: next_cursor.clone(),
+            source_high_watermark: next_cursor,
+            caught_up: true,
+            observed_at,
+            completeness: DiscoveryCompleteness::CompleteThroughCursor,
+            facts: vec![DiscoveryFact {
+                source,
+                coordinate: backend_engine::ProductPackageCoordinate::parse(coordinate)
+                    .expect("coordinate"),
+                standing,
+                observed_at,
+                source_event: DiscoverySourceEvent::Snapshot,
+                source_event_time: None,
+                proof: [17; 32],
+                metadata: DiscoveryMetadata {
+                    description: DiscoveryFacet::Known(description.to_owned()),
+                    ..DiscoveryMetadata::default()
+                },
+            }],
+            package_retractions: Vec::new(),
         }
     }
 
@@ -2912,8 +2959,8 @@ mod tests {
             DiscoveryFacet::Known("changed snapshot".to_owned());
         assert_eq!(
             classify_fact_transition(&npm_snapshot, &changed_snapshot),
-            Err(DiscoveryStoreError::Conflict),
-            "npm snapshots are baseline-only, not an unordered update stream"
+            Ok(DiscoveryFactTransition::Newer),
+            "the accepted local sequence CAS orders successive unsequenced snapshots"
         );
 
         let cargo_snapshot = event_fact(
@@ -2934,6 +2981,133 @@ mod tests {
             classify_fact_transition(&cargo_snapshot, &cargo_snapshot),
             Ok(DiscoveryFactTransition::Identical)
         );
+    }
+
+    #[test]
+    fn npm_and_nuget_snapshots_update_under_local_cas_and_reopen() {
+        for ecosystem in [RegistryEcosystem::Npm, RegistryEcosystem::Nuget] {
+            let path = temp_path(match ecosystem {
+                RegistryEcosystem::Npm => "npm-snapshot-reopen",
+                RegistryEcosystem::Nuget => "nuget-snapshot-reopen",
+                _ => unreachable!(),
+            });
+            let initial_cursor = cursor("snapshot-position");
+            let first = snapshot_batch(
+                ecosystem,
+                0,
+                DiscoveryCursor::default(),
+                initial_cursor.clone(),
+                200,
+                DiscoveryStanding::Published,
+                "initial snapshot metadata",
+            );
+            let source = first.source;
+            {
+                let mut store = DiscoveryStore::open(path.clone()).expect("open journal");
+                store.commit(first).expect("commit initial snapshot");
+
+                // The source cursor is intentionally unchanged. The captured
+                // local sequence is the CAS that orders this fresh snapshot.
+                let second = snapshot_batch(
+                    ecosystem,
+                    1,
+                    initial_cursor.clone(),
+                    initial_cursor.clone(),
+                    150,
+                    DiscoveryStanding::Yanked,
+                    "updated snapshot metadata",
+                );
+                store
+                    .commit(second)
+                    .expect("commit fresh snapshot under CAS");
+                assert_eq!(store.sequence(source), Some(2));
+                assert_eq!(store.cursor(source), initial_cursor);
+                assert_eq!(
+                    store.search_revision(),
+                    2,
+                    "the changed searchable metadata is projected once"
+                );
+            }
+
+            let reopened = DiscoveryStore::open(path.clone()).expect("reopen journal");
+            let selected = reopened
+                .fact(
+                    source,
+                    match ecosystem {
+                        RegistryEcosystem::Npm => "pkg:npm/example@1.0.0",
+                        RegistryEcosystem::Nuget => "pkg:nuget/Widget@1.0.0",
+                        _ => unreachable!(),
+                    },
+                )
+                .expect("latest snapshot fact survives reopen");
+            assert_eq!(selected.standing, DiscoveryStanding::Yanked);
+            assert_eq!(
+                selected.metadata.description,
+                DiscoveryFacet::Known("updated snapshot metadata".to_owned())
+            );
+            assert_eq!(selected.observed_at.as_unix_millis(), 150);
+            assert_eq!(reopened.sequence(source), Some(2));
+            drop(reopened);
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn typed_head_cannot_be_downgraded_to_snapshot_under_a_fresh_cas() {
+        let path = temp_path("typed-to-snapshot-downgrade");
+        let initial_cursor = cursor("typed-position");
+        let first = batch(
+            DiscoveryCursor::default(),
+            initial_cursor.clone(),
+            "1.0.0",
+            DiscoveryStanding::Published,
+            "2026-09-01T00:00:00Z",
+        );
+        let source = first.source;
+        {
+            let mut store = DiscoveryStore::open(path.clone()).expect("open journal");
+            store.commit(first).expect("commit typed event");
+            let snapshot = snapshot_batch(
+                RegistryEcosystem::Nuget,
+                1,
+                initial_cursor.clone(),
+                cursor("snapshot-position"),
+                250,
+                DiscoveryStanding::Yanked,
+                "unsequenced replacement",
+            );
+            assert!(matches!(
+                store.commit(snapshot),
+                Err(DiscoveryStoreError::Conflict)
+            ));
+            assert_eq!(store.sequence(source), Some(1));
+            assert_eq!(store.cursor(source), initial_cursor);
+            assert_eq!(
+                store
+                    .fact(source, "pkg:nuget/Widget@1.0.0")
+                    .expect("typed head remains selected")
+                    .source_event,
+                DiscoverySourceEvent::NugetCatalog {
+                    timestamp: DiscoveryTimestamp::parse_nuget_catalog_timestamp(
+                        "2026-09-01T00:00:00Z"
+                    )
+                    .expect("timestamp"),
+                    commit_id: "test-2026-09-01T00:00:00Z".to_owned(),
+                }
+            );
+        }
+        let reopened = DiscoveryStore::open(path.clone()).expect("reopen journal");
+        assert_eq!(reopened.sequence(source), Some(1));
+        assert_eq!(reopened.cursor(source), initial_cursor);
+        assert_eq!(
+            reopened
+                .fact(source, "pkg:nuget/Widget@1.0.0")
+                .expect("typed event survived reopen")
+                .standing,
+            DiscoveryStanding::Published
+        );
+        drop(reopened);
+        let _ = fs::remove_file(path);
     }
 
     #[test]
