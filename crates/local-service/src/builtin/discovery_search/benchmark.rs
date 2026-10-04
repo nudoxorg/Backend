@@ -640,6 +640,8 @@ impl BenchmarkIndex {
                 .get("fields")
                 .and_then(Value::as_object)
                 .ok_or_else(|| "update fields must be a JSON object".to_owned())?;
+            let mut normalized_field_updates = field_updates.clone();
+            normalize_deprecation_fields(&mut normalized_field_updates)?;
             let existing = self
                 .store
                 .fact(source, coordinate.as_str())
@@ -653,7 +655,7 @@ impl BenchmarkIndex {
                 .get_mut("fields")
                 .and_then(Value::as_object_mut)
                 .ok_or_else(|| "indexed document fields must be an object".to_owned())?;
-            for (field, value) in field_updates {
+            for (field, value) in &normalized_field_updates {
                 fields.insert(field.clone(), value.clone());
             }
             let latest_observed_at = self
@@ -970,6 +972,7 @@ fn parse_document(row: Value) -> Result<BenchmarkDocument, String> {
             skip_reason: Some("ecosystem_not_supported_by_registry_discovery_ranker"),
         });
     };
+    normalize_deprecation_row(&mut row)?;
     let coordinate =
         ProductPackageCoordinate::parse(purl_for_row(&row, ecosystem_name)?).map_err(|error| {
             format!(
@@ -987,6 +990,24 @@ fn parse_document(row: Value) -> Result<BenchmarkDocument, String> {
         forge_document: None,
         skip_reason: None,
     })
+}
+
+fn normalize_deprecation_row(row: &mut Value) -> Result<(), String> {
+    match row.get_mut("fields") {
+        None => Ok(()),
+        Some(Value::Object(fields)) => normalize_deprecation_fields(fields),
+        Some(_) => Err("document fields must be a JSON object".to_owned()),
+    }
+}
+
+fn normalize_deprecation_fields(fields: &mut serde_json::Map<String, Value>) -> Result<(), String> {
+    if fields.contains_key("deprecation") && fields.contains_key("deprecated") {
+        return Err("fields cannot include both deprecation and deprecated".to_owned());
+    }
+    if let Some(legacy) = fields.remove("deprecated") {
+        fields.insert("deprecation".to_owned(), legacy);
+    }
+    Ok(())
 }
 
 fn ecosystem(name: &str) -> Option<RegistryEcosystem> {
@@ -1083,6 +1104,9 @@ fn fact_from_row_with_event(
     let keywords = string_list_facet(fields.get("keywords"), "keywords")?;
     let license = string_facet(fields.get("license"), "license")?;
     let published_at = string_facet(fields.get("published_at"), "published_at")?;
+    if fields.contains_key("deprecation") && fields.contains_key("deprecated") {
+        return Err("fields cannot include both deprecation and deprecated".to_owned());
+    }
     let deprecation = string_facet(
         fields
             .get("deprecation")
@@ -1135,6 +1159,7 @@ fn sync_document_metadata_fields(
         .get_mut("fields")
         .and_then(Value::as_object_mut)
         .ok_or_else(|| "indexed document fields must be an object".to_owned())?;
+    normalize_deprecation_fields(fields)?;
     sync_metadata_facet(fields, "aliases", &metadata.aliases)?;
     sync_metadata_facet(fields, "description", &metadata.description)?;
     sync_metadata_facet(fields, "keywords", &metadata.keywords)?;
@@ -1153,14 +1178,7 @@ fn sync_metadata_facet<T: serde::Serialize>(
     name: &str,
     facet: &DiscoveryFacet<T>,
 ) -> Result<(), String> {
-    let provenance_field = fields
-        .get(name)
-        .or_else(|| {
-            (name == "deprecation")
-                .then(|| fields.get("deprecated"))
-                .flatten()
-        })
-        .cloned();
+    let provenance_field = fields.get(name).cloned();
     let source_snapshot_id = provenance_field
         .as_ref()
         .and_then(|value| value.get("source_snapshot_id"))
@@ -1722,6 +1740,9 @@ fn proof_from_row(row: &Value) -> Result<[u8; 32], String> {
 }
 
 fn decode_hex(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64 {
+        return None;
+    }
     let mut output = [0_u8; 32];
     for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
         let high = hex_nibble(pair[0])?;
@@ -1888,6 +1909,129 @@ mod benchmark_contract_tests {
     }
 
     #[test]
+    fn deprecation_facet_keeps_unknown_absent_and_known_empty_distinct() {
+        assert_eq!(
+            string_facet(None, "deprecation").expect("missing legacy facet"),
+            DiscoveryFacet::Unknown
+        );
+        assert_eq!(
+            string_facet(Some(&Value::Null), "deprecation").expect("null legacy facet"),
+            DiscoveryFacet::Absent
+        );
+        assert_eq!(
+            string_facet(
+                Some(&json!({"status": "known", "values": [""]})),
+                "deprecation"
+            )
+            .expect("explicitly empty deprecation value"),
+            DiscoveryFacet::Known(String::new())
+        );
+    }
+
+    #[test]
+    fn legacy_deprecated_update_is_canonical_and_survives_reopen() {
+        let scratch = tempfile::tempdir().expect("temporary benchmark directory");
+        let corpus_path = scratch.path().join("corpus.jsonl");
+        let index_root = scratch.path().join("index");
+        let original = json!({
+            "document_id": "fixture:cargo/sample@1.0.0",
+            "ecosystem": "cargo",
+            "name": "sample",
+            "version": "1.0.0",
+            "fields": {
+                "deprecated": {"status": "known", "values": ["old replacement"]}
+            }
+        });
+        fs::write(
+            &corpus_path,
+            serde_json::to_vec(&original).expect("encode source fixture"),
+        )
+        .expect("write source fixture");
+        build(&corpus_path, &index_root).expect("build local journal fixture");
+
+        let source = registry_source(RegistryEcosystem::Cargo);
+        let package = coordinate("cargo", "sample");
+        let mut index = open(&index_root).expect("open local journal fixture");
+        let original_fact = index
+            .store
+            .fact(source, package.as_str())
+            .expect("original package fact");
+        assert_eq!(
+            original_fact.metadata.deprecation,
+            DiscoveryFacet::Known("old replacement".to_owned())
+        );
+        let row_fields = index.documents["fixture:cargo/sample@1.0.0"].row["fields"]
+            .as_object()
+            .expect("normalized benchmark fields");
+        assert!(row_fields.contains_key("deprecation"));
+        assert!(!row_fields.contains_key("deprecated"));
+
+        let sequence_before_ambiguous = index.store.sequence(source).unwrap_or(0);
+        let ambiguous = json!({
+            "op": "update",
+            "updates": [{
+                "document_id": "fixture:cargo/sample@1.0.0",
+                "fields": {
+                    "deprecation": {"status": "known", "values": ["canonical"]},
+                    "deprecated": {"status": "known", "values": ["legacy"]}
+                }
+            }]
+        });
+        assert!(index.update_request(&ambiguous).is_err());
+        assert_eq!(
+            index.store.sequence(source).unwrap_or(0),
+            sequence_before_ambiguous
+        );
+        assert_eq!(
+            index
+                .store
+                .fact(source, package.as_str())
+                .expect("fact unchanged after ambiguous request")
+                .metadata
+                .deprecation,
+            DiscoveryFacet::Known("old replacement".to_owned())
+        );
+
+        index
+            .update_request(&json!({
+                "op": "update",
+                "updates": [{
+                    "document_id": "fixture:cargo/sample@1.0.0",
+                    "fields": {
+                        "deprecated": {"status": "known", "values": ["new replacement"]}
+                    }
+                }]
+            }))
+            .expect("legacy alias update");
+        assert_eq!(
+            index
+                .store
+                .fact(source, package.as_str())
+                .expect("updated package fact")
+                .metadata
+                .deprecation,
+            DiscoveryFacet::Known("new replacement".to_owned())
+        );
+        drop(index);
+
+        let reopened = open(&index_root).expect("reopen updated local journal");
+        assert_eq!(
+            reopened
+                .store
+                .fact(source, package.as_str())
+                .expect("persisted package fact")
+                .metadata
+                .deprecation,
+            DiscoveryFacet::Known("new replacement".to_owned())
+        );
+        let persisted_fields = reopened.documents["fixture:cargo/sample@1.0.0"]["fields"]
+            .as_object()
+            .expect("canonical retained fields");
+        assert!(persisted_fields.contains_key("deprecation"));
+        assert!(!persisted_fields.contains_key("deprecated"));
+    }
+
+    #[test]
     fn malformed_present_facets_fail_instead_of_becoming_unknown() {
         assert!(string_list_facet(Some(&json!({"status": true})), "aliases").is_err());
         assert!(string_list_facet(Some(&json!("alias")), "aliases").is_err());
@@ -2026,6 +2170,48 @@ mod benchmark_contract_tests {
         let (event, raw_time) = parse_source_event(&nuget_row, nuget).expect("typed NuGet event");
         assert_eq!(raw_time.as_deref(), Some("2026-10-01T12:30:00.100Z"));
         assert!(matches!(event, DiscoverySourceEvent::NugetCatalog { .. }));
+    }
+
+    #[test]
+    fn npm_change_proof_requires_exactly_64_ascii_hex_characters() {
+        let source = registry_source(RegistryEcosystem::Npm);
+        let row_for = |proof: String| {
+            json!({
+                "source_event": {
+                    "kind": "npm_change",
+                    "sequence": 10,
+                    "revision": "1-abc",
+                    "change_proof": proof
+                },
+                "source_event_time": "00000000000000000010",
+                "fields": {}
+            })
+        };
+
+        let uppercase_proof = "AB".repeat(32);
+        let parsed = parse_source_event(&row_for(uppercase_proof), source)
+            .expect("64 uppercase ASCII hex characters are accepted");
+        let DiscoverySourceEvent::NpmChange { change_proof, .. } = parsed.0 else {
+            panic!("parsed event should be NPM typed change");
+        };
+        assert_eq!(change_proof, [0xAB; 32]);
+
+        for malformed in [
+            String::new(),
+            "a".to_owned(),
+            "ab".repeat(31),
+            "a".repeat(63),
+            "a".repeat(65),
+            "a".repeat(66),
+            "a".repeat(128),
+            "é".repeat(32),
+            "g".repeat(64),
+        ] {
+            assert!(
+                parse_source_event(&row_for(malformed), source).is_err(),
+                "malformed change proof should be rejected"
+            );
+        }
     }
 
     #[test]
