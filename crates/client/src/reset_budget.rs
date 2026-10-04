@@ -102,9 +102,14 @@ impl ResetBudget {
     }
 
     /// Admits one authenticated page whose descriptor claims `rows`, then
-    /// checks the time. The first page fixes the allowance; every later page
-    /// must agree with it and fit inside its page count.
+    /// checks the time. The existing deadline is checked before a descriptor
+    /// can fix or extend the allowance. The first page fixes the allowance;
+    /// every later page must agree with it and fit inside its page count.
     pub(crate) fn admit_page(&mut self, rows: u64, now: Instant) -> Result<(), ResetFault> {
+        // Proof decoding can itself cross the provisional deadline. Do not
+        // let a late first descriptor replace that expired deadline with a
+        // larger, descriptor-derived allowance.
+        self.check(now)?;
         let rows = ResetRows::admit(rows).ok_or(ResetFault::RowBudget)?;
         match &mut self.allowance {
             Allowance::Provisional { .. } => {
@@ -179,6 +184,36 @@ mod tests {
         assert_eq!(budget.check(clock.now()), Ok(()));
         clock.advance(Duration::from_nanos(1));
         assert_eq!(budget.check(clock.now()), Err(ResetFault::TimeBudget));
+    }
+
+    #[test]
+    fn first_descriptor_at_the_provisional_deadline_is_refused_without_binding() {
+        let clock = ManualClock::new();
+        let mut budget = begin(&clock);
+        let provisional_deadline = budget.ends();
+        clock.advance(RESET_BASE_TIME);
+
+        assert_eq!(
+            budget.admit_page(256, clock.now()),
+            Err(ResetFault::TimeBudget)
+        );
+        assert_eq!(budget.descriptor(), None);
+        assert_eq!(budget.ends(), provisional_deadline);
+    }
+
+    #[test]
+    fn first_descriptor_after_the_provisional_deadline_is_refused_without_binding() {
+        let clock = ManualClock::new();
+        let mut budget = begin(&clock);
+        let provisional_deadline = budget.ends();
+        clock.advance(RESET_BASE_TIME + Duration::from_nanos(1));
+
+        assert_eq!(
+            budget.admit_page(256, clock.now()),
+            Err(ResetFault::TimeBudget)
+        );
+        assert_eq!(budget.descriptor(), None);
+        assert_eq!(budget.ends(), provisional_deadline);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use backend_replication::{
     LocalControlExchangeDecision, LocalControlExchangeError, LocalControlExchangeProgress,
     LocalSubscriptionId, LocalSubscriptionOperation, LocalSubscriptionResponse,
 };
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const CREDIT: usize = PUBLICATION_CREDIT;
@@ -368,8 +368,7 @@ pub struct PublicationLease {
     lease: LocalSubscriptionId,
     cursor: Cursor,
     root: Arc<ViewRoot>,
-    term: Mutex<LeaseMs>,
-    held_on: Mutex<ConnectionId>,
+    held_on: ConnectionId,
 }
 
 impl PublicationLease {
@@ -386,31 +385,11 @@ impl PublicationLease {
     /// owner granted, so one lost renewal still leaves another chance.
     #[must_use]
     pub fn renew_after(&self) -> Duration {
-        self.term
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .renewal_interval()
+        PUBLICATION_LEASE.renewal_interval()
     }
 
     fn connection(&self) -> ConnectionId {
-        self.held_on
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }
-
-    fn set_connection(&self, connection: ConnectionId) {
-        *self
-            .held_on
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = connection;
-    }
-
-    fn set_term(&self, term: LeaseMs) {
-        *self
-            .term
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = term;
+        self.held_on.clone()
     }
 }
 
@@ -469,8 +448,7 @@ impl LocalSubscriptionTransport {
             lease,
             cursor,
             root,
-            term: Mutex::new(PUBLICATION_LEASE),
-            held_on: Mutex::new(self.connection()),
+            held_on: self.connection(),
         };
         if let Err(error) = self.admit_publications(&mut state, response, &mut observer) {
             let _ = self.cancel_publications_current(&state);
@@ -528,14 +506,14 @@ impl LocalSubscriptionTransport {
     /// Fences a quiet lease to its exact admitted cursor before an idle pause.
     /// # Errors
     /// Returns an error if the owner no longer retains this exact lease.
-    pub fn renew_publications(&mut self, state: &PublicationLease) -> Result<(), ClientError> {
+    pub fn renew_publications(&mut self, state: &mut PublicationLease) -> Result<(), ClientError> {
         let response = self.renew_lease(state.lease, state.cursor, CREDIT, LEASE_MS)?;
         match response {
             LocalSubscriptionResponse::Renewed {
                 cursor, lease_ms, ..
             } if cursor.as_ref() == state.cursor.encode_control().as_ref() => {
-                state.set_term(granted_term(lease_ms)?);
-                state.set_connection(self.connection());
+                granted_term(lease_ms)?;
+                state.held_on = self.connection();
                 Ok(())
             }
             _ => Err(protocol(
@@ -551,7 +529,7 @@ impl LocalSubscriptionTransport {
     /// cursor-fence failure.
     pub fn renew_publications_observed(
         &mut self,
-        state: &PublicationLease,
+        state: &mut PublicationLease,
         control: &mut ObservedPublicationControl<'_>,
     ) -> Result<(), PublicationExchangeError> {
         let mut observer = PublicationObserver::Observed(control);
@@ -565,10 +543,12 @@ impl LocalSubscriptionTransport {
             },
             PublicationOperation::Renew,
         )?;
-        let lease_ms = match response {
+        match response {
             LocalSubscriptionResponse::Renewed {
                 cursor, lease_ms, ..
-            } if cursor.as_ref() == state.cursor.encode_control().as_ref() => lease_ms,
+            } if cursor.as_ref() == state.cursor.encode_control().as_ref() => {
+                granted_term(lease_ms)?;
+            }
             _ => {
                 return Err(PublicationExchangeError::Invalid(protocol(
                     "publication renewal did not fence the admitted cursor",
@@ -576,8 +556,7 @@ impl LocalSubscriptionTransport {
             }
         }
         observer.check()?;
-        state.set_term(granted_term(lease_ms)?);
-        state.set_connection(self.connection());
+        state.held_on = self.connection();
         Ok(())
     }
 
@@ -618,8 +597,7 @@ impl LocalSubscriptionTransport {
         let mut expected_page: Box<[u8]> = Box::new([]);
         // Batch and reset-page replies omit the term, so their successful
         // Resume carries the exact term requested above. Quiet replies carry
-        // the grant explicitly and replace this only after validation.
-        let mut granted = PUBLICATION_LEASE;
+        // the grant explicitly and it must match that same fixed term.
         let (root, cursor) = loop {
             observer.check_budget(&budget, self.now())?;
             if response.lease() != state.lease {
@@ -635,7 +613,7 @@ impl LocalSubscriptionTransport {
                     if hydrator.is_some() || cursor.as_ref() != previous.encode_control().as_ref() {
                         return Err(invalid("publication acknowledgement changed its cursor"));
                     }
-                    granted = granted_term(lease_ms)?;
+                    granted_term(lease_ms)?;
                     break (Arc::clone(&state.root), previous);
                 }
                 LocalSubscriptionResponse::Batch {
@@ -739,8 +717,7 @@ impl LocalSubscriptionTransport {
         // Quiet Resume has already fenced this exact durable cursor; it
         // does not need another frame or a duplicate root publication.
         if cursor == previous {
-            state.set_term(granted);
-            state.set_connection(self.connection());
+            state.held_on = self.connection();
             return Ok(());
         }
         match observer.request(
@@ -757,8 +734,7 @@ impl LocalSubscriptionTransport {
             _ => return Err(invalid("publication acknowledgement cursor mismatch")),
         }
         observer.check_budget(&budget, self.now())?;
-        state.set_term(granted);
-        state.set_connection(self.connection());
+        state.held_on = self.connection();
         state.cursor = cursor;
         state.root = root;
         Ok(())
@@ -897,8 +873,7 @@ mod tests {
             lease,
             cursor,
             root,
-            term: Mutex::new(PUBLICATION_LEASE),
-            held_on: Mutex::new(transport.connection()),
+            held_on: transport.connection(),
         }
     }
     fn authenticated_pair(
@@ -1276,7 +1251,7 @@ mod tests {
             .expect("resume");
         assert!(Arc::ptr_eq(&state.root(), &root));
         assert_eq!(state.cursor(), cursor);
-        transport.renew_publications(&state).expect("renew");
+        transport.renew_publications(&mut state).expect("renew");
         transport.cancel_publications(&state).expect("cancel");
         owner.join().expect("owner");
     }
@@ -1308,7 +1283,7 @@ mod tests {
             PublicationObservationDecision::Continue
         };
         let mut control = ObservedPublicationControl::new(recovery_deadline, &cancelled, &mut tick);
-        let state = transport
+        let mut state = transport
             .acquire_publications_observed(Arc::clone(&root), cursor, &mut control)
             .expect("observed open");
         drop(control);
@@ -1353,7 +1328,7 @@ mod tests {
         };
         let mut control = ObservedPublicationControl::new(recovery_deadline, &cancelled, &mut tick);
         transport
-            .renew_publications_observed(&state, &mut control)
+            .renew_publications_observed(&mut state, &mut control)
             .expect("observed renewal");
         drop(control);
         owner.join().expect("owner");

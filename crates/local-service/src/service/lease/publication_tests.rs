@@ -680,12 +680,14 @@ fn renewing_at_the_cadence_the_owner_granted_keeps_a_quiet_lease_alive_and_skipp
         }));
     });
     let mut client = wire.client();
-    let state = client
+    let mut state = client
         .acquire_publications(base, cursor, &|| false)
         .expect("a quiet lease");
     for _ in 0..10 {
         clock.advance(state.renew_after());
-        client.renew_publications(&state).expect("on-time renewal");
+        client
+            .renew_publications(&mut state)
+            .expect("on-time renewal");
     }
     assert_eq!(
         wire.ledger().active,
@@ -694,7 +696,10 @@ fn renewing_at_the_cadence_the_owner_granted_keeps_a_quiet_lease_alive_and_skipp
     );
     // Skipping renewals for a whole term loses it, and the loss is typed.
     clock.advance(PUBLICATION_LEASE.duration());
-    let lost = client.renew_publications(&state).err().expect("expired");
+    let lost = client
+        .renew_publications(&mut state)
+        .err()
+        .expect("expired");
     assert!(matches!(
         &lost,
         backend_client::ClientError::Protocol(message) if message.contains("unknown subscription lease")
