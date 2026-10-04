@@ -1608,14 +1608,14 @@ impl InputHandlerOwner {
     }
 }
 
-struct InputHandlerLease {
-    owner: Rc<RefCell<InputHandlerOwner>>,
+struct InputHandlerLease<'a> {
+    owner: &'a RefCell<InputHandlerOwner>,
     generation: u64,
     entry: Option<InputHandlerEntry>,
 }
 
-impl InputHandlerLease {
-    fn acquire(owner: Rc<RefCell<InputHandlerOwner>>) -> Option<Self> {
+impl<'a> InputHandlerLease<'a> {
+    fn acquire(owner: &'a RefCell<InputHandlerOwner>) -> Option<Self> {
         let (generation, entry) = {
             let mut slot = owner.borrow_mut();
             let generation = slot.generation;
@@ -1639,7 +1639,7 @@ impl InputHandlerLease {
     }
 }
 
-impl Drop for InputHandlerLease {
+impl Drop for InputHandlerLease<'_> {
     fn drop(&mut self) {
         let mut slot = self.owner.borrow_mut();
         if slot.generation == self.generation && matches!(&slot.state, InputHandlerState::Borrowed)
@@ -1683,7 +1683,7 @@ impl PlatformInputHandler {
     }
 
     fn with_current<R>(&mut self, f: impl FnOnce(&mut InputHandlerEntry) -> R) -> Option<R> {
-        let mut lease = InputHandlerLease::acquire(self.owner.clone())?;
+        let mut lease = InputHandlerLease::acquire(&self.owner)?;
         Some(f(lease.entry()))
     }
 
