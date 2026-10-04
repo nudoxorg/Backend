@@ -101,9 +101,11 @@ pub fn build(corpus_path: &Path, index_root: &Path) -> Result<Value, String> {
             let mut previous_cursor = DiscoveryCursor::default();
             for (batch_index, chunk) in facts.chunks(MAX_DISCOVERY_PAGE_ITEMS).enumerate() {
                 let next_cursor = snapshot_cursor(source, batch_index.saturating_add(1))?;
+                let expected_base_sequence = store.sequence(source).unwrap_or(0);
                 store
                     .commit(DiscoveryBatch {
                         source,
+                        expected_base_sequence,
                         previous_cursor,
                         next_cursor: next_cursor.clone(),
                         source_high_watermark: next_cursor.clone(),
@@ -527,6 +529,7 @@ impl BenchmarkIndex {
                         == Some(package_name.as_str())
             })
             .count();
+        let expected_base_sequence = self.store.sequence(source).unwrap_or(0);
         self.update_sequence = self.update_sequence.saturating_add(1);
         let observed_at = self
             .store
@@ -541,6 +544,7 @@ impl BenchmarkIndex {
         self.store
             .commit(DiscoveryBatch {
                 source,
+                expected_base_sequence,
                 previous_cursor,
                 next_cursor: next_cursor.clone(),
                 source_high_watermark: next_cursor,
@@ -595,6 +599,7 @@ impl BenchmarkIndex {
             let source = document
                 .registry_source
                 .ok_or_else(|| format!("document is not searchable: {document_id}"))?;
+            let expected_base_sequence = self.store.sequence(source).unwrap_or(0);
             let coordinate = document
                 .coordinate
                 .clone()
@@ -632,6 +637,7 @@ impl BenchmarkIndex {
             self.store
                 .commit(DiscoveryBatch {
                     source,
+                    expected_base_sequence,
                     previous_cursor,
                     next_cursor: next_cursor.clone(),
                     source_high_watermark: next_cursor,
