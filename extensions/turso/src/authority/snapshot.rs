@@ -6,6 +6,8 @@
 //! frontier. Failed attempts retain their private staging directory and exact
 //! [`CreatedDirectory`] receipt so callers can inspect the incomplete artifact
 //! without the snapshot code deleting a name that may have been substituted.
+//! The API assumes a cooperative private owner: capability name checks do not
+//! exclude a same-UID actor racing path replacement or same-inode writes.
 
 use super::{
     AuthorityError, TursoAuthority,
@@ -37,8 +39,11 @@ static NEXT_STAGE_NAME: AtomicU64 = AtomicU64::new(0);
 /// The source's current page-count estimate must fit this limit before an
 /// output is created. While Turso executes `VACUUM INTO`, the output is
 /// checked whenever its async operation yields and again before admission.
-/// The caller must still provision free space: the engine writes directly to
-/// the filesystem and this API has no portable filesystem quota capability.
+/// File-size sampling happens synchronously during those polls; final hashing
+/// also reads synchronously and can block the caller thread. This is bounded
+/// admission and polling, not a filesystem quota: there is no portable quota
+/// capability, and output can grow between checks. The caller must provision
+/// free space.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AuthoritySnapshotBudget {
     max_output_bytes: u64,
@@ -103,7 +108,8 @@ impl AuthoritySnapshotReceipt {
 /// The object retains its exact staging-directory receipt. Dropping it does
 /// not delete the snapshot. Callers may reopen [`Self::path`] while retaining
 /// this value and can check that the recorded names still resolve through
-/// [`Self::verify_named`].
+/// [`Self::verify_named`]. This receipt is an observation at admission time;
+/// it does not prevent a same-UID actor from rewriting the inode later.
 #[derive(Debug)]
 pub struct TursoAuthoritySnapshot {
     staging: CreatedDirectory,
@@ -159,6 +165,141 @@ pub struct IncompleteAuthoritySnapshot {
     output_file_bytes: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SnapshotOperationState {
+    Ready,
+    Executing,
+    Finished,
+}
+
+/// A prepared snapshot that keeps the exact staging receipt alive across
+/// cancellation while exclusively borrowing its authority owner.
+///
+/// Preparation completes source preflight before creating a stage and returns
+/// without another suspension point. [`Self::run`] marks the operation as
+/// executing before its first await. If its future is cancelled, this object
+/// retains the exact staging receipt and refuses a second execution; call
+/// [`Self::into_failure`] to recover the cause and incomplete artifact.
+///
+/// The filesystem boundary assumes a cooperative private owner. Directory
+/// capability checks do not exclude same-UID namespace races, and the file
+/// identity recorded during admission does not exclude a rewrite of the same
+/// inode after read-only validation.
+pub struct AuthoritySnapshotOperation<'owner> {
+    authority: &'owner mut TursoAuthority,
+    staging: Option<CreatedDirectory>,
+    staging_path: PathBuf,
+    path: PathBuf,
+    path_text: String,
+    budget: AuthoritySnapshotBudget,
+    state: SnapshotOperationState,
+}
+
+impl fmt::Debug for AuthoritySnapshotOperation<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthoritySnapshotOperation")
+            .field("path", &self.path)
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AuthoritySnapshotOperation<'_> {
+    /// Intended output path reserved by this operation.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Exact staging receipt retained until execution completes or the
+    /// operation is converted to a failure.
+    #[must_use]
+    pub const fn staging_receipt(&self) -> Option<&CreatedDirectory> {
+        self.staging.as_ref()
+    }
+
+    /// Executes this prepared snapshot once. Cancellation leaves the private
+    /// stage and receipt in this operation for explicit recovery.
+    pub async fn run(&mut self) -> Result<TursoAuthoritySnapshot, AuthoritySnapshotFailure> {
+        if self.state != SnapshotOperationState::Ready {
+            let error = match self.state {
+                SnapshotOperationState::Ready => {
+                    AuthoritySnapshotError::OperationAlreadyFinished
+                }
+                SnapshotOperationState::Executing => AuthoritySnapshotError::OperationCancelled,
+                SnapshotOperationState::Finished => {
+                    AuthoritySnapshotError::OperationAlreadyFinished
+                }
+            };
+            return Err(failure(error, None));
+        }
+        self.state = SnapshotOperationState::Executing;
+        let Some(stage) = self.staging.as_ref() else {
+            self.state = SnapshotOperationState::Finished;
+            return Err(failure(
+                AuthoritySnapshotError::OperationAlreadyFinished,
+                None,
+            ));
+        };
+        let result = run_snapshot_attempt(
+            &self.authority.connection,
+            stage,
+            &self.staging_path,
+            &self.path,
+            &self.path_text,
+            self.budget,
+        )
+        .await;
+
+        self.state = SnapshotOperationState::Finished;
+        let Some(staging) = self.staging.take() else {
+            return Err(failure(
+                AuthoritySnapshotError::OperationAlreadyFinished,
+                None,
+            ));
+        };
+        match result {
+            Ok(receipt) => Ok(TursoAuthoritySnapshot {
+                staging,
+                staging_path: self.staging_path.clone(),
+                path: self.path.clone(),
+                receipt,
+            }),
+            Err(error) => Err(failure(
+                error,
+                Some(capture_incomplete(
+                    staging,
+                    self.staging_path.clone(),
+                    self.path.clone(),
+                )),
+            )),
+        }
+    }
+
+    /// Converts this operation into a failure while retaining any staged
+    /// artifact. Use after cancellation or when abandoning a prepared attempt.
+    #[must_use]
+    pub fn into_failure(mut self) -> AuthoritySnapshotFailure {
+        let error = match self.state {
+            SnapshotOperationState::Ready => AuthoritySnapshotError::OperationNotRun,
+            SnapshotOperationState::Executing => AuthoritySnapshotError::OperationCancelled,
+            SnapshotOperationState::Finished => {
+                AuthoritySnapshotError::OperationAlreadyFinished
+            }
+        };
+        let incomplete = match self.staging.take() {
+            Some(staging) => Some(capture_incomplete(
+                staging,
+                self.staging_path,
+                self.path,
+            )),
+            None => None,
+        };
+        failure(error, incomplete)
+    }
+}
+
 impl IncompleteAuthoritySnapshot {
     /// Intended output path, which may be absent or incomplete.
     #[must_use]
@@ -209,7 +350,8 @@ pub enum AuthoritySnapshotError {
     InvalidBudget,
     /// The output root is not a private absolute directory matching its handle.
     InvalidDestinationRoot,
-    /// The UTF-8 path cannot be safely represented in the bounded SQL statement.
+    /// The path cannot be safely represented by the pinned engine parser in
+    /// the bounded SQL statement.
     InvalidDestinationPath,
     /// The source database's current page estimate exceeds the output budget.
     SourceExceedsBudget { estimate: u64, limit: u64 },
@@ -217,6 +359,12 @@ pub enum AuthoritySnapshotError {
     PageEstimateOverflow,
     /// The output exceeded the requested limit during execution or admission.
     OutputExceedsBudget { observed: u64, limit: u64 },
+    /// A prepared operation was converted to a failure without being run.
+    OperationNotRun,
+    /// A previous `run` was cancelled; recover the receipt and do not retry it.
+    OperationCancelled,
+    /// The operation has already completed and cannot be run again.
+    OperationAlreadyFinished,
     /// A unique private staging directory could not be allocated after bounded retries.
     StageNameExhausted,
     /// The staging directory was created but could not be pinned by the platform.
@@ -240,7 +388,9 @@ impl fmt::Display for AuthoritySnapshotError {
                 "snapshot destination root must be an absolute, private directory matching its capability",
             ),
             Self::InvalidDestinationPath => {
-                formatter.write_str("snapshot destination path is not a bounded UTF-8 path")
+                formatter.write_str(
+                    "snapshot destination path cannot be represented by the bounded engine statement",
+                )
             }
             Self::SourceExceedsBudget { estimate, limit } => write!(
                 formatter,
@@ -253,6 +403,13 @@ impl fmt::Display for AuthoritySnapshotError {
                 formatter,
                 "authority snapshot output reached {observed} bytes above limit {limit} bytes"
             ),
+            Self::OperationNotRun => formatter.write_str("snapshot operation was not run"),
+            Self::OperationCancelled => formatter.write_str(
+                "snapshot operation was cancelled or already executing; recover its incomplete artifact",
+            ),
+            Self::OperationAlreadyFinished => {
+                formatter.write_str("snapshot operation has already finished")
+            }
             Self::StageNameExhausted => {
                 formatter.write_str("could not allocate a unique private snapshot staging directory")
             }
@@ -304,11 +461,12 @@ impl AuthoritySnapshotFailure {
         self.incomplete.as_ref()
     }
 
-    /// Transfers the incomplete artifact receipt to the caller for later
-    /// inspection or verified cleanup.
+    /// Transfers the failure cause and incomplete artifact receipt together.
     #[must_use]
-    pub fn into_incomplete(self) -> Option<IncompleteAuthoritySnapshot> {
-        self.incomplete
+    pub fn into_parts(
+        self,
+    ) -> (AuthoritySnapshotError, Option<IncompleteAuthoritySnapshot>) {
+        (self.error, self.incomplete)
     }
 }
 
@@ -325,135 +483,129 @@ impl std::error::Error for AuthoritySnapshotFailure {
 }
 
 impl TursoAuthority {
-    /// Creates a same-engine, single-file snapshot through this process-owned
+    /// Prepares a same-engine, single-file snapshot through this process-owned
     /// authority connection.
     ///
     /// The output is built with Turso `VACUUM INTO` while the owner and any
     /// other multiprocess-WAL clients remain open. The destination root must
     /// already be an owner-private directory, supplied both as a pinned
-    /// capability and its absolute path. This method creates a unique private
-    /// child staging directory and never overwrites or deletes an output name.
-    /// On error after staging, [`AuthoritySnapshotFailure::incomplete`] retains
-    /// the exact [`CreatedDirectory`] receipt. A complete return requires a
-    /// bounded output, successful schema preflight and `PRAGMA integrity_check`
+    /// capability and its absolute path. All async preflight finishes before
+    /// this method creates a unique private child staging directory. It returns
+    /// an operation that borrows this authority exclusively and retains the
+    /// exact [`CreatedDirectory`] receipt if its `run` future is cancelled. A
+    /// complete return requires a bounded output, successful schema preflight,
+    /// and `PRAGMA integrity_check`
     /// on a new read-only connection from this same Turso build.
     ///
     /// The returned object covers only the authority database. It does not
     /// capture projection files or Registry Discovery journals and makes no
     /// claim about a shared catalog frontier.
-    pub async fn snapshot(
-        &mut self,
+    pub async fn prepare_snapshot<'owner>(
+        &'owner mut self,
         destination_root: &DirectoryCapability,
         destination_root_path: &Path,
         budget: AuthoritySnapshotBudget,
-    ) -> Result<TursoAuthoritySnapshot, AuthoritySnapshotFailure> {
-        create_snapshot(self, destination_root, destination_root_path, budget).await
+    ) -> Result<AuthoritySnapshotOperation<'owner>, AuthoritySnapshotFailure> {
+        if !destination_root_path.is_absolute() {
+            return Err(failure(
+                AuthoritySnapshotError::InvalidDestinationRoot,
+                None,
+            ));
+        }
+        if let Err(error) = destination_root.validate_private() {
+            return Err(failure(AuthoritySnapshotError::Filesystem(error), None));
+        }
+        if let Err(error) = destination_root.verify_path(destination_root_path) {
+            return Err(failure(AuthoritySnapshotError::Filesystem(error), None));
+        }
+
+        let source_estimate = match database_page_estimate(&self.connection).await {
+            Ok(estimate) => estimate,
+            Err(error) => return Err(failure(error, None)),
+        };
+        if source_estimate > budget.max_output_bytes {
+            return Err(failure(
+                AuthoritySnapshotError::SourceExceedsBudget {
+                    estimate: source_estimate,
+                    limit: budget.max_output_bytes,
+                },
+                None,
+            ));
+        }
+
+        // This is synchronous after the last await. Every candidate output
+        // path is fully admitted before its stage is created.
+        let (staging, staging_path, path, path_text) =
+            create_staging(destination_root, destination_root_path)?;
+        Ok(AuthoritySnapshotOperation {
+            authority: self,
+            staging: Some(staging),
+            staging_path,
+            path,
+            path_text,
+            budget,
+            state: SnapshotOperationState::Ready,
+        })
     }
 }
 
-async fn create_snapshot(
-    authority: &mut TursoAuthority,
-    root: &DirectoryCapability,
-    root_path: &Path,
+async fn run_snapshot_attempt(
+    connection: &turso::Connection,
+    staging: &CreatedDirectory,
+    staging_path: &Path,
+    path: &Path,
+    path_text: &str,
     budget: AuthoritySnapshotBudget,
-) -> Result<TursoAuthoritySnapshot, AuthoritySnapshotFailure> {
-    if !root_path.is_absolute() {
-        return Err(failure(
-            AuthoritySnapshotError::InvalidDestinationRoot,
-            None,
-        ));
-    }
-    if let Err(error) = root.validate_private() {
-        return Err(failure(AuthoritySnapshotError::Filesystem(error), None));
-    }
-    if let Err(error) = root.verify_path(root_path) {
-        return Err(failure(AuthoritySnapshotError::Filesystem(error), None));
-    }
-
-    let source_estimate = match database_page_estimate(&authority.connection).await {
-        Ok(estimate) => estimate,
-        Err(error) => return Err(failure(error, None)),
-    };
-    if source_estimate > budget.max_output_bytes {
-        return Err(failure(
-            AuthoritySnapshotError::SourceExceedsBudget {
-                estimate: source_estimate,
-                limit: budget.max_output_bytes,
-            },
-            None,
-        ));
+) -> Result<AuthoritySnapshotReceipt, AuthoritySnapshotError> {
+    staging
+        .verify_named()
+        .map_err(AuthoritySnapshotError::Filesystem)?;
+    staging
+        .verify_path(staging_path)
+        .map_err(AuthoritySnapshotError::Filesystem)?;
+    staging
+        .capability()
+        .validate_private()
+        .map_err(AuthoritySnapshotError::Filesystem)?;
+    let entries = staging
+        .capability()
+        .entries(1)
+        .map_err(AuthoritySnapshotError::Filesystem)?;
+    if !entries.is_empty() {
+        return Err(AuthoritySnapshotError::OutputIdentityChanged);
     }
 
-    let (staging, staging_path) = match create_staging(root, root_path) {
-        Ok(staging) => staging,
-        Err(error) => return Err(error),
-    };
-    let path = staging_path.join(SNAPSHOT_FILE_NAME);
-    let path_text = match snapshot_sql_path(&path) {
-        Ok(path) => path,
-        Err(error) => {
-            return Err(failure(
-                error,
-                Some(capture_incomplete(staging, staging_path, path)),
-            ));
-        }
-    };
-
-    let attempt = async {
-        staging
-            .verify_named()
-            .map_err(AuthoritySnapshotError::Filesystem)?;
-        staging
-            .verify_path(&staging_path)
-            .map_err(AuthoritySnapshotError::Filesystem)?;
-        staging
-            .capability()
-            .validate_private()
-            .map_err(AuthoritySnapshotError::Filesystem)?;
-        let entries = staging
-            .capability()
-            .entries(1)
-            .map_err(AuthoritySnapshotError::Filesystem)?;
-        if !entries.is_empty() {
-            return Err(AuthoritySnapshotError::OutputIdentityChanged);
-        }
-
-        let sql = format!("VACUUM INTO '{path_text}'");
-        let execution = execute_bounded(
-            &authority.connection,
-            &sql,
-            staging.capability(),
-            budget.max_output_bytes,
-        )
-        .await?;
-        let receipt = verify_output(&staging, &staging_path, &path, budget, execution).await?;
-        Ok::<AuthoritySnapshotReceipt, AuthoritySnapshotError>(receipt)
-    }
-    .await;
-
-    match attempt {
-        Ok(receipt) => Ok(TursoAuthoritySnapshot {
-            staging,
-            staging_path,
-            path,
-            receipt,
-        }),
-        Err(error) => Err(failure(
-            error,
-            Some(capture_incomplete(staging, staging_path, path)),
-        )),
-    }
+    let sql = format!("VACUUM INTO '{path_text}'");
+    let execution = execute_bounded(
+        connection,
+        &sql,
+        staging.capability(),
+        budget.max_output_bytes,
+    )
+    .await?;
+    verify_output(staging, staging_path, path, budget, execution).await
 }
 
 fn create_staging(
     root: &DirectoryCapability,
     root_path: &Path,
-) -> Result<(CreatedDirectory, PathBuf), AuthoritySnapshotFailure> {
+) -> Result<(CreatedDirectory, PathBuf, PathBuf, String), AuthoritySnapshotFailure> {
     for _ in 0..MAX_STAGE_NAME_ATTEMPTS {
         let name = staging_name();
         let path = root_path.join(&name);
+        let file_path = path.join(SNAPSHOT_FILE_NAME);
+        let path_text =
+            snapshot_sql_path(&file_path).map_err(|error| failure(error, None))?;
         match root.create_private_dir_tracked(&name) {
-            Ok(staging) => return Ok((staging, path)),
+            Ok(staging) => {
+                if let Err(error) = root.sync_all() {
+                    return Err(failure(
+                        AuthoritySnapshotError::Filesystem(error),
+                        Some(capture_incomplete(staging, path, file_path)),
+                    ));
+                }
+                return Ok((staging, path, file_path, path_text));
+            }
             Err(DirectoryCreateFailure::NotCreated(error))
                 if error.kind() == io::ErrorKind::AlreadyExists =>
             {
@@ -463,16 +615,14 @@ fn create_staging(
                 return Err(failure(AuthoritySnapshotError::Filesystem(error), None));
             }
             Err(DirectoryCreateFailure::CreatedButUnready { directory, source }) => {
+                let sync_error = root.sync_all().err();
                 return Err(failure(
-                    AuthoritySnapshotError::Filesystem(source),
-                    Some(capture_incomplete(
-                        directory,
-                        path.clone(),
-                        path.join(SNAPSHOT_FILE_NAME),
-                    )),
+                    AuthoritySnapshotError::Filesystem(sync_error.unwrap_or(source)),
+                    Some(capture_incomplete(directory, path.clone(), file_path)),
                 ));
             }
             Err(DirectoryCreateFailure::CreatedButUnpinned(source)) => {
+                let source = root.sync_all().err().unwrap_or(source);
                 return Err(failure(
                     AuthoritySnapshotError::StageUnpinned { path, source },
                     None,
@@ -494,30 +644,22 @@ fn staging_name() -> String {
     )
 }
 
-fn snapshot_sql_path(path: &Path) -> Result<String, AuthoritySnapshotError> {
+pub(super) fn snapshot_sql_path(path: &Path) -> Result<String, AuthoritySnapshotError> {
     let text = path.to_str().ok_or_else(|| {
         AuthoritySnapshotError::Owner(AuthorityError::NonUtf8Path(path.to_owned()))
     })?;
     if text.contains('\0') {
         return Err(AuthoritySnapshotError::InvalidDestinationPath);
     }
-    let escaped_bytes = text.bytes().try_fold(0_usize, |length, byte| {
-        length.checked_add(if byte == b'\'' { 2 } else { 1 })
-    });
-    let Some(escaped_bytes) = escaped_bytes else {
-        return Err(AuthoritySnapshotError::InvalidDestinationPath);
-    };
-    if escaped_bytes > MAX_DESTINATION_SQL_BYTES - SNAPSHOT_SQL_FIXED_BYTES {
+    // The pinned fork's VACUUM INTO string-token parser does not interpret
+    // doubled apostrophes as an escaped quote. Reject them before stage create
+    // rather than risk writing to a different path than the receipt records.
+    if text.contains('\'')
+        || text.len() > MAX_DESTINATION_SQL_BYTES - SNAPSHOT_SQL_FIXED_BYTES
+    {
         return Err(AuthoritySnapshotError::InvalidDestinationPath);
     }
-    let mut escaped = String::with_capacity(escaped_bytes);
-    for character in text.chars() {
-        escaped.push(character);
-        if character == '\'' {
-            escaped.push('\'');
-        }
-    }
-    Ok(escaped)
+    Ok(text.to_owned())
 }
 
 async fn database_page_estimate(
@@ -708,25 +850,25 @@ fn digest_private_file(
     let mut buffer = [0_u8; SNAPSHOT_HASH_BUFFER_BYTES];
     let mut total = 0_u64;
     loop {
-        let read = file
+        let read_len = file
             .read(&mut buffer)
             .map_err(AuthoritySnapshotError::Filesystem)?;
-        if read == 0 {
+        if read_len == 0 {
             break;
         }
-        let read =
-            u64::try_from(read).map_err(|_| AuthoritySnapshotError::OutputExceedsBudget {
+        let read_bytes =
+            u64::try_from(read_len).map_err(|_| AuthoritySnapshotError::OutputExceedsBudget {
                 observed: u64::MAX,
                 limit: maximum,
             })?;
         total = total
-            .checked_add(read)
+            .checked_add(read_bytes)
             .filter(|total| *total <= maximum)
             .ok_or(AuthoritySnapshotError::OutputExceedsBudget {
                 observed: u64::MAX,
                 limit: maximum,
             })?;
-        hasher.update(&buffer[..read]);
+        hasher.update(&buffer[..read_len]);
     }
     Ok((*hasher.finalize().as_bytes(), total))
 }
