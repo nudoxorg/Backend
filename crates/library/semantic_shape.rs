@@ -1456,6 +1456,13 @@ mod tests {
 
     fn request_in_profile(names: &[&str], profile: LanguageProfile) -> SemanticShapeRequest {
         let mut selected = source();
+        if matches!(profile, LanguageProfile::Java(_)) {
+            let coordinate =
+                crate::PackageCoordinate::parse("pkg:maven/org.example/shape-fixture@0.1.0")
+                    .expect("fixture Java coordinate");
+            selected.package = crate::PackageReference::Purl(coordinate.clone());
+            selected.coordinate = coordinate;
+        }
         selected.profile = crate::SemanticLanguageProfile::new(profile);
         SemanticShapeRequest::new(
             crate::view_state_root(&[]),
