@@ -4074,7 +4074,8 @@ mod tests {
     }
 
     #[test]
-    fn zero_byte_capability_requires_the_exact_empty_blob_and_empty_range() {
+    fn zero_byte_capability_requires_the_exact_empty_blob_and_empty_range()
+    -> Result<(), std::io::Error> {
         let (issuer, mut claims, policy, client) = claims_and_policy();
         claims.object.payload_length = 0;
         claims.blob_hash = BlobHash(*blake3::hash(&[]).as_bytes());
@@ -4087,7 +4088,7 @@ mod tests {
                 client,
                 &capability,
                 claims.range,
-                now_unix_ms().unwrap()
+                now_unix_ms()?
             ),
             Ok(())
         );
@@ -4104,6 +4105,7 @@ mod tests {
             issuer.issue(wrong_hash),
             Err(TransportError::Rejected(RejectCode::InvalidCapability))
         ));
+        Ok(())
     }
 
     #[test]

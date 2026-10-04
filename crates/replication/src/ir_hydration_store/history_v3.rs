@@ -2060,9 +2060,14 @@ mod tests {
         let mut select_source = source_copy(&source);
         let selection = SelectedSemanticPlane::select(&mut select_source, &manifest, image, kind)
             .expect("select current native core plane");
+        let selected_plane = manifest.plane(kind);
+        assert!(
+            selected_plane.is_some(),
+            "selected native manifest retains its requested core plane"
+        );
         for (segment, descriptor) in segments
             .iter()
-            .zip(manifest.plane(kind).unwrap().segments())
+            .zip(selected_plane.into_iter().flat_map(|plane| plane.segments()))
         {
             let payload = segment.bytes();
             let request = backend_semantic::ir::SemanticRangeRequest {

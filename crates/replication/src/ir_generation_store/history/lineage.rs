@@ -1622,8 +1622,8 @@ mod tests {
                 .borrow()
                 .expect("parse")
                 .verify(&history, &RejectLineageConfirmationsV1)
-                .unwrap_err(),
-            LineageEdgeSetErrorV1::NotDirectTransition
+                .err(),
+            Some(LineageEdgeSetErrorV1::NotDirectTransition)
         );
     }
     fn make_wire(edges: &[LineageEdgeV1]) -> OwnedTypedLineageEdgeSetV1 {
@@ -1663,8 +1663,8 @@ mod tests {
         assert_eq!(
             parsed
                 .verify(&history, &RejectLineageConfirmationsV1)
-                .unwrap_err(),
-            LineageEdgeSetErrorV1::GenerationRootMismatch
+                .err(),
+            Some(LineageEdgeSetErrorV1::GenerationRootMismatch)
         );
 
         let mut forged_child = wire.as_bytes().to_vec();
@@ -1674,8 +1674,8 @@ mod tests {
         assert_eq!(
             parsed
                 .verify(&history, &RejectLineageConfirmationsV1)
-                .unwrap_err(),
-            LineageEdgeSetErrorV1::GenerationRootMismatch
+                .err(),
+            Some(LineageEdgeSetErrorV1::GenerationRootMismatch)
         );
     }
 
@@ -1807,8 +1807,8 @@ mod tests {
             wire.borrow()
                 .expect("parse")
                 .verify(&history, &RejectLineageConfirmationsV1)
-                .unwrap_err(),
-            LineageEdgeSetErrorV1::NotStrictAncestor
+                .err(),
+            Some(LineageEdgeSetErrorV1::NotStrictAncestor)
         );
 
         history
@@ -1829,8 +1829,8 @@ mod tests {
                 .borrow()
                 .expect("parse forged origin root")
                 .verify(&history, &RejectLineageConfirmationsV1)
-                .unwrap_err(),
-            LineageEdgeSetErrorV1::NotStrictAncestor
+                .err(),
+            Some(LineageEdgeSetErrorV1::NotStrictAncestor)
         );
     }
 
@@ -1865,8 +1865,8 @@ mod tests {
             wire.borrow()
                 .expect("parse")
                 .verify(&history, &RejectLineageConfirmationsV1)
-                .unwrap_err(),
-            LineageEdgeSetErrorV1::UnattestedConfirmation
+                .err(),
+            Some(LineageEdgeSetErrorV1::UnattestedConfirmation)
         );
         let verified = wire
             .borrow()
@@ -1921,8 +1921,8 @@ mod tests {
                 .borrow()
                 .expect("parse transplanted proof")
                 .verify(&other_transition, &authority)
-                .unwrap_err(),
-            LineageEdgeSetErrorV1::UnattestedConfirmation
+                .err(),
+            Some(LineageEdgeSetErrorV1::UnattestedConfirmation)
         );
 
         assert_eq!(

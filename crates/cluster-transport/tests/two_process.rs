@@ -1268,7 +1268,8 @@ async fn zero_byte_cas_member_uses_authenticated_empty_range_and_cold_resumes() 
 }
 
 #[test]
-fn admission_rejects_wrong_peer_work_and_exact_fence_before_catalog_access() {
+fn admission_rejects_wrong_peer_work_and_exact_fence_before_catalog_access()
+-> Result<(), std::io::Error> {
     let issuer = CapabilityIssuer::new(secret(11));
     let server_key = secret(12);
     let allowed_client = secret(13);
@@ -1304,7 +1305,7 @@ fn admission_rejects_wrong_peer_work_and_exact_fence_before_catalog_access() {
             wrong_client.public(),
             &valid,
             valid.claims.range,
-            now_unix_ms().unwrap()
+            now_unix_ms()?
         ),
         Err(backend_cluster_transport::RejectCode::PeerNotAllowed)
     );
@@ -1320,7 +1321,7 @@ fn admission_rejects_wrong_peer_work_and_exact_fence_before_catalog_access() {
                 allowed_client.public(),
                 &capability,
                 capability.claims.range,
-                now_unix_ms().unwrap(),
+                now_unix_ms()?,
             ),
             Err(backend_cluster_transport::RejectCode::ScopeMismatch)
         );
@@ -1331,10 +1332,11 @@ fn admission_rejects_wrong_peer_work_and_exact_fence_before_catalog_access() {
             allowed_client.public(),
             &valid,
             valid.claims.range,
-            now_unix_ms().unwrap(),
+            now_unix_ms()?,
         ),
         Ok(())
     );
+    Ok(())
 }
 
 #[tokio::test]
