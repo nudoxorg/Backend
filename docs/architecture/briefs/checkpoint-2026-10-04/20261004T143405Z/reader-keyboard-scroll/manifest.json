@@ -1,0 +1,49 @@
+{
+  "kind": "UNACCEPTED_SOURCE_RECOVERY_CHECKPOINT",
+  "created_utc": "2026-10-04T14:34:05.525129+00:00",
+  "label": "reader-keyboard-scroll",
+  "branch": "codex/checkpoint-reader-keyboard-scroll-20261004T143405Z",
+  "worktree": "/private/tmp/nudox-reader-keyboard-scroll-20261004",
+  "parent": "d8ce9ce61e040cb0e8f60a243aef92204d48e035",
+  "merge_parents": [],
+  "working_source_tree": "2acd9d816ed36fdf3b9c90c10b98ee250e2a318f",
+  "description": "Frozen Reader PageDown/PageUp/Home/End with current mounted visit, bounded viewport, exact native focus and shared Graph/Settings scroll-body admission. Mounted test source covers partial final pages, zoom/resize, native focus, native editor exclusion and Graph camera preservation. Source parse and diff checks passed. Rust and native captures remain unrun; not a visually accepted GUI integration.",
+  "changed_paths": [
+    "apps/desktop/src/shell/keys.rs",
+    "apps/desktop/src/shell/mod.rs",
+    "apps/desktop/src/shell/reader.rs",
+    "apps/desktop/src/shell/reader_scroll_tests.rs",
+    "apps/desktop/src/shell/root.rs"
+  ],
+  "source_sha256": {
+    "apps/desktop/src/shell/keys.rs": "da657759c6c03d4a43657f1c288bd9d530cba7dc044e6860ec7a9441bca3c52f",
+    "apps/desktop/src/shell/mod.rs": "25e2e5d1f8bed2ef2cd8bf03ee272f18c807c5aa6ff02827ae953c721274cad1",
+    "apps/desktop/src/shell/reader.rs": "adb94c593d2cc44fdcf1bd60c84cdf0290a16ba5639b280a25baa7e9be3f07eb",
+    "apps/desktop/src/shell/reader_scroll_tests.rs": "7b5f1c3373f0881e4cfcf59176e22ff5ca6ea3906e4d9b79926452466dc2ee97",
+    "apps/desktop/src/shell/root.rs": "d561398f4b2556daddb9074690d1b5a3c819458d744c39301ab5b7d1a707daa4"
+  },
+  "untracked_source_paths": [
+    "apps/desktop/src/shell/reader_scroll_tests.rs"
+  ],
+  "original_index_sha256": "c31941f969417e876e59ea2d20b33f412649d51974bdddfa6a13fd25ba742bb3",
+  "original_index_stages_sha256": "e0d1cbd8269d65bd0edd471433e793cc9485c48e14e87a9f86618664d215ff69",
+  "original_status_sha256": "2d6853508cfb8a32d909944b39d721cd2d8c44e4427cc3d19e93ec9c64e44a24",
+  "preserved_index_blobs": [
+    "0a66762db05809c8922bb5a2a38ab4ad6dddabbe",
+    "79a829bc617e2b2d8865b2873edf0c3d35b6237c",
+    "8bcef04069d654f4d388d25f4bf1bab449e815d5",
+    "ab6b1a22113c2b322fcb608d88c9ba46c4190d5b"
+  ],
+  "related_slice_checkpoints": [],
+  "evidence": {
+    "preserved_files": {
+      "reader-scroll.patch": "/private/tmp/nudox-reader-keyboard-scroll-20261004.patch"
+    }
+  },
+  "acceptance": {
+    "full_root_review": false,
+    "combined_cargo_validation": false,
+    "native_gui_validation": false,
+    "release_or_deployment": false
+  }
+}

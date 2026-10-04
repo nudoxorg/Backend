@@ -20,7 +20,7 @@ use super::hints::{HintMode, Hinted, Step};
 use super::keyboard::KeyboardClaim;
 use super::keys::{self, CONTEXT};
 use super::pins::Pins;
-use super::reader::{Reader, ViewportScroll, Way, mounts_scroll_body};
+use super::reader::{Reader, Way};
 use super::region::{Links, a11y_inert, measured, new_region};
 use super::reveal::{HOLD, RevealHold};
 use super::shelf::Shelf;
@@ -1342,8 +1342,6 @@ impl Shell {
             }
         });
         self.notify_zone(zone, cx);
-        // The root's ReaderViewport key context follows the custom zone.
-        if old == Zone::Reader || zone == Zone::Reader { cx.notify(); }
     }
 
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1783,28 +1781,6 @@ impl Shell {
     fn page_input_allowed(&self, cx: &App) -> bool {
         self.background_input_allowed() && !self.ask_open && !self.shelf_over_open
             && !matches!(self.links.snapshot(cx).overlay(), Some(Overlay::CommandPalette | Overlay::AddProject))
-    }
-
-    /// The Shell's persistent focus handle stands for the active custom
-    /// zone. Native Reader descendants can also own these keys directly;
-    /// a Shelf, editor, menu or covered page never lends its focus to Reader.
-    fn scroll_reader(&mut self, command: ViewportScroll, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.page_input_allowed(cx) || super::titlebar::menu_open(window, cx)
-            || window.has_input_handler()
-            || (window.root::<gpui_component::Root>().flatten().is_some() && window.has_focused_input(cx))
-        {
-            cx.propagate();
-            return;
-        }
-        let shell_reader = self.zone == Zone::Reader && self.focus.is_focused(window);
-        let native_reader = self.reader.read(cx).owns_keyboard_scroll_focus(window, cx);
-        if !shell_reader && !native_reader {
-            cx.propagate();
-            return;
-        }
-        if !self.reader.update(cx, |reader, cx| reader.keyboard_scroll(command, cx)) {
-            cx.propagate();
-        }
     }
 
     pub(crate) fn mode_input_allowed(&self, cx: &App) -> bool {
@@ -2358,10 +2334,6 @@ impl Render for Shell {
 
         let mut context = KeyContext::new_with_defaults();
         context.add(CONTEXT);
-        if self.zone == Zone::Reader && self.focus.is_focused(window)
-            && mounts_scroll_body(self.links.store.read(cx), snapshot.route(), snapshot.page_overlay()) {
-            context.add(keys::READER_VIEWPORT);
-        }
         if self.ask_open {
             // The modal owns Tab, arrows, and result activation. Leave shell
             // shortcuts available while its plain zone bindings step aside.
@@ -2446,10 +2418,6 @@ impl Render for Shell {
             .key_context(context)
             .on_action(cx.listener(|shell, _: &keys::FocusNext, window, cx| shell.with_background_input(|shell| shell.walk(1, window, cx))))
             .on_action(cx.listener(|shell, _: &keys::FocusPrev, window, cx| shell.with_background_input(|shell| shell.walk(-1, window, cx))))
-            .on_action(cx.listener(|shell, _: &keys::ReaderPageDown, window, cx| shell.scroll_reader(ViewportScroll::PageDown, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::ReaderPageUp, window, cx| shell.scroll_reader(ViewportScroll::PageUp, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::ReaderTop, window, cx| shell.scroll_reader(ViewportScroll::Top, window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::ReaderBottom, window, cx| shell.scroll_reader(ViewportScroll::Bottom, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::Activate, window, cx| shell.with_background_input(|shell| shell.activate(window, cx))))
             .on_action(cx.listener(|shell, _: &keys::Peek, window, cx| shell.with_background_input(|shell| shell.peek(window, cx))))
             .on_action(cx.listener(|shell, _: &keys::PeelSource, window, cx| shell.with_background_input(|shell| shell.peel(window, cx))))

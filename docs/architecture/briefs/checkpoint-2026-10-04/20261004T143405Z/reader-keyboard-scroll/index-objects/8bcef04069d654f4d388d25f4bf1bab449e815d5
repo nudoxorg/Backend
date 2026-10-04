@@ -14,14 +14,6 @@ actions!(
         FocusNext,
         /// The previous focusable.
         FocusPrev,
-        /// Scroll the Reader down by one mounted viewport.
-        ReaderPageDown,
-        /// Scroll the Reader up by one mounted viewport.
-        ReaderPageUp,
-        /// Scroll the Reader to its top.
-        ReaderTop,
-        /// Scroll the Reader to its bottom.
-        ReaderBottom,
         /// Open what the focus stands on.
         Activate,
         /// Peek the focused item (again: pin it).
@@ -102,7 +94,6 @@ actions!(
 /// The key context of the shell root.
 pub(crate) const CONTEXT: &str = "NudoxShell";
 pub(crate) const NATIVE_CONTROL: &str = facet::controls::button::NATIVE_CONTROL;
-pub(crate) const READER_VIEWPORT: &str = "ReaderViewport";
 
 /// A command the table binds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -111,14 +102,6 @@ pub(crate) enum Command {
     FocusNext,
     /// K / ↑.
     FocusPrev,
-    /// Page Down.
-    ReaderPageDown,
-    /// Page Up.
-    ReaderPageUp,
-    /// Home.
-    ReaderTop,
-    /// End.
-    ReaderBottom,
     /// ↵.
     Activate,
     /// Space.
@@ -194,8 +177,6 @@ pub(crate) enum Scope {
     Shell,
     /// Outside text inputs (plain letters and arrows).
     Plain,
-    /// Only the Reader's focused viewport or one of its native descendants.
-    Reader,
 }
 
 /// One row of the table.
@@ -229,10 +210,6 @@ pub(crate) const TABLE: &[Key] = &[
     key(Command::FocusNext, "down", "↓", Scope::Plain, "walk focus down"),
     key(Command::FocusPrev, "k", "K", Scope::Plain, "walk focus up"),
     key(Command::FocusPrev, "up", "↑", Scope::Plain, "walk focus up"),
-    key(Command::ReaderPageDown, "pagedown", "Page Down", Scope::Reader, "scroll the page down"),
-    key(Command::ReaderPageUp, "pageup", "Page Up", Scope::Reader, "scroll the page up"),
-    key(Command::ReaderTop, "home", "Home", Scope::Reader, "scroll to the top of the page"),
-    key(Command::ReaderBottom, "end", "End", Scope::Reader, "scroll to the bottom of the page"),
     key(Command::Activate, "enter", "↵", Scope::Plain, "open what the focus stands on"),
     key(Command::Peek, "space", "Space", Scope::Plain, "peek; again to pin"),
     key(Command::PeelSource, "s", "S", Scope::Plain, "the focused declaration's code"),
@@ -286,15 +263,10 @@ fn binding_context(key: &Key) -> String {
     // Graph, menus and Compare each own a different part of the keyboard.
     let graph_owns = matches!(key.command,
         Command::FocusNext | Command::FocusPrev | Command::Activate | Command::Ask | Command::Escape | Command::Peek | Command::Tour);
-    let menu_owns = key.scope != Scope::Shell || key.command == Command::Escape;
+    let menu_owns = key.scope == Scope::Plain || key.command == Command::Escape;
     let compare_owns = matches!(key.command, Command::FocusNext | Command::FocusPrev);
     let mut context = String::from(CONTEXT);
-    if key.scope != Scope::Shell { context.push_str(" && !Input && !Ask && !hints && !NativeDialog && !Drawer && !HandControl"); }
-    if key.scope == Scope::Reader {
-        context.push_str(" && ");
-        context.push_str(READER_VIEWPORT);
-        context.push_str(" && !Graph");
-    }
+    if key.scope == Scope::Plain { context.push_str(" && !Input && !Ask && !hints && !NativeDialog && !Drawer && !HandControl"); }
     if matches!(key.command, Command::NextZone | Command::PrevZone) {
         context.push_str(" && !NativeFolio && !HandControl");
     }
@@ -318,10 +290,6 @@ fn binding(key: &Key) -> KeyBinding {
     match key.command {
         Command::FocusNext => KeyBinding::new(chord, FocusNext, context),
         Command::FocusPrev => KeyBinding::new(chord, FocusPrev, context),
-        Command::ReaderPageDown => KeyBinding::new(chord, ReaderPageDown, context),
-        Command::ReaderPageUp => KeyBinding::new(chord, ReaderPageUp, context),
-        Command::ReaderTop => KeyBinding::new(chord, ReaderTop, context),
-        Command::ReaderBottom => KeyBinding::new(chord, ReaderBottom, context),
         Command::Activate => KeyBinding::new(chord, Activate, context),
         Command::Peek => KeyBinding::new(chord, Peek, context),
         Command::PeelSource => KeyBinding::new(chord, PeelSource, context),
