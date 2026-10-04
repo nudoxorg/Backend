@@ -858,7 +858,8 @@ const REOPENED_SIGNATURE_CARRIERS: &[u8] = concat!(
     "    def quiet(self): ...\n",
     "def value(value: int) -> int: ...\n",
     "def echo(item: Left) -> Right: ...\n",
-);
+)
+.as_bytes();
 
 #[test]
 fn reopened_python_signatures_keep_exact_owner_carrier_bindings() -> Result<(), TestError> {
@@ -888,7 +889,7 @@ fn reopened_python_signatures_keep_exact_owner_carrier_bindings() -> Result<(), 
                 Some(SignatureCarrierBindingsObservation::Unavailable) | None => None,
             };
 
-            let brewer = entity(b"Brewer", ItemKind::Class, None)
+            let brewer = entity(b"Brewer", ItemKind::Record, None)
                 .ok_or(TestError::Falsified("Brewer class absent after reopen"))?;
             let brew = entity(b"brew", ItemKind::Function, Some(brewer.id))
                 .ok_or(TestError::Falsified("brew method absent after reopen"))?;

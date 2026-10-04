@@ -17,12 +17,12 @@ use backend_extension_turso::{
 use backend_replication::{
     ByteRange, DurableSemanticRangeStore, FileSemanticRangeStore, HydrationCredits,
     IrHydrationPoll, LocalControlLimits, LocalControlRequest, SemanticRangeClientCheckpoint,
-    SemanticRangeClientProgress, SemanticRangeGet, SemanticRangeRequest, SemanticTargetKey,
+    SemanticRangeClientProgress, SemanticRangeGet, SemanticTargetKey,
     TransportLimits, VerifiedSemanticSegment, encode_request,
 };
 use backend_semantic::ir::{
     GenerationId, SemanticIrPlane, SemanticManifestRoot, SemanticPlaneImageKey, SemanticPlaneKind,
-    SemanticPlaneRoot,
+    SemanticPlaneRoot, SemanticRangeRequest,
 };
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
 use backend_store::{ArtifactBudget, FileStore, UntrustedObjectId};
@@ -1575,7 +1575,7 @@ fn run_storage_case(
         LanguageProfile::Rust(RustEdition::Rust2024),
     )
     .expect("canonical selected target");
-    let mut client = LocalSemanticIndexClient::connect(&endpoint, target)
+    let mut client = LocalSemanticIndexClient::connect(&endpoint, target.clone())
         .expect("connect normal semantic index client after restart");
     let catalog = client
         .fetch_selected_catalog()
