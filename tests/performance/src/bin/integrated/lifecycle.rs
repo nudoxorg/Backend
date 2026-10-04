@@ -18,16 +18,32 @@ pub(super) fn run_turso_child(args: &[String]) -> BenchResult<()> {
     let root = PathBuf::from(args.first().ok_or("--child-turso needs a root")?);
     let mode = args.get(1).ok_or("--child-turso needs a mode")?;
     let ready = args.get(2).map(PathBuf::from);
-    fs::create_dir_all(&root)?;
-    let (view, _) = build_view(&lifecycle_class())?;
     let database_path = root.join(backend_extension_turso::FILE_NAME);
-    let mut projection = futures_executor::block_on(TursoProjection::open(&database_path))?;
-    let update = futures_executor::block_on(projection.synchronize(&view))?;
+    let (mut projection, view, update) = open_or_seed_view(
+        &database_path,
+        {
+            let class = lifecycle_class();
+            let (initial, _) = build_view(&class)?;
+            initial
+        },
+        || build_view(&lifecycle_class()).map(|(current, _)| current),
+    )?;
     if !matches!(
         update,
         ProjectionUpdate::Rebuilt { .. } | ProjectionUpdate::Reused { .. }
     ) {
         return Err(format!("unexpected lifecycle child update: {update:?}").into());
+    }
+    let revision = futures_executor::block_on(projection.revision())?;
+    let package_id = RowId::Package(package_key("polyglot@0.1.0")).stable_key();
+    let rooted = futures_executor::block_on(projection.lookup_label("polyglot@0.1.0", 16))?;
+    if revision.root() != *view.root().as_bytes()
+        || rooted.root != revision.root()
+        || rooted.ids.as_ref() != [package_id]
+    {
+        return Err(
+            "lifecycle child did not retain the exact admitted view and package row".into(),
+        );
     }
     if mode == "hold" {
         let ready = ready.ok_or("hold mode needs a ready marker")?;
@@ -35,6 +51,24 @@ pub(super) fn run_turso_child(args: &[String]) -> BenchResult<()> {
         thread::sleep(Duration::from_secs(30));
     }
     Ok(())
+}
+
+fn verify_selected_projection(database_path: &Path) -> BenchResult<TursoStorageMeasurement> {
+    let projection = futures_executor::block_on(TursoProjection::open(database_path))?;
+    let revision = futures_executor::block_on(projection.revision())?;
+    let (view, _) = build_view(&lifecycle_class())?;
+    let package_id = RowId::Package(package_key("polyglot@0.1.0")).stable_key();
+    let rooted = futures_executor::block_on(projection.lookup_label("polyglot@0.1.0", 16))?;
+    if revision.root() != *view.root().as_bytes()
+        || rooted.root != revision.root()
+        || rooted.ids.as_ref() != [package_id]
+    {
+        return Err(
+            "reopened selected projection root or package query differed from the admitted fixture"
+                .into(),
+        );
+    }
+    selected_storage_measurement(database_path, &projection)
 }
 
 fn child_exit_label(status: std::process::ExitStatus) -> String {
@@ -57,12 +91,11 @@ pub(super) fn run_process_lifecycle(profile: Profile) -> BenchResult<Vec<Lifecyc
         ("offline_restart_after_sigkill", Vec::with_capacity(rounds)),
     ];
     let mut storage_bytes = [0_usize; 4];
+    let mut projection_storage: [Option<TursoStorageMeasurement>; 4] = [None, None, None, None];
     let mut exits = [String::new(), String::new(), String::new(), String::new()];
     let mut correctness = [true; 4];
     for round in 0..rounds {
-        let root = temp_root(&format!("turso-process-{round}"));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root)?;
+        let root = temp_root(&format!("turso-process-{round}"))?;
         let database_path = root.join(backend_extension_turso::FILE_NAME);
         let spawn = |mode: &str, ready: Option<&Path>| -> BenchResult<std::process::Child> {
             let mut command = Command::new(&executable);
@@ -82,17 +115,24 @@ pub(super) fn run_process_lifecycle(profile: Profile) -> BenchResult<Vec<Lifecyc
         let mut fresh = spawn("fresh", None)?;
         let fresh_status = fresh.wait()?;
         phase_timings[0].1.push(started.elapsed().as_nanos());
-        storage_bytes[0] = dir_bytes(&root);
         exits[0] = child_exit_label(fresh_status);
-        correctness[0] &= fresh_status.success() && database_path.is_file();
+        let fresh_storage = verify_selected_projection(&database_path)?;
+        storage_bytes[0] =
+            usize::try_from(fresh_storage.total_namespace_file_bytes).unwrap_or(usize::MAX);
+        projection_storage[0] = Some(fresh_storage.clone());
+        correctness[0] &= fresh_status.success();
 
         let started = Instant::now();
         let mut graceful = spawn("graceful", None)?;
         let graceful_status = graceful.wait()?;
         phase_timings[1].1.push(started.elapsed().as_nanos());
-        storage_bytes[1] = dir_bytes(&root);
         exits[1] = child_exit_label(graceful_status);
-        correctness[1] &= graceful_status.success();
+        let graceful_storage = verify_selected_projection(&database_path)?;
+        storage_bytes[1] =
+            usize::try_from(graceful_storage.total_namespace_file_bytes).unwrap_or(usize::MAX);
+        projection_storage[1] = Some(graceful_storage.clone());
+        correctness[1] &= graceful_status.success()
+            && graceful_storage.selected_generation == fresh_storage.selected_generation;
 
         let ready = root.join("sigkill.ready");
         let _ = fs::remove_file(&ready);
@@ -106,18 +146,33 @@ pub(super) fn run_process_lifecycle(profile: Profile) -> BenchResult<Vec<Lifecyc
         let kill_result = killed.kill();
         let killed_status = killed.wait()?;
         phase_timings[2].1.push(started.elapsed().as_nanos());
-        storage_bytes[2] = dir_bytes(&root);
         exits[2] = child_exit_label(killed_status);
         correctness[2] &= ready_before_kill && kill_result.is_ok() && !killed_status.success();
+        let killed_storage =
+            turso_storage_measurement(&database_path, graceful_storage.selected_generation)?;
+        storage_bytes[2] =
+            usize::try_from(killed_storage.total_namespace_file_bytes).unwrap_or(usize::MAX);
+        projection_storage[2] = Some(killed_storage);
 
         let started = Instant::now();
         let mut offline = futures_executor::block_on(TursoProjection::open(&database_path))?;
+        let expected = futures_executor::block_on(offline.revision())?;
         let (view, _) = build_view(&lifecycle_class())?;
-        let offline_update = futures_executor::block_on(offline.synchronize(&view))?;
+        let offline_update = futures_executor::block_on(offline.synchronize_from(expected, &view))?;
+        let revision = futures_executor::block_on(offline.revision())?;
+        let package_id = RowId::Package(package_key("polyglot@0.1.0")).stable_key();
+        let rooted = futures_executor::block_on(offline.lookup_label("polyglot@0.1.0", 16))?;
         phase_timings[3].1.push(started.elapsed().as_nanos());
-        storage_bytes[3] = dir_bytes(&root);
         exits[3] = format!("{offline_update:?}");
-        correctness[3] &= matches!(offline_update, ProjectionUpdate::Reused { .. });
+        correctness[3] &= matches!(offline_update, ProjectionUpdate::Reused { .. })
+            && revision.root() == *view.root().as_bytes()
+            && rooted.root == revision.root()
+            && rooted.ids.as_ref() == [package_id];
+        let offline_storage = selected_storage_measurement(&database_path, &offline)?;
+        storage_bytes[3] =
+            usize::try_from(offline_storage.total_namespace_file_bytes).unwrap_or(usize::MAX);
+        projection_storage[3] = Some(offline_storage);
+        drop(offline);
         let _ = fs::remove_dir_all(root);
     }
     let mut measurements = Vec::with_capacity(phase_timings.len());
@@ -128,6 +183,7 @@ pub(super) fn run_process_lifecycle(profile: Profile) -> BenchResult<Vec<Lifecyc
             phase,
             wall: stats(&mut timings),
             storage_bytes: storage_bytes[index],
+            projection_storage: projection_storage[index].clone(),
             child_exit: exits[index].clone(),
             correctness: Correctness {
                 passed: correctness[index],

@@ -590,6 +590,233 @@ fn same_find_visit_returns_query_focus_once_after_ask_exit(cx: &mut TestAppConte
         "an intervening Tab revived the canceled query return");
 }
 
+/// Enter through the real Library affordance after the Shelf owns the
+/// keyboard. Find's first native claim must not be confused with that old
+/// Shell zone; no pointer is needed to focus its query after arrival.
+fn typed_find_for_ask_return(rig: &mut Rig, shelf_origin: bool) -> gpui::FocusHandle {
+    let shell = rig.shell.clone();
+    rig.cx.update(|window, cx| {
+        window.replace_root(cx, |window, cx| {
+            gpui_component::Root::new(shell.clone(), window, cx).bordered(false)
+        });
+        window.set_a11y_forced(true);
+        if shelf_origin {
+            shell.update(cx, |shell, cx| shell.take_zone(Zone::Shelf, window, cx));
+        }
+    });
+    rig.settle();
+    if shelf_origin {
+        let ledger = painted(rig);
+        let find = ledger
+            .targets
+            .iter()
+            .find(|target| target.key == "shelf-find" && target.state.clickable)
+            .expect("actual Library Find affordance");
+        rig.cx.simulate_click(
+            point(
+                px(find.bounds.x + find.bounds.width / 2.0),
+                px(find.bounds.y + find.bounds.height / 2.0),
+            ),
+            Modifiers::none(),
+        );
+        rig.settle();
+    } else {
+        rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(
+            BrowseRoute::FindHome,
+        ))));
+    }
+    assert_eq!(
+        native_focus_label(rig).as_deref(),
+        Some("Find query"),
+        "the component's real query owns native focus"
+    );
+    let zone = rig
+        .shell
+        .read_with(rig.cx, |shell, cx| shell.focus_state(cx).0);
+    assert_eq!(
+        zone,
+        if shelf_origin {
+            Zone::Shelf
+        } else {
+            Zone::Reader
+        },
+        "the fixture preserves the actual departure zone"
+    );
+    let handle = rig
+        .cx
+        .update(|window, cx| window.focused(cx))
+        .expect("mounted native Find query");
+    rig.cx.simulate_input("relation");
+    rig.settle();
+    assert!(
+        matches!(rig.route(), Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query))) if query.text.as_ref() == "relation"),
+        "typing must refine Find through its actual native text handler"
+    );
+    assert_eq!(
+        rig.cx.update(|window, cx| window.focused(cx)),
+        Some(handle.clone()),
+        "refinement keeps the same mounted query"
+    );
+    handle
+}
+
+fn ask_tab_to_real_result(rig: &mut Rig) {
+    let before = rig.route();
+    rig.keys("secondary-k");
+    let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+    let editor = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+    assert!(
+        rig.cx
+            .update(|window, cx| editor.read(cx).focus_handle(cx).is_focused(window))
+    );
+    rig.cx.simulate_input("relation");
+    rig.settle();
+    let tree = native_tree(rig);
+    let focus = tree["accesskit_focus"]
+        .as_str()
+        .expect("Ask editor native focus");
+    assert_eq!(
+        tree["nodes"][focus]["aria"]["value"].as_str(),
+        Some("relation")
+    );
+    // This reads the actual current owner-certified search page; a missing
+    // result must fail rather than turning Tab-to-result into Tab-to-editor.
+    let _ = ask_result(rig);
+    rig.keys("tab");
+    assert!(
+        rig.cx
+            .update(|window, cx| ask.read(cx).owns_focus(window, cx))
+    );
+    assert!(
+        !rig.cx
+            .update(|window, cx| editor.read(cx).focus_handle(cx).is_focused(window))
+    );
+    assert!(
+        native_focus_label(rig).is_some_and(|label| label.starts_with("Result 1:")),
+        "Tab must focus the mounted result, not the all-results link"
+    );
+    assert_eq!(
+        rig.route(),
+        before,
+        "Tab moves modal focus without previewing the background route"
+    );
+}
+
+/// The old native baseline sent the next character to Library after this
+/// exact no-click sequence. Cover both an ordinary Reader origin and a
+/// Shelf-origin Find whose actual input focus differs from the Shell zone.
+#[gpui::test]
+fn find_query_receives_character_after_ask_result_tab_escape_without_click(
+    cx: &mut TestAppContext,
+) {
+    for shelf_origin in [false, true] {
+        let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
+        let query = typed_find_for_ask_return(&mut rig, shelf_origin);
+        let route = rig.route();
+        ask_tab_to_real_result(&mut rig);
+        rig.cx.simulate_keystrokes("escape");
+        rig.frame(0);
+        assert_ne!(
+            native_focus_label(&mut rig).as_deref(),
+            Some("Find query"),
+            "the departing Ask plate still owns input"
+        );
+        rig.settle();
+        assert_eq!(rig.route(), route);
+        assert_eq!(
+            rig.cx.update(|window, cx| window.focused(cx)),
+            Some(query),
+            "the exact pre-Ask mounted query returns without a click"
+        );
+        assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
+        assert!(
+            !rig.shell
+                .read_with(rig.cx, |shell, cx| shell.diagnostic_find_return(cx).1),
+            "the mounted return is consumed once"
+        );
+        rig.cx.simulate_input("z");
+        rig.settle();
+        assert!(
+            matches!(rig.route(), Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query))) if query.text.as_ref() == "relationz"),
+            "the next native character must reach Find, not the Library narrowing field"
+        );
+        let tree = native_tree(&mut rig);
+        let focus = tree["accesskit_focus"]
+            .as_str()
+            .expect("native focus identity after editing");
+        assert_eq!(
+            tree["nodes"][focus]["aria"]["label"].as_str(),
+            Some("Find query")
+        );
+        assert_eq!(
+            tree["nodes"][focus]["aria"]["value"].as_str(),
+            Some("relationz")
+        );
+        rig.cx.update(|window, cx| window.focus_next(cx));
+        let away = rig.cx.update(|window, cx| window.focused(cx));
+        rig.repaint();
+        assert_eq!(
+            rig.cx.update(|window, cx| window.focused(cx)),
+            away,
+            "redraw cannot repeat a consumed return"
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum InterruptedAskFindReturn {
+    Input,
+    Route,
+    Owner,
+}
+
+#[gpui::test]
+fn shelf_origin_ask_find_return_rejects_superseding_input_route_and_owner(cx: &mut TestAppContext) {
+    for interruption in [
+        InterruptedAskFindReturn::Input,
+        InterruptedAskFindReturn::Route,
+        InterruptedAskFindReturn::Owner,
+    ] {
+        let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
+        let query = typed_find_for_ask_return(&mut rig, true);
+        ask_tab_to_real_result(&mut rig);
+        rig.cx.simulate_keystrokes("escape");
+        rig.frame(0);
+        assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Leaving));
+        assert!(
+            rig.shell
+                .read_with(rig.cx, |shell, cx| shell.diagnostic_find_return(cx).1),
+            "a real query return must exist before {interruption:?}"
+        );
+        match interruption {
+            InterruptedAskFindReturn::Input => rig.cx.simulate_keystrokes("left"),
+            InterruptedAskFindReturn::Route => rig.graph.root.update(rig.cx, |root, cx| {
+                root.queue(Intent::Navigate(Route::Orbit(OrbitRoute::Home)), cx)
+            }),
+            InterruptedAskFindReturn::Owner => rig.graph.store.update(rig.cx, |store, cx| {
+                store.owner_failed(
+                    &crate::runtime::owner::OwnerFault::Lost("Ask return owner replaced".into()),
+                    cx,
+                )
+            }),
+        }
+        rig.settle();
+        assert_ne!(
+            rig.cx.update(|window, cx| window.focused(cx)),
+            Some(query),
+            "{interruption:?} cannot restore a superseded query"
+        );
+        assert!(
+            !rig.shell
+                .read_with(rig.cx, |shell, cx| shell.diagnostic_find_return(cx).1),
+            "{interruption:?} retires the pending component return"
+        );
+        if matches!(interruption, InterruptedAskFindReturn::Route) {
+            assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Home));
+        }
+    }
+}
+
 /// Interaction inside the open modal (Tab to a result, a click back into the
 /// editor) is not a departure from the Find visit: Escape still returns the
 /// keyboard to the exact pre-Ask query field.

@@ -1091,6 +1091,13 @@ pub trait PlatformHeadlessRenderer {
     fn compositing(&self) -> Compositing {
         Compositing::default()
     }
+
+    /// NUDOX: the GPU this renderer draws on, when it can say. A headless
+    /// window reports it from `Window::gpu_specs`, so a capture can record
+    /// which device drew its pixels.
+    fn gpu_specs(&self) -> Option<crate::GpuSpecs> {
+        None
+    }
 }
 
 /// NUDOX: optional compositing a renderer supports. Window APIs that need one fall back to

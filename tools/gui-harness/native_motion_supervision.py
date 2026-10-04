@@ -26,6 +26,83 @@ class ProtocolError(RuntimeError):
     pass
 
 
+def single_sidecar_record(raw: bytes | None) -> tuple[dict[str, Any] | None, str | None]:
+    """A bounded, newline-terminated record, never a process-lifetime proof."""
+    if raw is None:
+        return None, "absent"
+    if len(raw) > MAX_MESSAGE:
+        return None, "record exceeds 4096 bytes"
+    if not raw.endswith(b"\n") or len(raw.splitlines()) != 1:
+        return None, "record requires one complete newline-terminated row"
+
+    def unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        fields: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in fields:
+                raise ValueError("duplicate JSON field")
+            fields[key] = value
+        return fields
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-JSON constant {value}")
+
+    try:
+        row = json.loads(raw, object_pairs_hook=unique_fields, parse_constant=reject_constant)
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        return None, f"invalid JSON: {error}"
+    if not isinstance(row, dict):
+        return None, "record must be an object"
+    return row, None
+
+
+def classify_preflight(raw: bytes | None, *, recorder: str, identifier: str,
+                       pid: int, foreground_required: bool) -> dict[str, Any]:
+    """Classify recorder-reported admission; metadata is not TCC attribution.
+
+    Refusal and completion are independent: even an identity-bound rejection
+    does not prove that the recorder stopped, nor release input ownership.
+    """
+    row, error = single_sidecar_record(raw)
+    result: dict[str, Any] = {"state": "Absent" if error == "absent" else "Invalid",
+                              "identity_bound": False, "native_failure_codes": [],
+                              "row": row, "diagnostic": error}
+    if error is not None:
+        return result
+    assert row is not None
+    if type(row.get("schema")) is not int or row["schema"] != 1:
+        result["diagnostic"] = "native preflight schema must be integer 1"
+        return result
+    required = {"recorder_executable": recorder, "recorder_bundle_identifier": identifier,
+                "pid": pid, "foreground_required": foreground_required}
+    mismatches = [key for key, value in required.items()
+                  if type(row.get(key)) is not type(value) or row.get(key) != value]
+    if mismatches:
+        result.update(state="IdentityMismatch", diagnostic="mismatched " + ", ".join(mismatches))
+        return result
+    codes = row.get("failures")
+    flags = ("screen_recording_preflight_granted", "ax_trusted", "stream_output_callback_ready")
+    if (any(type(row.get(key)) is not bool for key in flags)
+            or type(row.get("frontmost_pid")) is not int
+            or not isinstance(codes, list)
+            or any(type(code) is not str or not code or len(code) > 128 for code in codes)
+            or len(set(codes)) != len(codes)):
+        result["diagnostic"] = "native preflight requires typed flags, frontmost PID and unique failure codes"
+        return result
+    checks = {"ScreenRecordingPreflightDenied": not row[flags[0]],
+              "AccessibilityTrustDenied": not row[flags[1]],
+              "SCStreamOutputCallbackUnavailable": not row[flags[2]],
+              "TargetNotFrontmost": foreground_required and row["frontmost_pid"] != pid}
+    if any((code in codes) != failed for code, failed in checks.items()):
+        result["diagnostic"] = "native preflight failure codes contradict admission flags"
+        return result
+    state = row.get("state")
+    if state not in ("Admitted", "Rejected") or (state == "Admitted") != (not codes):
+        result["diagnostic"] = "native preflight state contradicts failure codes"
+        return result
+    result.update(state=state, identity_bound=True, native_failure_codes=codes, diagnostic=None)
+    return result
+
+
 class LineChannel:
     def __init__(self, connection: socket.socket):
         self.connection = connection

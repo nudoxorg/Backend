@@ -21,9 +21,17 @@ use std::{
     sync::atomic::{AtomicBool, Ordering as AtomicOrdering},
 };
 
+use crate::publish::{
+    DirectoryPublication, MovedAside, NamespaceFence, NamespaceFenceKind, PrivateNamespace,
+    StagePreparationFailure, TransientDenial, stage_preparation_cleanup_io_error,
+    backend_is_transient_denial, failed_stage_preparation_with, io_is_transient_denial,
+    retry_while_denied, STAGE_LEASE_FILE_PREFIX,
+};
 use backend_semantic::index_core::{
     IndexSnapshot, IndexSnapshotId, LexicalOperation, LexicalSegment, LexicalSegmentId,
 };
+
+const MAX_SEGMENT_STORE_NAMESPACE_ENTRIES: usize = 65_536;
 
 impl<'segment> TantivySnapshot<'_, 'segment> {
     /// Returns the immutable snapshot identity retained by this proof.
@@ -228,10 +236,13 @@ impl TantivySegmentStore {
 
     /// Builds, atomically publishes, and reopens a projection for one validated segment.
     ///
-    /// Existing valid content is reused without rebuilding.  A corrupt or incomplete final
-    /// directory is quarantined only after a complete replacement has been prepared.  Temporary
+    /// Existing valid content is reused without rebuilding. A corrupt or incomplete final
+    /// directory is quarantined only after a complete replacement has been prepared. Temporary
     /// directories never use the final content-addressed name, so a pre-publish interruption
-    /// cannot create durable authority.
+    /// cannot create durable authority. A fixed, bounded cooperative namespace fence covers
+    /// admission, quarantine, publication, and reopen. The stage build runs outside that fence
+    /// under its own active lease. A same-user process that bypasses the fence remains outside the
+    /// guarantee.
     ///
     /// # Errors
     ///
@@ -244,81 +255,178 @@ impl TantivySegmentStore {
         &self,
         segment: LexicalSegment<'_>,
     ) -> Result<TantivySegment, TantivySegmentStoreError> {
+        self.project_with_stage_hook(segment, || {})
+    }
+
+    fn project_with_stage_hook(
+        &self,
+        segment: LexicalSegment<'_>,
+        mut stage_ready: impl FnMut(),
+    ) -> Result<TantivySegment, TantivySegmentStoreError> {
+        let namespace = publication::open_recipe_namespace(&self.root)
+            .map_err(|source| io_error(StorePhase::CreateRoot, &self.root, source))?;
+        let fence = namespace
+            .acquire_fence(NamespaceFenceKind::SegmentStore)
+            .map_err(|source| io_error(StorePhase::CreateRoot, namespace.path(), source))?;
+        namespace
+            .verify_path()
+            .map_err(|source| io_error(StorePhase::CreateRoot, namespace.path(), source))?;
+        let final_name = publication::segment_name(segment.id);
         let final_dir = publication::segment_path(&self.root, segment.id);
+        retry_while_denied(|| sweep_abandoned_temp_stages(&namespace, &fence)).map_err(
+            |source| io_error(StorePhase::CreateTemporary, namespace.path(), source),
+        )?;
         let mut quarantine = None;
-        if final_dir.is_dir() {
-            match publication::open_segment(&final_dir, segment.id) {
-                Ok(opened) => return Ok(opened),
+        if path_is_real_directory(&final_dir)
+            .map_err(|source| io_error(StorePhase::Reopen, &final_dir, source))?
+        {
+            match open_segment_verified(&namespace, segment.id, &fence) {
+                Ok(opened) => {
+                    fence
+                        .verify_for(&namespace)
+                        .map_err(|source| io_error(StorePhase::Reopen, namespace.path(), source))?;
+                    return Ok(opened);
+                }
                 Err(error) if !error.rebuildable() => return Err(error),
                 Err(_) => {}
             }
         }
+        drop(fence);
 
-        let temp_dir = publication::new_temp_dir(&self.root, segment.id)?;
-        let build_result = publication::build_projection(&temp_dir, segment);
-        if let Err(error) = build_result {
-            let _ = fs::remove_dir_all(&temp_dir);
-            return Err(error);
-        }
-        if final_dir.exists() {
-            if !final_dir.is_dir() {
-                let path = publication::quarantine_path(&self.root, segment.id);
-                match fs::rename(&final_dir, &path) {
-                    Ok(()) => quarantine = Some(path),
-                    Err(source) if source.kind() == io::ErrorKind::NotFound => {}
-                    Err(source) => {
-                        let _ = fs::remove_dir_all(&temp_dir);
-                        return Err(io_error(StorePhase::Quarantine, &final_dir, source));
-                    }
-                }
+        // A scanner or indexer that briefly holds a just-written file can make
+        // the operating system refuse the build; a fresh stage is attempted
+        // again before the failure is reported.
+        let temp_stage = retry_while_denied(|| {
+            let fence = namespace
+                .acquire_fence(NamespaceFenceKind::SegmentStore)
+                .map_err(|source| {
+                    StagePreparationFailure::for_attempt(io_error(
+                        StorePhase::CreateTemporary,
+                        namespace.path(),
+                        source,
+                    ))
+                })?;
+            let stage = publication::new_temp_stage(&namespace, segment.id, &fence)
+                .map_err(StagePreparationFailure::for_attempt)?;
+            drop(fence);
+            stage_ready();
+            if let Err(source) = stage.verify_path() {
+                return Err(failed_stage_preparation_with(
+                    stage,
+                    io_error(StorePhase::CreateTemporary, &final_dir, source),
+                    |operation, cleanup| {
+                        io_error(
+                            StorePhase::CreateTemporary,
+                            &final_dir,
+                            stage_preparation_cleanup_io_error(operation, cleanup),
+                        )
+                    },
+                ));
+            }
+            match publication::build_projection(stage.path(), segment) {
+                Ok(()) => match stage.sync().and_then(|()| stage.verify_path()) {
+                    Ok(()) => Ok(stage),
+                    Err(source) => Err(failed_stage_preparation_with(
+                        stage,
+                        io_error(StorePhase::CreateTemporary, &final_dir, source),
+                        |operation, cleanup| {
+                            io_error(
+                                StorePhase::CreateTemporary,
+                                &final_dir,
+                                stage_preparation_cleanup_io_error(operation, cleanup),
+                            )
+                        },
+                    )),
+                },
+                Err(error) => Err(failed_stage_preparation_with(stage, error, |operation, cleanup| {
+                    io_error(
+                        StorePhase::CreateTemporary,
+                        &final_dir,
+                        stage_preparation_cleanup_io_error(operation, cleanup),
+                    )
+                })),
+            }
+        })
+        .map_err(StagePreparationFailure::into_error)?;
+        let fence = namespace
+            .acquire_fence(NamespaceFenceKind::SegmentStore)
+            .map_err(|source| io_error(StorePhase::Publish, namespace.path(), source))?;
+        if path_entry_exists(&final_dir)
+            .map_err(|source| io_error(StorePhase::Reopen, &final_dir, source))?
+        {
+            if !path_is_real_directory(&final_dir)
+                .map_err(|source| io_error(StorePhase::Reopen, &final_dir, source))?
+            {
+                quarantine = self.quarantine(&namespace, &final_name, segment.id, &fence)?;
             } else {
-                match publication::open_segment(&final_dir, segment.id) {
+                match open_segment_verified(&namespace, segment.id, &fence) {
                     Ok(opened) => {
-                        let _ = fs::remove_dir_all(&temp_dir);
+                        temp_stage.discard_under(&fence).map_err(|source| {
+                            io_error(
+                                StorePhase::CreateTemporary,
+                                &final_dir,
+                                source.into_io_error(),
+                            )
+                        })?;
                         return Ok(opened);
                     }
                     Err(error) if !error.rebuildable() => {
-                        let _ = fs::remove_dir_all(&temp_dir);
+                        temp_stage.discard_under(&fence).map_err(|source| {
+                            io_error(
+                                StorePhase::CreateTemporary,
+                                &final_dir,
+                                source.into_io_error(),
+                            )
+                        })?;
                         return Err(error);
                     }
                     Err(_) => {}
                 }
-                let path = publication::quarantine_path(&self.root, segment.id);
-                if let Err(source) = fs::rename(&final_dir, &path) {
-                    if source.kind() != io::ErrorKind::NotFound {
-                        let _ = fs::remove_dir_all(&temp_dir);
-                        return Err(io_error(StorePhase::Quarantine, &final_dir, source));
-                    }
-                } else {
-                    quarantine = Some(path);
-                }
+                quarantine = self.quarantine(&namespace, &final_name, segment.id, &fence)?;
             }
         }
-        match fs::rename(&temp_dir, &final_dir) {
-            Ok(()) => {
-                publication::sync_recipe_root(&self.root)
-                    .map_err(|source| io_error(StorePhase::Publish, &self.root, source))?;
-                finish_open(
-                    publication::open_segment(&final_dir, segment.id),
-                    quarantine,
-                )
-            }
-            Err(source)
-                if matches!(
-                    source.kind(),
-                    io::ErrorKind::AlreadyExists | io::ErrorKind::DirectoryNotEmpty
-                ) =>
-            {
-                let _ = fs::remove_dir_all(&temp_dir);
-                finish_open(
-                    publication::open_segment(&final_dir, segment.id),
-                    quarantine,
-                )
-            }
-            Err(source) => {
-                let _ = fs::remove_dir_all(&temp_dir);
-                Err(io_error(StorePhase::Publish, &final_dir, source))
-            }
+        let publication = temp_stage
+            .publish(&final_name, &fence)
+            .map_err(|source| io_error(StorePhase::Publish, &final_dir, source.into_io_error()))?;
+        match publication {
+            DirectoryPublication::Published => finish_open(
+                open_segment_verified(&namespace, segment.id, &fence),
+                &namespace,
+                &fence,
+                quarantine,
+            ),
+            // Another publisher named this exact segment first; its directory
+            // is validated like any other existing final directory.
+            DirectoryPublication::AlreadyPresent => finish_open(
+                open_segment_verified(&namespace, segment.id, &fence),
+                &namespace,
+                &fence,
+                quarantine,
+            ),
+        }
+    }
+
+    /// Moves a corrupt or foreign final entry aside, returning where it went.
+    /// A replacement stage that cannot proceed is discarded.
+    fn quarantine(
+        &self,
+        namespace: &PrivateNamespace,
+        entry: &str,
+        id: LexicalSegmentId,
+        fence: &NamespaceFence,
+    ) -> Result<Option<String>, TantivySegmentStoreError> {
+        namespace
+            .verify_path()
+            .map_err(|source| io_error(StorePhase::Quarantine, namespace.path(), source))?;
+        let name = publication::quarantine_name(id);
+        match namespace.move_aside(entry, &name, fence) {
+            Ok(MovedAside::Moved) => Ok(Some(name)),
+            Ok(MovedAside::Vanished) => Ok(None),
+            Err(source) => Err(io_error(
+                StorePhase::Quarantine,
+                &namespace.path().join(entry),
+                source,
+            )),
         }
     }
 
@@ -348,11 +456,36 @@ impl TantivySegmentStore {
     ///
     /// Returns a typed missing, corruption, identity, filesystem, or backend error.
     pub fn reopen(&self, id: LexicalSegmentId) -> Result<TantivySegment, TantivySegmentStoreError> {
-        let path = publication::segment_path(&self.root, id);
-        if !path.exists() {
-            return Err(TantivySegmentStoreError::Missing { id });
+        let namespace = publication::open_recipe_namespace(&self.root)
+            .map_err(|source| io_error(StorePhase::CreateRoot, &self.root, source))?;
+        let fence = namespace
+            .acquire_fence(NamespaceFenceKind::SegmentStore)
+            .map_err(|source| io_error(StorePhase::Reopen, namespace.path(), source))?;
+        namespace
+            .verify_path()
+            .map_err(|source| io_error(StorePhase::CreateRoot, namespace.path(), source))?;
+        let name = publication::segment_name(id);
+        match namespace.open_private_dir(&name) {
+            Ok(directory) => drop(directory),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                fence
+                    .verify_for(&namespace)
+                    .map_err(|source| io_error(StorePhase::Reopen, namespace.path(), source))?;
+                return Err(TantivySegmentStoreError::Missing { id });
+            }
+            Err(source) => {
+                return Err(io_error(
+                    StorePhase::Reopen,
+                    &namespace.path().join(&name),
+                    source,
+                ));
+            }
         }
-        publication::open_segment(&path, id)
+        let opened = open_segment_verified(&namespace, id, &fence);
+        fence
+            .verify_for(&namespace)
+            .map_err(|source| io_error(StorePhase::Reopen, namespace.path(), source))?;
+        opened
     }
 
     /// Proves that opened segment directories cover one validated snapshot selection.
@@ -411,23 +544,337 @@ pub(crate) fn backend_error(
     }
 }
 
-fn remove_quarantine_path(path: &Path) -> Result<(), TantivySegmentStoreError> {
-    let result = if path.is_dir() {
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
+fn path_entry_exists(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Reclaims only stages emitted by `new_temp_stage`. Their marker is held by
+/// the builder through the expensive write phase; all admission and deletion
+/// stays beneath the already-held fixed segment-store fence.
+fn sweep_abandoned_temp_stages(
+    namespace: &PrivateNamespace,
+    fence: &NamespaceFence,
+) -> io::Result<()> {
+    let entries = namespace.entries(MAX_SEGMENT_STORE_NAMESPACE_ENTRIES, fence)?;
+    for entry in &entries {
+        if let Some(name) = entry.name.to_str()
+            && is_segment_store_stage_name(name)
+        {
+            let _ = namespace.sweep_stage(name, fence)?;
+        }
+    }
+    for entry in &entries {
+        if let Some(lease_name) = entry.name.to_str()
+            && let Some(stage_name) = lease_name.strip_prefix(STAGE_LEASE_FILE_PREFIX)
+            && is_segment_store_stage_name(stage_name)
+        {
+            let _ = namespace.sweep_orphan_stage_lease(lease_name, stage_name, fence)?;
+        }
+    }
+    fence.verify_for(namespace)
+}
+
+fn is_segment_store_stage_name(name: &str) -> bool {
+    let Some(suffix) = name.strip_prefix('.') else {
+        return false;
     };
-    result.map_err(|source| io_error(StorePhase::Quarantine, path, source))
+    let Some((segment, owner)) = suffix.split_once(".tmp-") else {
+        return false;
+    };
+    let Some((process, stage)) = owner.split_once('-') else {
+        return false;
+    };
+    segment.len() == 32
+        && segment.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !process.is_empty()
+        && process.bytes().all(|byte| byte.is_ascii_digit())
+        && !stage.is_empty()
+        && stage.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn open_segment_verified(
+    namespace: &PrivateNamespace,
+    id: LexicalSegmentId,
+    fence: &NamespaceFence,
+) -> Result<TantivySegment, TantivySegmentStoreError> {
+    fence
+        .verify_for(namespace)
+        .map_err(|source| io_error(StorePhase::Reopen, namespace.path(), source))?;
+    let name = publication::segment_name(id);
+    let path = namespace.path().join(&name);
+    namespace
+        .verify_child_path(&name)
+        .map_err(|source| io_error(StorePhase::Reopen, &path, source))?;
+    fence
+        .verify_for(namespace)
+        .map_err(|source| io_error(StorePhase::Reopen, namespace.path(), source))?;
+    let opened = publication::open_segment(&path, id);
+    namespace
+        .verify_child_path(&name)
+        .map_err(|source| io_error(StorePhase::Reopen, &path, source))?;
+    opened
+}
+
+fn path_is_real_directory(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.file_type().is_dir()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Removes a quarantined entry. The goal is that it is gone, so one that has
+/// already vanished is success, and a scanner briefly holding a file inside it
+/// is waited out like any other transient denial.
+fn remove_quarantine_entry(
+    namespace: &PrivateNamespace,
+    name: &str,
+    fence: &NamespaceFence,
+) -> Result<(), TantivySegmentStoreError> {
+    let path = namespace.path().join(name);
+    retry_while_denied(|| {
+        namespace
+            .remove_entry(name, fence)
+            .map_err(|source| io_error(StorePhase::Quarantine, &path, source))
+    })
 }
 
 fn finish_open(
     result: Result<TantivySegment, TantivySegmentStoreError>,
-    quarantine: Option<PathBuf>,
+    namespace: &PrivateNamespace,
+    fence: &NamespaceFence,
+    quarantine: Option<String>,
 ) -> Result<TantivySegment, TantivySegmentStoreError> {
+    fence
+        .verify_for(namespace)
+        .map_err(|source| io_error(StorePhase::Reopen, namespace.path(), source))?;
     if result.is_ok()
-        && let Some(path) = quarantine
+        && let Some(name) = quarantine
     {
-        remove_quarantine_path(&path)?;
+        remove_quarantine_entry(namespace, &name, fence)?;
     }
+    fence
+        .verify_for(namespace)
+        .map_err(|source| io_error(StorePhase::Reopen, namespace.path(), source))?;
     result
+}
+
+impl TransientDenial for TantivySegmentStoreError {
+    fn is_transient_denial(&self) -> bool {
+        match self {
+            Self::Io { source, .. } => io_is_transient_denial(source),
+            Self::Tantivy { source, .. } => backend_is_transient_denial(source),
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod quarantine_tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    fn scratch(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "nudox-tantivy-quarantine-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_nanos())
+        ));
+        fs::create_dir_all(&path).expect("scratch directory");
+        path
+    }
+
+    #[test]
+    fn removing_a_quarantine_entry_that_is_already_gone_succeeds() {
+        let parent = scratch("gone");
+        let namespace =
+            PrivateNamespace::open_child(&parent, "private-v1").expect("private namespace");
+        let fence = namespace
+            .acquire_fence(NamespaceFenceKind::SegmentStore)
+            .expect("store gate");
+        // The entry was removed by someone else first: the goal is met.
+        remove_quarantine_entry(&namespace, ".segment.corrupt-1-1", &fence)
+            .expect("already gone");
+        drop(fence);
+        drop(namespace);
+        fs::remove_dir_all(parent).expect("cleanup");
+    }
+
+    #[test]
+    fn a_quarantined_directory_and_a_quarantined_file_are_both_removed() {
+        let parent = scratch("both");
+        let namespace =
+            PrivateNamespace::open_child(&parent, "private-v1").expect("private namespace");
+        let fence = namespace
+            .acquire_fence(NamespaceFenceKind::SegmentStore)
+            .expect("store gate");
+        let directory = namespace.path().join(".a.corrupt-1-2");
+        fs::create_dir_all(directory.join("tantivy")).expect("quarantined directory");
+        fs::write(directory.join("tantivy").join("meta.json"), b"{}").expect("content");
+        let file = namespace.path().join(".b.corrupt-1-3");
+        fs::write(&file, b"stray").expect("quarantined file");
+
+        remove_quarantine_entry(&namespace, ".a.corrupt-1-2", &fence)
+            .expect("directory removed");
+        remove_quarantine_entry(&namespace, ".b.corrupt-1-3", &fence)
+            .expect("file removed");
+        assert!(!directory.exists() && !file.exists());
+        drop(fence);
+        drop(namespace);
+        fs::remove_dir_all(parent).expect("cleanup");
+    }
+}
+
+#[cfg(test)]
+mod namespace_fence_tests {
+    #![allow(clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use backend_semantic::index_core::{
+        EntityArtifactIdentity, EntityDocumentId, LexicalRow, LexicalScore, LexicalSegment,
+    };
+    use backend_semantic::ir::EntityId;
+    use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        },
+        time::Duration,
+    };
+
+    fn scratch(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "nudox-tantivy-fence-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_nanos())
+        ))
+    }
+
+    fn segment(term: &'static [u8], entity: u32) -> LexicalSegment<'static> {
+        let artifact = ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
+            b"tantivy-fence-test",
+        );
+        let rows = Box::leak(Box::new([LexicalRow::new(
+            term,
+            EntityDocumentId {
+                artifact: EntityArtifactIdentity::Compact(artifact),
+                entity: EntityId::new(entity),
+            },
+            LexicalScore::from(1),
+        )]));
+        LexicalSegment::new(rows).expect("valid test segment")
+    }
+
+    fn overlap_projects(segments: [LexicalSegment<'static>; 2], label: &str) {
+        let root = scratch(label);
+        let store = TantivySegmentStore::open(&root).expect("store");
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let release = Arc::new(AtomicBool::new(false));
+        let mut workers = Vec::new();
+        for segment in segments {
+            let store = store.clone();
+            let ready_tx = ready_tx.clone();
+            let release = Arc::clone(&release);
+            workers.push(std::thread::spawn(move || {
+                store.project_with_stage_hook(segment, || {
+                    ready_tx.send(()).expect("report prepared stage");
+                    while !release.load(Ordering::Acquire) {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                })
+            }));
+        }
+        drop(ready_tx);
+        let first_ready = ready_rx.recv_timeout(Duration::from_secs(3)).is_ok();
+        let both_ready = first_ready && ready_rx.recv_timeout(Duration::from_secs(3)).is_ok();
+        release.store(true, Ordering::Release);
+        for worker in workers {
+            assert!(worker.join().expect("projection worker").is_ok());
+        }
+        assert!(
+            both_ready,
+            "both builders must reach their stage outside the gate"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn independent_segment_builds_overlap_outside_the_namespace_fence() {
+        let first = segment(b"first", 1);
+        let second = segment(b"second", 2);
+        assert_ne!(first.id, second.id);
+        overlap_projects([first, second], "independent");
+    }
+
+    #[test]
+    fn same_segment_builders_race_at_one_final_winner_admission() {
+        let same = segment(b"same", 3);
+        overlap_projects([same, same], "same-segment-winner");
+    }
+
+    #[test]
+    fn store_sweep_skips_live_stages_and_ignores_unowned_names() {
+        let root = scratch("store-stage-sweep");
+        let store = TantivySegmentStore::open(&root).expect("store");
+        let namespace = publication::open_recipe_namespace(&root).expect("recipe namespace");
+        let stale_identity = segment(b"live-stage", 4);
+        let fence = namespace
+            .acquire_fence(NamespaceFenceKind::SegmentStore)
+            .expect("store gate");
+        let active_stage = publication::new_temp_stage(&namespace, stale_identity.id, &fence)
+            .expect("active stage");
+        let active_path = active_stage.path().to_path_buf();
+        let active_marker = namespace
+            .path()
+            .join(crate::publish::stage_lease_file_name(active_stage.name()));
+        drop(fence);
+
+        let unrelated = namespace.path().join(".operator-owned-scratch");
+        fs::create_dir(&unrelated).expect("unrelated directory");
+        fs::write(unrelated.join("keep"), b"not our stage grammar").expect("sentinel");
+        assert!(!is_segment_store_stage_name(".operator-owned-scratch"));
+
+        let first = segment(b"first-project", 5);
+        drop(
+            store
+                .project(first)
+                .expect("project while other stage is live"),
+        );
+        assert!(
+            active_path.is_dir(),
+            "live stage must survive admission sweep"
+        );
+        assert!(active_marker.is_file(), "live marker must remain named");
+
+        drop(active_stage);
+        let second = segment(b"second-project", 6);
+        drop(
+            store
+                .project(second)
+                .expect("project and sweep abandoned stage"),
+        );
+        assert!(!active_path.exists(), "unlocked stale stage is reclaimed");
+        assert!(
+            !active_marker.exists(),
+            "its exact lease marker is reclaimed"
+        );
+        assert_eq!(
+            fs::read(unrelated.join("keep")).expect("unrelated survives"),
+            b"not our stage grammar"
+        );
+        drop(namespace);
+        drop(store);
+        let _ = fs::remove_dir_all(root);
+    }
 }

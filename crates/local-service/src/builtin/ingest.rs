@@ -1764,6 +1764,16 @@ fn file_system_revision(path: &Path) -> Option<FileSystemRevision> {
     Some(file_system_revision_from_metadata(&metadata))
 }
 
+/// Reads the revision of the object `path` names, walking every component
+/// relative to a held handle. A reparse point anywhere, including the final
+/// component, makes the revision unavailable rather than describing its target.
+#[cfg(windows)]
+fn file_system_revision(path: &Path) -> Option<FileSystemRevision> {
+    backend_platform::win32::project_fs::revision_of_path(path)
+        .ok()
+        .map(file_system_revision_from_windows)
+}
+
 #[cfg(not(windows))]
 fn file_system_revision_from_metadata(metadata: &fs::Metadata) -> FileSystemRevision {
     #[cfg(unix)]
@@ -4926,7 +4936,16 @@ mod compiler_workspace_snapshot_tests {
     #[test]
     fn workspace_paths_must_be_utf8_nfc_and_portable() {
         assert!(normalized_workspace_path(Path::new("src/main.rs")).is_ok());
+        // A backslash inside a component is a non-portable name on Unix. On
+        // Windows it is the separator, so the same text is the path
+        // `src/main.rs`, and must normalize to exactly that.
+        #[cfg(unix)]
         assert!(normalized_workspace_path(Path::new("src\\main.rs")).is_err());
+        #[cfg(windows)]
+        assert_eq!(
+            normalized_workspace_path(Path::new("src\\main.rs")).as_deref(),
+            Ok("src/main.rs")
+        );
         assert!(normalized_workspace_path(Path::new("src/e\u{301}.txt")).is_err());
     }
 

@@ -1018,30 +1018,79 @@ def launch_services_wait(bundle: Path, pid: int, plan_path: Path, out: Path,
     return {"mode": "LaunchServicesApp", "argv": argv, "launcher_exit_code": process.returncode,
             "timed_out": timed_out, "elapsed_seconds": round(time.monotonic() - then, 3),
             "logs": logs, "launcher_log_sha256": sha256(out / "launcher.log"),
-            "recorder_exit": None, "recorder_may_continue": timed_out,
+            # open -W is our child, not the recorder. Its exit cannot rule
+            # out a still-live app, even when the launcher returned zero.
+            "recorder_exit": None, "recorder_may_continue": True,
             "tcc_responsibility": "Unverified; inspect OS TCC attribution for launched PID"}
+
+
+def native_sidecar_bytes(path: Path) -> tuple[bytes | None, str | None]:
+    """Read one small native sidecar without following links or trusting EOF."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None, None
+    except OSError as error:
+        return None, str(error)
+    try:
+        details = os.fstat(fd)
+        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+            return None, "sidecar must be a regular singly linked file"
+        return os.read(fd, supervision.MAX_MESSAGE + 1), None
+    except OSError as error:
+        return None, str(error)
+    finally:
+        os.close(fd)
+
+
+def native_preflight_classification(out: Path, recorder: Path, identity: dict[str, str],
+                                    pid: int, plan: dict[str, Any]) -> dict[str, Any]:
+    raw, error = native_sidecar_bytes(out / "preflight.jsonl")
+    classification = supervision.classify_preflight(raw, recorder=str(recorder),
+        identifier=identity["identifier"], pid=pid, foreground_required=plan["foreground_required"])
+    if error is not None:
+        classification.update(state="Invalid", diagnostic=error)
+    return classification
 
 
 def launch_services_completion(out: Path, launch: dict[str, Any], recorder: Path,
                                identity: dict[str, str], pid: int,
-                               plan: dict[str, Any]) -> tuple[bool, dict[str, Any] | None, list[str]]:
+                               plan: dict[str, Any]) -> tuple[bool, dict[str, Any] | None, list[str], dict[str, Any]]:
+    """Native completion evidence and reported preflight admission are separate.
+
+    This checks sidecars, not an exact kernel exit or TCC process attribution.
+    Supervised input still needs its independent StopAck/NOTE_EXIT/EOF gate.
+    """
     failures = []
     if launch["timed_out"]:
         failures.append("LaunchServices wait timed out; recorder may still be running")
     if launch["launcher_exit_code"] != 0:
         failures.append("LaunchServices launcher exited nonzero; recorder exit is unknown")
-    if not (out / "result.jsonl").is_file():
+    raw_result, result_error = native_sidecar_bytes(out / "result.jsonl")
+    result, parse_error = supervision.single_sidecar_record(raw_result)
+    if raw_result is None and result_error is None:
         failures.append("native result sidecar absent; recorder completion unproven")
-    rows = read_jsonl(out / "preflight.jsonl") if (out / "preflight.jsonl").is_file() else []
-    preflight = rows[0] if len(rows) == 1 else None
-    if preflight is None or preflight.get("state") != "Admitted" or \
-            preflight.get("recorder_executable") != str(recorder) or \
-            preflight.get("recorder_bundle_identifier") != identity["identifier"] or \
-            preflight.get("pid") != pid or \
-            preflight.get("foreground_required") != plan["foreground_required"] or \
-            preflight.get("stream_output_callback_ready") is not True:
-        failures.append("native preflight identity/admission mismatch")
-    return not failures, preflight, failures
+    elif result_error or parse_error:
+        failures.append(f"native result sidecar invalid; completion unproven: {result_error or parse_error}")
+    elif result is not None and (any(type(result.get(key)) is not int or result[key] < 0
+                                   for key in ("captured_frames", "dropped_frames"))
+                                or result.get("stream_failure") is not None):
+        failures.append("native result counters or stream failure prevent completion admission")
+    classification = native_preflight_classification(out, recorder, identity, pid, plan)
+    if classification["state"] == "Rejected":
+        failures.append("native preflight rejected: " + ", ".join(classification["native_failure_codes"]))
+    elif classification["state"] != "Admitted":
+        failures.append(f"native preflight {classification['state']}: {classification['diagnostic']}")
+    return not failures, classification["row"], failures, classification
+
+
+def recorder_failure_message(manifest: dict[str, Any], out: Path) -> str:
+    details = manifest.get("launcher", {}).get("completion_failures", [])
+    classification = manifest.get("preflight_classification", {})
+    if not details and classification.get("state") == "Rejected":
+        details = ["native preflight rejected: " + ", ".join(classification["native_failure_codes"])]
+    prefix = "; ".join(details) + "; " if details else ""
+    return prefix + f"native recorder or plan snapshots did not prove completion; see {out / 'CAPTURE.json'}"
 
 
 def crop_frames(out: Path, plan: dict[str, Any], frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1415,8 +1464,9 @@ def run(args: argparse.Namespace) -> Path:
             manifest["launcher"] = launch
             manifest["recorder_exit"] = launch["recorder_exit"]
             (out / "recorder.log").write_bytes((out / "recorder.stderr").read_bytes())
-            recorder_finished, preflight, launch_failures = launch_services_completion(
+            recorder_finished, preflight, launch_failures, classification = launch_services_completion(
                 out, launch, recorder, manifest["recorder_identity"], args.pid, plan)
+            manifest["preflight_classification"] = classification
             if supervise_v1 and not launch["supervision"]["input_ownership_release_admitted"]:
                 launch_failures.append("supervised recorder input ownership remains unresolved")
                 recorder_finished = False
@@ -1456,9 +1506,12 @@ def run(args: argparse.Namespace) -> Path:
         manifest["recorder_identity_stable"] = False
         manifest["recorder_identity_change"] = str(exc)
     if not recorder_finished or not manifest["recorder_identity_stable"]:
+        if "preflight_classification" not in manifest:
+            manifest["preflight_classification"] = native_preflight_classification(
+                out, recorder, manifest["recorder_identity"], args.pid, plan)
         manifest["failed_recorder_evidence"] = failed_recorder_evidence(out)
         (out / "CAPTURE.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        raise RuntimeError(f"native recorder or plan snapshots did not prove completion; see {out / 'CAPTURE.json'}")
+        raise RuntimeError(recorder_failure_message(manifest, out))
     frames = read_jsonl(out / "frames.jsonl")
     if not frames or any(f["index"] != i for i, f in enumerate(frames)):
         raise ValueError("native frames missing or out of order")

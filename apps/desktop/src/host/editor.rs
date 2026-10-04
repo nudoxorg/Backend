@@ -58,6 +58,20 @@ pub(crate) fn launcher(cx: &App) -> Rc<dyn Launch> {
     cx.try_global::<Launcher>().map_or_else(|| Rc::new(System) as Rc<dyn Launch>, |launcher| Rc::clone(&launcher.0))
 }
 
+/// VS Code's command-line launcher. On Windows it is the batch file
+/// `code.cmd`, which `std::process::Command` finds on `PATH` only by that name.
+pub(crate) const VS_CODE: &str = if cfg!(windows) { "code.cmd" } else { "code" };
+
+/// What the platform opens a file with: Finder's `open`, Explorer, or the
+/// desktop's `xdg-open` (Windows has no `xdg-open`).
+const PLATFORM_OPENER: &str = if cfg!(target_os = "macos") {
+    "open"
+} else if cfg!(windows) {
+    "explorer"
+} else {
+    "xdg-open"
+};
+
 /// The commands to try, in order, to open `path` at `line`.
 pub(crate) fn commands(configured: Option<&str>, path: &str, line: u32) -> Vec<Command> {
     let mut out = Vec::new();
@@ -74,9 +88,9 @@ pub(crate) fn commands(configured: Option<&str>, path: &str, line: u32) -> Vec<C
                 line_requested: template.contains("{line}") || !template.contains("{path}") });
         }
     }
-    out.push(Command { program: "code".to_owned(), args: vec!["-g".to_owned(), format!("{path}:{line}")], line_requested: true });
+    out.push(Command { program: VS_CODE.to_owned(), args: vec!["-g".to_owned(), format!("{path}:{line}")], line_requested: true });
     out.push(Command { program: "zed".to_owned(), args: vec![format!("{path}:{line}")], line_requested: true });
-    out.push(Command { program: if cfg!(target_os = "macos") { "open" } else { "xdg-open" }.to_owned(), args: vec![path.to_owned()], line_requested: false });
+    out.push(Command { program: PLATFORM_OPENER.to_owned(), args: vec![path.to_owned()], line_requested: false });
     out
 }
 
@@ -152,17 +166,18 @@ mod tests {
 
     #[test]
     fn code_first_at_the_line() {
-        let recorder = Recorder { ran: RefCell::new(Vec::new()), works: vec!["code"] };
+        let recorder = Recorder { ran: RefCell::new(Vec::new()), works: vec![VS_CODE] };
         let outcome = open(&recorder, None, "/w/crates/engine/src/lib.rs", 40);
-        assert_eq!(outcome.requested(), Some(&Command { program: "code".into(), args: vec!["-g".into(), "/w/crates/engine/src/lib.rs:40".into()], line_requested: true }));
-        assert!(outcome.message("/w/crates/engine/src/lib.rs", 40).starts_with("Requested code"));
+        assert_eq!(outcome.requested(), Some(&Command { program: VS_CODE.into(), args: vec!["-g".into(), "/w/crates/engine/src/lib.rs:40".into()], line_requested: true }));
+        let expected = format!("Requested {VS_CODE}");
+        assert!(outcome.message("/w/crates/engine/src/lib.rs", 40).starts_with(expected.as_str()));
     }
 
     #[test]
     fn then_zed_then_the_platform() {
         let recorder = Recorder { ran: RefCell::new(Vec::new()), works: vec!["zed"] };
         let outcome = open(&recorder, None, "/w/a.rs", 7);
-        assert_eq!(outcome.failures().iter().map(|attempt| attempt.command.program.as_str()).collect::<Vec<_>>(), ["code"]);
+        assert_eq!(outcome.failures().iter().map(|attempt| attempt.command.program.as_str()).collect::<Vec<_>>(), [VS_CODE]);
         assert_eq!(outcome.requested().expect("zed started").args.as_slice(), ["/w/a.rs:7"]);
         let none = Recorder { ran: RefCell::new(Vec::new()), works: vec![] };
         let outcome = open(&none, None, "/w/a.rs", 7);
@@ -170,7 +185,7 @@ mod tests {
         assert_eq!(outcome.failures()[2].command.args, ["/w/a.rs"]);
         assert!(outcome.requested().is_none());
         assert!(outcome.message("/w/a.rs", 7).starts_with("Could not start an editor"));
-        let platform = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let platform = PLATFORM_OPENER;
         let fallback = Recorder { ran: RefCell::new(Vec::new()), works: vec![platform] };
         let outcome = open(&fallback, None, "/w/a.rs", 7);
         assert!(matches!(&outcome, LaunchOutcome::Requested { command, failures }

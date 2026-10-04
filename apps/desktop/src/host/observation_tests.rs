@@ -10,11 +10,13 @@ use backend_library::{
 };
 use backend_local_service::{
     EngineRequest, EngineStatus, FrameLimits, ListenerConfig, ListenerError, ListenerShutdown,
-    LocaldService, OwnerService, ProtocolError, RunReport, UnixListenerService,
+    LocaldService, OwnerService, ProtocolError, ResponseFrame, RunReport, UnixListenerService,
+    decode_response, encode_response,
 };
 use backend_replication::{
     LocalControlExchangeError, LocalControlExchangePhase, LocalControlExchangeProgress,
-    LocalSubscriptionId, LocalSubscriptionOperation, LocalSubscriptionResponse,
+    LocalSubscriptionId, LocalSubscriptionOperation, LocalSubscriptionRequest,
+    LocalSubscriptionResponse,
 };
 use std::path::PathBuf;
 use std::sync::{
@@ -122,6 +124,112 @@ struct BlockingSubscriptionOwner {
     resumes: Arc<AtomicUsize>,
 }
 
+// The fixture retains the typed status for legacy direct callers, but both
+// entry points must prepare the bounded outer reply before committing any
+// counters or entering the artificial producer-stall gate.
+fn prepare_fixture_status(
+    request_id: u64,
+    status: EngineStatus,
+    limits: FrameLimits,
+) -> Result<(EngineStatus, Vec<u8>), ProtocolError> {
+    let bytes = encode_response(
+        &ResponseFrame::Engine {
+            request_id,
+            status: status.clone(),
+        },
+        limits,
+    )?;
+    Ok((status, bytes))
+}
+
+impl BlockingSubscriptionOwner {
+    fn prepare(
+        &mut self,
+        request_id: u64,
+        request: EngineRequest,
+        limits: FrameLimits,
+    ) -> Result<(EngineStatus, Vec<u8>), ProtocolError> {
+        let EngineRequest::Subscription(request) = request else {
+            return prepare_fixture_status(
+                request_id,
+                EngineStatus::Rejected("wrong fixture operation".to_owned()),
+                limits,
+            );
+        };
+        let (response, resume) = match request.operation {
+            LocalSubscriptionOperation::Open {
+                cursor,
+                credit,
+                lease_ms,
+            } if cursor == self.cursor => (
+                LocalSubscriptionResponse::Opened {
+                    request_id,
+                    lease: self.lease,
+                    cursor: self.cursor.clone(),
+                    credit,
+                    lease_ms,
+                },
+                false,
+            ),
+            LocalSubscriptionOperation::Resume {
+                lease,
+                cursor,
+                credit,
+                lease_ms,
+            } if lease == self.lease && cursor == self.cursor => (
+                LocalSubscriptionResponse::Resumed {
+                    request_id,
+                    lease,
+                    cursor: self.cursor.clone(),
+                    credit,
+                    lease_ms,
+                },
+                true,
+            ),
+            LocalSubscriptionOperation::Renew {
+                lease,
+                cursor,
+                credit,
+                ..
+            } if lease == self.lease && cursor == self.cursor => (
+                LocalSubscriptionResponse::Renewed {
+                    request_id,
+                    lease,
+                    cursor: self.cursor.clone(),
+                    credit,
+                    lease_ms: 10_000,
+                },
+                false,
+            ),
+            LocalSubscriptionOperation::Cancel { lease } if lease == self.lease => (
+                LocalSubscriptionResponse::Cancelled { request_id, lease },
+                false,
+            ),
+            _ => {
+                return prepare_fixture_status(
+                    request_id,
+                    EngineStatus::Rejected("misbound fixture lease".to_owned()),
+                    limits,
+                );
+            }
+        };
+        let prepared =
+            prepare_fixture_status(request_id, EngineStatus::Subscription(response), limits)?;
+        if resume {
+            self.resumes.fetch_add(1, Ordering::AcqRel);
+            self.entered.send(request_id).expect("test holds receiver");
+            // Withhold the already encoded reply until the same real-socket
+            // stall gate opens, preserving the observer's timing scenario.
+            let (lock, wake) = &*self.release;
+            let mut released = lock.lock().expect("release lock");
+            while !*released {
+                released = wake.wait(released).expect("release wait");
+            }
+        }
+        Ok(prepared)
+    }
+}
+
 impl OwnerService for BlockingSubscriptionOwner {
     fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
         Ok(body.to_vec())
@@ -131,62 +239,17 @@ impl OwnerService for BlockingSubscriptionOwner {
         request_id: u64,
         request: EngineRequest,
     ) -> Result<EngineStatus, ProtocolError> {
-        let EngineRequest::Subscription(request) = request else {
-            return Ok(EngineStatus::Rejected("wrong fixture operation".to_owned()));
-        };
-        let response = match request.operation {
-            LocalSubscriptionOperation::Open {
-                cursor,
-                credit,
-                lease_ms,
-            } if cursor == self.cursor => LocalSubscriptionResponse::Opened {
-                request_id,
-                lease: self.lease,
-                cursor: self.cursor.clone(),
-                credit,
-                lease_ms,
-            },
-            LocalSubscriptionOperation::Resume {
-                lease,
-                cursor,
-                credit,
-                lease_ms,
-            } if lease == self.lease && cursor == self.cursor => {
-                self.resumes.fetch_add(1, Ordering::AcqRel);
-                self.entered.send(request_id).expect("test holds receiver");
-                let (lock, wake) = &*self.release;
-                let mut released = lock.lock().expect("release lock");
-                while !*released {
-                    released = wake.wait(released).expect("release wait");
-                }
-                LocalSubscriptionResponse::Resumed {
-                    request_id,
-                    lease,
-                    cursor: self.cursor.clone(),
-                    credit,
-                    lease_ms,
-                }
-            }
-            LocalSubscriptionOperation::Renew {
-                lease,
-                cursor,
-                credit,
-                ..
-            } if lease == self.lease && cursor == self.cursor => {
-                LocalSubscriptionResponse::Renewed {
-                    request_id,
-                    lease,
-                    cursor: self.cursor.clone(),
-                    credit,
-                    lease_ms: 10_000,
-                }
-            }
-            LocalSubscriptionOperation::Cancel { lease } if lease == self.lease => {
-                LocalSubscriptionResponse::Cancelled { request_id, lease }
-            }
-            _ => return Ok(EngineStatus::Rejected("misbound fixture lease".to_owned())),
-        };
-        Ok(EngineStatus::Subscription(response))
+        self.prepare(request_id, request, FrameLimits::default())
+            .map(|(status, _)| status)
+    }
+    fn engine_prepared(
+        &mut self,
+        request_id: u64,
+        request: EngineRequest,
+        limits: FrameLimits,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        self.prepare(request_id, request, limits)
+            .map(|(_, bytes)| bytes)
     }
     fn serve_one(&mut self) -> bool {
         false
@@ -200,35 +263,46 @@ struct RejectFirstResume {
     resumes: Arc<AtomicUsize>,
 }
 
-impl OwnerService for RejectFirstResume {
-    fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
-        Ok(body.to_vec())
-    }
-
-    fn engine(
+impl RejectFirstResume {
+    fn prepare(
         &mut self,
         request_id: u64,
         request: EngineRequest,
-    ) -> Result<EngineStatus, ProtocolError> {
+        limits: FrameLimits,
+    ) -> Result<(EngineStatus, Vec<u8>), ProtocolError> {
         let EngineRequest::Subscription(request) = request else {
-            return Ok(EngineStatus::Rejected("wrong fixture operation".to_owned()));
+            return prepare_fixture_status(
+                request_id,
+                EngineStatus::Rejected("wrong fixture operation".to_owned()),
+                limits,
+            );
         };
         let first = LocalSubscriptionId::from_bytes([3; 16]);
         let second = LocalSubscriptionId::from_bytes([4; 16]);
-        let response = match request.operation {
+        let (status, opened, resumed) = match request.operation {
             LocalSubscriptionOperation::Open {
                 cursor,
                 credit,
                 lease_ms,
             } if cursor == self.cursor => {
-                let number = self.opens.fetch_add(1, Ordering::AcqRel) + 1;
-                LocalSubscriptionResponse::Opened {
-                    request_id,
-                    lease: if number == 1 { first } else { second },
-                    cursor: self.cursor.clone(),
-                    credit,
-                    lease_ms,
-                }
+                // Only this fixture's single owner loop advances the counter.
+                // A failed encoding must not consume the prospective lease.
+                let lease = if self.opens.load(Ordering::Acquire) == 0 {
+                    first
+                } else {
+                    second
+                };
+                (
+                    EngineStatus::Subscription(LocalSubscriptionResponse::Opened {
+                        request_id,
+                        lease,
+                        cursor: self.cursor.clone(),
+                        credit,
+                        lease_ms,
+                    }),
+                    true,
+                    false,
+                )
             }
             LocalSubscriptionOperation::Resume {
                 lease,
@@ -236,40 +310,277 @@ impl OwnerService for RejectFirstResume {
                 credit,
                 lease_ms,
             } if cursor == self.cursor => {
-                self.resumes.fetch_add(1, Ordering::AcqRel);
-                if lease == first {
-                    return Ok(EngineStatus::Rejected(
-                        "lease refused by producer".to_owned(),
-                    ));
-                }
-                if lease != second {
-                    return Ok(EngineStatus::Rejected("unknown fixture lease".to_owned()));
-                }
-                LocalSubscriptionResponse::Resumed {
+                let status = if lease == first {
+                    EngineStatus::Rejected("lease refused by producer".to_owned())
+                } else if lease != second {
+                    EngineStatus::Rejected("unknown fixture lease".to_owned())
+                } else {
+                    EngineStatus::Subscription(LocalSubscriptionResponse::Resumed {
+                        request_id,
+                        lease,
+                        cursor: self.cursor.clone(),
+                        credit,
+                        lease_ms,
+                    })
+                };
+                (status, false, true)
+            }
+            LocalSubscriptionOperation::Cancel { lease } => (
+                EngineStatus::Subscription(LocalSubscriptionResponse::Cancelled {
                     request_id,
                     lease,
-                    cursor: self.cursor.clone(),
-                    credit,
-                    lease_ms,
-                }
-            }
-            LocalSubscriptionOperation::Cancel { lease } => {
-                LocalSubscriptionResponse::Cancelled { request_id, lease }
-            }
-            _ => {
-                return Ok(EngineStatus::Rejected(
-                    "misbound fixture operation".to_owned(),
-                ));
-            }
+                }),
+                false,
+                false,
+            ),
+            _ => (
+                EngineStatus::Rejected("misbound fixture operation".to_owned()),
+                false,
+                false,
+            ),
         };
-        Ok(EngineStatus::Subscription(response))
+        let prepared = prepare_fixture_status(request_id, status, limits)?;
+        if opened {
+            self.opens.fetch_add(1, Ordering::AcqRel);
+        }
+        if resumed {
+            self.resumes.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(prepared)
     }
+}
 
+impl OwnerService for RejectFirstResume {
+    fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+        Ok(body.to_vec())
+    }
+    fn engine(
+        &mut self,
+        request_id: u64,
+        request: EngineRequest,
+    ) -> Result<EngineStatus, ProtocolError> {
+        self.prepare(request_id, request, FrameLimits::default())
+            .map(|(status, _)| status)
+    }
+    fn engine_prepared(
+        &mut self,
+        request_id: u64,
+        request: EngineRequest,
+        limits: FrameLimits,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        self.prepare(request_id, request, limits)
+            .map(|(_, bytes)| bytes)
+    }
     fn serve_one(&mut self) -> bool {
         false
     }
-
     fn close(&mut self) {}
+}
+
+fn fixture_subscription(request_id: u64, operation: LocalSubscriptionOperation) -> EngineRequest {
+    EngineRequest::Subscription(LocalSubscriptionRequest {
+        request_id,
+        operation,
+    })
+}
+
+fn too_small_fixture_reply_limits() -> FrameLimits {
+    let mut limits = FrameLimits::default();
+    limits.max_frame = 1;
+    limits.max_cursor = 1;
+    limits.transport.max_frame = 1;
+    limits.transport.max_chunk = 1;
+    limits
+        .validate()
+        .expect("valid limits, but no subscription response can fit");
+    limits
+}
+
+#[test]
+fn blocked_resume_fixture_encodes_before_advancing_its_counter_or_gate() {
+    let cursor = Cursor::for_view_root_at(&root(), 0).encode_control();
+    let lease = LocalSubscriptionId::from_bytes([3; 16]);
+    let (entered, observed) = mpsc::channel();
+    let resumes = Arc::new(AtomicUsize::new(0));
+    // Open only this test's artificial gate to make an incorrect
+    // engine-then-encode implementation fail promptly instead of hanging.
+    let release = Arc::new((Mutex::new(true), Condvar::new()));
+    let mut owner = BlockingSubscriptionOwner {
+        cursor: cursor.clone(),
+        lease,
+        entered,
+        release,
+        resumes: Arc::clone(&resumes),
+    };
+    let operation = LocalSubscriptionOperation::Resume {
+        lease,
+        cursor: cursor.clone(),
+        credit: 1,
+        lease_ms: 10_000,
+    };
+    assert!(
+        owner
+            .engine_prepared(
+                1,
+                fixture_subscription(1, operation.clone()),
+                too_small_fixture_reply_limits()
+            )
+            .is_err()
+    );
+    assert_eq!(resumes.load(Ordering::Acquire), 0);
+    assert!(
+        matches!(observed.try_recv(), Err(mpsc::TryRecvError::Empty)),
+        "a rejected outer reply cannot enter the stall gate"
+    );
+    let bytes = owner
+        .engine_prepared(
+            2,
+            fixture_subscription(2, operation),
+            FrameLimits::default(),
+        )
+        .expect("prepared Resume");
+    assert_eq!(resumes.load(Ordering::Acquire), 1);
+    assert_eq!(
+        observed
+            .recv_timeout(Duration::from_secs(1))
+            .expect("only successful preparation enters"),
+        2
+    );
+    assert_eq!(
+        decode_response(&bytes, FrameLimits::default()).expect("bounded reply"),
+        ResponseFrame::Engine {
+            request_id: 2,
+            status: EngineStatus::Subscription(LocalSubscriptionResponse::Resumed {
+                request_id: 2,
+                lease,
+                cursor,
+                credit: 1,
+                lease_ms: 10_000
+            }),
+        }
+    );
+}
+
+#[test]
+fn resume_refusal_fixture_consumes_counters_only_after_exact_response_encoding() {
+    let cursor = Cursor::for_view_root_at(&root(), 0).encode_control();
+    let opens = Arc::new(AtomicUsize::new(0));
+    let resumes = Arc::new(AtomicUsize::new(0));
+    let mut owner = RejectFirstResume {
+        cursor: cursor.clone(),
+        opens: Arc::clone(&opens),
+        resumes: Arc::clone(&resumes),
+    };
+    let open = LocalSubscriptionOperation::Open {
+        cursor: cursor.clone(),
+        credit: 1,
+        lease_ms: 10_000,
+    };
+    assert!(
+        owner
+            .engine_prepared(
+                1,
+                fixture_subscription(1, open.clone()),
+                too_small_fixture_reply_limits()
+            )
+            .is_err()
+    );
+    assert_eq!(
+        opens.load(Ordering::Acquire),
+        0,
+        "failed outer encoding cannot consume the first lease"
+    );
+    for (request_id, lease) in [
+        (2, LocalSubscriptionId::from_bytes([3; 16])),
+        (3, LocalSubscriptionId::from_bytes([4; 16])),
+    ] {
+        let bytes = owner
+            .engine_prepared(
+                request_id,
+                fixture_subscription(request_id, open.clone()),
+                FrameLimits::default(),
+            )
+            .expect("prepared Open");
+        assert_eq!(
+            decode_response(&bytes, FrameLimits::default()).expect("bounded Open"),
+            ResponseFrame::Engine {
+                request_id,
+                status: EngineStatus::Subscription(LocalSubscriptionResponse::Opened {
+                    request_id,
+                    lease,
+                    cursor: cursor.clone(),
+                    credit: 1,
+                    lease_ms: 10_000
+                }),
+            }
+        );
+    }
+    assert_eq!(opens.load(Ordering::Acquire), 2);
+    let rejected_resume = LocalSubscriptionOperation::Resume {
+        lease: LocalSubscriptionId::from_bytes([3; 16]),
+        cursor: cursor.clone(),
+        credit: 1,
+        lease_ms: 10_000,
+    };
+    assert!(
+        owner
+            .engine_prepared(
+                4,
+                fixture_subscription(4, rejected_resume.clone()),
+                too_small_fixture_reply_limits()
+            )
+            .is_err()
+    );
+    assert_eq!(
+        resumes.load(Ordering::Acquire),
+        0,
+        "even the explicit refusal counter requires a prepared outer reply"
+    );
+    let refusal = owner
+        .engine_prepared(
+            5,
+            fixture_subscription(5, rejected_resume),
+            FrameLimits::default(),
+        )
+        .expect("prepared explicit refusal");
+    assert_eq!(
+        decode_response(&refusal, FrameLimits::default()).expect("bounded refusal"),
+        ResponseFrame::Engine {
+            request_id: 5,
+            status: EngineStatus::Rejected("lease refused by producer".to_owned())
+        }
+    );
+    assert_eq!(resumes.load(Ordering::Acquire), 1);
+    let second = LocalSubscriptionId::from_bytes([4; 16]);
+    let bytes = owner
+        .engine_prepared(
+            6,
+            fixture_subscription(
+                6,
+                LocalSubscriptionOperation::Resume {
+                    lease: second,
+                    cursor: cursor.clone(),
+                    credit: 1,
+                    lease_ms: 10_000,
+                },
+            ),
+            FrameLimits::default(),
+        )
+        .expect("prepared reacquired Resume");
+    assert_eq!(
+        decode_response(&bytes, FrameLimits::default()).expect("bounded second Resume"),
+        ResponseFrame::Engine {
+            request_id: 6,
+            status: EngineStatus::Subscription(LocalSubscriptionResponse::Resumed {
+                request_id: 6,
+                lease: second,
+                cursor,
+                credit: 1,
+                lease_ms: 10_000
+            }),
+        }
+    );
+    assert_eq!(resumes.load(Ordering::Acquire), 2);
 }
 
 fn socket_path() -> PathBuf {

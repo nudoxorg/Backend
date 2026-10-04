@@ -370,7 +370,7 @@ pub(super) fn git_source_state(
 }
 
 #[cfg(not(unix))]
-fn git_source_state(
+pub(super) fn git_source_state(
     _root: &Path,
     _wanted_paths: &BTreeSet<String>,
     _local_policy_paths: &[PathBuf],

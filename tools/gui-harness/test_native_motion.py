@@ -638,6 +638,7 @@ class NativeMotionTests(unittest.TestCase):
             self.assertEqual(argv[-4:], ["--args", "43542", str(plan_path), str(out)])
             self.assertTrue(popen.call_args.kwargs["start_new_session"])
             self.assertIsNone(launch["recorder_exit"])
+            self.assertTrue(launch["recorder_may_continue"])
             self.assertEqual(launch["launcher_exit_code"], 0)
             self.assertIn("Unverified", launch["tcc_responsibility"])
             self.assertEqual(launch["logs"]["recorder.stderr"]["size"], 0)
@@ -646,45 +647,47 @@ class NativeMotionTests(unittest.TestCase):
             identity = {"identifier": "dev.nudox.audit.motion-recorder"}
             recorder = app / "Contents/MacOS/NudoxMotionRecorder"
             plan = {"foreground_required": False}
-            admitted, _, failures = motion.launch_services_completion(out, launch, recorder,
+            admitted, _, failures, classification = motion.launch_services_completion(out, launch, recorder,
                                                                         identity, 43542, plan)
             self.assertFalse(admitted)
             self.assertIn("result sidecar absent", "; ".join(failures))
             (out / "result.jsonl").write_text('{"captured_frames":1,"dropped_frames":0}\n')
-            preflight = {"state": "Admitted", "recorder_executable": str(recorder),
+            preflight = {"schema": 1, "state": "Admitted", "failures": [],
+                         "screen_recording_preflight_granted": True, "ax_trusted": True,
+                         "frontmost_pid": 43542, "recorder_executable": str(recorder),
                          "recorder_bundle_identifier": identity["identifier"],
                          "pid": 43542, "foreground_required": False,
                          "stream_output_callback_ready": True}
             (out / "preflight.jsonl").write_text(json.dumps(preflight) + "\n")
-            admitted, row, failures = motion.launch_services_completion(out, launch, recorder,
+            admitted, row, failures, classification = motion.launch_services_completion(out, launch, recorder,
                                                                           identity, 43542, plan)
             self.assertTrue(admitted)
             self.assertEqual(row, preflight)
             self.assertEqual(failures, [])
             (out / "preflight.jsonl").write_text(json.dumps(dict(preflight,
                 stream_output_callback_ready=False)) + "\n")
-            admitted, _, failures = motion.launch_services_completion(out, launch, recorder,
+            admitted, _, failures, classification = motion.launch_services_completion(out, launch, recorder,
                                                                         identity, 43542, plan)
             self.assertFalse(admitted)
-            self.assertIn("identity/admission mismatch", "; ".join(failures))
+            self.assertIn(classification["state"], ("Invalid", "IdentityMismatch"))
             (out / "preflight.jsonl").write_text(json.dumps({
                 key: value for key, value in preflight.items()
                 if key != "stream_output_callback_ready"}) + "\n")
-            admitted, _, failures = motion.launch_services_completion(out, launch, recorder,
+            admitted, _, failures, classification = motion.launch_services_completion(out, launch, recorder,
                                                                         identity, 43542, plan)
             self.assertFalse(admitted)
-            self.assertIn("identity/admission mismatch", "; ".join(failures))
+            self.assertIn(classification["state"], ("Invalid", "IdentityMismatch"))
             (out / "preflight.jsonl").write_text(json.dumps(preflight) + "\n")
-            admitted, _, failures = motion.launch_services_completion(out,
+            admitted, _, failures, classification = motion.launch_services_completion(out,
                 dict(launch, launcher_exit_code=1), recorder, identity, 43542, plan)
             self.assertFalse(admitted)
             self.assertIn("launcher exited nonzero", "; ".join(failures))
             (out / "preflight.jsonl").write_text(json.dumps(dict(preflight,
                 recorder_executable="/different/recorder")) + "\n")
-            admitted, _, failures = motion.launch_services_completion(out, launch, recorder,
+            admitted, _, failures, classification = motion.launch_services_completion(out, launch, recorder,
                                                                         identity, 43542, plan)
             self.assertFalse(admitted)
-            self.assertIn("identity/admission mismatch", "; ".join(failures))
+            self.assertIn(classification["state"], ("Invalid", "IdentityMismatch"))
 
     def test_launch_services_timeout_marks_recorder_may_continue(self):
         with tempfile.TemporaryDirectory() as root:
@@ -705,6 +708,142 @@ class NativeMotionTests(unittest.TestCase):
             killpg.assert_called_once_with(5678, motion.signal.SIGTERM)
             self.assertTrue(launch["timed_out"])
             self.assertTrue(launch["recorder_may_continue"])
+
+    def test_identity_bound_refusal_preserves_codes_without_completion_or_exit(self):
+        # The real af83 passive refusal has these two denied flags and an
+        # available callback, but writes no result.jsonl. open -W returns zero.
+        with tempfile.TemporaryDirectory() as root:
+            out = Path(root)
+            recorder = out / "recorder"
+            identity = {"identifier": "dev.nudox.audit.motion-recorder"}
+            plan = {"foreground_required": False}
+            row = {"schema": 1, "state": "Rejected", "pid": 43542, "frontmost_pid": 62184,
+                   "recorder_executable": str(recorder),
+                   "recorder_bundle_identifier": identity["identifier"], "foreground_required": False,
+                   "screen_recording_preflight_granted": False, "ax_trusted": False,
+                   "stream_output_callback_ready": True,
+                   "failures": ["ScreenRecordingPreflightDenied", "AccessibilityTrustDenied"]}
+            (out / "preflight.jsonl").write_text(json.dumps(row) + "\n")
+            launch = {"timed_out": False, "launcher_exit_code": 0,
+                      "recorder_exit": None, "recorder_may_continue": True}
+            for result in (None, {"captured_frames": 1, "dropped_frames": 0}):
+                with self.subTest(result=result):
+                    if result is not None:
+                        (out / "result.jsonl").write_text(json.dumps(result) + "\n")
+                    admitted, observed, failures, classification = motion.launch_services_completion(
+                        out, launch, recorder, identity, 43542, plan)
+                    self.assertFalse(admitted)
+                    self.assertEqual(observed, row)
+                    self.assertEqual(classification["state"], "Rejected")
+                    self.assertTrue(classification["identity_bound"])
+                    self.assertEqual(classification["native_failure_codes"], row["failures"])
+                    manifest = {"launcher": dict(launch, completion_failures=failures),
+                                "preflight_classification": classification}
+                    message = motion.recorder_failure_message(manifest, out)
+                    for code in row["failures"]:
+                        self.assertIn(code, message)
+                    if result is None:
+                        self.assertIn("completion unproven", message)
+                        self.assertFalse((out / "result.jsonl").exists())
+                    self.assertIsNone(launch["recorder_exit"])
+                    self.assertTrue(launch["recorder_may_continue"])
+                    self.assertNotIn("analysis", manifest)
+
+    def test_preflight_protocol_separates_absence_invalid_identity_and_refusal(self):
+        recorder = "/owned/recorder"
+        row = {"schema": 1, "state": "Rejected", "pid": 43542, "frontmost_pid": 62184,
+               "recorder_executable": recorder, "recorder_bundle_identifier": "owned.recorder",
+               "foreground_required": False, "screen_recording_preflight_granted": False,
+               "ax_trusted": False, "stream_output_callback_ready": True,
+               "failures": ["ScreenRecordingPreflightDenied", "AccessibilityTrustDenied"]}
+        encoded = (json.dumps(row) + "\n").encode()
+        cases = [(None, "Absent"), (b"", "Invalid"), (encoded[:-1], "Invalid"),
+                 (b'{"schema":1,\n', "Invalid"), (encoded + encoded, "Invalid"),
+                 (b"x" * (motion.supervision.MAX_MESSAGE + 1), "Invalid"),
+                 (b'[]\n', "Invalid"), (b'{"schema":1,"schema":1}\n', "Invalid"),
+                 (b'{"schema":NaN}\n', "Invalid"), (b'\xff\n', "Invalid")]
+        for changes, state in [({"schema": True}, "Invalid"), ({"schema": 1.0}, "Invalid"),
+                ({"pid": True}, "IdentityMismatch"), ({"pid": 43543}, "IdentityMismatch"),
+                ({"recorder_executable": "/other/recorder"}, "IdentityMismatch"),
+                ({"recorder_bundle_identifier": "other.recorder"}, "IdentityMismatch"),
+                ({"foreground_required": 0}, "IdentityMismatch"),
+                ({"frontmost_pid": True}, "Invalid"), ({"ax_trusted": 0}, "Invalid"),
+                ({"stream_output_callback_ready": 1}, "Invalid"), ({"failures": "denied"}, "Invalid"),
+                ({"failures": [False]}, "Invalid"), ({"failures": [[]]}, "Invalid"),
+                ({"failures": ["x" * 129]}, "Invalid"),
+                ({"failures": row["failures"] * 2}, "Invalid"), ({"failures": []}, "Invalid"),
+                ({"state": "Admitted"}, "Invalid")]:
+            cases.append(((json.dumps(dict(row, **changes)) + "\n").encode(), state))
+        for raw, state in cases:
+            with self.subTest(raw=raw):
+                result = motion.supervision.classify_preflight(raw, recorder=recorder,
+                    identifier="owned.recorder", pid=43542, foreground_required=False)
+                self.assertEqual(result["state"], state)
+                self.assertFalse(result["identity_bound"])
+                self.assertEqual(result["native_failure_codes"], [])
+        result = motion.supervision.classify_preflight(encoded, recorder=recorder,
+            identifier="owned.recorder", pid=43542, foreground_required=False)
+        self.assertEqual(result["state"], "Rejected")
+        self.assertTrue(result["identity_bound"])
+        self.assertEqual(result["native_failure_codes"], row["failures"])
+
+    def test_completion_sidecars_require_complete_typed_rows_without_promoting_process_exit(self):
+        with tempfile.TemporaryDirectory() as root:
+            out = Path(root)
+            recorder = out / "recorder"
+            identity = {"identifier": "owned.recorder"}
+            plan = {"foreground_required": False}
+            row = {"schema": 1, "state": "Admitted", "pid": 43542, "frontmost_pid": 1,
+                   "recorder_executable": str(recorder), "recorder_bundle_identifier": identity["identifier"],
+                   "foreground_required": False, "screen_recording_preflight_granted": True,
+                   "ax_trusted": True, "stream_output_callback_ready": True, "failures": []}
+            (out / "preflight.jsonl").write_text(json.dumps(row) + "\n")
+            launch = {"timed_out": False, "launcher_exit_code": 0, "recorder_exit": None,
+                      "recorder_may_continue": True}
+            valid = {"captured_frames": 1, "dropped_frames": 0, "stream_failure": None}
+            cases = [(None, False), (b"", False), (b'{}\n', False), (b'[]\n', False),
+                     ((json.dumps(valid)).encode(), False),
+                     ((json.dumps(dict(valid, captured_frames=True)) + "\n").encode(), False),
+                     ((json.dumps(dict(valid, dropped_frames=-1)) + "\n").encode(), False),
+                     ((json.dumps(dict(valid, stream_failure="stopped early")) + "\n").encode(), False),
+                     ((json.dumps(valid) + "\n").encode(), True)]
+            for raw, expected in cases:
+                with self.subTest(raw=raw):
+                    if raw is not None:
+                        (out / "result.jsonl").write_bytes(raw)
+                    admitted, observed, failures, classification = motion.launch_services_completion(
+                        out, launch, recorder, identity, 43542, plan)
+                    self.assertEqual(admitted, expected)
+                    self.assertEqual(observed, row)
+                    self.assertEqual(classification["state"], "Admitted")
+                    self.assertEqual(bool(failures), not expected)
+                    self.assertIsNone(launch["recorder_exit"])
+                    self.assertTrue(launch["recorder_may_continue"])
+            (out / "preflight.jsonl").write_bytes(b'{"schema":1,\n')
+            admitted, _, failures, classification = motion.launch_services_completion(
+                out, launch, recorder, identity, 43542, plan)
+            self.assertFalse(admitted)
+            self.assertEqual(classification["state"], "Invalid")
+            (out / "preflight.jsonl").unlink()
+            admitted, _, failures, classification = motion.launch_services_completion(
+                out, launch, recorder, identity, 43542, plan)
+            self.assertFalse(admitted)
+            self.assertEqual(classification["state"], "Absent")
+
+    def test_native_sidecar_reader_rejects_links_and_nonregular_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            out = Path(root)
+            record = out / "record"
+            record.write_bytes(b"{}\n")
+            link = out / "symlink"
+            link.symlink_to(record)
+            self.assertIsNotNone(motion.native_sidecar_bytes(link)[1])
+            hard = out / "hardlink"
+            motion.os.link(record, hard)
+            self.assertIsNotNone(motion.native_sidecar_bytes(hard)[1])
+            fifo = out / "fifo"
+            motion.os.mkfifo(fifo)
+            self.assertIsNotNone(motion.native_sidecar_bytes(fifo)[1])
 
     def test_run19_plans_keep_find_drawer_settle_and_retarget_distinct(self):
         names = ["settings-fast-open-close", "ask-interrupted-reopen", "find-fast-open-close",

@@ -132,6 +132,7 @@ impl RevealHold {
 mod tests {
     use super::*;
 
+    /// The shortcut modifier held alone: ⌘ on macOS, Ctrl elsewhere.
     fn cmd() -> Modifiers {
         Modifiers::secondary_key()
     }
@@ -153,6 +154,20 @@ mod tests {
         assert_eq!(shown.reveal, Some(Reveal { keys: true, xray: false }));
         let released = hold.modifiers(Modifiers::default());
         assert_eq!(released.reveal, Some(Reveal::default()));
+    }
+
+    /// Off macOS the shell's chords are Ctrl chords: Ctrl held alone reveals
+    /// them, and the Windows (logo) key held alone does not.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn off_macos_ctrl_not_the_logo_key_reveals_the_keys() {
+        let mut hold = RevealHold::default();
+        let logo = Modifiers { platform: true, ..Modifiers::default() };
+        assert_eq!(hold.modifiers(logo).arm, None, "the logo key is not the shortcut modifier");
+        let _ = hold.modifiers(Modifiers::default());
+        let ctrl = Modifiers { control: true, ..Modifiers::default() };
+        let generation = hold.modifiers(ctrl).arm.expect("Ctrl arms the hold");
+        assert_eq!(hold.fire(generation).reveal, Some(Reveal { keys: true, xray: false }));
     }
 
     #[test]
