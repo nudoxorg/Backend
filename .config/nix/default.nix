@@ -120,7 +120,14 @@ let
       };
       controlFile = helpers.controlFile pkgs control;
       artifacts = import ./artifacts.nix { inherit pkgs control; };
-      formatting = import ./format.nix { inherit inputs pkgs toolchains; };
+      formatting = import ./format.nix {
+        inherit
+          inputs
+          pkgs
+          toolchains
+          workspaceRoot
+          ;
+      };
       astGrepSuite = import ./ast-grep-suite.nix {
         inherit pkgs;
         rules = control.lint.syntax;

@@ -21,11 +21,11 @@ def read(path: str) -> str:
 
 
 def main() -> None:
-    if len(sys.argv) != 10:
+    if len(sys.argv) != 12:
         fail(
             "usage: nix-host-runtime-contract.py HOST CORPUS_ENV SHELLS "
             "TS_FRONTEND GO_FRONTEND PYTHON_FRONTEND CSHARP_FRONTEND "
-            "FLEET_RS FLEET_SH"
+            "FLEET_RS FLEET_SH SUPERVISOR COMPILE_TESTS"
         )
 
     (
@@ -39,6 +39,8 @@ def main() -> None:
         csharp_frontend_path,
         fleet_rs_path,
         fleet_sh_path,
+        supervisor_path,
+        compile_tests_path,
     ) = sys.argv
     host = read(host_path)
     corpus_env = read(corpus_env_path)
@@ -115,6 +117,18 @@ def main() -> None:
         if name not in nix_names or name not in consumer:
             fail(f"frontend adapter {name} lacks a live Nix declaration and source consumer")
 
+    # Pinned process tools for hosts without an FHS /bin (NixOS): the
+    # supervisor's resource-limit shell and the coreutils that tests run after
+    # clearing their environment. They are never LocalHost authorities, and
+    # stay only while a source still reads them.
+    process_tools = {
+        "NUDOX_PROCESS_SHELL": read(supervisor_path),
+        "NUDOX_TEST_COREUTILS_BIN": read(compile_tests_path),
+    }
+    for name, consumer in process_tools.items():
+        if name not in nix_names or name not in consumer:
+            fail(f"process tool {name} lacks a live Nix declaration and source consumer")
+
     unclassified_nudox = {
         name
         for name in nix_names
@@ -122,6 +136,7 @@ def main() -> None:
         and name not in host_names
         and not name.endswith("_CORPUS_DIR")
         and name not in aliases
+        and name not in process_tools
     }
     if unclassified_nudox:
         fail(f"Nix exports unclassified NUDOX variables: {sorted(unclassified_nudox)}")

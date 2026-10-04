@@ -23,7 +23,8 @@ let
     )
   );
   isTargetId = name: builtins.match "[a-z][a-z0-9-]*" name != null;
-  complete = name:
+  complete =
+    name:
     let
       dir = targetRoot + "/${name}";
     in
@@ -34,7 +35,8 @@ let
     && builtins.pathExists (dir + "/corpus/canonical")
     && builtins.pathExists (dir + "/corpus/empty")
     && builtins.pathExists (dir + "/corpus/bad_magic");
-  maxLenOf = name:
+  maxLenOf =
+    name:
     let
       raw = builtins.readFile (targetRoot + "/${name}/max_len");
       trimmed = lib.removeSuffix "\n" (lib.removeSuffix "\r" (lib.removeSuffix "\n" raw));
@@ -96,7 +98,11 @@ let
         message = "llvm-cov percent was not measured; leave llvm_cov_percent null";
       }
       {
-        cond = builtins.elem gap.score [ 0 2 3 ];
+        cond = builtins.elem gap.score [
+          0
+          2
+          3
+        ];
         message = "gap.score must be 0, 2, or 3";
       }
       {
@@ -104,7 +110,11 @@ let
         message = "blast.method must be classified";
       }
       {
-        cond = builtins.elem blast.score [ 3 4 5 ];
+        cond = builtins.elem blast.score [
+          3
+          4
+          5
+        ];
         message = "blast.score must be 3, 4, or 5";
       }
       {
@@ -138,7 +148,8 @@ let
     dictionary = null;
     max_input_bytes = null;
   };
-  targetMeta = name:
+  targetMeta =
+    name:
     let
       score = requirePriority name (import (targetRoot + "/${name}/score.nix"));
       rank = rankOf name score;
@@ -167,14 +178,16 @@ let
         entrypoints
         ;
     };
-  requirePriority = name: score:
+  requirePriority =
+    name: score:
     demand name [
       {
         cond = builtins.isInt score.start_order && score.start_order >= 1 && score.start_order <= 9;
         message = "start_order must be an integer from 1 through 9";
       }
     ] score;
-  closed = spec:
+  closed =
+    spec:
     let
       rank = rankOf spec.id spec;
     in
@@ -196,7 +209,8 @@ let
       inherit rank;
     }
     // absentArtifacts;
-  deferred = spec:
+  deferred =
+    spec:
     {
       inherit (spec)
         id
@@ -217,7 +231,8 @@ let
     // absentArtifacts;
   # Property rows are siblings of fuzz rows. They are not supervised bins.
   # Complexity stays null: those modules were not counted for this rank.
-  propertyTarget = spec:
+  propertyTarget =
+    spec:
     {
       inherit (spec)
         id
@@ -286,9 +301,7 @@ let
         {
           cond =
             lib.length (
-              lib.unique (
-                map (name: (import (targetRoot + "/${name}/score.nix")).start_order) directoryNames
-              )
+              lib.unique (map (name: (import (targetRoot + "/${name}/score.nix")).start_order) directoryNames)
             ) == lib.length directoryNames;
           message = "start_order values must be unique across harness directories";
         }
@@ -401,24 +414,22 @@ let
           artifact_directory = "sibling artifacts/ of the durable corpus, never inside it";
         };
         throughput_note = "exec/s and time-to-useful-coverage are not flake attributes. Confirmed campaign numbers live in docs/operations/continuous-fuzzing.md.";
-        targets =
-          map targetMeta discovered
-          ++ [
-            (propertyTarget (
-              {
-                id = "laws";
-                name = "structured laws";
-              }
-              // (unscored [ "tests/laws" ])
-            ))
-            (propertyTarget (
-              {
-                id = "store-frame";
-                name = "store frame property";
-              }
-              // (unscored [ "crates/store/src/view/validate/raw_property.rs" ])
-            ))
-          ];
+        targets = map targetMeta discovered ++ [
+          (propertyTarget (
+            {
+              id = "laws";
+              name = "structured laws";
+            }
+            // (unscored [ "tests/laws" ])
+          ))
+          (propertyTarget (
+            {
+              id = "store-frame";
+              name = "store frame property";
+            }
+            // (unscored [ "crates/store/src/view/validate/raw_property.rs" ])
+          ))
+        ];
         backlog = [
           (closed {
             id = "session-frame";
@@ -552,7 +563,10 @@ let
         ];
       };
   metadataFile =
-    if metadata == null then null else pkgs.writeText "continuous-fuzz-metadata.json" (builtins.toJSON metadata);
+    if metadata == null then
+      null
+    else
+      pkgs.writeText "continuous-fuzz-metadata.json" (builtins.toJSON metadata);
   engineBinary =
     if discovered == null then
       null
@@ -683,18 +697,21 @@ let
       lib.listToAttrs (
         map (name: {
           inherit name;
-          value = pkgs.runCommand "fuzz-corpus-${name}" {
-            passthru = {
-              warmVault = corpusVault name;
-              durableMount = durableMountOf name;
-            };
-          } ''
-            mkdir -p "$out"
-            find ${targetRoot + "/${name}/corpus"} -type f ! -name '.*' -exec cp -a {} "$out/" \;
-            test -f "$out/canonical"
-            test -f "$out/empty"
-            test -f "$out/bad_magic"
-          '';
+          value =
+            pkgs.runCommand "fuzz-corpus-${name}"
+              {
+                passthru = {
+                  warmVault = corpusVault name;
+                  durableMount = durableMountOf name;
+                };
+              }
+              ''
+                mkdir -p "$out"
+                find ${targetRoot + "/${name}/corpus"} -type f ! -name '.*' -exec cp -a {} "$out/" \;
+                test -f "$out/canonical"
+                test -f "$out/empty"
+                test -f "$out/bad_magic"
+              '';
         }) discovered
       );
   dicts =
@@ -729,18 +746,21 @@ let
           in
           {
             inherit name;
-            value = pkgs.runCommand "fuzz-engine-${name}" {
-              passthru.adapter = {
-                id = "libfuzzer";
-                family = "coverage-guided";
-                linked = true;
-                adapter = "bolero";
-              };
-            } ''
-              mkdir -p "$out/bin"
-              cp ${script} "$out/bin/fuzz-engine-${name}"
-              chmod +x "$out/bin/fuzz-engine-${name}"
-            '';
+            value =
+              pkgs.runCommand "fuzz-engine-${name}"
+                {
+                  passthru.adapter = {
+                    id = "libfuzzer";
+                    family = "coverage-guided";
+                    linked = true;
+                    adapter = "bolero";
+                  };
+                }
+                ''
+                  mkdir -p "$out/bin"
+                  cp ${script} "$out/bin/fuzz-engine-${name}"
+                  chmod +x "$out/bin/fuzz-engine-${name}"
+                '';
           }
         ) discovered
       );
@@ -825,12 +845,14 @@ let
     if bins == null then
       null
     else
-      lib.listToAttrs (
-        map (name: lib.nameValuePair "fuzz-${name}" bins.${name}) discovered
-      );
+      lib.listToAttrs (map (name: lib.nameValuePair "fuzz-${name}" bins.${name}) discovered);
 in
 {
-  contract = if bundle == null then null else {
-    inherit bundle aliases;
-  };
+  contract =
+    if bundle == null then
+      null
+    else
+      {
+        inherit bundle aliases;
+      };
 }

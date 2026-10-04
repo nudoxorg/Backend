@@ -1,0 +1,19 @@
+# Mirrors the package Dylint generates to build its rustc driver.
+# Pins that package's dependency graph for vendoring into the Nix check.
+# Is never built here: Dylint builds its own copy from the vendored sources.
+[package]
+name = "dylint_driver-pinned"
+version = "0.1.0"
+edition = "2018"
+publish = false
+
+[[bin]]
+name = "dylint_driver-pinned"
+path = "main.rs"
+
+[dependencies]
+anyhow = "1.0"
+env_logger = "0.11"
+dylint_driver = { version = "=6.0.4" }
+
+[workspace]
