@@ -80,6 +80,10 @@ impl PageInputScope {
     fn same_producer(&self, other: &Self) -> bool {
         self.authority == other.authority && self.attachment == other.attachment && self.retry == other.retry
     }
+
+    pub(crate) fn same_attachment(&self, other: &Self) -> bool {
+        self.attachment == other.attachment && self.retry == other.retry
+    }
 }
 
 /// One checked clock, with an explicit projection for independent local input.

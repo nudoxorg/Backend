@@ -140,9 +140,14 @@ pub struct Actions {
     pub persist_held: Rc<dyn Fn(Vec<HeldPackage>, &mut App)>,
     /// Restores this exact query handle after Ask releases the same visit.
     pub return_focus: Rc<dyn Fn(gpui::FocusHandle, &mut Window, &mut App) -> super::library::ReturnDisposition>,
-    /// Admits the first deferred focus claim against the host's exact native
-    /// visit, input scope and unchanged focus intent.
-    pub claim_focus: Rc<dyn Fn(&gpui::FocusHandle, u64, &Window, &App) -> bool>,
+    /// The input epoch at the first paint is retained across a harmless
+    /// producer rebase; a later key or pointer cannot create a new claim.
+    pub claim_input_generation: Option<u64>,
+    /// The first paint's owner attachment must survive every fresh claim.
+    pub claim_owner: Rc<dyn Fn(&App) -> bool>,
+    /// Classifies the first deferred focus claim against the fresh native
+    /// visit, input scope and original focus intent.
+    pub claim_focus: Rc<dyn Fn(&gpui::FocusHandle, ClaimIntent, &Window, &App) -> ClaimDisposition>,
     pub query_input: Rc<dyn Fn(&str) -> QueryInput>,
     pub refine: Rc<dyn Fn(SharedString, &mut App)>,
     /// Retries the exact failed current route; absent when the owner cannot serve it.
@@ -155,6 +160,15 @@ pub struct Actions {
     /// Adding an offered release to the library; `None`: nothing is offered.
     pub acquire: Option<AddActions>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClaimIntent {
+    pub focus_epoch: u64,
+    pub input_generation: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClaimDisposition { Admitted, WaitForFreshFrame, Retired }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Selection { Package(SharedString), Answer(SharedString) }
@@ -221,6 +235,9 @@ struct State {
     all_answers: bool,
     source: bool,
     initial_focus_pending: bool,
+    initial_focus_intent: Option<ClaimIntent>,
+    initial_claim_owner: Option<Rc<dyn Fn(&App) -> bool>>,
+    initial_focus_refresh_requested: bool,
     pending: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -294,7 +311,7 @@ impl State {
         let held = Held(actions.initial_held.clone());
         let reveal = KeyboardReveal::new(actions.scroll.clone());
         Self { active: true, read_admission: ReadAdmission::Current, input, route_query: query, refine, actions, keyboard: vec![], loaded_query: None, snapshot: None, submitted: None, generation: 0, selected: None, reveal, held,
-            all_packages: false, all_answers: false, source: false, initial_focus_pending: true, pending: None, _subscriptions: vec![subscription] }
+            all_packages: false, all_answers: false, source: false, initial_focus_pending: true, initial_focus_intent: None, initial_claim_owner: None, initial_focus_refresh_requested: false, pending: None, _subscriptions: vec![subscription] }
     }
     /// A release added to the library changes its address (the offer's
     /// package URL becomes the tree the owner indexed): the selection follows
@@ -338,7 +355,7 @@ impl State {
 /// the exact mounted query to its host, which uses that registration when Add
 /// covers the field immediately after arrival.
 enum QueryFocus {
-    Claim(gpui::WeakEntity<State>),
+    Claim(gpui::WeakEntity<State>, ClaimIntent),
     Return,
 }
 
@@ -347,19 +364,42 @@ impl QueryFocus {
         self,
         query: gpui::FocusHandle,
         restore: Rc<dyn Fn(gpui::FocusHandle, &mut Window, &mut App) -> super::library::ReturnDisposition>,
-        claim: Rc<dyn Fn(&gpui::FocusHandle, u64, &Window, &App) -> bool>,
+        claim: Rc<dyn Fn(&gpui::FocusHandle, ClaimIntent, &Window, &App) -> ClaimDisposition>,
         window: &mut Window,
         cx: &mut App,
     ) {
-        let focus_epoch = window.focus_epoch();
         window.defer(cx, move |window, cx| {
-            if let Self::Claim(state) = self {
+            if let Self::Claim(state, intent) = self {
                 let Some(state) = state.upgrade() else { return; };
-                if !state.read(cx).active { return; }
                 let input = state.read(cx).input.clone();
-                if input.read(cx).focus_handle(cx) != query
-                    || !claim(&query, focus_epoch, window, cx) { return; }
-                input.update(cx, |input, cx| input.focus(window, cx));
+                let original_owner = state.read(cx).initial_claim_owner.clone();
+                let disposition = if input.read(cx).focus_handle(cx) != query
+                    || original_owner.as_ref().is_none_or(|owner| !owner(cx)) {
+                    ClaimDisposition::Retired
+                } else {
+                    claim(&query, intent, window, cx)
+                };
+                match disposition {
+                    ClaimDisposition::Admitted if state.read(cx).active => {
+                        state.update(cx, |state, _| { state.initial_focus_intent = None; state.initial_claim_owner = None; });
+                        input.update(cx, |input, cx| input.focus(window, cx));
+                    }
+                    ClaimDisposition::WaitForFreshFrame => {
+                        let refresh = state.update(cx, |state, _| {
+                            state.initial_focus_pending = true;
+                            if state.initial_focus_refresh_requested { false } else {
+                                state.initial_focus_refresh_requested = true;
+                                true
+                            }
+                        });
+                        // One corrective paint is enough. A still-unpainted
+                        // Reader waits for its own landing/producer event.
+                        if refresh { window.refresh(); }
+                    }
+                    ClaimDisposition::Admitted | ClaimDisposition::Retired => {
+                        state.update(cx, |state, _| { state.initial_focus_intent = None; state.initial_claim_owner = None; });
+                    }
+                }
             }
             restore(query, window, cx);
         });
@@ -425,7 +465,12 @@ impl RenderOnce for Find {
             // route owns the keyboard. Active paints transfer only after the
             // frame, when native accessibility has finished reporting focus.
             let transfer = if std::mem::take(&mut state.initial_focus_pending) {
-                QueryFocus::Claim(cx.weak_entity())
+                let intent = *state.initial_focus_intent.get_or_insert(ClaimIntent {
+                    focus_epoch: window.focus_epoch(),
+                    input_generation: self.actions.claim_input_generation,
+                });
+                state.initial_claim_owner.get_or_insert_with(|| Rc::clone(&self.actions.claim_owner));
+                QueryFocus::Claim(cx.weak_entity(), intent)
             } else {
                 QueryFocus::Return
             };

@@ -232,17 +232,38 @@ impl FindQueryClaim {
         Self { visit: source.visit.clone(), links: source.links.clone(), input, input_generation }
     }
 
+    fn same_initial_owner(&self, cx: &App) -> bool {
+        let (Some(initial), Some(shell)) = (self.input.as_ref(), self.links.shell.upgrade()) else { return false; };
+        self.visit.local(cx) && shell.read(cx).page_input_scope(cx).as_ref().is_some_and(|current| initial.same_attachment(current))
+    }
+
+    fn disposition(&self, query: &FocusHandle, intent: facet::browse::find::ClaimIntent, window: &Window, cx: &App) -> facet::browse::find::ClaimDisposition {
+        use facet::browse::find::ClaimDisposition;
+        let (Some(input), Some(input_generation), Some(shell)) =
+            (self.input.as_ref(), self.input_generation, self.links.shell.upgrade()) else { return ClaimDisposition::Retired; };
+        let shell = shell.read(cx);
+        if window.focus_epoch() != intent.focus_epoch
+            || intent.input_generation != Some(input_generation)
+            || shell.focus_return_generation() != Some(input_generation)
+            || !self.visit.local(cx) { return ClaimDisposition::Retired; }
+        let Some(current_input) = shell.page_input_scope(cx) else { return ClaimDisposition::Retired; };
+        if !input.same_attachment(&current_input) { return ClaimDisposition::Retired; }
+        // A root revision or a briefly unpainted Reader can invalidate a
+        // queued claim without ending this editing visit. The next paint
+        // supplies a new exact root/scope; the original intent stays fixed.
+        if self.links.snapshot(cx).key() != self.visit.root
+            || input != &current_input
+            || !self.visit.reader.upgrade().is_some_and(|reader| reader.read(cx).native_input_for(&self.visit.route, None)) {
+            return ClaimDisposition::WaitForFreshFrame;
+        }
+        if !window.is_focus_handle_mounted(query) { return ClaimDisposition::Retired; }
+        ClaimDisposition::Admitted
+    }
+
+    #[cfg(test)]
     fn admits(&self, query: &FocusHandle, focus_epoch: u64, window: &Window, cx: &App) -> bool {
-        let (Some(input), Some(input_generation)) = (self.input.as_ref(), self.input_generation) else { return false; };
-        window.focus_epoch() == focus_epoch
-            && window.is_focus_handle_mounted(query)
-            && self.links.snapshot(cx).key() == self.visit.root
-            && self.visit.local(cx)
-            && self.visit.reader.upgrade().is_some_and(|reader| reader.read(cx).native_input_for(&self.visit.route, None))
-            && self.links.shell.upgrade().is_some_and(|shell| {
-                let shell = shell.read(cx);
-                shell.admits_page_input_scope(input, cx) && shell.focus_return_generation() == Some(input_generation)
-            })
+        self.disposition(query, facet::browse::find::ClaimIntent { focus_epoch, input_generation: self.input_generation }, window, cx)
+            == facet::browse::find::ClaimDisposition::Admitted
     }
 }
 
@@ -565,6 +586,9 @@ fn find_actions(
     let reader = cx.weak_entity();
     let held_visit = source.visit.clone();
     let refine_visit = source.visit.clone();
+    let claim = FindQueryClaim::new(source, cx);
+    let claim_input_generation = claim.input_generation;
+    let claim_owner = claim.clone();
     let acquire = Some(crate::shell::acquire::add_actions(
         &ctx.links,
         cx.entity_id(),
@@ -590,10 +614,9 @@ fn find_actions(
                 })
             })
         },
-        claim_focus: {
-            let claim = FindQueryClaim::new(source, cx);
-            Rc::new(move |query, epoch, window, cx| claim.admits(query, epoch, window, cx))
-        },
+        claim_focus: Rc::new(move |query, intent, window, cx| claim.disposition(query, intent, window, cx)),
+        claim_input_generation,
+        claim_owner: Rc::new(move |cx| claim_owner.same_initial_owner(cx)),
         query_input: Rc::new(query_input),
         refine: Rc::new(move |text, cx| {
             if !refine_visit.local(cx) { return; }

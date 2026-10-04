@@ -538,7 +538,7 @@ fn find_callback_never_revives_on_a_new_same_route_visit_or_owner_attachment(cx:
 fn stale_first_find_focus_claim_is_denied_before_focus(cx: &mut TestAppContext) {
     let browse = BrowseRoute::Find(SearchQuery::new("RelationLabel", SearchQuery::DEFAULT_LIMIT).expect("query"));
     let route = Route::Orbit(OrbitRoute::Browse(browse.clone()));
-    for change in ["route", "add", "ask", "tab", "key", "attachment", "root"] {
+    for change in ["route", "add", "ask", "tab", "key", "attachment", "root", "producer_transit"] {
         let mut rig = rig(cx, Some(route.clone()), 1200.0, 800.0);
         rig.settle();
         let source = find_callback(&mut rig, &browse);
@@ -578,11 +578,65 @@ fn stale_first_find_focus_claim_is_denied_before_focus(cx: &mut TestAppContext) 
                 );
                 rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_key(next, None)), cx));
             }
+            "producer_transit" => {
+                let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+                let links = reader.read_with(rig.cx, |reader, _| reader.navigation_links());
+                rig.cx.update(|_, cx| links.dispatch(crate::navigation::Intent::Navigate(Route::Orbit(OrbitRoute::Home)), cx));
+                rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+            }
             _ => unreachable!(),
         }
-        assert!(!rig.cx.update(|window, cx| claim.admits(&query, epoch, window, cx)),
-            "an old Find focus claim survived {change}");
+        assert_eq!(rig.cx.update(|window, cx| claim.disposition(&query, facet::browse::find::ClaimIntent {
+            focus_epoch: epoch,
+            input_generation: claim.input_generation,
+        }, window, cx)), if change == "root" {
+            facet::browse::find::ClaimDisposition::WaitForFreshFrame
+        } else { facet::browse::find::ClaimDisposition::Retired },
+            "an old Find focus claim used the wrong disposition after {change}");
     }
+}
+
+#[gpui::test]
+fn same_visit_root_rebases_wait_for_fresh_find_claim_without_renewing_input_intent(cx: &mut TestAppContext) {
+    use facet::browse::find::{ClaimDisposition, ClaimIntent};
+    let browse = BrowseRoute::Find(SearchQuery::new("RelationLabel", SearchQuery::DEFAULT_LIMIT).expect("query"));
+    let route = Route::Orbit(OrbitRoute::Browse(browse.clone()));
+    let mut rig = rig(cx, Some(route), 1200.0, 800.0);
+    rig.settle();
+    let source = find_callback(&mut rig, &browse);
+    let claim = rig.cx.update(|_, cx| super::FindQueryClaim::new(&source, cx));
+    let input_generation = rig.shell.read_with(rig.cx, |shell, _| shell.focus_return_generation());
+    let (query, intent) = rig.cx.update(|window, cx| (window.focused(cx).expect("Find query"), ClaimIntent {
+        focus_epoch: window.focus_epoch(),
+        input_generation,
+    }));
+    assert_eq!(rig.cx.update(|window, cx| claim.disposition(&query, intent, window, cx)), ClaimDisposition::Admitted);
+
+    let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let observed = original.key().observed_at(original.key().observation() + 1);
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_key(observed, None)), cx));
+    assert_eq!(rig.cx.update(|window, cx| claim.disposition(&query, intent, window, cx)), ClaimDisposition::WaitForFreshFrame,
+        "a root observation outran the painted callback but did not end its Find visit");
+
+    rig.settle();
+    let fresh_source = find_callback(&mut rig, &browse);
+    let fresh = rig.cx.update(|_, cx| super::FindQueryClaim::new(&fresh_source, cx));
+    assert_eq!(rig.cx.update(|window, cx| fresh.disposition(&query, intent, window, cx)), ClaimDisposition::Admitted,
+        "the fresh exact root may claim the original uninterrupted focus intent");
+
+    let previous = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let producer = VersionedRoot::synthetic(backend_library::view_state_root(&[("find".into(), "next producer root".into())]), 9);
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(previous.with_key(producer, None)), cx));
+    assert_eq!(rig.cx.update(|window, cx| fresh.disposition(&query, intent, window, cx)), ClaimDisposition::WaitForFreshFrame,
+        "a producer root changed while this same editing visit had a queued claim");
+    rig.settle();
+    let producer_source = find_callback(&mut rig, &browse);
+    let producer_claim = rig.cx.update(|_, cx| super::FindQueryClaim::new(&producer_source, cx));
+    assert_eq!(rig.cx.update(|window, cx| producer_claim.disposition(&query, intent, window, cx)), ClaimDisposition::Admitted,
+        "a fresh exact producer-root claim keeps the original uninterrupted input intent");
+    rig.cx.simulate_keystrokes("left");
+    assert_eq!(rig.cx.update(|window, cx| producer_claim.disposition(&query, intent, window, cx)), ClaimDisposition::Retired,
+        "typing after the rebase must retire that original focus intent");
 }
 
 #[gpui::test]
