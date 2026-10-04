@@ -1019,6 +1019,68 @@ fn graph_publication_and_reads_are_bound_to_the_selected_view_root() {
 }
 
 #[test]
+fn graph_snapshot_oracle_rejects_a_row_root_advance_until_graph_rebind() {
+    futures_executor::block_on(async {
+        let path = path();
+        let initial = fallback_seed_view();
+        let source = PackageReference::parse("pkg:cargo/oracle-app@1.0.0").expect("source");
+        let facts = graph_facts(&source, &[dependency_edge(&source, "serde", "^1")]);
+        let mut projection = open_test(&path).await.expect("open selected projection");
+        let revision = projection
+            .package_graph_revision()
+            .await
+            .expect("graph base");
+        projection
+            .synchronize_package_graph_from(revision, initial.root(), &facts)
+            .await
+            .expect("publish initial graph");
+        assert_eq!(
+            graph_snapshot(&projection)
+                .await
+                .expect("coherent initial snapshot"),
+            expected_graph_snapshot(initial.root().as_bytes(), &facts)
+        );
+
+        let revision = projection
+            .revision()
+            .await
+            .expect("row base before source read");
+        let next = view_with_label("oracle-row-root-advance");
+        projection
+            .synchronize_from(revision, &next)
+            .await
+            .expect("advance row view");
+        assert!(matches!(
+            graph_snapshot(&projection).await,
+            Err(ProjectionError::StaleTransition)
+        ));
+
+        let revision = projection
+            .package_graph_revision()
+            .await
+            .expect("graph rebind base");
+        projection
+            .synchronize_package_graph_from(revision, next.root(), &facts)
+            .await
+            .expect("rebind unchanged facts");
+        assert_eq!(
+            graph_snapshot(&projection).await.expect("rebound snapshot"),
+            expected_graph_snapshot(next.root().as_bytes(), &facts)
+        );
+        drop(projection);
+        let reopened = TursoProjection::open(&path).await.expect("cold reopen");
+        assert_eq!(
+            graph_snapshot(&reopened)
+                .await
+                .expect("persisted coherent snapshot"),
+            expected_graph_snapshot(next.root().as_bytes(), &facts)
+        );
+        drop(reopened);
+        remove_database(&path);
+    });
+}
+
+#[test]
 fn unsupported_schema_versions_are_refused_without_replacing_the_generation() {
     futures_executor::block_on(async {
         let path = path();
@@ -2173,14 +2235,20 @@ fn package_graph_concurrent_writers_publish_whole_generations() {
         );
         let result_a = writer_a.join().expect("writer a thread");
         let result_b = writer_b.join().expect("writer b thread");
-        assert!(matches!(
-            result_a.unwrap_or_else(|error| panic!("writer a failed: {error}")),
-            ProjectionUpdate::Rebuilt { .. }
-        ));
-        assert!(matches!(
-            result_b.unwrap_or_else(|error| panic!("writer b failed: {error}")),
-            ProjectionUpdate::Rebuilt { .. }
-        ));
+        let committed_a = match result_a {
+            Ok(ProjectionUpdate::Rebuilt { .. }) => true,
+            Err(ProjectionError::StaleTransition) => false,
+            result => panic!("writer a had an unexpected outcome: {result:?}"),
+        };
+        let committed_b = match result_b {
+            Ok(ProjectionUpdate::Rebuilt { .. }) => true,
+            Err(ProjectionError::StaleTransition) => false,
+            result => panic!("writer b had an unexpected outcome: {result:?}"),
+        };
+        assert!(
+            committed_a || committed_b,
+            "at least one graph writer must commit"
+        );
 
         let observed = reader_thread
             .join()
@@ -2188,7 +2256,9 @@ fn package_graph_concurrent_writers_publish_whole_generations() {
             .unwrap_or_else(|error| panic!("reader snapshot failed: {error}"));
         for snapshot in &observed {
             assert!(
-                snapshot == &expected_initial || snapshot == &expected_a || snapshot == &expected_b,
+                snapshot == &expected_initial
+                    || (committed_a && snapshot == &expected_a)
+                    || (committed_b && snapshot == &expected_b),
                 "reader observed a mixed graph generation: {snapshot:?}"
             );
         }
@@ -2204,7 +2274,8 @@ fn package_graph_concurrent_writers_publish_whole_generations() {
             .await
             .unwrap_or_else(|error| panic!("final graph snapshot: {error}"));
         assert!(
-            final_snapshot == expected_a || final_snapshot == expected_b,
+            (committed_a && final_snapshot == expected_a)
+                || (committed_b && final_snapshot == expected_b),
             "final graph must be exactly one writer's complete generation: {final_snapshot:?}"
         );
         drop(reopened);
@@ -2415,6 +2486,13 @@ async fn graph_snapshot(projection: &TursoProjection) -> Result<GraphSnapshot, P
     let metadata = graph::package_graph_metadata_from(&tx)
         .await?
         .ok_or(ProjectionError::StaleTransition)?;
+    let selected_view = crate::read::metadata_from(&tx)
+        .await?
+        .ok_or(ProjectionError::StaleTransition)?;
+    if metadata.root != selected_view.root {
+        tx.rollback().await?;
+        return Err(ProjectionError::StaleTransition);
+    }
 
     let mut edge_rows = tx
         .query(
