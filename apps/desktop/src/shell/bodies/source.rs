@@ -26,7 +26,7 @@ use crate::shell::region::Links;
 use facet::tokens::ty;
 use facet::{Control, Set as _, Space};
 use gpui::{
-    App, AppContext as _, ClickEvent, Context, ElementId, Entity, InteractiveElement,
+    App, AppContext as _, ClickEvent, Context, ElementId, Entity, Focusable, InteractiveElement,
     InteractiveText, IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled,
     StyledText, Subscription, Window, div, px,
 };
