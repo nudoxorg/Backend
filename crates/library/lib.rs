@@ -41,6 +41,7 @@ mod registry_native;
 mod rich_graph;
 mod semantic_shape;
 mod source_atom;
+mod source_discovery;
 mod surface;
 mod view;
 mod wire;
@@ -204,6 +205,15 @@ pub use semantic_shape::{
     SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr, SemanticTypeFact,
     SemanticTypeUnavailable, SEMANTIC_SHAPE_CARRIER_IDENTITY_BYTES,
     semantic_shape_source_key, semantic_shape_source_preimage,
+};
+pub use source_discovery::{
+    CratesSparseDependency, CratesSparseFeature, CratesSparseMetadata, DiscoveryAdvisory,
+    DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryError, DiscoveryFacet,
+    DiscoveryFact, DiscoveryMetadata, DiscoveryObservedAt, DiscoveryPackageRetraction,
+    DiscoverySourceEvent, DiscoverySourceIdentity, DiscoveryStanding, DiscoveryTimestamp,
+    MAX_DISCOVERY_BATCH_ENCODED_BYTES, MAX_DISCOVERY_COMMIT_ID_BYTES, MAX_DISCOVERY_CURSOR_BYTES,
+    MAX_DISCOVERY_EVENT_TEXT_BYTES, MAX_DISCOVERY_PAGE_ITEMS, MAX_DISCOVERY_PROJECTS,
+    MAX_DISCOVERY_REVISION_BYTES,
 };
 pub use surface::{
     DeclarationChange, DeclarationRecord, DiffRecord, ForgeDiscoveryCandidate, ForgeFact,

@@ -732,7 +732,7 @@ fn release_version_order_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use backend_engine::registry::{DiscoverySourceIdentity, RegistryEndpoint};
+    use backend_engine::registry::RegistryEndpoint;
 
     fn lineage_key() -> LineageKey {
         let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://index.crates.io")
@@ -740,7 +740,7 @@ mod tests {
         LineageKey {
             source: super::super::LineageSearchSource::Discovery(
                 super::super::DiscoverySearchSource::Registry(
-                    DiscoverySourceIdentity::from_endpoint(&endpoint),
+                    backend_engine::registry::discovery_source_identity(&endpoint),
                 ),
             ),
             ecosystem: RegistryEcosystem::Cargo,
