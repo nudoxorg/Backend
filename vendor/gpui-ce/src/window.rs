@@ -1299,7 +1299,7 @@ mod element_owner_path_tests {
         assert!(before_reuse.node_storage_growths <= 2);
         assert_eq!(arena.work().cached_handles_reused, 2);
         assert!(anonymous.same_owner(&child(&arena, Some(&root), 0, None)));
-        let owners = std::collections::HashSet::from([anonymous.clone()]);
+        let owners = std::collections::HashSet::from([anonymous]);
         assert!(owners.contains(&child(&arena, Some(&root), 0, None)));
         assert!(arena.work().path_equality_segments > 0);
         assert!(arena.work().path_hash_segments > 0);
@@ -2889,7 +2889,7 @@ impl Window {
             ),
             next_frame: Frame::new(
                 DispatchTree::new(cx.keymap.clone(), cx.actions.clone()),
-                element_owner_path_operations.clone(),
+                element_owner_path_operations,
             ),
             input_handler_owner: Rc::new(RefCell::new(InputHandlerOwner::default())),
             frame_sequence: 0,

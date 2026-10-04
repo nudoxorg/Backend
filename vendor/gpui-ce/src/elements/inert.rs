@@ -1398,7 +1398,6 @@ mod tests {
             let events = events.clone();
             let child_focus = child_focus.clone();
             let nested_focus = nested_focus.clone();
-            let sibling_focus = sibling_focus.clone();
             move |_, cx| {
                 let focus = cx.focus_handle();
                 let nested = cx.focus_handle();

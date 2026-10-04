@@ -793,7 +793,6 @@ mod tests {
         let target = Rc::new(std::cell::Cell::new(1.0));
         let rendered_values = Rc::new(RefCell::new(Vec::new()));
         let window = cx.open_window(size(px(100.), px(100.)), {
-            let target = target.clone();
             let rendered_values = rendered_values.clone();
             move |_, _| SpringAnimationTestView {
                 target,
