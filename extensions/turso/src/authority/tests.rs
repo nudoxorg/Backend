@@ -2,6 +2,7 @@
 
 #![allow(clippy::expect_used, clippy::panic)]
 
+use super::schema::{AUTHORITY_SCHEMA, AUTHORITY_SCHEMA_VERSION};
 use super::*;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,6 +31,477 @@ fn path() -> PathBuf {
         "backend-turso-index-authority-{}-{serial}.db",
         std::process::id()
     ))
+}
+
+fn raw_execute(path: &PathBuf, sql: &str) {
+    futures_executor::block_on(async {
+        let text = path.to_str().expect("fixture path is UTF-8");
+        let database = turso::Builder::new_local(text)
+            .experimental_multiprocess_wal(true)
+            .experimental_index_method(true)
+            .build()
+            .await
+            .expect("fixture database");
+        let connection = database.connect().expect("fixture connection");
+        connection.execute_batch(sql).await.expect("fixture SQL");
+        drop(connection);
+        drop(database);
+    });
+}
+
+fn seed_authority(path: &PathBuf, ddl: &str, marker_rows: &str) {
+    raw_execute(path, ddl);
+    if !marker_rows.is_empty() {
+        raw_execute(path, marker_rows);
+    }
+}
+
+fn database_snapshot(path: &PathBuf) -> (Vec<Vec<turso::Value>>, Vec<Vec<turso::Value>>) {
+    futures_executor::block_on(async {
+        let text = path.to_str().expect("fixture path is UTF-8");
+        let database = turso::Builder::new_local(text)
+            .experimental_multiprocess_wal(true)
+            .experimental_index_method(true)
+            .build()
+            .await
+            .expect("snapshot database");
+        let connection = database.connect().expect("snapshot connection");
+        let schema = snapshot_query(
+            &connection,
+            "SELECT type, name, tbl_name, sql FROM sqlite_schema \
+             ORDER BY type, name, tbl_name",
+        )
+        .await;
+        let marker = match connection
+            .query("SELECT * FROM backend_index_authority_meta LIMIT 3", ())
+            .await
+        {
+            Ok(mut rows) => {
+                let mut values = Vec::new();
+                while let Some(row) = rows.next().await.expect("snapshot marker row") {
+                    values.push(
+                        (0..row.column_count())
+                            .map(|index| row.get_value(index).expect("snapshot marker value"))
+                            .collect(),
+                    );
+                }
+                values
+            }
+            Err(_) => Vec::new(),
+        };
+        drop(connection);
+        drop(database);
+        (schema, marker)
+    })
+}
+
+async fn snapshot_query(connection: &turso::Connection, sql: &str) -> Vec<Vec<turso::Value>> {
+    let mut rows = connection.query(sql, ()).await.expect("snapshot query");
+    let mut values = Vec::new();
+    while let Some(row) = rows.next().await.expect("snapshot row") {
+        values.push(
+            (0..row.column_count())
+                .map(|index| row.get_value(index).expect("snapshot value"))
+                .collect(),
+        );
+    }
+    values
+}
+
+fn seed_with_version(path: &PathBuf, ddl: &str, version: &str) {
+    seed_authority(
+        path,
+        ddl,
+        &format!(
+            "INSERT INTO backend_index_authority_meta(singleton, schema_version) \
+             VALUES (1, {version});"
+        ),
+    );
+}
+
+fn assert_refusal_preserves_file(path: &PathBuf) -> AuthorityError {
+    let before = database_snapshot(path);
+    let result = futures_executor::block_on(TursoAuthority::open(path));
+    let error = match result {
+        Ok(_) => panic!("malformed authority unexpectedly opened"),
+        Err(error) => error,
+    };
+    assert_eq!(database_snapshot(path), before);
+    error
+}
+
+fn remove_trigger(ddl: &str, name: &str) -> String {
+    let needle = format!("CREATE TRIGGER IF NOT EXISTS {name}");
+    let start = ddl.find(&needle).expect("trigger start");
+    let end = ddl[start..]
+        .find("END;")
+        .map(|offset| start + offset + "END;".len())
+        .expect("trigger end");
+    format!("{}{}", &ddl[..start], &ddl[end..])
+}
+
+fn table_info(path: &PathBuf, table: &str) -> Vec<Vec<turso::Value>> {
+    futures_executor::block_on(async {
+        let text = path.to_str().expect("fixture path is UTF-8");
+        let database = turso::Builder::new_local(text)
+            .experimental_multiprocess_wal(true)
+            .experimental_index_method(true)
+            .build()
+            .await
+            .expect("table-info database");
+        let connection = database.connect().expect("table-info connection");
+        let sql = format!("PRAGMA table_info({table})");
+        let values = snapshot_query(&connection, &sql).await;
+        drop(connection);
+        drop(database);
+        values
+    })
+}
+
+#[test]
+fn fresh_authority_roundtrips_the_turso_catalogue_witness() {
+    futures_executor::block_on(async {
+        let witness = schema_preflight::expected_schema()
+            .await
+            .unwrap_or_else(|error| panic!("canonical witness: {error}"));
+        assert_eq!(
+            witness
+                .iter()
+                .filter(|object| object.kind.as_ref() == "table")
+                .count(),
+            9
+        );
+        assert_eq!(
+            witness
+                .iter()
+                .filter(|object| object.kind.as_ref() == "trigger")
+                .count(),
+            4
+        );
+        assert!(witness.iter().any(|object| {
+            object.kind.as_ref() == "index"
+                && object.sql.is_none()
+                && object
+                    .name
+                    .starts_with("sqlite_autoindex_backend_index_authority_")
+        }));
+
+        let fresh_path = path();
+        drop(
+            TursoAuthority::open(&fresh_path)
+                .await
+                .unwrap_or_else(|error| panic!("fresh open: {error}")),
+        );
+        let after_initialize = database_snapshot(&fresh_path);
+        drop(
+            TursoAuthority::open(&fresh_path)
+                .await
+                .unwrap_or_else(|error| panic!("cold current open: {error}")),
+        );
+        assert_eq!(database_snapshot(&fresh_path), after_initialize);
+
+        let existing_empty = path();
+        raw_execute(&existing_empty, "");
+        drop(
+            TursoAuthority::open(&existing_empty)
+                .await
+                .unwrap_or_else(|error| panic!("existing empty open: {error}")),
+        );
+    });
+}
+
+#[test]
+fn unsupported_versions_are_rejected_before_any_file_change() {
+    for version in [5, AUTHORITY_SCHEMA_VERSION + 1] {
+        let path = path();
+        seed_with_version(&path, AUTHORITY_SCHEMA, &version.to_string());
+        assert!(matches!(
+            assert_refusal_preserves_file(&path),
+            AuthorityError::Schema { found } if found == version
+        ));
+    }
+}
+
+#[test]
+fn partial_and_malformed_markers_are_rejected_without_mutation() {
+    let partial = path();
+    seed_authority(
+        &partial,
+        "CREATE TABLE backend_index_authority_scopes (package TEXT);",
+        "",
+    );
+    assert!(matches!(
+        assert_refusal_preserves_file(&partial),
+        AuthorityError::SchemaIntegrity
+    ));
+
+    let wrong_kind = path();
+    seed_authority(
+        &wrong_kind,
+        "CREATE VIEW backend_index_authority_meta AS \
+         SELECT 1 AS singleton, 6 AS schema_version;",
+        "",
+    );
+    assert!(matches!(
+        assert_refusal_preserves_file(&wrong_kind),
+        AuthorityError::SchemaIntegrity
+    ));
+
+    let wrong_columns = path();
+    seed_authority(
+        &wrong_columns,
+        "CREATE TABLE backend_index_authority_meta (\
+             singleton INTEGER, schema_version_v6 INTEGER);",
+        "INSERT INTO backend_index_authority_meta VALUES (1, 6);",
+    );
+    assert!(matches!(
+        assert_refusal_preserves_file(&wrong_columns),
+        AuthorityError::SchemaIntegrity
+    ));
+
+    let missing_row = path();
+    seed_authority(&missing_row, AUTHORITY_SCHEMA, "");
+    assert!(matches!(
+        assert_refusal_preserves_file(&missing_row),
+        AuthorityError::SchemaIntegrity
+    ));
+
+    let duplicate = path();
+    let duplicate_ddl = AUTHORITY_SCHEMA.replacen(
+        "CREATE TABLE IF NOT EXISTS backend_index_authority_meta (\n    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),\n    schema_version INTEGER NOT NULL\n);",
+        "CREATE TABLE backend_index_authority_meta (singleton INTEGER, schema_version INTEGER);",
+        1,
+    );
+    assert_ne!(duplicate_ddl, AUTHORITY_SCHEMA);
+    seed_authority(
+        &duplicate,
+        &duplicate_ddl,
+        "INSERT INTO backend_index_authority_meta VALUES (1, 6); \
+         INSERT INTO backend_index_authority_meta VALUES (2, 6);",
+    );
+    assert!(matches!(
+        assert_refusal_preserves_file(&duplicate),
+        AuthorityError::SchemaIntegrity
+    ));
+
+    let malformed = path();
+    seed_authority(
+        &malformed,
+        AUTHORITY_SCHEMA,
+        "INSERT INTO backend_index_authority_meta VALUES (1, 'six');",
+    );
+    assert!(matches!(
+        assert_refusal_preserves_file(&malformed),
+        AuthorityError::SchemaIntegrity
+    ));
+}
+
+#[test]
+fn catalog_attestation_detects_missing_changed_and_attached_objects() {
+    let changed_trigger = AUTHORITY_SCHEMA.replace(
+        "terminal compiler attempt is immutable",
+        "terminal compiler attempt wording changed",
+    );
+    let missing_trigger = remove_trigger(
+        AUTHORITY_SCHEMA,
+        "backend_index_authority_attempt_terminal_immutable_delete",
+    );
+    let external_trigger = format!(
+        "{AUTHORITY_SCHEMA}\n\
+         CREATE TRIGGER external_authority_probe AFTER INSERT ON \
+         backend_index_authority_meta BEGIN SELECT 1; END;"
+    );
+    let external_unique_index = format!(
+        "{AUTHORITY_SCHEMA}\n\
+         CREATE UNIQUE INDEX external_authority_unique \
+         ON backend_index_authority_meta(schema_version);"
+    );
+    let base_named_index_on_other_table = format!(
+        "{AUTHORITY_SCHEMA}\n\
+         CREATE TABLE external_fixture (id INTEGER); \
+         CREATE INDEX backend_index_authority_external_index \
+         ON external_fixture(id);"
+    );
+
+    for ddl in [
+        changed_trigger.as_str(),
+        missing_trigger.as_str(),
+        external_trigger.as_str(),
+        external_unique_index.as_str(),
+        base_named_index_on_other_table.as_str(),
+    ] {
+        let path = path();
+        seed_with_version(&path, ddl, &AUTHORITY_SCHEMA_VERSION.to_string());
+        assert!(matches!(
+            assert_refusal_preserves_file(&path),
+            AuthorityError::SchemaIntegrity
+        ));
+    }
+}
+
+#[test]
+fn independent_discovery_and_completion_objects_can_coexist() {
+    let path = path();
+    let ddl = format!(
+        "{AUTHORITY_SCHEMA}\n\
+         CREATE TABLE backend_registry_discovery_plans (id INTEGER); \
+         CREATE TABLE backend_compiler_result_completion_meta (id INTEGER); \
+         CREATE INDEX backend_compiler_result_completion_lookup \
+         ON backend_compiler_result_completion_meta(id);"
+    );
+    seed_with_version(&path, &ddl, &AUTHORITY_SCHEMA_VERSION.to_string());
+    let before = database_snapshot(&path);
+    drop(
+        futures_executor::block_on(TursoAuthority::open(&path))
+            .unwrap_or_else(|error| panic!("open with independent module objects: {error}")),
+    );
+    assert_eq!(database_snapshot(&path), before);
+}
+
+#[test]
+fn check_constraint_change_with_same_table_info_is_rejected() {
+    let baseline_path = path();
+    seed_with_version(
+        &baseline_path,
+        AUTHORITY_SCHEMA,
+        &AUTHORITY_SCHEMA_VERSION.to_string(),
+    );
+
+    let changed_ddl = AUTHORITY_SCHEMA.replacen(
+        "CHECK (plane_kind IN (0, 1))",
+        "CHECK (plane_kind IN (0, 2))",
+        1,
+    );
+    let changed_path = path();
+    seed_with_version(
+        &changed_path,
+        &changed_ddl,
+        &AUTHORITY_SCHEMA_VERSION.to_string(),
+    );
+    assert_eq!(
+        table_info(&baseline_path, "backend_index_authority_scopes"),
+        table_info(&changed_path, "backend_index_authority_scopes")
+    );
+    assert!(matches!(
+        assert_refusal_preserves_file(&changed_path),
+        AuthorityError::SchemaIntegrity
+    ));
+}
+
+#[test]
+fn inventory_copy_bounds_reject_oversized_sql_and_many_objects() {
+    let oversized_path = path();
+    let body = "z".repeat(16 * 1024 + 1);
+    let oversized_ddl = format!(
+        "{AUTHORITY_SCHEMA}\n\
+         CREATE TRIGGER external_oversized_probe AFTER UPDATE ON \
+         backend_index_authority_meta BEGIN SELECT length('{body}'); END;"
+    );
+    seed_with_version(
+        &oversized_path,
+        &oversized_ddl,
+        &AUTHORITY_SCHEMA_VERSION.to_string(),
+    );
+    assert!(matches!(
+        assert_refusal_preserves_file(&oversized_path),
+        AuthorityError::SchemaIntegrity
+    ));
+
+    let many_path = path();
+    let mut many_ddl = AUTHORITY_SCHEMA.to_owned();
+    for index in 0..=64 {
+        many_ddl.push_str(&format!(
+            "\nCREATE TABLE backend_index_authority_extra_{index} (id INTEGER);"
+        ));
+    }
+    seed_with_version(&many_path, &many_ddl, &AUTHORITY_SCHEMA_VERSION.to_string());
+    assert!(matches!(
+        assert_refusal_preserves_file(&many_path),
+        AuthorityError::SchemaIntegrity
+    ));
+}
+
+#[test]
+fn failed_marker_insert_rolls_back_fresh_schema_ddl() {
+    futures_executor::block_on(async {
+        let path = path();
+        let text = path.to_str().expect("fixture path is UTF-8");
+        let database = turso::Builder::new_local(text)
+            .experimental_multiprocess_wal(true)
+            .experimental_index_method(true)
+            .build()
+            .await
+            .expect("rollback database");
+        let mut connection = database.connect().expect("rollback connection");
+        let transaction = connection
+            .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
+            .await
+            .expect("rollback transaction");
+        transaction
+            .execute_batch(AUTHORITY_SCHEMA)
+            .await
+            .expect("authority DDL");
+        assert!(
+            transaction
+                .execute(
+                    "INSERT INTO backend_index_authority_meta(singleton, schema_version) \
+                 VALUES (2, ?1)",
+                    [AUTHORITY_SCHEMA_VERSION],
+                )
+                .await
+                .is_err()
+        );
+        transaction.rollback().await.expect("explicit rollback");
+
+        let mut rows = connection
+            .query(
+                "SELECT 1 FROM sqlite_schema \
+                 WHERE substr(name, 1, length(?1)) = ?1 COLLATE NOCASE \
+                    OR substr(tbl_name, 1, length(?1)) = ?1 COLLATE NOCASE LIMIT 1",
+                turso::params!["backend_index_authority_"],
+            )
+            .await
+            .expect("catalog after rollback");
+        assert!(
+            rows.next()
+                .await
+                .expect("catalog row after rollback")
+                .is_none()
+        );
+        drop(rows);
+        drop(connection);
+        drop(database);
+    });
+}
+
+#[test]
+fn competing_fresh_openers_serialize_and_revalidate_under_the_writer_lock() {
+    let path = path();
+    let barrier = Arc::new(Barrier::new(3));
+    let left_path = path.clone();
+    let left_barrier = Arc::clone(&barrier);
+    let left = thread::spawn(move || {
+        left_barrier.wait();
+        futures_executor::block_on(TursoAuthority::open(&left_path))
+            .map(drop)
+            .map_err(|error| error.to_string())
+    });
+    let right_path = path.clone();
+    let right_barrier = Arc::clone(&barrier);
+    let right = thread::spawn(move || {
+        right_barrier.wait();
+        futures_executor::block_on(TursoAuthority::open(&right_path))
+            .map(drop)
+            .map_err(|error| error.to_string())
+    });
+    barrier.wait();
+    assert!(left.join().expect("left opener thread").is_ok());
+    assert!(right.join().expect("right opener thread").is_ok());
+
+    drop(
+        futures_executor::block_on(TursoAuthority::open(&path))
+            .unwrap_or_else(|error| panic!("cold open after competing initializers: {error}")),
+    );
 }
 
 fn namespace() -> AuthorityNamespace {

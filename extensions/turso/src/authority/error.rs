@@ -9,8 +9,12 @@ pub enum AuthorityError {
     Database(turso::Error),
     /// A database path cannot be represented by the local Turso runtime.
     NonUtf8Path(PathBuf),
+    /// Checking whether the authority path already exists failed.
+    PathIo(std::io::Error),
     /// Persisted authority schema is not supported by this binary.
     Schema { found: i64 },
+    /// The authority schema marker or canonical object inventory is malformed.
+    SchemaIntegrity,
     /// One namespace component is empty, too long, or contains NUL.
     InvalidNamespace,
     /// Observation time/count exceeds the SQL integer domain or has invalid data.
@@ -50,8 +54,12 @@ impl fmt::Display for AuthorityError {
                     path.display()
                 )
             }
+            Self::PathIo(error) => write!(formatter, "could not inspect Turso authority path: {error}"),
             Self::Schema { found } => {
                 write!(formatter, "unsupported Turso authority schema {found}")
+            }
+            Self::SchemaIntegrity => {
+                formatter.write_str("corrupt or incompatible Turso authority schema")
             }
             Self::InvalidNamespace => formatter.write_str("invalid Turso authority namespace"),
             Self::InvalidObservation => formatter.write_str("invalid source observation"),
@@ -94,6 +102,7 @@ impl std::error::Error for AuthorityError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Database(error) => Some(error),
+            Self::PathIo(error) => Some(error),
             _ => None,
         }
     }
