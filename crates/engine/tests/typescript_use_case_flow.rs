@@ -31,7 +31,7 @@ type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
 fn try_lower(
-    source: &'static [u8],
+    source: &[u8],
     authority: Option<&Report>,
 ) -> TestResult<backend_engine::driver::CompiledIr> {
     let toolchain = ResolvedToolchain::from_version(
@@ -40,7 +40,7 @@ fn try_lower(
         b"typescript-authority-test",
     )
     ?;
-    let diagnostic: &'static mut [u8] = Box::leak(Box::new([0; 4096]));
+    let mut diagnostic = [0; 4096];
     Ok(compile_ir(
         CompileRequest {
             profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
@@ -57,43 +57,58 @@ fn try_lower(
             },
         },
         CompileScratch {
-            diagnostic_output: diagnostic,
+            diagnostic_output: &mut diagnostic,
             native_work: Path::new("/tmp"),
         },
-    )?)
+    )
+    .map_err(|error| io::Error::other(format!("TypeScript test lowering failed: {error:?}")))?)
 }
 
-fn view(source: &'static [u8], authority: &Report) -> TestResult<FragmentView<'static>> {
-    let toolchain = ResolvedToolchain::from_version(
-        NativeTool::TypeScriptCompiler,
-        Path::new("/bin/true"),
-        b"typescript-authority-test",
-    )
-    ?;
-    let diagnostic: &'static mut [u8] = Box::leak(Box::new([0; 4096]));
-    let output: &'static mut [u8] = Box::leak(vec![0; 8 * 1024 * 1024].into_boxed_slice());
-    let compiled = backend_engine::driver::compile(
-        CompileRequest {
-            profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
-            stage: Stage::LowerIr,
-            source,
-            declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
-            toolchain: ToolchainSelection::ResolvedNative(toolchain),
-            authority: SemanticAuthorityInput::TypeScript { report: authority },
-            control: CompileControl {
-                deadline: Instant::now() + Duration::from_secs(30),
-                cancelled: &CANCELLED,
+struct LoweredFragment {
+    output: Vec<u8>,
+    len: usize,
+}
+
+impl LoweredFragment {
+    fn compile(source: &[u8], authority: &Report) -> TestResult<Self> {
+        let toolchain = ResolvedToolchain::from_version(
+            NativeTool::TypeScriptCompiler,
+            Path::new("/bin/true"),
+            b"typescript-authority-test",
+        )?;
+        let mut diagnostic = [0; 4096];
+        let mut output = vec![0; 8 * 1024 * 1024];
+        let compiled = backend_engine::driver::compile(
+            CompileRequest {
+                profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                stage: Stage::LowerIr,
+                source,
+                declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
+                toolchain: ToolchainSelection::ResolvedNative(toolchain),
+                authority: SemanticAuthorityInput::TypeScript { report: authority },
+                control: CompileControl {
+                    deadline: Instant::now() + Duration::from_secs(30),
+                    cancelled: &CANCELLED,
+                },
             },
-        },
-        CompileScratch {
-            diagnostic_output: diagnostic,
-            native_work: Path::new("/tmp"),
-        },
-        backend_engine::driver::CompileOutput {
-            fragment_output: output,
-        },
-    )?;
-    Ok(compiled.fragment)
+            CompileScratch {
+                diagnostic_output: &mut diagnostic,
+                native_work: Path::new("/tmp"),
+            },
+            backend_engine::driver::CompileOutput {
+                fragment_output: &mut output,
+            },
+        )
+        .map_err(|error| io::Error::other(format!("TypeScript fragment lowering failed: {error:?}")))?;
+        let len = compiled.fragment.as_ref().len();
+        drop(compiled);
+        FragmentView::validate(&output[..len])?;
+        Ok(Self { output, len })
+    }
+
+    fn view(&self) -> TestResult<FragmentView<'_>> {
+        Ok(FragmentView::validate(&self.output[..self.len])?)
+    }
 }
 
 fn entities(view: &FragmentView<'_>) -> Vec<(u32, Vec<u8>, EntityKind)> {
@@ -214,7 +229,8 @@ fn cross_file_bindings() -> TestResult<()> {
     let ir = &compiled.ir;
     use_case_support::finish("typescript", "cross-file-bindings", timer.elapsed(), ir)?;
 
-    let decoded = view(SOURCE, &authority)?;
+    let decoded_storage = LoweredFragment::compile(SOURCE, &authority)?;
+    let decoded = decoded_storage.view()?;
     assert_eq!(parameter_count(&decoded, b"left"), 1);
     assert_eq!(use_case_support::count_named(ir, EntityKind::Record, b"Box"), 1);
     assert_eq!(use_case_support::count_named(ir, EntityKind::Function, b"take"), 1);
