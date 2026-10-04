@@ -194,9 +194,18 @@ mod tests {
         pages.seed(crate::model::pages::SeedEntry::Orbit(Arc::new(model.clone())), VersionedRoot::unserved());
         assert!(DisplayCapture::select(&pages, &Route::World, root).is_none());
         let key = PageKey::Orbit;
-        let generation = pages.begin(&key, root).expect("fresh revalidation");
-        assert!(DisplayCapture::select(&pages, &Route::World, root).is_none(), "in-flight is never complete");
-        assert_eq!(pages.land(&key, generation, Ok(PageValue::Orbit(model))), Landing::Unchanged);
+        let generation = pages
+            .begin(&key, root)
+            .expect("page generation admission")
+            .expect("fresh revalidation");
+        assert!(
+            DisplayCapture::select(&pages, &Route::World, root).is_none(),
+            "in-flight is never complete"
+        );
+        assert_eq!(
+            pages.land(&key, generation, Ok(PageValue::Orbit(model))),
+            Landing::Unchanged
+        );
         assert!(DisplayCapture::select(&pages, &Route::World, other).is_none());
         let capture = DisplayCapture::select(&pages, &Route::World, root).expect("current read");
         let display = capture.prepare().expect("closed display");

@@ -1,0 +1,14 @@
+{
+  "helper_sha256": "0d1ef016a560185374a204b122cee62d70fe69b9c297340fbea4174a638e8cfc",
+  "python": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 17.0.0 (clang-1700.6.4.2)]",
+  "executable": "/opt/homebrew/opt/python@3.14/bin/python3.14",
+  "tests_run": 5,
+  "adversarial_subcases": 10,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "successful": true,
+  "log_sha256": "0a377f280e7ff2912a4d98a33676e707b6293ed41787e70a9b313c3f06580a3b",
+  "scope": "manifest admission only; full remote source verification and Rust tests pending",
+  "earlier_preflight": "Exact list-order assertion failed before tests; corrected to compare canonical sets against the actual delta, with no helper change."
+}

@@ -230,9 +230,11 @@ fn pointer_and_keyboard_targets_resume_each_other(cx: &mut TestAppContext) {
 
     // The shell may synchronize the same focused target repeatedly. A recent
     // pointer move still takes precedence until it leaves its hitbox.
+    // With the pointer gone, b's keyboard light still answers every other
+    // occurrence of its subject: a shares it, so a stays Related.
     cx.simulate_mouse_move(point(px(400.0), px(400.0)), None, Modifiers::none());
     frame(cx);
-    assert_eq!(lit_of(&seen), (Some(Lit::Rest), Some(Lit::Target), Some(Lit::Rest)));
+    assert_eq!(lit_of(&seen), (Some(Lit::Related), Some(Lit::Target), Some(Lit::Rest)));
     cx.simulate_mouse_move(point(px(10.0), px(10.0)), None, Modifiers::none());
     cx.update(|window, cx| super::focus(Some(FocusTarget::new("b", Subject::new("present::SemanticLinkKind"))), window, cx));
     frame(cx);
@@ -240,7 +242,7 @@ fn pointer_and_keyboard_targets_resume_each_other(cx: &mut TestAppContext) {
 
     cx.simulate_mouse_move(point(px(400.0), px(400.0)), None, Modifiers::none());
     frame(cx);
-    assert_eq!(lit_of(&seen), (Some(Lit::Rest), Some(Lit::Target), Some(Lit::Rest)), "leaving the pointer restores keyboard focus");
+    assert_eq!(lit_of(&seen), (Some(Lit::Related), Some(Lit::Target), Some(Lit::Rest)), "leaving the pointer restores keyboard focus");
 
     cx.update(|window, cx| super::focus(None, window, cx));
     assert_eq!(cx.update(|window, cx| super::target(window, cx)), None, "blur clears the last remaining target");

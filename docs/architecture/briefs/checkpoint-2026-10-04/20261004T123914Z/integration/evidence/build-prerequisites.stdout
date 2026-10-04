@@ -1,0 +1,46 @@
+uid=1893584017
+path=/Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077 mode=drwx------ uid=1893584017 type=Directory
+path=/Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/cargo-home mode=drwx------ uid=1893584017 type=Directory
+path=/Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/cargo-target mode=drwx------ uid=1893584017 type=Directory
+path=/Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/cargo-build-graph mode=drwx------ uid=1893584017 type=Directory
+ABSENT /Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/attempts
+path=/Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/cargo-home/.global-cache mode=lrwxr-xr-x uid=1893584017 type=Symbolic Link
+path=/Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/cargo-home/.package-cache mode=lrwxr-xr-x uid=1893584017 type=Symbolic Link
+path=/Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/cargo-home/.package-cache-mutate mode=lrwxr-xr-x uid=1893584017 type=Symbolic Link
+path=/Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/cargo-home/git mode=lrwxr-xr-x uid=1893584017 type=Symbolic Link
+path=/Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/cargo-home/registry mode=lrwxr-xr-x uid=1893584017 type=Symbolic Link
+path=/Users/rmccrar6/.cache/nudox/cargo-1.97 mode=drwxr-xr-x uid=1893584017 type=Directory
+path=/Users/rmccrar6/.cache/nudox/cargo-1.97/sccache mode=drwx------ uid=1893584017 type=Directory
+path=/tmp/nudox-sccache-1893584017 mode=drwx------ uid=1893584017 type=Directory
+path=/tmp/nudox-sccache-1893584017/validation-13d9919 mode=drwx------ uid=1893584017 type=Directory
+path=/tmp/nudox-sccache-1893584017/validation-13d9919/s.sock mode=srwxr-x--- uid=1893584017 type=Socket
+CARGO_HOME_LINKS
+link=/Users/rmccrar6/.local/share/nudox/build-receipts/platform-client-13d9919ae6a9fc4d662c5ffb322462c6e3dfb25d/cargo-home/.global-cache mode=lrwxr-xr-x uid=1893584017
+name=.global-cache target=/Users/rmccrar6/.cache/nudox/cargo-1.97/.global-cache resolved=/Users/rmccrar6/.cache/nudox/cargo-1.97/.global-cache
+resolved_mode=-rw-r--r-- resolved_uid=1893584017 resolved_path=/Users/rmccrar6/.cache/nudox/cargo-1.97/.global-cache
+link=/Users/rmccrar6/.local/share/nudox/build-receipts/platform-client-13d9919ae6a9fc4d662c5ffb322462c6e3dfb25d/cargo-home/.package-cache mode=lrwxr-xr-x uid=1893584017
+name=.package-cache target=/Users/rmccrar6/.cache/nudox/cargo-1.97/.package-cache resolved=/Users/rmccrar6/.cache/nudox/cargo-1.97/.package-cache
+resolved_mode=-rw-r--r-- resolved_uid=1893584017 resolved_path=/Users/rmccrar6/.cache/nudox/cargo-1.97/.package-cache
+link=/Users/rmccrar6/.local/share/nudox/build-receipts/platform-client-13d9919ae6a9fc4d662c5ffb322462c6e3dfb25d/cargo-home/.package-cache-mutate mode=lrwxr-xr-x uid=1893584017
+name=.package-cache-mutate target=/Users/rmccrar6/.cache/nudox/cargo-1.97/.package-cache-mutate resolved=/Users/rmccrar6/.cache/nudox/cargo-1.97/.package-cache-mutate
+resolved_mode=-rw-r--r-- resolved_uid=1893584017 resolved_path=/Users/rmccrar6/.cache/nudox/cargo-1.97/.package-cache-mutate
+link=/Users/rmccrar6/.local/share/nudox/build-receipts/platform-client-13d9919ae6a9fc4d662c5ffb322462c6e3dfb25d/cargo-home/git mode=lrwxr-xr-x uid=1893584017
+name=git target=/Users/rmccrar6/.cache/nudox/cargo-1.97/git resolved=/Users/rmccrar6/.cache/nudox/cargo-1.97/git
+resolved_mode=drwxr-xr-x resolved_uid=1893584017 resolved_path=/Users/rmccrar6/.cache/nudox/cargo-1.97/git
+link=/Users/rmccrar6/.local/share/nudox/build-receipts/platform-client-13d9919ae6a9fc4d662c5ffb322462c6e3dfb25d/cargo-home/registry mode=lrwxr-xr-x uid=1893584017
+name=registry target=/Users/rmccrar6/.cache/nudox/cargo-1.97/registry resolved=/Users/rmccrar6/.cache/nudox/cargo-1.97/registry
+resolved_mode=drwxr-xr-x resolved_uid=1893584017 resolved_path=/Users/rmccrar6/.cache/nudox/cargo-1.97/registry
+SOURCE_HASHES
+5f997f548c3f47161dd044b441381936a51cb3db35d7ae699c46473769d5467f  /Users/rmccrar6/.local/share/nudox/source-releases/9a896bf197aed9028e9dbf14f0532eb00daad077/source/Cargo.lock
+9d12da4445b83205525ccbac93423b374e5c1153bcc1203ae635166088dc105b  /Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/layout-result.json
+7ba9be7f63beb5e1cc1e730136e053da5b72743ceb13ec27a97b7915543afe2a  /Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/run-cargo.sh
+b824e0545653b3fd8e48513648a314737663e3ca7c592269c8a6455fcc918b8e  /Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/execute-stage.sh
+d2162b815a2a7fbb1b611460eb654c03c6c7f1b9c2ee11cee8fb92c975c02fba  /Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/run-sequence.sh
+534314ceba4c04932855a22c3cca406f03ba46eeebd189ff38fbcecab44b23cd  /Users/rmccrar6/.local/share/nudox/source-releases/9a896bf197aed9028e9dbf14f0532eb00daad077/source/../receipt/source-verification.json
+e7530a332ec37738e10a2df1e93c8d49d829bef008b3dd7776ff29d8bb7a1d17  /Users/rmccrar6/.local/share/nudox/source-releases/9a896bf197aed9028e9dbf14f0532eb00daad077/source/../receipt/staging-result.json
+SOCKET_SYMLINK=no
+SOCKET_TEST=unix-socket
+SOCKET_OPEN_FILES
+lsof_exit=1
+SCCACHE_PROCESSES
+process_grep_exit=1

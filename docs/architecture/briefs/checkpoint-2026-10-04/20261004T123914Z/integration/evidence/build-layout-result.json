@@ -1,0 +1,53 @@
+{
+  "build_graph_dir": "/Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/cargo-build-graph",
+  "cargo_home": "/Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/cargo-home",
+  "cargo_lock_sha256": "5f997f548c3f47161dd044b441381936a51cb3db35d7ae699c46473769d5467f",
+  "copied_cargo_credentials_or_config": false,
+  "no_cargo_invoked": true,
+  "old_source_target_or_build_graph_reused": false,
+  "prepared_utc_epoch": 1791116498,
+  "receipt": "/Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077",
+  "reused_symlinks_only": [
+    {
+      "name": ".global-cache",
+      "original_target": "/Users/rmccrar6/.cache/nudox/cargo-1.97/.global-cache",
+      "resolved": "/Users/rmccrar6/.cache/nudox/cargo-1.97/.global-cache",
+      "target": "/Users/rmccrar6/.cache/nudox/cargo-1.97/.global-cache"
+    },
+    {
+      "name": ".package-cache",
+      "original_target": "/Users/rmccrar6/.cache/nudox/cargo-1.97/.package-cache",
+      "resolved": "/Users/rmccrar6/.cache/nudox/cargo-1.97/.package-cache",
+      "target": "/Users/rmccrar6/.cache/nudox/cargo-1.97/.package-cache"
+    },
+    {
+      "name": ".package-cache-mutate",
+      "original_target": "/Users/rmccrar6/.cache/nudox/cargo-1.97/.package-cache-mutate",
+      "resolved": "/Users/rmccrar6/.cache/nudox/cargo-1.97/.package-cache-mutate",
+      "target": "/Users/rmccrar6/.cache/nudox/cargo-1.97/.package-cache-mutate"
+    },
+    {
+      "name": "git",
+      "original_target": "/Users/rmccrar6/.cache/nudox/cargo-1.97/git",
+      "resolved": "/Users/rmccrar6/.cache/nudox/cargo-1.97/git",
+      "target": "/Users/rmccrar6/.cache/nudox/cargo-1.97/git"
+    },
+    {
+      "name": "registry",
+      "original_target": "/Users/rmccrar6/.cache/nudox/cargo-1.97/registry",
+      "resolved": "/Users/rmccrar6/.cache/nudox/cargo-1.97/registry",
+      "target": "/Users/rmccrar6/.cache/nudox/cargo-1.97/registry"
+    }
+  ],
+  "reviewed_wrapper_sha256": {
+    "execute-stage.sh": "b824e0545653b3fd8e48513648a314737663e3ca7c592269c8a6455fcc918b8e",
+    "run-cargo.sh": "7ba9be7f63beb5e1cc1e730136e053da5b72743ceb13ec27a97b7915543afe2a",
+    "run-sequence.sh": "d2162b815a2a7fbb1b611460eb654c03c6c7f1b9c2ee11cee8fb92c975c02fba"
+  },
+  "shared_cache": "/Users/rmccrar6/.cache/nudox/cargo-1.97",
+  "source_commit": "9a896bf197aed9028e9dbf14f0532eb00daad077",
+  "source_release": "/Users/rmccrar6/.local/share/nudox/source-releases/9a896bf197aed9028e9dbf14f0532eb00daad077",
+  "source_tree": "19146a7b96b3dda49d856ba777dc3794a7e20695",
+  "status": "isolated_empty_build_roots_prepared",
+  "target_dir": "/Users/rmccrar6/.local/share/nudox/build-receipts/validation-9a896bf197aed9028e9dbf14f0532eb00daad077/cargo-target"
+}

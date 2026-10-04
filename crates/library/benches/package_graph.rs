@@ -10,9 +10,9 @@ use std::time::Instant;
 
 use backend_library::{
     DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
-    PackageDependencyRecord, PackageDependencySourceFacts, PackageDependencyTarget,
-    PackageGraphIndex, PackageGraphSourceKey, PackageReference, RegistryEcosystem,
-    linear_dependent_sources,
+    IndexedCheckedPackageGraph, PackageDependencyRecord, PackageDependencySourceFacts,
+    PackageDependencyTarget, PackageGraphIndexLimits, PackageGraphSourceKey, PackageReference,
+    RegistryEcosystem, linear_dependent_sources,
 };
 
 const SOURCES: usize = 4_096;
@@ -23,8 +23,8 @@ const WARMUPS: usize = 4;
 fn main() {
     let facts = fixture(SOURCES, EDGES);
     let target = PackageReference::parse("pkg:cargo/target-lib@1.0.0").expect("target");
-    let index = PackageGraphIndex::from_facts(&facts);
-    let indexed = index.dependent_sources(&facts, &target);
+    let index = IndexedCheckedPackageGraph::new(facts.clone(), limits()).expect("checked graph");
+    let indexed = index.dependent_sources(&target);
     let scanned = linear_dependent_sources(&facts, &target);
     if indexed != scanned {
         eprintln!("package_graph index diverged from the linear scan");
@@ -37,11 +37,15 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let cold = time(|| {
-        let built = PackageGraphIndex::from_facts(&facts);
-        built.dependent_sources(&facts, &target)
-    });
-    let warm = time(|| index.dependent_sources(&facts, &target));
+    let cold = time_with_setup(
+        || facts.clone(),
+        |owned_facts| {
+            let built =
+                IndexedCheckedPackageGraph::new(owned_facts, limits()).expect("checked graph");
+            built.dependent_sources(&target)
+        },
+    );
+    let warm = time(|| index.dependent_sources(&target));
     let scan = time(|| linear_dependent_sources(&facts, &target));
     let (cold_median, cold_p95) = percentiles(&cold);
     let (warm_median, warm_p95) = percentiles(&warm);
@@ -52,6 +56,16 @@ fn main() {
     );
 }
 
+fn limits() -> PackageGraphIndexLimits {
+    PackageGraphIndexLimits {
+        max_sources: SOURCES,
+        max_total_rows: SOURCES * EDGES,
+        max_reverse_edges: SOURCES * EDGES,
+        max_index_key_bytes: 64 * 1024 * 1024,
+        max_fact_bytes: 64 * 1024 * 1024,
+    }
+}
+
 fn time<T>(mut body: impl FnMut() -> T) -> Vec<u128> {
     for _ in 0..WARMUPS {
         let _ = body();
@@ -60,6 +74,20 @@ fn time<T>(mut body: impl FnMut() -> T) -> Vec<u128> {
     for _ in 0..SAMPLES {
         let started = Instant::now();
         let _ = body();
+        samples.push(started.elapsed().as_nanos());
+    }
+    samples
+}
+
+fn time_with_setup<S, T>(mut setup: impl FnMut() -> S, mut body: impl FnMut(S) -> T) -> Vec<u128> {
+    for _ in 0..WARMUPS {
+        let _ = body(setup());
+    }
+    let mut samples = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
+        let input = setup();
+        let started = Instant::now();
+        let _ = body(input);
         samples.push(started.elapsed().as_nanos());
     }
     samples

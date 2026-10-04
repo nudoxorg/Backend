@@ -153,7 +153,7 @@ impl Runner {
             }
             self.crawl_page(crawl, depth - 1, visited, crawled, report)?;
             // Back, to the route it left, standing on what was clicked.
-            self.deliver(&[Act::Key { chord: "cmd-[".to_owned() }], "crawl back")?;
+            self.deliver(&[Act::Key { chord: "secondary-[".to_owned() }], "crawl back")?;
             if let Err(why) = self.settle()? {
                 crawled.problems.push(format!("{at}: after back, not still: {why}"));
             }

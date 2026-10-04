@@ -445,6 +445,12 @@ optional = true
 version = "0.24.8"
 optional = true
 
+# NUDOX: the highlighter tests register the JSON grammar as a custom language.
+# Upstream's base `tree-sitter` feature carried it; since JSON moved to its own
+# feature, the tests take the grammar as a fixture of their own.
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies.tree-sitter-json]
+version = "0.24.8"
+
 [target.'cfg(not(target_family = "wasm"))'.dependencies.tree-sitter-kotlin-sg]
 version = "0.4.0"
 optional = true

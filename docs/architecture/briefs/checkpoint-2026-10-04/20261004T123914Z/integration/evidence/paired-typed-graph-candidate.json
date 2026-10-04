@@ -1,0 +1,55 @@
+{
+  "commit": "d21562d4bfd5e7648b0aeb6bdd8bab6fc8d5555d",
+  "tree": "70a4bcb2cb8ba0624f15ee9295fea23b4234dc27",
+  "branch": "codex/typed-graph-candidate-20261004T121200Z",
+  "base": "9a896bf197aed9028e9dbf14f0532eb00daad077",
+  "changed_paths": {
+    "crates/library/lib.rs": {
+      "sha256": "e7f3eb4c2d75931e1de430f806c59fec6ebd97a2ef896fc26cea4c87c33ebb00",
+      "blob": "b892c4f17fa2bcce89a4587931771ffea0a07510",
+      "source_worktree": "/private/tmp/nudox-typed-graph-library-20261004"
+    },
+    "crates/library/package_graph.rs": {
+      "sha256": "ce374e7293ba914fa1f736f562a5dce5d73fb041ec9fa1917cf190d2a0ef4471",
+      "blob": "86289f2a9b148331ee8e13a6ac9faadfb58e9687",
+      "source_worktree": "/private/tmp/nudox-typed-graph-library-20261004"
+    },
+    "crates/library/package_graph_page.rs": {
+      "sha256": "68246c25e5aac8cdfc7a29ca1d5dc0a93d2a1c6ddf4039f79b68c0fa9b31819c",
+      "blob": "deed9203b50eed4fdb13aeca033316ee8f419409",
+      "source_worktree": "/private/tmp/nudox-typed-graph-library-20261004"
+    },
+    "crates/library/surface.rs": {
+      "sha256": "2b5bfffdb0f0cb141be40b03b23ec2399c330709e2801a6f46e4040ec59f707c",
+      "blob": "01d69d9f1cbd568f4974ec635f2d8d68d78e3da7",
+      "source_worktree": "/private/tmp/nudox-typed-graph-library-20261004"
+    },
+    "extensions/turso/src/graph.rs": {
+      "sha256": "f478bf1ed80349f66605bbd051a96244942c19e15dbf5fef20487fe7af5f7c71",
+      "blob": "bcba5a279e598ac6a74af35823cbd6185b0f2d06",
+      "source_worktree": "/private/tmp/nudox-typed-graph-turso-20261004"
+    },
+    "extensions/turso/src/package_graph_read.rs": {
+      "sha256": "463cb726f74694a527e4c6b2a6e55ec92b2d4fafefc6b6639e332eda0bdde999",
+      "blob": "e796822d0b40542ee0e2b6d9433afb32cf1f3459",
+      "source_worktree": "/private/tmp/nudox-typed-graph-turso-20261004"
+    },
+    "extensions/turso/src/schema.rs": {
+      "sha256": "919ab00251f1aafd97833b7f501b6c10b5e6ef73e26ee4270c9016cba4cfcb82",
+      "blob": "47bf5ae9a379760f4e9ddaf51ad3501282902012",
+      "source_worktree": "/private/tmp/nudox-typed-graph-turso-20261004"
+    },
+    "extensions/turso/src/tests.rs": {
+      "sha256": "4ca3129a9890048bc101fc6ebc5cb4dac923eb8c94c745cdcde175b0224ed2a7",
+      "blob": "d9379239e98d8ddf998235acd9c634250601827b",
+      "source_worktree": "/private/tmp/nudox-typed-graph-turso-20261004"
+    }
+  },
+  "patch_sha256": "a3878dcdccf22fec17a66405f351373531c81e3b93bb3d55cdfd2250aca73f15",
+  "original_index_and_merge_untouched": true,
+  "review": "Root reviewed library and all frozen Turso changes, latest one-query source-state admission and owning APIs",
+  "acceptance": "UNRUN; paired library/storage source candidate, not canonical or deployed",
+  "artifact_dir": "/private/tmp/nudox-typed-graph-candidate-20261004T121200Z",
+  "remote_verified": true,
+  "push_status": "SOURCE_CANDIDATE_PUSHED; validation pending"
+}

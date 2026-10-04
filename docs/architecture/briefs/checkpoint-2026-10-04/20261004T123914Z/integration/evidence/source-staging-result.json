@@ -1,0 +1,71 @@
+{
+  "base_clone_verified_without_hardlinks": {
+    "cargo_lock_sha256": "5f997f548c3f47161dd044b441381936a51cb3db35d7ae699c46473769d5467f",
+    "commit": "13d9919ae6a9fc4d662c5ffb322462c6e3dfb25d",
+    "entries": 9233,
+    "gitlink_entries": 4108,
+    "manifest_kind": "base",
+    "manifest_sha256": "ca834ddcdf16990d59fd040476fecfa3591b20161f3ae527dfd6b7737baea7a2",
+    "parent_entries": 5125,
+    "status": "verified",
+    "tree": "e8a0ba54bdfae0698aca136b9400d9a1c8a89817"
+  },
+  "base_commit": "13d9919ae6a9fc4d662c5ffb322462c6e3dfb25d",
+  "base_manifest_sha256": "ca834ddcdf16990d59fd040476fecfa3591b20161f3ae527dfd6b7737baea7a2",
+  "base_source_verified": {
+    "cargo_lock_sha256": "5f997f548c3f47161dd044b441381936a51cb3db35d7ae699c46473769d5467f",
+    "commit": "13d9919ae6a9fc4d662c5ffb322462c6e3dfb25d",
+    "entries": 9233,
+    "gitlink_entries": 4108,
+    "manifest_kind": "base",
+    "manifest_sha256": "ca834ddcdf16990d59fd040476fecfa3591b20161f3ae527dfd6b7737baea7a2",
+    "parent_entries": 5125,
+    "status": "verified",
+    "tree": "e8a0ba54bdfae0698aca136b9400d9a1c8a89817"
+  },
+  "candidate_manifest_sha256": "534314ceba4c04932855a22c3cca406f03ba46eeebd189ff38fbcecab44b23cd",
+  "candidate_receipt_sha256": "0fed0e5d42602dfa136af17b09d5056b9eb3554c95917b5f7743f8034799d1ee",
+  "cargo_lock_sha256": "5f997f548c3f47161dd044b441381936a51cb3db35d7ae699c46473769d5467f",
+  "changed_paths": [
+    "crates/library/benches/package_graph.rs",
+    "crates/library/lib.rs",
+    "crates/library/package_graph.rs",
+    "crates/library/package_graph_page.rs",
+    "crates/library/semantic_shape.rs",
+    "crates/library/wire/reply_semantic_shape.rs",
+    "crates/local-service/src/builtin.rs",
+    "crates/local-service/src/builtin/commands/adapter.rs",
+    "crates/local-service/src/builtin/local_manifest_residence.rs",
+    "crates/local-service/src/builtin/product_state.rs",
+    "crates/local-service/src/builtin/registry.rs",
+    "crates/local-service/src/process.rs",
+    "extensions/turso/src/tests.rs"
+  ],
+  "copy_command": [
+    "/bin/cp",
+    "-cRp",
+    "/Users/rmccrar6/.local/share/nudox/source-releases/9a896bf197aed9028e9dbf14f0532eb00daad077-base13-normalized-v1/source",
+    "/Users/rmccrar6/.local/share/nudox/source-releases/.9a896bf197aed9028e9dbf14f0532eb00daad077.staging-14985-1791115924/source"
+  ],
+  "delta_bytes": 241812,
+  "delta_sha256": "78c35b5b7d1c992bdb507d8d4dafcbadf537eaa1cbc7c18f938a873d4e85cdba",
+  "entry_count": 9233,
+  "final_source_verified_without_hardlinks": {
+    "cargo_lock_sha256": "5f997f548c3f47161dd044b441381936a51cb3db35d7ae699c46473769d5467f",
+    "commit": "9a896bf197aed9028e9dbf14f0532eb00daad077",
+    "entries": 9233,
+    "gitlink_entries": 4108,
+    "manifest_kind": "final",
+    "manifest_sha256": "534314ceba4c04932855a22c3cca406f03ba46eeebd189ff38fbcecab44b23cd",
+    "parent_entries": 5125,
+    "status": "verified",
+    "tree": "19146a7b96b3dda49d856ba777dc3794a7e20695"
+  },
+  "gitlink_commit": "052ad81a7dbb6efed34ea482ae6c7e2e6f6682e0",
+  "no_cargo_or_remote_service_action": true,
+  "package_receipt_sha256": "ff19117df2d259420174ddadda1599703ecadff071e74fd67c0d01eee7623676",
+  "source_commit": "9a896bf197aed9028e9dbf14f0532eb00daad077",
+  "source_tree": "19146a7b96b3dda49d856ba777dc3794a7e20695",
+  "status": "source_staged_verified",
+  "verifier_sha256": "0d1ef016a560185374a204b122cee62d70fe69b9c297340fbea4174a638e8cfc"
+}

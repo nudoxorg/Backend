@@ -74,6 +74,9 @@ MAX_AX_SAMPLE_AGE_MS = 150
 MAX_CLOCK_RESIDUAL_MS = 50
 MAX_CALLBACK_OFFSET_MS = 100
 MAX_PLAN_BYTES = 1_000_000
+# Failure inspection is deliberately capped; beyond it a row count is
+# unknown, not zero or a complete capture. Successful film analysis is separate.
+MAX_FAILURE_EVIDENCE_BYTES = 1_000_000
 EXPECTED_PLAN_FLAG_V1 = "--expected-plan-sha256-v1"
 
 
@@ -176,10 +179,10 @@ def consumed_plan_receipt(out: Path, expected: dict[str, Any], recorder: Path,
         if path.is_symlink() or path.stat().st_nlink != 1 or path.stat().st_mode & 0o222:
             raise ValueError("receipt is linked or writable")
         observation, raw = plan_file_observation(path)
-        rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
-        if len(rows) != 1 or not isinstance(rows[0], dict):
-            raise ValueError("expected exactly one typed receipt row")
-        row = rows[0]
+        row, parse_error = supervision.single_sidecar_record(raw)
+        if parse_error is not None:
+            raise ValueError(parse_error)
+        assert row is not None
         required = {"schema": 1, "kind": "native-motion-plan-consumption-v1", "state": "MatchedV1",
                     "pid": pid, "plan_path": expected["path"], "consumed_bytes": expected["bytes"],
                     "consumed_sha256": expected["sha256"], "expected_sha256": expected["sha256"],
@@ -750,22 +753,39 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def failed_recorder_evidence(out: Path) -> dict[str, Any]:
-    """Preserve typed pre-input evidence without promoting it to a capture."""
-    evidence: dict[str, Any] = {"state": "RecorderFailedBeforeAnalysis"}
+    """Bounded point-in-time inspection, never a completion or exit proof."""
+    evidence: dict[str, Any] = {"state": "RecorderFailedBeforeAnalysis", "sidecars": {}}
     for name, key in [("preflight.jsonl", "preflight"), ("window.jsonl", "window"),
                       ("stream-state.jsonl", "stream_state"),
                       ("plan-consumption.jsonl", "plan_consumption")]:
-        path = out / name
-        if path.is_file():
-            try:
-                rows = read_jsonl(path)
-                if rows:
-                    evidence[key] = rows[0]
-            except (OSError, ValueError) as error:
-                evidence[key + "_parse_error"] = str(error)
+        raw, read_error = native_sidecar_bytes(out / name)
+        row, parse_error = supervision.single_sidecar_record(raw)
+        error = read_error or parse_error
+        state = "Absent" if raw is None and read_error is None else ("Invalid" if error else "Parsed")
+        evidence["sidecars"][name] = {"state": state, "diagnostic": error}
+        if state == "Parsed":
+            evidence[key] = row
+        elif state == "Invalid":
+            evidence[key + "_parse_error"] = error
     for name, key in [("frames.jsonl", "frame_rows"), ("actions.jsonl", "action_rows")]:
-        path = out / name
-        evidence[key] = len(read_jsonl(path)) if path.is_file() else 0
+        raw, read_error = native_sidecar_bytes(out / name, limit=MAX_FAILURE_EVIDENCE_BYTES)
+        count, state, error = None, "Absent", read_error
+        if read_error is not None:
+            state = "Invalid"
+        elif raw is not None:
+            rows = raw.splitlines(keepends=True)
+            if len(raw) > MAX_FAILURE_EVIDENCE_BYTES or len(rows) > MAX_FRAMES:
+                state, error = "BoundExceeded", "row count unknown beyond bounded failure inspection"
+            else:
+                state, count = "Parsed", 0
+                for line in rows:
+                    _, error = supervision.single_sidecar_record(line, limit=MAX_FAILURE_EVIDENCE_BYTES)
+                    if error is not None:
+                        state, count = "Invalid", None
+                        break
+                    count += 1
+        evidence[key] = count
+        evidence["sidecars"][name] = {"state": state, "diagnostic": error, "observed_rows": count}
     return evidence
 
 
@@ -1018,30 +1038,85 @@ def launch_services_wait(bundle: Path, pid: int, plan_path: Path, out: Path,
     return {"mode": "LaunchServicesApp", "argv": argv, "launcher_exit_code": process.returncode,
             "timed_out": timed_out, "elapsed_seconds": round(time.monotonic() - then, 3),
             "logs": logs, "launcher_log_sha256": sha256(out / "launcher.log"),
-            "recorder_exit": None, "recorder_may_continue": timed_out,
+            # open -W is our child, not the recorder. Its exit cannot rule
+            # out a still-live app, even when the launcher returned zero.
+            "recorder_exit": None, "recorder_may_continue": True,
             "tcc_responsibility": "Unverified; inspect OS TCC attribution for launched PID"}
+
+
+def native_sidecar_bytes(path: Path, *, limit: int = supervision.MAX_MESSAGE) -> tuple[bytes | None, str | None]:
+    """Read one small native sidecar without following links or trusting EOF."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None, None
+    except OSError as error:
+        return None, str(error)
+    try:
+        details = os.fstat(fd)
+        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+            return None, "sidecar must be a regular singly linked file"
+        raw = os.read(fd, limit + 1)
+        after = os.fstat(fd)
+        if (len(raw) < min(details.st_size, limit + 1)
+                or (details.st_size, details.st_mtime_ns, details.st_ctime_ns, details.st_nlink)
+                != (after.st_size, after.st_mtime_ns, after.st_ctime_ns, after.st_nlink)):
+            return None, "sidecar changed or was incompletely read"
+        return raw, None
+    except OSError as error:
+        return None, str(error)
+    finally:
+        os.close(fd)
+
+
+def native_preflight_classification(out: Path, recorder: Path, identity: dict[str, str],
+                                    pid: int, plan: dict[str, Any]) -> dict[str, Any]:
+    raw, error = native_sidecar_bytes(out / "preflight.jsonl")
+    classification = supervision.classify_preflight(raw, recorder=str(recorder),
+        identifier=identity["identifier"], pid=pid, foreground_required=plan["foreground_required"])
+    if error is not None:
+        classification.update(state="Invalid", diagnostic=error)
+    return classification
 
 
 def launch_services_completion(out: Path, launch: dict[str, Any], recorder: Path,
                                identity: dict[str, str], pid: int,
-                               plan: dict[str, Any]) -> tuple[bool, dict[str, Any] | None, list[str]]:
+                               plan: dict[str, Any]) -> tuple[bool, dict[str, Any] | None, list[str], dict[str, Any]]:
+    """Native completion evidence and reported preflight admission are separate.
+
+    This checks sidecars, not an exact kernel exit or TCC process attribution.
+    Supervised input still needs its independent StopAck/NOTE_EXIT/EOF gate.
+    """
     failures = []
     if launch["timed_out"]:
         failures.append("LaunchServices wait timed out; recorder may still be running")
     if launch["launcher_exit_code"] != 0:
         failures.append("LaunchServices launcher exited nonzero; recorder exit is unknown")
-    if not (out / "result.jsonl").is_file():
+    raw_result, result_error = native_sidecar_bytes(out / "result.jsonl")
+    result, parse_error = supervision.single_sidecar_record(raw_result)
+    if raw_result is None and result_error is None:
         failures.append("native result sidecar absent; recorder completion unproven")
-    rows = read_jsonl(out / "preflight.jsonl") if (out / "preflight.jsonl").is_file() else []
-    preflight = rows[0] if len(rows) == 1 else None
-    if preflight is None or preflight.get("state") != "Admitted" or \
-            preflight.get("recorder_executable") != str(recorder) or \
-            preflight.get("recorder_bundle_identifier") != identity["identifier"] or \
-            preflight.get("pid") != pid or \
-            preflight.get("foreground_required") != plan["foreground_required"] or \
-            preflight.get("stream_output_callback_ready") is not True:
-        failures.append("native preflight identity/admission mismatch")
-    return not failures, preflight, failures
+    elif result_error or parse_error:
+        failures.append(f"native result sidecar invalid; completion unproven: {result_error or parse_error}")
+    elif result is not None and (any(type(result.get(key)) is not int or result[key] < 0
+                                   for key in ("captured_frames", "dropped_frames"))
+                                or result.get("stream_failure") is not None):
+        failures.append("native result counters or stream failure prevent completion admission")
+    classification = native_preflight_classification(out, recorder, identity, pid, plan)
+    if classification["state"] == "Rejected":
+        failures.append("native preflight rejected: " + ", ".join(classification["native_failure_codes"]))
+    elif classification["state"] != "Admitted":
+        failures.append(f"native preflight {classification['state']}: {classification['diagnostic']}")
+    return not failures, classification["row"], failures, classification
+
+
+def recorder_failure_message(manifest: dict[str, Any], out: Path) -> str:
+    details = manifest.get("launcher", {}).get("completion_failures", [])
+    classification = manifest.get("preflight_classification", {})
+    if not details and classification.get("state") == "Rejected":
+        details = ["native preflight rejected: " + ", ".join(classification["native_failure_codes"])]
+    prefix = "; ".join(details) + "; " if details else ""
+    return prefix + f"native recorder or plan snapshots did not prove completion; see {out / 'CAPTURE.json'}"
 
 
 def crop_frames(out: Path, plan: dict[str, Any], frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1415,8 +1490,9 @@ def run(args: argparse.Namespace) -> Path:
             manifest["launcher"] = launch
             manifest["recorder_exit"] = launch["recorder_exit"]
             (out / "recorder.log").write_bytes((out / "recorder.stderr").read_bytes())
-            recorder_finished, preflight, launch_failures = launch_services_completion(
+            recorder_finished, preflight, launch_failures, classification = launch_services_completion(
                 out, launch, recorder, manifest["recorder_identity"], args.pid, plan)
+            manifest["preflight_classification"] = classification
             if supervise_v1 and not launch["supervision"]["input_ownership_release_admitted"]:
                 launch_failures.append("supervised recorder input ownership remains unresolved")
                 recorder_finished = False
@@ -1456,9 +1532,12 @@ def run(args: argparse.Namespace) -> Path:
         manifest["recorder_identity_stable"] = False
         manifest["recorder_identity_change"] = str(exc)
     if not recorder_finished or not manifest["recorder_identity_stable"]:
+        if "preflight_classification" not in manifest:
+            manifest["preflight_classification"] = native_preflight_classification(
+                out, recorder, manifest["recorder_identity"], args.pid, plan)
         manifest["failed_recorder_evidence"] = failed_recorder_evidence(out)
         (out / "CAPTURE.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        raise RuntimeError(f"native recorder or plan snapshots did not prove completion; see {out / 'CAPTURE.json'}")
+        raise RuntimeError(recorder_failure_message(manifest, out))
     frames = read_jsonl(out / "frames.jsonl")
     if not frames or any(f["index"] != i for i, f in enumerate(frames)):
         raise ValueError("native frames missing or out of order")
