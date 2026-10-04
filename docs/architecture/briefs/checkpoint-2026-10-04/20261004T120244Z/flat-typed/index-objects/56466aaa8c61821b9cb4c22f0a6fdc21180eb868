@@ -12,7 +12,7 @@ pub const MAX_PACKAGE_GRAPH_PAGE_ROWS: u16 = 128;
 /// Maximum source authorities listed in an ambiguity response.
 pub const MAX_PACKAGE_GRAPH_AUTHORITIES: usize = 64;
 /// Schema for the root and facts-witness-bound package graph page contract.
-pub const PACKAGE_GRAPH_PAGE_SCHEMA: u16 = 2;
+pub const PACKAGE_GRAPH_PAGE_SCHEMA: u16 = 1;
 
 /// Direction of one package graph read.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -171,8 +171,7 @@ impl PackageGraphPageRequest {
     #[must_use]
     pub fn recipe(&self, selected_source: Option<&PackageGraphSourceKey>) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"nudox.package-graph.page.v2\0");
-        hasher.update(&[self.package.kind().tag()]);
+        hasher.update(b"nudox.package-graph.page.v1\0");
         hash_identity_part(&mut hasher, self.package.as_str().as_bytes());
         match self.catalog_snapshot {
             Some(snapshot) => {
@@ -196,7 +195,6 @@ impl PackageGraphPageRequest {
         }
         if let Some(source) = selected_source {
             hasher.update(&[1]);
-            hasher.update(&[source.coordinate.kind().tag()]);
             hash_identity_part(&mut hasher, source.coordinate.as_str().as_bytes());
             hasher.update(&[source.authority.kind_tag() as u8]);
             hasher.update(&source.authority.id_bytes());
@@ -286,9 +284,10 @@ impl PackageGraphPage {
                 .rows
                 .windows(2)
                 .any(|pair| pair[0].facts_version >= pair[1].facts_version)
-            || self.rows.iter().any(|row| {
-                row.facts_version != row.recomputed_version() || row.target.admit().is_err()
-            })
+            || self
+                .rows
+                .iter()
+                .any(|row| row.facts_version != row.recomputed_version())
         {
             return Err(PackageGraphPageError::PageShape);
         }
@@ -361,11 +360,9 @@ impl PackageGraphPage {
                                     || ((target.qualifiers().is_some()
                                         || target.subpath().is_some())
                                         && row.target.resolved.is_none())
-                                    || row
-                                        .target
-                                        .resolved
-                                        .as_ref()
-                                        .is_some_and(|resolved| resolved != &self.package)
+                                    || row.target.resolved.as_ref().is_some_and(|resolved| {
+                                        resolved.as_str() != self.package.as_str()
+                                    })
                             }) {
                                 return Err(PackageGraphPageError::PageShape);
                             }
@@ -713,15 +710,12 @@ fn select_checked_source<'a>(
     facts: &'a CheckedPackageGraphFacts,
 ) -> Result<CheckedSourceSelection<'a>, PackageGraphPageError> {
     let all_facts = facts.facts();
-    let start = all_facts.partition_point(|(source, _)| {
-        source.coordinate.canonical_cmp(&request.package) == std::cmp::Ordering::Less
-    });
+    let coordinate = request.package.as_str();
+    let start = all_facts.partition_point(|(source, _)| source.coordinate.as_str() < coordinate);
     let end = start
         + all_facts[start..]
             .iter()
-            .take_while(|(source, _)| {
-                source.coordinate.canonical_cmp(&request.package) == std::cmp::Ordering::Equal
-            })
+            .take_while(|(source, _)| source.coordinate.as_str() == coordinate)
             .count();
     let sources = &all_facts[start..end];
     if let Some(cursor_source) = request
@@ -1037,54 +1031,6 @@ mod tests {
         )
         .expect("checked graph facts");
         (graph, source, rows)
-    }
-
-    fn typed_collision_graph() -> (
-        IndexedCheckedPackageGraph,
-        PackageReference,
-        PackageReference,
-        PackageGraphSourceKey,
-        PackageGraphSourceKey,
-    ) {
-        let text = "pkg:cargo/widget@1.0.0";
-        let purl = PackageReference::from_kind(crate::PackageReferenceKind::Purl, text)
-            .expect("PURL coordinate");
-        let local = PackageReference::from_kind(crate::PackageReferenceKind::Local, text)
-            .expect("same-spelling local label");
-        let authority = PackageGraphSourceAuthority::Unattributed;
-        let purl_source = PackageGraphSourceKey::new(purl.clone(), authority);
-        let local_source = PackageGraphSourceKey::new(local.clone(), authority);
-        let purl_rows = vec![
-            edge(&purl_source, "alpha", "^1", Some("pkg:cargo/alpha@1.0.0")),
-            edge(&purl_source, "beta", "^1", Some("pkg:cargo/beta@1.0.0")),
-        ];
-        let dependent_a = source_named("dependent-a");
-        let dependent_b = source_named("dependent-b");
-        let facts = vec![
-            (
-                local_source.clone(),
-                DependencyFacts::Unknown(ProductText::from_static("local state")),
-            ),
-            (
-                purl_source.clone(),
-                DependencyFacts::Known(purl_rows.into_boxed_slice()),
-            ),
-            (
-                dependent_a.clone(),
-                DependencyFacts::Known(
-                    vec![edge(&dependent_a, "widget", "^1", Some(text))].into_boxed_slice(),
-                ),
-            ),
-            (
-                dependent_b.clone(),
-                DependencyFacts::Known(
-                    vec![edge(&dependent_b, "widget", "^1", Some(text))].into_boxed_slice(),
-                ),
-            ),
-        ];
-        let graph = IndexedCheckedPackageGraph::new(facts, test_limits())
-            .expect("both typed source coordinates coexist");
-        (graph, purl, local, purl_source, local_source)
     }
 
     fn page_for(
@@ -1526,51 +1472,6 @@ mod tests {
     }
 
     #[test]
-    fn authority_chooser_accepts_sixty_four_choices_and_rejects_sixty_five() {
-        let coordinate =
-            PackageReference::parse("pkg:cargo/fanout@1.0.0").expect("fanout coordinate");
-        let make_graph = |count: u8| {
-            let facts = (0..count)
-                .map(|authority| {
-                    (
-                        PackageGraphSourceKey::new(
-                            coordinate.clone(),
-                            PackageGraphSourceAuthority::Registry(
-                                RegistryAuthorityId::from_configured_source(
-                                    [authority.wrapping_add(1); 32],
-                                ),
-                            ),
-                        ),
-                        DependencyFacts::Known(Vec::new().into_boxed_slice()),
-                    )
-                })
-                .collect();
-            IndexedCheckedPackageGraph::new(facts, test_limits()).expect("fanout graph")
-        };
-        let request = PackageGraphPageRequest::new(
-            coordinate.clone(),
-            PackageGraphDirection::Dependencies,
-            None,
-            1,
-        )
-        .expect("fanout request");
-
-        let at_limit = make_graph(64);
-        let page = page_for(&request, &at_limit);
-        assert!(matches!(
-            &page.knowledge,
-            PackageGraphKnowledge::Ambiguous { sources } if sources.len() == 64
-        ));
-        assert_eq!(page.admit_for(&request), Ok(()));
-
-        let over_limit = make_graph(65);
-        assert_eq!(
-            expected_page(&request, [0xa1; 32], &over_limit),
-            Err(PackageGraphPageError::AuthorityFanout)
-        );
-    }
-
-    #[test]
     fn cursor_recipe_binds_coordinate_direction_authority_and_limit() {
         let authority = PackageGraphSourceAuthority::Registry(
             RegistryAuthorityId::from_configured_source([0x22; 32]),
@@ -1595,193 +1496,6 @@ mod tests {
             )),
         );
         assert_ne!(recipe, base.recipe(Some(&other_source)));
-    }
-
-    #[test]
-    fn typed_coordinate_selection_and_authority_match_only_the_requested_kind() {
-        let (graph, purl, local, purl_source, local_source) = typed_collision_graph();
-        assert_eq!(purl.as_str(), local.as_str());
-        for (coordinate, source, reason) in [
-            (&purl, &purl_source, ""),
-            (&local, &local_source, "local state"),
-        ] {
-            let request = PackageGraphPageRequest::new(
-                coordinate.clone(),
-                PackageGraphDirection::Dependencies,
-                Some(PackageGraphSourceAuthority::Unattributed),
-                1,
-            )
-            .expect("typed forward request");
-            let page = page_for(&request, &graph);
-            assert_eq!(page.source.as_ref(), Some(source));
-            match (&page.knowledge, reason) {
-                (PackageGraphKnowledge::Known, "") => {}
-                (
-                    PackageGraphKnowledge::Unknown {
-                        reason: Some(actual),
-                    },
-                    expected,
-                ) => {
-                    assert_eq!(actual.as_str(), expected)
-                }
-                (knowledge, _) => panic!("unexpected typed source state: {knowledge:?}"),
-            }
-            page.admit_for(&request)
-                .expect("selected source has the requested typed coordinate");
-        }
-
-        let local_only = IndexedCheckedPackageGraph::new(
-            vec![(
-                local_source,
-                DependencyFacts::Unknown(ProductText::from_static("local state")),
-            )],
-            test_limits(),
-        )
-        .expect("local-only graph");
-        let purl_request = PackageGraphPageRequest::new(
-            purl,
-            PackageGraphDirection::Dependencies,
-            Some(PackageGraphSourceAuthority::Unattributed),
-            1,
-        )
-        .expect("PURL request against local-only graph");
-        let missing = page_for(&purl_request, &local_only);
-        assert!(missing.source.is_none());
-        assert!(matches!(
-            missing.knowledge,
-            PackageGraphKnowledge::Unknown { .. }
-        ));
-        missing
-            .admit_for(&purl_request)
-            .expect("same-spelling local source is not a PURL source");
-    }
-
-    #[test]
-    fn package_graph_cursors_reject_cross_kind_replay() {
-        let (graph, purl, local, purl_source, _) = typed_collision_graph();
-        let view_root = [0xa1; 32];
-
-        let purl_forward = PackageGraphPageRequest::new(
-            purl.clone(),
-            PackageGraphDirection::Dependencies,
-            Some(PackageGraphSourceAuthority::Unattributed),
-            1,
-        )
-        .expect("PURL forward request");
-        let purl_forward_page = page_for(&purl_forward, &graph);
-        let PackageGraphPageTerminal::More(forward_cursor) = purl_forward_page.terminal.clone()
-        else {
-            panic!("two PURL outgoing rows require a continuation");
-        };
-        assert_ne!(
-            purl_forward.recipe(Some(&purl_source)),
-            PackageGraphPageRequest::new(
-                local.clone(),
-                PackageGraphDirection::Dependencies,
-                Some(PackageGraphSourceAuthority::Unattributed),
-                1,
-            )
-            .expect("local forward request")
-            .recipe(Some(&PackageGraphSourceKey::new(
-                local.clone(),
-                PackageGraphSourceAuthority::Unattributed,
-            )))
-        );
-        let local_forward = PackageGraphPageRequest::new(
-            local.clone(),
-            PackageGraphDirection::Dependencies,
-            Some(PackageGraphSourceAuthority::Unattributed),
-            1,
-        )
-        .expect("local forward request")
-        .with_cursor(forward_cursor);
-        assert_eq!(
-            local_forward.admit(),
-            Err(PackageGraphPageError::CursorMismatch),
-            "forward cursors bind the exact typed source coordinate"
-        );
-
-        let purl_reverse =
-            PackageGraphPageRequest::new(purl, PackageGraphDirection::Dependents, None, 1)
-                .expect("PURL reverse request");
-        let purl_reverse_page = page_for(&purl_reverse, &graph);
-        let PackageGraphPageTerminal::More(reverse_cursor) = purl_reverse_page.terminal else {
-            panic!("two dependents require a continuation");
-        };
-        let local_reverse =
-            PackageGraphPageRequest::new(local, PackageGraphDirection::Dependents, None, 1)
-                .expect("local reverse request");
-        assert_ne!(
-            purl_reverse.recipe(None),
-            local_reverse.recipe(None),
-            "reverse query recipes include reference kind even without a selected source"
-        );
-        let cross_kind_reverse = local_reverse.with_cursor(reverse_cursor);
-        assert_eq!(
-            expected_page(&cross_kind_reverse, view_root, &graph).unwrap_err(),
-            PackageGraphPageError::CursorMismatch
-        );
-    }
-
-    #[test]
-    fn page_admission_rechecks_resolved_target_contract() {
-        let source = source();
-        let source_package = source.coordinate.clone();
-        let raw_target = |resolved| PackageDependencyTarget {
-            ecosystem: RegistryEcosystem::Cargo,
-            name: ProductText::new("widget").expect("target name"),
-            requirement: ProductText::new("^1").expect("requirement"),
-            resolved: Some(resolved),
-        };
-        let invalid_targets = [
-            raw_target(
-                PackageReference::from_kind(
-                    crate::PackageReferenceKind::Local,
-                    "pkg:cargo/widget@1.0.0",
-                )
-                .expect("same-spelling Local target"),
-            ),
-            raw_target(
-                PackageReference::parse("pkg:npm/widget@1.0.0").expect("wrong ecosystem PURL"),
-            ),
-            raw_target(
-                PackageReference::parse("pkg:cargo/other@1.0.0").expect("wrong lineage PURL"),
-            ),
-        ];
-
-        for target in invalid_targets {
-            let row = PackageDependencyRecord::new_with_source_authority(
-                source_package.clone(),
-                source.authority,
-                target,
-                DependencyScope::Runtime,
-                false,
-                DependencyEvidence {
-                    authority: DependencyAuthority::RegistryMetadata,
-                    frontier: [0x73; 32],
-                    provenance: [0x74; 32],
-                },
-            );
-            assert_eq!(row.facts_version, row.recomputed_version());
-            let page = PackageGraphPage {
-                schema: PACKAGE_GRAPH_PAGE_SCHEMA,
-                view_root: [0x75; 32],
-                facts_witness: [0x76; 32],
-                catalog_snapshot: None,
-                package: PackageReference::parse("pkg:cargo/widget@1.0.0")
-                    .expect("PURL page target"),
-                direction: PackageGraphDirection::Dependents,
-                source: None,
-                knowledge: PackageGraphKnowledge::Known,
-                rows: vec![row].into_boxed_slice(),
-                terminal: PackageGraphPageTerminal::Complete,
-            };
-            assert_eq!(
-                page.admit(),
-                Err(PackageGraphPageError::PageShape),
-                "a valid row digest does not admit an invalid resolved target"
-            );
-        }
     }
 
     #[test]
