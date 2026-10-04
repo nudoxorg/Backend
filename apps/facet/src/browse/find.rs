@@ -140,6 +140,9 @@ pub struct Actions {
     pub persist_held: Rc<dyn Fn(Vec<HeldPackage>, &mut App)>,
     /// Restores this exact query handle after Ask releases the same visit.
     pub return_focus: Rc<dyn Fn(gpui::FocusHandle, &mut Window, &mut App) -> super::library::ReturnDisposition>,
+    /// Admits the first deferred focus claim against the host's exact native
+    /// visit, input scope and unchanged focus intent.
+    pub claim_focus: Rc<dyn Fn(&gpui::FocusHandle, u64, &Window, &App) -> bool>,
     pub query_input: Rc<dyn Fn(&str) -> QueryInput>,
     pub refine: Rc<dyn Fn(SharedString, &mut App)>,
     /// Retries the exact failed current route; absent when the owner cannot serve it.
@@ -344,14 +347,18 @@ impl QueryFocus {
         self,
         query: gpui::FocusHandle,
         restore: Rc<dyn Fn(gpui::FocusHandle, &mut Window, &mut App) -> super::library::ReturnDisposition>,
+        claim: Rc<dyn Fn(&gpui::FocusHandle, u64, &Window, &App) -> bool>,
         window: &mut Window,
         cx: &mut App,
     ) {
+        let focus_epoch = window.focus_epoch();
         window.defer(cx, move |window, cx| {
             if let Self::Claim(state) = self {
                 let Some(state) = state.upgrade() else { return; };
                 if !state.read(cx).active { return; }
                 let input = state.read(cx).input.clone();
+                if input.read(cx).focus_handle(cx) != query
+                    || !claim(&query, focus_epoch, window, cx) { return; }
                 input.update(cx, |input, cx| input.focus(window, cx));
             }
             restore(query, window, cx);
@@ -425,6 +432,7 @@ impl RenderOnce for Find {
             transfer.after_frame(
                 state.input.read(cx).focus_handle(cx),
                 Rc::clone(&self.actions.return_focus),
+                Rc::clone(&self.actions.claim_focus),
                 window,
                 cx,
             );

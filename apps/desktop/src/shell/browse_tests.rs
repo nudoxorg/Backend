@@ -531,6 +531,77 @@ fn find_callback_never_revives_on_a_new_same_route_visit_or_owner_attachment(cx:
     assert_eq!(rig.route(), route);
 }
 
+/// The first Find paint defers its focus claim. Every input or ownership
+/// change between that paint and the effect callback must reject the old
+/// claim before it can move native focus.
+#[gpui::test]
+fn stale_first_find_focus_claim_is_denied_before_focus(cx: &mut TestAppContext) {
+    let browse = BrowseRoute::Find(SearchQuery::new("RelationLabel", SearchQuery::DEFAULT_LIMIT).expect("query"));
+    let route = Route::Orbit(OrbitRoute::Browse(browse.clone()));
+    for change in ["route", "add", "ask", "tab", "key", "attachment", "root"] {
+        let mut rig = rig(cx, Some(route.clone()), 1200.0, 800.0);
+        rig.settle();
+        let source = find_callback(&mut rig, &browse);
+        let claim = rig.cx.update(|_, cx| super::FindQueryClaim::new(&source, cx));
+        let (query, epoch) = rig.cx.update(|window, cx| (window.focused(cx).expect("Find query"), window.focus_epoch()));
+        assert!(rig.cx.update(|window, cx| claim.admits(&query, epoch, window, cx)),
+            "the current mounted Find query should be claimable before {change}");
+        match change {
+            "route" => rig.go(crate::navigation::Intent::Navigate(Route::Orbit(OrbitRoute::Home))),
+            "add" => rig.keys("secondary-o"),
+            "ask" => rig.keys("secondary-k"),
+            "tab" => {
+                // This deferred admission is queued before the focus move,
+                // just as a Find paint can queue its claim before the next
+                // input in the same GPUI effect cycle.
+                let observed = std::rc::Rc::new(std::cell::Cell::new(None));
+                let result = std::rc::Rc::clone(&observed);
+                let deferred = claim.clone();
+                let target = query.clone();
+                rig.cx.update(|window, cx| {
+                    window.defer(cx, move |window, cx| result.set(Some(deferred.admits(&target, epoch, window, cx))));
+                    window.focus_next(cx);
+                });
+                assert_eq!(observed.get(), Some(false), "a focus move outran the queued first claim");
+            }
+            "key" => rig.cx.simulate_keystrokes("left"),
+            "attachment" => {
+                rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+                rig.cx.run_until_parked();
+                rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+                rig.cx.run_until_parked();
+            }
+            "root" => {
+                let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+                let next = VersionedRoot::synthetic(
+                    backend_library::view_state_root(&[("find".into(), "new claim root".into())]), 9,
+                );
+                rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_key(next, None)), cx));
+            }
+            _ => unreachable!(),
+        }
+        assert!(!rig.cx.update(|window, cx| claim.admits(&query, epoch, window, cx)),
+            "an old Find focus claim survived {change}");
+    }
+}
+
+#[gpui::test]
+fn failed_owner_still_admits_the_local_find_query_claim(cx: &mut TestAppContext) {
+    let browse = BrowseRoute::Find(SearchQuery::new("RelationLabel", SearchQuery::DEFAULT_LIMIT).expect("query"));
+    let route = Route::Orbit(OrbitRoute::Browse(browse.clone()));
+    let mut rig = rig(cx, Some(route), 1200.0, 800.0);
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(
+        &crate::runtime::owner::OwnerFault::Lost("owner lost".into()), cx,
+    ));
+    rig.settle();
+    assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.owner_serving()));
+    let source = find_callback(&mut rig, &browse);
+    let claim = rig.cx.update(|_, cx| super::FindQueryClaim::new(&source, cx));
+    let (query, epoch) = rig.cx.update(|window, cx| (window.focused(cx).expect("Find query"), window.focus_epoch()));
+    assert!(rig.cx.update(|window, cx| claim.admits(&query, epoch, window, cx)),
+        "Find's local editor cannot depend on owner readiness");
+}
+
 fn compare_selection() -> CompareSet {
     CompareSet::new(["/fixture/present", "/fixture/second", "/fixture/third"]
         .into_iter().map(|key| PackageRef::parse(key).expect("fixture package"))).expect("three packages")

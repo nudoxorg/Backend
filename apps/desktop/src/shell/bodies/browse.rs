@@ -16,9 +16,10 @@ use crate::navigation::{BrowseRoute, CargoBrowseContext, CompareSet, Intent, Orb
 use crate::shell::kit::{indexed_result_route, package_route, symbol_route, symbol_view_route};
 use crate::shell::reader::Reader;
 use crate::shell::reader::NativeActionLease;
+use crate::shell::root::PageInputScope;
 use facet::browse::library::{InventoryHandle, ReleaseHandle};
 use facet::browse::{LibraryActions, LibraryModel, library};
-use gpui::{App, AppContext as _, Context, InteractiveElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div};
+use gpui::{App, AppContext as _, Context, FocusHandle, InteractiveElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -209,6 +210,40 @@ struct FindActionSource {
     key: BrowseKey,
     root: VersionedRoot,
     visit: CurrentBrowseVisit,
+}
+
+/// A Find query's first focus claim belongs to the exact native scene that
+/// painted it. Resource readiness is absent here: the local field remains
+/// editable while its read is pending or its owner has failed.
+#[derive(Clone)]
+struct FindQueryClaim {
+    visit: CurrentBrowseVisit,
+    links: super::super::region::Links,
+    input: Option<PageInputScope>,
+    input_generation: Option<u64>,
+}
+
+impl FindQueryClaim {
+    fn new(source: &FindActionSource, cx: &App) -> Self {
+        let (input, input_generation) = source.links.shell.upgrade().map_or((None, None), |shell| {
+            let shell = shell.read(cx);
+            (shell.page_input_scope(cx), shell.focus_return_generation())
+        });
+        Self { visit: source.visit.clone(), links: source.links.clone(), input, input_generation }
+    }
+
+    fn admits(&self, query: &FocusHandle, focus_epoch: u64, window: &Window, cx: &App) -> bool {
+        let (Some(input), Some(input_generation)) = (self.input.as_ref(), self.input_generation) else { return false; };
+        window.focus_epoch() == focus_epoch
+            && window.is_focus_handle_mounted(query)
+            && self.links.snapshot(cx).key() == self.visit.root
+            && self.visit.local(cx)
+            && self.visit.reader.upgrade().is_some_and(|reader| reader.read(cx).native_input_for(&self.visit.route, None))
+            && self.links.shell.upgrade().is_some_and(|shell| {
+                let shell = shell.read(cx);
+                shell.admits_page_input_scope(input, cx) && shell.focus_return_generation() == Some(input_generation)
+            })
+    }
 }
 
 impl FindActionSource {
@@ -554,6 +589,10 @@ fn find_actions(
                     ))
                 })
             })
+        },
+        claim_focus: {
+            let claim = FindQueryClaim::new(source, cx);
+            Rc::new(move |query, epoch, window, cx| claim.admits(query, epoch, window, cx))
         },
         query_input: Rc::new(query_input),
         refine: Rc::new(move |text, cx| {
