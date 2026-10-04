@@ -28,11 +28,45 @@ use backend_replication::{
 #[cfg(any(unix, windows))]
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 #[cfg(any(unix, windows))]
 const CONNECTION_FRAME_BUDGET: usize = 240;
+
+/// Identity for one physical connection, including each replacement after a
+/// frame budget or interrupted exchange. A retained clone prevents allocator
+/// reuse from making a stale socket appear current.
+#[cfg(any(unix, windows))]
+#[derive(Clone, Debug)]
+pub(crate) struct ConnectionId(Arc<()>);
+
+#[cfg(any(unix, windows))]
+impl ConnectionId {
+    fn next() -> Self {
+        Self(Arc::new(()))
+    }
+}
+
+#[cfg(any(unix, windows))]
+impl PartialEq for ConnectionId {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+#[cfg(any(unix, windows))]
+impl Eq for ConnectionId {}
+
+/// A terminal cancel makes its socket permanently unavailable to the
+/// transport, even when the owner never acknowledges the cancel.
+#[cfg(any(unix, windows))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Lifecycle {
+    Serving,
+    Released,
+}
 
 /// Failure starting or completing one resumable local-control request.
 #[cfg(any(unix, windows))]
@@ -102,6 +136,9 @@ fn map_control_error(error: LocalControlError) -> ClientError {
 #[cfg(any(unix, windows))]
 pub struct LocalSubscriptionTransport {
     client: LocalControlClient<backend_replication::LocalStream>,
+    connection: ConnectionId,
+    lifecycle: Lifecycle,
+    clock: Arc<dyn crate::monotonic::MonotonicClock>,
     interrupt: Option<crate::TransportInterrupt>,
     peer: Option<backend_replication::AuthenticatedLocalPeer>,
     endpoint: Option<PathBuf>,
@@ -154,6 +191,9 @@ impl LocalSubscriptionTransport {
         let interrupt = Some(crate::TransportInterrupt::new(&stream)?);
         Ok(Self {
             client: LocalControlClient::new(stream, control_limits()),
+            connection: ConnectionId::next(),
+            lifecycle: Lifecycle::Serving,
+            clock: Arc::new(crate::monotonic::SystemClock),
             interrupt,
             peer: Some(peer),
             endpoint: Some(path.to_path_buf()),
@@ -174,6 +214,9 @@ impl LocalSubscriptionTransport {
         let interrupt = crate::TransportInterrupt::new(&stream).ok();
         Self {
             client: LocalControlClient::new(stream, control_limits()),
+            connection: ConnectionId::next(),
+            lifecycle: Lifecycle::Serving,
+            clock: Arc::new(crate::monotonic::SystemClock),
             interrupt,
             peer: None,
             endpoint: None,
@@ -182,6 +225,29 @@ impl LocalSubscriptionTransport {
             frames_on_connection: 0,
             next_request_id: 1,
         }
+    }
+
+    /// Replaces the clock used for publication and reset deadlines. Production
+    /// transports use the system monotonic clock; deterministic tests may
+    /// inject a manual clock.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn crate::monotonic::MonotonicClock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    pub(crate) fn now(&self) -> Instant {
+        self.clock.now()
+    }
+
+    /// The physical socket currently carrying this transport's requests.
+    pub(crate) fn connection(&self) -> ConnectionId {
+        self.connection.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exhaust_connection_budget_for_test(&mut self) {
+        self.frames_on_connection = CONNECTION_FRAME_BUDGET;
     }
 
     /// Returns a handle for the exact currently connected control socket.
@@ -204,13 +270,15 @@ impl LocalSubscriptionTransport {
             .map_err(|error| ClientError::Io(error.to_string()))?;
         let peer = backend_replication::AuthenticatedLocalPeer::authenticate(&stream, endpoint)
             .map_err(crate::map_peer_authentication_error)?;
-        self.client = LocalControlClient::new(stream, control_limits());
+        let client = LocalControlClient::new(stream, control_limits());
         if let Some(interrupt) = &self.interrupt {
-            interrupt.replace(self.client.stream())?;
+            interrupt.replace(client.stream())?;
         } else {
-            self.interrupt = Some(crate::TransportInterrupt::new(self.client.stream())?);
+            self.interrupt = Some(crate::TransportInterrupt::new(client.stream())?);
         }
+        self.client = client;
         self.peer = Some(peer);
+        self.connection = ConnectionId::next();
         self.frames_on_connection = 0;
         Ok(())
     }
@@ -287,6 +355,11 @@ impl LocalSubscriptionTransport {
         &mut self,
         request: &LocalControlRequest,
     ) -> Result<LocalControlResponse, ClientError> {
+        if self.lifecycle == Lifecycle::Released {
+            return Err(ClientError::Io(
+                "transport already released by a terminal lease cancellation".to_owned(),
+            ));
+        }
         self.prepare_request()?;
         let response = self.client.request(request).map_err(map_control_error)?;
         self.frames_on_connection = self.frames_on_connection.saturating_add(1);
@@ -316,6 +389,11 @@ impl LocalSubscriptionTransport {
         deadline: Instant,
         tick: impl FnMut(LocalControlExchangeProgress) -> LocalControlExchangeDecision,
     ) -> Result<LocalControlResponse, LocalSubscriptionExchangeError> {
+        if self.lifecycle == Lifecycle::Released {
+            return Err(LocalSubscriptionExchangeError::Setup(ClientError::Io(
+                "transport already released by a terminal lease cancellation".to_owned(),
+            )));
+        }
         self.prepare_request()
             .map_err(LocalSubscriptionExchangeError::Setup)?;
         let result = {
@@ -466,24 +544,48 @@ impl LocalSubscriptionTransport {
     pub(crate) fn cancel_lease_current(
         &mut self,
         lease: LocalSubscriptionId,
+        held_on: ConnectionId,
         timeout: Duration,
     ) -> Result<(), ClientError> {
-        self.client.stream().set_read_timeout(Some(timeout))
-            .and_then(|()| self.client.stream().set_write_timeout(Some(timeout)))
-            .map_err(|error| ClientError::Io(error.to_string()))?;
-        let request_id = self.next_request_id;
-        self.next_request_id = request_id.checked_add(1)
-            .ok_or_else(|| ClientError::Protocol("subscription request id exhausted".into()))?;
-        let request = LocalControlRequest::Subscription(LocalSubscriptionRequest {
-            request_id,
-            operation: LocalSubscriptionOperation::Cancel { lease },
-        });
-        match self.client.request(&request).map_err(map_control_error)? {
-            LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
-                request_id: observed, lease: acknowledged,
-            }) if observed == request_id && acknowledged == lease => Ok(()),
-            _ => Err(ClientError::Protocol("exact-socket lease cancellation was not acknowledged".into())),
+        if self.connection != held_on {
+            return Err(ClientError::Protocol(
+                "publication lease is not held on this socket".to_owned(),
+            ));
         }
+        if self.lifecycle == Lifecycle::Released {
+            return Err(ClientError::Io(
+                "transport already released by a terminal lease cancellation".to_owned(),
+            ));
+        }
+        self.lifecycle = Lifecycle::Released;
+        let result = (|| {
+            self.client
+                .stream()
+                .set_read_timeout(Some(timeout))
+                .and_then(|()| self.client.stream().set_write_timeout(Some(timeout)))
+                .map_err(|error| ClientError::Io(error.to_string()))?;
+            let request_id = self.next_request_id;
+            self.next_request_id = request_id.checked_add(1).ok_or_else(|| {
+                ClientError::Protocol("subscription request id exhausted".to_owned())
+            })?;
+            let request = LocalControlRequest::Subscription(LocalSubscriptionRequest {
+                request_id,
+                operation: LocalSubscriptionOperation::Cancel { lease },
+            });
+            match self.client.request(&request).map_err(map_control_error)? {
+                LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                    request_id: observed,
+                    lease: acknowledged,
+                }) if observed == request_id && acknowledged == lease => Ok(()),
+                _ => Err(ClientError::Protocol(
+                    "exact-socket lease cancellation was not acknowledged".to_owned(),
+                )),
+            }
+        })();
+        // Cancellation is terminal even when its bounded exchange fails. Do
+        // not leave an ambiguous frame or an idle socket alive for reuse.
+        self.retire_connection();
+        result
     }
 
     /// Requests one bounded snapshot page for a reset descriptor. The page

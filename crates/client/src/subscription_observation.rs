@@ -5,21 +5,21 @@
 use crate::subscription::{
     snapshot_page_from_bytes_with_verifier, subscription_read_from_bytes_against,
 };
+use crate::lease_contract::{LeaseMs, PUBLICATION_CREDIT, PUBLICATION_LEASE};
+use crate::monotonic::{MonotonicClock, SystemClock};
+use crate::reset_budget::{ResetBudget, ResetFault};
+use crate::subscription_local::ConnectionId;
 use crate::{ClientError, LocalSubscriptionExchangeError, LocalSubscriptionTransport};
 use backend_library::{Cursor, CursorEvent, CursorRead, SnapshotHydrator, ViewRoot};
 use backend_replication::{
     LocalControlExchangeDecision, LocalControlExchangeError, LocalControlExchangeProgress,
     LocalSubscriptionId, LocalSubscriptionOperation, LocalSubscriptionResponse,
 };
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-const CREDIT: usize = 64;
-const LEASE_MS: u64 = 10_000;
-const MAX_RESET_ROWS: u64 = 131_072;
-const RESET_TIME: Duration = Duration::from_secs(10);
-const PAGE_TIME: Duration = Duration::from_secs(2);
-const MAX_RESET_PAGES: u64 = MAX_RESET_ROWS / CREDIT as u64;
+const CREDIT: usize = PUBLICATION_CREDIT;
+const LEASE_MS: u64 = PUBLICATION_LEASE.get();
 
 /// Which fixed budget currently governs one observation request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,6 +91,7 @@ pub enum PublicationObservationDecision {
 /// driving a frame. Its work must remain short and nonblocking.
 pub struct ObservedPublicationControl<'a> {
     recovery_deadline: Instant,
+    clock: Arc<dyn MonotonicClock>,
     cancelled: &'a dyn Fn() -> bool,
     tick: &'a mut dyn FnMut(PublicationObservationProgress) -> PublicationObservationDecision,
     budget: PublicationExchangeBudget,
@@ -104,9 +105,27 @@ impl<'a> ObservedPublicationControl<'a> {
         cancelled: &'a dyn Fn() -> bool,
         tick: &'a mut dyn FnMut(PublicationObservationProgress) -> PublicationObservationDecision,
     ) -> Self {
-        let started = Instant::now();
+        Self::new_with_clock(
+            recovery_deadline,
+            Arc::new(SystemClock),
+            cancelled,
+            tick,
+        )
+    }
+
+    /// Creates a control against an injected monotonic clock. Use the same
+    /// clock for the transport when testing absolute reset deadlines.
+    #[must_use]
+    pub fn new_with_clock(
+        recovery_deadline: Instant,
+        clock: Arc<dyn MonotonicClock>,
+        cancelled: &'a dyn Fn() -> bool,
+        tick: &'a mut dyn FnMut(PublicationObservationProgress) -> PublicationObservationDecision,
+    ) -> Self {
+        let started = clock.now();
         Self {
             recovery_deadline,
+            clock,
             cancelled,
             tick,
             budget: PublicationExchangeBudget {
@@ -218,60 +237,6 @@ impl From<ClientError> for PublicationExchangeError {
     }
 }
 
-/// The first authenticated descriptor fixes the whole reset's allowance.
-/// Progress never moves this deadline; socket I/O limits remain independent.
-struct PublicationBudget {
-    started: Instant,
-    deadline: Instant,
-    rows: Option<u64>,
-    pages: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PublicationBudgetFailure {
-    RowsExceeded,
-    RowsChanged,
-    PageLimitExceeded,
-    Expired,
-}
-
-impl PublicationBudget {
-    fn new(now: Instant) -> Self {
-        Self {
-            started: now,
-            deadline: now + RESET_TIME,
-            rows: None,
-            pages: 0,
-        }
-    }
-    fn page(&mut self, rows: u64, now: Instant) -> Result<(), PublicationBudgetFailure> {
-        if rows > MAX_RESET_ROWS {
-            return Err(PublicationBudgetFailure::RowsExceeded);
-        }
-        if let Some(expected) = self.rows {
-            if expected != rows {
-                return Err(PublicationBudgetFailure::RowsChanged);
-            }
-        } else {
-            let pages = rows.div_ceil(CREDIT as u64).max(1);
-            self.deadline = self.started + RESET_TIME + PAGE_TIME * pages as u32;
-            self.rows = Some(rows);
-        }
-        self.pages += 1;
-        if self.pages > MAX_RESET_PAGES {
-            return Err(PublicationBudgetFailure::PageLimitExceeded);
-        }
-        self.check(now)
-    }
-    fn check(&self, now: Instant) -> Result<(), PublicationBudgetFailure> {
-        if now >= self.deadline {
-            Err(PublicationBudgetFailure::Expired)
-        } else {
-            Ok(())
-        }
-    }
-}
-
 enum PublicationObserver<'control, 'callback> {
     Legacy(&'callback dyn Fn() -> bool),
     Observed(&'control mut ObservedPublicationControl<'callback>),
@@ -287,67 +252,60 @@ impl PublicationObserver<'_, '_> {
             Self::Observed(control) if (control.cancelled)() => {
                 Err(PublicationExchangeError::Cancelled)
             }
-            Self::Observed(control) if Instant::now() >= control.budget.deadline => {
+            Self::Observed(control) if control.clock.now() >= control.budget.deadline => {
                 Err(PublicationExchangeError::BudgetExpired(control.budget))
             }
             Self::Observed(_) => Ok(()),
         }
     }
 
-    fn check_budget(&self, budget: &PublicationBudget) -> Result<(), PublicationExchangeError> {
+    fn check_budget(
+        &self,
+        budget: &ResetBudget,
+        fallback_now: Instant,
+    ) -> Result<(), PublicationExchangeError> {
         self.check()?;
+        let now = match self {
+            Self::Legacy(_) => fallback_now,
+            Self::Observed(control) => control.clock.now(),
+        };
         budget
-            .check(Instant::now())
-            .map_err(|failure| self.budget_error(budget, failure))
+            .check(now)
+            .map_err(|failure| self.budget_error(failure))
     }
 
-    fn begin_admission(&mut self, budget: &PublicationBudget) {
+    fn begin_admission(&mut self, budget: &ResetBudget) {
         if let Self::Observed(control) = self {
             control.budget = PublicationExchangeBudget {
-                started: budget.started,
-                deadline: control.recovery_deadline.min(budget.started + RESET_TIME),
+                started: budget.started(),
+                deadline: control.recovery_deadline.min(budget.deadline()),
                 kind: PublicationBudgetKind::Ordinary,
             };
         }
     }
 
-    fn bind_reset(&mut self, budget: &PublicationBudget) {
+    fn bind_reset(&mut self, budget: &ResetBudget) {
         if let Self::Observed(control) = self
-            && let Some(rows) = budget.rows
+            && let Some((rows, pages)) = budget.descriptor()
         {
             control.budget = PublicationExchangeBudget {
-                started: budget.started,
-                deadline: budget.deadline,
+                started: budget.started(),
+                deadline: budget.deadline(),
                 kind: PublicationBudgetKind::AuthenticatedReset {
                     rows,
-                    pages: rows.div_ceil(CREDIT as u64).max(1),
+                    pages: u64::from(pages),
                 },
             };
         }
     }
 
-    fn budget_error(
-        &self,
-        _budget: &PublicationBudget,
-        failure: PublicationBudgetFailure,
-    ) -> PublicationExchangeError {
-        if failure == PublicationBudgetFailure::Expired {
+    fn budget_error(&self, failure: ResetFault) -> PublicationExchangeError {
+        if failure == ResetFault::TimeBudget {
             if let Self::Observed(control) = self {
                 return PublicationExchangeError::BudgetExpired(control.budget);
             }
-            return PublicationExchangeError::Invalid(protocol(
-                "publication reset exceeded its time budget",
-            ));
         }
-        let message = match failure {
-            PublicationBudgetFailure::RowsExceeded => "publication reset exceeds its row budget",
-            PublicationBudgetFailure::RowsChanged => "publication reset changed its row budget",
-            PublicationBudgetFailure::PageLimitExceeded => {
-                "publication reset exceeds its page budget"
-            }
-            PublicationBudgetFailure::Expired => "publication reset exceeded its time budget",
-        };
-        PublicationExchangeError::Invalid(protocol(message))
+        PublicationExchangeError::Invalid(protocol(failure.message()))
     }
 
     fn request(
@@ -410,6 +368,8 @@ pub struct PublicationLease {
     lease: LocalSubscriptionId,
     cursor: Cursor,
     root: Arc<ViewRoot>,
+    term: Mutex<LeaseMs>,
+    held_on: Mutex<ConnectionId>,
 }
 
 impl PublicationLease {
@@ -420,6 +380,37 @@ impl PublicationLease {
     /// Exact admitted producer cursor.
     pub const fn cursor(&self) -> Cursor {
         self.cursor
+    }
+
+    /// How long a quiet holder may wait between renewals: half the term the
+    /// owner granted, so one lost renewal still leaves another chance.
+    #[must_use]
+    pub fn renew_after(&self) -> Duration {
+        self.term
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .renewal_interval()
+    }
+
+    fn connection(&self) -> ConnectionId {
+        self.held_on
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn set_connection(&self, connection: ConnectionId) {
+        *self
+            .held_on
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = connection;
+    }
+
+    fn set_term(&self, term: LeaseMs) {
+        *self
+            .term
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = term;
     }
 }
 
@@ -478,6 +469,8 @@ impl LocalSubscriptionTransport {
             lease,
             cursor,
             root,
+            term: Mutex::new(PUBLICATION_LEASE),
+            held_on: Mutex::new(self.connection()),
         };
         if let Err(error) = self.admit_publications(&mut state, response, &mut observer) {
             let _ = self.cancel_publications_current(&state);
@@ -536,10 +529,13 @@ impl LocalSubscriptionTransport {
     /// # Errors
     /// Returns an error if the owner no longer retains this exact lease.
     pub fn renew_publications(&mut self, state: &PublicationLease) -> Result<(), ClientError> {
-        match self.renew_lease(state.lease, state.cursor, CREDIT, LEASE_MS)? {
-            LocalSubscriptionResponse::Renewed { cursor, .. }
-                if cursor.as_ref() == state.cursor.encode_control().as_ref() =>
-            {
+        let response = self.renew_lease(state.lease, state.cursor, CREDIT, LEASE_MS)?;
+        match response {
+            LocalSubscriptionResponse::Renewed {
+                cursor, lease_ms, ..
+            } if cursor.as_ref() == state.cursor.encode_control().as_ref() => {
+                state.set_term(granted_term(lease_ms)?);
+                state.set_connection(self.connection());
                 Ok(())
             }
             _ => Err(protocol(
@@ -569,9 +565,10 @@ impl LocalSubscriptionTransport {
             },
             PublicationOperation::Renew,
         )?;
-        match response {
-            LocalSubscriptionResponse::Renewed { cursor, .. }
-                if cursor.as_ref() == state.cursor.encode_control().as_ref() => {}
+        let lease_ms = match response {
+            LocalSubscriptionResponse::Renewed {
+                cursor, lease_ms, ..
+            } if cursor.as_ref() == state.cursor.encode_control().as_ref() => lease_ms,
             _ => {
                 return Err(PublicationExchangeError::Invalid(protocol(
                     "publication renewal did not fence the admitted cursor",
@@ -579,6 +576,8 @@ impl LocalSubscriptionTransport {
             }
         }
         observer.check()?;
+        state.set_term(granted_term(lease_ms)?);
+        state.set_connection(self.connection());
         Ok(())
     }
 
@@ -602,7 +601,7 @@ impl LocalSubscriptionTransport {
         &mut self,
         state: &PublicationLease,
     ) -> Result<(), ClientError> {
-        self.cancel_lease_current(state.lease, Duration::from_millis(50))
+        self.cancel_lease_current(state.lease, state.connection(), Duration::from_millis(50))
     }
 
     fn admit_publications(
@@ -611,22 +610,32 @@ impl LocalSubscriptionTransport {
         mut response: LocalSubscriptionResponse,
         observer: &mut PublicationObserver<'_, '_>,
     ) -> Result<(), PublicationExchangeError> {
-        let mut budget = PublicationBudget::new(Instant::now());
+        let mut budget = ResetBudget::begin(self.now())
+            .map_err(|failure| observer.budget_error(failure))?;
         observer.begin_admission(&budget);
         let previous = state.cursor;
         let mut hydrator: Option<SnapshotHydrator> = None;
         let mut expected_page: Box<[u8]> = Box::new([]);
+        // Batch and reset-page replies omit the term, so their successful
+        // Resume carries the exact term requested above. Quiet replies carry
+        // the grant explicitly and replace this only after validation.
+        let mut granted = PUBLICATION_LEASE;
         let (root, cursor) = loop {
-            observer.check_budget(&budget)?;
+            observer.check_budget(&budget, self.now())?;
             if response.lease() != state.lease {
                 return Err(invalid("publication response changed lease identity"));
             }
             match response {
-                LocalSubscriptionResponse::Opened { cursor, .. }
-                | LocalSubscriptionResponse::Resumed { cursor, .. } => {
+                LocalSubscriptionResponse::Opened {
+                    cursor, lease_ms, ..
+                }
+                | LocalSubscriptionResponse::Resumed {
+                    cursor, lease_ms, ..
+                } => {
                     if hydrator.is_some() || cursor.as_ref() != previous.encode_control().as_ref() {
                         return Err(invalid("publication acknowledgement changed its cursor"));
                     }
+                    granted = granted_term(lease_ms)?;
                     break (Arc::clone(&state.root), previous);
                 }
                 LocalSubscriptionResponse::Batch {
@@ -678,12 +687,12 @@ impl LocalSubscriptionTransport {
                     })?;
                     let claim =
                         snapshot_page_from_bytes_with_verifier(&payload, previous, None, peer)?;
-                    let first_descriptor = budget.rows.is_none();
-                    let page_result = budget.page(claim.descriptor().row_count(), Instant::now());
+                    let first_descriptor = budget.descriptor().is_none();
+                    let page_result = budget.admit_page(claim.descriptor().row_count(), self.now());
                     if first_descriptor {
                         observer.bind_reset(&budget);
                     }
-                    page_result.map_err(|failure| observer.budget_error(&budget, failure))?;
+                    page_result.map_err(|failure| observer.budget_error(failure))?;
                     let admitted_next = claim.next_token().map_err(ClientError::Protocol)?;
                     if next.as_deref() == Some(page.as_ref()) {
                         return Err(invalid("publication reset repeated its continuation"));
@@ -726,10 +735,12 @@ impl LocalSubscriptionTransport {
                 _ => return Err(invalid("unexpected publication lifecycle response")),
             }
         };
-        observer.check_budget(&budget)?;
+        observer.check_budget(&budget, self.now())?;
         // Quiet Resume has already fenced this exact durable cursor; it
         // does not need another frame or a duplicate root publication.
         if cursor == previous {
+            state.set_term(granted);
+            state.set_connection(self.connection());
             return Ok(());
         }
         match observer.request(
@@ -745,7 +756,9 @@ impl LocalSubscriptionTransport {
             } if admitted.as_ref() == cursor.encode_control().as_ref() => {}
             _ => return Err(invalid("publication acknowledgement cursor mismatch")),
         }
-        observer.check_budget(&budget)?;
+        observer.check_budget(&budget, self.now())?;
+        state.set_term(granted);
+        state.set_connection(self.connection());
         state.cursor = cursor;
         state.root = root;
         Ok(())
@@ -755,6 +768,18 @@ impl LocalSubscriptionTransport {
 fn protocol(message: &str) -> ClientError {
     ClientError::Protocol(message.to_owned())
 }
+
+fn granted_term(lease_ms: u64) -> Result<LeaseMs, ClientError> {
+    let term = LeaseMs::new(lease_ms)
+        .ok_or_else(|| protocol("publication lease term is invalid"))?;
+    if term != PUBLICATION_LEASE {
+        return Err(protocol(
+            "publication lease term does not match the term requested",
+        ));
+    }
+    Ok(term)
+}
+
 fn invalid(message: &str) -> PublicationExchangeError {
     PublicationExchangeError::Invalid(protocol(message))
 }
@@ -763,6 +788,7 @@ fn invalid(message: &str) -> PublicationExchangeError {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::lease_contract::{MAX_RESET_ROWS, RESET_BASE_TIME, RESET_PAGE_TIME, ResetPages};
     use backend_library::{
         AuthorityScopeClaim, Basis, Coverage, CoverageCapability, CursorResetReason, Frontier,
         ProducerObservationClaims, ProducerObservationVerifier, Row, RowId, ScopeRoot,
@@ -780,6 +806,23 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::thread::JoinHandle;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn explicit_publication_grants_must_match_the_requested_wire_term() {
+        assert_eq!(granted_term(LEASE_MS), Ok(PUBLICATION_LEASE));
+        assert_eq!(
+            granted_term(LEASE_MS - 1),
+            Err(protocol("publication lease term does not match the term requested"))
+        );
+        assert_eq!(
+            granted_term(LEASE_MS + 1),
+            Err(protocol("publication lease term does not match the term requested"))
+        );
+        assert_eq!(
+            granted_term(0),
+            Err(protocol("publication lease term is invalid"))
+        );
+    }
 
     struct FixtureVerifier;
     impl ProducerObservationVerifier for FixtureVerifier {
@@ -843,6 +886,20 @@ mod tests {
             .expect("server bound");
         let join = std::thread::spawn(move || serve(&mut server));
         (LocalSubscriptionTransport::from_stream(client), join)
+    }
+    fn lease_on(
+        transport: &LocalSubscriptionTransport,
+        lease: LocalSubscriptionId,
+        root: Arc<ViewRoot>,
+        cursor: Cursor,
+    ) -> PublicationLease {
+        PublicationLease {
+            lease,
+            cursor,
+            root,
+            term: Mutex::new(PUBLICATION_LEASE),
+            held_on: Mutex::new(transport.connection()),
+        }
     }
     fn authenticated_pair(
         serve: impl FnOnce(&mut UnixStream) + Send + 'static,
@@ -1043,6 +1100,7 @@ mod tests {
         pages: Vec<EncodedSnapshotPage>,
         corrupt_page: Option<usize>,
         reject_ack_cursor: bool,
+        close_before_ack: bool,
         acknowledged: Option<std::sync::mpsc::Sender<u64>>,
     ) {
         let (request_id, operation) = request(stream);
@@ -1111,6 +1169,10 @@ mod tests {
             if corrupt_page == Some(index) {
                 return;
             }
+        }
+
+        if close_before_ack {
+            return;
         }
 
         let (ack_id, operation) = request(stream);
@@ -1335,7 +1397,7 @@ mod tests {
             assert_eq!(budget.kind(), PublicationBudgetKind::Ordinary);
             assert_eq!(
                 budget.deadline(),
-                recovery_deadline.min(budget.started() + RESET_TIME)
+                recovery_deadline.min(budget.started() + RESET_BASE_TIME)
             );
             assert_eq!(state.cursor(), cursor);
             drop(control);
@@ -1357,6 +1419,7 @@ mod tests {
                 lease,
                 pages,
                 None,
+                false,
                 false,
                 Some(ack_sent),
             );
@@ -1403,7 +1466,7 @@ mod tests {
             "page and Ack ticks observe reset budget"
         );
         let fixed = reset_steps[0].budget;
-        assert_eq!(fixed.allowance(), RESET_TIME + PAGE_TIME * 3);
+        assert_eq!(fixed.allowance(), RESET_BASE_TIME + RESET_PAGE_TIME * 3);
         assert!(fixed.deadline() > recovery_deadline);
         assert!(reset_steps.iter().all(|step| {
             step.budget.started() == fixed.started()
@@ -1440,11 +1503,6 @@ mod tests {
         for (corrupt_page, reject_ack_cursor) in [(Some(1), false), (None, true)] {
             let (initial, _target, previous, target_cursor, pages) = multi_page_reset_fixture();
             let lease = LocalSubscriptionId::from_bytes([12; 16]);
-            let mut state = PublicationLease {
-                lease,
-                cursor: previous,
-                root: Arc::clone(&initial),
-            };
             let (mut transport, path, owner) = authenticated_pair(move |stream| {
                 serve_snapshot_reset(
                     stream,
@@ -1454,9 +1512,11 @@ mod tests {
                     pages,
                     corrupt_page,
                     reject_ack_cursor,
+                    false,
                     None,
                 );
             });
+            let mut state = lease_on(&transport, lease, Arc::clone(&initial), previous);
             let recovery_deadline = Instant::now() + Duration::from_secs(30);
             let cancelled = || false;
             let mut tick = |_| PublicationObservationDecision::Continue;
@@ -1476,15 +1536,66 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_owner_prevents_the_reset_ack_from_being_written_or_admitted() {
+        let (initial, _target, previous, target_cursor, pages) = multi_page_reset_fixture();
+        let lease = LocalSubscriptionId::from_bytes([13; 16]);
+        let (mut transport, path, owner) = authenticated_pair(move |stream| {
+            serve_snapshot_reset(
+                stream,
+                previous,
+                target_cursor,
+                lease,
+                pages,
+                None,
+                false,
+                true,
+                None,
+            );
+        });
+        let mut state = lease_on(&transport, lease, Arc::clone(&initial), previous);
+        // Resume, two continuation pages and then Ack. The owner closes after
+        // the final page; cancellation at Ack's first byte boundary must not
+        // send or replay that acknowledgement on a replacement connection.
+        let cancelled = || false;
+        let mut tick = |progress: PublicationObservationProgress| {
+            if progress.exchange.request_id == 4 && progress.exchange.write_offset == 0 {
+                PublicationObservationDecision::Cancel
+            } else {
+                PublicationObservationDecision::Continue
+            }
+        };
+        let mut control = ObservedPublicationControl::new(
+            Instant::now() + Duration::from_secs(30),
+            &cancelled,
+            &mut tick,
+        );
+        let error = transport
+            .resume_publications_observed(&mut state, &mut control)
+            .expect_err("the closed owner never admits Ack");
+        assert!(matches!(
+            error,
+            PublicationExchangeError::Exchange(LocalControlExchangeError {
+                failure: backend_replication::LocalControlExchangeFailure::Cancelled,
+                progress: LocalControlExchangeProgress {
+                    request_id: 4,
+                    write_offset: 0,
+                    ..
+                },
+            })
+        ));
+        assert_eq!(state.cursor(), previous);
+        assert_eq!(state.root().root(), initial.root());
+        drop(control);
+        drop(transport);
+        owner.join().expect("authenticated owner");
+        std::fs::remove_file(path).expect("remove test socket");
+    }
+
+    #[test]
     fn observed_resume_keeps_server_rejection_distinct_from_local_invalid_reply() {
         let root = root();
         let cursor = Cursor::for_view_root_at(&root, 0);
         let lease = LocalSubscriptionId::from_bytes([3; 16]);
-        let mut state = PublicationLease {
-            lease,
-            cursor,
-            root: Arc::clone(&root),
-        };
         let (mut transport, owner) = pair(move |stream| {
             let (request_id, operation) = request(stream);
             assert!(matches!(
@@ -1499,6 +1610,7 @@ mod tests {
                 },
             );
         });
+        let mut state = lease_on(&transport, lease, Arc::clone(&root), cursor);
         let cancelled = || false;
         let mut tick = |_| PublicationObservationDecision::Continue;
         let mut control = ObservedPublicationControl::new(
@@ -1612,11 +1724,6 @@ mod tests {
         let cursor = Cursor::for_view_root_at(&root, 0);
         for message in ["subscription lease expired", "unknown subscription lease"] {
             let lease = LocalSubscriptionId::from_bytes([3; 16]);
-            let mut state = PublicationLease {
-                lease,
-                root: Arc::clone(&root),
-                cursor,
-            };
             let (mut transport, owner) = pair(move |stream| {
                 let (request_id, _) = request(stream);
                 reply(
@@ -1627,6 +1734,7 @@ mod tests {
                     },
                 );
             });
+            let mut state = lease_on(&transport, lease, Arc::clone(&root), cursor);
             assert!(
                 transport
                     .resume_publications(&mut state, &|| false)
@@ -1696,12 +1804,8 @@ mod tests {
             },
         ];
         for response in responses {
-            let mut state = PublicationLease {
-                lease,
-                cursor,
-                root: Arc::clone(&root),
-            };
             let (mut transport, owner) = pair(|_| {});
+            let mut state = lease_on(&transport, lease, Arc::clone(&root), cursor);
             let cancelled = || false;
             let mut observer = PublicationObserver::Legacy(&cancelled);
             assert!(
@@ -1718,26 +1822,28 @@ mod tests {
     #[test]
     fn reset_budget_allows_delayed_progress_but_never_moves_its_deadline() {
         let started = Instant::now();
-        let mut budget = PublicationBudget::new(started);
-        budget.page(256, started).expect("descriptor");
-        let fixed = budget.deadline;
+        let mut budget = ResetBudget::begin(started).expect("base deadline");
+        budget.admit_page(256, started).expect("descriptor");
+        let fixed = budget.deadline();
         // More than the negotiated 10s in aggregate, but each page's
         // socket waits can still remain within the caller's 1s I/O limit.
         for elapsed in [5, 10, 15] {
             budget
-                .page(256, started + Duration::from_secs(elapsed))
+                .admit_page(256, started + Duration::from_secs(elapsed))
                 .expect("bounded delayed progress");
-            assert_eq!(budget.deadline, fixed);
+            assert_eq!(budget.deadline(), fixed);
         }
         assert!(budget.check(started + Duration::from_secs(18)).is_err());
-        assert!(budget.page(257, started).is_err());
-        let mut oversized = PublicationBudget::new(started);
-        assert!(oversized.page(MAX_RESET_ROWS + 1, started).is_err());
-        let mut excessive = PublicationBudget::new(started);
-        for _ in 0..MAX_RESET_PAGES {
-            excessive.page(MAX_RESET_ROWS, started).expect("page cap");
+        assert!(budget.admit_page(257, started).is_err());
+        let mut oversized = ResetBudget::begin(started).expect("base deadline");
+        assert!(oversized.admit_page(MAX_RESET_ROWS + 1, started).is_err());
+        let mut excessive = ResetBudget::begin(started).expect("base deadline");
+        for _ in 0..ResetPages::LIMIT.get() {
+            excessive
+                .admit_page(MAX_RESET_ROWS, started)
+                .expect("page cap");
         }
-        assert!(excessive.page(MAX_RESET_ROWS, started).is_err());
+        assert!(excessive.admit_page(MAX_RESET_ROWS, started).is_err());
     }
 
     #[test]
@@ -1745,11 +1851,6 @@ mod tests {
         let root = root();
         let cursor = Cursor::for_view_root_at(&root, 0);
         let lease = LocalSubscriptionId::from_bytes([3; 16]);
-        let state = PublicationLease {
-            lease,
-            cursor,
-            root,
-        };
         let (mut transport, owner) = pair(move |stream| {
             let (request_id, operation) = request(stream);
             assert!(
@@ -1763,6 +1864,7 @@ mod tests {
                 }),
             );
         });
+        let state = lease_on(&transport, lease, Arc::clone(&root), cursor);
         transport
             .cancel_publications_current(&state)
             .expect("terminal cancel");
@@ -1770,9 +1872,124 @@ mod tests {
         // A socket already interrupted by cancellation fails promptly; it
         // must never dial an endpoint to perform terminal cleanup.
         let (mut transport, owner) = pair(|_| {});
+        let state = lease_on(&transport, lease, root, cursor);
         transport.interrupt_handle().expect("socket").interrupt();
         assert!(transport.cancel_publications_current(&state).is_err());
         owner.join().expect("owner");
+    }
+
+    #[test]
+    fn terminal_cancel_releases_the_transport_even_when_the_owner_does_not_ack() {
+        let root = root();
+        let cursor = Cursor::for_view_root_at(&root, 0);
+        let lease = LocalSubscriptionId::from_bytes([31; 16]);
+        let (mut transport, owner) = pair(move |stream| {
+            let (request_id, operation) = request(stream);
+            assert!(matches!(
+                operation,
+                LocalSubscriptionOperation::Cancel { lease: sent } if sent == lease
+            ));
+            let _ = request_id;
+            // The owner closes without an acknowledgement.
+        });
+        let state = lease_on(&transport, lease, root, cursor);
+        assert!(transport
+            .cancel_publications_current(&state)
+            .is_err());
+        assert!(matches!(
+            transport.renew_lease(lease, cursor, CREDIT, LEASE_MS),
+            Err(ClientError::Io(message))
+                if message.contains("released by a terminal lease cancellation")
+        ));
+        owner.join().expect("owner");
+    }
+
+    #[test]
+    fn a_lease_from_another_socket_is_never_cancelled_here() {
+        let root = root();
+        let cursor = Cursor::for_view_root_at(&root, 0);
+        let lease = LocalSubscriptionId::from_bytes([32; 16]);
+        let (mut here, here_owner) = pair(|stream| {
+            assert!(read_frame(stream, crate::limits()).is_err());
+        });
+        let (elsewhere, elsewhere_owner) = pair(|_| {});
+        let state = lease_on(&elsewhere, lease, root, cursor);
+        assert_eq!(
+            here.cancel_publications_current(&state),
+            Err(protocol("publication lease is not held on this socket"))
+        );
+        drop(here);
+        here_owner.join().expect("no cancel crossed this socket");
+        drop(elsewhere);
+        elsewhere_owner.join().expect("no work on the lease socket");
+    }
+
+    #[test]
+    fn reusing_the_same_endpoint_after_rotation_does_not_reuse_a_socket_identity() {
+        let path = std::path::PathBuf::from(format!(
+            "/tmp/nudox-pub-rotate-{}-{}.sock",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let listener = std::os::unix::net::UnixListener::bind(&path)
+            .expect("bind reused endpoint path");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("restrict reused endpoint path");
+        let root = root();
+        let cursor = Cursor::for_view_root_at(&root, 0);
+        let lease = LocalSubscriptionId::from_bytes([33; 16]);
+        let server = std::thread::spawn(move || {
+            let (_first, _) = listener.accept().expect("first endpoint connection");
+            let (mut replacement, _) = listener.accept().expect("replacement connection");
+            replacement
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("bounded replacement read");
+            let (request_id, operation) = request(&mut replacement);
+            let LocalSubscriptionOperation::Renew {
+                lease: renewed,
+                cursor: renewed_cursor,
+                ..
+            } = operation
+            else {
+                panic!("rotation must carry the explicit renew request");
+            };
+            assert_eq!(renewed, lease);
+            assert_eq!(renewed_cursor.as_ref(), cursor.encode_control().as_ref());
+            reply(
+                &mut replacement,
+                LocalControlResponse::Subscription(LocalSubscriptionResponse::Renewed {
+                    request_id,
+                    lease,
+                    cursor: cursor.encode_control(),
+                    credit: CREDIT,
+                    lease_ms: LEASE_MS,
+                }),
+            );
+            assert!(read_frame(&mut replacement, crate::limits()).is_err());
+        });
+        let mut transport = LocalSubscriptionTransport::connect_with_timeouts(
+            &path,
+            Duration::from_secs(1),
+            Duration::from_millis(200),
+        )
+        .expect("connect to endpoint");
+        let state = lease_on(&transport, lease, root, cursor);
+        let original = state.connection();
+        transport.exhaust_connection_budget_for_test();
+        transport
+            .renew_lease(lease, cursor, CREDIT, LEASE_MS)
+            .expect("the new socket can serve an ordinary renewal");
+        assert_ne!(transport.connection(), original);
+        assert_eq!(
+            transport.cancel_publications_current(&state),
+            Err(protocol("publication lease is not held on this socket"))
+        );
+        drop(transport);
+        server.join().expect("replacement owner");
+        std::fs::remove_file(path).expect("remove endpoint path");
     }
 
     #[test]
