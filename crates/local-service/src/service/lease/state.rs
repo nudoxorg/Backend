@@ -19,6 +19,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Instant;
 
+const _: () = assert!(MAX_SNAPSHOT_PAGE_ROWS > 0);
 const _: () = assert!(MAX_SNAPSHOT_PAGE_ROWS <= MAX_SUBSCRIPTION_EVENTS);
 const ONE_MILLISECOND: LeaseMs = LeaseMs::constant(1);
 
@@ -41,10 +42,11 @@ impl EventCredit {
         self.0.get().checked_add(other.0.get()).and_then(Self::new)
     }
 
-    /// A page's credit becomes the lease's retained credit. The compile-time
-    /// assertion above guarantees it is within the event bound.
+    /// A page's credit becomes the lease's retained credit. The shared
+    /// nonzero representation avoids a runtime fallback; compile-time guards
+    /// prove the page bound fits the event-credit range.
     fn from_page(page: PageCredit) -> Self {
-        Self::new(page.get()).unwrap_or(Self(NonZeroUsize::MIN))
+        Self(page.0)
     }
 }
 
