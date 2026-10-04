@@ -317,7 +317,7 @@ impl Render for Titlebar {
             self.targets.push(Target { id: id.into(), label: "Add package".into(), action: target_action, peek: None, source: None });
             right = right.child(self.targets.track(
                 id,
-                facet::controls::icon_button(id, Icon::Plus, "Add package", &measure)
+                facet::controls::icon_button(id, Icon::Package, "Add package", &measure)
                     .on_click(move |window, cx| act(window, cx)),
             ));
         }

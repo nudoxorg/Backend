@@ -22,7 +22,7 @@ use crate::shell::reader::Reader;
 use facet::controls::{Glyph, KbdVoice, button, kbd};
 use facet::data::{Door, Stage, StageState, gem_progress, seam};
 use facet::overlay::tooltip::{TipText, content};
-use facet::icons::{Icon, Kind};
+use facet::icons::Kind;
 use facet::tokens::fluid::EMPTY_GEM;
 use facet::tokens::ty;
 use facet::Space;
@@ -342,7 +342,7 @@ fn find_packages(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> AnyElement {
     });
     let focus = ctx.native_handle(&SharedString::from("find-packages"), cx);
     let mut control = button("find-packages", "Add package", &ctx.measure)
-        .ghost().icon(Icon::Plus).on_click(move |window, cx| act(window, cx));
+        .ghost().glyph(Glyph::Plus).on_click(move |window, cx| act(window, cx));
     if let Some(focus) = focus { control = control.focus_handle(focus); }
     ctx.targets.track("find-packages", div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control)).into_any_element()
 }

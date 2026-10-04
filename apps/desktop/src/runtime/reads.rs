@@ -1628,7 +1628,7 @@ fn compose_package(
         // A registry-shaped reply for this local route may describe a
         // same-name published release. Only the path's own manifest can
         // supply this project's name, version, and license.
-        .and_then(|project| loader.load_with_cancel(&project, &|| context.cancel.is_cancelled()));
+        .and_then(|project| loader.load_with_cancel(&project, context.cancel.flag()));
     check(context.cancel)?;
     // Every part failing the same way means the package itself is unknown.
     if let (Err(error), None) = (&records, &local)
