@@ -65,5 +65,6 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version; version 13 binds shape facts to the reply certificate.
-pub const DTO_VERSION: u16 = 13;
+/// Current transport DTO version; version 14 requires explicit callable
+/// carrier capture and preserves stable compiler declaration identities.
+pub const DTO_VERSION: u16 = 14;
