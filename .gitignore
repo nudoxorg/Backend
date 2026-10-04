@@ -4,7 +4,8 @@
 
 /.local/
 /.direnv/
-/build/prelude-local/
+# Repository build tooling writes its generated trees here; tooling source lives in .config/.
+/build/
 **/.backend/
 /.DS_Store
 /result
