@@ -264,8 +264,9 @@ fn registry_source(cache: &CargoCache, stem: &str) -> Result<PathBuf, String> {
 /// not per process. Ownership is one lock on `data`, so a second process
 /// cannot own it; with the same endpoint it reaches the running owner
 /// (`DesktopHost::start_with_paths` attaches to a live one) instead of
-/// dialling a socket nobody listens on. Under `/tmp`: a socket path under
-/// the repository exceeds `sockaddr_un`.
+/// dialling a socket nobody listens on. In the socket directory
+/// ([`socket_directory`]): a socket path under the repository exceeds
+/// `sockaddr_un`.
 fn endpoint_for(data: &Path) -> Result<PathBuf, String> {
     use sha2::Digest as _;
     let data = data
@@ -273,7 +274,18 @@ fn endpoint_for(data: &Path) -> Result<PathBuf, String> {
         .map_err(|error| format!("{}: {error}", data.display()))?;
     let digest = sha2::Sha256::digest(data.as_os_str().as_encoded_bytes());
     let hex = digest.iter().take(6).map(|byte| format!("{byte:02x}")).collect::<String>();
-    Ok(PathBuf::from(format!("/tmp/nx-harness-{hex}.sock")))
+    Ok(socket_directory().join(format!("nx-harness-{hex}.sock")))
+}
+
+/// Where harness endpoints live: `/tmp` on Unix (short enough for
+/// `sockaddr_un`), this user's temporary directory on Windows, where `/tmp`
+/// is not a directory and AF_UNIX allows 108 bytes.
+fn socket_directory() -> PathBuf {
+    #[cfg(unix)]
+    let directory = PathBuf::from("/tmp");
+    #[cfg(not(unix))]
+    let directory = std::env::temp_dir();
+    directory
 }
 
 fn utf8(path: &Path) -> Result<&str, String> {
@@ -683,7 +695,9 @@ fn state_refused(error: &crate::HostError) -> bool {
 /// any that is group- or world-accessible (`crates/platform/durable.rs`), so
 /// under a shell's usual 022 the first boot succeeds and every later boot of
 /// the same state directory is refused. Files this process writes afterwards
-/// (captures included) are 0600.
+/// (captures included) are 0600. Windows has no umask: the owner gives every
+/// directory it creates the owner-only DACL itself, and [`private_dir`] does
+/// the same for the harness's.
 fn private_umask() {
     #[cfg(unix)]
     rustix::process::umask(rustix::fs::Mode::from_bits_truncate(0o077));
@@ -691,16 +705,28 @@ fn private_umask() {
 
 /// A directory only this user can enter: the owner refuses anything looser
 /// (`crates/platform/durable.rs`), and `create_dir_all` alone honours the
-/// umask (0755).
+/// umask (0755) on Unix and inherits the parent's ACL on Windows.
 fn private_dir(path: &Path) -> std::io::Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt as _;
-        builder.mode(0o700);
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(path)
     }
-    builder.create(path)
+    #[cfg(windows)]
+    {
+        // Every directory from the first missing one down to `path` is
+        // created owner-only beneath a parent this user owns (an ordinary
+        // directory first, then each private one); an existing `path` must
+        // already be owner-only. Ancestors that exist are never changed.
+        let missing = path.ancestors().take_while(|ancestor| !ancestor.exists()).collect::<Vec<_>>();
+        if missing.is_empty() {
+            return backend_platform::durable::ensure_private_child_directory(path);
+        }
+        missing
+            .into_iter()
+            .rev()
+            .try_for_each(backend_platform::durable::ensure_private_child_directory)
+    }
 }
 
 /// The clean state directory a run falls back to when `configured` is
@@ -2059,6 +2085,35 @@ mod tests {
         }
         std::fs::remove_dir_all(&root).expect("remove the test's own scratch");
         // The fallback lives beside the shared index, named for the refused one.
+        assert_eq!(fallback_state(&repo(), &repo().join(".local/harness/desktop")), repo().join(".local/harness/fallback-desktop"));
+    }
+
+    /// The Windows counterpart: the owner opens its state through a walk that
+    /// refuses any directory without the owner-only DACL, so a directory the
+    /// harness makes must carry it, and an existing one without it is refused
+    /// (which sends the boot to a clean fallback) rather than silently used.
+    #[cfg(windows)]
+    #[test]
+    fn a_state_dir_the_harness_creates_is_one_the_owner_accepts() {
+        use super::{fallback_state, private_dir, repo};
+        use backend_platform::durable::ensure_private_directory;
+
+        let root = std::env::temp_dir().join(format!("nudox-state-dir-{}", std::process::id()));
+        let data = root.join("state").join("data");
+        private_dir(&data).expect("create private dirs");
+        // The owner's own check of a state directory beneath a private parent.
+        ensure_private_directory(&root.join("state")).expect("the owner accepts the state directory");
+        ensure_private_directory(&data).expect("the owner accepts the data directory");
+        // Again, over the existing tree: verified, not recreated.
+        private_dir(&data).expect("an existing private tree is accepted");
+        // A directory made the ordinary way inherits the parent's ACL.
+        let plain = root.join("plain");
+        std::fs::create_dir(&plain).expect("an ordinary directory");
+        let refused = private_dir(&plain);
+        let owner = ensure_private_directory(&plain);
+        std::fs::remove_dir_all(&root).expect("remove the test's own scratch");
+        assert!(refused.is_err(), "an existing directory without the owner-only DACL was accepted");
+        assert!(owner.is_err(), "the oracle no longer tells a private directory from an ordinary one");
         assert_eq!(fallback_state(&repo(), &repo().join(".local/harness/desktop")), repo().join(".local/harness/fallback-desktop"));
     }
 

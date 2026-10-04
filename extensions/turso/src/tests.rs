@@ -13,7 +13,7 @@ use backend_library::{
 };
 use backend_library::{
     CheckedPackageGraphFacts, DependencyAuthority, DependencyEvidence, DependencyFacts,
-    DependencyScope, PackageDependencyRecord, PackageDependencySourceFacts,
+    DependencyScope, MAX_PACKAGE_GRAPH_ROWS, PackageDependencyRecord, PackageDependencySourceFacts,
     PackageDependencyTarget, PackageGraphSourceAuthority, PackageGraphSourceKey, PackageReference,
     ProductText, RegistryAuthorityId, RegistryEcosystem, package_dependency_facts_witness,
 };
@@ -46,7 +46,7 @@ impl ProducerObservationVerifier for ExactObservation {
     }
 }
 
-fn capability(object: backend_library::SemanticObject) -> CoverageCapability {
+pub(crate) fn capability(object: backend_library::SemanticObject) -> CoverageCapability {
     let declaration = AuthorityScopeClaim::from_object_version(object);
     let raw = backend_library::UntrustedProducerObservation::new(
         [7; 32],
@@ -62,7 +62,7 @@ fn capability(object: backend_library::SemanticObject) -> CoverageCapability {
         .unwrap_or_else(|error| panic!("capability: {error}"))
 }
 
-fn root(rows: Vec<Row>) -> ViewRoot {
+pub(crate) fn root(rows: Vec<Row>) -> ViewRoot {
     let source = view_state_root(&[]);
     let object = object_version(b"projection-test");
     let basis = Basis::with_context(source, object, branch_key("main"), log_key("library"), 1);
@@ -77,6 +77,25 @@ fn root(rows: Vec<Row>) -> ViewRoot {
     .unwrap_or_else(|error| panic!("root: {error:?}"))
 }
 
+pub(crate) fn replacement_view() -> ViewRoot {
+    view_with_label("generation-target")
+}
+
+pub(crate) fn view_with_label(label: &str) -> ViewRoot {
+    let base = fallback_seed_view();
+    let row = Row::new(
+        RowId::Package(package_key(label)),
+        base.basis(),
+        label,
+    );
+    let prepared = base
+        .prepare(ViewDelta::Upsert { row }, capability(base.basis().object))
+        .unwrap_or_else(|error| panic!("prepare replacement view: {error:?}"));
+    base.commit(prepared)
+        .unwrap_or_else(|error| panic!("commit replacement view: {error:?}"))
+        .0
+}
+
 fn path() -> PathBuf {
     let serial = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
@@ -85,7 +104,96 @@ fn path() -> PathBuf {
     ))
 }
 
+pub(crate) fn fallback_seed_view() -> ViewRoot {
+    let source = view_state_root(&[]);
+    let object = object_version(b"projection-test-open-seed");
+    let basis = Basis::with_context(
+        source,
+        object,
+        branch_key("projection-seed"),
+        log_key("projection-seed"),
+        1,
+    );
+    ViewRoot::new_checked(
+        view_key(b"projection-test-open-seed"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        Vec::new(),
+        vec![Coverage::Complete],
+        capability(object),
+    )
+    .unwrap_or_else(|error| panic!("fallback seed root: {error:?}"))
+}
+
+pub(crate) async fn open_test(path: &std::path::Path) -> Result<TursoProjection, ProjectionError> {
+    match TursoProjection::open(path).await {
+        Err(ProjectionError::NeedsSeed) => {
+            let view = fallback_seed_view();
+            TursoProjection::seed_if_empty(
+                path,
+                ProjectionSeed::new(&view, ProjectionGraphSeed::Unavailable),
+            )
+            .await
+        }
+        result => result,
+    }
+}
+
+impl TursoProjection {
+    async fn synchronize_from_current_for_test(
+        &mut self,
+        view: &ViewRoot,
+    ) -> Result<ProjectionUpdate, ProjectionError> {
+        let revision = self.revision().await?;
+        self.synchronize_from(revision, view).await
+    }
+
+    async fn synchronize_package_graph_current_for_test(
+        &mut self,
+        root: backend_library::ViewStateRoot,
+        facts: &[PackageDependencySourceFacts],
+    ) -> Result<ProjectionUpdate, ProjectionError> {
+        let revision = self.package_graph_revision().await?;
+        self.synchronize_package_graph_from(revision, root, facts)
+            .await
+    }
+
+    async fn synchronize_checked_package_graph_current_for_test(
+        &mut self,
+        root: backend_library::ViewStateRoot,
+        facts: &CheckedPackageGraphFacts,
+    ) -> Result<ProjectionUpdate, ProjectionError> {
+        let revision = self.package_graph_revision().await?;
+        self.synchronize_checked_package_graph_from(revision, root, facts)
+            .await
+    }
+}
+
+pub(crate) async fn synchronize_graph_from_current_for_test(
+    projection: &mut TursoProjection,
+    root: backend_library::ViewStateRoot,
+    facts: &[PackageDependencySourceFacts],
+) -> Result<ProjectionUpdate, ProjectionError> {
+    projection
+        .synchronize_package_graph_current_for_test(root, facts)
+        .await
+}
+
+pub(crate) async fn synchronize_checked_graph_from_current_for_test(
+    projection: &mut TursoProjection,
+    root: backend_library::ViewStateRoot,
+    facts: &CheckedPackageGraphFacts,
+) -> Result<ProjectionUpdate, ProjectionError> {
+    projection
+        .synchronize_checked_package_graph_current_for_test(root, facts)
+        .await
+}
+
 fn remove_database(path: &std::path::Path) {
+    if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+        let namespace = path.with_file_name(format!("{name}.namespace-v1"));
+        let _ = std::fs::remove_dir_all(namespace);
+    }
     for suffix in ["", "-wal", "-shm", "-tshm"] {
         let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
         let _ = std::fs::remove_file(sidecar);
@@ -136,6 +244,188 @@ async fn assert_projection_integrity_without_fts(projection: &TursoProjection) {
 }
 
 #[test]
+fn fresh_open_requires_a_complete_seed_and_cold_reopen_uses_the_selected_generation() {
+    futures_executor::block_on(async {
+        let path = path();
+        let namespace_path = path.with_file_name(format!(
+            "{}.namespace-v1",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .expect("path name")
+        ));
+        assert!(matches!(
+            TursoProjection::open(&path).await,
+            Err(ProjectionError::NeedsSeed)
+        ));
+        assert!(
+            !namespace_path.exists(),
+            "selected-only open must not create namespace state"
+        );
+
+        let view = replacement_view();
+        let facts = CheckedPackageGraphFacts::new(Vec::new()).expect("checked empty graph");
+        let seed = ProjectionSeed::new(&view, ProjectionGraphSeed::Checked(&facts));
+        let seeded = TursoProjection::seed_if_empty(&path, seed)
+            .await
+            .expect("seed generation");
+        let generation = seeded.generation;
+        let selected = seeded
+            .namespace
+            .selected()
+            .expect("selector")
+            .expect("selected");
+        assert_eq!(selected.generation, generation);
+        assert_eq!(selected.seed_view_root, *view.root().as_bytes());
+        assert_eq!(selected.seed_view_version, *view.version().as_bytes());
+        assert_eq!(selected.graph_state, 1);
+        assert_eq!(selected.graph_witness, facts.witness());
+        assert_eq!(
+            seeded
+                .namespace
+                .generation_count_for_test()
+                .expect("bounded generation count"),
+            1
+        );
+        let unrelated_seed = fallback_seed_view();
+        assert!(matches!(
+            TursoProjection::seed_if_empty(
+                &path,
+                ProjectionSeed::new(&unrelated_seed, ProjectionGraphSeed::Unavailable),
+            )
+            .await,
+            Err(ProjectionError::AlreadySeeded)
+        ));
+        assert_eq!(
+            seeded
+                .namespace
+                .selected()
+                .expect("seed selection unchanged"),
+            Some(selected),
+            "an existing generation cannot be mistaken for an accepted replacement seed"
+        );
+        let rooted = seeded
+            .lookup_label("generation-target", 4)
+            .await
+            .expect("seeded row");
+        assert_eq!(rooted.root, *view.root().as_bytes());
+        drop(seeded);
+
+        let reopened = TursoProjection::open(&path)
+            .await
+            .expect("selected cold reopen");
+        assert_eq!(reopened.generation, generation);
+        assert_eq!(
+            reopened
+                .lookup_label("generation-target", 4)
+                .await
+                .expect("reopened row")
+                .root,
+            *view.root().as_bytes()
+        );
+        drop(reopened);
+        remove_database(&path);
+    });
+}
+
+#[test]
+fn unsupported_selected_schema_is_refused_without_replacing_its_generation() {
+    futures_executor::block_on(async {
+        let path = path();
+        let old_seed_view = fallback_seed_view();
+        let old = TursoProjection::seed_if_empty(
+            &path,
+            ProjectionSeed::new(&old_seed_view, ProjectionGraphSeed::Unavailable),
+        )
+        .await
+        .expect("initial generation");
+        old.connection
+            .execute(
+                "UPDATE backend_projection_meta SET schema_version=?1 WHERE singleton=1",
+                [schema::SCHEMA_VERSION - 1],
+            )
+            .await
+            .expect("mark selected projection old");
+        let namespace = super::projection_namespace::ProjectionNamespace::open_existing(&path)
+            .expect("namespace");
+        namespace
+            .set_selected_schema_for_test(schema::SCHEMA_VERSION - 1)
+            .expect("mark selector old");
+        let selected_before = namespace.selected().expect("old selector");
+        let generations_before = namespace
+            .generation_count_for_test()
+            .expect("generation inventory before refusal");
+
+        let new_seed_view = replacement_view();
+        assert!(matches!(
+            TursoProjection::seed_if_empty(
+                &path,
+                ProjectionSeed::new(&new_seed_view, ProjectionGraphSeed::Unavailable),
+            )
+            .await,
+            Err(ProjectionError::AlreadySeeded)
+        ));
+        assert!(matches!(
+            TursoProjection::open(&path).await,
+            Err(ProjectionError::Schema { found }) if found == schema::SCHEMA_VERSION - 1
+        ));
+        assert_eq!(
+            namespace.selected().expect("selector remains old"),
+            selected_before,
+            "a seed cannot implicitly replace an unsupported selected generation"
+        );
+        assert_eq!(
+            namespace
+                .generation_count_for_test()
+                .expect("generation inventory after refusal"),
+            generations_before,
+            "refusal does not leave an unselected replacement stage"
+        );
+        assert!(matches!(
+            old.lookup_label("generation-target", 4).await,
+            Err(ProjectionError::SupersededGeneration)
+        ));
+        drop(old);
+        assert!(matches!(
+            TursoProjection::open(&path).await,
+            Err(ProjectionError::Schema { found }) if found == schema::SCHEMA_VERSION - 1
+        ));
+        remove_database(&path);
+    });
+}
+
+#[test]
+fn missing_selected_database_is_refused_without_creating_an_empty_replacement() {
+    futures_executor::block_on(async {
+        let path = path();
+        let seed_view = fallback_seed_view();
+        let seeded = TursoProjection::seed_if_empty(
+            &path,
+            ProjectionSeed::new(&seed_view, ProjectionGraphSeed::Unavailable),
+        )
+        .await
+        .expect("seed initial selected generation");
+        let selected_database = seeded
+            .namespace
+            .database_path(seeded.generation)
+            .expect("selected database path");
+        drop(seeded);
+
+        std::fs::remove_file(&selected_database).expect("simulate missing selected database");
+        assert!(matches!(
+            TursoProjection::open(&path).await,
+            Err(ProjectionError::CorruptNamespace {
+                field: "missing_projection_database"
+            })
+        ));
+        assert!(
+            !selected_database.exists(),
+            "selected-only open must not create a writable empty database"
+        );
+        remove_database(&path);
+    });
+}
+
+#[test]
 fn exact_root_reuses_database_and_hot_delta_changes_one_row() {
     futures_executor::block_on(async {
         let path = path();
@@ -150,19 +440,19 @@ fn exact_root_reuses_database_and_hot_delta_changes_one_row() {
             .commit(prepared)
             .unwrap_or_else(|error| panic!("commit: {error:?}"));
 
-        let mut projection = TursoProjection::open(&path)
+        let mut projection = open_test(&path)
             .await
             .unwrap_or_else(|error| panic!("open: {error}"));
         assert_eq!(
             projection
-                .synchronize(&empty)
+                .synchronize_from_current_for_test(&empty)
                 .await
                 .unwrap_or_else(|error| panic!("initial synchronize: {error}")),
             ProjectionUpdate::Rebuilt { rows: 0 }
         );
         assert_eq!(
             projection
-                .synchronize(&empty)
+                .synchronize_from_current_for_test(&empty)
                 .await
                 .unwrap_or_else(|error| panic!("reuse synchronize: {error}")),
             ProjectionUpdate::Reused { rows: 0 }
@@ -190,6 +480,13 @@ fn exact_root_reuses_database_and_hot_delta_changes_one_row() {
             .unwrap_or_else(|error| panic!("lookup label: {error}"));
         assert_eq!(found.root.as_ref(), next.root().as_bytes());
         assert_eq!(found.ids.as_ref(), &[RowId::Package(package).stable_key()]);
+        assert!(matches!(
+            projection
+                .lookup_label("workspace", MAX_LABEL_QUERY_ROWS + 1)
+                .await,
+            Err(ProjectionError::ReadLimitExceeded { maximum })
+                if maximum == MAX_LABEL_QUERY_ROWS as usize
+        ));
         assert_projection_integrity_without_fts(&projection).await;
         let prefix = projection
             .lookup_label("work", 10)
@@ -198,22 +495,531 @@ fn exact_root_reuses_database_and_hot_delta_changes_one_row() {
         assert!(prefix.ids.is_empty(), "labels are matched exactly");
         drop(projection);
 
-        let mut reopened = TursoProjection::open(&path)
+        let mut reopened = open_test(&path)
             .await
             .unwrap_or_else(|error| panic!("reopen: {error}"));
         assert_eq!(
             reopened
-                .synchronize(&next)
+                .synchronize_from_current_for_test(&next)
                 .await
                 .unwrap_or_else(|error| panic!("reopen synchronize: {error}")),
             ProjectionUpdate::Reused { rows: 1 }
         );
-        std::fs::remove_file(&path).unwrap_or_else(|error| panic!("remove projection: {error}"));
+        drop(reopened);
+        remove_database(&path);
     });
 }
 
 #[test]
-fn an_older_schema_is_rebuilt_and_a_newer_schema_is_refused() {
+fn delayed_complete_view_cannot_roll_back_a_newer_projection_revision() {
+    futures_executor::block_on(async {
+        let path = path();
+        let old_view = fallback_seed_view();
+        let new_view = replacement_view();
+        let seed = TursoProjection::seed_if_empty(
+            &path,
+            ProjectionSeed::new(&old_view, ProjectionGraphSeed::Unavailable),
+        )
+        .await
+        .expect("seed initial selected root");
+        drop(seed);
+
+        let mut delayed = TursoProjection::open(&path)
+            .await
+            .expect("open delayed writer");
+        let delayed_revision = delayed
+            .revision()
+            .await
+            .expect("capture before source read");
+        let mut current = TursoProjection::open(&path)
+            .await
+            .expect("open current writer");
+        let current_revision = current.revision().await.expect("capture current base");
+        current
+            .synchronize_from(current_revision, &new_view)
+            .await
+            .expect("publish newer complete root");
+
+        assert!(matches!(
+            delayed.synchronize_from(delayed_revision, &old_view).await,
+            Err(ProjectionError::StaleTransition)
+        ));
+        assert!(matches!(
+            delayed.synchronize_from(delayed_revision, &new_view).await,
+            Err(ProjectionError::StaleTransition)
+        ));
+        assert!(matches!(
+            delayed.synchronize(&old_view).await,
+            Err(ProjectionError::StaleTransition)
+        ));
+        drop(delayed);
+        drop(current);
+
+        let reopened = TursoProjection::open(&path).await.expect("cold reopen");
+        let rows = reopened
+            .lookup_label("generation-target", 4)
+            .await
+            .expect("newer root survives cold reopen");
+        assert_eq!(rows.root, *new_view.root().as_bytes());
+        assert_eq!(rows.ids.len(), 1);
+        drop(reopened);
+        remove_database(&path);
+    });
+}
+
+#[test]
+fn delayed_complete_view_rejects_exact_target_published_in_pretransaction_gap() {
+    futures_executor::block_on(async {
+        let path = path();
+        let initial = fallback_seed_view();
+        let target = replacement_view();
+        let seed = TursoProjection::seed_if_empty(
+            &path,
+            ProjectionSeed::new(&initial, ProjectionGraphSeed::Unavailable),
+        )
+        .await
+        .expect("seed initial selected root");
+        drop(seed);
+
+        let mut winner = TursoProjection::open(&path)
+            .await
+            .expect("open competing publisher");
+        let winner_revision = winner.revision().await.expect("capture winner base");
+        let worker_path = path.clone();
+        let worker_target = target.clone();
+        let (at_transaction_sender, at_transaction_receiver) = mpsc::channel();
+        let (resume_sender, resume_receiver) = mpsc::channel();
+        let delayed = thread::spawn(move || {
+            let mut delayed = futures_executor::block_on(TursoProjection::open(&worker_path))
+                .expect("open delayed writer");
+            let revision = futures_executor::block_on(delayed.revision())
+                .expect("capture before source read");
+            crate::writer::set_before_projection_writer_tx_test_hook(move || {
+                at_transaction_sender
+                    .send(())
+                    .expect("report pre-transaction barrier");
+                resume_receiver
+                    .recv()
+                    .expect("release pre-transaction barrier");
+            });
+            futures_executor::block_on(delayed.synchronize_from(revision, &worker_target))
+        });
+
+        at_transaction_receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("delayed writer reached the transaction boundary");
+        winner
+            .synchronize_from(winner_revision, &target)
+            .await
+            .expect("commit exact target while delayed writer is paused");
+        resume_sender.send(()).expect("resume delayed writer");
+        assert!(matches!(
+            delayed.join().expect("join delayed writer"),
+            Err(ProjectionError::StaleTransition)
+        ));
+        drop(winner);
+
+        let reopened = TursoProjection::open(&path).await.expect("cold reopen");
+        let selected = reopened
+            .lookup_label("generation-target", 4)
+            .await
+            .expect("selected target survives stale replay");
+        assert_eq!(selected.root, *target.root().as_bytes());
+        assert_eq!(selected.ids.len(), 1);
+        drop(reopened);
+        remove_database(&path);
+    });
+}
+
+#[test]
+fn reset_rebuild_obeys_its_committed_base_and_rejects_a_stale_reset() {
+    futures_executor::block_on(async {
+        let path = path();
+        let base = fallback_seed_view();
+        let make_target = |label: &'static str| {
+            let row = Row::new(RowId::Package(package_key(label)), base.basis(), label);
+            let prepared = base
+                .prepare(ViewDelta::Upsert { row }, capability(base.basis().object))
+                .expect("prepare target row");
+            base.clone().commit(prepared).expect("commit target row").0
+        };
+        let make_reset = |target: ViewRoot| {
+            let prepared = base
+                .prepare(
+                    ViewDelta::Reset {
+                        root: Box::new(target),
+                    },
+                    capability(base.basis().object),
+                )
+                .expect("prepare checked reset");
+            base.clone().commit(prepared).expect("commit checked reset")
+        };
+        let (committed_view, committed_reset) = make_reset(make_target("reset-committed"));
+        let (_stale_view, stale_reset) = make_reset(make_target("reset-stale"));
+        let seed = TursoProjection::seed_if_empty(
+            &path,
+            ProjectionSeed::new(&base, ProjectionGraphSeed::Unavailable),
+        )
+        .await
+        .expect("seed reset base");
+        drop(seed);
+
+        let mut winner = TursoProjection::open(&path)
+            .await
+            .expect("open reset winner");
+        let mut stale = TursoProjection::open(&path)
+            .await
+            .expect("open stale reset writer");
+        assert_eq!(
+            winner
+                .apply(&committed_reset)
+                .await
+                .expect("valid reset applies"),
+            ProjectionUpdate::Rebuilt { rows: 1 }
+        );
+        assert!(matches!(
+            winner.apply(&committed_reset).await,
+            Err(ProjectionError::StaleTransition)
+        ));
+        assert!(matches!(
+            stale.apply(&stale_reset).await,
+            Err(ProjectionError::StaleTransition)
+        ));
+        drop(winner);
+        drop(stale);
+
+        let reopened = TursoProjection::open(&path)
+            .await
+            .expect("cold reopen after reset");
+        let rows = reopened
+            .lookup_label("reset-committed", 4)
+            .await
+            .expect("committed reset remains selected");
+        assert_eq!(rows.root, *committed_view.root().as_bytes());
+        assert_eq!(rows.ids.len(), 1);
+        let stale_rows = reopened
+            .lookup_label("reset-stale", 4)
+            .await
+            .expect("stale reset row stays absent");
+        assert!(stale_rows.ids.is_empty());
+        drop(reopened);
+        remove_database(&path);
+    });
+}
+
+#[test]
+fn delayed_graph_facts_cannot_replace_a_newer_graph_witness() {
+    futures_executor::block_on(async {
+        let path = path();
+        let source = PackageReference::parse("pkg:cargo/revision-app@1.0.0").expect("source");
+        let old_edge = dependency_edge(&source, "serde", "^1");
+        let new_edge = dependency_edge(&source, "serde", "^2");
+        let old_facts = graph_facts(&source, &[old_edge]);
+        let new_facts = graph_facts(&source, &[new_edge.clone()]);
+        let seed_view = fallback_seed_view();
+        let seed = TursoProjection::seed_if_empty(
+            &path,
+            ProjectionSeed::new(&seed_view, ProjectionGraphSeed::Unavailable),
+        )
+        .await
+        .expect("seed selected view root");
+        drop(seed);
+
+        let mut delayed = TursoProjection::open(&path)
+            .await
+            .expect("open delayed graph writer");
+        let delayed_revision = delayed
+            .package_graph_revision()
+            .await
+            .expect("capture graph revision before source read");
+        let mut current = TursoProjection::open(&path)
+            .await
+            .expect("open current graph writer");
+        let current_revision = current
+            .package_graph_revision()
+            .await
+            .expect("capture current graph base");
+        current
+            .synchronize_package_graph_from(current_revision, seed_view.root(), &new_facts)
+            .await
+            .expect("publish newer graph facts");
+        assert!(matches!(
+            delayed
+                .synchronize_package_graph_from(delayed_revision, seed_view.root(), &old_facts)
+                .await,
+            Err(ProjectionError::StaleTransition)
+        ));
+        drop(delayed);
+        drop(current);
+
+        let reopened = TursoProjection::open(&path)
+            .await
+            .expect("cold graph reopen");
+        let graph = reopened
+            .package_dependencies(&source)
+            .await
+            .expect("read selected graph");
+        assert_eq!(graph.root.as_ref(), seed_view.root().as_bytes());
+        assert_eq!(graph.edges.as_ref(), &[new_edge]);
+        drop(reopened);
+        remove_database(&path);
+    });
+}
+
+#[test]
+fn delayed_graph_revision_is_rejected_after_the_selected_view_root_advances() {
+    futures_executor::block_on(async {
+        let path = path();
+        let source = PackageReference::parse("pkg:cargo/revision-app@1.0.0").expect("source");
+        let old_edge = dependency_edge(&source, "serde", "^1");
+        let old_facts = graph_facts(&source, &[old_edge.clone()]);
+        let old_witness = CheckedPackageGraphFacts::new(old_facts.clone())
+            .expect("checked old graph facts")
+            .witness();
+        let seed_view = fallback_seed_view();
+        let new_view = replacement_view();
+        let seed = TursoProjection::seed_if_empty(
+            &path,
+            ProjectionSeed::new(&seed_view, ProjectionGraphSeed::Unavailable),
+        )
+        .await
+        .expect("seed selected view root");
+        drop(seed);
+
+        let mut initial = TursoProjection::open(&path)
+            .await
+            .expect("open initial graph writer");
+        let initial_revision = initial
+            .package_graph_revision()
+            .await
+            .expect("capture initial graph revision");
+        initial
+            .synchronize_package_graph_from(initial_revision, seed_view.root(), &old_facts)
+            .await
+            .expect("publish initial complete graph");
+        drop(initial);
+
+        let mut delayed = TursoProjection::open(&path)
+            .await
+            .expect("open delayed graph writer");
+        let delayed_revision = delayed
+            .package_graph_revision()
+            .await
+            .expect("capture graph revision before source read");
+        let mut current = TursoProjection::open(&path)
+            .await
+            .expect("open current view writer");
+        let current_revision = current.revision().await.expect("capture current view base");
+        current
+            .synchronize_from(current_revision, &new_view)
+            .await
+            .expect("advance selected view while preserving the complete graph witness");
+        assert!(matches!(
+            current.package_dependencies(&source).await,
+            Err(ProjectionError::StaleTransition)
+        ));
+        let current_graph_revision = current
+            .package_graph_revision()
+            .await
+            .expect("capture graph root after selected view advance");
+        current
+            .synchronize_package_graph_from(
+                current_graph_revision,
+                new_view.root(),
+                &old_facts,
+            )
+            .await
+            .expect("rebind preserved graph facts to the new selected view root");
+
+        assert!(matches!(
+            delayed
+                .synchronize_package_graph_from(delayed_revision, new_view.root(), &old_facts)
+                .await,
+            Err(ProjectionError::StaleTransition)
+        ));
+        drop(delayed);
+        drop(current);
+
+        let reopened = TursoProjection::open(&path).await.expect("cold reopen");
+        let graph = reopened
+            .package_dependencies(&source)
+            .await
+            .expect("read the preserved complete graph");
+        assert_eq!(graph.root.as_ref(), new_view.root().as_bytes());
+        assert_eq!(graph.facts_witness, old_witness);
+        assert_eq!(graph.edges.as_ref(), &[old_edge]);
+        drop(reopened);
+        remove_database(&path);
+    });
+}
+
+#[test]
+fn delayed_graph_revision_rejects_exact_target_published_in_pretransaction_gap() {
+    futures_executor::block_on(async {
+        let path = path();
+        let view = fallback_seed_view();
+        let source = PackageReference::parse("pkg:cargo/revision-app@1.0.0").expect("source");
+        let old_edge = dependency_edge(&source, "serde", "^1");
+        let new_edge = dependency_edge(&source, "serde", "^2");
+        let old_facts = graph_facts(&source, &[old_edge]);
+        let new_facts = graph_facts(&source, std::slice::from_ref(&new_edge));
+        let old_checked = CheckedPackageGraphFacts::new(old_facts)
+            .expect("checked old graph facts");
+        let seed = TursoProjection::seed_if_empty(
+            &path,
+            ProjectionSeed::new(&view, ProjectionGraphSeed::Checked(&old_checked)),
+        )
+        .await
+        .expect("seed complete graph");
+        drop(seed);
+
+        let mut winner = TursoProjection::open(&path)
+            .await
+            .expect("open competing graph writer");
+        let winner_revision = winner
+            .package_graph_revision()
+            .await
+            .expect("capture winner graph base");
+        let worker_path = path.clone();
+        let worker_view_root = view.root();
+        let worker_facts = new_facts.clone();
+        let (at_transaction_sender, at_transaction_receiver) = mpsc::channel();
+        let (resume_sender, resume_receiver) = mpsc::channel();
+        let delayed = thread::spawn(move || {
+            let mut delayed = futures_executor::block_on(TursoProjection::open(&worker_path))
+                .expect("open delayed graph writer");
+            let revision = futures_executor::block_on(delayed.package_graph_revision())
+                .expect("capture graph revision before source read");
+            crate::writer::set_before_projection_writer_tx_test_hook(move || {
+                at_transaction_sender
+                    .send(())
+                    .expect("report pre-transaction barrier");
+                resume_receiver
+                    .recv()
+                    .expect("release pre-transaction barrier");
+            });
+            futures_executor::block_on(delayed.synchronize_package_graph_from(
+                revision,
+                worker_view_root,
+                &worker_facts,
+            ))
+        });
+
+        at_transaction_receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("delayed graph writer reached the transaction boundary");
+        winner
+            .synchronize_package_graph_from(winner_revision, view.root(), &new_facts)
+            .await
+            .expect("commit exact graph target while delayed writer is paused");
+        resume_sender.send(()).expect("resume delayed graph writer");
+        assert!(matches!(
+            delayed.join().expect("join delayed graph writer"),
+            Err(ProjectionError::StaleTransition)
+        ));
+        drop(winner);
+
+        let reopened = TursoProjection::open(&path).await.expect("cold graph reopen");
+        let graph = reopened
+            .package_dependencies(&source)
+            .await
+            .expect("selected graph survives stale replay");
+        assert_eq!(graph.root.as_ref(), view.root().as_bytes());
+        assert_eq!(graph.edges.as_ref(), &[new_edge]);
+        drop(reopened);
+        remove_database(&path);
+    });
+}
+
+#[test]
+fn graph_publication_and_reads_are_bound_to_the_selected_view_root() {
+    futures_executor::block_on(async {
+        let path = path();
+        let view = fallback_seed_view();
+        let source = PackageReference::parse("pkg:cargo/view-bound-app@1.0.0").expect("source");
+        let facts = graph_facts(&source, &[dependency_edge(&source, "serde", "^1")]);
+        let mut projection = open_test(&path).await.expect("open selected projection");
+        let revision = projection
+            .package_graph_revision()
+            .await
+            .expect("capture graph base");
+        let unrelated = view_state_root(&[("unrelated-graph-root".to_owned(), "x".to_owned())]);
+        assert!(matches!(
+            projection
+                .synchronize_package_graph_from(revision, unrelated, &facts)
+                .await,
+            Err(ProjectionError::StaleTransition)
+        ));
+        let revision = projection
+            .package_graph_revision()
+            .await
+            .expect("graph remains uninitialized");
+        projection
+            .synchronize_package_graph_from(revision, view.root(), &facts)
+            .await
+            .expect("publish graph at selected view root");
+
+        projection
+            .connection
+            .execute(
+                "UPDATE backend_projection_package_graph_meta SET root=?1 WHERE singleton=1",
+                [vec![0xA7_u8; 32]],
+            )
+            .await
+            .expect("simulate mismatched persisted graph root");
+        assert!(matches!(
+            projection.package_dependencies(&source).await,
+            Err(ProjectionError::StaleTransition)
+        ));
+        assert!(matches!(
+            projection
+                .package_dependencies_for_source(&PackageGraphSourceKey::unattributed(
+                    source.clone(),
+                ))
+                .await,
+            Err(ProjectionError::StaleTransition)
+        ));
+        let target = PackageReference::parse("pkg:cargo/serde@1.0.0").expect("target");
+        assert!(matches!(
+            projection.package_dependents(&target).await,
+            Err(ProjectionError::StaleTransition)
+        ));
+        let request = backend_library::PackageGraphPageRequest::new(
+            source.clone(),
+            backend_library::PackageGraphDirection::Dependencies,
+            None,
+            4,
+        )
+        .expect("valid first page");
+        assert!(matches!(
+            projection.read_package_graph_page(&request).await,
+            Err(PackageGraphReadError::Projection(
+                ProjectionError::StaleTransition
+            ))
+        ));
+        let cursor = backend_library::PackageGraphCursor {
+            schema: backend_library::PACKAGE_GRAPH_PAGE_SCHEMA,
+            view_root: *view.root().as_bytes(),
+            facts_witness: CheckedPackageGraphFacts::new(facts)
+                .expect("checked facts")
+                .witness(),
+            recipe: [0; 32],
+            catalog_snapshot: None,
+            source: None,
+            after_edge_id: [0; 32],
+        };
+        let continued = request.with_cursor(cursor);
+        assert!(matches!(
+            projection.read_package_graph_page(&continued).await,
+            Err(PackageGraphReadError::StaleCursor)
+        ));
+        drop(projection);
+        remove_database(&path);
+    });
+}
+
+#[test]
+fn unsupported_schema_versions_are_refused_without_replacing_the_generation() {
     futures_executor::block_on(async {
         let path = path();
         let package = package_key("workspace");
@@ -222,56 +1028,82 @@ fn an_older_schema_is_rebuilt_and_a_newer_schema_is_refused() {
             root(Vec::new()).basis(),
             "workspace",
         )]);
-        let stamp = |version: i64| {
-            let path = path.clone();
-            async move {
-                let projection = TursoProjection::open_or_rebuild(&path)
-                    .await
-                    .unwrap_or_else(|error| panic!("open: {error}"));
-                projection
-                    .connection
-                    .execute(
-                        "UPDATE backend_projection_meta SET schema_version = ?1 WHERE singleton=1",
-                        [version],
-                    )
-                    .await
-                    .unwrap_or_else(|error| panic!("stamp schema: {error}"));
-            }
-        };
-
-        let mut projection = TursoProjection::open(&path)
+        let mut projection = open_test(&path)
             .await
             .unwrap_or_else(|error| panic!("open: {error}"));
         projection
-            .synchronize(&view)
+            .synchronize_from_current_for_test(&view)
             .await
             .unwrap_or_else(|error| panic!("synchronize: {error}"));
-        drop(projection);
-
-        stamp(schema::SCHEMA_VERSION - 1).await;
-        assert!(matches!(
-            TursoProjection::open(&path).await,
-            Err(ProjectionError::Schema { .. })
-        ));
-        let mut rebuilt = TursoProjection::open_or_rebuild(&path)
+        projection
+            .connection
+            .execute(
+                "UPDATE backend_projection_meta SET schema_version = ?1 WHERE singleton=1",
+                [schema::SCHEMA_VERSION - 1],
+            )
             .await
-            .unwrap_or_else(|error| panic!("rebuild older schema: {error}"));
-        assert_eq!(
-            rebuilt
-                .synchronize(&view)
-                .await
-                .unwrap_or_else(|error| panic!("repopulate: {error}")),
-            ProjectionUpdate::Rebuilt { rows: 1 }
-        );
-        drop(rebuilt);
-
-        stamp(schema::SCHEMA_VERSION + 1).await;
+            .expect("stamp older schema");
+        let namespace = super::projection_namespace::ProjectionNamespace::open_existing(&path)
+            .expect("namespace");
+        namespace
+            .set_selected_schema_for_test(schema::SCHEMA_VERSION - 1)
+            .expect("stamp older selector");
+        let old_selector = namespace.selected().expect("old selector");
+        let generation_count = namespace
+            .generation_count_for_test()
+            .expect("generation count");
         assert!(matches!(
-            TursoProjection::open_or_rebuild(&path).await,
-            Err(ProjectionError::Schema { .. })
+            open_test(&path).await,
+            Err(ProjectionError::Schema { found }) if found == schema::SCHEMA_VERSION - 1
         ));
-        assert!(path.exists(), "a newer projection must never be discarded");
-        std::fs::remove_file(&path).unwrap_or_else(|error| panic!("remove projection: {error}"));
+        let unused_seed = fallback_seed_view();
+        assert!(matches!(
+            TursoProjection::seed_if_empty(
+                &path,
+                ProjectionSeed::new(&unused_seed, ProjectionGraphSeed::Unavailable),
+            )
+            .await,
+            Err(ProjectionError::AlreadySeeded)
+        ));
+        assert_eq!(
+            namespace.selected().expect("selector unchanged"),
+            old_selector
+        );
+        assert_eq!(
+            namespace
+                .generation_count_for_test()
+                .expect("generation count unchanged"),
+            generation_count
+        );
+
+        projection
+            .connection
+            .execute(
+                "UPDATE backend_projection_meta SET schema_version = ?1 WHERE singleton=1",
+                [schema::SCHEMA_VERSION + 1],
+            )
+            .await
+            .expect("stamp future schema");
+        namespace
+            .set_selected_schema_for_test(schema::SCHEMA_VERSION + 1)
+            .expect("stamp future selector");
+        let future_selector = namespace.selected().expect("future selector");
+        assert!(matches!(
+            open_test(&path).await,
+            Err(ProjectionError::Schema { found }) if found == schema::SCHEMA_VERSION + 1
+        ));
+        assert_eq!(
+            namespace.selected().expect("future selector unchanged"),
+            future_selector
+        );
+        assert_eq!(
+            namespace
+                .generation_count_for_test()
+                .expect("generation count remains bounded"),
+            generation_count
+        );
+        drop(projection);
+        remove_database(&path);
     });
 }
 
@@ -311,12 +1143,12 @@ fn multiprocess_wal_stress_serializes_writers_and_preserves_read_snapshots() {
             .commit(second_prepared)
             .unwrap_or_else(|error| panic!("commit second delta: {error:?}"));
 
-        let mut initial = TursoProjection::open(&path)
+        let mut initial = open_test(&path)
             .await
             .unwrap_or_else(|error| panic!("open initial projection: {error}"));
         assert_eq!(
             initial
-                .synchronize(&base)
+                .synchronize_from_current_for_test(&base)
                 .await
                 .unwrap_or_else(|error| panic!("synchronize base: {error}")),
             ProjectionUpdate::Rebuilt { rows: 0 }
@@ -335,8 +1167,8 @@ fn multiprocess_wal_stress_serializes_writers_and_preserves_read_snapshots() {
             let base = base.clone();
             handles.push(thread::spawn(move || {
                 let prepared = futures_executor::block_on(async {
-                    let mut projection = TursoProjection::open(&path).await?;
-                    let update = projection.synchronize(&base).await?;
+                    let mut projection = open_test(&path).await?;
+                    let update = projection.synchronize_from_current_for_test(&base).await?;
                     if !matches!(update, ProjectionUpdate::Reused { .. }) {
                         return Err(ProjectionError::StaleTransition);
                     }
@@ -361,8 +1193,8 @@ fn multiprocess_wal_stress_serializes_writers_and_preserves_read_snapshots() {
             let first_delta = first_delta.clone();
             handles.push(thread::spawn(move || {
                 let prepared = futures_executor::block_on(async {
-                    let mut projection = TursoProjection::open(&path).await?;
-                    let update = projection.synchronize(&base).await?;
+                    let mut projection = open_test(&path).await?;
+                    let update = projection.synchronize_from_current_for_test(&base).await?;
                     if !matches!(update, ProjectionUpdate::Reused { .. }) {
                         return Err(ProjectionError::StaleTransition);
                     }
@@ -422,12 +1254,12 @@ fn multiprocess_wal_stress_serializes_writers_and_preserves_read_snapshots() {
             "losers must be typed stale transitions or replay no-ops"
         );
 
-        let mut restarted = TursoProjection::open(&path)
+        let mut restarted = open_test(&path)
             .await
             .unwrap_or_else(|error| panic!("reopen projection: {error}"));
         assert_eq!(
             restarted
-                .synchronize(&first_view)
+                .synchronize_from_current_for_test(&first_view)
                 .await
                 .unwrap_or_else(|error| panic!("restart recovery: {error}")),
             ProjectionUpdate::Reused { rows: 1 }
@@ -441,7 +1273,7 @@ fn multiprocess_wal_stress_serializes_writers_and_preserves_read_snapshots() {
         );
         assert_eq!(
             restarted
-                .synchronize(&second_view)
+                .synchronize_from_current_for_test(&second_view)
                 .await
                 .unwrap_or_else(|error| panic!("second exact-root no-op: {error}")),
             ProjectionUpdate::Reused { rows: 2 }
@@ -459,11 +1291,44 @@ fn multiprocess_wal_stress_serializes_writers_and_preserves_read_snapshots() {
             .unwrap_or_else(|error| panic!("post-restart label lookup: {error}"));
         assert_eq!(rows.root.as_ref(), second_view.root().as_bytes());
         assert_eq!(rows.ids.as_ref(), &[RowId::Package(package).stable_key()]);
+        drop(restarted);
+        remove_database(&path);
+    });
+}
 
-        for suffix in ["", "-wal", "-shm"] {
-            let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
-            let _ = std::fs::remove_file(sidecar);
-        }
+#[test]
+fn unpaged_reverse_graph_read_stops_at_its_bounded_result_limit() {
+    futures_executor::block_on(async {
+        let path = path();
+        let mut projection = open_test(&path).await.expect("open projection");
+        let source_facts = (0..=MAX_PACKAGE_GRAPH_ROWS)
+            .map(|index| {
+                let source = PackageReference::parse(format!("pkg:cargo/dependent-{index}@1.0.0"))
+                    .expect("source coordinate");
+                let edge = dependency_edge(&source, "shared-target", "^1");
+                (
+                    PackageGraphSourceKey::unattributed(source),
+                    DependencyFacts::Known(vec![edge].into_boxed_slice()),
+                )
+            })
+            .collect::<Vec<_>>();
+        let checked =
+            CheckedPackageGraphFacts::new(source_facts).expect("admit bounded source facts");
+        let graph_root = fallback_seed_view().root();
+        projection
+            .synchronize_checked_package_graph_current_for_test(graph_root, &checked)
+            .await
+            .expect("publish valid graph with more reverse edges than one unpaged read admits");
+
+        let target =
+            PackageReference::parse("pkg:cargo/shared-target@1.0.0").expect("target coordinate");
+        assert!(matches!(
+            projection.package_dependents(&target).await,
+            Err(ProjectionError::ReadLimitExceeded { maximum })
+                if maximum == MAX_PACKAGE_GRAPH_ROWS
+        ));
+        drop(projection);
+        remove_database(&path);
     });
 }
 
@@ -509,10 +1374,10 @@ fn package_graph_keeps_same_coordinate_edges_separate_by_registry_authority() {
             ),
         ];
         let checked = CheckedPackageGraphFacts::new(facts).expect("checked source facts");
-        let mut projection = TursoProjection::open(&path).await.expect("open");
+        let mut projection = open_test(&path).await.expect("open");
         projection
-            .synchronize_checked_package_graph(
-                view_state_root(&[("graph".to_owned(), "two-sources".to_owned())]),
+            .synchronize_checked_package_graph_current_for_test(
+                fallback_seed_view().root(),
                 &checked,
             )
             .await
@@ -575,8 +1440,8 @@ fn package_graph_keeps_same_coordinate_edges_separate_by_registry_authority() {
         );
         assert!(
             projection
-                .synchronize_package_graph(
-                    view_state_root(&[("graph".to_owned(), "forged-forge".to_owned())]),
+                .synchronize_package_graph_current_for_test(
+                    fallback_seed_view().root(),
                     &[(
                         PackageGraphSourceKey::new(source, authority_a),
                         DependencyFacts::Known(vec![forged].into_boxed_slice()),
@@ -619,10 +1484,10 @@ fn package_graph_distinguishes_known_empty_unknown_and_absent_authorities() {
                 DependencyFacts::Unknown(ProductText::new("field omitted").expect("reason")),
             ),
         ];
-        let mut projection = TursoProjection::open(&path).await.expect("open");
+        let mut projection = open_test(&path).await.expect("open");
         projection
-            .synchronize_package_graph(
-                view_state_root(&[("graph".to_owned(), "states".to_owned())]),
+            .synchronize_package_graph_current_for_test(
+                fallback_seed_view().root(),
                 &facts,
             )
             .await
@@ -639,8 +1504,8 @@ fn package_graph_distinguishes_known_empty_unknown_and_absent_authorities() {
         ];
         assert!(
             projection
-                .synchronize_package_graph(
-                    view_state_root(&[("graph".to_owned(), "duplicate-source".to_owned())]),
+                .synchronize_package_graph_current_for_test(
+                    fallback_seed_view().root(),
                     &duplicate_source_facts,
                 )
                 .await
@@ -685,10 +1550,14 @@ fn package_graph_distinguishes_known_empty_unknown_and_absent_authorities() {
 fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
     futures_executor::block_on(async {
         let path = path();
-        let root_a = view_state_root(&[("graph".to_owned(), "a".to_owned())]);
-        let root_b = view_state_root(&[("graph".to_owned(), "b".to_owned())]);
-        let root_c = view_state_root(&[("graph".to_owned(), "c".to_owned())]);
-        let root_d = view_state_root(&[("graph".to_owned(), "d".to_owned())]);
+        let view_a = fallback_seed_view();
+        let view_b = view_with_label("graph-root-b");
+        let view_c = view_with_label("graph-root-c");
+        let view_d = view_with_label("graph-root-d");
+        let root_a = view_a.root();
+        let root_b = view_b.root();
+        let root_c = view_c.root();
+        let root_d = view_d.root();
         let source = PackageReference::parse("pkg:cargo/app@1.0.0").expect("source");
         let target = PackageReference::parse("pkg:cargo/serde@1.0.0").expect("target");
         let edge = PackageDependencyRecord::new(
@@ -704,26 +1573,30 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
             },
         );
         let facts = graph_facts(&source, std::slice::from_ref(&edge));
-        let mut projection = TursoProjection::open(&path).await.expect("open");
+        let mut projection = open_test(&path).await.expect("open");
         assert_eq!(
             projection
-                .synchronize_package_graph(root_a, &facts)
+                .synchronize_package_graph_current_for_test(root_a, &facts)
                 .await
                 .expect("project graph"),
             ProjectionUpdate::Rebuilt { rows: 1 }
         );
         assert_eq!(
             projection
-                .synchronize_package_graph(root_a, &facts)
+                .synchronize_package_graph_current_for_test(root_a, &facts)
                 .await
                 .expect("reuse graph"),
             ProjectionUpdate::Reused { rows: 1 }
         );
         let first_edge_rowid = stored_edge(&projection, &edge.facts_version).await;
+        projection
+            .synchronize_from_current_for_test(&view_b)
+            .await
+            .expect("advance selected row root before moving graph root");
         let changes_before_root_move = graph_total_changes(&projection).await;
         assert_eq!(
             projection
-                .synchronize_package_graph(root_b, &facts)
+                .synchronize_package_graph_current_for_test(root_b, &facts)
                 .await
                 .expect("project new root"),
             ProjectionUpdate::Rebuilt { rows: 1 }
@@ -769,11 +1642,16 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
         assert_eq!(reverse.edges[0].source, source);
         let facts_version = edge.facts_version;
         let rowid = stored_edge(&projection, &facts_version).await;
+        let view_moved = view_with_label("graph-root-moved");
+        projection
+            .synchronize_from_current_for_test(&view_moved)
+            .await
+            .expect("advance selected row root before second graph move");
         let changes_before_second_root_move = graph_total_changes(&projection).await;
-        let root_move = view_state_root(&[("graph".to_owned(), "moved".to_owned())]);
+        let root_move = view_moved.root();
         assert_eq!(
             projection
-                .synchronize_package_graph(root_move, &facts)
+                .synchronize_package_graph_current_for_test(root_move, &facts)
                 .await
                 .expect("move graph root"),
             ProjectionUpdate::Rebuilt { rows: 1 }
@@ -789,9 +1667,13 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
             .expect("forward after root move");
         assert_eq!(moved_forward.root.as_ref(), root_move.as_bytes());
         assert_eq!(moved_forward.edges.as_ref(), &[edge]);
+        projection
+            .synchronize_from_current_for_test(&view_c)
+            .await
+            .expect("advance selected row root before clearing graph");
         assert_eq!(
             projection
-                .synchronize_package_graph(root_c, &[])
+                .synchronize_package_graph_current_for_test(root_c, &[])
                 .await
                 .expect("clear graph"),
             ProjectionUpdate::Rebuilt { rows: 0 }
@@ -827,9 +1709,13 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
             },
         );
         let facts_v2 = graph_facts(&source, std::slice::from_ref(&edge_v2));
+        projection
+            .synchronize_from_current_for_test(&view_d)
+            .await
+            .expect("advance selected row root before changed facts");
         assert_eq!(
             projection
-                .synchronize_package_graph(root_d, &facts_v2)
+                .synchronize_package_graph_current_for_test(root_d, &facts_v2)
                 .await
                 .expect("project changed requirement"),
             ProjectionUpdate::Rebuilt { rows: 1 }
@@ -845,9 +1731,14 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
             PackageGraphSourceKey::unattributed(target.clone()),
             DependencyFacts::Unavailable(ProductText::new("metadata timeout").expect("reason")),
         )];
-        let root_e = view_state_root(&[("graph".to_owned(), "e".to_owned())]);
+        let view_e = view_with_label("graph-root-e");
         projection
-            .synchronize_package_graph(root_e, &unavailable)
+            .synchronize_from_current_for_test(&view_e)
+            .await
+            .expect("advance selected row root before unavailable state");
+        let root_e = view_e.root();
+        projection
+            .synchronize_package_graph_current_for_test(root_e, &unavailable)
             .await
             .expect("project unavailable");
         let state = projection
@@ -875,11 +1766,16 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
                 .is_empty()
         );
         let state_rowid = stored_state_rowid(&projection, target.as_str()).await;
+        let view_f = view_with_label("graph-root-f");
+        projection
+            .synchronize_from_current_for_test(&view_f)
+            .await
+            .expect("advance selected row root before state-only move");
+        let root_f = view_f.root();
         let changes_before_state_root_move = graph_total_changes(&projection).await;
-        let root_f = view_state_root(&[("graph".to_owned(), "f".to_owned())]);
         assert_eq!(
             projection
-                .synchronize_package_graph(root_f, &unavailable)
+                .synchronize_package_graph_current_for_test(root_f, &unavailable)
                 .await
                 .expect("keep matching state"),
             ProjectionUpdate::Rebuilt { rows: 0 }
@@ -905,11 +1801,16 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
             PackageGraphSourceKey::unattributed(target.clone()),
             DependencyFacts::Unavailable(ProductText::new("registry reset").expect("reason")),
         )];
-        let root_g = view_state_root(&[("graph".to_owned(), "g".to_owned())]);
+        let view_g = view_with_label("graph-root-g");
+        projection
+            .synchronize_from_current_for_test(&view_g)
+            .await
+            .expect("advance selected row root before state reason change");
+        let root_g = view_g.root();
         let state_rowid_before_reason_change =
             stored_state_rowid(&projection, target.as_str()).await;
         projection
-            .synchronize_package_graph(root_g, &changed)
+            .synchronize_package_graph_current_for_test(root_g, &changed)
             .await
             .expect("replace state");
         assert_eq!(
@@ -925,7 +1826,8 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
             replaced.state.expect("replaced").reason.as_str(),
             "registry reset"
         );
-        std::fs::remove_file(&path).expect("remove projection");
+        drop(projection);
+        remove_database(&path);
     });
 }
 
@@ -933,7 +1835,7 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
 fn package_graph_same_root_reconciles_changed_facts_after_restart() {
     futures_executor::block_on(async {
         let path = path();
-        let selected_root = view_state_root(&[("graph".to_owned(), "same-root".to_owned())]);
+        let selected_root = fallback_seed_view().root();
         let source = PackageReference::parse("pkg:cargo/app@1.0.0").expect("source");
         let old_runtime =
             dependency_edge_in_scope(&source, "serde", "^1", DependencyScope::Runtime);
@@ -948,10 +1850,10 @@ fn package_graph_same_root_reconciles_changed_facts_after_restart() {
         let changed_facts = graph_facts(&source, &expected);
         let expected_witness = package_dependency_facts_witness(&changed_facts);
 
-        let mut projection = TursoProjection::open(&path).await.expect("open initial");
+        let mut projection = open_test(&path).await.expect("open initial");
         assert_eq!(
             projection
-                .synchronize_package_graph(selected_root, &old_facts)
+                .synchronize_package_graph_current_for_test(selected_root, &old_facts)
                 .await
                 .expect("seed old graph"),
             ProjectionUpdate::Rebuilt { rows: 2 }
@@ -962,10 +1864,10 @@ fn package_graph_same_root_reconciles_changed_facts_after_restart() {
         );
         drop(projection);
 
-        let mut projection = TursoProjection::open(&path).await.expect("reopen");
+        let mut projection = open_test(&path).await.expect("reopen");
         assert_eq!(
             projection
-                .synchronize_package_graph(selected_root, &changed_facts)
+                .synchronize_package_graph_current_for_test(selected_root, &changed_facts)
                 .await
                 .expect("replace graph at unchanged root"),
             ProjectionUpdate::Rebuilt { rows: 3 }
@@ -980,9 +1882,7 @@ fn package_graph_same_root_reconciles_changed_facts_after_restart() {
         assert_eq!(graph_edge_count(&projection).await, 3);
         drop(projection);
 
-        let reopened = TursoProjection::open(&path)
-            .await
-            .expect("reopen persisted graph");
+        let reopened = open_test(&path).await.expect("reopen persisted graph");
         let persisted = reopened
             .package_dependencies(&source)
             .await
@@ -1060,11 +1960,10 @@ fn package_graph_source_witness_delta_edits_deletes_and_reopens_exactly() {
                 DependencyFacts::Unavailable(ProductText::new("forge timeout").expect("reason")),
             ),
         ];
-        let selected_root =
-            view_state_root(&[("graph".to_owned(), "same-root-source-delta".to_owned())]);
-        let mut projection = TursoProjection::open(&path).await.expect("open initial");
+        let selected_root = fallback_seed_view().root();
+        let mut projection = open_test(&path).await.expect("open initial");
         projection
-            .synchronize_package_graph(selected_root.clone(), &initial)
+            .synchronize_package_graph_current_for_test(selected_root.clone(), &initial)
             .await
             .expect("seed graph");
         let edge_a_rowid = stored_edge(&projection, &edge_a.facts_version).await;
@@ -1073,7 +1972,7 @@ fn package_graph_source_witness_delta_edits_deletes_and_reopens_exactly() {
         // Reopening must retain source witnesses so this same-root update can
         // isolate the changed authority and state without rebuilding other
         // authorities at the shared coordinate.
-        let mut projection = TursoProjection::open(&path).await.expect("cold reopen");
+        let mut projection = open_test(&path).await.expect("cold reopen");
         let changed = vec![
             (
                 empty_key.clone(),
@@ -1097,7 +1996,7 @@ fn package_graph_source_witness_delta_edits_deletes_and_reopens_exactly() {
         let checked = CheckedPackageGraphFacts::new(changed.clone()).expect("checked delta");
         assert_eq!(
             projection
-                .synchronize_checked_package_graph(selected_root.clone(), &checked)
+                .synchronize_checked_package_graph_current_for_test(selected_root.clone(), &checked)
                 .await
                 .expect("same-root source delta"),
             ProjectionUpdate::Rebuilt { rows: 2 }
@@ -1154,7 +2053,7 @@ fn package_graph_source_witness_delta_edits_deletes_and_reopens_exactly() {
         let no_op_changes = graph_total_changes(&projection).await;
         assert_eq!(
             projection
-                .synchronize_checked_package_graph(selected_root.clone(), &checked)
+                .synchronize_checked_package_graph_current_for_test(selected_root.clone(), &checked)
                 .await
                 .expect("exact no-op"),
             ProjectionUpdate::Reused { rows: 2 }
@@ -1174,7 +2073,7 @@ fn package_graph_source_witness_delta_edits_deletes_and_reopens_exactly() {
             ),
         ];
         projection
-            .synchronize_package_graph(selected_root.clone(), &after_deletion)
+            .synchronize_package_graph_current_for_test(selected_root.clone(), &after_deletion)
             .await
             .expect("delete sources at same root");
         assert_eq!(
@@ -1195,9 +2094,7 @@ fn package_graph_source_witness_delta_edits_deletes_and_reopens_exactly() {
         );
         drop(projection);
 
-        let reopened = TursoProjection::open(&path)
-            .await
-            .expect("reopen final graph");
+        let reopened = open_test(&path).await.expect("reopen final graph");
         let final_graph = graph_snapshot(&reopened)
             .await
             .unwrap_or_else(|error| panic!("final source delta snapshot: {error}"));
@@ -1216,26 +2113,26 @@ fn package_graph_concurrent_writers_publish_whole_generations() {
         let state_source =
             PackageReference::parse("pkg:npm/race-state@1.0.0").expect("state source");
 
-        let root_initial = view_state_root(&[("graph".to_owned(), "race-initial".to_owned())]);
+        let root_initial = fallback_seed_view().root();
         let facts_initial = race_generation_facts(&app, &state_source, "^1", "initial state");
         let expected_initial = expected_graph_snapshot(root_initial.as_bytes(), &facts_initial);
-        let mut seed = TursoProjection::open(&path).await.expect("open seed");
-        seed.synchronize_package_graph(root_initial, &facts_initial)
+        let mut seed = open_test(&path).await.expect("open seed");
+        seed.synchronize_package_graph_current_for_test(root_initial, &facts_initial)
             .await
             .expect("seed initial graph");
         drop(seed);
 
-        let root_a = view_state_root(&[("graph".to_owned(), "race-writer-a".to_owned())]);
+        let root_a = root_initial;
         let facts_a = race_generation_facts(&app, &state_source, "^2", "writer a state");
         let expected_a = expected_graph_snapshot(root_a.as_bytes(), &facts_a);
-        let root_b = view_state_root(&[("graph".to_owned(), "race-writer-b".to_owned())]);
+        let root_b = root_initial;
         let facts_b = race_generation_facts(&app, &state_source, "^3", "writer b state");
         let expected_b = expected_graph_snapshot(root_b.as_bytes(), &facts_b);
         assert_ne!(expected_initial, expected_a);
         assert_ne!(expected_initial, expected_b);
         assert_ne!(expected_a, expected_b);
 
-        let reader = TursoProjection::open(&path).await.expect("open reader");
+        let reader = open_test(&path).await.expect("open reader");
         let start = Arc::new(Barrier::new(3));
         let reader_ready = Arc::new(Barrier::new(3));
         let writers_done = Arc::new(AtomicUsize::new(0));
@@ -1302,9 +2199,7 @@ fn package_graph_concurrent_writers_publish_whole_generations() {
             "the seeded graph should be visible before either writer commits"
         );
 
-        let reopened = TursoProjection::open(&path)
-            .await
-            .expect("reopen final graph");
+        let reopened = open_test(&path).await.expect("reopen final graph");
         let final_snapshot = graph_snapshot(&reopened)
             .await
             .unwrap_or_else(|error| panic!("final graph snapshot: {error}"));
@@ -1328,17 +2223,23 @@ fn package_graph_root_move_keeps_an_unchanged_edge_and_replaces_one() {
         let kept = dependency_edge(&source, "serde", "^1");
         let old = dependency_edge(&source, "tokio", "^1");
         let facts = graph_facts(&source, &[kept.clone(), old.clone()]);
-        let mut projection = TursoProjection::open(&path).await.expect("open");
-        let root_a = view_state_root(&[("graph".to_owned(), "keep-a".to_owned())]);
+        let mut projection = open_test(&path).await.expect("open");
+        let initial_view = fallback_seed_view();
+        let root_a = initial_view.root();
         projection
-            .synchronize_package_graph(root_a, &facts)
+            .synchronize_package_graph_current_for_test(root_a, &facts)
             .await
             .expect("seed");
         let kept_row = stored_edge(&projection, &kept.facts_version).await;
-        let root_b = view_state_root(&[("graph".to_owned(), "keep-b".to_owned())]);
+        let view_b = view_with_label("graph-keep-b");
+        let root_b = view_b.root();
+        projection
+            .synchronize_from_current_for_test(&view_b)
+            .await
+            .expect("advance selected row root before graph root move");
         let before_root_move = graph_total_changes(&projection).await;
         projection
-            .synchronize_package_graph(root_b, &facts)
+            .synchronize_package_graph_current_for_test(root_b, &facts)
             .await
             .expect("move");
         assert_eq!(
@@ -1348,10 +2249,15 @@ fn package_graph_root_move_keeps_an_unchanged_edge_and_replaces_one() {
         assert_eq!(graph_total_changes(&projection).await - before_root_move, 1);
         let replacement = dependency_edge(&source, "tokio", "^2");
         let replaced = graph_facts(&source, &[kept.clone(), replacement.clone()]);
-        let root_c = view_state_root(&[("graph".to_owned(), "keep-c".to_owned())]);
+        let view_c = view_with_label("graph-keep-c");
+        let root_c = view_c.root();
+        projection
+            .synchronize_from_current_for_test(&view_c)
+            .await
+            .expect("advance selected row root before replacing graph edge");
         let before_edge_delta = graph_total_changes(&projection).await;
         projection
-            .synchronize_package_graph(root_c, &replaced)
+            .synchronize_package_graph_current_for_test(root_c, &replaced)
             .await
             .expect("replace");
         let after_edge_delta = graph_total_changes(&projection).await;
@@ -1490,13 +2396,13 @@ fn spawn_graph_writer(
     writers_done: Arc<AtomicUsize>,
 ) -> thread::JoinHandle<Result<ProjectionUpdate, ProjectionError>> {
     thread::spawn(move || {
-        let opened = futures_executor::block_on(TursoProjection::open(&path));
+        let opened = futures_executor::block_on(open_test(&path));
         start.wait();
         reader_ready.wait();
         let result = match opened {
-            Ok(mut projection) => {
-                futures_executor::block_on(projection.synchronize_package_graph(root, &facts))
-            }
+            Ok(mut projection) => futures_executor::block_on(
+                projection.synchronize_package_graph_current_for_test(root, &facts),
+            ),
             Err(error) => Err(error),
         };
         writers_done.fetch_add(1, Ordering::Release);
@@ -1670,12 +2576,12 @@ fn stress_exact_label_projection_reports_build_lookup_and_delta_costs() {
             })
             .collect::<Vec<_>>();
         let view = root(rows);
-        let mut projection = TursoProjection::open(&path)
+        let mut projection = open_test(&path)
             .await
             .unwrap_or_else(|error| panic!("open: {error}"));
         let started = Instant::now();
         let update = projection
-            .synchronize(&view)
+            .synchronize_from_current_for_test(&view)
             .await
             .unwrap_or_else(|error| panic!("synchronize: {error}"));
         let build_ms = started.elapsed().as_secs_f64() * 1_000.0;
@@ -1766,12 +2672,12 @@ fn rebuild_keeps_an_unchanged_rowid_and_records_only_real_mutations() {
         ]);
         let keep_key = RowId::Package(package_key("keep")).stable_key();
 
-        let mut projection = TursoProjection::open(&path)
+        let mut projection = open_test(&path)
             .await
             .unwrap_or_else(|error| panic!("open: {error}"));
         assert_eq!(
             projection
-                .synchronize(&first)
+                .synchronize_from_current_for_test(&first)
                 .await
                 .unwrap_or_else(|error| panic!("first synchronize: {error}")),
             ProjectionUpdate::Rebuilt { rows: 3 }
@@ -1781,7 +2687,7 @@ fn rebuild_keeps_an_unchanged_rowid_and_records_only_real_mutations() {
 
         assert_eq!(
             projection
-                .synchronize(&revised)
+                .synchronize_from_current_for_test(&revised)
                 .await
                 .unwrap_or_else(|error| panic!("revised synchronize: {error}")),
             ProjectionUpdate::Rebuilt { rows: 2 }
@@ -1810,7 +2716,7 @@ fn rebuild_keeps_an_unchanged_rowid_and_records_only_real_mutations() {
         assert!(removed.ids.is_empty());
 
         drop(projection);
-        std::fs::remove_file(&path).unwrap_or_else(|error| panic!("remove projection: {error}"));
+        remove_database(&path);
     });
 }
 
@@ -1824,17 +2730,17 @@ fn frontier_republish_keeps_rows_until_a_hot_delta_clears_the_digest() {
         let object = basis.object;
         let first = root_at(vec![kept.clone()], 0);
         let moved = root_at(vec![kept.clone()], 1);
-        let mut projection = TursoProjection::open(&path)
+        let mut projection = open_test(&path)
             .await
             .unwrap_or_else(|error| panic!("open: {error}"));
         projection
-            .synchronize(&first)
+            .synchronize_from_current_for_test(&first)
             .await
             .unwrap_or_else(|error| panic!("seed: {error}"));
         let kept_key = kept.id.stable_key();
         let kept_rowid = stored_rowid(&projection, &kept_key).await;
         projection
-            .synchronize(&moved)
+            .synchronize_from_current_for_test(&moved)
             .await
             .unwrap_or_else(|error| panic!("move: {error}"));
         assert_eq!(stored_rowid(&projection, &kept_key).await, kept_rowid);
@@ -1851,7 +2757,7 @@ fn frontier_republish_keeps_rows_until_a_hot_delta_clears_the_digest() {
             .unwrap_or_else(|error| panic!("apply: {error}"));
         let restored = root_at(vec![kept], 2);
         projection
-            .synchronize(&restored)
+            .synchronize_from_current_for_test(&restored)
             .await
             .unwrap_or_else(|error| panic!("restore: {error}"));
         assert_eq!(stored_rowid(&projection, &kept_key).await, kept_rowid);
@@ -1902,11 +2808,11 @@ fn projection_row_content_and_hash_survive_synchronize_and_restart() {
         ]);
         row.score = Some(7);
         let view = root(vec![row.clone()]);
-        let mut projection = TursoProjection::open(&path)
+        let mut projection = open_test(&path)
             .await
             .unwrap_or_else(|error| panic!("open: {error}"));
         projection
-            .synchronize(&view)
+            .synchronize_from_current_for_test(&view)
             .await
             .unwrap_or_else(|error| panic!("synchronize: {error}"));
         let key = row.id.stable_key();
@@ -1960,7 +2866,7 @@ fn projection_row_content_and_hash_survive_synchronize_and_restart() {
             .unwrap_or_else(|error| panic!("apply content update: {error}"));
         drop(projection);
 
-        let restarted_projection = TursoProjection::open(&path)
+        let restarted_projection = open_test(&path)
             .await
             .unwrap_or_else(|error| panic!("reopen projection: {error}"));
         let found = restarted_projection

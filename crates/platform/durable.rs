@@ -11,6 +11,9 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(unix)]
+use crate::linkage::{IfUnlinked, Linkage, open_admitted};
+
 #[path = "durable_read.rs"]
 mod read;
 pub use read::{BoundedWriter, read_regular_bounded};
@@ -61,7 +64,9 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// current-user-only DACL on that handle. Unix opens and holds the private
 /// parent directory, opens the final component relative to that handle without
 /// following links, then checks the file's owner, type, permissions, and link
-/// count on the opened handle.
+/// count on the opened handle. A file that a replacing rename unlinked after
+/// the open is kept on both platforms: the reader holds the complete
+/// generation that was published under the name when it opened it.
 ///
 /// # Errors
 /// Returns an I/O error if the file is missing, is not a regular private file,
@@ -146,6 +151,16 @@ fn create_temporary(parent: &Path, file_name: Option<&OsStr>) -> io::Result<(Pat
 }
 
 /// Atomically replaces `destination` with `source` on the same filesystem.
+///
+/// This is the one reviewed replace-by-rename: it behaves like Unix `rename`. The replacement
+/// succeeds whether or not another handle holds `destination` open (that handle keeps the
+/// previous generation), whatever `destination`'s own mode or read-only attribute, and for paths
+/// of any length. Windows prefers the one-step swap and falls back to POSIX-semantics unlinking
+/// only when the swap is refused because the destination is held open. A lookup that races either
+/// can transiently fail on Windows (`NotFound` or access denied, never a torn file); readers of
+/// replaced state look again briefly, and a caller that must never be misled holds the
+/// publisher's lock. A scanner that holds a file without sharing delete is waited out for a
+/// bounded time (about 320 ms) before its error is returned.
 ///
 /// # Errors
 ///
@@ -257,16 +272,27 @@ fn open_private_read_platform(path: &Path) -> io::Result<File> {
                 "private state path needs a final file name",
             )
         })?;
-    let file = openat(
-        &parent_handle,
-        name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::empty(),
+    // A writer that publishes with a replacing rename may unlink the file between this open and
+    // the checks; the reader keeps the complete generation it opened.
+    open_admitted(
+        IfUnlinked::Keep,
+        || {
+            openat(
+                &parent_handle,
+                name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map(File::from)
+            .map_err(rustix_io)
+        },
+        |file, linkage| validate_unix_private_file(&file.metadata()?, linkage),
+        |file| {
+            use std::os::unix::fs::MetadataExt as _;
+            file.metadata().is_ok_and(|metadata| metadata.nlink() == 0)
+        },
+        std::thread::sleep,
     )
-    .map(File::from)
-    .map_err(rustix_io)?;
-    validate_unix_private_file(&file.metadata()?)?;
-    Ok(file)
 }
 
 #[cfg(windows)]
@@ -582,14 +608,14 @@ fn reject_unix_symlink_destination(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn validate_unix_private_file(metadata: &fs::Metadata) -> io::Result<()> {
+fn validate_unix_private_file(metadata: &fs::Metadata, linkage: Linkage) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt as _;
 
     if !metadata.is_file()
         || metadata.file_type().is_symlink()
         || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o077 != 0
-        || metadata.nlink() != 1
+        || !linkage.admits(metadata.nlink())
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -835,6 +861,80 @@ mod tests {
                 .kind(),
             io::ErrorKind::PermissionDenied
         );
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    /// A private fixture directory on either platform: mode 0700 on Unix, a protected
+    /// current-user-only DACL on Windows.
+    fn private_fixture(name: &str) -> PathBuf {
+        let root = fixture(name);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+                .expect("protect fixture directory");
+        }
+        #[cfg(windows)]
+        crate::win32::security::restrict_to_current_user(&root).expect("protect fixture directory");
+        root
+    }
+
+    /// A reader that opens a private state file just before a replacing rename must read the
+    /// generation it opened, never be refused because that generation lost its name. Before the
+    /// fix the Unix admission saw zero links and returned `PermissionDenied`.
+    #[test]
+    fn reading_private_state_while_it_is_replaced_always_yields_a_whole_generation() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        const READS: usize = 3_000;
+        let root = private_fixture("hot-private-state");
+        let path = root.join("state.bin");
+        write_private_atomic(&path, &[0xAA; 256]).expect("first generation");
+
+        let finished = Arc::new(AtomicBool::new(false));
+        let publisher = {
+            let (path, finished) = (path.clone(), Arc::clone(&finished));
+            std::thread::spawn(move || {
+                let mut generation = 0_u8;
+                while !finished.load(Ordering::Relaxed) {
+                    generation = generation.wrapping_add(1);
+                    match write_private_atomic(&path, &[generation; 256]) {
+                        Ok(()) => {}
+                        // A scanner can hold the fresh temporary longer than the bounded wait
+                        // when the machine is saturated; the publication is then refused whole
+                        // and the next generation tries again. This test is about readers.
+                        Err(error)
+                            if cfg!(windows) && error.kind() == io::ErrorKind::PermissionDenied => {
+                        }
+                        Err(error) => panic!("publish a generation: {error}"),
+                    }
+                }
+            })
+        };
+        let mut vanished = 0_usize;
+        for read in 0..READS {
+            let mut file = match open_private_read(&path) {
+                Ok(file) => file,
+                // Windows POSIX-semantics replacement can briefly hide the name from a lookup
+                // (see `win32::workspace_fs::rename_into`); the other platforms never do.
+                Err(error) if cfg!(windows) && error.kind() == io::ErrorKind::NotFound => {
+                    vanished += 1;
+                    continue;
+                }
+                Err(error) => panic!("read {read} of a replaced private file failed: {error}"),
+            };
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut bytes).expect("read the generation");
+            assert_eq!(bytes.len(), 256, "a torn generation was visible");
+            assert!(
+                bytes.iter().all(|byte| *byte == bytes[0]),
+                "a mixed generation"
+            );
+        }
+        finished.store(true, Ordering::Relaxed);
+        publisher.join().expect("join publisher");
+        eprintln!("{vanished} of {READS} lookups landed in the replace gap");
         fs::remove_dir_all(root).expect("remove fixture");
     }
 }

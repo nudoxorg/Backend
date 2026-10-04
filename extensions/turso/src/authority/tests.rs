@@ -4,6 +4,7 @@
 
 use super::schema::{AUTHORITY_SCHEMA, AUTHORITY_SCHEMA_VERSION};
 use super::*;
+use crate::sharing::SharedWalBackend;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, mpsc};
@@ -11,7 +12,7 @@ use std::thread;
 
 static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
-struct AcceptVerifiedClosure;
+pub(super) struct AcceptVerifiedClosure;
 
 impl DurableClosureVerifier for AcceptVerifiedClosure {
     type Error = &'static str;
@@ -25,7 +26,7 @@ impl DurableClosureVerifier for AcceptVerifiedClosure {
     }
 }
 
-fn path() -> PathBuf {
+pub(super) fn path() -> PathBuf {
     let serial = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
         "backend-turso-index-authority-{}-{serial}.db",
@@ -33,15 +34,24 @@ fn path() -> PathBuf {
     ))
 }
 
+async fn fixture_database(path: &PathBuf, read_only: bool) -> turso::Database {
+    let text = path.to_str().expect("fixture path is UTF-8");
+    let backend = SharedWalBackend::detect().expect("fixture shared-WAL backend");
+    let builder = backend.builder(text).experimental_index_method(true);
+    let builder = if read_only {
+        builder.read_only(true)
+    } else {
+        builder
+    };
+    backend
+        .open_database(builder)
+        .await
+        .expect("fixture shared database")
+}
+
 fn raw_execute(path: &PathBuf, sql: &str) {
     futures_executor::block_on(async {
-        let text = path.to_str().expect("fixture path is UTF-8");
-        let database = turso::Builder::new_local(text)
-            .experimental_multiprocess_wal(true)
-            .experimental_index_method(true)
-            .build()
-            .await
-            .expect("fixture database");
+        let database = fixture_database(path, false).await;
         let connection = database.connect().expect("fixture connection");
         connection.execute_batch(sql).await.expect("fixture SQL");
         drop(connection);
@@ -58,13 +68,7 @@ fn seed_authority(path: &PathBuf, ddl: &str, marker_rows: &str) {
 
 fn database_snapshot(path: &PathBuf) -> (Vec<Vec<turso::Value>>, Vec<Vec<turso::Value>>) {
     futures_executor::block_on(async {
-        let text = path.to_str().expect("fixture path is UTF-8");
-        let database = turso::Builder::new_local(text)
-            .experimental_multiprocess_wal(true)
-            .experimental_index_method(true)
-            .build()
-            .await
-            .expect("snapshot database");
+        let database = fixture_database(path, true).await;
         let connection = database.connect().expect("snapshot connection");
         let schema = snapshot_query(
             &connection,
@@ -142,13 +146,7 @@ fn remove_trigger(ddl: &str, name: &str) -> String {
 
 fn table_info(path: &PathBuf, table: &str) -> Vec<Vec<turso::Value>> {
     futures_executor::block_on(async {
-        let text = path.to_str().expect("fixture path is UTF-8");
-        let database = turso::Builder::new_local(text)
-            .experimental_multiprocess_wal(true)
-            .experimental_index_method(true)
-            .build()
-            .await
-            .expect("table-info database");
+        let database = fixture_database(path, true).await;
         let connection = database.connect().expect("table-info connection");
         let sql = format!("PRAGMA table_info({table})");
         let values = snapshot_query(&connection, &sql).await;
@@ -425,13 +423,7 @@ fn inventory_copy_bounds_reject_oversized_sql_and_many_objects() {
 fn failed_marker_insert_rolls_back_fresh_schema_ddl() {
     futures_executor::block_on(async {
         let path = path();
-        let text = path.to_str().expect("fixture path is UTF-8");
-        let database = turso::Builder::new_local(text)
-            .experimental_multiprocess_wal(true)
-            .experimental_index_method(true)
-            .build()
-            .await
-            .expect("rollback database");
+        let database = fixture_database(&path, false).await;
         let mut connection = database.connect().expect("rollback connection");
         let transaction = connection
             .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
@@ -504,17 +496,17 @@ fn competing_fresh_openers_serialize_and_revalidate_under_the_writer_lock() {
     );
 }
 
-fn namespace() -> AuthorityNamespace {
+pub(super) fn namespace() -> AuthorityNamespace {
     AuthorityNamespace::package_metadata("pkg:cargo/widget", "registry:crates-io", "main", "stable")
         .unwrap_or_else(|error| panic!("namespace: {error}"))
 }
 
-fn observation(value: SourceObservationValue, observed_at_ms: u64) -> SourceObservation {
+pub(super) fn observation(value: SourceObservationValue, observed_at_ms: u64) -> SourceObservation {
     SourceObservation::new(namespace(), Some([11; 32]), observed_at_ms, value)
         .unwrap_or_else(|error| panic!("observation: {error}"))
 }
 
-fn candidate(
+pub(super) fn candidate(
     attempt: CandidateAttempt,
     candidate: u8,
     root: u8,

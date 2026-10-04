@@ -327,11 +327,148 @@ fn confirms_retired(members: &[ProcessIdentity], leader_pid: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FileIdentity;
     use std::{
-        fs,
-        process::Stdio,
-        time::{Duration, Instant},
+        fs::{self, OpenOptions},
+        io::{Read, Seek, SeekFrom},
+        os::unix::{fs::OpenOptionsExt as _, process::ExitStatusExt as _},
+        path::PathBuf,
+        process::{Child, Stdio},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
+
+    struct OwnedPidMarker {
+        file: fs::File,
+        identity: FileIdentity,
+        path: PathBuf,
+    }
+
+    impl OwnedPidMarker {
+        fn create() -> io::Result<Self> {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            for attempt in 0..16_u8 {
+                let path = std::env::temp_dir().join(format!(
+                    "backend-platform-darwin-pgrp-child-{}-{nonce}-{attempt}.pid",
+                    std::process::id()
+                ));
+                let file = match OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&path)
+                {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(error),
+                };
+                let identity = FileIdentity::of_file(&file)?;
+                let marker = Self {
+                    file,
+                    identity,
+                    path,
+                };
+                marker.verify_named()?;
+                return Ok(marker);
+            }
+            Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "could not reserve a unique process-group PID marker",
+            ))
+        }
+
+        fn verify_named(&self) -> io::Result<()> {
+            if FileIdentity::of_path_nofollow(&self.path)? != self.identity {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "process-group PID marker name changed identity",
+                ));
+            }
+            Ok(())
+        }
+
+        fn read_complete_pid(&mut self) -> io::Result<Option<i32>> {
+            self.verify_named()?;
+            self.file.seek(SeekFrom::Start(0))?;
+            let mut contents = [0_u8; 33];
+            let read = self
+                .file
+                .by_ref()
+                .take(contents.len() as u64)
+                .read(&mut contents)?;
+            if read > 32 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "child PID marker exceeds its 32-byte limit",
+                ));
+            }
+            let contents = std::str::from_utf8(&contents[..read]).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "child PID marker is not UTF-8")
+            })?;
+            if !contents.ends_with('\n') {
+                return Ok(None);
+            }
+            let pid = contents.trim().parse().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid child PID marker")
+            })?;
+            Ok(Some(pid))
+        }
+    }
+
+    impl Drop for OwnedPidMarker {
+        fn drop(&mut self) {
+            if FileIdentity::of_path_nofollow(&self.path).ok() == Some(self.identity) {
+                let _ = fs::remove_file(&self.path);
+            }
+        }
+    }
+
+    struct OwnedSessionLeader {
+        child: Child,
+        leader_reaped: bool,
+    }
+
+    impl OwnedSessionLeader {
+        fn spawn(command: &mut Command) -> io::Result<Self> {
+            configure_process_session(command);
+            Ok(Self {
+                child: command.spawn()?,
+                leader_reaped: false,
+            })
+        }
+
+        fn id(&self) -> u32 {
+            self.child.id()
+        }
+
+        fn wait_after_retirement(&mut self) -> io::Result<std::process::ExitStatus> {
+            let status = self.child.wait()?;
+            self.leader_reaped = true;
+            Ok(status)
+        }
+    }
+
+    impl Drop for OwnedSessionLeader {
+        fn drop(&mut self) {
+            if self.leader_reaped {
+                return;
+            }
+            // This guard owns the direct child and never waits it before this
+            // branch. The leader therefore remains waitable and its PID cannot
+            // have been reused when the fallback group signal is sent.
+            let group_signal_succeeded = Pid::from_raw(self.child.id() as i32)
+                .is_some_and(|group| kill_process_group(group, Signal::KILL).is_ok());
+            if !group_signal_succeeded {
+                let _ = self.child.kill();
+            }
+            if self.child.wait().is_ok() {
+                self.leader_reaped = true;
+            }
+        }
+    }
 
     fn member(pid: i32, unique_id: u64, status: u32) -> ProcessIdentity {
         ProcessIdentity {
@@ -423,32 +560,29 @@ mod tests {
 
     #[test]
     fn darwin_session_group_retirement_observes_real_child_lifecycle() {
-        let pid_file = std::env::temp_dir().join(format!(
-            "backend-platform-darwin-pgrp-child-{}.pid",
-            std::process::id()
-        ));
-        let _ = fs::remove_file(&pid_file);
+        let mut pid_file = OwnedPidMarker::create().expect("reserve unique descendant marker");
         let mut command = Command::new("/bin/sh");
         command
             .args([
                 "-c",
-                "sleep 30 & echo $! > \"$1\"; wait",
+                "/bin/sleep 30 & echo $! > \"$1\"; exec /bin/sleep 30",
                 "backend-platform-darwin-pgrp-test",
             ])
-            .arg(&pid_file)
+            .arg(&pid_file.path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        configure_process_session(&mut command);
-        let mut child = command.spawn().expect("spawn session leader");
+        let mut leader = OwnedSessionLeader::spawn(&mut command).expect("spawn session leader");
 
         let handshake_deadline = Instant::now() + Duration::from_secs(2);
         let descendant = loop {
-            if let Ok(contents) = fs::read_to_string(&pid_file)
-                && let Ok(raw_pid) = contents.trim().parse::<i32>()
-                && let Some(pid) = Pid::from_raw(raw_pid)
+            match pid_file
+                .read_complete_pid()
+                .expect("read the exact owned descendant marker")
             {
-                break pid;
+                Some(raw_pid) if let Some(pid) = Pid::from_raw(raw_pid) => break pid,
+                Some(_) => panic!("descendant marker contained an invalid PID"),
+                None => {}
             }
             assert!(
                 Instant::now() < handshake_deadline,
@@ -456,20 +590,33 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(1));
         };
-        let live_descendant = process_identity(descendant.as_raw_pid(), child.id())
+        let live_descendant = process_identity(descendant.as_raw_pid(), leader.id())
             .expect("query descendant identity")
             .expect("descendant belongs to the session group");
         assert_ne!(
             live_descendant.status, SZOMB,
             "descendant must be live before retirement"
         );
+        let live_leader = process_identity(leader.id() as libc::pid_t, leader.id())
+            .expect("query session leader identity")
+            .expect("leader belongs to its process group");
+        assert_ne!(
+            live_leader.status, SZOMB,
+            "session leader must remain live and waitable before retirement"
+        );
 
-        retire_process_group(child.id()).expect("retire process group");
-        let status = child.wait().expect("reap pinned session leader");
-        assert!(!status.success());
+        retire_process_group(leader.id()).expect("retire process group");
+        let status = leader
+            .wait_after_retirement()
+            .expect("reap pinned session leader");
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGKILL),
+            "the non-returning session leader must have received the group kill"
+        );
 
         let reap_deadline = Instant::now() + Duration::from_secs(2);
-        while process_identity(descendant.as_raw_pid(), child.id())
+        while process_identity(descendant.as_raw_pid(), leader.id())
             .expect("query descendant after retirement")
             .is_some_and(|identity| identity.status != SZOMB)
         {
@@ -479,7 +626,6 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(1));
         }
-        let _ = fs::remove_file(pid_file);
     }
 
     #[test]

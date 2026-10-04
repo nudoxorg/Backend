@@ -1,8 +1,9 @@
 //! Bounded reads beneath a pinned local-project directory.
 
+use backend_platform::FileIdentity;
 use backend_platform::directory::DirectoryCapability;
 use std::fs::File;
-use std::io::{self, Read as _};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 /// Opens a package-relative regular file through a held directory capability.
@@ -74,12 +75,15 @@ pub(crate) fn read_bytes_under(
     let reserve = usize::try_from(metadata.len()).unwrap_or(0);
     let mut bytes =
         Vec::with_capacity(reserve.min(usize::try_from(maximum_bytes).unwrap_or(usize::MAX)));
-    file.take(maximum_bytes.saturating_add(1))
-        .read_to_end(&mut bytes)?;
+    Read::take(&file, maximum_bytes.saturating_add(1)).read_to_end(&mut bytes)?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum_bytes {
         return Err(invalid("source file exceeds the read bound"));
     }
-    let editor_hint = editor_hint_for_opened_file(package_root, relative, &metadata);
+    // The hint is optional: a filesystem without stable object ids yields no
+    // hint rather than refusing a read the held descriptor already made.
+    let editor_hint = FileIdentity::of_file(&file)
+        .ok()
+        .and_then(|opened| editor_hint_for_opened_file(package_root, relative, opened));
     Ok((bytes, editor_hint))
 }
 
@@ -88,33 +92,16 @@ pub(crate) fn read_bytes_under(
 pub(crate) fn editor_hint_for_opened_file(
     package_root: &Path,
     relative: &Path,
-    opened_metadata: &std::fs::Metadata,
+    opened: FileIdentity,
 ) -> Option<PathBuf> {
     let canonical_root = package_root.canonicalize().ok()?;
     let candidate = package_root.join(relative).canonicalize().ok()?;
     if !candidate.starts_with(canonical_root) {
         return None;
     }
-    let path_metadata = std::fs::metadata(&candidate).ok()?;
-    same_file(opened_metadata, &path_metadata).then_some(candidate)
-}
-
-#[cfg(unix)]
-fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt as _;
-    left.dev() == right.dev() && left.ino() == right.ino()
-}
-
-#[cfg(windows)]
-fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt as _;
-    left.volume_serial_number() == right.volume_serial_number()
-        && left.file_index() == right.file_index()
-}
-
-#[cfg(not(any(unix, windows)))]
-fn same_file(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
-    false
+    // `candidate` is canonical, so no link remains to follow or refuse.
+    let named = FileIdentity::of_path_nofollow(&candidate).ok()?;
+    (named == opened).then_some(candidate)
 }
 
 fn invalid(message: &'static str) -> io::Error {
