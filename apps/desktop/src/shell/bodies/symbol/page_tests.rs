@@ -497,7 +497,7 @@ fn a_click_on_a_place_opens_that_file_at_that_line_in_the_editor(cx: &mut TestAp
     rig.settle();
     let ran = ran.borrow();
     assert_eq!(ran.len(), 1, "one editor launch request");
-    assert_eq!(ran[0].program, "code");
+    assert_eq!(ran[0].program, crate::host::editor::VS_CODE);
     assert_eq!(ran[0].args, ["-g".to_owned(), "/work/gui-harness/src/c.rs:7".to_owned()],
         "the file the place is in, at its line");
 }

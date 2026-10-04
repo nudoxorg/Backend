@@ -5,6 +5,19 @@
 set -eu
 unset CARGO_BUILD_BUILD_DIR CARGO_TARGET_DIR
 
+# The script under test serves its cache over a Unix-domain socket from a Python
+# helper, in a mode-0700 per-uid directory under /tmp, and is part of the Nix
+# development shell. None of that exists on Windows (CPython there has no
+# `os.getuid` or POSIX permission semantics), so under Git Bash, MSYS or
+# Cygwin this test cannot run. It says so and exits 77, the conventional "skipped"
+# status, instead of failing deep inside the helper.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*)
+    echo "cargo-shared-cache: SKIP: the cache protocol needs POSIX sockets, uids and modes" >&2
+    exit 77
+    ;;
+esac
+
 repo_root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
 # A Nix check runs this file as a lone store path, where the repository layout
 # is gone; it names the script under test explicitly instead.

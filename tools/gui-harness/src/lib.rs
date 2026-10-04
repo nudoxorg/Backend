@@ -912,9 +912,10 @@ pub enum CaptureError {
     /// GPUI driver failed.
     #[error("GPUI capture failed: {0}")]
     Gpui(String),
-    /// The platform does not expose a direct offscreen renderer.
-    #[error("the current GPUI platform has no direct offscreen renderer")]
-    NoRenderer,
+    /// The platform does not expose a direct offscreen renderer, or it could
+    /// not be created; the platform's reason.
+    #[error("the current GPUI platform has no direct offscreen renderer: {0}")]
+    NoRenderer(String),
     /// A configured baseline frame was absent.
     #[error("baseline is missing for capture {0:?}")]
     BaselineMissing(String),

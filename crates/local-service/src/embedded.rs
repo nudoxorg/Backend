@@ -353,7 +353,10 @@ mod tests {
                 .expect("private scratch root");
         }
         #[cfg(not(unix))]
-        std::fs::create_dir_all(&root).expect("scratch root");
+        {
+            std::fs::create_dir_all(&root).expect("scratch root");
+            crate::test_support::make_private(&root).expect("private scratch root");
+        }
         let project = root.join("project");
         std::fs::create_dir_all(&project).expect("project");
         let paths = WorkspacePaths::discover(

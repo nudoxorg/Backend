@@ -1116,7 +1116,7 @@ impl Drop for TypedV2HistorySpool {
 }
 
 #[cfg(windows)]
-const WINDOWS_FILE_FLAG_DELETE_ON_CLOSE: i32 = 0x0400_0000;
+const WINDOWS_FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
 
 /// Private capability constructed only after exact closure membership,
 /// schema, object identity, and payload length were checked and spooled.

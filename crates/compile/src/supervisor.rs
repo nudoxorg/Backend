@@ -709,6 +709,25 @@ fn wait_for_child_exit_without_reaping(pid: u32) -> Result<bool, ProcessError> {
     }
 }
 
+/// Targets without `waitid(WNOWAIT)` cannot observe a leader's exit while
+/// keeping it waitable, so this reports the same typed refusal as
+/// [`child_exited_without_reaping`] instead of guessing.
+#[cfg(not(all(
+    unix,
+    not(any(
+        target_os = "cygwin",
+        target_os = "horizon",
+        target_os = "openbsd",
+        target_os = "redox",
+        target_os = "wasi"
+    ))
+)))]
+fn wait_for_child_exit_without_reaping(_pid: u32) -> Result<bool, ProcessError> {
+    Err(ProcessError::UnsupportedLimit(
+        crate::UnsupportedLimit::ProcessGroup,
+    ))
+}
+
 fn child_reaper_state() -> Result<Arc<ChildReaperState>, ProcessError> {
     let state_slot = CHILD_REAPER.get_or_init(|| Mutex::new(None));
     let mut state = state_slot

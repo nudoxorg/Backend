@@ -1,0 +1,195 @@
+# Backend v2 is one acyclic versioned engine. Proven compiler semantics are
+# retained as first-class workspace crates and adapted at product boundaries.
+[workspace]
+resolver = "3"
+members = [
+    "crates/*",
+    "frontends/*",
+    "extensions/*",
+    "apps/*",
+    "tests/*",
+    "tools/*",
+    "vendor/gpui-ce",
+    "vendor/gpui_ce_components",
+    "vendor/gpui_ce_wgpu",
+]
+exclude = [
+    ".config/dylint",
+    "tests/__pycache__",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1.0.100"
+allocation-counter = "0.8.1"
+arrayvec = { version = "0.7.6", default-features = false }
+atomic-waker = { version = "1.1.2", default-features = false }
+axum = { version = "0.8.4", default-features = false, features = ["http1", "json", "tokio"] }
+base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
+async-channel = "2.5.0"
+blake3 = { version = "1.8.2", default-features = false }
+bolero = "0.13.4"
+bytes = { version = "1.10.1", default-features = false }
+derive_more = { version = "2.1.1", default-features = false, features = ["debug"] }
+fearless_simd = { version = "0.7.0", default-features = false }
+flate2 = "1.1.10"
+fs4 = { version = "0.13.1", default-features = false, features = ["sync"] }
+futures-core = { version = "0.3.31", default-features = false }
+futures-executor = "0.3.31"
+futures-util = { version = "0.3.31", default-features = false, features = ["alloc"] }
+ignore = "0.4.33"
+libc = { version = "0.2.189", default-features = false }
+# Keep the entire CE family on one published GPUI type universe. Cargo.lock
+# records registry checksums for each of these exact versions.
+gpui = { package = "gpui-ce", version = "=0.2.2", default-features = false }
+gpui_platform = { package = "gpui_ce_platform", version = "=0.1.0", default-features = false }
+gpui_component = { package = "gpui_ce_components", version = "=0.2.0" }
+hmac = "0.12.1"
+httpdate = "1.0.3"
+loom = "0.7.2"
+markdown = "=1.0.0"
+opentelemetry = { version = "=0.32.0", features = ["logs", "metrics", "trace"] }
+opentelemetry-appender-tracing = "=0.32.0"
+opentelemetry_sdk = { version = "=0.32.1", features = ["logs", "metrics", "trace"] }
+parking_lot = "0.12.4"
+postcard = { version = "=1.1.3", default-features = false, features = ["alloc"] }
+proptest = "1.7.0"
+quick-xml = "0.41.0"
+rstest = { version = "0.26.1", default-features = false }
+serde = { version = "=1.0.229", default-features = false, features = ["alloc", "derive", "rc"] }
+serde_json = "=1.0.151"
+sha2 = { version = "0.10.9", default-features = false }
+sha1 = { version = "0.10.6", default-features = false }
+zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
+smallvec = { version = "1.15.1", features = ["const_generics", "serde"] }
+strum = { version = "0.28.0", default-features = false, features = ["derive"] }
+tantivy = "0.26.1"
+tempfile = "3.27.0"
+thiserror = { version = "2", default-features = false }
+trybuild = "1.0.118"
+tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+toml = "0.8.23"
+tracing = "=0.1.44"
+tracing-opentelemetry = "=0.33.0"
+tracing-subscriber = { version = "=0.3.23", features = ["registry"] }
+tree-sitter = "=0.27.0"
+trustfall = { git = "https://github.com/philocalyst/trustfall", rev = "5a0a8607fc5d972380437289b9a4ad1aa5150b09", features = ["async"] }
+trustfall_core = { git = "https://github.com/philocalyst/trustfall", rev = "5a0a8607fc5d972380437289b9a4ad1aa5150b09", features = ["async"] }
+turso = { version = "=0.8.0-pre.10", default-features = false }
+ureq = { version = "=3.4.0", default-features = false, features = ["gzip", "json", "rustls"] }
+zerocopy = { version = "0.8.56", default-features = false, features = ["derive"] }
+
+[workspace.lints.rust]
+# Audited low-level storage modules may opt into narrowly scoped unsafe code;
+# all other workspace code inherits this denial.
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+expect_used = "warn"
+mem_forget = "deny"
+panic = "warn"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+
+[profile.dev]
+debug = 1
+incremental = true
+
+# The local owner's start is the harness's hot path: blake3 per tree leaf, the library projection's search-posting build, certificate admission. Optimizing only these crates took a desktop capture from 123 s to 55 s (W-Instant, 2026-09-28). facet, desktop and third-party crates stay at 0 on purpose: GUI lanes rebuild them constantly. debug-assertions and overflow-checks are inherited unchanged.
+[profile.dev.package.blake3]
+opt-level = 3
+[profile.dev.package.backend-version]
+opt-level = 2
+[profile.dev.package.backend-flow]
+opt-level = 2
+[profile.dev.package.backend-library]
+opt-level = 2
+[profile.dev.package.backend-store]
+opt-level = 2
+[profile.dev.package.backend-engine]
+opt-level = 2
+
+# backend-desktop's --lib test binary stopped linking on 2026-09-28:
+# `ld: b(l) ARM64 branch out of range (-151592460 max is +/-128MB)`, a call
+# out of a gpui_ce_macos objc class-registration ctor, once __TEXT,__text
+# passed ~150MB. Confirmed by relink with cached objects that neither the
+# nixpkgs ld64-956.6 in this dev shell nor Apple's newer system linker
+# (/usr/bin/ld, ld-prime 1230.1) inserts a branch island for this call
+# pattern — a linker swap does not fix it. These are the largest opt-level-0
+# contributors to that section (rust-analyzer's query engine, used only by
+# the Rust language frontend, plus the local-service crate that links every
+# frontend together): optimizing them shrinks __text back under the range.
+# None of them are gpui/objc or anything GUI lanes rebuild. See
+# .local/lanes/wave6/tissue/LINK.md.
+[profile.dev.package.ra_ap_hir_ty]
+opt-level = 2
+[profile.dev.package.ra_ap_hir_def]
+opt-level = 2
+[profile.dev.package.ra_ap_hir_expand]
+opt-level = 2
+[profile.dev.package.ra_ap_hir]
+opt-level = 2
+[profile.dev.package.ra_ap_ide_db]
+opt-level = 2
+[profile.dev.package.ra_ap_syntax]
+opt-level = 2
+[profile.dev.package.backend-local-service]
+opt-level = 2
+# 2026-09-28 night: over again (-134 MB against the 128 MB range, W-Open I2). The next largest
+# opt-level-0 contributors that no GUI lane edits: the embedded SQL engine, search, networking,
+# the query engine, the TS parser. Sizes from the slot's debug rlibs: turso_core 143 MB,
+# tantivy 71, iroh 51, trustfall_core 22, oxc_ast 19, oxc_parser 16.
+[profile.dev.package.turso_core]
+opt-level = 2
+[profile.dev.package.tantivy]
+opt-level = 2
+[profile.dev.package.iroh]
+opt-level = 2
+[profile.dev.package.trustfall_core]
+opt-level = 2
+[profile.dev.package.oxc_ast]
+opt-level = 2
+[profile.dev.package.oxc_parser]
+opt-level = 2
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+strip = "symbols"
+
+[patch.crates-io]
+gpui_ce_components = { path = "vendor/gpui_ce_components" }
+# Deterministic-clock patches: every animation reads the executor clock
+# (`TestClock` headless). See vendor/gpui-ce/NUDOX-PATCHES.md.
+gpui-ce = { path = "vendor/gpui-ce" }
+gpui_ce_components_base = { path = "vendor/gpui_ce_components_base" }
+gpui_ce_macos = { path = "vendor/gpui_ce_macos" }
+# Windows headless rendering: the wgpu renderer the Windows window uses gains an
+# offscreen target with readback, and the platform crate hands it out from
+# `current_headless_renderer` (vendor/gpui-ce/NUDOX-PATCHES.md).
+gpui_ce_platform = { path = "vendor/gpui_ce_platform" }
+gpui_ce_wgpu = { path = "vendor/gpui_ce_wgpu" }
+# The headless test scheduler took its two locks in opposite orders in
+# `block` and `schedule_local`: a journey hung for good when an engine
+# thread woke a local task (vendor/gpui_ce_scheduler/src/test_scheduler.rs).
+gpui_ce_scheduler = { path = "vendor/gpui_ce_scheduler" }
+# Rust authority pins executable discovery and child environments to the
+# admitted toolchain carried by CargoConfig.extra_env.
+ra_ap_hir_def = { path = "vendor/ra_ap_hir_def" }
+ra_ap_project_model = { path = "vendor/ra_ap_project_model" }
+ra_ap_toolchain = { path = "vendor/ra_ap_toolchain" }

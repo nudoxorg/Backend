@@ -23,5 +23,14 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 
+# Windows windows draw with wgpu in this workspace (apps/desktop); the headless
+# renderer is that same renderer's offscreen target, offered only with `wgpu`.
+[target.'cfg(target_os = "windows")'.dependencies]
+gpui_platform = { workspace = true, features = ["test-support", "wgpu"] }
+
+# `tests/headless_pixels.rs` chooses the adapter policy directly.
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+gpui_wgpu = { package = "gpui_ce_wgpu", version = "=0.1.0", features = ["test-support"] }
+
 [lints]
 workspace = true

@@ -5,8 +5,14 @@
 //! bounds, and reply admission path.
 #![forbid(unsafe_code)]
 
+pub mod lease_contract;
+pub mod monotonic;
 #[cfg(any(unix, windows))]
 mod remote_command;
+#[cfg(any(unix, windows))]
+mod reset_budget;
+#[cfg(any(unix, windows))]
+mod reset_hydration;
 #[cfg(any(unix, windows))]
 mod semantic_range_local;
 mod subscription;
@@ -14,6 +20,8 @@ mod subscription;
 mod subscription_local;
 #[cfg(any(unix, windows))]
 mod subscription_observation;
+#[cfg(all(test, any(unix, windows)))]
+mod test_socket;
 
 #[cfg(any(unix, windows))]
 pub use remote_command::RemoteIndexCommandTransport;
