@@ -23,6 +23,7 @@ use crate::ir::{
 
 use super::wire::{
     DIRECTORY_BYTES, ENTITY_ROW_BYTES, FullDirectoryKind, HEADER_BYTES, RANGE_ROW_BYTES,
+    SIGNATURE_CARRIER_RANGE_ROW_BYTES, SIGNATURE_CARRIER_TARGET_ROW_BYTES,
     SPARSE_BINDING_ROW_BYTES,
 };
 use super::{
@@ -306,6 +307,44 @@ fn lane_payload_offset(bytes: &[u8], kind: FullDirectoryKind) -> usize {
 
 fn set_u32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+#[test]
+fn signature_binding_size_preflight_checks_wire_width_without_allocating() {
+    for (row_bytes, field) in [
+        (
+            SIGNATURE_CARRIER_RANGE_ROW_BYTES,
+            FullSemanticImageField::SignatureCarrierBindingRanges,
+        ),
+        (
+            SIGNATURE_CARRIER_TARGET_ROW_BYTES,
+            FullSemanticImageField::SignatureCarrierBindingTargets,
+        ),
+    ] {
+        let max_wire_bytes = u32::MAX as usize;
+        let largest_rows = max_wire_bytes / row_bytes;
+        let largest_bytes = largest_rows * row_bytes;
+        assert_eq!(
+            super::plan::signature_binding_lane_bytes(largest_rows, row_bytes, field),
+            Ok(largest_bytes)
+        );
+        assert!(matches!(
+            super::plan::signature_binding_lane_bytes(largest_rows + 1, row_bytes, field),
+            Err(FullSemanticImageFault::LengthOverflow { field: observed }) if observed == field
+        ));
+    }
+
+    let half_wire = (u32::MAX as usize) / 2;
+    assert_eq!(
+        super::plan::signature_binding_lanes_bytes(half_wire, half_wire),
+        Ok(half_wire * 2)
+    );
+    assert!(matches!(
+        super::plan::signature_binding_lanes_bytes(half_wire + 1, half_wire + 1),
+        Err(FullSemanticImageFault::LengthOverflow {
+            field: FullSemanticImageField::Directory
+        })
+    ));
 }
 
 #[cfg(feature = "mmap")]

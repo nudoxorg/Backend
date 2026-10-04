@@ -284,21 +284,26 @@ fn plan_signature_carrier_bindings(
         }
         .into());
     }
-    let range_bytes = function_count
-        .checked_mul(SIGNATURE_CARRIER_RANGE_ROW_BYTES)
-        .ok_or(FullSemanticImageFault::LengthOverflow {
-            field: FullSemanticImageField::SignatureCarrierBindingRanges,
-        })?;
+    let range_bytes = signature_binding_lane_bytes(
+        function_count,
+        SIGNATURE_CARRIER_RANGE_ROW_BYTES,
+        FullSemanticImageField::SignatureCarrierBindingRanges,
+    )?;
     let target_count = source.targets().len();
     count(
         target_count,
         FullSemanticImageField::SignatureCarrierBindingTargets,
     )?;
-    let target_byte_length = target_count
-        .checked_mul(SIGNATURE_CARRIER_TARGET_ROW_BYTES)
-        .ok_or(FullSemanticImageFault::LengthOverflow {
-            field: FullSemanticImageField::SignatureCarrierBindingTargets,
-        })?;
+    let target_byte_length = signature_binding_lane_bytes(
+        target_count,
+        SIGNATURE_CARRIER_TARGET_ROW_BYTES,
+        FullSemanticImageField::SignatureCarrierBindingTargets,
+    )?;
+    // Reject an unrepresentable combined binding-lane budget before allocating
+    // either buffer. Other lanes and the header are still admitted by the
+    // complete layout pass below; this is not a whole-image budget check.
+    let _binding_lanes_byte_length =
+        signature_binding_lanes_bytes(range_bytes, target_byte_length)?;
     let mut ranges = Vec::new();
     ranges
         .try_reserve_exact(function_count)
@@ -991,6 +996,35 @@ fn checked_bytes(
 
 fn count(value: usize, field: FullSemanticImageField) -> Result<u32, FullSemanticImageFault> {
     u32::try_from(value).map_err(|_| FullSemanticImageFault::LengthOverflow { field })
+}
+
+/// Computes one signature-binding lane's exact allocation size while proving
+/// that its directory byte length fits the wire's `u32` field.
+pub(super) fn signature_binding_lane_bytes(
+    rows: usize,
+    row_bytes: usize,
+    field: FullSemanticImageField,
+) -> Result<usize, FullSemanticImageFault> {
+    let bytes = rows
+        .checked_mul(row_bytes)
+        .ok_or(FullSemanticImageFault::LengthOverflow { field })?;
+    count(bytes, field)?;
+    Ok(bytes)
+}
+
+/// Checks the combined range/target byte budget against the directory width.
+/// This is only the budget of these two lanes, not the complete image.
+pub(super) fn signature_binding_lanes_bytes(
+    ranges: usize,
+    targets: usize,
+) -> Result<usize, FullSemanticImageFault> {
+    let bytes = ranges
+        .checked_add(targets)
+        .ok_or(FullSemanticImageFault::LengthOverflow {
+            field: FullSemanticImageField::Directory,
+        })?;
+    count(bytes, FullSemanticImageField::Directory)?;
+    Ok(bytes)
 }
 
 fn write_core_entity(
