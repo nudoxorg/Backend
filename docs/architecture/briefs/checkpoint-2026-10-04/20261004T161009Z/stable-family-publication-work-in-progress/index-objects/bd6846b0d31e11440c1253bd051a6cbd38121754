@@ -38,36 +38,27 @@ use backend_library::interface::{
     SemanticImageAccessError, SemanticImageAuthority, SemanticImageSnapshot, SourceAuthority,
 };
 use backend_semantic::ir::{
-    EmbeddingPlaneIdentity, JumboRopeLimits, MAX_SEMANTIC_SEGMENT_BYTES, SemanticBuildIdentity,
-    SemanticImageIdentity, SemanticImageReopenError, SemanticImageView, SemanticInputWitness,
-    SemanticInputClaimV2, SemanticIrPlane, SemanticManifestError, SemanticPlane,
-    SemanticPlaneKind, SemanticPlaneManifest, SemanticPlaneSegment, SemanticSegmentId,
-    SemanticTypedPlaneVerificationTierV2,
+    EmbeddingPlaneIdentity, MAX_SEMANTIC_SEGMENT_BYTES, SemanticBuildIdentity,
+    SemanticImageReopenError, SemanticImageView, SemanticInputWitness, SemanticIrPlane,
+    SemanticManifestError, SemanticPlane, SemanticPlaneKind, SemanticPlaneManifest,
+    SemanticPlaneSegment, SemanticSegmentId,
 };
 use backend_semantic::registry::{AdapterRoute, FullRegistry};
 use backend_semantic::vocabulary::AuthorityDiagnosticClass;
 use backend_store::journal::{
     DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError,
 };
-use backend_store::FileStore;
 use backend_version::Coverage;
 use backend_version::ScopeRoot;
 use backend_version::{
     ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, SourceFactDomain,
 };
 use std::{
-    io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::Instant,
 };
 use thiserror::Error;
-
-use backend_replication::{
-    DurableSemanticObjectAdmission, DurableSemanticObjectPin,
-    ProducedSemanticTypedPlaneContentV3, SemanticTypedPlaneBoundaryPoliciesV3,
-    produce_semantic_typed_plane_content_v3,
-};
 
 use crate::application::executor::StagedOutputLease;
 use crate::application::package_authority::{
@@ -859,74 +850,6 @@ impl<'bytes> StagedVersionedPlanes<'bytes> {
     }
 }
 
-/// Seven-family c007 content streamed from one exact staged compiler package.
-///
-/// This value retains producer pins and the owner-minted in-memory compilation
-/// attempt. It is a content receipt only: the embedded producer manifest
-/// preserves the staged input coverage claim and does not authorize reuse.
-/// Durable publication must bind it to the candidate attempt that owns the
-/// staged package.
-pub struct StagedTypedPlaneContentV3 {
-    compilation_attempt_id: CompilationAttemptId,
-    input_witness: SemanticInputWitness,
-    artifacts: Box<[StagedTypedPlaneContentArtifact]>,
-}
-
-impl StagedTypedPlaneContentV3 {
-    /// Per-image content receipts in the exact canonical compilation order.
-    #[must_use]
-    pub fn artifacts(&self) -> &[StagedTypedPlaneContentArtifact] {
-        &self.artifacts
-    }
-
-    /// Exact live witness retained by the staging owner.
-    #[must_use]
-    pub const fn input_witness(&self) -> SemanticInputWitness {
-        self.input_witness
-    }
-}
-
-/// One c007 output whose reader was borrowed from the named staged artifact.
-pub struct StagedTypedPlaneContentArtifact {
-    artifact_ordinal: usize,
-    semantic_image: SemanticImageArtifactFacts,
-    build: SemanticBuildIdentity,
-    input_witness: SemanticInputWitness,
-    produced: ProducedSemanticTypedPlaneContentV3,
-}
-
-impl StagedTypedPlaneContentArtifact {
-    /// Ordinal in the exact staged canonical compiler manifest.
-    #[must_use]
-    pub const fn artifact_ordinal(&self) -> usize {
-        self.artifact_ordinal
-    }
-
-    /// Complete semantic image identity and byte length retained by staging.
-    #[must_use]
-    pub const fn semantic_image(&self) -> SemanticImageArtifactFacts {
-        self.semantic_image
-    }
-
-    /// Exact runtime/toolchain/source recipe used by this staged image.
-    #[must_use]
-    pub const fn build(&self) -> SemanticBuildIdentity {
-        self.build
-    }
-
-    /// Original staged witness, including its unmodified coverage state.
-    #[must_use]
-    pub const fn input_witness(&self) -> SemanticInputWitness {
-        self.input_witness
-    }
-
-    /// Claim-only c007 content and durable FileStore receipts.
-    #[must_use]
-    pub const fn produced(&self) -> &ProducedSemanticTypedPlaneContentV3 {
-        &self.produced
-    }
-}
-
 /// Rejection while binding bounded versioned-plane metadata to a staged package.
 #[derive(Debug, Error)]
 pub enum StagedVersionedPlaneError {
@@ -948,29 +871,6 @@ pub enum StagedVersionedPlaneError {
     /// A bounded metadata allocation failed.
     #[error("semantic-plane output allocation failed")]
     Allocation(#[source] std::collections::TryReserveError),
-}
-
-/// Failure while streaming stable-key c007 content from staged readers.
-#[derive(Debug, Error)]
-pub enum StagedTypedPlaneContentError {
-    /// The staged result has neither portable nor host-local admitted runtime identity.
-    #[error("typed semantic content requires an admitted compiler runtime identity")]
-    ExecutionIdentityUnavailable,
-    /// The runtime, input, or source recipe does not govern the staged package.
-    #[error("typed semantic content identity does not match the staged compiler output")]
-    ExecutionIdentityMismatch,
-    /// One c007 artifact did not retain the exact staged image or witness claim.
-    #[error("typed semantic content differs from its exact staged image or input claim")]
-    ContentIdentityMismatch,
-    /// Bounded output receipt allocation failed.
-    #[error("typed semantic content receipt allocation failed")]
-    Allocation(#[source] std::collections::TryReserveError),
-    /// Full-image validation or the exact reader callback failed.
-    #[error(transparent)]
-    Reader(#[from] StagedSemanticReaderError<io::Error>),
-    /// The shared stable-key producer rejected the exact borrowed reader.
-    #[error("stable-key typed semantic producer failed: {0}")]
-    Producer(String),
 }
 
 /// Work performed before lending one staged canonical image to a reader callback.
@@ -1158,145 +1058,6 @@ impl StagedSemanticPackage {
                 },
             },
         }
-    }
-
-    /// Streams every staged image through the shared stable-key c007 producer.
-    ///
-    /// Each producer call runs inside [`Self::with_semantic_reader`], so the
-    /// only reader accepted here is the fully validated borrowed view over
-    /// this exact staged image. The returned receipts retain their FileStore
-    /// pins and opaque compilation-attempt binding for publication. The
-    /// producer copies the input claim as-is and never upgrades its coverage.
-    pub fn produce_typed_plane_content_v3(
-        &self,
-        store: &FileStore,
-        policies: SemanticTypedPlaneBoundaryPoliciesV3,
-        tier: SemanticTypedPlaneVerificationTierV2,
-        jumbo_limits: JumboRopeLimits,
-    ) -> Result<StagedTypedPlaneContentV3, StagedTypedPlaneContentError> {
-        if self
-            .plane_execution_identity
-            .is_some_and(|identity| identity.input_witness() != self.input)
-        {
-            return Err(StagedTypedPlaneContentError::ExecutionIdentityMismatch);
-        }
-        let (target, profile, stage, tool, toolchain, environment, target_platform) =
-            if let Some(identity) = self.execution_identity {
-                (
-                    identity.target(),
-                    identity.profile(),
-                    identity.stage(),
-                    identity.toolchain(),
-                    identity.toolchain_identity(),
-                    identity.environment_identity(),
-                    identity.target_platform_identity(),
-                )
-            } else if let Some(identity) = self.plane_execution_identity {
-                (
-                    identity.target(),
-                    identity.profile(),
-                    identity.stage(),
-                    identity.toolchain(),
-                    identity.toolchain_identity(),
-                    identity.environment_identity(),
-                    identity.target_platform_identity(),
-                )
-            } else {
-                return Err(StagedTypedPlaneContentError::ExecutionIdentityUnavailable);
-            };
-        if target != self.target_identity || profile != self.profile || stage != self.stage {
-            return Err(StagedTypedPlaneContentError::ExecutionIdentityMismatch);
-        }
-
-        let mut output = Vec::new();
-        output
-            .try_reserve_exact(self.artifacts.len())
-            .map_err(StagedTypedPlaneContentError::Allocation)?;
-        for artifact_ordinal in 0..self.artifacts.len() {
-            let artifact = self
-                .artifacts
-                .get(artifact_ordinal)
-                .ok_or(StagedTypedPlaneContentError::ExecutionIdentityMismatch)?;
-            let recipe = artifact.recipe();
-            if recipe.profile != profile
-                || recipe.stage != stage
-                || recipe.tool != tool
-                || recipe.toolchain.as_ref() != &toolchain
-            {
-                return Err(StagedTypedPlaneContentError::ExecutionIdentityMismatch);
-            }
-            // Match the per-image source recipe and runtime fields used by the
-            // existing transitional V1 plane producer. Keep this value tied to
-            // the artifact ordinal; the request-level recipe is not equivalent.
-            let build = SemanticBuildIdentity::new(
-                self.package_identity,
-                *target.as_ref(),
-                profile,
-                stage,
-                *recipe.identity.as_ref(),
-                toolchain,
-                environment,
-                target_platform,
-            );
-            let semantic_image = artifact.semantic_image();
-            let input_witness = self.input;
-            let produced = self.with_semantic_reader(artifact_ordinal, |reader, _metrics| {
-                let produced = produce_semantic_typed_plane_content_v3(
-                    store,
-                    reader,
-                    build,
-                    input_witness,
-                    policies,
-                    tier,
-                    jumbo_limits,
-                )
-                .map_err(io::Error::other)?;
-                if produced.manifest().build() != build
-                    || produced.manifest().input_claim()
-                        != SemanticInputClaimV2::from_witness(&input_witness)
-                    || produced.manifest().image_facts() != **reader
-                {
-                    return Err(io::Error::other(
-                        "stable-key output changed staged build, image, or input facts",
-                    ));
-                }
-                Ok(produced)
-            })?;
-            output.push(StagedTypedPlaneContentArtifact {
-                artifact_ordinal,
-                semantic_image,
-                build,
-                input_witness,
-                produced,
-            });
-        }
-        Ok(StagedTypedPlaneContentV3 {
-            compilation_attempt_id: self.staged.compilation_attempt_id,
-            input_witness: self.input,
-            artifacts: output.into_boxed_slice(),
-        })
-    }
-
-    /// Confirms a content receipt was produced from this exact in-memory
-    /// compilation attempt, rather than another staged package with similar
-    /// names, versions, or image order.
-    #[must_use]
-    pub fn owns_typed_plane_content(&self, content: &StagedTypedPlaneContentV3) -> bool {
-        content.compilation_attempt_id == self.staged.compilation_attempt_id
-            && content.input_witness == self.input
-            && content.artifacts.len() == self.artifacts.len()
-            && content
-                .artifacts
-                .iter()
-                .zip(&self.artifacts)
-                .enumerate()
-                .all(|(ordinal, (observed, expected))| {
-                    observed.artifact_ordinal == ordinal
-                        && observed.semantic_image == expected.semantic_image()
-                        && observed.input_witness == self.input
-                        && observed.produced.manifest().build() == observed.build
-                        && observed.produced.input_witness() == self.input
-                })
     }
 
     /// Builds one exact per-image manifest over bounded ranges of the canonical IR bytes.
