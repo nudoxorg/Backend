@@ -1522,6 +1522,7 @@ impl DiscoveryStore {
         }
         let journal = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&path)?;
