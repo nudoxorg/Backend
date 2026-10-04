@@ -1,0 +1,382 @@
+{
+  "content_mismatch_sample": [],
+  "counts": {
+    "bytes_mismatch": 0,
+    "duplicate_inode_paths": 0,
+    "expected": 9233,
+    "extra": 0,
+    "found": 9233,
+    "missing": 0,
+    "mode_mismatch": 4108,
+    "multiply_linked_regular": 0,
+    "sha256_mismatch": 0,
+    "type_mismatch": 0
+  },
+  "extra_sample": [],
+  "manifest_kind": "base",
+  "missing_sample": [],
+  "mode_mismatch_sample": [
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.aristo/canon-matches.toml",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.cargo/config.toml",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/async-io-model/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/cdc/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/code-quality/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/debugging/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o755",
+      "bytes_match": true,
+      "expected_mode": "0o777",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/debugging/references/CORRUPTION-TOOLS.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o755",
+      "bytes_match": true,
+      "expected_mode": "0o777",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/debugging/scripts",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/differential-fuzzer/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/index-knowledge/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/memory-benchmark/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/merge-semantics/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/mvcc/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/orm/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/pr-workflow/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/prolly-chunk-store/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/remotes-protocol/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/storage-format/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/testing/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/transaction-correctness/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/vc-perf-benchmarks/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/vc-vtables/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/versioning-model/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.claude/skills/yield-injections/SKILL.md",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o755",
+      "bytes_match": true,
+      "expected_mode": "0o777",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.codex/skills",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.config/nextest.toml",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.devcontainer/.gitignore",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.devcontainer/Dockerfile",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.devcontainer/Dockerfile.squid",
+      "sha256_match": true,
+      "type_match": true
+    },
+    {
+      "actual_mode": "0o644",
+      "bytes_match": true,
+      "expected_mode": "0o664",
+      "fields": [
+        "mode"
+      ],
+      "nlink": 1,
+      "path": "server/index/turso/.devcontainer/devcontainer.json",
+      "sha256_match": true,
+      "type_match": true
+    }
+  ],
+  "source_commit": "13d9919ae6a9fc4d662c5ffb322462c6e3dfb25d",
+  "source_tree": "e8a0ba54bdfae0698aca136b9400d9a1c8a89817"
+}

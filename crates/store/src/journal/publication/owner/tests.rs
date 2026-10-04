@@ -110,6 +110,15 @@ fn published(
     }
 }
 
+/// Allocation that dropping the sender of a one-slot response channel costs while its receiver
+/// is still alive, measured on this platform's `std::sync::mpsc`.
+fn sender_disconnect_allocation() -> AllocationInfo {
+    let (sender, receiver) = sync_channel::<u8>(1);
+    let allocations = measure(|| drop(sender));
+    drop(receiver);
+    allocations
+}
+
 fn nonzero(value: usize) -> io::Result<NonZeroUsize> {
     NonZeroUsize::new(value).ok_or_else(|| io::Error::other("test capacity must be nonzero"))
 }
@@ -285,6 +294,11 @@ fn warmed_duplicate_group_reuses_owner_storage_without_heap_allocation()
     // Initialize the measurement guard outside the warmed owner operation; this first-use
     // bookkeeping is not part of publication admission or group storage.
     let _ = measure(|| {});
+    // The owner drops its response sender while the caller's receiver is still pending. What
+    // std retains for that disconnect depends on the platform's lock: a boxed pthread mutex
+    // allocates on first use, an inline futex or SRW lock allocates nothing. Calibrate against
+    // the same disconnect on a bare channel instead of pinning one platform's numbers.
+    let disconnect = sender_disconnect_allocation();
     let allocations = measure(|| {
         process(
             &paths,
@@ -298,17 +312,8 @@ fn warmed_duplicate_group_reuses_owner_storage_without_heap_allocation()
         );
     });
     assert_eq!(
-        allocations,
-        AllocationInfo {
-            // The owner/group path itself allocates nothing. std::sync::mpsc retains one
-            // 64-byte terminal node while the pending receiver has not consumed its result.
-            count_total: 1,
-            count_current: 1,
-            count_max: 1,
-            bytes_total: 64,
-            bytes_current: 64,
-            bytes_max: 64,
-        }
+        allocations, disconnect,
+        "the owner/group path allocates nothing of its own; only std's sender disconnect may"
     );
     let _second = published(second_response, "warmed duplicate")?;
     assert_eq!(storage.frames.bytes.as_ptr(), frame_pointer);

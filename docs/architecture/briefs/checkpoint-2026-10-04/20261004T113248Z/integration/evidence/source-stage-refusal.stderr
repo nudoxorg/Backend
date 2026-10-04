@@ -1,0 +1,1 @@
+STAGE_FAILED: source manifest verifier failed: VERIFY_FAILED: mode mismatch for server/index/turso/.aristo/canon-matches.toml: expected 0o664, got 0o644

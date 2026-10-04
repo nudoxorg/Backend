@@ -184,6 +184,7 @@ mod tests {
         // acceptance. A real owner-replacement test lives in store tests.
         pages
             .begin(&key, VersionedRoot::unserved())
+            .expect("page generation admission")
             .expect("pending slot");
         let pending = pages.stamp(&key);
         assert_ne!(before, pending);

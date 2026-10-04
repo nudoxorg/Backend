@@ -15,6 +15,35 @@ pub use backend_replication::{
     peer_is_same_effective_uid,
 };
 
+/// Fills `bytes` from the operating system's cryptographic random source.
+///
+/// This is the one entropy seam of the engine: handshake nonces, attempt
+/// identities and acquisition fences all draw from it, so a platform without a
+/// source fails each of them closed through the same typed `io::Error`.
+///
+/// # Errors
+///
+/// Returns the operating system's error, or [`std::io::ErrorKind::Unsupported`]
+/// on a target with no audited source.
+pub(crate) fn fill_entropy(bytes: &mut [u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open("/dev/urandom")?.read_exact(bytes)
+    }
+    #[cfg(windows)]
+    {
+        backend_platform::win32::random::fill(bytes)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = bytes;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "secure random source unavailable",
+        ))
+    }
+}
+
 /// Failure while loading a process authority credential.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthoritySecretError {
@@ -164,5 +193,25 @@ mod tests {
         );
         std::fs::remove_dir_all(directory)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod entropy_tests {
+    use super::fill_entropy;
+
+    #[test]
+    fn successive_draws_differ_and_are_not_the_zero_buffer() {
+        let mut first = [0_u8; 32];
+        let mut second = [0_u8; 32];
+        fill_entropy(&mut first).expect("the platform provides a random source");
+        fill_entropy(&mut second).expect("the platform provides a random source");
+        assert_ne!(first, [0_u8; 32], "a draw must overwrite its buffer");
+        assert_ne!(first, second, "two 256-bit draws must not collide");
+    }
+
+    #[test]
+    fn an_empty_buffer_is_a_successful_empty_draw() {
+        fill_entropy(&mut []).expect("an empty draw needs no entropy");
     }
 }

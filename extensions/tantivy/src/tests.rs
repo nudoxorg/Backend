@@ -2725,6 +2725,11 @@ fn cold_exact_posting_cover_rejects_surplus_edges_and_rebuilds_from_source() {
         })
         .collect::<Vec<_>>();
     let state = state_for(documents, [0x92; 32]);
+    std::fs::create_dir_all(&root).expect("create cache parent");
+    backend_platform::durable::ensure_private_child_directory(
+        &root.join(DURABLE_ROOTS_DIRECTORY),
+    )
+    .expect("create the production private cache namespace before forging a child");
     let directory = root
         .join(DURABLE_ROOTS_DIRECTORY)
         .join(hex_fingerprint(projection_fingerprint(state.binding())));

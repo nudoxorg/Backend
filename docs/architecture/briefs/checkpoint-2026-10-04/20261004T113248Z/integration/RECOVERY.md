@@ -1,0 +1,7 @@
+# Recovery checkpoint
+
+Exact unfinished integration working source and original merge index, including strict control protocol admission, 55 passing Python motion-harness tests with FFmpeg timing/crop checks, and the formatted Source accessibility regression. The 55 tests validate the harness with synthetic media; native GUI animation acceptance is not established. The Source Rust regression is unrun. Candidate13 platform passed 70 tests and client compilation failed with four errors. Candidate9a repairs remain unrun: source materialization first failed for missing Python, then correctly refused gitlink mode mismatches. All 9,233 source paths have matching contents; a private clone normalization is being prepared without modifying the old base. Five isolated worktrees are preserved on linked recovery branches, not integrated. No new deploy or live ingest backup occurred. Native observations remain the older Run19 binary; recorder permissions for the corrected af83 bundle are still pending.
+
+This preserves frozen working source, not an accepted integration or release. No real worktree index, HEAD, branch, or merge state was changed. The default canonical branch was not moved.
+
+`merge-index-stages.nul` and `index-objects/` preserve staged-only content. To reconstruct the index, use a separate checkout and temporary GIT_INDEX_FILE; feed the NUL records to git update-index -z --index-info after git read-tree --empty. Do not overwrite the existing integration index.

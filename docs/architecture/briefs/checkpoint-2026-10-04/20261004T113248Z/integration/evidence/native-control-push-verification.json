@@ -1,0 +1,20 @@
+{
+  "commit": "feaa8b071b479c6aa7f6fe085c1e24383a229fd1",
+  "branch": "codex/native-control-protocol-20261004",
+  "tree": "5ed78ca6f3a4d08c2b37478af8c5f28dbd2e4125",
+  "parent": "c70bc0ec690dfad51c625177e5852c727c53985e",
+  "paths": [
+    "tools/gui-harness/native_motion_supervision.py",
+    "tools/gui-harness/test_native_motion.py",
+    "docs/architecture/briefs/checkpoint-2026-10-04/native-control-55-tests.json"
+  ],
+  "real_integration_state_preserved": true,
+  "artifact_dir": "/private/tmp/nudox-native-control-atomic-2l32hoen",
+  "test_receipt": "/private/tmp/nudox-root-motion-full-20261004T111701Z/receipt.json",
+  "push_verified": true,
+  "remote_refs": {
+    "refs/heads/canonical": "76587b45c7abc378dfd5decfed51063cd2559aa6",
+    "refs/heads/codex/native-control-protocol-20261004": "feaa8b071b479c6aa7f6fe085c1e24383a229fd1"
+  },
+  "verified_utc": "2026-10-04T11:23:26.649975+00:00"
+}

@@ -38,12 +38,11 @@ pub use listener::{
 };
 pub use process::{
     ADVISORY_GHSA_ENV, ADVISORY_MAX_AGE_ENV, ADVISORY_OFFLINE_ENV, ADVISORY_OSV_ENV,
-    ADVISORY_OSV_SCOPE_ENV,
-    ADVISORY_POLICY_ENV, ADVISORY_RUSTSEC_ENV, AUTHORITY_SECRET_ENV, AdvisoryConfig,
-    AdvisorySourceConfig, ENDPOINT_ENV, FORGE_AUTH_ENV, FORGE_AUTH_FILE_ENV, FORGE_AUTH_SCOPES_ENV,
-    FORGE_OFFLINE_ENV, ForgeAuthentication, ForgeConfig, PROFILE_ENV, ProcessConfig, ProcessError,
-    REGISTRY_AUTH_ENV, REGISTRY_AUTH_FILE_ENV, REGISTRY_AUTH_SCOPES_ENV,
-    REGISTRY_DISCOVERY_MAX_PAGES_ENV, REGISTRY_DISCOVERY_OFFLINE_ENV,
+    ADVISORY_OSV_SCOPE_ENV, ADVISORY_POLICY_ENV, ADVISORY_RUSTSEC_ENV, AUTHORITY_SECRET_ENV,
+    AdvisoryConfig, AdvisorySourceConfig, ENDPOINT_ENV, FORGE_AUTH_ENV, FORGE_AUTH_FILE_ENV,
+    FORGE_AUTH_SCOPES_ENV, FORGE_OFFLINE_ENV, ForgeAuthentication, ForgeConfig, PROFILE_ENV,
+    ProcessConfig, ProcessError, REGISTRY_AUTH_ENV, REGISTRY_AUTH_FILE_ENV,
+    REGISTRY_AUTH_SCOPES_ENV, REGISTRY_DISCOVERY_MAX_PAGES_ENV, REGISTRY_DISCOVERY_OFFLINE_ENV,
     REGISTRY_DISCOVERY_SOURCES_ENV, REGISTRY_ECOSYSTEM_ENV, REGISTRY_ENDPOINT_ENV,
     REGISTRY_NATIVE_ENV, REGISTRY_OFFLINE_ENV, REGISTRY_SOURCES_ENV, RegistryConfig,
     RegistryDiscoveryConfig, RegistryUserPolicy, WORKER_ENDPOINT_ENV, WORKSPACE_ENV, main_entry,
@@ -56,10 +55,10 @@ pub use protocol::{
     frame, is_lifecycle, read_frame, unframe, write_frame,
 };
 pub use service::{
-    CommandOutcome, CompletionAdmission, DeferredCommands, Handled, LocaldOwner, LocaldService,
-    NoCompletionAdmission, NoReplicationAdmission,
-    NoSemanticRangeAdmission, OwnerService, ReplicationAdmission, SemanticRangeAdmission,
-    ServiceError, SubscriptionLeaseLimits,
+    CommandOutcome, CompletionAdmission, DeferredCommands, Handled, LeaseLimitError, LocaldOwner,
+    LocaldService, NoCompletionAdmission, NoReplicationAdmission, NoSemanticRangeAdmission,
+    OwnerService, ReplicationAdmission, SemanticRangeAdmission, ServiceError,
+    SubscriptionLeaseLimits,
 };
 
 /// Versioned request body sent through the local transport boundary.

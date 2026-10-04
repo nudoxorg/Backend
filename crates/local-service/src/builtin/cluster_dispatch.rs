@@ -5970,7 +5970,7 @@ async fn pause_after_pending_recovery_status() -> Result<(), ClusterDispatchErro
         file.write_all(b"pending-result-before-grant-pages\n")?;
         file.sync_all()?;
         if let Some(parent) = marker.parent() {
-            fs::File::open(parent)?.sync_all()?;
+            backend_platform::durability::open_directory(parent)?.sync_all()?;
         }
         loop {
             thread::sleep(Duration::from_millis(20));
@@ -6010,7 +6010,7 @@ async fn pause_after_live_result_receipt() -> Result<(), ClusterDispatchError> {
         file.write_all(b"live-result-receipt-before-grant-pages\n")?;
         file.sync_all()?;
         if let Some(parent) = marker.parent() {
-            fs::File::open(parent)?.sync_all()?;
+            backend_platform::durability::open_directory(parent)?.sync_all()?;
         }
         loop {
             thread::sleep(Duration::from_millis(20));
