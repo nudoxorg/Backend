@@ -113,7 +113,12 @@ per stream;
 Turso dumps, BLAKE3 hashing, Git checks, and process census output each have
 separate byte limits. Partial stdout/stderr and a receipt with exit status,
 elapsed time, observed/stored bytes, hashes, and failure reason are retained on
-a limit or timeout. The runner admits at most
+a limit or timeout. Process wait/reap and owned-group signaling are serialized;
+the runner never signals a numeric process group after its leader has been
+reaped. If a descendant keeps a pipe open after that point, it records the
+partial failure and stops draining those pipes. The stdin writer likewise
+uses cancellable nonblocking I/O and records whether it stopped. The
+runner admits at most
 4,096 CLI operations total across live and restore phases and at most eight
 search repetitions; owner lifetime is capped at one hour. Direct HTTPS reads
 check both the per-read inactivity timeout and a total request-set deadline.

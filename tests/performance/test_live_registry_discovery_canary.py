@@ -13,6 +13,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 
 RUNNER_PATH = Path(__file__).with_name("live_registry_discovery_canary.py")
@@ -189,6 +190,7 @@ class BoundedProcessTests(unittest.TestCase):
         stderr_limit: int = 1024,
         timeout: float = 2.0,
         drain_timeout: float | None = None,
+        input_data: bytes | None = None,
     ) -> CANARY.BoundedProcess:
         return CANARY.BoundedProcess(
             [sys.executable, "-c", code],
@@ -199,6 +201,7 @@ class BoundedProcessTests(unittest.TestCase):
             max_stderr_bytes=stderr_limit,
             timeout_seconds=timeout,
             drain_timeout_seconds=drain_timeout,
+            input_data=input_data,
         )
 
     def test_stdout_and_stderr_are_separately_capped_with_receipts(self) -> None:
@@ -298,6 +301,79 @@ class BoundedProcessTests(unittest.TestCase):
             while not marker.exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
             self.assertTrue(marker.exists(), "group cleanup killed a new-session descendant")
+
+    def test_wait_racing_wall_timeout_finishes_and_never_signals_after_reap(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nudox-bounded-process-race-") as temporary:
+            root = Path(temporary)
+            process = self.make_process(
+                root,
+                "race",
+                "import time; time.sleep(0.08); print('race complete', flush=True)",
+                timeout=0.08,
+                drain_timeout=0.2,
+            )
+            outcomes: list[object] = []
+
+            def waiter() -> None:
+                try:
+                    outcomes.append(process.wait())
+                except BaseException as error:
+                    outcomes.append(error)
+
+            thread = threading.Thread(target=waiter)
+            thread.start()
+            thread.join(timeout=1.0)
+            self.assertFalse(thread.is_alive(), "wait and the timeout callback deadlocked")
+            self.assertEqual(len(outcomes), 1)
+            self.assertIsNotNone(process.poll())
+            with mock.patch.object(CANARY.os, "killpg") as killpg:
+                process._on_timeout()
+                process.terminate_owned_group()
+                killpg.assert_not_called()
+            if isinstance(outcomes[0], BaseException):
+                self.assertIsInstance(outcomes[0], CANARY.BoundedProcessError)
+                self.assertTrue(outcomes[0].receipt["receipt_path"])
+            else:
+                self.assertEqual(outcomes[0]["exit_code"], 0)  # type: ignore[index]
+
+    def test_detached_child_holding_stdin_is_cancelled_after_parent_exit(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nudox-bounded-process-stdin-") as temporary:
+            root = Path(temporary)
+            marker = root / "stdin-holder-finished"
+            detached_child = (
+                "import pathlib,time; time.sleep(0.7); "
+                f"pathlib.Path({str(marker)!r}).write_text('survived')"
+            )
+            parent = (
+                "import subprocess,sys; "
+                f"subprocess.Popen([sys.executable,'-c',{detached_child!r}],start_new_session=True); "
+                "print('leader exiting', flush=True)"
+            )
+            process = self.make_process(
+                root,
+                "stdin-holder",
+                parent,
+                timeout=3.0,
+                drain_timeout=0.15,
+                input_data=b"x" * (4 * 1024 * 1024),
+            )
+            started = time.monotonic()
+            with self.assertRaises(CANARY.BoundedProcessError) as caught:
+                process.wait()
+            elapsed = time.monotonic() - started
+            with mock.patch.object(CANARY.os, "killpg") as killpg:
+                process.terminate_owned_group()
+                killpg.assert_not_called()
+            receipt = caught.exception.receipt
+            self.assertLess(elapsed, 1.2)
+            self.assertLess(receipt["input_bytes_written"], receipt["input_bytes"])
+            self.assertTrue(receipt["input_writer_stopped"])
+            self.assertIsNotNone(receipt["input_writer_failure_reason"])
+            self.assertTrue(Path(receipt["stdout_path"]).read_bytes().startswith(b"leader exiting\n"))
+            deadline = time.monotonic() + 2.0
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(marker.exists(), "cleanup signalled the detached stdin holder")
 
 
 class _LoopbackHttpHandler(socketserver.StreamRequestHandler):

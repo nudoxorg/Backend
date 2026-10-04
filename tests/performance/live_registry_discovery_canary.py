@@ -205,13 +205,18 @@ class BoundedProcess:
         self.started_at_utc = utc_now()
         self.started_ns = time.perf_counter_ns()
         process_deadline = time.monotonic() + timeout_seconds
+        self._process_deadline = process_deadline
         self.input_bytes = len(input_data) if input_data is not None else 0
+        self.input_bytes_written = 0
+        self.input_writer_failure_reason: str | None = None
         self.output_bytes = {"stdout": 0, "stderr": 0}
         self.stored_bytes = {"stdout": 0, "stderr": 0}
         self.failure_reason: str | None = None
         self._lock = threading.Lock()
+        self._ownership_lock = threading.RLock()
         self._finalizing = False
         self._stop_readers = threading.Event()
+        self._stop_writer = threading.Event()
         self._finished = False
         self._receipt: dict[str, Any] | None = None
         for path in (stdout_path, stderr_path, receipt_path):
@@ -263,33 +268,52 @@ class BoundedProcess:
 
     @property
     def returncode(self) -> int | None:
-        return self.process.poll()
+        return self.poll()
 
     def poll(self) -> int | None:
-        return self.process.poll()
+        with self._ownership_lock:
+            return self.process.poll()
 
     def send_signal(self, signum: int) -> None:
-        if self.process.poll() is not None:
-            return
-        self.process.send_signal(signum)
+        with self._ownership_lock:
+            if self.process.poll() is not None:
+                return
+            self.process.send_signal(signum)
 
     def terminate_owned_group(self) -> None:
-        try:
-            os.killpg(self.pid, signal.SIGKILL)
-        except (AttributeError, ProcessLookupError, PermissionError):
-            if self.process.poll() is None:
-                self.process.kill()
-
-    def _fail_and_kill(self, reason: str) -> None:
-        with self._lock:
-            if self._finalizing:
+        # Popen poll/wait reaps the leader. Serialize that operation with the
+        # group signal so its numeric PID/PGID cannot be reused between our
+        # liveness check and killpg.
+        with self._ownership_lock:
+            if self.process.poll() is not None:
                 return
+            try:
+                os.killpg(self.pid, signal.SIGKILL)
+            except (AttributeError, ProcessLookupError, PermissionError):
+                if self.process.poll() is None:
+                    self.process.kill()
+
+    def _record_failure(self, reason: str) -> None:
+        with self._lock:
             if self.failure_reason is None:
                 self.failure_reason = reason
-        self.terminate_owned_group()
+
+    def _fail_and_kill(self, reason: str) -> None:
+        with self._ownership_lock:
+            process_alive = self.process.poll() is None
+            with self._lock:
+                if self._finalizing:
+                    return
+                if self.failure_reason is None:
+                    self.failure_reason = reason
+            if process_alive:
+                self.terminate_owned_group()
 
     def _on_timeout(self) -> None:
-        self._fail_and_kill(f"wall-time limit exceeded ({self.timeout_seconds:g}s)")
+        with self._ownership_lock:
+            if self.process.poll() is not None:
+                return
+            self._fail_and_kill(f"wall-time limit exceeded ({self.timeout_seconds:g}s)")
 
     def _drain_streams(self) -> None:
         """Drain raw nonblocking descriptors; never block on BufferedReader.read()."""
@@ -370,19 +394,75 @@ class BoundedProcess:
                     pass
 
     def _write_input(self, input_data: bytes) -> None:
-        assert self.process.stdin is not None
+        stream = self.process.stdin
+        assert stream is not None
+        selector = selectors.DefaultSelector()
         try:
+            descriptor = stream.fileno()
+            os.set_blocking(descriptor, False)
+            selector.register(descriptor, selectors.EVENT_WRITE)
             view = memoryview(input_data)
-            for offset in range(0, len(view), PROCESS_READ_CHUNK_BYTES):
-                self.process.stdin.write(view[offset : offset + PROCESS_READ_CHUNK_BYTES])
-            self.process.stdin.flush()
-        except (BrokenPipeError, OSError):
-            pass
+            offset = 0
+            while offset < len(view) and not self._stop_writer.is_set():
+                remaining = self._process_deadline - time.monotonic()
+                if remaining <= 0:
+                    self.input_writer_failure_reason = "stdin writer reached the process wall-time deadline"
+                    self._fail_and_kill(self.input_writer_failure_reason)
+                    break
+                try:
+                    events = selector.select(timeout=min(0.05, remaining))
+                except OSError as error:
+                    self.input_writer_failure_reason = f"stdin writer selector failed: {error}"
+                    self._fail_and_kill(self.input_writer_failure_reason)
+                    break
+                if not events:
+                    continue
+                try:
+                    written = os.write(
+                        descriptor,
+                        view[offset : offset + PROCESS_READ_CHUNK_BYTES],
+                    )
+                except BlockingIOError:
+                    continue
+                except BrokenPipeError:
+                    self.input_writer_failure_reason = (
+                        f"child closed stdin after {offset} of {len(view)} input bytes"
+                    )
+                    break
+                except OSError as error:
+                    self.input_writer_failure_reason = f"stdin writer failed after {offset} bytes: {error}"
+                    break
+                if written <= 0:
+                    self.input_writer_failure_reason = "stdin writer made no progress"
+                    break
+                offset += written
+                with self._lock:
+                    self.input_bytes_written = offset
+            if self._stop_writer.is_set() and offset < len(view):
+                self.input_writer_failure_reason = (
+                    f"stdin writer cancelled after {offset} of {len(view)} input bytes"
+                )
+        except (OSError, ValueError) as error:
+            self.input_writer_failure_reason = f"stdin writer setup failed: {error}"
+            self._fail_and_kill(self.input_writer_failure_reason)
         finally:
+            selector.close()
             try:
-                self.process.stdin.close()
+                stream.close()
             except OSError:
-                pass
+                if self.input_writer_failure_reason is None:
+                    self.input_writer_failure_reason = "stdin pipe close failed"
+
+    def _wait_for_process_until(self, deadline: float, timeout_value: float) -> int:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(self.command, timeout_value)
+            with self._ownership_lock:
+                try:
+                    return self.process.wait(timeout=min(0.05, remaining))
+                except subprocess.TimeoutExpired:
+                    pass
 
     def wait(
         self, timeout: float | None = None, *, force_on_timeout: bool = False
@@ -404,19 +484,26 @@ class BoundedProcess:
             else self.timeout_seconds + self.drain_timeout_seconds
         )
         try:
-            self.process.wait(timeout=wait_limit)
+            self._wait_for_process_until(time.monotonic() + wait_limit, wait_limit)
         except subprocess.TimeoutExpired:
             if timeout is not None and not force_on_timeout:
                 raise
             self._fail_and_kill("owned process did not exit by its wall-time deadline")
             try:
-                self.process.wait(timeout=self.drain_timeout_seconds)
+                self._wait_for_process_until(
+                    time.monotonic() + self.drain_timeout_seconds,
+                    self.drain_timeout_seconds,
+                )
             except subprocess.TimeoutExpired:
-                with self._lock:
-                    if self.failure_reason is None:
-                        self.failure_reason = "owned process remained alive after group kill"
+                self._record_failure("owned process remained alive after group kill")
         self._timer.cancel()
         drain_deadline = time.monotonic() + self.drain_timeout_seconds
+        if self._writer_thread is not None:
+            self._writer_thread.join(max(0.0, drain_deadline - time.monotonic()))
+        if self._writer_thread is not None and self._writer_thread.is_alive():
+            self._record_failure("stdin writer remained active after the parent process exited")
+            self._stop_writer.set()
+            self._writer_thread.join(0.15)
         for thread in self._reader_threads:
             thread.join(max(0.0, drain_deadline - time.monotonic()))
         if any(thread.is_alive() for thread in self._reader_threads):
@@ -434,9 +521,8 @@ class BoundedProcess:
                 if self.failure_reason is None:
                     self.failure_reason = "output drain did not close before the evidence deadline"
             self._stop_readers.set()
-        if self._writer_thread is not None and self._writer_thread.is_alive():
-            self._fail_and_kill("owned child did not close stdin before the drain deadline")
-            self._writer_thread.join(0.1)
+        with self._ownership_lock:
+            exit_code = self.process.returncode
         with self._lock:
             receipt = {
                 "argv": self.command,
@@ -445,9 +531,14 @@ class BoundedProcess:
                 "isolated_process_group": True,
                 "started_at_utc": self.started_at_utc,
                 "elapsed_ns": time.perf_counter_ns() - self.started_ns,
-                "exit_code": self.process.poll(),
+                "exit_code": exit_code,
                 "failure_reason": self.failure_reason,
                 "input_bytes": self.input_bytes,
+                "input_bytes_written": self.input_bytes_written,
+                "input_writer_stopped": (
+                    self._writer_thread is None or not self._writer_thread.is_alive()
+                ),
+                "input_writer_failure_reason": self.input_writer_failure_reason,
                 "stdout_path": str(self.stdout_path),
                 "stderr_path": str(self.stderr_path),
                 "stdout_bytes_observed": self.output_bytes["stdout"],
@@ -2241,7 +2332,6 @@ def process_rss_bytes(pid: int) -> int | None:
             )
             status = process.wait(timeout=1.0)
             if capture.tell() > 64:
-                kill_process_group_if_present(process.pid)
                 continue
             capture.seek(0)
             raw = capture.read(65)
