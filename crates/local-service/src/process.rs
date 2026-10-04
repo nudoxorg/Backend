@@ -30,6 +30,9 @@
 
 use crate::listener::{ListenerConfig, ListenerError, RunReport, UnixListenerService};
 use crate::protocol::ProtocolError;
+use crate::runtime_policy::{
+    LocaldRuntimePolicy, MAX_RUNTIME_POLICY_BYTES, RUNTIME_POLICY_ENV, RuntimePolicyError,
+};
 use crate::service::{LocaldService, OwnerService};
 use backend_engine::UnixEndpointPath;
 use backend_engine::advisory::AdvisorySource;
@@ -44,6 +47,7 @@ use backend_engine::{
 };
 use backend_runtime::WorkspacePaths;
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::io::Read;
@@ -937,6 +941,55 @@ fn package_graph_limit(
 }
 
 impl ProcessConfig {
+    /// Captures the effective registry, discovery, advisory, and cache policy
+    /// after all process and desktop settings have been applied.
+    ///
+    /// # Errors
+    /// Returns an error when the current cache horizon is outside the shared
+    /// runtime-policy bound.
+    pub fn runtime_policy(&self) -> Result<LocaldRuntimePolicy, RuntimePolicyError> {
+        let registry_network_allowed = matches!(self.registry.policy, AcquisitionPolicy::Online);
+        LocaldRuntimePolicy::new(
+            registry_network_allowed,
+            registry_network_allowed && !self.discovery.offline,
+            !self.advisory.offline,
+            self.advisory.refresh_enabled,
+            self.registry.cache_max_age_millis,
+        )
+    }
+
+    /// Applies a host policy after normal CLI and environment configuration.
+    /// This merge can narrow network access, refresh work, and cache age; it
+    /// never re-enables a path already closed by locald's operator settings.
+    pub fn apply_runtime_policy(&mut self, policy: LocaldRuntimePolicy) {
+        if !policy.registry_network_allowed()
+            || matches!(self.registry.policy, AcquisitionPolicy::Offline)
+        {
+            self.registry.policy = AcquisitionPolicy::Offline;
+            self.registry.sources = self.registry.sources.clone().offline();
+        }
+        if !policy.discovery_network_allowed()
+            || matches!(self.registry.policy, AcquisitionPolicy::Offline)
+        {
+            self.discovery.offline = true;
+        }
+        if !policy.advisory_network_allowed() {
+            self.advisory.offline = true;
+        }
+        if !policy.advisory_refresh_enabled() {
+            self.advisory.refresh_enabled = false;
+        }
+        self.registry.cache_max_age_millis = match (
+            self.registry.cache_max_age_millis,
+            policy.registry_cache_max_age_millis(),
+        ) {
+            (Some(current), Some(incoming)) => Some(current.min(incoming)),
+            (Some(current), None) => Some(current),
+            (None, Some(incoming)) => Some(incoming),
+            (None, None) => None,
+        };
+    }
+
     /// Applies preferences read by a desktop before it starts its embedded
     /// service. Existing operator-level offline settings remain restrictive;
     /// user preferences can narrow service behavior but cannot enable a
@@ -957,11 +1010,21 @@ impl ProcessConfig {
     }
 
     /// Parses bounded process arguments and environment fallbacks.
+    /// An inherited [`RUNTIME_POLICY_ENV`] value is validated and merged after
+    /// ordinary configuration, so it can narrow but never reopen locald paths.
     ///
     /// # Errors
     ///
     /// Returns an error for malformed, missing, or unsupported arguments.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, ProcessError> {
+        let runtime_policy_value = std::env::var_os(RUNTIME_POLICY_ENV);
+        Self::parse_with_runtime_policy(args, runtime_policy_value.as_deref())
+    }
+
+    fn parse_with_runtime_policy(
+        args: impl IntoIterator<Item = String>,
+        runtime_policy_value: Option<&OsStr>,
+    ) -> Result<Self, ProcessError> {
         let ParsedOptions {
             endpoint,
             workspace,
@@ -1102,7 +1165,7 @@ impl ProcessConfig {
             registry_discovery_offline || registry_offline,
             registry_discovery_max_pages,
         )?;
-        Ok(Self {
+        let mut config = Self {
             endpoint,
             workspace: paths.data().to_path_buf(),
             profile,
@@ -1115,8 +1178,34 @@ impl ProcessConfig {
             discovery,
             package_graph_limits: package_graph_limits_from_environment()?,
             compiler_environment: Vec::new(),
-        })
+        };
+        apply_runtime_policy_environment_value(&mut config, runtime_policy_value)?;
+        Ok(config)
     }
+}
+
+fn apply_runtime_policy_environment_value(
+    config: &mut ProcessConfig,
+    value: Option<&OsStr>,
+) -> Result<(), ProcessError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if value.as_encoded_bytes().len() > MAX_RUNTIME_POLICY_BYTES {
+        return Err(ProcessError::Usage(format!(
+            "{RUNTIME_POLICY_ENV} exceeds its size limit"
+        )));
+    }
+    let value = value.to_str().ok_or_else(|| {
+        ProcessError::Usage(format!(
+            "{RUNTIME_POLICY_ENV} must contain UTF-8 policy data"
+        ))
+    })?;
+    let policy = LocaldRuntimePolicy::parse(value).map_err(|error| {
+        ProcessError::Usage(format!("{RUNTIME_POLICY_ENV} is invalid: {error}"))
+    })?;
+    config.apply_runtime_policy(policy);
+    Ok(())
 }
 
 struct ParsedOptions {
@@ -1517,6 +1606,180 @@ impl std::error::Error for ProcessError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_config_with_policy_value(value: Option<&OsStr>, extra_args: &[&str]) -> ProcessConfig {
+        let mut args = vec![
+            "--endpoint".to_owned(),
+            "/tmp/backend-locald-runtime-policy.sock".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp/backend-locald-runtime-policy".to_owned(),
+        ];
+        args.extend(extra_args.iter().map(|arg| (*arg).to_owned()));
+        ProcessConfig::parse_with_runtime_policy(args, value)
+            .expect("parse explicit locald runtime policy fixture")
+    }
+
+    fn policy(
+        registry_network_allowed: bool,
+        discovery_network_allowed: bool,
+        advisory_network_allowed: bool,
+        advisory_refresh_enabled: bool,
+        registry_cache_max_age_millis: Option<u64>,
+    ) -> LocaldRuntimePolicy {
+        LocaldRuntimePolicy::new(
+            registry_network_allowed,
+            discovery_network_allowed,
+            advisory_network_allowed,
+            advisory_refresh_enabled,
+            registry_cache_max_age_millis,
+        )
+        .expect("bounded runtime policy fixture")
+    }
+
+    #[test]
+    fn runtime_policy_cache_ceiling_matches_the_existing_desktop_setting() {
+        assert_eq!(
+            crate::runtime_policy::MAX_REGISTRY_CACHE_AGE_MILLIS,
+            u64::from(RegistryUserPolicy::MAX_CACHE_AGE_DAYS)
+                * RegistryUserPolicy::MILLIS_PER_DAY
+        );
+    }
+
+    #[test]
+    fn cold_parse_applies_canonical_policy_after_local_options() {
+        let allowed = policy(true, true, true, true, None);
+        let encoded = allowed.encode().expect("encode policy");
+        let config = parse_config_with_policy_value(
+            Some(OsStr::new(&encoded)),
+            &[
+                "--registry-offline",
+                "--registry-discovery-offline",
+                "--advisory-offline",
+            ],
+        );
+        assert_eq!(config.registry.policy, AcquisitionPolicy::Offline);
+        assert!(config.discovery.offline);
+        assert!(config.advisory.offline);
+        assert!(config.advisory.refresh_enabled);
+
+        let mut without_policy = parse_config_with_policy_value(None, &[]);
+        let before_absent_policy = without_policy.clone();
+        apply_runtime_policy_environment_value(&mut without_policy, None)
+            .expect("absence leaves ordinary configuration alone");
+        assert_eq!(without_policy, before_absent_policy);
+    }
+
+    #[test]
+    fn runtime_policy_closes_network_refresh_and_preserves_zero_cache_horizon() {
+        let restrictive = policy(false, false, false, false, Some(0));
+        let mut config = parse_config_with_policy_value(None, &[]);
+        config.apply_runtime_policy(restrictive);
+
+        assert_eq!(config.registry.policy, AcquisitionPolicy::Offline);
+        assert!(
+            config
+                .registry
+                .sources
+                .sources()
+                .all(|source| { source.policy() == AcquisitionPolicy::Offline })
+        );
+        assert!(config.discovery.offline);
+        assert!(config.advisory.offline);
+        assert!(!config.advisory.refresh_enabled);
+        assert_eq!(config.registry.cache_max_age_millis, Some(0));
+        assert_eq!(
+            config
+                .runtime_policy()
+                .expect("snapshot restrictive policy"),
+            restrictive
+        );
+    }
+
+    #[test]
+    fn runtime_policy_merge_never_reopens_paths_and_takes_the_tighter_cache_age() {
+        let mut config = parse_config_with_policy_value(
+            None,
+            &[
+                "--registry-offline",
+                "--registry-discovery-offline",
+                "--advisory-offline",
+            ],
+        );
+        config.advisory.refresh_enabled = false;
+        config.registry.cache_max_age_millis = Some(100);
+        config.apply_runtime_policy(policy(true, true, true, true, Some(500)));
+
+        assert_eq!(config.registry.policy, AcquisitionPolicy::Offline);
+        assert!(config.discovery.offline);
+        assert!(config.advisory.offline);
+        assert!(!config.advisory.refresh_enabled);
+        assert_eq!(config.registry.cache_max_age_millis, Some(100));
+
+        let mut config = parse_config_with_policy_value(None, &[]);
+        config.registry.cache_max_age_millis = Some(500);
+        config.apply_runtime_policy(policy(true, true, true, true, Some(100)));
+        assert_eq!(config.registry.cache_max_age_millis, Some(100));
+
+        config.registry.cache_max_age_millis = None;
+        config.apply_runtime_policy(policy(true, true, true, true, None));
+        assert_eq!(config.registry.cache_max_age_millis, None);
+        config.apply_runtime_policy(policy(true, true, true, true, Some(0)));
+        assert_eq!(config.registry.cache_max_age_millis, Some(0));
+    }
+
+    #[test]
+    fn malformed_runtime_policy_is_a_safe_usage_error_and_absence_is_allowed() {
+        let secret_like_input = "not-json-/private/path/token";
+        let args = [
+            "--endpoint".to_owned(),
+            "/tmp/backend-locald-runtime-policy-error.sock".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp/backend-locald-runtime-policy-error".to_owned(),
+        ];
+        let error =
+            ProcessConfig::parse_with_runtime_policy(args, Some(OsStr::new(secret_like_input)))
+                .expect_err("malformed runtime policy must fail closed");
+        assert!(matches!(error, ProcessError::Usage(_)));
+        assert!(!error.to_string().contains(secret_like_input));
+
+        let args = [
+            "--endpoint".to_owned(),
+            "/tmp/backend-locald-runtime-policy-absent.sock".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp/backend-locald-runtime-policy-absent".to_owned(),
+        ];
+        assert!(ProcessConfig::parse_with_runtime_policy(args, None).is_ok());
+
+        let oversized = "x".repeat(MAX_RUNTIME_POLICY_BYTES + 1);
+        let args = [
+            "--endpoint".to_owned(),
+            "/tmp/backend-locald-runtime-policy-large.sock".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp/backend-locald-runtime-policy-large".to_owned(),
+        ];
+        let error = ProcessConfig::parse_with_runtime_policy(args, Some(OsStr::new(&oversized)))
+            .expect_err("oversized runtime policy must fail before parsing");
+        assert!(matches!(error, ProcessError::Usage(_)));
+        assert!(!error.to_string().contains(&oversized));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_runtime_policy_is_a_safe_usage_error() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let invalid_utf8 = OsStr::from_bytes(b"\xff");
+        let config = ProcessConfig::parse_with_runtime_policy(
+            [
+                "--endpoint".to_owned(),
+                "/tmp/backend-locald-runtime-policy-non-utf8.sock".to_owned(),
+                "--workspace".to_owned(),
+                "/tmp/backend-locald-runtime-policy-non-utf8".to_owned(),
+            ],
+            Some(invalid_utf8),
+        );
+        assert!(matches!(config, Err(ProcessError::Usage(message)) if message.contains("UTF-8")));
+    }
 
     #[test]
     fn graph_admission_configuration_rejects_invalid_limits_without_environment_mutation() {

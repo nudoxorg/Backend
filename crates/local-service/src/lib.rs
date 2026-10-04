@@ -19,6 +19,8 @@ pub mod protocol;
 /// Helpers for tests that exercise owner-controlled private state.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+/// Bounded policy copied from a desktop host into a cold embedded locald.
+pub mod runtime_policy;
 /// Durable registry acquisition is an engine effect composed by local-service.
 pub use backend_engine::registry;
 pub(crate) mod reconcile;
@@ -56,6 +58,10 @@ pub use protocol::{
     LIFECYCLE_VERSION, Operation, ProtocolError, RequestFrame, ResponseFrame,
     decode_engine_request, decode_request, decode_response, encode_engine_request, encode_response,
     frame, is_lifecycle, read_frame, unframe, write_frame,
+};
+pub use runtime_policy::{
+    LocaldRuntimePolicy, MAX_REGISTRY_CACHE_AGE_MILLIS, MAX_RUNTIME_POLICY_BYTES,
+    RUNTIME_POLICY_ENV, RuntimePolicyError,
 };
 pub use service::{
     CommandOutcome, CompletionAdmission, DeferredCommands, Handled, LeaseLimitError, LocaldOwner,
