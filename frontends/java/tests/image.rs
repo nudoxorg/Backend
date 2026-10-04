@@ -170,7 +170,7 @@ fn v2_extensions_reject_each_hostile_plane_mutation() -> Result<(), ImageTestErr
     ] {
         let mut mutant = valid.clone();
         let entry = DIRECTORY_OFFSET + index * DIRECTORY_ENTRY_BYTES;
-        let length = u32_at(&mutant, entry + 12) - 1;
+        let length = u32_at(&mutant, entry + 12)? - 1;
         mutant[entry + 12..entry + 16].copy_from_slice(&length.to_le_bytes());
         checksum(&mut mutant, 2);
         if !matches!(JavaImage::open(&mutant), Err(ImageError::Section { plane: found, cause: backend_frontend_java::legacy::SectionError::ByteCount { .. } }) if found == expected)
@@ -527,8 +527,22 @@ fn checksum(image: &mut [u8], version: u16) {
     image[16..DIRECTORY_OFFSET].copy_from_slice(&digest.finalize());
 }
 
-fn u32_at(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+fn u32_at(bytes: &[u8], offset: usize) -> Result<u32, ImageTestError> {
+    let end = offset
+        .checked_add(4)
+        .ok_or(ImageTestError::FixtureOverflow {
+            fact: "directory scalar end",
+        })?;
+    let bytes: [u8; 4] = bytes
+        .get(offset..end)
+        .ok_or(ImageTestError::MissingFact {
+            fact: "fixed directory scalar",
+        })?
+        .try_into()
+        .map_err(|_| ImageTestError::MissingFact {
+            fact: "fixed directory scalar",
+        })?;
+    Ok(u32::from_le_bytes(bytes))
 }
 
 fn push_u16(bytes: &mut Vec<u8>, value: u16) {

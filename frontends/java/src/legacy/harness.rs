@@ -917,6 +917,8 @@ mod plan_tests {
     use super::{JavaSource, module_plan};
     use crate::legacy::JavaRelease;
 
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     struct TempDir(PathBuf);
 
     static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
@@ -991,7 +993,7 @@ mod plan_tests {
     }
 
     #[test]
-    fn staged_module_plans_target_first_then_corpus_siblings_deduplicated() {
+    fn staged_module_plans_target_first_then_corpus_siblings_deduplicated() -> TestResult {
         let corpus = TempDir::new("siblings");
         let sibling = corpus.path().join("org/testlib/api/1.0.0");
         fs::create_dir_all(&sibling).expect("seed sibling root");
@@ -1025,13 +1027,11 @@ mod plan_tests {
             plan,
             vec![
                 (String::from("org.target"), corpus.path().to_path_buf()),
-                (
-                    String::from("org.testlib.api"),
-                    fs::canonicalize(&other).unwrap()
-                ),
+                (String::from("org.testlib.api"), fs::canonicalize(&other)?),
             ],
             "target first, corpus siblings after, duplicate module names pruned to the newest version"
         );
+        Ok(())
     }
 
     #[test]
@@ -1059,7 +1059,7 @@ mod plan_tests {
     }
 
     #[test]
-    fn modular_caller_root_engages_module_mode_without_staged_declaration() {
+    fn modular_caller_root_engages_module_mode_without_staged_declaration() -> TestResult {
         let caller = TempDir::new("caller");
         let target_root = caller.path().join("org/target/target/1.0.0");
         fs::create_dir_all(&target_root).expect("seed modular caller root");
@@ -1072,7 +1072,7 @@ mod plan_tests {
         let plan = module_plan(
             JavaRelease::Java21,
             &[source(Path::new("demo/App.java"), b"package demo;\n")],
-            &[fs::canonicalize(&target_root).unwrap()],
+            &[fs::canonicalize(&target_root)?],
             Some(corpus.path()),
             corpus.path(),
         )
@@ -1081,5 +1081,6 @@ mod plan_tests {
             plan.is_none(),
             "with no nameable target and no corpus modules there is nothing to map, so the default path stays: {plan:?}"
         );
+        Ok(())
     }
 }
