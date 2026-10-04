@@ -1600,7 +1600,7 @@ mod tests {
             assert!(matches!(operation, LocalSubscriptionOperation::Open { .. }));
             assert!(read_frame(stream, crate::limits()).is_err());
         });
-        transport = transport.with_clock(Arc::clone(&clock));
+        transport = transport.with_clock(Arc::<ManualClock>::clone(&clock));
         let started = clock.now();
         let recovery_deadline = started + Duration::from_secs(30);
         let cancelled = || false;
@@ -1617,7 +1617,7 @@ mod tests {
         };
         let mut control = ObservedPublicationControl::new_with_clock(
             recovery_deadline,
-            Arc::clone(&clock),
+            Arc::<ManualClock>::clone(&clock),
             &cancelled,
             &mut tick,
         );
@@ -1664,7 +1664,7 @@ mod tests {
             );
             assert!(read_frame(stream, crate::limits()).is_err());
         });
-        transport = transport.with_clock(Arc::clone(&clock));
+        transport = transport.with_clock(Arc::<ManualClock>::clone(&clock));
         let state = lease_on(&transport, lease, Arc::clone(&root), cursor);
         let mut state = state;
         let started = clock.now();
@@ -1683,7 +1683,7 @@ mod tests {
         };
         let mut control = ObservedPublicationControl::new_with_clock(
             recovery_deadline,
-            Arc::clone(&clock),
+            Arc::<ManualClock>::clone(&clock),
             &cancelled,
             &mut tick,
         );
@@ -1742,7 +1742,7 @@ mod tests {
             );
         });
         let clock = ManualClock::new();
-        transport = transport.with_clock(Arc::clone(&clock));
+        transport = transport.with_clock(Arc::<ManualClock>::clone(&clock));
         let mut state = lease_on(&transport, lease, Arc::clone(&initial), previous);
         let started = clock.now();
         let recovery_deadline = started + Duration::from_secs(2);
@@ -1750,7 +1750,7 @@ mod tests {
         let mut tick = |_| PublicationObservationDecision::Continue;
         let mut control = ObservedPublicationControl::new_with_clock(
             recovery_deadline,
-            Arc::clone(&clock),
+            Arc::<ManualClock>::clone(&clock),
             &cancelled,
             &mut tick,
         );
@@ -1808,7 +1808,7 @@ mod tests {
             );
         });
         let clock = ManualClock::new();
-        transport = transport.with_clock(Arc::clone(&clock));
+        transport = transport.with_clock(Arc::<ManualClock>::clone(&clock));
         let started = clock.now();
         let io_deadline = started + Duration::from_millis(200);
         let cancelled = || false;
@@ -1951,7 +1951,7 @@ mod tests {
             );
         });
         let clock = ManualClock::new();
-        transport = transport.with_clock(Arc::clone(&clock));
+        transport = transport.with_clock(Arc::<ManualClock>::clone(&clock));
         // The authenticated reset budget must expand beyond this caller's
         // short ordinary recovery window, from the original Open start, but
         // only after proof admission completes before that initial ceiling.
@@ -1965,7 +1965,7 @@ mod tests {
         };
         let mut control = ObservedPublicationControl::new_with_clock(
             recovery_deadline,
-            Arc::clone(&clock),
+            Arc::<ManualClock>::clone(&clock),
             &cancelled,
             &mut tick,
         );
@@ -2096,7 +2096,7 @@ mod tests {
             );
         });
         let clock = ManualClock::new();
-        transport = transport.with_clock(Arc::clone(&clock));
+        transport = transport.with_clock(Arc::<ManualClock>::clone(&clock));
         let mut state = lease_on(&transport, lease, Arc::clone(&initial), previous);
         let operation_started = clock.now();
         let recovery_deadline = operation_started + Duration::from_secs(60);
@@ -2104,7 +2104,7 @@ mod tests {
         let mut tick = |_| PublicationObservationDecision::Continue;
         let mut control = ObservedPublicationControl::new_with_clock(
             recovery_deadline,
-            Arc::clone(&clock),
+            Arc::<ManualClock>::clone(&clock),
             &cancelled,
             &mut tick,
         );
@@ -2516,13 +2516,13 @@ mod tests {
                 operation,
                 LocalSubscriptionOperation::Renew { .. }
             ));
-            let response = LocalControlResponse::Renewed {
+            let response = LocalControlResponse::Subscription(LocalSubscriptionResponse::Renewed {
                 request_id,
                 lease,
                 cursor: cursor.encode_control(),
                 credit: CREDIT,
                 lease_ms: LEASE_MS,
-            };
+            });
             let wire = frame(
                 &encode_response(&response, crate::limits()).expect("response"),
                 crate::limits(),
@@ -2534,7 +2534,7 @@ mod tests {
             let mut byte = [0_u8; 1];
             assert_eq!(stream.read(&mut byte).expect("observe retired socket"), 0);
         });
-        transport = transport.with_clock(Arc::clone(&clock));
+        transport = transport.with_clock(Arc::<ManualClock>::clone(&clock));
         let mut state = lease_on(&transport, lease, root, cursor);
         let recovery_deadline = clock.now() + Duration::from_secs(1);
         let cancelled = || false;
@@ -2551,7 +2551,7 @@ mod tests {
         };
         let mut control = ObservedPublicationControl::new_with_clock(
             recovery_deadline,
-            Arc::clone(&clock),
+            Arc::<ManualClock>::clone(&clock),
             &cancelled,
             &mut tick,
         );
