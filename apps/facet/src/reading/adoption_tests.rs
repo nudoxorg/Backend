@@ -11,7 +11,7 @@ use crate::overlay::text::Sig;
 use crate::semantics::fails::Section;
 use crate::{ActiveFacet as _, Measure};
 use gpui::{
-    Context, InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _,
+    Context, InteractiveElement as _, IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _,
     TestAppContext, VisualTestContext, Window, div, px,
 };
 use std::{cell::Cell, rc::Rc, sync::Arc, time::Duration};

@@ -4,7 +4,7 @@ use super::{FloatKind, FloatRequest};
 use crate::reading::{self, ControlKind, Intent, ReadingRole};
 use gpui::{
     Context, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, TestAppContext, VisualTestContext, Window, div, point, px, size,
+    SharedString, StatefulInteractiveElement as _, Styled as _, TestAppContext, VisualTestContext, Window, div, point, px, size,
 };
 use std::{cell::Cell, rc::Rc, sync::Arc, time::Duration};
 

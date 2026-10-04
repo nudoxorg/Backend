@@ -2016,7 +2016,7 @@ mod test {
         let cx = cx.add_empty_window();
         let state = ListState::new(100, gpui::ListAlignment::Top, px(20.))
             .with_uniform_item_height(px(20.));
-        let focus = cx.update(|cx| cx.focus_handle());
+        let focus = cx.update(|_, cx| cx.focus_handle());
         let keys = Rc::new(Cell::new(0));
         state.set_item_focus_handle(7, Some(focus.clone()));
         struct View(ListState, crate::FocusHandle, Rc<Cell<u32>>);

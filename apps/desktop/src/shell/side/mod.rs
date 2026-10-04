@@ -1468,11 +1468,11 @@ fn release_address<'a>(route: &'a Route, package: &PackageRef) -> Option<(Packag
 
 #[cfg(test)]
 mod measured_layout_tests {
-    use super::{Do, Item, Row, RowId, RowLayout};
+    use super::{DeferredScroll, Do, Item, RevealIntent, Row, RowId, RowLayout, StickyGeometry, sticky_ancestors_in};
     use super::row::Mark;
     use facet::icons::Kind;
-    use gpui::{AppContext as _, ListOffset, px};
-    use std::sync::Arc;
+    use gpui::{AppContext as _, IntoElement, ListOffset, px};
+    use std::{rc::Rc, sync::Arc};
 
     struct MeasuredRows {
         scroll: gpui::ListState,

@@ -656,6 +656,7 @@ impl Rig {
                 .graph
                 .store
                 .read_with(self.cx, |store, _| store.pool_activity());
+            let (queued, running, undelivered) = (pool.queued, pool.running, pool.undelivered);
             let (graph_ready, graph_work) = self.shell.read_with(self.cx, |shell, cx| {
                 (shell.graph_ready(cx), shell.graph_work_status(cx))
             });
@@ -674,12 +675,12 @@ impl Rig {
             assert!(
                 rounds <= ROUNDS,
                 "the shell never settled: after {ROUNDS} rounds of 700 ms of virtual time it still asks for {frames} frame(s), \
-                 {queued} queued and {running} running read(s), graph ready={graph_ready}, graph work={graph_work:?}; renders so far {:?}",
+                 {queued} queued, {running} running and {undelivered} undelivered read(s), graph ready={graph_ready}, graph work={graph_work:?}; renders so far {:?}",
                 self.counts()
             );
             assert!(
                 Instant::now() < deadline,
-                "the shell never settled: after {:?} of real time {queued} read(s) are queued, {running} running, graph ready={graph_ready}, graph work={graph_work:?}",
+                "the shell never settled: after {:?} of real time {queued} read(s) are queued, {running} running, {undelivered} undelivered, graph ready={graph_ready}, graph work={graph_work:?}",
                 self.patience
             );
             std::thread::sleep(Duration::from_millis(2));
