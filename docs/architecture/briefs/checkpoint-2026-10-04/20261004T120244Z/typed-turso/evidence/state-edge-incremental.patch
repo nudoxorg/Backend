@@ -1,0 +1,238 @@
+--- a/extensions/turso/src/graph.rs
++++ b/extensions/turso/src/graph.rs
+@@ -829,10 +829,14 @@
+     connection: &turso::Connection,
+     source: &PackageGraphSourceKey,
+ ) -> Result<PackageGraphSourceState, ProjectionError> {
+-    let mut witness_rows = connection
++    let mut rows = connection
+         .query(
+             "SELECT s.source, s.coordinate_kind, s.source_authority_kind, \
+-             s.source_authority_id, w.facts_witness \
++             s.source_authority_id, w.facts_witness, st.state, st.reason, \
++             EXISTS(SELECT 1 FROM backend_projection_package_edges AS e \
++                    WHERE e.source=s.source AND e.coordinate_kind=s.coordinate_kind \
++                    AND e.source_authority_kind=s.source_authority_kind \
++                    AND e.source_authority_id=s.source_authority_id LIMIT 1) \
+              FROM backend_projection_package_sources AS s \
+              JOIN backend_projection_package_source_witnesses AS w \
+              ON s.source=w.source AND s.coordinate_kind=w.coordinate_kind \
+@@ -839,5 +843,9 @@
+              AND s.source_authority_kind=w.source_authority_kind \
+              AND s.source_authority_id=w.source_authority_id \
++             LEFT JOIN backend_projection_package_states AS st \
++             ON s.source=st.source AND s.coordinate_kind=st.coordinate_kind \
++             AND s.source_authority_kind=st.source_authority_kind \
++             AND s.source_authority_id=st.source_authority_id \
+              WHERE s.source=?1 AND s.coordinate_kind=?2 \
+              AND s.source_authority_kind=?3 AND s.source_authority_id=?4 LIMIT 2",
+             turso::params![
+@@ -848,7 +856,7 @@
+             ],
+         )
+         .await?;
+-    let Some(witness_row) = witness_rows.next().await? else {
++    let Some(row) = rows.next().await? else {
+         return Err(misuse_graph_edge(
+             "package graph source is missing from its source/witness inventory",
+         ));
+@@ -855,9 +863,9 @@
+     };
+     let stored_source = decode_source_key(
+-        witness_row.get(0)?,
+-        witness_row.get(1)?,
+-        witness_row.get(2)?,
+-        graph_digest(witness_row.get(3)?, "graph source authority id")?,
++        row.get(0)?,
++        row.get(1)?,
++        row.get(2)?,
++        graph_digest(row.get(3)?, "graph source authority id")?,
+     )?;
+     if stored_source != *source {
+         return Err(misuse_graph_edge(
+@@ -864,27 +872,24 @@
+             "package graph source witness has a different typed identity",
+         ));
+     }
+-    let witness = graph_digest(witness_row.get(4)?, "graph source facts witness")?;
+-    if witness_rows.next().await?.is_some() {
++    let witness = graph_digest(row.get(4)?, "graph source facts witness")?;
++    let state = row.get::<Option<i64>>(5)?;
++    let reason = row.get::<Option<String>>(6)?;
++    let has_edge = match row.get::<i64>(7)? {
++        0 => false,
++        1 => true,
++        _ => return Err(misuse_graph_edge("invalid package graph edge-existence flag")),
++    };
++    if rows.next().await?.is_some() {
+         return Err(misuse_graph_edge("package graph source witness is duplicated"));
+     }
+-    drop(witness_rows);
+-
+-    let mut rows = connection
+-        .query(
+-            "SELECT state, reason FROM backend_projection_package_states \
+-             WHERE source=?1 AND coordinate_kind=?2 AND source_authority_kind=?3 AND source_authority_id=?4",
+-            turso::params![
+-                source.coordinate.as_str(),
+-                i64::from(source.coordinate.kind().tag()),
+-                source.authority.kind_tag(),
+-                source.authority.id_bytes().as_slice()
+-            ],
+-        )
+-        .await?;
+-    let row = rows.next().await?;
+     drop(rows);
+-    let Some(row) = row else {
++    let Some(state) = state else {
++        if reason.is_some() {
++            return Err(misuse_graph_edge(
++                "package graph state reason exists without a state kind",
++            ));
++        }
+         let known_empty = checked_source_witness(
+             source,
+             DependencyFacts::Known(Vec::<PackageDependencyRecord>::new().into_boxed_slice()),
+@@ -891,19 +896,4 @@
+         )?;
+-        let mut edge_rows = connection
+-            .query(
+-                "SELECT 1 FROM backend_projection_package_edges WHERE source=?1 \
+-                 AND coordinate_kind=?2 AND source_authority_kind=?3 \
+-                 AND source_authority_id=?4 LIMIT 1",
+-                turso::params![
+-                    source.coordinate.as_str(),
+-                    i64::from(source.coordinate.kind().tag()),
+-                    source.authority.kind_tag(),
+-                    source.authority.id_bytes().as_slice()
+-                ],
+-            )
+-            .await?;
+-        let has_edge = edge_rows.next().await?.is_some();
+-        drop(edge_rows);
+         // This indexed probe distinguishes a deleted Unknown/Unavailable row
+         // from Known facts. It does not prove every edge against the graph
+         // witness; bounded pages have no Merkle membership proof.
+@@ -916,8 +906,15 @@
+         ));
+     };
+ 
+-    let state = row.get::<i64>(0)?;
+-    let reason = decode_exact_product_text(row.get::<String>(1)?, "invalid graph state reason")?;
++    if has_edge {
++        return Err(misuse_graph_edge(
++            "package graph gap state coexists with indexed dependency edges",
++        ));
++    }
++    let reason = decode_exact_product_text(
++        reason.ok_or_else(|| misuse_graph_edge("package graph state reason is missing"))?,
++        "invalid graph state reason",
++    )?;
+     let facts = match state {
+         1 => DependencyFacts::Unknown(reason.clone()),
+         2 => DependencyFacts::Unavailable(reason.clone()),
+--- a/extensions/turso/src/package_graph_read.rs
++++ b/extensions/turso/src/package_graph_read.rs
+@@ -1075,6 +1075,102 @@
+     }
+ 
+     #[test]
++    fn gap_state_with_a_valid_witness_cannot_hide_an_indexed_edge() {
++        futures_executor::block_on(async {
++            let source = package("pkg:cargo/state-with-edge@1.0.0");
++            let authority = registry_authority(0x3a);
++            let source_key = PackageGraphSourceKey::new(source.clone(), authority);
++            let edge_facts: [PackageDependencySourceFacts; 1] = [(
++                source_key.clone(),
++                DependencyFacts::Known(
++                    vec![edge(
++                        &source,
++                        authority,
++                        "serde",
++                        "^1",
++                        None,
++                        DependencyScope::Runtime,
++                        0x3a,
++                    )]
++                    .into_boxed_slice(),
++                ),
++            )];
++            let (path, projection) = projection_with_facts(&edge_facts, 0x3a).await;
++
++            // Construct a coherent Unknown fact snapshot and persist its exact
++            // per-source and graph digests alongside the matching state row.
++            // The existing edge remains independently well-formed; only the
++            // contradictory coexistence should make both reads refuse it.
++            let reason = ProductText::new("registry omitted dependency metadata")
++                .expect("state reason");
++            let unknown = backend_library::CheckedPackageGraphFacts::new(vec![(
++                source_key.clone(),
++                DependencyFacts::Unknown(reason.clone()),
++            )])
++            .expect("valid Unknown graph fact");
++            projection
++                .connection
++                .execute(
++                    "UPDATE backend_projection_package_source_witnesses \
++                     SET facts_witness=?1 WHERE source=?2 AND coordinate_kind=?3 \
++                     AND source_authority_kind=?4 AND source_authority_id=?5",
++                    turso::params![
++                        unknown.source_witnesses()[0].as_slice(),
++                        source.as_str(),
++                        i64::from(source.kind().tag()),
++                        authority.kind_tag(),
++                        authority.id_bytes().as_slice()
++                    ],
++                )
++                .await
++                .expect("persist matching Unknown source witness");
++            projection
++                .connection
++                .execute(
++                    "UPDATE backend_projection_package_graph_meta \
++                     SET edge_count=0, facts_witness=?1",
++                    turso::params![unknown.witness().as_slice()],
++                )
++                .await
++                .expect("persist matching Unknown graph witness");
++            projection
++                .connection
++                .execute(
++                    "INSERT INTO backend_projection_package_states \
++                     (source, coordinate_kind, source_authority_kind, source_authority_id, state, reason) \
++                     VALUES (?1, ?2, ?3, ?4, 1, ?5)",
++                    turso::params![
++                        source.as_str(),
++                        i64::from(source.kind().tag()),
++                        authority.kind_tag(),
++                        authority.id_bytes().as_slice(),
++                        reason.as_str()
++                    ],
++                )
++                .await
++                .expect("persist matching Unknown state");
++
++            assert!(projection
++                .package_dependencies_for_source(&source_key)
++                .await
++                .is_err(), "unpaged reads must reject a valid gap witness with an indexed edge");
++            let request = PackageGraphPageRequest::new(
++                source,
++                PackageGraphDirection::Dependencies,
++                Some(authority),
++                8,
++            )
++            .expect("request");
++            assert!(projection
++                .read_package_graph_page(&request)
++                .await
++                .is_err(), "paged reads must reject a valid gap witness with an indexed edge");
++            drop(projection);
++            remove_database(&path);
++        });
++    }
++
++    #[test]
+     fn deleted_state_row_is_not_misread_as_known_empty() {
+         futures_executor::block_on(async {
+             let source = package("pkg:cargo/state-deleted@1.0.0");

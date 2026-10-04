@@ -1,6 +1,6 @@
 //! SQL schema and stable statement text for the projection.
 
-pub(crate) const SCHEMA_VERSION: i64 = 9;
+pub(crate) const SCHEMA_VERSION: i64 = 8;
 pub(crate) const MAX_AUDIT_ROOTS: i64 = 128;
 /// Rows per multi-row rebuild statement.
 pub(crate) const REBUILD_BATCH_ROWS: usize = 512;
@@ -46,7 +46,6 @@ CREATE TABLE IF NOT EXISTS backend_projection_package_graph_meta (
 CREATE TABLE IF NOT EXISTS backend_projection_package_edges (
     edge_id BLOB PRIMARY KEY,
     source TEXT NOT NULL,
-    coordinate_kind INTEGER NOT NULL CHECK (coordinate_kind IN (1, 2)),
     source_authority_kind INTEGER NOT NULL CHECK (source_authority_kind BETWEEN 0 AND 4),
     source_authority_id BLOB NOT NULL CHECK (length(source_authority_id) = 32),
     target_ecosystem INTEGER NOT NULL,
@@ -61,34 +60,31 @@ CREATE TABLE IF NOT EXISTS backend_projection_package_edges (
     facts_version BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS backend_projection_package_edges_source
-    ON backend_projection_package_edges(source, coordinate_kind, source_authority_kind, source_authority_id, edge_id);
+    ON backend_projection_package_edges(source, source_authority_kind, source_authority_id, edge_id);
 CREATE INDEX IF NOT EXISTS backend_projection_package_edges_target
     ON backend_projection_package_edges(target_ecosystem, target_name, resolved, edge_id);
 CREATE INDEX IF NOT EXISTS backend_projection_package_edges_target_page
     ON backend_projection_package_edges(target_ecosystem, target_name, edge_id);
 CREATE TABLE IF NOT EXISTS backend_projection_package_states (
     source TEXT NOT NULL,
-    coordinate_kind INTEGER NOT NULL CHECK (coordinate_kind IN (1, 2)),
     source_authority_kind INTEGER NOT NULL CHECK (source_authority_kind BETWEEN 0 AND 4),
     source_authority_id BLOB NOT NULL CHECK (length(source_authority_id) = 32),
     state INTEGER NOT NULL,
     reason TEXT NOT NULL,
-    PRIMARY KEY(source, coordinate_kind, source_authority_kind, source_authority_id)
+    PRIMARY KEY(source, source_authority_kind, source_authority_id)
 );
 CREATE TABLE IF NOT EXISTS backend_projection_package_sources (
     source TEXT NOT NULL,
-    coordinate_kind INTEGER NOT NULL CHECK (coordinate_kind IN (1, 2)),
     source_authority_kind INTEGER NOT NULL CHECK (source_authority_kind BETWEEN 0 AND 4),
     source_authority_id BLOB NOT NULL CHECK (length(source_authority_id) = 32),
-    PRIMARY KEY(source, coordinate_kind, source_authority_kind, source_authority_id)
+    PRIMARY KEY(source, source_authority_kind, source_authority_id)
 );
 CREATE TABLE IF NOT EXISTS backend_projection_package_source_witnesses (
     source TEXT NOT NULL,
-    coordinate_kind INTEGER NOT NULL CHECK (coordinate_kind IN (1, 2)),
     source_authority_kind INTEGER NOT NULL CHECK (source_authority_kind BETWEEN 0 AND 4),
     source_authority_id BLOB NOT NULL CHECK (length(source_authority_id) = 32),
     facts_witness BLOB NOT NULL CHECK (length(facts_witness) = 32),
-    PRIMARY KEY(source, coordinate_kind, source_authority_kind, source_authority_id)
+    PRIMARY KEY(source, source_authority_kind, source_authority_id)
 );
 ";
 
