@@ -1,5 +1,9 @@
 //! Real Tantivy-backed lexical source with canonical ranking at the adapter boundary.
 
+use crate::publish::{
+    DirectoryPublication, TransientDenial, backend_is_transient_denial, io_is_transient_denial,
+    publish_directory, retry_while_denied,
+};
 use crate::{
     Binding, Cursor, DocumentState, Error, FieldSelection, LexicalPage, LexicalSource, Limits,
     MatchMode, OverlayLimits, Query, QueryRequest, RankedHit, Relevance, SchemaVersion,
@@ -506,6 +510,45 @@ impl std::fmt::Display for TantivySourceError {
 
 impl std::error::Error for TantivySourceError {}
 
+impl TransientDenial for TantivySourceError {
+    fn is_transient_denial(&self) -> bool {
+        match self {
+            Self::Io(error) => io_is_transient_denial(error),
+            Self::Backend(error) => backend_is_transient_denial(error),
+            _ => false,
+        }
+    }
+}
+
+enum PreparedStageFailure {
+    Retryable(TantivySourceError),
+    Terminal(TantivySourceError),
+}
+
+impl From<TantivySourceError> for PreparedStageFailure {
+    fn from(error: TantivySourceError) -> Self {
+        if error.is_transient_denial() {
+            Self::Retryable(error)
+        } else {
+            Self::Terminal(error)
+        }
+    }
+}
+
+impl TransientDenial for PreparedStageFailure {
+    fn is_transient_denial(&self) -> bool {
+        matches!(self, Self::Retryable(_))
+    }
+}
+
+impl PreparedStageFailure {
+    fn into_error(self) -> TantivySourceError {
+        match self {
+            Self::Retryable(error) | Self::Terminal(error) => error,
+        }
+    }
+}
+
 impl From<Error> for TantivySourceError {
     fn from(error: Error) -> Self {
         Self::Contract(error)
@@ -794,6 +837,40 @@ impl TantivySource {
             }
         }
 
+        // Build the stage once. The shared publisher retries only its final
+        // idempotent rename, preserving these exact admitted bytes.
+        let action = match Self::stage_and_publish(
+            state,
+            limits,
+            &version_root,
+            &key,
+            &selected,
+            budget,
+        )? {
+            DirectoryPublication::Published => DurableProjectionAction::Built,
+            // Another publisher named this exact root first. It is validated by
+            // the open below like any other existing root.
+            DirectoryPublication::AlreadyPresent => DurableProjectionAction::Opened,
+        };
+
+        let mut source = Self::open_in_dir_with_budget(state, limits, &selected, budget)?;
+        pin_durable_root(&mut source, &selected)?;
+        touch_durable_root(&selected)?;
+        prune_durable_roots(&version_root, &selected, budget)?;
+        Ok((source, action))
+    }
+
+    /// Builds a complete projection in a fresh private stage and publishes it
+    /// under `selected`. A stage that fails is removed; a lost publication race
+    /// leaves the winner in place and removes this stage.
+    fn stage_and_publish(
+        state: &DocumentState,
+        limits: Limits,
+        version_root: &Path,
+        key: &str,
+        selected: &Path,
+        budget: DurableCacheBudget,
+    ) -> Result<DirectoryPublication, TantivySourceError> {
         let stage_id = NEXT_DURABLE_STAGE.fetch_add(1, AtomicOrdering::Relaxed);
         let staging =
             version_root.join(format!(".{key}.building-{}-{stage_id}", std::process::id()));
@@ -806,15 +883,16 @@ impl TantivySource {
             }
         };
         drop(built);
-        sync_directory(&staging)?;
-        fs::rename(&staging, &selected)?;
-        sync_directory(&version_root)?;
-
-        let mut source = Self::open_in_dir_with_budget(state, limits, &selected, budget)?;
-        pin_durable_root(&mut source, &selected)?;
-        touch_durable_root(&selected)?;
-        prune_durable_roots(&version_root, &selected, budget)?;
-        Ok((source, DurableProjectionAction::Built))
+        let publication = sync_directory(&staging)
+            .and_then(|()| publish_directory(&staging, selected))
+            .inspect_err(|_| {
+                let _ = remove_projection_path(&staging);
+            })?;
+        if publication == DirectoryPublication::AlreadyPresent {
+            remove_projection_path(&staging)?;
+        }
+        sync_directory(version_root)?;
+        Ok(publication)
     }
 
     /// Publishes a selected delta as a new durable generation. The previous
@@ -994,14 +1072,26 @@ impl TantivySource {
             cache_budget,
         )?;
         sync_directory(&staging)?;
-        fs::rename(&staging, &selected)?;
+        let publication = publish_directory(&staging, &selected)?;
+        if publication == DirectoryPublication::AlreadyPresent {
+            // Another publisher named this exact root first; it is validated by
+            // the open below like any other existing root, and this stage is
+            // discarded.
+            remove_projection_path(&staging)?;
+        }
         sync_directory(&version_root)?;
 
         let mut source = Self::open_in_dir_with_budget(next, limits, &selected, cache_budget)?;
         pin_durable_root(&mut source, &selected)?;
         touch_durable_root(&selected)?;
         prune_durable_roots(&version_root, &selected, cache_budget)?;
-        Ok((source, Some(revision), DurableProjectionAction::Revised))
+        Ok(match publication {
+            DirectoryPublication::Published => {
+                (source, Some(revision), DurableProjectionAction::Revised)
+            }
+            // The winner's root was opened, not this delta's.
+            DirectoryPublication::AlreadyPresent => (source, None, DurableProjectionAction::Opened),
+        })
     }
 
     fn populate(

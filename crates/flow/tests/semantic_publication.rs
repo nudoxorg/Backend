@@ -4,7 +4,7 @@
 use core::{mem::MaybeUninit, num::NonZeroUsize};
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
@@ -116,9 +116,14 @@ enum SemanticJourneyError {
 fn authority_truth_survives_publication_reopen_discovery_render_and_index()
 -> Result<(), SemanticJourneyError> {
     let authority = go_authority_image(SOURCE);
+    // The Go authority image is precomputed, so no process runs: the toolchain only needs an
+    // absolute path (a `/usr/bin/...` literal is rooted but not absolute on Windows) and a
+    // writable native-work directory, which the host temporary directory supplies everywhere.
+    let fixture_root = std::env::temp_dir();
+    let fixture_executable = fixture_root.join("go");
     let toolchain = ResolvedToolchain::from_version(
         NativeTool::GoCompiler,
-        Path::new("/usr/bin/true"),
+        &fixture_executable,
         b"semantic-publication-go-authority",
     )?;
     let cancelled = AtomicBool::new(false);
@@ -139,7 +144,7 @@ fn authority_truth_survives_publication_reopen_discovery_render_and_index()
         },
         CompileScratch {
             diagnostic_output: &mut diagnostic,
-            native_work: Path::new("/private/tmp"),
+            native_work: &fixture_root,
         },
         CompileOutput {
             fragment_output: &mut fragment_output,

@@ -15,23 +15,30 @@ mod graph;
 mod package_graph_read;
 mod read;
 mod schema;
+mod sharing;
 mod writer;
 
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
 
+#[cfg(test)]
+mod process_harness;
+
+#[cfg(test)]
+mod process_tests;
+
 pub use authority::{
-    AttemptInvalidatedByObservationProof, AuthorityError, AuthorityHash, AuthorityNamespace,
-    AuthorityPlane, COMPILER_PUBLICATION_ENVELOPE_SCHEMA, COMPILER_PUBLICATION_METADATA_SCHEMA,
-    COMPILER_SEMANTIC_IMAGE_SCHEMA, CandidateAttempt, CandidateAttemptRecoveryClaim,
-    CandidateAttemptRetirementReason, CandidateGeneration, ClosureClaim, ClosureReceipt,
-    CompilerEnvelopeError, CompilerImageMember, CompilerPublicationEnvelope,
-    CompilerPublicationMetadata, ExistingGenerationSelection, ProjectionKind, ProjectionWatermark,
-    ReopenedCompilerImage, ReopenedCompilerMetadata, ReopenedCompilerPublication, SelectedFrontier,
-    SelectedGeneration, SelectionOrigin, SourceObservation, SourceObservationReceipt,
-    SourceObservationValue, SupersededAttemptProof, TursoAuthority,
-    VERSIONED_PLANE_MANIFEST_SCHEMA, VERSIONED_PLANE_SEGMENT_SCHEMA,
+    AttemptDisposition, AttemptInvalidatedByObservationProof, AuthorityError, AuthorityHash,
+    AuthorityNamespace, AuthorityPlane, COMPILER_PUBLICATION_ENVELOPE_SCHEMA,
+    COMPILER_PUBLICATION_METADATA_SCHEMA, COMPILER_SEMANTIC_IMAGE_SCHEMA, CandidateAttempt,
+    CandidateAttemptRecoveryClaim, CandidateAttemptRetirementReason, CandidateGeneration,
+    ClosureClaim, ClosureReceipt, CompilerEnvelopeError, CompilerImageMember,
+    CompilerPublicationEnvelope, CompilerPublicationMetadata, ExistingGenerationSelection,
+    ProjectionKind, ProjectionWatermark, ReopenedCompilerImage, ReopenedCompilerMetadata,
+    ReopenedCompilerPublication, SelectedFrontier, SelectedGeneration, SelectionOrigin,
+    SourceObservation, SourceObservationReceipt, SourceObservationValue, SupersededAttemptProof,
+    TursoAuthority, VERSIONED_PLANE_MANIFEST_SCHEMA, VERSIONED_PLANE_SEGMENT_SCHEMA,
     VersionedPlaneArtifactMetadata, VersionedPlaneError, VersionedPlaneManifestSchema,
     VersionedPlaneMember, VersionedPlaneMetadata, VersionedPlanePublication,
     VersionedPlaneSegmentSchema, reopen_selected_compiler_metadata,
@@ -41,6 +48,7 @@ pub use error::ProjectionError;
 pub use graph::{PackageGraphSourceSelection, PackageGraphState, RootedPackageGraph};
 pub use package_graph_read::PackageGraphReadError;
 pub use read::RootedRows;
+pub use sharing::{IoBackendName, SharedWalBackend, SharingRefusal};
 
 use std::fmt;
 

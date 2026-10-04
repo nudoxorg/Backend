@@ -16,6 +16,14 @@ mod versioned;
 #[path = "tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "disposition_tests.rs"]
+mod disposition_tests;
+
+#[cfg(test)]
+#[path = "crash_tests.rs"]
+mod crash_tests;
+
 use envelope::FileStoreCompilerPublicationVerifier;
 pub use envelope::{
     COMPILER_PUBLICATION_ENVELOPE_SCHEMA, COMPILER_PUBLICATION_METADATA_SCHEMA,
@@ -27,12 +35,12 @@ pub use envelope::{
 pub use error::AuthorityError;
 use types::DurableClosureVerifier;
 pub use types::{
-    AttemptInvalidatedByObservationProof, AuthorityHash, AuthorityNamespace, AuthorityPlane,
-    CandidateAttempt, CandidateAttemptRecoveryClaim, CandidateAttemptRetirementReason,
-    CandidateGeneration, ClosureClaim, ClosureReceipt, ExistingGenerationSelection,
-    NoResultRetirementBarrier, ProjectionKind, ProjectionWatermark, SelectedFrontier,
-    SelectedGeneration, SelectionOrigin, SourceObservation, SourceObservationReceipt,
-    SourceObservationValue, SupersededAttemptProof,
+    AttemptDisposition, AttemptInvalidatedByObservationProof, AuthorityHash, AuthorityNamespace,
+    AuthorityPlane, CandidateAttempt, CandidateAttemptRecoveryClaim,
+    CandidateAttemptRetirementReason, CandidateGeneration, ClosureClaim, ClosureReceipt,
+    ExistingGenerationSelection, NoResultRetirementBarrier, ProjectionKind, ProjectionWatermark,
+    SelectedFrontier, SelectedGeneration, SelectionOrigin, SourceObservation,
+    SourceObservationReceipt, SourceObservationValue, SupersededAttemptProof,
 };
 pub use versioned::{
     VERSIONED_PLANE_MANIFEST_SCHEMA, VERSIONED_PLANE_SEGMENT_SCHEMA,
@@ -42,6 +50,7 @@ pub use versioned::{
 };
 
 use crate::connection::BUSY_TIMEOUT;
+use crate::sharing::SharedWalBackend;
 use backend_store::{ArtifactBudget, FileStore};
 use schema::{AUTHORITY_SCHEMA, AUTHORITY_SCHEMA_VERSION};
 use std::{fmt, path::Path};
@@ -74,17 +83,28 @@ impl TursoAuthority {
     /// The read-only preflight plus in-transaction recheck prevents issued DDL
     /// or data writes on a classified refusal. A filesystem path replacement
     /// between those opens still requires an external interlock.
+    ///
+    /// The authority is reached by the daemon, its workers and clients, so it
+    /// is opened with shared multiprocess logging or not at all:
+    /// [`AuthorityError::Sharing`] names the capability this platform or volume
+    /// lacks instead of a weaker mode being used.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, AuthorityError> {
         let path = path.as_ref();
         let text = path
             .to_str()
             .ok_or_else(|| AuthorityError::NonUtf8Path(path.to_path_buf()))?;
+        // Use one detected backend for both read-only attestation and the
+        // writer handle. Windows needs IOCP for both: the platform-default
+        // backend cannot safely join this database's shared multiprocess WAL.
+        let backend = SharedWalBackend::detect()?;
         let initial_state = if path.try_exists().map_err(AuthorityError::PathIo)? {
-            let database = turso::Builder::new_local(text)
-                .read_only(true)
-                .experimental_multiprocess_wal(true)
-                .experimental_index_method(true)
-                .build()
+            let database = backend
+                .open_database(
+                    backend
+                        .builder(text)
+                        .read_only(true)
+                        .experimental_index_method(true),
+                )
                 .await?;
             let connection = database.connect()?;
             connection.busy_timeout(BUSY_TIMEOUT)?;
@@ -102,10 +122,8 @@ impl TursoAuthority {
             let _ = schema_preflight::expected_schema().await?;
         }
 
-        let database = turso::Builder::new_local(text)
-            .experimental_multiprocess_wal(true)
-            .experimental_index_method(true)
-            .build()
+        let database = backend
+            .open_database(backend.builder(text).experimental_index_method(true))
             .await?;
         let mut connection = database.connect()?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
@@ -1025,6 +1043,42 @@ impl TursoAuthority {
             claim.base_root,
             observation,
         ))
+    }
+
+    /// Reads what the authority durably recorded for one exact attempt.
+    ///
+    /// This is the restart-time answer for an owner that may have died at any
+    /// point between selecting a generation, marking its projections current
+    /// and acknowledging its client. The selection transaction consumes the
+    /// attempt and appends its immutable history entry in one commit, so the
+    /// answer is never ambiguous: the attempt is [`AttemptDisposition::Pending`],
+    /// [`AttemptDisposition::Published`] with the exact generation it produced,
+    /// [`AttemptDisposition::Retired`] with its recorded reason, or fenced out.
+    /// Callers must not infer success from the presence of a package, and must
+    /// not resubmit a failed attempt blindly.
+    ///
+    /// Everything is read from one snapshot. A claim whose attempt identity is
+    /// known but whose epoch, fence, input, base head or observation differs
+    /// from the durable record is refused as [`AuthorityError::StaleAttempt`]
+    /// rather than answered, so a forged claim cannot read another attempt's
+    /// outcome.
+    pub async fn attempt_disposition(
+        &self,
+        claim: &CandidateAttemptRecoveryClaim,
+    ) -> Result<AttemptDisposition, AuthorityError> {
+        if claim.epoch == 0
+            || claim.attempt_id == [0; 16]
+            || claim.fence == [0; 32]
+            || claim.input_digest == [0; 32]
+            || claim.observation_sequence == 0
+            || (claim.base_generation == 0) != claim.base_root.is_none()
+        {
+            return Err(AuthorityError::StaleAttempt);
+        }
+        let tx = self.connection.unchecked_transaction().await?;
+        let disposition = read_attempt_disposition(&tx, claim).await;
+        tx.rollback().await?;
+        disposition
     }
 
     /// Closes an exact unselected attempt after its owner job reaches a
@@ -2161,6 +2215,192 @@ impl DurableClosureVerifier for SelectedCompilerMetadataVerifier<'_> {
     }
 }
 
+/// The durable fence fields of one attempt row, active or terminal.
+struct StoredAttemptFacts {
+    epoch: i64,
+    fence: Vec<u8>,
+    input_digest: Vec<u8>,
+    base_generation: i64,
+    base_root: Option<Vec<u8>>,
+    observation_sequence: i64,
+}
+
+impl StoredAttemptFacts {
+    /// Whether every fence field equals the claim's. A shorter or longer
+    /// stored blob can only be corruption and compares unequal.
+    fn agrees_with(&self, claim: &CandidateAttemptRecoveryClaim) -> Result<bool, AuthorityError> {
+        Ok(self.epoch == u64_to_i64(claim.epoch)?
+            && self.fence.as_slice() == claim.fence.as_slice()
+            && self.input_digest.as_slice() == claim.input_digest.as_slice()
+            && self.base_generation == u64_to_i64(claim.base_generation)?
+            && self.base_root.as_deref() == claim.base_root.as_ref().map(|root| root.as_slice())
+            && self.observation_sequence == u64_to_i64(claim.observation_sequence)?)
+    }
+}
+
+async fn read_attempt_disposition(
+    connection: &turso::Connection,
+    claim: &CandidateAttemptRecoveryClaim,
+) -> Result<AttemptDisposition, AuthorityError> {
+    let namespace = &claim.namespace;
+    let mut rows = connection
+        .query(
+            "SELECT epoch, attempt_fence, input_digest, base_generation, base_root, \
+                    observation_sequence, state \
+             FROM backend_index_authority_attempts \
+             WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+               AND plane_kind=?5 AND profile=?6 AND attempt_id=?7",
+            turso::params![
+                namespace.package.as_ref(),
+                namespace.source.as_ref(),
+                namespace.branch.as_ref(),
+                namespace.environment.as_ref(),
+                namespace.plane.sql_parts().0,
+                namespace.plane.sql_parts().1,
+                claim.attempt_id.as_slice()
+            ],
+        )
+        .await?;
+    if let Some(row) = rows.next().await? {
+        let facts = StoredAttemptFacts {
+            epoch: row.get(0)?,
+            fence: row.get(1)?,
+            input_digest: row.get(2)?,
+            base_generation: row.get(3)?,
+            base_root: row.get(4)?,
+            observation_sequence: row.get(5)?,
+        };
+        let state: i64 = row.get(6)?;
+        drop(rows);
+        if !facts.agrees_with(claim)? {
+            return Err(AuthorityError::StaleAttempt);
+        }
+        return match state {
+            0 => active_attempt_disposition(connection, claim).await,
+            1 => selected_attempt_disposition(connection, claim).await,
+            _ => Err(AuthorityError::CorruptRecord("attempt_state")),
+        };
+    }
+    drop(rows);
+
+    let mut terminal_rows = connection
+        .query(
+            "SELECT epoch, attempt_fence, input_digest, base_generation, base_root, \
+                    observation_sequence, terminal_reason \
+             FROM backend_index_authority_attempt_terminals \
+             WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+               AND plane_kind=?5 AND profile=?6 AND attempt_id=?7",
+            turso::params![
+                namespace.package.as_ref(),
+                namespace.source.as_ref(),
+                namespace.branch.as_ref(),
+                namespace.environment.as_ref(),
+                namespace.plane.sql_parts().0,
+                namespace.plane.sql_parts().1,
+                claim.attempt_id.as_slice()
+            ],
+        )
+        .await?;
+    let Some(row) = terminal_rows.next().await? else {
+        return Ok(AttemptDisposition::Unrecorded);
+    };
+    let facts = StoredAttemptFacts {
+        epoch: row.get(0)?,
+        fence: row.get(1)?,
+        input_digest: row.get(2)?,
+        base_generation: row.get(3)?,
+        base_root: row.get(4)?,
+        observation_sequence: row.get(5)?,
+    };
+    let reason: i64 = row.get(6)?;
+    drop(terminal_rows);
+    if !facts.agrees_with(claim)? {
+        return Err(AuthorityError::StaleAttempt);
+    }
+    CandidateAttemptRetirementReason::from_sql_code(reason)
+        .map(AttemptDisposition::Retired)
+        .ok_or(AuthorityError::CorruptRecord("terminal_reason"))
+}
+
+/// An unselected, unretired attempt is pending only while it is still the
+/// latest attempt, for the latest observation, over the head it started from.
+async fn active_attempt_disposition(
+    connection: &turso::Connection,
+    claim: &CandidateAttemptRecoveryClaim,
+) -> Result<AttemptDisposition, AuthorityError> {
+    let namespace = &claim.namespace;
+    let mut scope_rows = connection
+        .query(
+            "SELECT attempt_epoch, latest_attempt, latest_observation \
+             FROM backend_index_authority_scopes \
+             WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+               AND plane_kind=?5 AND profile=?6",
+            namespace_params(namespace),
+        )
+        .await?;
+    let scope = scope_rows
+        .next()
+        .await?
+        .ok_or(AuthorityError::CorruptRecord("scope"))?;
+    let current_epoch: i64 = scope.get(0)?;
+    let latest_attempt: Option<Vec<u8>> = scope.get(1)?;
+    let latest_observation: i64 = scope.get(2)?;
+    drop(scope_rows);
+    let head = read_head_token(connection, namespace).await?;
+    let is_latest = current_epoch == u64_to_i64(claim.epoch)?
+        && latest_attempt.as_deref() == Some(claim.attempt_id.as_slice())
+        && latest_observation == u64_to_i64(claim.observation_sequence)?
+        && head == (u64_to_i64(claim.base_generation)?, claim.base_root);
+    Ok(if is_latest {
+        AttemptDisposition::Pending
+    } else {
+        AttemptDisposition::Fenced
+    })
+}
+
+/// A selected attempt owns exactly one immutable history entry, written by the
+/// transaction that consumed it.
+async fn selected_attempt_disposition(
+    connection: &turso::Connection,
+    claim: &CandidateAttemptRecoveryClaim,
+) -> Result<AttemptDisposition, AuthorityError> {
+    let namespace = &claim.namespace;
+    let mut rows = connection
+        .query(
+            "SELECT generation FROM backend_index_authority_generation_history \
+             WHERE package=?1 AND source=?2 AND branch=?3 AND environment=?4 \
+               AND plane_kind=?5 AND profile=?6 AND attempt_id=?7 \
+             ORDER BY generation ASC LIMIT 2",
+            turso::params![
+                namespace.package.as_ref(),
+                namespace.source.as_ref(),
+                namespace.branch.as_ref(),
+                namespace.environment.as_ref(),
+                namespace.plane.sql_parts().0,
+                namespace.plane.sql_parts().1,
+                claim.attempt_id.as_slice()
+            ],
+        )
+        .await?;
+    // One row is the immutable selection; a second is enough to prove
+    // corruption. Never materialize an attacker-sized matching history.
+    let Some(row) = rows.next().await? else {
+        return Err(AuthorityError::CorruptRecord("selected_attempt_history"));
+    };
+    let generation: i64 = row.get(0)?;
+    if rows.next().await?.is_some() {
+        return Err(AuthorityError::CorruptRecord("selected_attempt_history"));
+    }
+    drop(rows);
+    let selected = read_selected_generation(connection, namespace, generation)
+        .await?
+        .ok_or(AuthorityError::CorruptRecord("selected_attempt_history"))?;
+    if selected.attempt().0 != &claim.attempt_id {
+        return Err(AuthorityError::CorruptRecord("selected_attempt_history"));
+    }
+    Ok(AttemptDisposition::Published(selected))
+}
+
 async fn ensure_scope(
     connection: &turso::Connection,
     namespace: &AuthorityNamespace,
@@ -2575,4 +2815,12 @@ fn decode_array<const N: usize>(
     bytes
         .try_into()
         .map_err(|_| AuthorityError::CorruptRecord(field))
+}
+
+#[cfg(test)]
+impl TursoAuthority {
+    /// The raw connection, for tests that hold a transaction open on purpose.
+    pub(crate) fn raw_connection(&self) -> &turso::Connection {
+        &self.connection
+    }
 }

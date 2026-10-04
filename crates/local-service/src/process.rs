@@ -1569,10 +1569,11 @@ mod tests {
 
     #[test]
     fn forge_policy_limits_and_provider_credentials_are_process_local() {
+        // Not the thread name: it is the test's path, and `::` is not a valid
+        // file name on Windows.
         let token_path = std::env::temp_dir().join(format!(
-            "backend-locald-forge-auth-{}-{}.token",
+            "backend-locald-forge-auth-{}-process-local.token",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
         ));
         fs::write(&token_path, "forge-secret\n").expect("write scoped forge credential");
         let parsed = ProcessConfig::parse([

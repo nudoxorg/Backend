@@ -132,12 +132,7 @@ impl LeaseStore {
             .unwrap_or_default()
             .as_nanos();
         let mut entropy = [0_u8; ID_BYTES];
-        #[cfg(unix)]
-        File::open("/dev/urandom")?.read_exact(&mut entropy)?;
-        #[cfg(windows)]
-        backend_platform::win32::random::fill(&mut entropy)?;
-        #[cfg(not(any(unix, windows)))]
-        entropy[..16].copy_from_slice(&timestamp.to_be_bytes());
+        crate::platform::fill_entropy(&mut entropy)?;
         let mut hasher = Hasher::new();
         hasher.update(b"backend.acquisition.fence.v1\0");
         hasher.update(&entropy);

@@ -326,22 +326,77 @@ fn mcp_admission_bounds_requests_and_replies() {
     );
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+/// Local-endpoint fixtures that behave identically on Unix sockets and on the
+/// Windows `AF_UNIX` sockets `backend_replication` provides, so no transport
+/// test needs a platform branch of its own.
+///
+/// A connected pair is an unnamed socketpair on Unix, which has no `sun_path`
+/// to overrun under a deep temporary directory. A named endpoint is only
+/// needed by the tests that dial one by path, and those do not run on macOS.
+#[cfg(any(unix, windows))]
+mod endpoint {
+    #[cfg(not(target_os = "macos"))]
+    use backend_replication::LocalListener;
+    use backend_replication::LocalStream;
+    #[cfg(not(target_os = "macos"))]
+    use std::path::{Path, PathBuf};
+    #[cfg(not(target_os = "macos"))]
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[cfg(not(target_os = "macos"))]
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    /// A path no other test in this process, and no earlier process, is using.
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn scratch(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "bmcp-{label}-{}-{}.sock",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    /// Binds an endpoint whose permissions satisfy peer authentication: the
+    /// current user alone may use it.
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn bind_private(path: &Path) -> LocalListener {
+        let listener = LocalListener::bind(path).expect("bind local endpoint");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .expect("restrict endpoint to its owner");
+        }
+        #[cfg(windows)]
+        backend_platform::win32::security::restrict_to_current_user(path)
+            .expect("restrict endpoint to its owner");
+        listener
+    }
+
+    /// A connected `(server, client)` pair that has not been authenticated.
+    #[cfg(unix)]
+    pub(super) fn pair() -> (LocalStream, LocalStream) {
+        LocalStream::pair().expect("create a socketpair")
+    }
+
+    /// A connected `(server, client)` pair that has not been authenticated.
+    #[cfg(windows)]
+    pub(super) fn pair() -> (LocalStream, LocalStream) {
+        let path = scratch("pair");
+        let listener = LocalListener::bind(&path).expect("bind pair endpoint");
+        let client = LocalStream::connect(&path).expect("connect pair endpoint");
+        let (server, _) = listener.accept().expect("accept pair endpoint");
+        drop(listener);
+        let _ = std::fs::remove_file(&path);
+        (server, client)
+    }
+}
+
+#[cfg(all(any(unix, windows), not(target_os = "macos")))]
 #[test]
 fn unix_transport_executes_one_correlated_request() {
-    use std::os::unix::fs::PermissionsExt;
-    use std::os::unix::net::UnixListener;
-    let path = std::env::temp_dir().join(format!(
-        "backend-mcp-test-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
-    let listener = UnixListener::bind(&path).expect("listener");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-        .expect("socket permissions");
+    let path = endpoint::scratch("correlated");
+    let listener = endpoint::bind_private(&path);
     let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let (mut server, _) = listener.accept().expect("accept");
@@ -364,15 +419,13 @@ fn unix_transport_executes_one_correlated_request() {
     std::fs::remove_file(path).expect("remove socket");
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one case per forged-identity variant keeps the proof readable"
 )]
 fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
-    use std::os::unix::net::UnixStream;
-
     let package = package_key("pkg");
     let request_certificate = WireCertificate::new().with_claim(WireClaim::Key {
         schema: WireSchema::Package,
@@ -380,7 +433,7 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
         value: "pkg".to_owned(),
     });
     let intent = backend_library::Intent::request_package(package).id();
-    let (mut server, client) = UnixStream::pair().expect("pair");
+    let (mut server, client) = endpoint::pair();
     let server_thread = std::thread::spawn(move || {
         let body = read_frame(&mut server).expect("request body");
         let request: CommandDto = serde_json::from_slice(&body).expect("certified request");
@@ -413,7 +466,7 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
     assert_eq!(reply.reply, CommandReply::Added(intent));
     server_thread.join().expect("server");
 
-    let (mut server, client) = UnixStream::pair().expect("pair");
+    let (mut server, client) = endpoint::pair();
     let server_thread = std::thread::spawn(move || {
         let body = read_frame(&mut server).expect("request body");
         let request: CommandDto = serde_json::from_slice(&body).expect("certified request");
@@ -453,13 +506,11 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
     server_thread.join().expect("server");
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn unix_transport_rejects_digest_only_identity_success() {
-    use std::os::unix::net::UnixStream;
-
     let package = package_key("pkg");
-    let (mut server, client) = UnixStream::pair().expect("pair");
+    let (mut server, client) = endpoint::pair();
     let server_thread = std::thread::spawn(move || {
         let body = read_frame(&mut server).expect("request body");
         let request: CommandDto = serde_json::from_slice(&body).expect("request");
@@ -488,7 +539,7 @@ fn unix_transport_rejects_digest_only_identity_success() {
     server_thread.join().expect("server");
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn unix_endpoint_path_is_bounded() {
     assert!(matches!(

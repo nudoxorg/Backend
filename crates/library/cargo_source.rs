@@ -1711,6 +1711,7 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_test_paths::{absolute, absolute_path};
 
     fn authority(source: Option<&str>) -> CargoPackageSourceAuthorityV1 {
         CargoPackageSourceAuthorityV1::from_metadata_observation(
@@ -1718,8 +1719,8 @@ mod tests {
             "1.0.219",
             "cargo-package-id-exact",
             source,
-            "/workspace/.cargo/registry/src/serde-1.0.219/Cargo.toml",
-            "/workspace",
+            &absolute("/workspace/.cargo/registry/src/serde-1.0.219/Cargo.toml"),
+            &absolute("/workspace"),
             [7; 32],
             "x86_64-unknown-linux-gnu",
             &["derive".to_owned(), "std".to_owned()],
@@ -1811,8 +1812,8 @@ mod tests {
                 "1.0.219",
                 "cargo-package-id-exact",
                 Some("git+https://example.test/serde?branch=main#not-a-commit"),
-                "/workspace/serde/Cargo.toml",
-                "/workspace",
+                &absolute("/workspace/serde/Cargo.toml"),
+                &absolute("/workspace"),
                 [7; 32],
                 "x86_64-unknown-linux-gnu",
                 &[],
@@ -1826,7 +1827,7 @@ mod tests {
                 "cargo-package-id-exact",
                 Some("registry+https://example.test/index"),
                 "relative/Cargo.toml",
-                "/workspace",
+                &absolute("/workspace"),
                 [7; 32],
                 "x86_64-unknown-linux-gnu",
                 &[],
@@ -1837,9 +1838,9 @@ mod tests {
 
     #[test]
     fn external_path_sources_use_opaque_display_labels() {
-        let outside = Path::new("/private/cargo/sources/helper");
-        let workspace = Path::new("/private/project");
-        let label = CargoPackageSourceAuthorityV1::vendored_display_path(outside, workspace)
+        let outside = absolute_path("/private/cargo/sources/helper");
+        let workspace = absolute_path("/private/project");
+        let label = CargoPackageSourceAuthorityV1::vendored_display_path(&outside, &workspace)
             .expect("bounded opaque label");
         assert!(label.starts_with("external/"));
         assert!(!label.contains("/private/"));
@@ -1848,8 +1849,8 @@ mod tests {
             "1.0.0",
             "path+file:///private/cargo/sources/helper#helper@1.0.0",
             None,
-            "/private/cargo/sources/helper/Cargo.toml",
-            "/private/project",
+            &absolute("/private/cargo/sources/helper/Cargo.toml"),
+            &absolute("/private/project"),
             [9; 32],
             "x86_64-unknown-linux-gnu",
             &[],
@@ -1872,8 +1873,8 @@ mod tests {
         let authority = authority(Some("registry+https://example.test/index"));
         let package = authority.package_reference().expect("exact package route");
         let request_binding = ProjectTreeRequestBindingV1::for_paths(
-            Path::new("/workspace/crates/app"),
-            "/workspace",
+            &absolute_path("/workspace/crates/app"),
+            &absolute("/workspace"),
         )
         .expect("tree request binding");
         assert_eq!(
@@ -1942,8 +1943,8 @@ mod tests {
         let authority = authority(Some("registry+https://example.test/index"));
         let package = authority.package_reference().expect("exact package route");
         let request_binding = ProjectTreeRequestBindingV1::for_paths(
-            Path::new("/workspace/crates/app"),
-            "/workspace",
+            &absolute_path("/workspace/crates/app"),
+            &absolute("/workspace"),
         )
         .expect("tree request binding");
         let contents = "# app\n";

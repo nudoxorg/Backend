@@ -22,6 +22,19 @@ use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEnco
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+/// Removes a scratch tree. A scanner or indexer that briefly holds a just-written
+/// file makes Windows refuse the removal, so it is retried a few times; a tree
+/// that still cannot be removed is left for the operating system's temporary
+/// cleanup, because scratch removal is not what any of these tests assert.
+fn cleanup(path: PathBuf) {
+    for attempt in 0..6_u64 {
+        if fs::remove_dir_all(&path).is_ok() || !path.exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25 << attempt.min(4)));
+    }
+}
+
 fn root() -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "nudox-tantivy-durable-{}-{}",
@@ -86,7 +99,7 @@ fn project_reopen_and_reuse_roundtrip() {
     assert_eq!(hit.provenance().segment(), segment.id);
     assert_eq!(hit.provenance().document(), document(1));
     assert_eq!(hit.term(), b"alpha");
-    fs::remove_dir_all(path).expect("cleanup");
+    cleanup(path);
 }
 
 #[test]
@@ -122,7 +135,7 @@ fn temporary_selection_slice_can_yield_a_longer_lived_segment_hit() {
         output[0]
     };
     assert_eq!(hit.expect("hit").term(), b"alpha");
-    fs::remove_dir_all(path).expect("cleanup");
+    cleanup(path);
 }
 
 #[test]
@@ -164,7 +177,7 @@ fn corrupt_final_projection_is_rebuilt_and_incomplete_is_not_authority() {
         store.project(segment).expect("file identity rebuild").id(),
         segment.id
     );
-    fs::remove_dir_all(path).expect("cleanup");
+    cleanup(path);
 }
 
 #[test]
@@ -199,7 +212,7 @@ fn newest_tombstone_shadows_old_key_and_same_document_terms_survive() {
         1
     );
     assert_eq!(output[0].expect("beta").term(), b"beta");
-    fs::remove_dir_all(path).expect("cleanup");
+    cleanup(path);
 }
 
 #[test]
@@ -283,7 +296,7 @@ fn durable_union_matches_core_manifest_for_overlapping_terms_and_tombstones() {
     assert_eq!(durable_hit.provenance().document(), exact_hits[0].document);
     assert_eq!(durable_hit.term(), exact_hits[0].term);
     assert_eq!(durable_hit.score(), exact_hits[0].score);
-    fs::remove_dir_all(path).expect("cleanup");
+    cleanup(path);
 }
 
 #[test]
@@ -317,7 +330,7 @@ fn prefix_selector_returns_multiple_backend_ordinals_and_byte_grammar() {
     assert_eq!(written, 2);
     assert_eq!(output[0].expect("alpha").term(), b"alpha");
     assert_eq!(output[1].expect("alpine").term(), b"alpine");
-    fs::remove_dir_all(path).expect("cleanup");
+    cleanup(path);
 }
 
 #[test]
@@ -379,7 +392,7 @@ fn byte_exact_and_empty_prefix_preserve_core_terms() {
             .expect("punctuation prefix"),
         0
     );
-    fs::remove_dir_all(path).expect("cleanup");
+    cleanup(path);
 }
 
 #[test]
@@ -408,7 +421,7 @@ fn encoded_term_bound_is_checked_before_tantivy_writer() {
             ..
         })
     ));
-    fs::remove_dir_all(path).expect("cleanup");
+    cleanup(path);
 }
 
 #[test]
@@ -435,7 +448,7 @@ fn wrong_snapshot_selection_is_typed() {
         result,
         Err(TantivySegmentStoreError::SnapshotSegmentOrder { .. })
     ));
-    fs::remove_dir_all(path).expect("cleanup");
+    cleanup(path);
 }
 
 #[test]
@@ -478,7 +491,7 @@ fn concurrent_same_identity_projects_reopen_without_clobbering() {
             .filter_map(Result::ok)
             .all(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
     );
-    fs::remove_dir_all(path).expect("cleanup");
+    cleanup(path);
 }
 
 #[test]
@@ -498,7 +511,7 @@ fn abandoned_temporary_directory_is_not_reopenable_authority() {
         store.reopen(segment.id),
         Err(TantivySegmentStoreError::Missing { .. })
     ));
-    fs::remove_dir_all(path).expect("cleanup");
+    cleanup(path);
 }
 
 #[test]
@@ -535,7 +548,7 @@ fn exact_membership_returns_the_later_row() {
     drop(pinned);
     drop(opened);
     drop(store);
-    fs::remove_dir_all(path).expect("cleanup");
+    cleanup(path);
 }
 
 #[test]
@@ -574,5 +587,5 @@ fn an_old_or_wrong_recipe_fails_closed_on_reopen() {
             if detail == "projection recipe mismatch"
     ));
     drop(store);
-    fs::remove_dir_all(path).expect("cleanup");
+    cleanup(path);
 }

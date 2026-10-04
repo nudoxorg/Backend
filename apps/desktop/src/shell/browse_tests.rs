@@ -188,9 +188,9 @@ fn owner() -> (
             .as_millis()
             % 100_000
     );
-    // `/tmp`, not `temp_dir()`: a long socket path exceeds `sockaddr_un`.
-    let state = PathBuf::from("/tmp").join(format!("nx-browse-{nonce}"));
-    let endpoint = PathBuf::from("/tmp").join(format!("nx-browse-{nonce}.sock"));
+    // A short Unix socket base, or this user's temp directory on Windows.
+    let state = crate::host::scratch_base().join(format!("nx-browse-{nonce}"));
+    let endpoint = crate::host::scratch_base().join(format!("nx-browse-{nonce}.sock"));
     // The owner refuses a state directory anyone else could enter: 0700, not the umask's 0755.
     crate::host::private_dir(&state.join("data")).expect("workspace");
     let paths = backend_runtime::WorkspacePaths::discover(
@@ -671,6 +671,9 @@ fn compare_callback_never_revives_on_a_new_same_route_visit(cx: &mut TestAppCont
     assert!(rig.cx.update(|_, cx| current.current(cx, |_| Some(())).is_ok()));
 }
 
+/// A Compare choice painted under one owner attachment cannot act after the
+/// same root is re-attached (Starting, then Ready again), even though the
+/// route, the selection and the root revision all still match.
 #[gpui::test]
 fn compare_painted_callback_cannot_cross_same_root_owner_attachment(cx: &mut TestAppContext) {
     let root = VersionedRoot::synthetic(
