@@ -695,7 +695,8 @@ mod tests {
     }
 
     #[test]
-    fn exact_shape_surfaces_rename_without_selecting_identity() {
+    fn exact_shape_surfaces_rename_without_selecting_identity()
+    -> Result<(), LineageMatcherFailureV1> {
         let deleted = [observation(
             1,
             1,
@@ -716,7 +717,7 @@ mod tests {
             Some(7),
             &[],
         )];
-        let result = match_lineage_candidates_v1(&deleted, &introduced, limits()).unwrap();
+        let result = match_lineage_candidates_v1(&deleted, &introduced, limits())?;
 
         assert_eq!(result.candidates.len(), 1);
         let candidate = result.candidates[0];
@@ -730,10 +731,11 @@ mod tests {
             LineageCandidateAmbiguityV1::NoCompetingSurfacePair
         );
         assert_eq!(result.cost.candidate_pairs_scored, 1);
+        Ok(())
     }
 
     #[test]
-    fn exact_name_surfaces_path_and_parent_relocation() {
+    fn exact_name_surfaces_path_and_parent_relocation() -> Result<(), LineageMatcherFailureV1> {
         let parent_before = identity(20, 1);
         let parent_after = identity(21, 1);
         let deleted = [observation(
@@ -756,7 +758,7 @@ mod tests {
             Some(8),
             &[],
         )];
-        let result = match_lineage_candidates_v1(&deleted, &introduced, limits()).unwrap();
+        let result = match_lineage_candidates_v1(&deleted, &introduced, limits())?;
 
         assert_eq!(result.candidates.len(), 1);
         assert_eq!(result.candidates[0].edit, LineageEditKindV1::Relocation);
@@ -764,10 +766,12 @@ mod tests {
         assert!(result.candidates[0].parent_changed);
         assert!(result.candidates[0].anchors.same_name);
         assert!(!result.candidates[0].anchors.same_core_shape);
+        Ok(())
     }
 
     #[test]
-    fn split_is_reported_as_competing_candidates_for_both_children() {
+    fn split_is_reported_as_competing_candidates_for_both_children()
+    -> Result<(), LineageMatcherFailureV1> {
         let deleted = [observation(
             1,
             1,
@@ -792,7 +796,7 @@ mod tests {
             observation(3, 3, "src/lib.rs", b"decode_body", RUST, None, Some(7), &[]),
         ];
         sort_by_identity(&mut introduced);
-        let result = match_lineage_candidates_v1(&deleted, &introduced, limits()).unwrap();
+        let result = match_lineage_candidates_v1(&deleted, &introduced, limits())?;
 
         assert_eq!(result.candidates.len(), 2);
         for candidate in result.candidates {
@@ -805,10 +809,12 @@ mod tests {
                 }
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn duplicate_shapes_and_near_duplicate_bodies_remain_ambiguous() {
+    fn duplicate_shapes_and_near_duplicate_bodies_remain_ambiguous()
+    -> Result<(), LineageMatcherFailureV1> {
         let common = sorted_refs([1, 2, 3]);
         let before_a = sorted_refs([1, 2, 4]);
         let before_b = sorted_refs([1, 2, 5]);
@@ -845,7 +851,7 @@ mod tests {
             Some(7),
             &common,
         )];
-        let result = match_lineage_candidates_v1(&deleted, &introduced, limits()).unwrap();
+        let result = match_lineage_candidates_v1(&deleted, &introduced, limits())?;
 
         assert_eq!(result.candidates.len(), 2);
         assert!(result.candidates.iter().all(|candidate| matches!(
@@ -863,10 +869,12 @@ mod tests {
                 band: BodyReferenceOverlapBandV1::Mid,
             })
         )));
+        Ok(())
     }
 
     #[test]
-    fn immediate_readd_after_deletion_has_no_old_endpoint_to_match() {
+    fn immediate_readd_after_deletion_has_no_old_endpoint_to_match()
+    -> Result<(), LineageMatcherFailureV1> {
         let introduced = [observation(
             2,
             2,
@@ -880,12 +888,14 @@ mod tests {
         // This is the direct transition from an empty parent generation to a
         // re-added child. The deleted endpoint from two generations ago is not
         // passed in, so the matcher cannot invent resurrection ancestry.
-        let result = match_lineage_candidates_v1(&[], &introduced, limits()).unwrap();
+        let result = match_lineage_candidates_v1(&[], &introduced, limits())?;
         assert!(result.candidates.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn cross_language_equal_bytes_do_not_cross_the_profile_gate() {
+    fn cross_language_equal_bytes_do_not_cross_the_profile_gate()
+    -> Result<(), LineageMatcherFailureV1> {
         let deleted = [observation(
             1,
             1,
@@ -906,12 +916,14 @@ mod tests {
             Some(7),
             &[],
         )];
-        let result = match_lineage_candidates_v1(&deleted, &introduced, limits()).unwrap();
+        let result = match_lineage_candidates_v1(&deleted, &introduced, limits())?;
         assert!(result.candidates.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn rename_and_move_is_explicit_and_bounded_work_is_reported() {
+    fn rename_and_move_is_explicit_and_bounded_work_is_reported()
+    -> Result<(), LineageMatcherFailureV1> {
         let deleted = [observation(
             1,
             1,
@@ -932,7 +944,7 @@ mod tests {
             Some(7),
             &[],
         )];
-        let result = match_lineage_candidates_v1(&deleted, &introduced, limits()).unwrap();
+        let result = match_lineage_candidates_v1(&deleted, &introduced, limits())?;
         assert_eq!(
             result.candidates[0].edit,
             LineageEditKindV1::RenameAndRelocation
@@ -946,10 +958,12 @@ mod tests {
             b"decode".len() + b"parse".len()
         );
         assert_eq!(result.cost.candidate_pairs_scored, 1);
+        Ok(())
     }
 
     #[test]
-    fn body_overlap_cannot_create_a_candidate_without_an_exact_anchor() {
+    fn body_overlap_cannot_create_a_candidate_without_an_exact_anchor()
+    -> Result<(), LineageMatcherFailureV1> {
         let refs = sorted_refs([1, 2, 3]);
         let deleted = [observation(
             1,
@@ -971,10 +985,11 @@ mod tests {
             Some(8),
             &refs,
         )];
-        let result = match_lineage_candidates_v1(&deleted, &introduced, limits()).unwrap();
+        let result = match_lineage_candidates_v1(&deleted, &introduced, limits())?;
         assert!(result.candidates.is_empty());
         assert_eq!(result.cost.candidate_pairs_scored, 0);
         assert_eq!(result.cost.body_reference_steps, 0);
+        Ok(())
     }
 
     #[test]
@@ -983,13 +998,15 @@ mod tests {
             observation(2, 2, "src/lib.rs", b"decode", RUST, None, Some(7), &[]),
             observation(1, 1, "src/lib.rs", b"decode", RUST, None, Some(7), &[]),
         ];
-        let error = match_lineage_candidates_v1(&deleted, &[], limits()).unwrap_err();
         assert!(matches!(
-            error.kind,
-            LineageMatcherFailureKindV1::EndpointsNotStrictlySorted {
-                side: LineageEndpointSideV1::Deleted,
-                index: 1,
-            }
+            match_lineage_candidates_v1(&deleted, &[], limits()),
+            Err(LineageMatcherFailureV1 {
+                kind: LineageMatcherFailureKindV1::EndpointsNotStrictlySorted {
+                    side: LineageEndpointSideV1::Deleted,
+                    index: 1,
+                },
+                ..
+            })
         ));
 
         sort_by_identity(&mut deleted);
@@ -1007,10 +1024,12 @@ mod tests {
             max_candidate_pairs: 0,
             ..limits()
         };
-        let error = match_lineage_candidates_v1(&deleted, &introduced, tight).unwrap_err();
         assert!(matches!(
-            error.kind,
-            LineageMatcherFailureKindV1::CandidatePairLimitExceeded { limit: 0 }
+            match_lineage_candidates_v1(&deleted, &introduced, tight),
+            Err(LineageMatcherFailureV1 {
+                kind: LineageMatcherFailureKindV1::CandidatePairLimitExceeded { limit: 0 },
+                ..
+            })
         ));
     }
 }

@@ -3183,8 +3183,8 @@ mod tests {
             panic!("identical stable-key bytes should reuse across complete input roots");
         };
         assert_eq!(
-            segment_id,
-            base.planes()[0].segments()[0].admitted_id().unwrap()
+            Some(segment_id),
+            base.planes()[0].segments()[0].admitted_id()
         );
         assert_eq!(
             segment.id_claim(),
@@ -3314,8 +3314,8 @@ mod tests {
         };
         assert_eq!(segment.first_key(), &[1; 32]);
         assert_eq!(
-            segment_id,
-            base.planes()[0].segments()[0].admitted_id().unwrap()
+            Some(segment_id),
+            base.planes()[0].segments()[0].admitted_id()
         );
         assert!(segment.admitted_id().is_none());
         assert!(matches!(

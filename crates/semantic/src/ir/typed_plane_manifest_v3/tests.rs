@@ -654,11 +654,13 @@ fn v3_update_work_counters_cover_noop_clustered_and_scattered_batches() {
             .expect("sorted batch fits the explicit update budget");
         let work = update.work();
         if changes.iter().all(|change| {
-            family
-                .range(Some(change.key), None)
-                .expect("key remains inside one family")
-                .next()
-                .is_some_and(|entry| *entry.reference == *change.after.as_ref().unwrap())
+            change.after.as_ref().is_some_and(|after| {
+                family
+                    .range(Some(change.key), None)
+                    .expect("key remains inside one family")
+                    .next()
+                    .is_some_and(|entry| *entry.reference == *after)
+            })
         }) {
             assert_eq!(update.target_descriptor().tree_root(), family.tree_root());
             assert!(update.changed_pages().next().is_none());
@@ -679,7 +681,8 @@ fn v3_update_work_counters_cover_noop_clustered_and_scattered_batches() {
 }
 
 #[test]
-fn payload_claim_fixed_wire_round_trips_distinct_encodings() {
+fn payload_claim_fixed_wire_round_trips_distinct_encodings()
+-> Result<(), crate::ir::row_index::StableRowIndexError> {
     let raw = UntrustedRowPayloadIdentity::from_raw([0x12; 32], 0x0102);
     let tagged = UntrustedRowPayloadIdentity::from_tagged_raw(0xa7, [0x34; 32], 0x0304);
     let raw_wire = raw.to_fixed_wire();
@@ -695,13 +698,14 @@ fn payload_claim_fixed_wire_round_trips_distinct_encodings() {
         Ok(tagged)
     );
 
-    let verified = RowPayload::from_tagged_bytes(0xa7, b"typed bytes").unwrap();
+    let verified = RowPayload::from_tagged_bytes(0xa7, b"typed bytes")?;
     let claim = verified.claim();
     assert_eq!(claim.tag(), Some(0xa7));
     assert_eq!(
         UntrustedRowPayloadIdentity::from_fixed_wire(&claim.to_fixed_wire()),
         Ok(claim)
     );
+    Ok(())
 }
 
 #[test]
@@ -760,7 +764,7 @@ fn grammar_valid_row_claim_stays_untrusted_until_payload_bytes_are_checked() {
 }
 
 #[test]
-fn persisted_root_rejects_a_wrong_relation_claim_context() {
+fn persisted_root_rejects_a_wrong_relation_claim_context() -> Result<(), &'static str> {
     let index = index_with_core_rows(0);
     let family = index.family(RowFamily::Core);
     let loader = memory_nodes(family);
@@ -770,6 +774,10 @@ fn persisted_root_rejects_a_wrong_relation_claim_context() {
         IdContext::delta::<SemanticTypedPlaneRowRelationV3>(),
     )
     .expect("digest width is valid even with the wrong context");
-    let bytes = loader.bytes.get(&root).unwrap();
+    let bytes = loader
+        .bytes
+        .get(&root)
+        .ok_or("fixture loader retained the indexed root bytes")?;
     assert!(PersistedTreeRoot::admit(wrong_context, bytes).is_err());
+    Ok(())
 }

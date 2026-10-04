@@ -2986,10 +2986,17 @@ mod tests {
         .expect("typed family and policy-bound jumbo closures verify")
     }
 
-    fn ids(values: &[CanonicalSemanticPlaneSegmentPayload]) -> Vec<SemanticSegmentId> {
+    fn ids(
+        values: &[CanonicalSemanticPlaneSegmentPayload],
+    ) -> Result<Vec<SemanticSegmentId>, SemanticPlaneRecordError> {
         values
             .iter()
-            .map(|value| value.metadata().unwrap().admitted_id().unwrap())
+            .map(|value| {
+                value
+                    .metadata()?
+                    .admitted_id()
+                    .ok_or(SemanticPlaneRecordError::MissingAdmittedId)
+            })
             .collect()
     }
 
@@ -3462,7 +3469,8 @@ mod tests {
     }
 
     #[test]
-    fn docs_edits_at_start_middle_and_end_leave_unrelated_segment_ids_stable() {
+    fn docs_edits_at_start_middle_and_end_leave_unrelated_segment_ids_stable()
+    -> Result<(), SemanticPlaneRecordError> {
         let base = image(128, None);
         let input = witness();
         let core = encode_canonical_plane_family(&base, &CoreDeclarationRows, input, 320)
@@ -3497,7 +3505,7 @@ mod tests {
         .expect("streamed docs planes encode");
         assert_eq!(
             streaming_sink.ids,
-            ids(&docs),
+            ids(&docs)?,
             "borrowed stream emits the same canonical payload IDs"
         );
         assert_eq!(streamed_metrics.output_bytes(), metrics.output_bytes());
@@ -3505,8 +3513,8 @@ mod tests {
 
         let descriptors: Vec<_> = docs
             .iter()
-            .map(|segment| segment.metadata().unwrap())
-            .collect();
+            .map(|segment| segment.metadata())
+            .collect::<Result<_, _>>()?;
         let payloads: Vec<_> = docs.iter().map(|segment| segment.bytes()).collect();
         verify_semantic_plane_family_against_reader(
             &base,
@@ -3525,9 +3533,9 @@ mod tests {
                     .expect("core planes re-encode");
             let next_docs = encode_canonical_plane_family(&target, &DocumentationRows, input, 320)
                 .expect("documentation planes re-encode");
-            assert_eq!(ids(&core), ids(&next_core));
-            let original = ids(&docs);
-            let changed = ids(&next_docs);
+            assert_eq!(ids(&core)?, ids(&next_core)?);
+            let original = ids(&docs)?;
+            let changed = ids(&next_docs)?;
             assert_eq!(original.len(), changed.len());
             assert_eq!(
                 original.iter().filter(|id| changed.contains(*id)).count(),
@@ -3535,6 +3543,7 @@ mod tests {
                 "only the one stable-key bucket holding declaration {edited} should change"
             );
         }
+        Ok(())
     }
 
     #[test]
@@ -3780,7 +3789,8 @@ mod tests {
     }
 
     #[test]
-    fn relation_and_occurrence_rows_are_coordinate_independent_and_preserve_multiplicity() {
+    fn relation_and_occurrence_rows_are_coordinate_independent_and_preserve_multiplicity()
+    -> Result<(), SemanticPlaneRecordError> {
         let forward = graph_image(false, false);
         let reordered = graph_image(true, false);
         let input = witness();
@@ -3796,8 +3806,8 @@ mod tests {
             encode_canonical_plane_family(&reordered, &OccurrenceRows, input, 512)
                 .expect("reordered occurrence rows encode");
 
-        assert_eq!(ids(&relation_segments), ids(&reordered_relations));
-        assert_eq!(ids(&occurrence_segments), ids(&reordered_occurrences));
+        assert_eq!(ids(&relation_segments)?, ids(&reordered_relations)?);
+        assert_eq!(ids(&occurrence_segments)?, ids(&reordered_occurrences)?);
         assert_eq!(
             occurrence_segments
                 .iter()
@@ -3872,9 +3882,9 @@ mod tests {
         let edited_occurrences =
             encode_canonical_plane_family(&edited, &OccurrenceRows, input, 128)
                 .expect("edited occurrence segments encode");
-        assert_eq!(ids(&relation_segments), ids(&edited_relations));
-        let base_ids = ids(&base_occurrences);
-        let edited_ids = ids(&edited_occurrences);
+        assert_eq!(ids(&relation_segments)?, ids(&edited_relations)?);
+        let base_ids = ids(&base_occurrences)?;
+        let edited_ids = ids(&edited_occurrences)?;
         assert_eq!(base_ids.len(), 3);
         assert_eq!(edited_ids.len(), 3);
         assert_eq!(
@@ -3885,6 +3895,7 @@ mod tests {
             2,
             "the changed occurrence has its own segment while unrelated sites retain IDs"
         );
+        Ok(())
     }
 
     #[test]
@@ -3906,12 +3917,13 @@ mod tests {
     }
 
     #[test]
-    fn decoder_rejects_unknown_tag_malformed_utf8_and_forged_row_count() {
+    fn decoder_rejects_unknown_tag_malformed_utf8_and_forged_row_count()
+    -> Result<(), SemanticPlaneRecordError> {
         let ir = image(1, None);
         let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Documentation);
         let payload = &encode_canonical_plane_family(&ir, &DocumentationRows, witness(), 512)
             .expect("small docs row")[0];
-        let descriptor = payload.metadata().unwrap();
+        let descriptor = payload.metadata()?;
 
         let mut bad_tag = payload.bytes().to_vec();
         bad_tag[HEADER_BYTES + 32] = 0xFF;
@@ -3922,8 +3934,7 @@ mod tests {
             payload.row_count(),
             &bad_tag,
             witness(),
-        )
-        .unwrap();
+        )?;
         assert!(matches!(
             decode_semantic_plane_segment(kind, &bad_tag_descriptor, &bad_tag),
             Err(SemanticPlaneRecordError::RowGrammar)
@@ -3950,8 +3961,7 @@ mod tests {
             payload.row_count(),
             &bad_utf8,
             witness(),
-        )
-        .unwrap();
+        )?;
         assert!(matches!(
             decode_semantic_plane_segment(kind, &bad_utf8_descriptor, &bad_utf8),
             Err(SemanticPlaneRecordError::RowGrammar)
@@ -3966,23 +3976,23 @@ mod tests {
             2,
             &false_count,
             witness(),
-        )
-        .unwrap();
+        )?;
         assert!(matches!(
             decode_semantic_plane_segment(kind, &false_count_descriptor, &false_count),
             Err(SemanticPlaneRecordError::Truncated)
         ));
         assert!(decode_semantic_plane_segment(kind, &descriptor, payload.bytes()).is_ok());
-        let validated = payload
-            .validate()
-            .expect("canonical local segment validates");
+        let validated = payload.validate()?;
         assert_eq!(validated.kind(), kind);
         assert_eq!(validated.row_count(), payload.row_count());
         assert_eq!(validated.bytes(), payload.bytes());
         assert_eq!(
             validated.id(),
-            descriptor.admitted_id().expect("descriptor hashes payload")
+            descriptor
+                .admitted_id()
+                .ok_or(SemanticPlaneRecordError::MissingAdmittedId)?
         );
+        Ok(())
     }
 
     #[test]
@@ -3995,16 +4005,17 @@ mod tests {
     }
 
     #[test]
-    fn unicode_documentation_round_trips_as_exact_typed_payload() {
+    fn unicode_documentation_round_trips_as_exact_typed_payload()
+    -> Result<(), SemanticPlaneRecordError> {
         let ir = image(1, None);
         let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Documentation);
         let rows = encode_canonical_plane_family(&ir, &DocumentationRows, witness(), 512)
             .expect("Unicode docs encode");
-        let descriptor = rows[0].metadata().unwrap();
-        let view = decode_semantic_plane_segment(kind, &descriptor, rows[0].bytes())
-            .expect("strict UTF-8 docs reopen");
+        let descriptor = rows[0].metadata()?;
+        let view = decode_semantic_plane_segment(kind, &descriptor, rows[0].bytes())?;
         assert_eq!(view.row_count(), 1);
         assert_eq!(view.records().len(), 1);
+        Ok(())
     }
 
     #[test]
@@ -4496,14 +4507,15 @@ mod tests {
     }
 
     #[test]
-    fn documentation_edits_do_not_rewrite_source_provenance() {
+    fn documentation_edits_do_not_rewrite_source_provenance() -> Result<(), SemanticPlaneRecordError>
+    {
         let base = image(128, None);
         let edited = image(128, Some(64));
         let before = encode_canonical_plane_family(&base, &SourceProvenanceRows, witness(), 512)
             .expect("base source rows");
         let after = encode_canonical_plane_family(&edited, &SourceProvenanceRows, witness(), 512)
             .expect("edited source rows");
-        assert_eq!(ids(&before), ids(&after));
+        assert_eq!(ids(&before)?, ids(&after)?);
         let descriptors: Vec<_> = before
             .iter()
             .map(|segment| segment.metadata().expect("descriptor"))
@@ -4518,17 +4530,19 @@ mod tests {
             512,
         )
         .expect("exact source family oracle");
+        Ok(())
     }
 
     #[test]
-    fn relation_representative_source_survives_atom_and_observation_reordering() {
+    fn relation_representative_source_survives_atom_and_observation_reordering()
+    -> Result<(), SemanticPlaneRecordError> {
         let first = representative_image(false);
         let second = representative_image(true);
         let before = encode_canonical_plane_family(&first, &SourceProvenanceRows, witness(), 512)
             .expect("first source family");
         let after = encode_canonical_plane_family(&second, &SourceProvenanceRows, witness(), 512)
             .expect("reordered source family");
-        assert_eq!(ids(&before), ids(&after));
+        assert_eq!(ids(&before)?, ids(&after)?);
         assert_eq!(
             before
                 .iter()
@@ -4554,5 +4568,6 @@ mod tests {
             1,
             "representative relation source cannot disappear behind occurrences"
         );
+        Ok(())
     }
 }
