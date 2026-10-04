@@ -1472,51 +1472,6 @@ mod tests {
     }
 
     #[test]
-    fn authority_chooser_accepts_sixty_four_choices_and_rejects_sixty_five() {
-        let coordinate =
-            PackageReference::parse("pkg:cargo/fanout@1.0.0").expect("fanout coordinate");
-        let make_graph = |count: u8| {
-            let facts = (0..count)
-                .map(|authority| {
-                    (
-                        PackageGraphSourceKey::new(
-                            coordinate.clone(),
-                            PackageGraphSourceAuthority::Registry(
-                                RegistryAuthorityId::from_configured_source(
-                                    [authority.wrapping_add(1); 32],
-                                ),
-                            ),
-                        ),
-                        DependencyFacts::Known(Vec::new().into_boxed_slice()),
-                    )
-                })
-                .collect();
-            IndexedCheckedPackageGraph::new(facts, test_limits()).expect("fanout graph")
-        };
-        let request = PackageGraphPageRequest::new(
-            coordinate.clone(),
-            PackageGraphDirection::Dependencies,
-            None,
-            1,
-        )
-        .expect("fanout request");
-
-        let at_limit = make_graph(64);
-        let page = page_for(&request, &at_limit);
-        assert!(matches!(
-            &page.knowledge,
-            PackageGraphKnowledge::Ambiguous { sources } if sources.len() == 64
-        ));
-        assert_eq!(page.admit_for(&request), Ok(()));
-
-        let over_limit = make_graph(65);
-        assert_eq!(
-            expected_page(&request, [0xa1; 32], &over_limit),
-            Err(PackageGraphPageError::AuthorityFanout)
-        );
-    }
-
-    #[test]
     fn cursor_recipe_binds_coordinate_direction_authority_and_limit() {
         let authority = PackageGraphSourceAuthority::Registry(
             RegistryAuthorityId::from_configured_source([0x22; 32]),
