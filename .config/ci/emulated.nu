@@ -12,6 +12,24 @@
 
 use lib.nu [platform-packages]
 
+# Accept only a complete successful oneline listing. `nextest list` may emit
+# useful partial stdout before failing; those rows are not an admitted test
+# selection and must never be followed by a run.
+export def validate-nextest-list [listed: record]: nothing -> record {
+    if $listed.exit_code != 0 {
+        return {tests: [], failure: "list-failed"}
+    }
+    let tests = (
+        $listed.stdout
+        | lines
+        | where {|line| not ($line | str trim | is-empty) }
+    )
+    if ($tests | is-empty) {
+        return {tests: [], failure: "empty-selection"}
+    }
+    {tests: $tests, failure: null}
+}
+
 def lanes []: nothing -> record {
     {
         windows: {
@@ -171,22 +189,37 @@ def main [
     | where {|row| $row.name =~ '^(CARGO_TARGET_DIR|CARGO_HOME|TMPDIR|WINEPREFIX|NEXTEST_|CARGO_TARGET_.*_RUNNER)' }
     | each {|row| print $"   env ($row.name)=($row.value)" }
     let listed = (
-        do { ^cargo nextest list --locked --config-file $config --profile emulated --target $lane.target ...$packages -E $filter }
-        | complete
+        try {
+            do { ^cargo nextest list --locked --message-format oneline --config-file $config --profile emulated --target $lane.target ...$packages -E $filter }
+            | complete
+        } catch {|error|
+            {exit_code: 1, stdout: "", stderr: $error.msg}
+        }
     )
-    print $"   nextest list exit=($listed.exit_code), (($listed.stdout | lines | length)) listed lines"
+    let selection = validate-nextest-list $listed
+    print $"   nextest list exit=($listed.exit_code), (($selection.tests | length)) selected tests"
     if $listed.exit_code != 0 {
         print "   nextest list stderr (last 40 lines):"
         $listed.stderr | lines | last 40 | each {|line| print $"     ($line)" }
     }
+    let run_attempted = $selection.failure == null
+    if not $run_attempted {
+        print --stderr $"   nextest selection rejected: ($selection.failure)"
+    }
     # Streamed, not captured: nextest prints each failure's output in its
-    # final summary, and a long run should show progress as it goes.
-    let passed = (try {
-        ^cargo nextest run --locked --no-fail-fast --hide-progress-bar --config-file $config --profile emulated --target $lane.target ...$packages -E $filter
-        true
-    } catch { false })
+    # final summary, and a long run should show progress as it goes. The
+    # explicit no-tests failure is a second guard if the selection changes
+    # between listing and execution.
+    let passed = if $run_attempted {
+        try {
+            ^cargo nextest run --locked --no-tests=fail --no-fail-fast --hide-progress-bar --config-file $config --profile emulated --target $lane.target ...$packages -E $filter
+            true
+        } catch { false }
+    } else {
+        false
+    }
     if $platform == "windows" { stop-wine }
-    if not $passed { print-junit-failures }
+    if $run_attempted and not $passed { print-junit-failures }
     print $"== emulated: ($platform) (if $passed { 'passed' } else { 'FAILED' }) in ((date now) - $started) =="
     rm --force $config
     if not $passed { error make {msg: $"emulated ($platform) lane failed"} }

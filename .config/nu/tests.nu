@@ -3,6 +3,36 @@
 # Fails when any executable law lacks a distinct adversarial proof surface.
 
 use std/assert
+use ../ci/emulated.nu [validate-nextest-list]
+
+# Emulated CI must run only a complete, nonempty nextest selection. A failed
+# listing's partial stdout is never treated as an admitted selection.
+let valid_emulated_listing = validate-nextest-list {
+    exit_code: 0
+    stdout: "backend_store::tests::opens\nbackend_runtime::tests::closes\n"
+    stderr: ""
+}
+assert equal $valid_emulated_listing.tests [
+    "backend_store::tests::opens"
+    "backend_runtime::tests::closes"
+] "emulated selection must count only the selected oneline test cases"
+assert equal $valid_emulated_listing.failure null "a successful nonempty listing is admitted"
+
+let failed_emulated_listing = validate-nextest-list {
+    exit_code: 1
+    stdout: "backend_store::tests::partial-result\n"
+    stderr: "nextest list failed after partial output"
+}
+assert equal $failed_emulated_listing.tests [] "partial output from a failed list must be discarded"
+assert equal $failed_emulated_listing.failure "list-failed" "a failed listing must reject the lane before run"
+
+let empty_emulated_listing = validate-nextest-list {
+    exit_code: 0
+    stdout: " \n\t\n"
+    stderr: ""
+}
+assert equal $empty_emulated_listing.tests [] "empty and whitespace-only output contains no tests"
+assert equal $empty_emulated_listing.failure "empty-selection" "a successful empty selection must reject the lane"
 
 let config = $env.BACKEND_CONFIG_SNAPSHOT | path expand
 let control = (open $env.BACKEND_CONTROL_PLANE)
