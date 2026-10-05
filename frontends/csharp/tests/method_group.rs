@@ -7,10 +7,12 @@ use backend_frontend_csharp::legacy::{
 };
 use sha2::{Digest, Sha256};
 use std::error::Error;
-use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[path = "support/oracle.rs"]
+mod oracle;
 
 const SOURCE: &str = r#"using System;
 using System.Linq;
@@ -64,50 +66,6 @@ fn dotnet() -> Result<PathBuf, Box<dyn Error>> {
         Err(_) => probe_dotnet_path(PathBuf::from("/home/ubuntu/.dotnet/dotnet"))
             .map_err(|error| format!("dotnet unavailable: {error:?}").into()),
     }
-}
-
-fn publish_oracle(dotnet: &Path) -> Result<PathBuf, Box<dyn Error>> {
-    let helper_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/legacy/helper");
-    let publish = std::env::temp_dir().join(format!(
-        "nudox-csharp-method-group-publish-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos())
-    ));
-    fs::create_dir_all(&publish)?;
-    let intermediate = publish.join("obj");
-    let mut intermediate_arg = OsString::from("-p:BaseIntermediateOutputPath=");
-    intermediate_arg.push(&intermediate);
-    intermediate_arg.push(std::path::MAIN_SEPARATOR.to_string());
-    let output_base = publish.join("bin");
-    let mut output_base_arg = OsString::from("-p:BaseOutputPath=");
-    output_base_arg.push(&output_base);
-    output_base_arg.push(std::path::MAIN_SEPARATOR.to_string());
-    let restored = Command::new(dotnet)
-        .args(["restore", "oracle.csproj", "--locked-mode", "--nologo"])
-        .arg(&intermediate_arg)
-        .current_dir(&helper_dir)
-        .status()?;
-    assert!(restored.success(), "locked oracle restore failed: {restored}");
-    let published = Command::new(dotnet)
-        .args([
-            "publish",
-            "oracle.csproj",
-            "-c",
-            "Release",
-            "--nologo",
-            "--no-restore",
-            "-p:UseSharedCompilation=false",
-        ])
-        .arg(&intermediate_arg)
-        .arg(&output_base_arg)
-        .arg("-o")
-        .arg(&publish)
-        .current_dir(&helper_dir)
-        .status()?;
-    assert!(published.success(), "oracle publish failed: {published}");
-    Ok(publish.join("oracle.dll"))
 }
 
 fn run_oracle(
@@ -241,7 +199,7 @@ fn invocations_owned_by<'a>(
 #[test]
 fn compiler_resolved_method_groups_emit_distinct_reference_rows() -> Result<(), Box<dyn Error>> {
     let dotnet = dotnet()?;
-    let helper = publish_oracle(&dotnet)?;
+    let helper = oracle::for_test(&dotnet, "method-group")?;
     let root = std::env::temp_dir().join(format!(
         "nudox-csharp-method-group-root-{}-{}",
         std::process::id(),
@@ -253,7 +211,7 @@ fn compiler_resolved_method_groups_emit_distinct_reference_rows() -> Result<(), 
     let binding = root.join("MethodGroup.cs");
     fs::write(&binding, SOURCE)?;
     let output = root.join("authority.ncaimg");
-    run_oracle(&dotnet, &helper, &root, &binding, &output)?;
+    run_oracle(&dotnet, helper.path_for_use()?, &root, &binding, &output)?;
     let bytes = fs::read(&output)?;
     let authority = image(&bytes)?;
     let source = SOURCE.as_bytes();
