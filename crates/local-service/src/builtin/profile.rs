@@ -37,12 +37,42 @@ pub(super) type BuiltinWorkspaceRelation = backend_engine::ProductSourceRelation
 pub(super) type BuiltinPackageRecord = backend_engine::ProductSourceRecord;
 pub(super) type BuiltinSemanticRelation = ProductSemanticPublicationRelation;
 
+/// Current admission and the read-only historical probe share the full
+/// membership proof; only the exact source-file key derivation differs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SourceFileKeyLayout {
+    Current,
+    Retired,
+}
+
+impl SourceFileKeyLayout {
+    fn admits(self, project: [u8; 32], path: &str, key: [u8; 32]) -> bool {
+        let current = backend_engine::product_source_file_key(project, path);
+        match self {
+            Self::Current => key == current,
+            Self::Retired => {
+                key != current
+                    && key == backend_engine::legacy_product_source_file_key(project, path)
+            }
+        }
+    }
+}
+
 fn prepare_source_update(
     relation: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
     project_key: [u8; 32],
     changes: &[BuiltinSourceChange],
 ) -> Result<LazyPreparedUpdate<BuiltinWorkspaceRelation>, BuiltinModelError> {
-    validate_source_membership_transition(relation, project_key, changes)?;
+    prepare_source_update_with_layout(relation, project_key, changes, SourceFileKeyLayout::Current)
+}
+
+fn prepare_source_update_with_layout(
+    relation: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    project_key: [u8; 32],
+    changes: &[BuiltinSourceChange],
+    layout: SourceFileKeyLayout,
+) -> Result<LazyPreparedUpdate<BuiltinWorkspaceRelation>, BuiltinModelError> {
+    validate_source_membership_transition(relation, project_key, changes, layout)?;
     let changes = changes
         .iter()
         .map(|change| TreeChange {
@@ -63,6 +93,7 @@ fn validate_source_membership_transition(
     relation: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
     project_key: [u8; 32],
     changes: &[BuiltinSourceChange],
+    layout: SourceFileKeyLayout,
 ) -> Result<(), BuiltinModelError> {
     if changes.is_empty() {
         return Ok(());
@@ -79,8 +110,7 @@ fn validate_source_membership_transition(
                 }
             } else if let Some(fields) = record.file_fields() {
                 if fields.project != project_key
-                    || backend_engine::product_source_file_key(project_key, fields.path)
-                        != change.key
+                    || !layout.admits(project_key, fields.path, change.key)
                 {
                     return Err(BuiltinModelError(
                         "source file key, path, and owning project disagree".to_owned(),
@@ -155,7 +185,7 @@ fn validate_source_membership_transition(
         let record = record.ok_or_else(|| {
             BuiltinModelError("project frontier refers to a missing source file".to_owned())
         })?;
-        validate_project_file(project_key, key, &record)?;
+        validate_project_file_with_layout(project_key, key, &record, layout)?;
     }
     let new_files = match new_project.as_ref() {
         Some(record) => resolve_project_file_keys(project_key, record, |key| {
@@ -229,7 +259,7 @@ fn validate_source_membership_transition(
             .and_then(|index| changes[index].after.as_ref());
         match (after, before) {
             (Some(record), None) if record.file_fields().is_some() => {
-                validate_project_file(project_key, key, record)?;
+                validate_project_file_with_layout(project_key, key, record, layout)?;
             }
             (Some(record), Some(_)) if record.file_fields().is_some() => {
                 return Err(BuiltinModelError(
@@ -370,12 +400,19 @@ pub(super) fn validate_project_file(
     file_key: [u8; 32],
     record: &BuiltinPackageRecord,
 ) -> Result<(), BuiltinModelError> {
+    validate_project_file_with_layout(project_key, file_key, record, SourceFileKeyLayout::Current)
+}
+
+pub(super) fn validate_project_file_with_layout(
+    project_key: [u8; 32],
+    file_key: [u8; 32],
+    record: &BuiltinPackageRecord,
+    layout: SourceFileKeyLayout,
+) -> Result<(), BuiltinModelError> {
     let fields = record.file_fields().ok_or_else(|| {
         BuiltinModelError("project frontier refers to a non-file source row".to_owned())
     })?;
-    if fields.project != project_key
-        || backend_engine::product_source_file_key(project_key, fields.path) != file_key
-    {
+    if fields.project != project_key || !layout.admits(project_key, fields.path, file_key) {
         return Err(BuiltinModelError(
             "project frontier file key, path, and owner disagree".to_owned(),
         ));
@@ -1331,103 +1368,11 @@ impl WorkspaceModel for BuiltinModel {
         intent: &Self::Intent,
         transaction: TransactionId,
     ) -> Result<PreparedTransition, Self::Error> {
-        let intent = intent.clone();
         let relation = base
             .relation::<BuiltinWorkspaceRelation>()
             .map_err(|error| BuiltinModelError(format!("open product source: {error}")))?;
-        let semantic = base
-            .relation::<BuiltinSemanticRelation>()
-            .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
-        intent.admit_semantic_selection_against(&semantic)?;
         let update = prepare_source_update(&relation, intent.package.to_bytes(), intent.changes())?;
-        let semantic_update = prepare_semantic_update(&semantic, intent.semantic_changes())?;
-        let source_changed = update.delta().changes().next().is_some();
-        let semantic_changed = semantic_update.delta().changes().next().is_some();
-        let changed_items = update
-            .delta()
-            .changes()
-            .count()
-            .saturating_add(semantic_update.delta().changes().count());
-        if changed_items == 0 {
-            return Err(BuiltinModelError(
-                "product source intent is a no-op".to_owned(),
-            ));
-        }
-        let base_manifest =
-            workspace_manifest_from_root(&relation.root_handle(), &semantic.root_handle())?;
-        if base.manifest() != &base_manifest {
-            return Err(BuiltinModelError(
-                "workspace base manifest mismatch".to_owned(),
-            ));
-        }
-        let target_manifest =
-            workspace_manifest_from_root(&update.target_root(), &semantic_update.target_root())?;
-        let target_root = update.target().root();
-        let semantic_target_root = semantic_update.target().root();
-        let request = self.request_id(&intent);
-        let changed_nodes = update.changed_nodes().to_vec();
-        let semantic_changed_nodes = semantic_update.changed_nodes().to_vec();
-        let relation_base_object = relation
-            .root_object()
-            .map_err(|error| BuiltinModelError(error.to_string()))?;
-        let semantic_base_object = semantic
-            .root_object()
-            .map_err(|error| BuiltinModelError(error.to_string()))?;
-        let work =
-            TransitionWork::from_lazy(changed_items, update.work()).map_err(BuiltinModelError)?;
-        let relation_delta = update.into_delta();
-        let semantic_delta = semantic_update.into_delta();
-        let mut transitions = Vec::with_capacity(2);
-        if source_changed {
-            transitions.push(RelationTransition::from_delta(&relation_delta));
-        }
-        if semantic_changed {
-            transitions.push(RelationTransition::from_delta(&semantic_delta));
-        }
-        let delta = WorkspaceDelta::new(&base_manifest, &target_manifest, transitions)
-            .map_err(|error| BuiltinModelError(error.to_string()))?;
-        let provenance = CommitProvenance::from_versions(
-            ObjectVersion::<AuthorityVersionSchema>::from_value(AUTHORITY_VALUE),
-            transaction.version(),
-            request,
-        );
-        let commit = backend_engine::commit_checked(&target_manifest, Vec::new(), provenance)
-            .map_err(|error| BuiltinModelError(error.to_string()))?;
-        let closure = transition_closure_lazy(
-            base.closure(),
-            &target_manifest,
-            LazyClosureUpdate {
-                base_source: relation_base_object,
-                base_semantic: semantic_base_object,
-                changed_sources: &changed_nodes,
-                source_root: target_root,
-                changed_semantics: &semantic_changed_nodes,
-                semantic_root: semantic_target_root,
-                transaction,
-                intent: &intent,
-            },
-        )?;
-        let registry = RelationAdmissionRegistry::new()
-            .with_relation::<BuiltinWorkspaceRelation>()
-            .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
-            .with_relation::<BuiltinSemanticRelation>()
-            .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?;
-        let intent_bytes = intent.encode();
-        let intent_key = ObjectKey::<BuiltinIntentSchema>::from_value(&intent_bytes);
-        let intent_object = TypedObject::from_value(&intent_key, &intent_bytes);
-        let transition = PreparedTransition::new_with_registry(
-            request,
-            transaction,
-            delta,
-            commit,
-            closure,
-            &registry,
-        )
-        .map_err(|error| BuiltinModelError(format!("construct prepared transition: {error}")))?;
-        transition
-            .replace_object_family([intent_object], &registry)
-            .map(|transition| transition.with_work(work))
-            .map_err(|error| BuiltinModelError(format!("retain current intent: {error}")))
+        prepare_transition_with_source_update(base, intent, transaction, &relation, update)
     }
 
     fn admit_persisted(
@@ -1449,17 +1394,245 @@ impl WorkspaceModel for BuiltinModel {
     }
 }
 
+/// Builds the ordinary checked transition from an already admitted source
+/// update. The historical fixture writer uses this same durable wire path.
+pub(super) fn prepare_transition_with_source_update(
+    base: &WorkspaceSnapshot,
+    intent: &BuiltinIntent,
+    transaction: TransactionId,
+    relation: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    update: LazyPreparedUpdate<BuiltinWorkspaceRelation>,
+) -> Result<PreparedTransition, BuiltinModelError> {
+    let semantic = base
+        .relation::<BuiltinSemanticRelation>()
+        .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
+    intent.admit_semantic_selection_against(&semantic)?;
+    let semantic_update = prepare_semantic_update(&semantic, intent.semantic_changes())?;
+    let source_changed = update.delta().changes().next().is_some();
+    let semantic_changed = semantic_update.delta().changes().next().is_some();
+    let changed_items = update
+        .delta()
+        .changes()
+        .count()
+        .saturating_add(semantic_update.delta().changes().count());
+    if changed_items == 0 {
+        return Err(BuiltinModelError(
+            "product source intent is a no-op".to_owned(),
+        ));
+    }
+    let base_manifest =
+        workspace_manifest_from_root(&relation.root_handle(), &semantic.root_handle())?;
+    if base.manifest() != &base_manifest {
+        return Err(BuiltinModelError(
+            "workspace base manifest mismatch".to_owned(),
+        ));
+    }
+    let target_manifest =
+        workspace_manifest_from_root(&update.target_root(), &semantic_update.target_root())?;
+    let target_root = update.target().root();
+    let semantic_target_root = semantic_update.target().root();
+    let request = BuiltinModel.request_id(intent);
+    let changed_nodes = update.changed_nodes().to_vec();
+    let semantic_changed_nodes = semantic_update.changed_nodes().to_vec();
+    let relation_base_object = relation
+        .root_object()
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let semantic_base_object = semantic
+        .root_object()
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let work =
+        TransitionWork::from_lazy(changed_items, update.work()).map_err(BuiltinModelError)?;
+    let relation_delta = update.into_delta();
+    let semantic_delta = semantic_update.into_delta();
+    let mut transitions = Vec::with_capacity(2);
+    if source_changed {
+        transitions.push(RelationTransition::from_delta(&relation_delta));
+    }
+    if semantic_changed {
+        transitions.push(RelationTransition::from_delta(&semantic_delta));
+    }
+    let delta = WorkspaceDelta::new(&base_manifest, &target_manifest, transitions)
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let provenance = CommitProvenance::from_versions(
+        ObjectVersion::<AuthorityVersionSchema>::from_value(AUTHORITY_VALUE),
+        transaction.version(),
+        request,
+    );
+    let commit = backend_engine::commit_checked(&target_manifest, Vec::new(), provenance)
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let closure = transition_closure_lazy(
+        base.closure(),
+        &target_manifest,
+        LazyClosureUpdate {
+            base_source: relation_base_object,
+            base_semantic: semantic_base_object,
+            changed_sources: &changed_nodes,
+            source_root: target_root,
+            changed_semantics: &semantic_changed_nodes,
+            semantic_root: semantic_target_root,
+            transaction,
+            intent,
+        },
+    )?;
+    let registry = RelationAdmissionRegistry::new()
+        .with_relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
+        .with_relation::<BuiltinSemanticRelation>()
+        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?;
+    let intent_bytes = intent.encode();
+    let intent_key = ObjectKey::<BuiltinIntentSchema>::from_value(&intent_bytes);
+    let intent_object = TypedObject::from_value(&intent_key, &intent_bytes);
+    let transition = PreparedTransition::new_with_registry(
+        request,
+        transaction,
+        delta,
+        commit,
+        closure,
+        &registry,
+    )
+    .map_err(|error| BuiltinModelError(format!("construct prepared transition: {error}")))?;
+    transition
+        .replace_object_family([intent_object], &registry)
+        .map(|transition| transition.with_work(work))
+        .map_err(|error| BuiltinModelError(format!("retain current intent: {error}")))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(super) fn prepare_retired_fixture(
+    base: &WorkspaceSnapshot,
+    intent: &BuiltinIntent,
+    transaction: TransactionId,
+) -> Result<PreparedTransition, BuiltinModelError> {
+    let relation = base
+        .relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("open retired source fixture: {error}")))?;
+    let update = prepare_source_update_with_layout(
+        &relation,
+        intent.package.to_bytes(),
+        intent.changes(),
+        SourceFileKeyLayout::Retired,
+    )?;
+    prepare_transition_with_source_update(base, intent, transaction, &relation, update)
+}
+
+/// This model exists only to certify a refused, authenticated historical
+/// store head. It cannot plan an intent or be installed in a serving daemon.
+#[derive(Clone, Debug)]
+pub(super) struct RetiredSourceProbe {
+    workspace: std::path::PathBuf,
+}
+
+impl RetiredSourceProbe {
+    pub(super) fn new(workspace: &std::path::Path) -> Self {
+        Self {
+            workspace: workspace.to_owned(),
+        }
+    }
+
+    // WorkspaceOwner opens/repairs its diagnostic journal after model and
+    // store-pack admission. Refuse damaged diagnostics here, while its lease
+    // is held, so upgrade classification never truncates or rewrites old bytes.
+    fn admit_unmodified_diagnostics(&self) -> Result<(), BuiltinModelError> {
+        let path = self.workspace.join("workspace.journal");
+        match std::fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(BuiltinModelError(error.to_string())),
+            Ok(metadata) if !metadata.file_type().is_file() => {
+                return Err(BuiltinModelError(
+                    "historical diagnostic journal is not a regular file".to_owned(),
+                ));
+            }
+            Ok(_) => {}
+        }
+        let (_journal, scan) = backend_engine::HashChainJournal::<
+            backend_engine::schema::WorkspaceLog,
+        >::open_streaming_with_deferred_repair(
+            path,
+            backend_engine::JournalLimits::default(),
+            |_| Ok(()),
+        )
+        .map_err(|error| BuiltinModelError(format!("historical diagnostic journal: {error}")))?;
+        if scan.truncated_tail {
+            return Err(BuiltinModelError(
+                "historical diagnostic journal has a torn tail".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl WorkspaceModel for RetiredSourceProbe {
+    type Intent = BuiltinIntent;
+    type Error = BuiltinModelError;
+
+    fn request_id(&self, intent: &Self::Intent) -> [u8; 32] {
+        BuiltinModel.request_id(intent)
+    }
+
+    fn prepare(
+        &self,
+        _base: &WorkspaceSnapshot,
+        _intent: &Self::Intent,
+        _transaction: TransactionId,
+    ) -> Result<PreparedTransition, Self::Error> {
+        Err(BuiltinModelError(
+            "retired source probe cannot publish".to_owned(),
+        ))
+    }
+
+    fn admit_persisted(
+        &self,
+        _persisted: &backend_engine::PersistedTransition,
+    ) -> Result<PreparedTransition, Self::Error> {
+        Err(BuiltinModelError(
+            "retired source probe requires the owned durable store".to_owned(),
+        ))
+    }
+
+    fn admit_persisted_with_store(
+        &self,
+        persisted: &backend_engine::PersistedTransition,
+        store: &backend_engine::FileStore,
+    ) -> Result<PreparedTransition, Self::Error> {
+        let transition =
+            admit_persisted_transition_with_layout(persisted, store, SourceFileKeyLayout::Retired)?;
+        self.admit_unmodified_diagnostics()?;
+        Ok(transition)
+    }
+}
+
 fn admit_persisted_transition(
     persisted: &backend_engine::PersistedTransition,
     store: &backend_engine::FileStore,
 ) -> Result<PreparedTransition, BuiltinModelError> {
+    admit_persisted_transition_with_layout(persisted, store, SourceFileKeyLayout::Current)
+}
+
+fn admit_persisted_transition_with_layout(
+    persisted: &backend_engine::PersistedTransition,
+    store: &backend_engine::FileStore,
+    layout: SourceFileKeyLayout,
+) -> Result<PreparedTransition, BuiltinModelError> {
     let persisted_intent = admit_persisted_intent(persisted.closure_manifest().objects())?;
+    if layout == SourceFileKeyLayout::Retired
+        && BuiltinModel.request_id(&persisted_intent) != persisted.request()
+    {
+        return Err(BuiltinModelError(
+            "retired persisted intent does not match its request identity".to_owned(),
+        ));
+    }
     let untrusted_manifest = WorkspaceManifest::decode_untrusted(persisted.manifest_bytes())
         .map_err(|error| BuiltinModelError(format!("decode persisted manifest: {error}")))?;
 
     // The rest of restart admission reopens both exact relation roots and
     // proves that this typed intent alone reproduces the authenticated delta.
-    admit_persisted_relations(persisted, store, persisted_intent, untrusted_manifest)
+    admit_persisted_relations(
+        persisted,
+        store,
+        persisted_intent,
+        untrusted_manifest,
+        layout,
+    )
 }
 
 fn admit_persisted_intent(objects: &[TypedObject]) -> Result<BuiltinIntent, BuiltinModelError> {
@@ -1514,6 +1687,7 @@ fn admit_persisted_relations(
     store: &backend_engine::FileStore,
     persisted_intent: BuiltinIntent,
     untrusted_manifest: backend_version::UntrustedWorkspaceManifest,
+    layout: SourceFileKeyLayout,
 ) -> Result<PreparedTransition, BuiltinModelError> {
     let target_root = untrusted_manifest
         .relations()
@@ -1573,10 +1747,11 @@ fn admit_persisted_relations(
             BuiltinModelError(format!("open persisted base semantic relation: {error}"))
         })?;
     persisted_intent.admit_semantic_selection_against(&base_semantic)?;
-    let update = prepare_source_update(
+    let update = prepare_source_update_with_layout(
         &base_tree,
         persisted_intent.package.to_bytes(),
         persisted_intent.changes(),
+        layout,
     )?;
     let semantic_update =
         prepare_semantic_update(&base_semantic, persisted_intent.semantic_changes())?;
@@ -1694,6 +1869,15 @@ fn admit_persisted_relations(
         &registry,
     )
     .map_err(|error| BuiltinModelError(format!("admit persisted closure: {error:?}")))?;
+    if layout == SourceFileKeyLayout::Retired {
+        super::read_indexed_relation(&base_tree, layout)?;
+        let sources = super::read_indexed_relation(&target_tree, layout)?;
+        if sources.files.is_empty() {
+            return Err(BuiltinModelError(
+                "retired layout has no retired source files".to_owned(),
+            ));
+        }
+    }
     let intent_bytes = persisted_intent.encode();
     let intent_key = ObjectKey::<BuiltinIntentSchema>::from_value(&intent_bytes);
     let intent_object = TypedObject::from_value(&intent_key, &intent_bytes);
@@ -2195,3 +2379,7 @@ mod persisted_intent_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "profile_membership_tests.rs"]
+mod membership_tests;

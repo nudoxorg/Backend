@@ -13,6 +13,7 @@ use backend_version::{
     TreeChange, UntrustedId,
 };
 use std::fmt;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
 /// The canonical relation a rejected node belongs to.
@@ -666,6 +667,25 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
     ) -> Result<Vec<Option<R::Value>>, WorkspaceRelationError> {
         self.tree()
             .lookup_many_sorted(keys)
+            .map_err(|error| map_tree_error::<R>(error, None))
+    }
+
+    /// Visits values for strictly increasing keys through this handle's exact
+    /// selected root. The value reference is valid only during the callback;
+    /// missing keys are passed as `None`, and `Break` stops traversal with the
+    /// caller's typed reason. This avoids cloning large relation values when a
+    /// caller needs only a small validation result.
+    ///
+    /// # Errors
+    /// Returns an error when keys are not strictly increasing or a requested
+    /// node cannot be loaded and admitted.
+    pub fn visit_many_sorted<B>(
+        &self,
+        keys: &[R::Key],
+        visitor: impl FnMut(&R::Key, Option<&R::Value>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, WorkspaceRelationError> {
+        self.tree()
+            .visit_many_sorted(keys, visitor)
             .map_err(|error| map_tree_error::<R>(error, None))
     }
 

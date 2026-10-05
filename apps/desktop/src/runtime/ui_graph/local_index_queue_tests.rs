@@ -31,6 +31,8 @@ struct Schedule {
 }
 impl Schedule {
     fn new(cx: &mut TestAppContext, gate: OwnerGate) -> Self {
+        // This oracle races the real filesystem writer and engine actor.
+        cx.executor().allow_parking();
         let project = LocalProjectId::new("/fixture/local-project").expect("project");
         let snapshot = crate::navigation::reduce(
             &AppSnapshot::empty(authority()),

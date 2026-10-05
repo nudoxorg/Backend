@@ -2086,22 +2086,13 @@ mod tests {
 
     #[test]
     fn cargo_source_reply_requires_current_exact_file_proof_and_marks_semantics_unindexed() {
+        use crate::runtime::cargo_fixture::{PACKAGE_NAME, PACKAGE_VERSION};
         use backend_library::CargoPackageSourceAuthorityStateV1;
-        const METADATA: &[u8] = include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"
-        ));
-        let input = backend_library::browse::metadata_input_with_stable_source_witness(
-            METADATA,
-            "aarch64-apple-darwin",
-            None,
-            [7; 32],
-        )
-        .expect("Cargo metadata fixture");
+        let input = crate::runtime::cargo_fixture::input().expect("complete Cargo metadata fixture");
         let row = input
             .packages
             .iter()
-            .find(|row| row.name == "serde" && row.version == "1.0.219")
+            .find(|row| row.name == PACKAGE_NAME && row.version == PACKAGE_VERSION)
             .expect("resolved package");
         let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority else {
             panic!("resolved metadata must carry exact authority")
@@ -2122,7 +2113,7 @@ mod tests {
                 crate::navigation::CargoSourcePath::new(path.as_str()).expect("GUI path"),
             ),
         };
-        let contents: Box<str> = "[package]\nname = \"serde\"\n".into();
+        let contents: Box<str> = format!("[package]\nname = \"{PACKAGE_NAME}\"\n").into();
         let digest = *blake3::hash(contents.as_bytes()).as_bytes();
         let reply = CargoPackageSourceFileResultV1::Read {
             package: reference.clone(),
@@ -2195,27 +2186,11 @@ mod tests {
 
     #[test]
     fn cold_cargo_file_rehydrates_only_the_tree_containing_its_exact_authority() {
+        use crate::runtime::cargo_fixture::{PACKAGE_NAME, PACKAGE_VERSION};
         use backend_advisory::{AdvisoryAuthority, normalize_package};
         use backend_library::CargoPackageSourceAuthorityStateV1;
-        use backend_library::browse::{
-            ProjectTree, build_tree, metadata_input_with_stable_source_witness,
-        };
-
-        const METADATA: &[u8] = include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"
-        ));
-        const LOCKFILE: &str = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/library/browse/fixtures/tree-2026-09-27/Cargo.lock"
-        ));
-        let input = metadata_input_with_stable_source_witness(
-            METADATA,
-            "aarch64-apple-darwin",
-            Some(LOCKFILE),
-            [7; 32],
-        )
-        .expect("Cargo metadata fixture");
+        use backend_library::browse::{ProjectTree, build_tree};
+        let input = crate::runtime::cargo_fixture::input().expect("complete Cargo metadata fixture");
         let advisories = AdvisoryAuthority::new(1);
         let observe = |name: &str, version: &str| {
             let package = normalize_package("cargo", name).expect("identity");
@@ -2230,13 +2205,13 @@ mod tests {
         )
         .expect("owner fixture binding");
         tree.request_binding = Some(binding);
-        let row = tree.package("serde", "1.0.219").expect("exact row");
+        let row = tree.package(PACKAGE_NAME, PACKAGE_VERSION).expect("exact row");
         let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority else {
             panic!("metadata receipt")
         };
         let package = authority.package_reference().expect("qualified package");
         let path = CargoPackageSourcePathV1::new("Cargo.toml").expect("path");
-        let contents: Box<str> = "[package]\nname = \"serde\"\n".into();
+        let contents: Box<str> = format!("[package]\nname = \"{PACKAGE_NAME}\"\n").into();
         let digest = *blake3::hash(contents.as_bytes()).as_bytes();
         let current = CargoPackageSourceFileResultV1::Read {
             package: package.clone(),
@@ -2349,8 +2324,11 @@ mod tests {
         );
 
         let other = CargoSourceKey {
-            package: PackageRef::parse("pkg:cargo/serde@1.0.219?cargo-authority=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-                .expect("other authority"),
+            package: PackageRef::parse(&format!(
+                "pkg:cargo/{PACKAGE_NAME}@{PACKAGE_VERSION}?cargo-authority={}",
+                "b".repeat(64)
+            ))
+            .expect("other authority"),
             ..key
         };
         let mut engine = ColdEngine {
@@ -2370,25 +2348,16 @@ mod tests {
 
     #[test]
     fn cargo_inventory_preserves_exact_paths_and_partial_coverage_without_file_proof() {
+        use crate::runtime::cargo_fixture::{PACKAGE_NAME, PACKAGE_VERSION};
         use backend_library::{
             CargoPackageSourceAuthorityStateV1, CargoPackageSourceInventoryCoverageV1,
             CargoPackageSourceInventoryGapV1, CargoPackageSourceInventoryV1,
         };
-        const METADATA: &[u8] = include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"
-        ));
-        let input = backend_library::browse::metadata_input_with_stable_source_witness(
-            METADATA,
-            "aarch64-apple-darwin",
-            None,
-            [7; 32],
-        )
-        .expect("Cargo metadata fixture");
+        let input = crate::runtime::cargo_fixture::input().expect("complete Cargo metadata fixture");
         let row = input
             .packages
             .iter()
-            .find(|row| row.name == "serde" && row.version == "1.0.219")
+            .find(|row| row.name == PACKAGE_NAME && row.version == PACKAGE_VERSION)
             .expect("resolved package");
         let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority else {
             panic!("source receipt")
@@ -2470,8 +2439,11 @@ mod tests {
             "a wire list with unverified ordering is not a navigable file index"
         );
         let other = CargoSourceInventoryKey {
-            package: PackageRef::parse("pkg:cargo/serde@1.0.219?cargo-authority=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-                .expect("other source"),
+            package: PackageRef::parse(&format!(
+                "pkg:cargo/{PACKAGE_NAME}@{PACKAGE_VERSION}?cargo-authority={}",
+                "b".repeat(64)
+            ))
+            .expect("other source"),
             ..key
         };
         assert!(
@@ -2727,15 +2699,17 @@ mod tests {
             release: Arc::clone(&release),
         })
         .expect("read pool");
-        pool.submit(ReadJob {
-            key: PageKey::Health,
-            request: ReadRequest::Health,
-            generation: Generation::new(1).expect("nonzero fixture generation"),
-            priority: Priority::Normal,
-            cancel: CancellationToken::new(),
-            affinity: None,
-        })
-        .expect("admitted");
+        let admitted = pool
+            .submit(ReadJob {
+                key: PageKey::Health,
+                request: ReadRequest::Health,
+                generation: Generation::new(1).expect("nonzero fixture generation"),
+                priority: Priority::Normal,
+                cancel: CancellationToken::new(),
+                affinity: None,
+            })
+            .expect("admitted");
+        assert!(admitted.evicted.is_none());
         started
             .recv_timeout(Duration::from_secs(2))
             .expect("stage reached UI queue");
@@ -3002,14 +2976,16 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(harness.started().1, "slow-busy");
-        harness
+        let admitted = harness
             .pool
             .submit(job("fast-hover", 2, Priority::Prefetch))
             .expect("admitted");
-        harness
+        assert!(admitted.evicted.is_none());
+        let admitted = harness
             .pool
             .submit(job("fast-dropped", 3, Priority::Prefetch))
             .expect("admitted");
+        assert!(admitted.evicted.is_none());
         assert!(
             harness
                 .pool
@@ -3038,10 +3014,11 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(harness.started().1, "slow-busy");
-        harness
+        let admitted = harness
             .pool
             .submit(job("fast-hover", 2, Priority::Prefetch))
             .expect("admitted");
+        assert!(admitted.evicted.is_none());
         assert!(
             harness
                 .pool
@@ -3072,10 +3049,11 @@ mod tests {
         let mut harness = harness(2);
         let mut receiver = harness.pool.take_wake().expect("wake receiver");
         for round in 0..8 {
-            harness
+            let admitted = harness
                 .pool
                 .submit(job(&format!("fast-{round}"), round + 1, Priority::Normal))
                 .expect("admitted");
+            assert!(admitted.evicted.is_none());
         }
         crate::runtime::wait::until("all eight terminals published", || {
             harness.pool.load().undelivered == 8 && receiver.counts().0 == 8

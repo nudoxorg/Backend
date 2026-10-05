@@ -1484,6 +1484,7 @@ mod tests {
             selected: true,
             freshness: Default::default(),
             history_status: Default::default(),
+            selected_source_frontier: None,
         }
     }
 

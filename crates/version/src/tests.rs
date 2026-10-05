@@ -109,6 +109,52 @@ impl Relation for CountedValueRelation {
     }
 }
 
+static VISITOR_VALUE_CLONES: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, Eq, PartialEq)]
+struct VisitorValue(u64);
+
+impl Clone for VisitorValue {
+    fn clone(&self) -> Self {
+        VISITOR_VALUE_CLONES.fetch_add(1, AtomicOrdering::Relaxed);
+        Self(self.0)
+    }
+}
+
+struct VisitorRelation;
+
+impl Relation for VisitorRelation {
+    const DOMAIN: u8 = 14;
+    const TYPE: u16 = 10;
+    type Key = u64;
+    type Value = VisitorValue;
+
+    fn encode_key(key: &u64, out: &mut Vec<u8>) {
+        out.extend_from_slice(&key.to_be_bytes());
+    }
+
+    fn encode_value(value: &VisitorValue, out: &mut Vec<u8>) {
+        out.extend_from_slice(&value.0.to_be_bytes());
+    }
+}
+
+impl CanonicalRelation for VisitorRelation {
+    fn decode_key(bytes: &[u8]) -> Result<Self::Key, RelationDecodeError> {
+        bytes
+            .try_into()
+            .map(u64::from_be_bytes)
+            .map_err(|_| RelationDecodeError::Malformed)
+    }
+
+    fn decode_value(bytes: &[u8]) -> Result<Self::Value, RelationDecodeError> {
+        bytes
+            .try_into()
+            .map(u64::from_be_bytes)
+            .map(VisitorValue)
+            .map_err(|_| RelationDecodeError::Malformed)
+    }
+}
+
 #[test]
 fn owned_bulk_builder_never_clones_payload_values() -> Result<(), Box<dyn std::error::Error>> {
     let clones = std::sync::Arc::new(AtomicUsize::new(0));
@@ -531,6 +577,158 @@ fn lazy_sorted_lookup_batches_share_paths_and_match_single_key_lookup()
         lazy.lookup_many_sorted(&[FIRST_KEY, FIRST_KEY]),
         Err(LazyTreeError::Node(NodeError::UnsortedOrDuplicate))
     ));
+    Ok(())
+}
+
+#[test]
+fn lazy_sorted_borrowed_visitor_matches_owned_lookup_without_row_clones()
+-> Result<(), Box<dyn std::error::Error>> {
+    let items = (0..10_000u64)
+        .step_by(2)
+        .map(|key| (key, VisitorValue(key * 3)))
+        .collect::<Vec<_>>();
+    let tree = PersistentTree::<VisitorRelation>::from_sorted_items(&items)?;
+    let nodes = tree
+        .node_closure()
+        .map(|node| (node.id().to_bytes(), node.canonical_bytes().to_vec()))
+        .collect();
+    let loader = MeasuredLoader::<VisitorRelation>::new(nodes);
+    let wrong_context = UntrustedId::from_wire(
+        tree.root().commitment().as_bytes(),
+        IdContext::new(
+            0x56,
+            VisitorRelation::DOMAIN,
+            VisitorRelation::TYPE,
+            VisitorRelation::VERSION,
+        ),
+    )?;
+    assert!(matches!(
+        LazyTree::open(&loader, wrong_context),
+        Err(LazyTreeError::Node(NodeError::SchemaMismatch))
+    ));
+    assert_eq!(
+        loader.calls.get(),
+        0,
+        "foreign root context must fail before I/O"
+    );
+
+    let claim = UntrustedId::from_wire(
+        tree.root().commitment().as_bytes(),
+        IdContext::relation::<VisitorRelation>(),
+    )?;
+    let lazy = LazyTree::open(&loader, claim)?;
+    let keys = [0, 1, 2, 9_999, 10_001];
+    let mut observed = Vec::new();
+    VISITOR_VALUE_CLONES.store(0, AtomicOrdering::Relaxed);
+    let visited = lazy.visit_many_sorted(&keys, |key, value| {
+        observed.push((*key, value.map(|value| value.0)));
+        std::ops::ControlFlow::<()>::Continue(())
+    })?;
+    assert_eq!(visited, std::ops::ControlFlow::Continue(()));
+    assert_eq!(
+        observed,
+        vec![
+            (0, Some(0)),
+            (1, None),
+            (2, Some(6)),
+            (9_999, None),
+            (10_001, None),
+        ]
+    );
+    assert_eq!(
+        VISITOR_VALUE_CLONES.load(AtomicOrdering::Relaxed),
+        0,
+        "the callback borrows decoded rows instead of cloning them"
+    );
+
+    let owned = lazy.lookup_many_sorted(&keys)?;
+    assert_eq!(
+        owned,
+        vec![
+            Some(VisitorValue(0)),
+            None,
+            Some(VisitorValue(6)),
+            None,
+            None,
+        ]
+    );
+    assert_eq!(
+        VISITOR_VALUE_CLONES.load(AtomicOrdering::Relaxed),
+        2,
+        "the compatibility lookup owns exactly the present values"
+    );
+
+    let mut empty_visits = 0;
+    assert_eq!(
+        lazy.visit_many_sorted(&[], |_, _| {
+            empty_visits += 1;
+            std::ops::ControlFlow::<()>::Continue(())
+        })?,
+        std::ops::ControlFlow::Continue(())
+    );
+    assert_eq!(empty_visits, 0);
+    assert!(matches!(
+        lazy.visit_many_sorted(&[2, 2], |_, _| {
+            std::ops::ControlFlow::<()>::Continue(())
+        }),
+        Err(LazyTreeError::Node(NodeError::UnsortedOrDuplicate))
+    ));
+    assert!(matches!(
+        lazy.visit_many_sorted(&[2, 1], |_, _| {
+            std::ops::ControlFlow::<()>::Continue(())
+        }),
+        Err(LazyTreeError::Node(NodeError::UnsortedOrDuplicate))
+    ));
+
+    let mut stopped_after = Vec::new();
+    let stopped = lazy.visit_many_sorted(&keys, |key, _| {
+        stopped_after.push(*key);
+        if *key == 1 {
+            std::ops::ControlFlow::Break("validation stopped")
+        } else {
+            std::ops::ControlFlow::Continue(())
+        }
+    })?;
+    assert_eq!(stopped, std::ops::ControlFlow::Break("validation stopped"));
+    assert_eq!(stopped_after, [0, 1]);
+    Ok(())
+}
+
+#[test]
+fn lazy_sorted_borrowed_visitor_preserves_authenticated_child_errors()
+-> Result<(), Box<dyn std::error::Error>> {
+    let items = (0..4_000u64).map(|key| (key, key * 5)).collect::<Vec<_>>();
+    let tree = PersistentTree::<RelationFixture>::from_sorted_items(&items)?;
+    assert!(tree.root().level() > 0);
+    let root = admit_canonical_root::<RelationFixture>(tree.root().as_bytes())?;
+    let missing_child = root
+        .child_summaries()?
+        .first()
+        .ok_or("branch fixture omitted its first child")?
+        .commitment
+        .to_bytes();
+    let mut nodes = tree
+        .node_closure()
+        .map(|node| (node.id().to_bytes(), node.canonical_bytes().to_vec()))
+        .collect::<BTreeMap<_, _>>();
+    nodes.remove(&missing_child);
+    let loader = MeasuredLoader::<RelationFixture>::new(nodes);
+    let claim = UntrustedId::from_wire(
+        tree.root().commitment().as_bytes(),
+        IdContext::relation::<RelationFixture>(),
+    )?;
+    let lazy = LazyTree::open(&loader, claim)?;
+    let visit_error = lazy
+        .visit_many_sorted(&[0, 1], |_, _| std::ops::ControlFlow::<()>::Continue(()))
+        .expect_err("the selected authenticated child was removed from the loader");
+    assert_eq!(
+        visit_error,
+        LazyTreeError::Load(NodeError::MalformedEncoding)
+    );
+    let owned_error = lazy
+        .lookup_many_sorted(&[0, 1])
+        .expect_err("the owning lookup shares the same authenticated descent");
+    assert_eq!(owned_error, visit_error);
     Ok(())
 }
 

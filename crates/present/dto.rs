@@ -735,6 +735,13 @@ pub struct ProductDto {
     /// Exact owner-issued indexing ticket, observation, or terminal receipt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_job: Option<IndexJobProjection>,
+    /// Exact durable index-operation status, including a Published receipt or
+    /// typed failure/unresolved reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_operation: Option<backend_library::IndexOperationObservation>,
+    /// Exact checked Project membership captured with the selected semantic generations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_source_frontier: Option<backend_library::SelectedProjectSourceFrontier>,
 }
 
 /// Shared page envelope projected for CLI, MCP, and desktop product replies.
@@ -780,6 +787,9 @@ pub struct ProductRecordDto {
     /// compiler generation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_status: Option<backend_library::SemanticHistoryPublicationStatus>,
+    /// Exact canonical two-byte profile of an immutable semantic generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler_profile: Option<backend_library::SemanticLanguageProfile>,
 }
 
 impl ProductDto {
@@ -801,6 +811,7 @@ impl ProductDto {
                     discovery: record.discovery_details().cloned(),
                     package_group: record.package_group().cloned(),
                     history_status: record.history_status().cloned(),
+                    compiler_profile: record.compiler_profile(),
                 })
                 .collect(),
             note: view.note().map(ToOwned::to_owned),
@@ -814,6 +825,8 @@ impl ProductDto {
                     next_cursor: page.next_cursor().map(ToOwned::to_owned),
                 }),
             index_job: view.index_job().cloned(),
+            index_operation: view.index_operation().cloned(),
+            selected_source_frontier: view.selected_source_frontier().cloned(),
         }
     }
 }

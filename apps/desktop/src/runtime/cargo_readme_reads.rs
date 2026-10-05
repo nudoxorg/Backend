@@ -345,21 +345,11 @@ pub(crate) mod tests {
         CargoReadmeKey,
         CargoPackageReadmeResultV1,
     ) {
+        use crate::runtime::cargo_fixture::{PACKAGE_NAME, PACKAGE_VERSION};
         use backend_advisory::{AdvisoryAuthority, normalize_package};
-        use backend_library::browse::{
-            ProjectTreeRequestBindingV1, build_tree, metadata_input_with_stable_source_witness,
-        };
-        const METADATA: &[u8] = include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"
-        ));
-        let input = metadata_input_with_stable_source_witness(
-            METADATA,
-            "aarch64-apple-darwin",
-            None,
-            [7; 32],
-        )
-        .expect("metadata witness fixture");
+        use backend_library::browse::{ProjectTreeRequestBindingV1, build_tree};
+        let input =
+            crate::runtime::cargo_fixture::input().expect("complete metadata witness fixture");
         let advisories = AdvisoryAuthority::new(1);
         let mut tree = build_tree(&input, &|name: &str, version: &str| {
             advisories.observe(
@@ -380,7 +370,7 @@ pub(crate) mod tests {
         tree.request_binding = Some(binding);
         assert!(tree.has_admissible_shape());
         let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &tree
-            .package("serde", "1.0.219")
+            .package(PACKAGE_NAME, PACKAGE_VERSION)
             .expect("package")
             .source_authority
         else {

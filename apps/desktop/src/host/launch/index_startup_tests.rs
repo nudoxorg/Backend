@@ -66,6 +66,10 @@ fn wait_for_terminal(
     crate::runtime::wait::until(
         "the real owner returned an exact terminal operation",
         || {
+            // The owner works on real threads, while this context's status
+            // cadence uses its virtual clock. Pump the same keyed read the
+            // desktop schedules after an Accepted/Active receipt.
+            cx.executor().advance_clock(Duration::from_millis(500));
             cx.run_until_parked();
             terminal = graph.root.read_with(cx, |root, _| {
                 let snapshot = root.snapshot();
@@ -137,6 +141,8 @@ fn late_launch_snapshot_still_dispatches_a_real_index_and_retry() -> TestResult 
         );
     }
     paths.initialize()?;
+    let mut cx = TestAppContext::single();
+    cx.executor().allow_parking();
     let service = EmbeddedLocalService::start(offline_config(&paths)?)?;
     let mut proof = Session::connect(paths.endpoint())?;
     let revision = proof.revision()?;
@@ -162,7 +168,6 @@ fn late_launch_snapshot_still_dispatches_a_real_index_and_retry() -> TestResult 
     let before = boot.snapshot.session().clone();
     let persistence = boot.persistence.clone().ok_or("real startup persistence")?;
     let actor = EngineActor::start(boot.client, 4)?;
-    let mut cx = TestAppContext::single();
     let graph = cx.update(|cx| {
         UiEntityGraph::install_with_bootstrap(
             cx,

@@ -40,9 +40,7 @@ impl Serialize for ViewDto {
 impl<'de> Deserialize<'de> for ViewDto {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = ViewEnvelopeWire::deserialize(deserializer)?;
-        if value.version != DTO_VERSION {
-            return Err(serde::de::Error::custom("unsupported view DTO version"));
-        }
+        ensure_version(value.version, "view").map_err(serde::de::Error::custom)?;
         let empty_certificate = WireCertificate::new();
         let certificate = value.certificate.as_ref().unwrap_or(&empty_certificate);
         let snapshot = snapshot_from_wire(value.snapshot, certificate, None)
@@ -606,9 +604,7 @@ pub(crate) fn decode_event_with_certificate(
 impl<'de> Deserialize<'de> for EventDto {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = EventEnvelopeWire::deserialize(deserializer)?;
-        if value.version != DTO_VERSION {
-            return Err(serde::de::Error::custom("unsupported event DTO version"));
-        }
+        ensure_version(value.version, "event").map_err(serde::de::Error::custom)?;
         let empty_certificate = WireCertificate::new();
         let certificate = value.certificate.as_ref().unwrap_or(&empty_certificate);
         let event = decode_event_parts(&value.cursor, value.event, certificate, None)

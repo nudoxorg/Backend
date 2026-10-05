@@ -14,11 +14,11 @@ use backend_semantic::ir::{EntityKind, Ir};
 use serde::Serialize;
 
 /// Bytes per token. Must match `backend_present::ESTIMATED_BYTES_PER_TOKEN`.
-pub const ESTIMATED_BYTES_PER_TOKEN: usize = 4;
+pub(crate) const ESTIMATED_BYTES_PER_TOKEN: usize = 4;
 
 /// One finished use-case measurement.
 #[derive(Debug, Serialize)]
-pub struct UseCaseReport {
+pub(crate) struct UseCaseReport {
     /// Language label, for example `rust` or `typescript`.
     pub language: &'static str,
     /// Stable use-case name.
@@ -42,31 +42,31 @@ pub struct UseCaseReport {
 }
 
 /// Clock for one compile.
-pub struct CompileTimer {
+pub(crate) struct CompileTimer {
     start: Instant,
 }
 
 impl CompileTimer {
     /// Starts the compile clock.
-    pub fn start() -> Self {
+    pub(crate) fn start() -> Self {
         Self {
             start: Instant::now(),
         }
     }
 
     /// Elapsed time since [`CompileTimer::start`].
-    pub fn elapsed(&self) -> Duration {
+    pub(crate) fn elapsed(&self) -> Duration {
         self.start.elapsed()
     }
 }
 
 /// Ceiling token count for `bytes`, matching the present-budget gate.
-pub const fn estimate_tokens(bytes: usize) -> usize {
+pub(crate) const fn estimate_tokens(bytes: usize) -> usize {
     bytes.saturating_add(ESTIMATED_BYTES_PER_TOKEN - 1) / ESTIMATED_BYTES_PER_TOKEN
 }
 
 /// Sorted `kind\tname` lines for every entity. This is the index input digest.
-pub fn name_digest(ir: &Ir) -> String {
+pub(crate) fn name_digest(ir: &Ir) -> String {
     let mut lines = Vec::new();
     for item in ir.items() {
         let name = String::from_utf8_lossy(item.name()).into_owned();
@@ -77,7 +77,7 @@ pub fn name_digest(ir: &Ir) -> String {
 }
 
 /// Measures the digest and writes one JSON report under `target/use-case-bench/`.
-pub fn finish(
+pub(crate) fn finish(
     language: &'static str,
     use_case: &'static str,
     compile: Duration,
@@ -104,7 +104,7 @@ pub fn finish(
 }
 
 /// Records a flow that could not run because a required toolchain is absent.
-pub fn skip(
+pub(crate) fn skip(
     language: &'static str,
     use_case: &'static str,
     reason: &'static str,
@@ -139,7 +139,7 @@ fn bench_dir() -> PathBuf {
 }
 
 /// Entity count for one kind and exact name. Tests use this instead of `is_ok`.
-pub fn count_named(ir: &Ir, kind: EntityKind, name: &[u8]) -> usize {
+pub(crate) fn count_named(ir: &Ir, kind: EntityKind, name: &[u8]) -> usize {
     ir.items()
         .filter(|item| item.kind() == kind && item.name() == name)
         .count()

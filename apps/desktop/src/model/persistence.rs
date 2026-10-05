@@ -2052,7 +2052,11 @@ mod tests {
                 0 => browse.project = "/fixture/workspace/another-member".into(),
                 1 => browse.request_binding.effective_workspace_root_digest = [3; 32],
                 2 => origin.request_binding.requested_root_digest = [4; 32],
-                3 => *package = "pkg:cargo/serde@1.0.219".into(),
+                3 => *package = format!(
+                    "pkg:cargo/{}@{}",
+                    key.package.display_name(),
+                    key.package.version().expect("observed pinned version"),
+                ),
                 4 => origin.root_scope = backend_library::CargoPackageReadmeRootScopeV1::Package,
                 5 => *href = "../../outside.rs#L7".into(),
                 _ => *line = Some(0),

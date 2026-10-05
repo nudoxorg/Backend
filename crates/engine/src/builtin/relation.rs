@@ -57,11 +57,11 @@ const SOURCE_RECORD_VERSION: u8 = 13;
 /// content-defined cut policy also cuts on encoded-byte anchors; 256 remains
 /// below its 410-key byte-pressure floor for 32-byte relation keys while
 /// bounding the number of page references in a project row.
-pub const MIN_PROJECT_MEMBERSHIP_PAGE_FILES: usize = 256;
+const MIN_PROJECT_MEMBERSHIP_PAGE_FILES: usize = 256;
 
 /// Maximum file keys in one membership page. The row-value capacity, rather
 /// than a logical project limit, remains the hard encoded-byte bound.
-pub const MAX_PROJECT_MEMBERSHIP_PAGE_FILES: usize = 1024;
+const MAX_PROJECT_MEMBERSHIP_PAGE_FILES: usize = 1024;
 
 /// Content-defined cuts use stable file-key anchors between the minimum and
 /// maximum page geometry. The forced maximum can reflow later pages in the
@@ -656,7 +656,7 @@ impl ProductSourceRecord {
     /// Maximum admitted coordinate or relative-path length.
     pub const MAX_LABEL_BYTES: usize = 4096;
     /// Maximum source files selected by one project across its membership.
-    pub const MAX_PROJECT_FILES: usize = 100_000;
+    pub const MAX_PROJECT_FILES: usize = backend_library::MAX_SELECTED_PROJECT_FRONTIER_FILES;
     /// Maximum declarations retained in one source file.
     pub const MAX_FILE_DECLARATIONS: usize = 16_384;
     /// Largest encoded value one row of this relation may carry.

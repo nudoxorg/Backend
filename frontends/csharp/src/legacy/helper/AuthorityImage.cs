@@ -402,6 +402,7 @@ internal static class AuthorityImage
                 if (node.Parent is MemberBindingExpressionSyntax) continue;
                 if (IsInvocationCallee(node)) continue;
                 if (InsideNameOf(node)) continue;
+                if (InsideAttributeName(node)) continue;
                 if (model.GetSymbolInfo(node).Symbol is IMethodSymbol)
                     AddReference(model, node, 8, node);
             }
@@ -461,6 +462,15 @@ internal static class AuthorityImage
             }
             return false;
         }
+
+        // Attribute designators bind to attribute constructors in Roslyn, but
+        // they name metadata applications rather than methods used as values.
+        // Check the syntax span so qualified, alias-qualified, and generic
+        // attribute names share the same exclusion without matching spellings.
+        private static bool InsideAttributeName(SyntaxNode node) =>
+            node.Ancestors().OfType<AttributeSyntax>().Any(attribute =>
+                attribute.Name.Span.Start <= node.SpanStart
+                && node.Span.End <= attribute.Name.Span.End);
 
         private static bool IsFieldWrite(SyntaxNode node) =>
             (node.Parent is AssignmentExpressionSyntax assignment && assignment.Left == node)

@@ -16,11 +16,11 @@ use std::{
 use thiserror::Error;
 
 /// Canonical Maven Central host; never fetch from any other host.
-pub const CENTRAL_HOST: &str = "https://repo.maven.apache.org/maven2/";
+pub(crate) const CENTRAL_HOST: &str = "https://repo.maven.apache.org/maven2/";
 
 /// Zero-based position of the frozen commons-csv row (1-based row 6) whose
 /// fragments carry the publication, index, and generation-2 leg.
-pub const PUBLICATION_ROW: usize = 5;
+pub(crate) const PUBLICATION_ROW: usize = 5;
 
 /// Zero-based position of the frozen jetbrains-annotations row (1-based row 18).
 /// `NotNull` and `Nullable` declare annotation types with no executable, so
@@ -28,11 +28,11 @@ pub const PUBLICATION_ROW: usize = 5;
 /// `new AssertionError(...)`. The row asserts exactly that, and that the
 /// `NotNull.exception() default Exception.class` type reference survives
 /// lowering.
-pub const ANNOTATIONS_ROW: usize = 17;
+pub(crate) const ANNOTATIONS_ROW: usize = 17;
 
 /// One frozen corpus row: release PURL, frozen entry paths inside the sources
 /// jar, and the complete classpath dependency coordinates.
-pub struct CorpusRow {
+pub(crate) struct CorpusRow {
     /// Release PURL in the `maven:` spelling.
     pub purl: &'static str,
     /// Frozen entry paths, exactly as they must exist inside the sources jar.
@@ -41,7 +41,7 @@ pub struct CorpusRow {
     pub deps: &'static [&'static str],
 }
 
-pub const CORPUS: &[CorpusRow] = &[
+pub(crate) const CORPUS: &[CorpusRow] = &[
     CorpusRow {
         purl: "maven:org.apache.commons:commons-lang3@3.14.0",
         entries: &[
@@ -242,13 +242,13 @@ pub const CORPUS: &[CorpusRow] = &[
 /// The class simple name prefixed by its package, derived from one frozen
 /// entry path (`org/apache/commons/csv/CSVFormat.java` becomes
 /// `org.apache.commons.csv.CSVFormat`).
-pub fn qualified_name(entry: &str) -> String {
+pub(crate) fn qualified_name(entry: &str) -> String {
     let trimmed = entry.strip_suffix(".java").unwrap_or(entry);
     trimmed.replace('/', ".")
 }
 
 #[derive(Debug, Error)]
-pub enum Error {
+pub(crate) enum Error {
     #[error("fixture filesystem operation at {path:?} failed: {source}")]
     Io {
         path: PathBuf,
@@ -266,11 +266,11 @@ fn io(path: &Path, source: io::Error) -> Error {
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-pub struct TempDir {
+pub(crate) struct TempDir {
     pub path: PathBuf,
 }
 impl TempDir {
-    pub fn new(label: &str) -> Result<Self, Error> {
+    pub(crate) fn new(label: &str) -> Result<Self, Error> {
         let path = std::env::temp_dir().join(format!(
             "nudox-java-corpus-{}-{}-{}-{label}",
             std::process::id(),
@@ -283,7 +283,7 @@ impl TempDir {
         fs::create_dir(&path).map_err(|e| io(&path, e))?;
         Ok(Self { path })
     }
-    pub fn remove(self) -> Result<(), Error> {
+    pub(crate) fn remove(self) -> Result<(), Error> {
         fs::remove_dir_all(&self.path).map_err(|e| io(&self.path, e))
     }
 }
@@ -293,7 +293,7 @@ impl Drop for TempDir {
     }
 }
 
-pub fn write_file(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+pub(crate) fn write_file(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
     }

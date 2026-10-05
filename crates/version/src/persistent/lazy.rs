@@ -6,7 +6,7 @@ use crate::{
     DEFAULT_CUT_POLICY, IdContext, MapChange, NodeError, PersistentTree, TreeChange, TreeError,
     UntrustedId, canonical_branch_from_commitments, canonical_empty, canonical_leaf,
 };
-use std::{borrow::Borrow, cell::Cell, mem::size_of};
+use std::{borrow::Borrow, cell::Cell, mem::size_of, ops::ControlFlow};
 
 use super::TreeNodeLoader;
 use super::update::merge_segment;
@@ -624,22 +624,53 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         &self,
         keys: &[R::Key],
     ) -> Result<Vec<Option<R::Value>>, LazyTreeError<L::Error>> {
-        if keys.windows(2).any(|pair| pair[0] >= pair[1]) {
-            return Err(LazyTreeError::Node(NodeError::UnsortedOrDuplicate));
-        }
+        Self::validate_sorted_keys(keys).map_err(LazyTreeError::Node)?;
         let mut values = Vec::with_capacity(keys.len());
-        self.lookup_many_in_node(&self.root, keys, &mut values)?;
-        Ok(values)
+        match self.visit_many_in_node(&self.root, keys, &mut |_, value| {
+            values.push(value.cloned());
+            ControlFlow::<std::convert::Infallible>::Continue(())
+        })? {
+            ControlFlow::Continue(()) => Ok(values),
+            ControlFlow::Break(never) => match never {},
+        }
     }
 
-    fn lookup_many_in_node(
+    /// Visits values for strictly increasing keys while borrowing each value
+    /// only for the callback. Missing keys are passed as `None`. Returning
+    /// `Break` stops traversal and returns that exact caller value; no row is
+    /// cloned into a result vector.
+    ///
+    /// This uses the same authenticated branch descent as
+    /// [`Self::lookup_many_sorted`]. Callers that retain a result must copy
+    /// only the fields they need while the callback runs.
+    ///
+    /// # Errors
+    /// Returns [`LazyTreeError::Node`] for keys that are not strictly
+    /// increasing or for a malformed branch, and forwards loader failures.
+    pub fn visit_many_sorted<B>(
+        &self,
+        keys: &[R::Key],
+        mut visitor: impl FnMut(&R::Key, Option<&R::Value>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LazyTreeError<L::Error>> {
+        Self::validate_sorted_keys(keys).map_err(LazyTreeError::Node)?;
+        self.visit_many_in_node(&self.root, keys, &mut visitor)
+    }
+
+    fn validate_sorted_keys(keys: &[R::Key]) -> Result<(), NodeError> {
+        if keys.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(NodeError::UnsortedOrDuplicate);
+        }
+        Ok(())
+    }
+
+    fn visit_many_in_node<B>(
         &self,
         node: &CheckedCanonicalRoot<R>,
         keys: &[R::Key],
-        values: &mut Vec<Option<R::Value>>,
-    ) -> Result<(), LazyTreeError<L::Error>> {
+        visitor: &mut impl FnMut(&R::Key, Option<&R::Value>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>, LazyTreeError<L::Error>> {
         if keys.is_empty() {
-            return Ok(());
+            return Ok(ControlFlow::Continue(()));
         }
         if node.node().level() == 0 {
             let entries = node.leaf_entries().map_err(LazyTreeError::Node)?;
@@ -648,14 +679,15 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
                 while entry_index < entries.len() && entries[entry_index].0.cmp(key).is_lt() {
                     entry_index += 1;
                 }
-                values.push(
-                    entries
-                        .get(entry_index)
-                        .filter(|(candidate, _)| candidate == key)
-                        .map(|(_, value)| value.clone()),
-                );
+                let value = entries
+                    .get(entry_index)
+                    .filter(|(candidate, _)| candidate == key)
+                    .map(|(_, value)| value);
+                if let ControlFlow::Break(reason) = visitor(key, value) {
+                    return Ok(ControlFlow::Break(reason));
+                }
             }
-            return Ok(());
+            return Ok(ControlFlow::Continue(()));
         }
 
         let summaries = node.child_summaries().map_err(LazyTreeError::Node)?;
@@ -682,10 +714,14 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             }
             let claim = child_claim(&summaries[child_index]).map_err(LazyTreeError::Node)?;
             let child = self.load(claim)?;
-            self.lookup_many_in_node(&child, &keys[start..end], values)?;
+            if let ControlFlow::Break(reason) =
+                self.visit_many_in_node(&child, &keys[start..end], visitor)?
+            {
+                return Ok(ControlFlow::Break(reason));
+            }
             start = end;
         }
-        Ok(())
+        Ok(ControlFlow::Continue(()))
     }
 
     /// Reads at most `limit` rows after an optional canonical key.

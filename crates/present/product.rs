@@ -22,9 +22,10 @@ use backend_library::{
     RegistryMetadata, RegistryNativeAvailability, RegistryNativeDetails, RegistryNativeMetadata,
     RegistryPackageFactAuthority, RegistryPackageFactFreshness, RegistryPackageRecord,
     RegistryPackageSearchGroup, RegistryReleaseMatchScope, RegistrySearchGroupKind,
-    RegistrySearchHit, RegistrySearchRelease, ReleaseRecord, SemanticHistoryPublicationStatus,
-    SemanticVersionFreshness, SemanticVersionRecord, SubscriptionRecord, SurfaceReply,
-    TreeNodeRecord, TreeOpener, TreeSubject, encode_id,
+    RegistrySearchHit, RegistrySearchRelease, ReleaseRecord, SelectedProjectSourceFrontier,
+    SemanticHistoryPublicationStatus, SemanticLanguageProfile, SemanticVersionFreshness,
+    SemanticVersionRecord, SubscriptionRecord, SurfaceReply, TreeNodeRecord, TreeOpener,
+    TreeSubject, encode_id,
 };
 use backend_library::{
     IndexCancelReceipt, IndexCancelStatus, IndexJobObservation, IndexJobOutcome,
@@ -46,6 +47,7 @@ pub struct ProductRecord {
     discovery_details: Option<RegistryDiscoveryCandidate>,
     package_group: Option<RegistryPackageSearchGroup>,
     history_status: Option<SemanticHistoryPublicationStatus>,
+    compiler_profile: Option<SemanticLanguageProfile>,
 }
 
 impl ProductRecord {
@@ -62,6 +64,7 @@ impl ProductRecord {
             discovery_details: None,
             package_group: None,
             history_status: None,
+            compiler_profile: None,
         }
     }
 
@@ -105,6 +108,13 @@ impl ProductRecord {
     #[must_use]
     pub fn with_history_status(mut self, status: SemanticHistoryPublicationStatus) -> Self {
         self.history_status = Some(status);
+        self
+    }
+
+    /// Attaches the exact closed compiler profile to one semantic generation row.
+    #[must_use]
+    pub fn with_compiler_profile(mut self, profile: SemanticLanguageProfile) -> Self {
+        self.compiler_profile = Some(profile);
         self
     }
 
@@ -161,6 +171,13 @@ impl ProductRecord {
     pub fn history_status(&self) -> Option<&SemanticHistoryPublicationStatus> {
         self.history_status.as_ref()
     }
+
+    /// Returns the exact compiler profile carried by a semantic generation row.
+    #[must_use]
+    pub const fn compiler_profile(&self) -> Option<SemanticLanguageProfile> {
+        self.compiler_profile
+    }
+
 }
 
 /// One rendered product answer.
@@ -172,6 +189,8 @@ pub struct ProductView {
     fault: Option<Fault>,
     index_search_page: Option<IndexSearchPageInfo>,
     index_job: Option<IndexJobProjection>,
+    index_operation: Option<backend_library::IndexOperationObservation>,
+    selected_source_frontier: Option<SelectedProjectSourceFrontier>,
 }
 
 /// Exact owner-issued indexing state retained alongside its readable projection.
@@ -358,6 +377,19 @@ impl ProductView {
         self.index_job.as_ref()
     }
 
+    /// Returns the exact durable index-operation observation carried by this
+    /// product reply, when present.
+    #[must_use]
+    pub const fn index_operation(&self) -> Option<&backend_library::IndexOperationObservation> {
+        self.index_operation.as_ref()
+    }
+
+    /// Returns the exact selected Project membership captured with this semantic query.
+    #[must_use]
+    pub fn selected_source_frontier(&self) -> Option<&SelectedProjectSourceFrontier> {
+        self.selected_source_frontier.as_ref()
+    }
+
     /// Returns this product answer's typed owner cursor, when it has one.
     #[must_use]
     pub fn cursor_family(&self) -> Option<&ContinuationCursor> {
@@ -400,6 +432,22 @@ impl ProductView {
         self
     }
 
+    fn with_index_operation(
+        mut self,
+        index_operation: backend_library::IndexOperationObservation,
+    ) -> Self {
+        self.index_operation = Some(index_operation);
+        self
+    }
+
+    fn with_selected_source_frontier(
+        mut self,
+        frontier: Option<SelectedProjectSourceFrontier>,
+    ) -> Self {
+        self.selected_source_frontier = frontier;
+        self
+    }
+
     /// Records one product answer a surface assembled itself.
     ///
     /// An accepted intent is not a [`SurfaceReply`], but it is the same shape
@@ -413,6 +461,8 @@ impl ProductView {
             fault: None,
             index_search_page: None,
             index_job: None,
+            index_operation: None,
+            selected_source_frontier: None,
         }
     }
 
@@ -426,6 +476,8 @@ impl ProductView {
             fault: None,
             index_search_page: None,
             index_job: None,
+            index_operation: None,
+            selected_source_frontier: None,
         }
     }
 
@@ -437,6 +489,8 @@ impl ProductView {
             fault: None,
             index_search_page: None,
             index_job: None,
+            index_operation: None,
+            selected_source_frontier: None,
         }
     }
 
@@ -448,6 +502,8 @@ impl ProductView {
             fault: None,
             index_search_page: None,
             index_job: None,
+            index_operation: None,
+            selected_source_frontier: None,
         }
     }
 
@@ -459,6 +515,8 @@ impl ProductView {
             fault: Some(fault),
             index_search_page: None,
             index_job: None,
+            index_operation: None,
+            selected_source_frontier: None,
         }
     }
 }
@@ -520,6 +578,11 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::SemanticVersions(records) => ProductView::rows(
             "semantic-versions",
             records.iter().map(semantic_row).collect(),
+        )
+        .with_selected_source_frontier(
+            records
+                .iter()
+                .find_map(|record| record.selected_source_frontier.clone()),
         ),
         SurfaceReply::SemanticVersionSelected(record) => {
             ProductView::rows("select-semantic-version", vec![semantic_row(record)])
@@ -528,7 +591,9 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             index_start_view(result).with_index_job(IndexJobProjection::Started(result.clone()))
         }
         SurfaceReply::IndexOperationStarted(observation)
-        | SurfaceReply::IndexOperationStatus(observation) => index_operation_view(observation),
+        | SurfaceReply::IndexOperationStatus(observation) => {
+            index_operation_view(observation).with_index_operation(observation.clone())
+        }
         SurfaceReply::IndexTerminal(terminal) => index_terminal_view(terminal)
             .with_index_job(IndexJobProjection::Terminal(terminal.clone())),
         SurfaceReply::IndexProgress(observation) => index_observation_view(observation)
@@ -1902,6 +1967,7 @@ fn semantic_row(record: &SemanticVersionRecord) -> ProductRecord {
         tags,
     )
     .with_history_status(record.history_status.clone())
+    .with_compiler_profile(record.profile)
 }
 
 fn semantic_history_label(status: &SemanticHistoryPublicationStatus) -> &'static str {
@@ -2262,6 +2328,7 @@ mod tests {
             selected,
             freshness,
             history_status,
+            selected_source_frontier: None,
         }
     }
 
@@ -2269,6 +2336,189 @@ mod tests {
         product_view(&SurfaceReply::SemanticVersions(
             vec![record].into_boxed_slice(),
         ))
+    }
+
+    #[test]
+    fn semantic_generation_projection_preserves_profile_and_decodes_older_dto() {
+        let profile = SemanticLanguageProfile::from_name("rust").expect("Rust profile");
+        let view = semantic_versions_view(semantic_version(
+            SemanticHistoryPublicationStatus::NotSelected,
+            false,
+            true,
+            SemanticVersionFreshness::Current {
+                input_digest: [0x71; 32],
+            },
+        ));
+        let row = view.records().first().expect("semantic generation row");
+        assert_eq!(row.compiler_profile(), Some(profile));
+
+        let dto = crate::dto::ProductDto::new(&view);
+        assert_eq!(dto.records[0].compiler_profile, Some(profile));
+        let mut old_value = serde_json::to_value(&dto).expect("serialized product DTO");
+        assert_eq!(
+            old_value["records"][0]["compiler_profile"],
+            serde_json::json!(profile.to_bytes()),
+            "the typed projection preserves the existing two-byte wire shape"
+        );
+        old_value["records"][0]
+            .as_object_mut()
+            .expect("record object")
+            .remove("compiler_profile");
+        let decoded: crate::dto::ProductDto =
+            serde_json::from_value(old_value).expect("older DTO without compiler profile");
+        assert_eq!(decoded.records[0].compiler_profile, None);
+    }
+
+    #[test]
+    fn selected_source_frontier_survives_product_and_older_dto_projection() {
+        let mut record = semantic_version(
+            SemanticHistoryPublicationStatus::NotSelected,
+            true,
+            true,
+            SemanticVersionFreshness::Current {
+                input_digest: [0x81; 32],
+            },
+        );
+        let package =
+            PackageReference::parse("/workspace/large-project").expect("local project package");
+        record.package = package.clone();
+        let frontier = SelectedProjectSourceFrontier {
+            package,
+            source_relation_root: [0x82; 32],
+            source_version: [0x83; 32],
+            file_count: 2_916,
+        };
+        record.selected_source_frontier = Some(frontier.clone());
+
+        let view = semantic_versions_view(record);
+        assert_eq!(view.selected_source_frontier(), Some(&frontier));
+        let dto = crate::dto::ProductDto::new(&view);
+        assert_eq!(dto.selected_source_frontier, Some(frontier.clone()));
+
+        let mut old_value = serde_json::to_value(&dto).expect("selected frontier DTO");
+        assert_eq!(old_value["selected_source_frontier"]["file_count"], 2_916);
+        old_value
+            .as_object_mut()
+            .expect("product object")
+            .remove("selected_source_frontier");
+        let older: crate::dto::ProductDto =
+            serde_json::from_value(old_value).expect("older product row decodes");
+        assert_eq!(older.selected_source_frontier, None);
+    }
+
+    #[test]
+    fn durable_index_operation_projection_preserves_all_states_and_published_receipt() {
+        use backend_library::{
+            CompileExecutionIntent, IndexOperationFailureReason, IndexOperationKey,
+            IndexOperationObservation, IndexOperationPublicationReceipt, IndexOperationState,
+            IndexOperationStatus, IndexOperationUnresolvedReason, ProductText,
+        };
+
+        let package = PackageReference::parse("/workspace/project").expect("local package");
+        let key = IndexOperationKey::from_bytes([0x31; 32]).expect("operation key");
+        let status = |state| {
+            IndexOperationStatus::new(
+                key,
+                package.clone(),
+                CompileExecutionIntent::Interactive,
+                state,
+            )
+        };
+        let receipt_root = backend_library::view_state_root(&[]);
+        let basis = backend_library::Basis::new(
+            receipt_root,
+            backend_library::object_version(b"index-operation-projection-test"),
+        );
+        let frontier = backend_library::Frontier::new(
+            backend_library::branch_key("main"),
+            backend_library::log_key("library"),
+            backend_library::CURSOR_SCHEMA,
+            receipt_root,
+            0,
+        );
+        let view = backend_library::ViewRoot::new_incomplete(
+            backend_library::view_key(b"index-operation-projection-test-view"),
+            basis,
+            frontier,
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("incomplete projection view");
+        let receipt = IndexOperationPublicationReceipt::from_published_view(
+            Some([0x41; 32]),
+            [0x42; 32],
+            [0x43; 32],
+            9,
+            &view,
+            backend_library::Cursor::for_view_root(&view),
+        )
+        .expect("checked published receipt");
+        let observations = [
+            IndexOperationObservation::Unknown { operation_key: key },
+            IndexOperationObservation::OutsideReceiptWindow {
+                operation_key: key,
+                request_digest: [0x51; 32],
+            },
+            IndexOperationObservation::Known(status(IndexOperationState::Accepted)),
+            IndexOperationObservation::Known(status(IndexOperationState::Active {
+                ticket: backend_library::IndexJobTicket::new(
+                    std::num::NonZeroU64::new(7).expect("nonzero job ticket"),
+                    [0x61; 16],
+                    package.clone(),
+                ),
+                stage: backend_library::IndexJobStage::Compiling,
+            })),
+            IndexOperationObservation::Known(status(IndexOperationState::Published(receipt))),
+            IndexOperationObservation::Known(status(IndexOperationState::Failed {
+                reason: IndexOperationFailureReason::WorkerFailed,
+                detail: ProductText::new("bounded worker detail").expect("failure detail"),
+            })),
+            IndexOperationObservation::Known(status(IndexOperationState::Unresolved {
+                reason: IndexOperationUnresolvedReason::RestartedDuringPublication,
+                detail: ProductText::new("bounded unresolved detail").expect("unresolved detail"),
+            })),
+        ];
+
+        for observation in observations {
+            let expected = serde_json::to_value(&observation).expect("exact observation encoding");
+            for reply in [
+                SurfaceReply::IndexOperationStarted(observation.clone()),
+                SurfaceReply::IndexOperationStatus(observation.clone()),
+            ] {
+                let view = product_view(&reply);
+                assert_eq!(view.index_operation(), Some(&observation));
+                let dto = crate::dto::ProductDto::new(&view);
+                assert_eq!(dto.index_operation.as_ref(), Some(&observation));
+                let encoded = serde_json::to_value(&dto).expect("full product DTO");
+                assert_eq!(encoded["index_operation"], expected);
+                let decoded: crate::dto::ProductDto =
+                    serde_json::from_value(encoded.clone()).expect("typed observation roundtrip");
+                assert_eq!(decoded.index_operation.as_ref(), Some(&observation));
+
+                let mut older = encoded.clone();
+                older
+                    .as_object_mut()
+                    .expect("product object")
+                    .remove("index_operation");
+                let decoded_older: crate::dto::ProductDto =
+                    serde_json::from_value(older).expect("older DTO without operation field");
+                assert_eq!(decoded_older.index_operation, None);
+
+                let answer = crate::drive::Answer::Product(Box::new(view));
+                for detail in [crate::Detail::Summary, crate::Detail::Full] {
+                    let payload = crate::encode_answer(
+                        &answer,
+                        detail,
+                        None,
+                        crate::DEFAULT_RESPONSE_BUDGET_BYTES,
+                    )
+                    .expect("bounded index-operation projection");
+                    let value: serde_json::Value =
+                        serde_json::from_slice(&payload.bytes).expect("typed answer JSON");
+                    assert_eq!(value["index_operation"], expected);
+                }
+            }
+        }
     }
 
     fn published_history_proof(

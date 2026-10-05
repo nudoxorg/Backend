@@ -1012,6 +1012,7 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
             input_digest: [35; 32],
         },
         history_status: Default::default(),
+        selected_source_frontier: None,
     };
     let request = crate::SemanticShapeRequest::new(
         root.root(),
@@ -1358,6 +1359,17 @@ fn dto_versions_and_outer_fields_are_strict() {
     assert!(serde_json::from_value::<CommandDto>(old_command_json).is_err());
 
     let reply = ReplyDto::error(2, "error");
+    for unsupported in [DTO_VERSION - 1, DTO_VERSION + 1] {
+        let mut reply_json = serde_json::to_value(&reply).expect("reply JSON");
+        reply_json["version"] = serde_json::json!(unsupported);
+        let error = serde_json::from_value::<ReplyDto>(reply_json)
+            .expect_err("a different build's protocol is refused")
+            .to_string();
+        assert!(error.contains(&format!("reply DTO version {unsupported}")));
+        assert!(error.contains(&format!("this build supports {DTO_VERSION}")));
+        assert!(error.contains("same build"));
+        assert!(error.contains("rebuild your CLI/MCP client"));
+    }
     let mut reply_json = serde_json::to_value(&reply).expect("reply JSON");
     reply_json["extra"] = serde_json::json!(true);
     assert!(serde_json::from_value::<ReplyDto>(reply_json).is_err());

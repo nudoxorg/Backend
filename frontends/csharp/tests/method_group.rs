@@ -14,17 +14,32 @@ use std::process::Command;
 
 const SOURCE: &str = r#"using System;
 using System.Linq;
+using Demo = demo;
+using SystemAlias = System;
 using static demo.Widget;
 namespace demo;
+[global::System.Obsolete("qualified metadata")]
+public class QualifiedAttributeUse {}
+[SystemAlias::Obsolete("alias-qualified metadata")]
+public class AliasQualifiedAttributeUse {}
+[global::demo.Marker<int>]
+public class QualifiedGenericAttributeUse {}
+[Demo::Marker<int>]
+public class AliasQualifiedGenericAttributeUse {}
+[AttributeUsage(AttributeTargets.Class)]
+public sealed class MarkerAttribute<T> : Attribute {}
+[Obsolete("attribute metadata")]
 public static class Widget {
     public static string Parse(string raw) => raw;
     public static int Length(string raw) => raw.Length;
+    public static void GenericTarget<T>() { }
 }
 public class Box {
     public string Parse(string raw) => raw;
     public static void Via(string[] items) {
         Func<string, string> bound = Widget.Parse;
         Func<string, int> qualified = Widget.Length;
+        Action generic = Widget.GenericTarget<int>;
         _ = items.Select(Widget.Parse);
         var called = Widget.Parse("x");
         var named = nameof(Widget.Parse);
@@ -247,6 +262,7 @@ fn compiler_resolved_method_groups_emit_distinct_reference_rows() -> Result<(), 
 
     let declarations: Vec<_> = authority.declarations().collect::<Result<_, _>>()?;
     let references: Vec<_> = authority.references().collect::<Result<_, _>>()?;
+    let attributes: Vec<_> = authority.attributes().collect::<Result<_, _>>()?;
 
     let widget = find_type(&declarations, b"Widget", DeclarationKind::Class)
         .ok_or("Widget class missing")?;
@@ -269,8 +285,96 @@ fn compiler_resolved_method_groups_emit_distinct_reference_rows() -> Result<(), 
     let length_row = declaration_index(&declarations, length_method);
     let via_row = declaration_index(&declarations, via_method);
     let conditional_row = declaration_index(&declarations, conditional_method);
-    let _widget_row = declaration_index(&declarations, widget);
+    let widget_row = declaration_index(&declarations, widget);
     let _box_row = declaration_index(&declarations, box_type);
+
+    // Attribute designators remain metadata rows, never method values. Cover
+    // simple, qualified, alias-qualified, and generic forms; the generic
+    // method value below must still produce a MethodGroup.
+    for (name, marker, token) in [
+        (
+            b"QualifiedAttributeUse".as_slice(),
+            b"[global::System.".as_slice(),
+            b"Obsolete".as_slice(),
+        ),
+        (
+            b"AliasQualifiedAttributeUse".as_slice(),
+            b"[SystemAlias::".as_slice(),
+            b"Obsolete".as_slice(),
+        ),
+        (
+            b"QualifiedGenericAttributeUse".as_slice(),
+            b"[global::demo.Marker".as_slice(),
+            b"Marker".as_slice(),
+        ),
+        (
+            b"AliasQualifiedGenericAttributeUse".as_slice(),
+            b"[Demo::Marker".as_slice(),
+            b"Marker".as_slice(),
+        ),
+    ] {
+        let declaration = find_type(&declarations, name, DeclarationKind::Class)
+            .ok_or("attribute fixture class missing")?;
+        let declaration = declaration_index(&declarations, declaration);
+        if !attributes
+            .iter()
+            .any(|attribute| attribute.declaration == declaration)
+        {
+            return Err(format!(
+                "attribute metadata missing for {}",
+                String::from_utf8_lossy(name)
+            )
+            .into());
+        }
+        let (start, end) = span_after(source, marker, token);
+        if references.iter().any(|reference| {
+            reference.kind == ReferenceTag::MethodGroup
+                && reference.start == start
+                && reference.end == end
+        }) {
+            return Err(format!(
+                "attribute designator {} emitted a MethodGroup",
+                String::from_utf8_lossy(name)
+            )
+            .into());
+        }
+    }
+    if !attributes.iter().any(|attribute| {
+        attribute.declaration == widget_row
+            && attribute
+                .spelling
+                .bytes
+                .windows(b"Obsolete".len())
+                .any(|window| window == b"Obsolete")
+    }) {
+        return Err("Obsolete attribute metadata missing for Widget".into());
+    }
+    let (obsolete_start, obsolete_end) = span_after(source, b"[Obsolete(", b"Obsolete");
+    if references.iter().any(|reference| {
+        reference.kind == ReferenceTag::MethodGroup
+            && reference.start == obsolete_start
+            && reference.end == obsolete_end
+    }) {
+        return Err("Obsolete attribute designator emitted a MethodGroup".into());
+    }
+
+    let (generic_start, generic_end) =
+        span_after(source, b"generic = Widget.", b"GenericTarget<int>");
+    let generic_groups = references
+        .iter()
+        .filter(|reference| {
+            reference.kind == ReferenceTag::MethodGroup
+                && reference.owner == via_row
+                && reference.spelling.bytes == b"GenericTarget<int>"
+                && reference.start == generic_start
+                && reference.end == generic_end
+        })
+        .count();
+    if generic_groups != 1 {
+        return Err(
+            format!("expected one generic method-value row, found {generic_groups}").into(),
+        );
+    }
 
     let (bound_parse_start, bound_parse_end) = span_after(source, b"bound = Widget.", b"Parse");
     let bound_groups = references

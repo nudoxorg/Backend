@@ -8,7 +8,7 @@ use std::{
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum Error {
+pub(crate) enum Error {
     #[error("network request failed: {source}")]
     Network {
         #[source]
@@ -42,7 +42,7 @@ pub enum Error {
     },
 }
 
-pub fn sha256(bytes: &[u8]) -> [u8; 32] {
+pub(crate) fn sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
@@ -54,7 +54,7 @@ fn transport() -> ureq::Agent {
         .new_agent()
 }
 
-pub fn download(url: &str, cap: usize, deadline: Instant) -> Result<Vec<u8>, Error> {
+pub(crate) fn download(url: &str, cap: usize, deadline: Instant) -> Result<Vec<u8>, Error> {
     let response = transport()
         .get(url)
         .call()
@@ -103,7 +103,7 @@ fn reject_escaping(path: &str) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn unpack(bytes: &[u8], root: &Path) -> Result<(), Error> {
+pub(crate) fn unpack(bytes: &[u8], root: &Path) -> Result<(), Error> {
     let mut decoder = GzDecoder::new(bytes);
     let mut tar = Vec::new();
     decoder
@@ -222,7 +222,7 @@ fn pax_path_override(payload: &[u8]) -> Result<Option<String>, Error> {
     Ok(None)
 }
 
-pub fn fresh_dir(label: &str) -> Result<PathBuf, Error> {
+pub(crate) fn fresh_dir(label: &str) -> Result<PathBuf, Error> {
     // Every call gets a unique directory: a leftover directory from an
     // aborted earlier run must never be silently reused as this run's
     // journal or artifact store.

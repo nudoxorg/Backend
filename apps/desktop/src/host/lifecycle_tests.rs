@@ -208,15 +208,31 @@ fn a_finished_index_is_written_down_the_moment_it_finishes(cx: &mut TestAppConte
             root.snapshot().workspace().projects.iter().any(|item| item.id == project && item.phase == ProjectPhase::Ready)
         })
     });
+    let operation = graph.root.read_with(cx, |root, _| {
+        root.snapshot().workspace().projects.iter().find(|row| row.id == project)
+            .and_then(|row| row.operation.clone()).expect("the exact completed operation")
+    });
+    assert!(operation.has_terminal_observation(), "Ready retains the checked publication receipt");
     // Nothing else asked for a save after the result arrived: what is on disk
-    // is what the result wrote.
-    let saved = PersistentState::at(&state_file).load().expect("the state file");
+    // is what the result wrote. The ordered writer finishes that requested
+    // save asynchronously; observing Ready alone is not its acknowledgment.
+    let persistence = PersistentState::at(&state_file);
+    wait::until("the completed publication receipt is synchronized", || {
+        cx.run_until_parked();
+        persistence.load().is_ok_and(|saved| saved.shelf.iter().any(|row|
+            row.local_path == project.as_str() && row.phase == PersistedProjectPhase::Ready
+                && row.operation.as_ref() == Some(&operation)))
+    });
+    let saved = persistence.load().expect("the state file");
     assert_eq!(
         saved.shelf.iter().map(|item| (item.local_path.clone(), item.phase, item.files_indexed)).collect::<Vec<_>>(),
         [(project.as_str().to_owned(), PersistedProjectPhase::Ready, None)],
         "a relaunch retains the exact publication receipt without guessing a per-operation count"
     );
-    std::fs::remove_dir_all(&root).ok();
+    assert_eq!(saved.shelf[0].operation.as_ref(), Some(&operation));
+    cx.quit();
+    drop(graph);
+    std::fs::remove_dir_all(&root).expect("finished lifecycle fixture removed");
 }
 
 // ── an owner that could not start ─────────────────────────────────────────

@@ -21,7 +21,7 @@ mod reply_semantic_shape;
 use super::{
     CoverageWire, CursorWire, DTO_VERSION, EmptyWire, FreshnessWire, FrontierWire, HealthWire,
     ReplyDto, WireCertificate, WireSchema, coverage_from_wire, coverage_to_wire, cursor_from_wire,
-    cursor_from_wire_with_capability, cursor_to_wire, freshness_from_wire, freshness_to_wire,
+    cursor_from_wire_with_capability, cursor_to_wire, ensure_version, freshness_from_wire, freshness_to_wire,
     frontier_from_wire, frontier_to_wire, inventory_from_wire, inventory_to_wire,
     progress_from_wire, progress_to_wire,
 };
@@ -247,9 +247,7 @@ impl Serialize for ReplyDto {
 impl<'de> Deserialize<'de> for ReplyDto {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let envelope = ReplyEnvelope::deserialize(deserializer)?;
-        if envelope.version != DTO_VERSION {
-            return Err(serde::de::Error::custom("unsupported reply DTO version"));
-        }
+        ensure_version(envelope.version, "reply").map_err(serde::de::Error::custom)?;
         let empty_certificate = WireCertificate::new();
         let certificate = envelope.certificate.as_ref().unwrap_or(&empty_certificate);
         let reply =

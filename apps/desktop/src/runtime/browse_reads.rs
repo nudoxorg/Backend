@@ -999,34 +999,21 @@ mod find_tests {
 
     #[test]
     fn tree_links_use_only_exact_owner_observed_cargo_source_receipts() {
+        use crate::runtime::cargo_fixture::{PACKAGE_NAME, PACKAGE_VERSION};
         use backend_advisory::{AdvisoryAuthority, normalize_package};
-        use backend_library::browse::{build_tree, metadata_input_with_stable_source_witness};
-        const METADATA: &[u8] = include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"
-        ));
-        const LOCKFILE: &str = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/library/browse/fixtures/tree-2026-09-27/Cargo.lock"
-        ));
-        let input = metadata_input_with_stable_source_witness(
-            METADATA,
-            "aarch64-apple-darwin",
-            Some(LOCKFILE),
-            [7; 32],
-        )
-        .expect("actual Cargo metadata fixture");
+        use backend_library::browse::build_tree;
+        let input = crate::runtime::cargo_fixture::input().expect("complete Cargo metadata fixture");
         let authority = AdvisoryAuthority::new(1);
         let observe = |name: &str, version: &str| {
             let package = normalize_package("cargo", name).expect("test package");
             authority.observe(&package, version, false, false, 0, false)
         };
         let mut tree = build_tree(&input, &observe);
-        let serde = tree
-            .package("serde", "1.0.219")
+        let observed = tree
+            .package(PACKAGE_NAME, PACKAGE_VERSION)
             .expect("resolved Cargo package")
             .clone();
-        let receipt = serde.source_qualified_reference().expect("owner receipt");
+        let receipt = observed.source_qualified_reference().expect("owner receipt");
         let model = tree_model(&tree);
         assert!(
             model
@@ -1034,34 +1021,39 @@ mod find_tests {
                 .contains(&PackageRef::from_reference(receipt.clone()))
         );
         let TreeDestination::Open(exact) =
-            TreeSources::new(&tree).destination(&serde.name, &serde.version, Some(&receipt))
+            TreeSources::new(&tree).destination(&observed.name, &observed.version, Some(&receipt))
         else {
             panic!("complete metadata receipt opens its exact source")
         };
         assert_eq!(exact.reference(), &receipt);
         assert!(exact.as_str().contains("?cargo-authority="));
-        assert_ne!(exact.as_str(), "pkg:cargo/serde@1.0.219");
+        assert_ne!(
+            exact.as_str(),
+            format!("pkg:cargo/{PACKAGE_NAME}@{PACKAGE_VERSION}")
+        );
 
         assert!(matches!(
-            TreeSources::new(&tree).destination(&serde.name, &serde.version, None),
+            TreeSources::new(&tree).destination(&observed.name, &observed.version, None),
             TreeDestination::Unavailable(_)
         ));
-        let different = backend_library::PackageReference::parse(
-            "pkg:cargo/serde@1.0.219?cargo-authority=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        ).expect("other source address");
+        let different = backend_library::PackageReference::parse(format!(
+            "pkg:cargo/{PACKAGE_NAME}@{PACKAGE_VERSION}?cargo-authority={}",
+            "b".repeat(64),
+        ))
+        .expect("other source address");
         assert!(matches!(
-            TreeSources::new(&tree).destination(&serde.name, &serde.version, Some(&different)),
+            TreeSources::new(&tree).destination(&observed.name, &observed.version, Some(&different)),
             TreeDestination::Unavailable(_)
         ));
         tree.packages = tree
             .packages
             .iter()
             .cloned()
-            .chain(std::iter::once(serde.clone()))
+            .chain(std::iter::once(observed.clone()))
             .collect();
         assert!(
             matches!(
-                TreeSources::new(&tree).destination(&serde.name, &serde.version, Some(&receipt)),
+                TreeSources::new(&tree).destination(&observed.name, &observed.version, Some(&receipt)),
                 TreeDestination::Unavailable(_)
             ),
             "ambiguous rows cannot lend each other file authority"

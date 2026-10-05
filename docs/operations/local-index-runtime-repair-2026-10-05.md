@@ -9,8 +9,10 @@ real startup-to-publication workflow. These are release blockers.
 
 ## Changes reviewed and integrated
 
-The source checkpoint is `9b6af13481d8b855f4eccd09a6e11fba52056640`, tree
-`42b28e63d0a9a6a3300cbe95d62c526ca76423b9`, before this evidence document.
+The original pushed source checkpoint is `9b6af13481d8b855f4eccd09a6e11fba52056640`,
+tree `42b28e63d0a9a6a3300cbe95d62c526ca76423b9`. The subsequent integration
+contains the changes below; execution evidence is pinned separately rather
+than transferred automatically to newer source revisions.
 
 * First dispatch retains the exact persisted operation claim through ordinary
   publications from the same owner. A mutation lease distinguishes an owner
@@ -32,12 +34,33 @@ The source checkpoint is `9b6af13481d8b855f4eccd09a6e11fba52056640`, tree
   compilation planning remain linear; this is not a constant-work claim.
 * Deferred compiler completion validates its own project's captured frontier
   against the current relation. It does not reject an unrelated package's
-  publication merely because the whole workspace root advanced.
+  publication merely because the whole workspace root advanced. A bounded
+  digest includes the complete encoded prior file rows, including changes in
+  an unavailable-source reason that preserve the Project source version.
 * Ingest moves the valid UTF-8 source buffer into its String, preserving exact
-  bytes, identity and byte accounting without a second full source allocation.
+  bytes, identity and byte accounting without a second full source allocation;
+  the existing owned compiler-source constructor now consumes that String.
+* Retired-layout recovery recognizes the exact authenticated old Project/file
+  frontier through a read-only private probe. Current, mixed, foreign and
+  damaged layouts remain refused. Only a positively identified older layout
+  receives the typed diagnosis needed by the existing quarantine workflow.
+  This does not widen the current validator or publish an old-layout repair.
+* Semantic replies admit a selected generation per exact package coordinate
+  and language profile, matching the compiler's existing selection model.
+  Duplicate selections for the same target remain refused. Local selected
+  records carry the complete checked Project membership count and source
+  identities from the same immutable owner snapshot that answered the query.
+  The borrowed tree visitor validates file ownership without cloning source
+  payloads into a second result vector. This validation still performs work
+  proportional to the membership; no query-latency benchmark is claimed.
 * CLI help exposes the existing `index /absolute/folder` alias. Durable
   acceptance must use keyed IndexOperationStart/Status; legacy Add success
   alone does not prove the desktop operation lifecycle.
+* The selected-frontier field changes a strict semantic reply shape, so the
+  transport DTO version advances to 16. Version mismatch diagnostics name the
+  observed and supported versions and direct the operator to matching builds.
+  Deploy GUI, locald, CLI and MCP together; do not reuse a v15 client and
+  interpret a nested decoding failure as an indexing failure.
 
 ## Evidence and its limits
 
@@ -61,9 +84,63 @@ not execute them or launch an updated GUI.
 
 An earlier targeted test build at `8af41c67dc` was stopped when other compiler
 jobs pushed the fleet above the four-build limit. Its parent observed exit
-143; **no regression tests executed**. The warmed cache is retained. A new
-one-job test build at `9b6af13481` is pending at this checkpoint; neither that
-build nor its tests are credited as a pass here.
+143; **no regression tests executed**. The warmed cache is retained. Actual
+execution at `9b6af13481` subsequently ran 53 tests: **44 passed, 9 failed**.
+The failures exposed a real retired-layout startup gap as well as incorrect
+test scheduling, asynchronous-save expectations and outdated fixture facts.
+Those failures are retained in
+`/private/tmp/nudox-index-targeted-tests-retry-9b6af1-20261005/index-result.json`.
+An intermediate `e20a3e4b78` test build failed to compile a new fixture's
+unchecked String where ProductText was required; **no tests ran** there.
+
+The corrected integration at `db8bc805ef23f5d929643ad7558ca00a85f1c238`, tree
+`6ee5dc96a01ac66338eca3715ba8d1cce7bb3da1`, passed the full workspace/all-targets
+check above on 2026-10-05 03:19:06–03:21:23 UTC. The log SHA-256 is
+`a202d5ad9e4cdce805a293c33d269c26176666ac475b4d4ec3fe48ca0937bbfc`.
+Actual test results from that exact source, with one compiler job, are:
+
+| Suite | Passed | Failed | Interpretation |
+| --- | ---: | ---: | --- |
+| Desktop `index_` | 52 | 1 | The remaining failure is an authority-bearing Cargo fixture built from a trimmed capture without resolved feature observations. |
+| Desktop `durable_writer_tests` | 12 | 0 | Real writer acknowledgement, cancellation, freshness recovery and exact-claim schedules. |
+| Desktop `runtime::owner::tests` | 7 | 0 | Owner observation and lifecycle admission. |
+
+The receipts and full logs are retained at
+`/private/tmp/nudox-index-repaired-runtime-tests-db8bc8-20261005/`.
+The retired-layout test build was subsequently stopped with exit 143 after
+two fleet censuses found five compiler workloads. Only Root's process group
+was stopped; no retired-layout tests ran, and the parent did not execute its
+remaining membership/frontier/DTO selectors. The warm compilation cache is
+retained. Newer selected-frontier, multi-profile reply and transport-version
+changes are not covered by the `db8bc805ef` execution evidence.
+
+Two subsequent full checks failed in the new semantic-reply tests, before any
+test execution. At `63b8107d0d`, five calls omitted the required command identity;
+at `71c6acc646`, one fixture moved a frontier still borrowed by its record
+constructor. Both diagnostics are fixed in `cd1e4a189e`. The failed logs are kept at
+`/private/tmp/nudox-index-repaired-runtime-tests-63b810-20261005/` and
+`/private/tmp/nudox-index-repaired-runtime-tests-71c6ac-20261005/`. Neither attempt
+ran tests. The expanded lane selects the entire desktop library suite, rather
+than only the `index_` tests, and fails on an empty focused selection.
+
+The full workspace/all-targets check at
+`cd1e4a189ec1fd2a4504e3ee85de2f72c739124c`, tree
+`7c2961efad9a3f78caaba599635ca8b42dc8f989`, exited **0** on
+2026-10-05 04:19:42–04:22:20 UTC, with unchanged clean source. Log SHA-256:
+`491ed924152bd7bf885895106269e08bf73b32cb58a26ffd247b56bb8a415f56`.
+The subsequent desktop test build was stopped with exit 143 at 04:27:49 UTC
+after two fleet censuses again found five compiler workloads. Only Root's
+owned process group was stopped. **No desktop tests ran in this attempt**;
+the remaining focused suites were not started. Exact receipts remain at
+`/private/tmp/nudox-index-repaired-runtime-tests-cd1e4a-20261005/`.
+
+The Cargo authority fixtures now use a complete producer capture with observed
+resolved features, its recorded target and lockfile. A previous presentation
+helper that fabricated empty feature lists has been removed. Native-path
+localization changes filesystem spelling without inventing feature or dependency
+facts. The desktop declares its test-support dependency explicitly. These
+fixture changes still require actual test execution; existing unrelated POSIX
+project-binding fixtures are not Windows portability evidence.
 
 The startup oracle uses real BootClient, persistence and an embedded service
 after a forced launch-snapshot timeout. Its closed compiler set deliberately
@@ -72,6 +149,38 @@ not successful language compilation evidence. Its cold restoration reloads
 desktop state while the service remains alive; service-journal restart is a
 separate gate. Controlled writer/actor tests cover the save-time publication
 race independently. None replace native user-flow testing.
+
+The real C# helper was restored and published offline from immutable helper
+source and SHA-512-verified NuGet archives, without changing the user's Nix
+configuration. Run1 exposed a false MethodGroup reference for an attribute
+name, alongside intentional property-write and method-call changes missing
+from the old golden. The source fix excludes the attribute's name syntax while
+preserving references in attribute arguments and actual method-value expressions.
+Root decoded and compared the authority images: the source fix removes exactly
+that false reference, preserving the other sections, four property writes and
+six invocation records. The reviewed fidelity golden was then updated.
+
+Run3 at `71c6acc64619db5c87ba24b4c4259b6b91a99507`, tree
+`acf86d7f889a27a96c2b8ca77c7f5f41d2fd3dc8`, passed all six actual commands
+(restore, publish and cold source-mode invocations), with unchanged inputs.
+Both fidelity runs match the corrected 6,812-byte golden, SHA-256
+`476777384f934d84d369a77bd1d153a58327d18c9762103bb4e13ec882c0aa76`.
+The 671-byte Unicode image also exactly matches its golden. The receipt is
+`/private/tmp/nudox-roslyn-realization-20261005-run3/receipt.json`.
+This proves the helper's source-mode fidelity gate. It does not prove project
+NuGet dependency restoration, successful C# GUI indexing or investor-bundle
+relocation. The new focused Rust assertions remain unexecuted.
+
+Root also revalidated a canonical closed compiler-host snapshot containing
+16 configured roles against the current source, all 11 real candidate project
+rows, the ten supported profile spellings, and the full run3 helper source and
+published-file inventory. The role/path checks pass; no product owner has
+consumed this snapshot. The candidate corpus includes PostgreSQL REL_17_2
+with 2,235 recognized source paths and about 44 MiB of source, including two
+oversized files that must be represented as unavailable rather than omitted.
+Its count exceeds the source-derived 2,046 candidate floor, but no accepted
+membership or semantic publication has been measured. Static receipt:
+`/private/tmp/nudox-real-corpus-root-static-v3-retry-20261005/receipt.json`.
 
 ## Remaining acceptance gates
 

@@ -15,7 +15,7 @@ use std::io;
 
 const NONE: u32 = u32::MAX;
 
-pub struct ImageBuilder {
+pub(crate) struct ImageBuilder {
     atoms: Vec<Vec<u8>>,
     types: Vec<[u8; 16]>,
     type_children: Vec<u32>,
@@ -25,7 +25,7 @@ pub struct ImageBuilder {
 }
 
 impl ImageBuilder {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             atoms: Vec::new(),
             types: Vec::new(),
@@ -35,12 +35,12 @@ impl ImageBuilder {
             declarations: Vec::new(),
         }
     }
-    pub fn atom(&mut self, text: &'static [u8]) -> u32 {
+    pub(crate) fn atom(&mut self, text: &'static [u8]) -> u32 {
         let id = self.atoms.len() as u32;
         self.atoms.push(text.to_vec());
         id
     }
-    pub fn ty(&mut self, kind: u8, spelling: Option<u32>, flags: u8, children: &[u32]) -> u32 {
+    pub(crate) fn ty(&mut self, kind: u8, spelling: Option<u32>, flags: u8, children: &[u32]) -> u32 {
         let start = self.type_children.len() as u32;
         self.type_children.extend_from_slice(children);
         let mut row = [0; 16];
@@ -53,7 +53,7 @@ impl ImageBuilder {
         self.types.push(row);
         id
     }
-    pub fn symbol(&mut self, owner: u32, name: u32, parameters: &[u32]) -> u32 {
+    pub(crate) fn symbol(&mut self, owner: u32, name: u32, parameters: &[u32]) -> u32 {
         let start = self.symbol_parameters.len() as u32;
         self.symbol_parameters.extend_from_slice(parameters);
         let mut row = [0; 16];
@@ -65,7 +65,7 @@ impl ImageBuilder {
         self.symbols.push(row);
         id
     }
-    pub fn declaration(
+    pub(crate) fn declaration(
         &mut self,
         kind: u8,
         name: u32,
@@ -93,7 +93,7 @@ impl ImageBuilder {
         row[28..32].copy_from_slice(&symbol.unwrap_or(NONE).to_le_bytes());
         self.declarations.push(row);
     }
-    pub fn finish(self, source: &[u8]) -> Vec<u8> {
+    pub(crate) fn finish(self, source: &[u8]) -> Vec<u8> {
         let mut atoms = Vec::new();
         let mut atom_bytes = Vec::new();
         for atom in &self.atoms {
@@ -164,7 +164,7 @@ fn encode_u32(values: &[u32]) -> Vec<u8> {
         .flat_map(|value| value.to_le_bytes())
         .collect()
 }
-pub fn compile(source: &'static [u8], image: Vec<u8>) -> io::Result<Ir> {
+pub(crate) fn compile(source: &'static [u8], image: Vec<u8>) -> io::Result<Ir> {
     let tool = ResolvedToolchain::from_version(
         NativeTool::JavaCompiler,
         Path::new("/usr/bin/true"),

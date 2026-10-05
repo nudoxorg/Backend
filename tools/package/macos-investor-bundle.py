@@ -16,6 +16,7 @@ import json
 import os
 import platform
 import plistlib
+import posixpath
 import re
 import shutil
 import subprocess
@@ -23,6 +24,18 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+
+from macho_relocation import (
+    RelocationInputError,
+    bundle_relative,
+    file_tree_manifest,
+    file_tree_sha256,
+    relative_loader_name,
+    unwrap_admitted_origin,
+    validate_dotnet_runtime_receipt,
+    validate_relocation_plan,
+    write_new_bytes,
+)
 
 
 MACOS_TARGETS = {
@@ -115,6 +128,254 @@ def require_sha(value: Any, label: str) -> str:
     if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
         fail(f"{label} must be a lowercase SHA-256 digest")
     return value
+
+
+def origin_receipt(path: Path, origin_id: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    value = load_json(path, f"{origin_id} origin receipt")
+    try:
+        return unwrap_admitted_origin(value, origin_id)
+    except RelocationInputError as error:
+        fail(str(error))
+
+
+def relocation_inputs(
+    receipt_paths: dict[str, Path],
+    plan_path: Path | None,
+    source: dict[str, str],
+    target: str,
+    roots: dict[str, Path],
+) -> tuple[dict[str, Any] | None, str | None]:
+    admissions: dict[str, tuple[dict[str, Any], dict[str, Any] | None, str]] = {}
+    for origin_id, path in receipt_paths.items():
+        raw_receipt, attachment = origin_receipt(path, origin_id)
+        outer = load_json(path, f"{origin_id} origin receipt")
+        if attachment is None:
+            receipt_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        else:
+            receipt_sha = require_sha(outer.get("source_receipt_sha256"), f"{origin_id} source receipt")
+        admissions[origin_id] = (raw_receipt, attachment, receipt_sha)
+    attached = {origin_id for origin_id, (_, attachment, _) in admissions.items() if attachment is not None}
+    if not attached:
+        if plan_path is not None:
+            fail("a relocation plan was supplied but no origin receipt attaches to it")
+        return None, None
+    if attached != set(receipt_paths):
+        fail("every app, Roslyn, helper, and runtime receipt must attach to one shared relocation plan")
+    if plan_path is None:
+        fail("admitted origin receipts require --relocation-plan")
+    try:
+        plan_bytes = plan_path.read_bytes()
+    except OSError as error:
+        fail(f"cannot read the admitted Mach-O relocation plan: {error}")
+    try:
+        plan = json.loads(plan_bytes)
+        plan = validate_relocation_plan(plan)
+    except (json.JSONDecodeError, RelocationInputError) as error:
+        fail(f"invalid Mach-O relocation plan: {error}")
+    plan_digest = hashlib.sha256(plan_bytes).hexdigest()
+    expected_origin_ids = set(receipt_paths)
+    if set(plan["origins"]) != expected_origin_ids:
+        fail("Mach-O relocation plan origins differ from the four admitted inputs")
+    if plan["source"] != {"git_revision": source["git_revision"], "git_tree": source["git_tree"]}:
+        fail("Mach-O relocation plan does not bind the exact application source")
+    if plan["target"]["triple"] != target or plan["target"]["architecture"] != MACOS_TARGETS[target]:
+        fail("Mach-O relocation plan target differs from the requested bundle")
+    expected_kinds = {
+        "application": "application",
+        "roslyn": "roslyn",
+        "helpers": "helpers",
+        "dotnet-runtime": "dotnet-runtime",
+    }
+    for origin_id, (receipt, attachment, receipt_sha) in admissions.items():
+        if attachment is None or attachment["manifest_sha256"] != plan_digest:
+            fail(f"origin receipt {origin_id} does not attach to the exact relocation plan bytes")
+        origin = plan["origins"][origin_id]
+        if origin["receipt_kind"] != expected_kinds[origin_id]:
+            fail(f"relocation plan has the wrong origin receipt kind for {origin_id}")
+        if origin["receipt_sha256"] != receipt_sha:
+            fail(f"relocation plan does not bind the original {origin_id} receipt bytes")
+        root = roots[origin_id]
+        try:
+            tree = file_tree_sha256(file_tree_manifest(root))
+        except RelocationInputError as error:
+            fail(str(error))
+        if tree != origin["root_tree_sha256"]:
+            fail(f"relocation plan input tree changed for origin {origin_id}")
+    return plan, plan_digest
+
+
+def parse_named_paths(values: list[str], label: str) -> dict[str, Path]:
+    result: dict[str, Path] = {}
+    for value in values:
+        if "=" not in value:
+            fail(f"{label} must use ID=PATH syntax")
+        key, raw = value.split("=", 1)
+        if not key or not raw or key in result:
+            fail(f"{label} has an empty or duplicate ID")
+        result[key] = Path(raw).resolve(strict=True)
+    return result
+
+
+def _stage_path(bundle: Path, relative: str) -> Path:
+    safe = bundle_relative(relative, "Mach-O staged path")
+    return bundle.joinpath(*safe.split("/"))
+
+
+def apply_macho_relocation(
+    staging: Path,
+    plan: dict[str, Any],
+    package_roots: dict[str, Path],
+) -> dict[str, Any]:
+    expected_packages = set(plan["packages"])
+    if set(package_roots) != expected_packages:
+        fail("relocation package roots must exactly match the pinned plan package set")
+    for package_id, package in plan["packages"].items():
+        root = package_roots[package_id]
+        actual_tree = file_tree_sha256(file_tree_manifest(root))
+        if actual_tree != package["root_tree_sha256"]:
+            fail(f"relocation package root changed after collection: {package_id}")
+
+    image_paths: dict[str, Path] = {}
+    original_signatures: dict[str, str] = {}
+    for image in plan["images"]:
+        ref = image["ref"]
+        if image["kind"] == "origin":
+            path = _stage_path(staging, image["bundle_path"])
+        else:
+            package_id = image["package_id"]
+            relative = image["package_relative_path"]
+            root = package_roots[package_id].resolve(strict=True)
+            source = (root / relative)
+            try:
+                resolved = source.resolve(strict=True)
+            except OSError as error:
+                fail(f"pinned Mach-O package input is missing: {package_id}/{relative}: {error}")
+            if not path_within(resolved, root) or not resolved.is_file() or source.is_dir():
+                fail(f"pinned Mach-O package input escapes its root or is not a file: {package_id}/{relative}")
+            if sha256(resolved) != image["sha256"]:
+                fail(f"pinned Mach-O package input hash changed: {package_id}/{relative}")
+            path = _stage_path(staging, image["bundle_path"])
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() or path.is_symlink():
+                fail(f"relocation destination already exists: {image['bundle_path']}")
+            shutil.copy2(resolved, path)
+        if not path.is_file() or path.is_symlink() or sha256(path) != image["sha256"]:
+            fail(f"staged Mach-O image differs from the admitted input: {image['bundle_path']}")
+        signature = inspect_signature(path)
+        if signature != image["signature"]:
+            fail(f"staged Mach-O signature observation differs from collection: {image['bundle_path']}")
+        rpaths, dylib_id = inspect_load_metadata(path)
+        if rpaths != image["rpaths"] or dylib_id != image["dylib_id"]:
+            fail(f"staged Mach-O load commands differ from collection: {image['bundle_path']}")
+        image_paths[ref] = path
+        original_signatures[ref] = signature
+
+    expected_loads: dict[str, list[dict[str, Any]]] = {ref: [] for ref in image_paths}
+    for load in plan["loads"]:
+        expected_loads[load["image_ref"]].append(load)
+    for image in plan["images"]:
+        ref = image["ref"]
+        path = image_paths[ref]
+        output = run(["otool", "-L", str(path)])
+        actual_names = []
+        for line in output.splitlines()[1:]:
+            line = line.strip()
+            if line:
+                actual_names.append(line.split(" (compatibility version ", 1)[0])
+        if image["dylib_id"] is not None:
+            actual_names = [name for name in actual_names if name != image["dylib_id"]]
+        admitted_names = [load["install_name"] for load in expected_loads[ref]]
+        if sorted(actual_names) != sorted(admitted_names):
+            fail(f"Mach-O load-command list differs from admitted relocation graph: {image['bundle_path']}")
+
+    loads_by_image: dict[str, list[dict[str, Any]]] = {ref: [] for ref in image_paths}
+    for load in plan["loads"]:
+        loads_by_image[load["image_ref"]].append(load)
+    relocation_records: list[dict[str, Any]] = []
+    for image in plan["images"]:
+        ref = image["ref"]
+        path = image_paths[ref]
+        bundle_path = image["bundle_path"]
+        command = ["install_name_tool"]
+        changes = 0
+        for load in loads_by_image[ref]:
+            if load["target_kind"] == "system":
+                if load["install_name"] != load["system_path"]:
+                    command.extend(["-change", load["install_name"], load["system_path"]])
+                    changes += 1
+                continue
+            target_image = next(item for item in plan["images"] if item["ref"] == load["target_ref"])
+            relocated_name = relative_loader_name(bundle_path, target_image["bundle_path"])
+            command.extend(["-change", load["install_name"], relocated_name])
+            changes += 1
+        for raw_rpath in image["remove_rpaths"]:
+            command.extend(["-delete_rpath", raw_rpath])
+            changes += 1
+        normalized_id = None
+        if image["dylib_id"] is not None:
+            relative_from_contents = bundle_path.removeprefix("Contents/")
+            normalized_id = f"@rpath/{relative_from_contents}"
+            command.extend(["-id", normalized_id])
+            root_rpath_relative = posixpath.relpath("Contents", posixpath.dirname(bundle_path))
+            root_rpath = "@loader_path" if root_rpath_relative == "." else f"@loader_path/{root_rpath_relative}"
+            current_rpaths = [item for item in image["rpaths"] if item not in image["remove_rpaths"]]
+            if root_rpath not in current_rpaths:
+                command.extend(["-add_rpath", root_rpath])
+            changes += 1
+        if changes:
+            command.append(str(path))
+            run(command)
+        rpaths_after, dylib_id_after = inspect_load_metadata(path)
+        if any(item in rpaths_after for item in image["remove_rpaths"]):
+            fail(f"external LC_RPATH remains after relocation: {bundle_path}")
+        if normalized_id is not None and dylib_id_after != normalized_id:
+            fail(f"Mach-O ID was not normalized after relocation: {bundle_path}")
+        relocation_records.append(
+            {
+                "path": bundle_path,
+                "input_sha256": image["sha256"],
+                "staged_sha256": sha256(path),
+                "input_signature": original_signatures[ref],
+                "staged_signature": inspect_signature(path),
+                "load_edges_rewritten": sum(
+                    load["target_kind"] != "system" or load["install_name"] != load.get("system_path")
+                    for load in loads_by_image[ref]
+                ),
+                "rpaths_removed": image["remove_rpaths"],
+                "dylib_id_after": dylib_id_after,
+            }
+        )
+
+    notice_records: list[dict[str, Any]] = []
+    license_root = staging / "Contents/Resources/Licenses/Third Party"
+    for package_id, package in sorted(plan["packages"].items()):
+        for notice in package["notices"]:
+            name = notice["name"]
+            if not isinstance(name, str) or not name or Path(name).name != name or name in {".", ".."}:
+                fail(f"unsafe package notice name for {package_id}")
+            content = base64.b64decode(notice["content_base64"], validate=True)
+            digest = hashlib.sha256(content).hexdigest()
+            if digest != notice["sha256"]:
+                fail(f"package notice bytes changed after collection: {package_id}/{name}")
+            destination = license_root / package_id / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists() or destination.is_symlink():
+                fail(f"package notice destination already exists: {package_id}/{name}")
+            destination.write_bytes(content)
+            notice_records.append(
+                {
+                    "package_id": package_id,
+                    "name": name,
+                    "sha256": digest,
+                    "path": destination.relative_to(staging).as_posix(),
+                }
+            )
+    return {
+        "plan_sha256": None,
+        "images": relocation_records,
+        "notices": notice_records,
+        "signature_policy": "input observations are retained; modified images require a later real sign-and-verify step",
+    }
 
 
 def validate_direct_cargo_provenance(
@@ -294,7 +555,7 @@ def validate_app_build(
     target: str,
     expected_runner_sha256: str,
 ) -> tuple[dict[str, Any], dict[str, Path]]:
-    receipt = load_json(receipt_path, "application build receipt")
+    receipt, _ = origin_receipt(receipt_path, "application")
     expected_source = {
         "git_revision": source["git_revision"],
         "git_tree": source["git_tree"],
@@ -493,7 +754,7 @@ def validate_roslyn_build(
     source: dict[str, str],
     target: str,
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    receipt = load_json(receipt_path, "Roslyn helper build receipt")
+    receipt, _ = origin_receipt(receipt_path, "roslyn")
     project = source_root / "frontends/csharp/src/legacy/helper/oracle.csproj"
     lock = source_root / "frontends/csharp/src/legacy/helper/packages.lock.json"
     expected_source = {
@@ -550,7 +811,7 @@ def validate_helper_payload(
     source: dict[str, str],
     target: str,
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    receipt = load_json(receipt_path, "compiler-helper receipt")
+    receipt, _ = origin_receipt(receipt_path, "helpers")
     if receipt.get("schema") != 1 or receipt.get("source") != {
         "git_revision": source["git_revision"],
         "git_tree": source["git_tree"],
@@ -622,7 +883,9 @@ def validate_helper_payload(
     return receipt, observed
 
 
-def copy_runtime(dotnet_root: Path, destination: Path) -> dict[str, str]:
+def copy_runtime(
+    dotnet_root: Path, destination: Path, receipt: dict[str, Any]
+) -> dict[str, str]:
     dotnet = dotnet_root / "dotnet"
     host = dotnet_root / "host"
     shared = dotnet_root / "shared"
@@ -635,23 +898,37 @@ def copy_runtime(dotnet_root: Path, destination: Path) -> dict[str, str]:
     ]
     if not runtimes:
         fail("dotnet root must contain a shared Microsoft.NETCore.App runtime")
-    notices = ("LICENSE.txt", "ThirdPartyNotices.txt")
-    for name in notices:
-        if not (dotnet_root / name).is_file():
-            fail(f"dotnet distribution is missing its {name} notice")
+    notice_names = {
+        "license": "LICENSE.txt",
+        "third_party": "ThirdPartyNotices.txt",
+    }
     destination.mkdir(parents=True)
     shutil.copy2(dotnet, destination / "dotnet")
     shutil.copytree(host, destination / "host", symlinks=False)
     shutil.copytree(shared, destination / "shared", symlinks=False)
-    for name in notices:
-        shutil.copy2(dotnet_root / name, destination / name)
-    return {name: sha256(dotnet_root / name) for name in notices}
+    copied: dict[str, str] = {}
+    for key, name in notice_names.items():
+        relative = receipt["notices"][key]["path"]
+        shutil.copy2(dotnet_root / relative, destination / name)
+        copied[name] = sha256(destination / name)
+    return copied
 
 
 def macos_tools() -> None:
     if platform.system() != "Darwin":
         fail("bundle assembly and Mach-O closure verification require macOS")
-    missing = [name for name in ("codesign", "ditto", "dyld_info", "file", "lipo", "otool", "plutil", "vtool") if shutil.which(name) is None]
+    required = (
+        "codesign",
+        "ditto",
+        "dyld_info",
+        "file",
+        "install_name_tool",
+        "lipo",
+        "otool",
+        "plutil",
+        "vtool",
+    )
+    missing = [name for name in required if shutil.which(name) is None]
     if missing:
         fail(f"missing required macOS verification tools: {', '.join(missing)}")
 
@@ -920,9 +1197,18 @@ def inspect_dependencies(
 def process_contexts(image: Path, bundle: Path, process_roots: list[Path]) -> list[Path]:
     canonical = image.resolve(strict=True)
     root_set = {path.resolve(strict=True) for path in process_roots}
-    if canonical in root_set:
-        return [canonical]
     relative = image.relative_to(bundle).as_posix()
+    root_relatives = {root.relative_to(bundle).as_posix(): root for root in root_set}
+    relatives = process_contexts_for_relative(relative, set(root_relatives))
+    owners = [root_relatives[owner] for owner in relatives]
+    if any(owner.resolve(strict=True) not in root_set for owner in owners):
+        fail(f"runtime image {relative} refers to a non-root process owner")
+    return sorted(owners)
+
+
+def process_contexts_for_relative(relative: str, process_root_relatives: set[str]) -> list[str]:
+    if relative in process_root_relatives:
+        return [relative]
     helper_owners = {
         "Contents/Resources/dotnet/": "Contents/Resources/dotnet/dotnet",
         "Contents/Resources/Helpers/csharp/": "Contents/Resources/dotnet/dotnet",
@@ -932,12 +1218,11 @@ def process_contexts(image: Path, bundle: Path, process_roots: list[Path]) -> li
     }
     for prefix, owner_relative in helper_owners.items():
         if relative.startswith(prefix):
-            owner = (bundle / owner_relative).resolve(strict=True)
-            if owner not in root_set:
+            if owner_relative not in process_root_relatives:
                 fail(f"runtime image {relative} refers to a non-root process owner {owner_relative}")
-            return [owner]
+            return [owner_relative]
     if relative.startswith(("Contents/Frameworks/", "Contents/MacOS/")):
-        return sorted(root_set)
+        return sorted(process_root_relatives)
     fail(f"Mach-O image has no declared process context in the bundle layout: {relative}")
 
 
@@ -952,11 +1237,24 @@ def inspect_signature(path: Path) -> str:
     output = completed.stdout
     if "code object is not signed at all" in output:
         return "unsigned"
-    if "signature=adhoc" in output.lower():
+    is_adhoc = "signature=adhoc" in output.lower()
+    is_signed = "Authority=" in output or "TeamIdentifier=" in output
+    if not completed.returncode and not is_adhoc and not is_signed:
+        fail(f"cannot classify code-signature state for {path}: {output.strip()}")
+    verification = subprocess.run(
+        ["codesign", "--verify", "--strict", str(path)],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if verification.returncode != 0:
+        return "invalidated" if is_adhoc or is_signed else "invalid"
+    if is_adhoc:
         return "ad-hoc"
-    if completed.returncode == 0 and ("Authority=" in output or "TeamIdentifier=" in output):
+    if is_signed:
         return "signed"
-    fail(f"cannot classify code-signature state for {path}: {output.strip()}")
+    return "unsigned"
 
 
 def minimum_macos(image: Path) -> str:
@@ -1039,10 +1337,15 @@ def main() -> int:
     parser.add_argument("--artifact-dir", required=True, type=Path, help="directory containing the three admitted application binaries")
     parser.add_argument("--build-receipt", required=True, type=Path, help="Root-produced application build receipt JSON")
     parser.add_argument("--dotnet-root", required=True, type=Path, help="real macOS .NET runtime installation root")
+    parser.add_argument("--dotnet-receipt", required=True, type=Path, help="content-bound .NET runtime origin receipt")
+    parser.add_argument("--dotnet-pin", required=True, type=Path, help="reviewed source/version/tree pin for the .NET distribution")
+    parser.add_argument("--dotnet-source-archive", type=Path, help="exact source archive when the .NET pin uses verified-archive")
     parser.add_argument("--roslyn-dir", required=True, type=Path, help="real framework-dependent oracle publish output directory")
     parser.add_argument("--roslyn-receipt", required=True, type=Path, help="Root-produced locked Roslyn publish receipt JSON")
     parser.add_argument("--helpers-dir", required=True, type=Path, help="receipted real Go, Pyrefly, Node, and TypeScript helper payload")
     parser.add_argument("--helpers-receipt", required=True, type=Path, help="Root-produced compiler-helper receipt JSON")
+    parser.add_argument("--relocation-plan", type=Path, help="collector-produced plan referenced by all four admitted origin receipts")
+    parser.add_argument("--relocation-package-root", action="append", default=[], metavar="PACKAGE=PATH", help="exact pinned source root for a third-party Mach-O package")
     parser.add_argument("--output-dir", required=True, type=Path, help="new directory for .app, zip, and receipt")
     parser.add_argument("--target", choices=MACOS_TARGETS, default="aarch64-apple-darwin")
     args = parser.parse_args()
@@ -1062,7 +1365,7 @@ def main() -> int:
     dotnet_root = args.dotnet_root.resolve(strict=True)
     if args.output_dir.exists() or args.output_dir.is_symlink():
         fail(f"output directory already exists; refusing to reuse it: {args.output_dir}")
-    output_dir = args.output_dir.resolve(strict=False)
+    output_dir = args.output_dir.absolute()
     if output_dir.exists() or output_dir.is_symlink():
         fail(f"output directory already exists; refusing to reuse it: {output_dir}")
 
@@ -1082,9 +1385,46 @@ def main() -> int:
     helpers_receipt, helper_files = validate_helper_payload(
         args.helpers_receipt.resolve(strict=True), helpers_dir, source_root, source, args.target
     )
+    dotnet_receipt_path = args.dotnet_receipt.resolve(strict=True)
+    dotnet_receipt, _ = origin_receipt(dotnet_receipt_path, "dotnet-runtime")
+    try:
+        dotnet_files = validate_dotnet_runtime_receipt(
+            dotnet_receipt,
+            dotnet_root,
+            args.target,
+            args.dotnet_pin.resolve(strict=True),
+            args.dotnet_source_archive.resolve(strict=True) if args.dotnet_source_archive else None,
+        )
+    except RelocationInputError as error:
+        fail(str(error))
     dotnet = dotnet_root / "dotnet"
     if not dotnet.is_file() or not os.access(dotnet, os.X_OK):
         fail(f"dotnet host is not executable: {dotnet}")
+
+    source_root_paths = {
+        "application": artifact_dir,
+        "roslyn": roslyn_dir,
+        "helpers": helpers_dir,
+        "dotnet-runtime": dotnet_root,
+    }
+    admitted_receipt_paths = {
+        "application": args.build_receipt.resolve(strict=True),
+        "roslyn": args.roslyn_receipt.resolve(strict=True),
+        "helpers": args.helpers_receipt.resolve(strict=True),
+        "dotnet-runtime": dotnet_receipt_path,
+    }
+    plan, plan_digest = relocation_inputs(
+        admitted_receipt_paths,
+        args.relocation_plan.resolve(strict=True) if args.relocation_plan else None,
+        source,
+        args.target,
+        source_root_paths,
+    )
+    relocation_package_roots = parse_named_paths(
+        args.relocation_package_root, "relocation package root"
+    ) if args.relocation_package_root else {}
+    if plan is None and relocation_package_roots:
+        fail("relocation package roots were supplied without admitted origin receipts")
 
     plist_path = source_root / "apps/desktop/macos/Info.plist"
     with plist_path.open("rb") as stream:
@@ -1152,7 +1492,7 @@ def main() -> int:
             encoding="utf-8",
         )
         (typescript_dir / "tsc").chmod(0o755)
-        runtime_notices = copy_runtime(dotnet_root, resources / "dotnet")
+        runtime_notices = copy_runtime(dotnet_root, resources / "dotnet", dotnet_receipt)
         licenses = resources / "Font Licenses"
         licenses.mkdir()
         for name in FONT_LICENSES:
@@ -1166,6 +1506,7 @@ def main() -> int:
         shutil.copy2(args.build_receipt, provenance / "application-build-receipt.json")
         shutil.copy2(args.roslyn_receipt, provenance / "roslyn-build-receipt.json")
         shutil.copy2(args.helpers_receipt, provenance / "compiler-helpers-receipt.json")
+        shutil.copy2(dotnet_receipt_path, provenance / "dotnet-runtime-receipt.json")
 
         info = run(["plutil", "-lint", str(staging / "Contents/Info.plist")])
         if "OK" not in info:
@@ -1180,6 +1521,21 @@ def main() -> int:
                 for relative in HELPER_EXECUTABLES.values()
             ),
         }
+        relocation_record = {
+            "plan_sha256": None,
+            "images": [],
+            "notices": [],
+            "signature_policy": "no relocation plan was attached; only already-bundled or Apple system dependencies can pass closure audit",
+        }
+        if plan is not None:
+            relocation_record = apply_macho_relocation(
+                staging, plan, relocation_package_roots
+            )
+            relocation_record["plan_sha256"] = plan_digest
+            shutil.copy2(
+                args.relocation_plan.resolve(strict=True),
+                provenance / "macho-relocation-plan.json",
+            )
         macho_records = inspect_macho_tree(
             staging,
             target_arch,
@@ -1234,16 +1590,23 @@ def main() -> int:
                 },
             },
             "dotnet_runtime": {
-                "root_path_recorded_as_hashes_only": True,
+                "receipt_sha256": sha256(dotnet_receipt_path),
+                "package": dotnet_receipt["package"],
+                "distribution": dotnet_receipt["distribution"],
+                "pin_descriptor_sha256": dotnet_receipt["pin_descriptor_sha256"],
+                "root_tree_sha256": dotnet_receipt["root_tree_sha256"],
+                "files": dotnet_files,
                 "notices": runtime_notices,
             },
+            "macho_relocation": relocation_record,
             "font_licenses": {name: sha256(licenses / name) for name in FONT_LICENSES},
             "macho_images": macho_records,
             "files": file_inventory(staging),
             "distribution_status": f"app bundle {bundle_signature}; notarization not performed; native QA pending",
         }
         manifest_path = resources / "build-manifest.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        write_new_bytes(manifest_path, manifest_bytes, label="bundle manifest")
 
         final_app = output_dir / "Nudox.app"
         zip_path = output_dir / "Nudox-macOS.zip"
@@ -1259,7 +1622,8 @@ def main() -> int:
             "package_status": f"app bundle {bundle_signature}; notarization not performed; native QA pending",
         }
         receipt_path = output_dir / "Nudox-macOS.receipt.json"
-        receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        receipt_bytes = (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        write_new_bytes(receipt_path, receipt_bytes, label="bundle receipt")
 
     print(f"Created {output_dir / 'Nudox.app'}")
     print(f"Created {output_dir / 'Nudox-macOS.zip'}")
@@ -1271,6 +1635,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except PackageError as error:
+    except (PackageError, RelocationInputError, OSError, ValueError) as error:
         print(f"package refused: {error}", file=sys.stderr)
         sys.exit(2)
