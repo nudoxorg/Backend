@@ -4,6 +4,7 @@
 
 pub(crate) mod aside;
 pub(crate) mod bootstrap;
+pub(crate) mod close;
 pub(crate) mod editor;
 #[cfg(test)]
 mod embedded_owner_tests;
