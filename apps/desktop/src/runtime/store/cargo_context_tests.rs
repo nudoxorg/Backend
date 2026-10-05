@@ -23,20 +23,13 @@ fn root() -> VersionedRoot {
     )
 }
 
-/// No subprocess or filesystem observation: the stable metadata witness is
-/// an existing producer fixture, with an explicit requested member binding.
+/// No subprocess or filesystem observation: models a stable owner witness over
+/// the complete producer capture, with an explicit requested member binding.
 pub(crate) fn fixture(project: &LocalProjectId) -> (TreeModel, PackageRef, CargoBrowseContext) {
+    use crate::runtime::cargo_fixture::{PACKAGE_NAME, PACKAGE_VERSION};
     use backend_advisory::{AdvisoryAuthority, normalize_package};
-    use backend_library::browse::{
-        ProjectTreeRequestBindingV1, build_tree, metadata_input_with_stable_source_witness,
-    };
-    const METADATA: &[u8] = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"
-    ));
-    let input =
-        metadata_input_with_stable_source_witness(METADATA, "aarch64-apple-darwin", None, [7; 32])
-            .expect("producer fixture");
+    use backend_library::browse::{ProjectTreeRequestBindingV1, build_tree};
+    let input = crate::runtime::cargo_fixture::input().expect("complete producer fixture");
     let authority = AdvisoryAuthority::new(1);
     let mut tree = build_tree(&input, &|name: &str, version: &str| {
         authority.observe(
@@ -55,14 +48,11 @@ pub(crate) fn fixture(project: &LocalProjectId) -> (TreeModel, PackageRef, Cargo
     .expect("fixture binding");
     tree.request_binding = Some(binding);
     assert!(tree.has_admissible_shape());
-    // Keep the version and source from this immutable Cargo observation. A
-    // changed capture must not leave a stale, separately pinned test address.
-    let mut observed = tree.packages.iter().filter(|row| row.name == "serde");
-    let row = observed.next().expect("observed serde package");
-    assert!(
-        observed.next().is_none(),
-        "the fixture must have exactly one observed serde coordinate"
-    );
+    // Selection must retain the exact observed version and source. `package`
+    // refuses ambiguous rows instead of selecting another source by position.
+    let row = tree
+        .package(PACKAGE_NAME, PACKAGE_VERSION)
+        .expect("observed package");
     let package = PackageRef::from_reference(
         row.source_qualified_reference()
             .expect("exact observed package"),
@@ -214,8 +204,9 @@ fn current_tree_admits_exact_package_without_semantic_dossier_or_history() {
     );
 
     let sibling = PackageRef::parse(&format!(
-        "pkg:cargo/serde@{}?cargo-authority={}",
-        package.version().expect("observed serde version"),
+        "pkg:cargo/{}@{}?cargo-authority={}",
+        crate::runtime::cargo_fixture::PACKAGE_NAME,
+        package.version().expect("observed package version"),
         "b".repeat(64)
     ))
     .expect("other exact receipt");

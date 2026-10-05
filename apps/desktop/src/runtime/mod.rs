@@ -3,6 +3,8 @@
 pub(crate) mod acquire;
 pub mod actor;
 pub mod browse_reads;
+#[cfg(test)]
+pub(crate) mod cargo_fixture;
 pub(crate) mod cargo_readme_reads;
 pub(crate) mod browse_views;
 pub mod client;
