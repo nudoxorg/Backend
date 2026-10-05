@@ -73,7 +73,7 @@ pub(crate) fn set_test_fault(point: u8) {
 }
 
 use self::objects::{
-    decode_object, decode_pack_file, encode_object, encode_pack_file, write_immutable,
+    decode_pack_file, encode_object, encode_pack_file, write_immutable,
     write_immutable_file_with_status, write_immutable_with_status,
 };
 use self::recovery::{base_matches, descriptor_matches_base};
