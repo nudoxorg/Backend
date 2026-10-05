@@ -117,12 +117,22 @@ changes are not covered by the `db8bc805ef` execution evidence.
 Two subsequent full checks failed in the new semantic-reply tests, before any
 test execution. At `63b8107d0d`, five calls omitted the required command identity;
 at `71c6acc646`, one fixture moved a frontier still borrowed by its record
-constructor. Both diagnostics are fixed in `cd1e4a189e`, whose execution gate is
-separate and remains pending until a receipt exists. The failed logs are kept at
+constructor. Both diagnostics are fixed in `cd1e4a189e`. The failed logs are kept at
 `/private/tmp/nudox-index-repaired-runtime-tests-63b810-20261005/` and
 `/private/tmp/nudox-index-repaired-runtime-tests-71c6ac-20261005/`. Neither attempt
-ran tests. The next lane selects the entire desktop library suite, rather than
-only the `index_` tests, and fails on an empty focused selection.
+ran tests. The expanded lane selects the entire desktop library suite, rather
+than only the `index_` tests, and fails on an empty focused selection.
+
+The full workspace/all-targets check at
+`cd1e4a189ec1fd2a4504e3ee85de2f72c739124c`, tree
+`7c2961efad9a3f78caaba599635ca8b42dc8f989`, exited **0** on
+2026-10-05 04:19:42–04:22:20 UTC, with unchanged clean source. Log SHA-256:
+`491ed924152bd7bf885895106269e08bf73b32cb58a26ffd247b56bb8a415f56`.
+The subsequent desktop test build was stopped with exit 143 at 04:27:49 UTC
+after two fleet censuses again found five compiler workloads. Only Root's
+owned process group was stopped. **No desktop tests ran in this attempt**;
+the remaining focused suites were not started. Exact receipts remain at
+`/private/tmp/nudox-index-repaired-runtime-tests-cd1e4a-20261005/`.
 
 The Cargo authority fixtures now use a complete producer capture with observed
 resolved features, its recorded target and lockfile. A previous presentation
@@ -160,6 +170,17 @@ The 671-byte Unicode image also exactly matches its golden. The receipt is
 This proves the helper's source-mode fidelity gate. It does not prove project
 NuGet dependency restoration, successful C# GUI indexing or investor-bundle
 relocation. The new focused Rust assertions remain unexecuted.
+
+Root also revalidated a canonical closed compiler-host snapshot containing
+16 configured roles against the current source, all 11 real candidate project
+rows, the ten supported profile spellings, and the full run3 helper source and
+published-file inventory. The role/path checks pass; no product owner has
+consumed this snapshot. The candidate corpus includes PostgreSQL REL_17_2
+with 2,235 recognized source paths and about 44 MiB of source, including two
+oversized files that must be represented as unavailable rather than omitted.
+Its count exceeds the source-derived 2,046 candidate floor, but no accepted
+membership or semantic publication has been measured. Static receipt:
+`/private/tmp/nudox-real-corpus-root-static-v3-retry-20261005/receipt.json`.
 
 ## Remaining acceptance gates
 
