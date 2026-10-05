@@ -1182,7 +1182,7 @@ mod bootstrap_exhaustion_tests {
         );
         #[cfg(unix)]
         {
-            // Darwin clears socket timeout options on shutdown. The socket
+            // Darwin clears the receive timeout on shutdown. The socket
             // is retired on every platform; none of these options authorize
             // another request or reconnect without a new authenticated peer.
             let expected = if cfg!(target_os = "macos") {
@@ -1205,8 +1205,8 @@ mod bootstrap_exhaustion_tests {
                     .stream()
                     .write_timeout()
                     .expect("write timeout getter"),
-                expected,
-                "native shutdown write timeout disposition"
+                Some(Duration::from_secs(30)),
+                "shutdown preserves the configured write timeout"
             );
         }
 
