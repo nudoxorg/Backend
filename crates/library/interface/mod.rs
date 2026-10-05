@@ -26,16 +26,17 @@ pub use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES,
 };
 pub use compiler::{
-    CompilerAttempt, CompilerCapability, CompilerCause, CompilerDiagnostic,
-    CompilerDiagnosticFacts, CompilerReadiness, CompilerRequest, CompilerRuntimeCause,
-    CompilerRuntimePanic, CompilerTerminal, DurableReceiptAuthority, FragmentCause,
-    GeneratedArtifact, GenerationAuthority, InvalidUtf8Fact, LoweringCause,
-    MAX_NATIVE_WORKER_PANIC_BYTES, NativeArtifactAction, NativeArtifactCause, NativeArtifactRole,
-    NativeDirectoryCause, NativeIoFact, NativeIoPhase, NativePrimaryCause, NativeWorkCause,
-    NativeWorkCleanupCause, NativeWorkPhase, NativeWorker, NativeWorkerPanic,
-    NativeWorkerPanicClass, NativeWorkerPanicMessage, PublicationAuthority, PublicationCause,
-    PublicationPhase, SemanticImageAccessError, SemanticImageAuthority, SemanticImageSnapshot,
-    SourceAuthority, UnavailableCompiler,
+    BoundedCompilerFragmentDetail, CompilerAttempt, CompilerCapability, CompilerCause,
+    CompilerDiagnostic, CompilerDiagnosticFacts, CompilerFragmentFailure, CompilerFragmentFault,
+    CompilerFragmentFaultFacts, CompilerFragmentFaultFamily, CompilerReadiness, CompilerRequest,
+    CompilerRuntimeCause, CompilerRuntimePanic, CompilerTerminal, DurableReceiptAuthority,
+    FragmentCause, GeneratedArtifact, GenerationAuthority, InvalidUtf8Fact, LoweringCause,
+    MAX_COMPILER_FRAGMENT_DETAIL_BYTES, MAX_NATIVE_WORKER_PANIC_BYTES, NativeArtifactAction,
+    NativeArtifactCause, NativeArtifactRole, NativeDirectoryCause, NativeIoFact, NativeIoPhase,
+    NativePrimaryCause, NativeWorkCause, NativeWorkCleanupCause, NativeWorkPhase, NativeWorker,
+    NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage, PublicationAuthority,
+    PublicationCause, PublicationPhase, SemanticImageAccessError, SemanticImageAuthority,
+    SemanticImageSnapshot, SourceAuthority, UnavailableCompiler,
 };
 pub use index_sync::{
     BaseGeneration, ClientIndex, ClientManifest, ClientSyncError, ClientSyncPhase,

@@ -31,7 +31,7 @@ use backend_frontend_rust::legacy::{
     RustWorkspaceSessionLease,
 };
 use backend_library::interface::{
-    CompilerAttempt, CompilerCapability, CompilerCause, CompilerReadiness,
+    CompilerAttempt, CompilerCapability, CompilerCause, CompilerFragmentFailure, CompilerReadiness,
     CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, FragmentCause,
     GeneratedArtifact, PackageCompilePhase, PackageCompileRequest, PackageDeclarationScopeCause,
     PackageSourceCause, PublicationAuthority, PublicationCause, PublicationPhase,
@@ -46,10 +46,10 @@ use backend_semantic::ir::{
 };
 use backend_semantic::registry::{AdapterRoute, FullRegistry};
 use backend_semantic::vocabulary::AuthorityDiagnosticClass;
+use backend_store::FileStore;
 use backend_store::journal::{
     DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError,
 };
-use backend_store::FileStore;
 use backend_version::Coverage;
 use backend_version::ScopeRoot;
 use backend_version::{
@@ -3120,12 +3120,12 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
             artifact.fragment.as_ref(),
         );
         let fragment_view = backend_semantic::ir::FragmentView::validate(&artifact.fragment)
-            .map_err(|_| CompilerTerminal::Compile {
+            .map_err(|cause| CompilerTerminal::Compile {
                 attempted: CompilerAttempt {
                     source,
                     recipe: recipe.identity,
                 },
-                cause: CompilerCause::Fragment(FragmentCause::Validate),
+                cause: CompilerCause::FragmentFailure(CompilerFragmentFailure::validate(cause)),
             })?;
         let compiled = CompiledFragment {
             source: artifact.source,
@@ -3825,10 +3825,7 @@ fn bounded_error_display(
     } else {
         output.text
     };
-    BoundedErrorMessage {
-        text,
-        truncated,
-    }
+    BoundedErrorMessage { text, truncated }
 }
 
 struct BoundedErrorMessageWriter {
@@ -4087,16 +4084,19 @@ mod tests {
 
         let diagnostic = bounded_error_chain(&error);
 
-        assert!(diagnostic.text.starts_with(
-            "package semantic output could not be prepared for transport"
-        ));
-        assert!(diagnostic.text.contains("stored semantic-image bytes contain 2048"));
+        assert!(
+            diagnostic
+                .text
+                .starts_with("package semantic output could not be prepared for transport")
+        );
+        assert!(
+            diagnostic
+                .text
+                .contains("stored semantic-image bytes contain 2048")
+        );
         assert!(diagnostic.text.contains("… intermediate causes omitted …"));
         assert!(diagnostic.truncated);
-        assert!(
-            diagnostic.text.len()
-                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
-        );
+        assert!(diagnostic.text.len() <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES);
     }
 
     #[test]
@@ -4113,10 +4113,7 @@ mod tests {
         assert!(diagnostic.text.is_char_boundary(diagnostic.text.len()));
         assert!(diagnostic.text.ends_with('…'));
         assert!(diagnostic.truncated);
-        assert!(
-            diagnostic.text.len()
-                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
-        );
+        assert!(diagnostic.text.len() <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES);
     }
 
     #[test]
@@ -4173,10 +4170,7 @@ mod tests {
 
         assert!(diagnostic.text.contains("error source cycle detected"));
         assert!(diagnostic.truncated);
-        assert!(
-            diagnostic.text.len()
-                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
-        );
+        assert!(diagnostic.text.len() <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES);
     }
 
     #[test]
@@ -4199,15 +4193,14 @@ mod tests {
         let diagnostic = bounded_error_chain(&error);
 
         assert!(diagnostic.text.contains("cause 7"));
-        assert!(diagnostic
-            .text
-            .contains("additional causes omitted after depth limit"));
+        assert!(
+            diagnostic
+                .text
+                .contains("additional causes omitted after depth limit")
+        );
         assert!(!diagnostic.text.contains("cause beyond depth limit"));
         assert!(diagnostic.truncated);
-        assert!(
-            diagnostic.text.len()
-                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
-        );
+        assert!(diagnostic.text.len() <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES);
     }
 
     #[test]
@@ -4225,7 +4218,11 @@ mod tests {
         let source = std::error::Error::source(&error).expect("typed publication source");
         assert!(source.is::<crate::publication::PublishSemanticError>());
         let diagnostic = bounded_error_chain(&error);
-        assert!(diagnostic.text.contains("semantic image bytes contain 256 bytes"));
+        assert!(
+            diagnostic
+                .text
+                .contains("semantic image bytes contain 256 bytes")
+        );
         assert!(!diagnostic.truncated);
     }
 

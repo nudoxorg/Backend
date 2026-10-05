@@ -5,6 +5,15 @@
 
 use std::time::Duration;
 
+use backend_library::interface::{
+    ApplicationOutcome, ApplicationReply, CompilerAttempt, CompilerCause, CompilerDiagnostic,
+    CompilerFragmentFailure, CompilerTerminal, CorrelationId, Diagnostic, DiagnosticCode,
+    DiagnosticDetail, DurableReceiptAuthority, GeneratedArtifact, GenerationAuthority,
+    NativeIoFact, NativeIoPhase, PublicationAuthority, ReplyBody, SemanticImageAuthority,
+    SourceAuthority,
+};
+use backend_library::protocol::encode_cli_reply;
+use backend_semantic::ir::{BuildError, EntityId, LayoutStep, PrepareError};
 use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, Language, LanguageProfile,
     NativeTool, RustEdition, Stage,
@@ -15,13 +24,6 @@ use backend_version::{
     IrManifestEncoding, IrSemanticImageDomain, IrSemanticImageEncoding, SourceFactDomain,
     ToolchainDomain,
 };
-use backend_library::interface::{
-    ApplicationOutcome, ApplicationReply, CompilerAttempt, CompilerCause, CompilerDiagnostic,
-    CompilerTerminal, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail,
-    DurableReceiptAuthority, GeneratedArtifact, GenerationAuthority, NativeIoFact, NativeIoPhase,
-    PublicationAuthority, ReplyBody, SemanticImageAuthority, SourceAuthority,
-};
-use backend_library::protocol::encode_cli_reply;
 use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]
@@ -160,6 +162,25 @@ fn authority_failure_reply() -> Result<ApplicationReply, TestError> {
             },
         },
     })
+}
+
+fn fragment_failure_reply(failure: CompilerFragmentFailure) -> ApplicationReply {
+    let artifact = generated_artifact();
+    ApplicationReply {
+        correlation: CorrelationId(406),
+        outcome: ApplicationOutcome::Failed {
+            diagnostic: Diagnostic {
+                code: DiagnosticCode::CompilerTerminal,
+                detail: DiagnosticDetail::Compiler(CompilerTerminal::Compile {
+                    attempted: CompilerAttempt {
+                        source: artifact.source,
+                        recipe: artifact.recipe.identity,
+                    },
+                    cause: CompilerCause::FragmentFailure(failure),
+                }),
+            },
+        },
+    }
 }
 
 #[test]
@@ -354,6 +375,117 @@ fn compiler_terminal_keeps_typed_attempt_and_bounded_native_diagnostic() -> Resu
         return Err(TestError::Projection {
             channel: "native diagnostic erased message",
             observed: message.clone(),
+        });
+    }
+    Ok(())
+}
+
+#[test]
+fn fragment_failure_projects_source_span_coordinates_without_authority_reclassification()
+-> Result<(), TestError> {
+    let failure = CompilerFragmentFailure::build(BuildError::InvalidOccurrenceSpan {
+        owner: EntityId::new(7),
+        start: 18,
+        end: 24,
+    });
+    let encoded: Value =
+        serde_json::from_slice(&encode_cli_reply(fragment_failure_reply(failure))?)?;
+    let cause = &encoded["diagnostic"]["detail"]["terminal"]["cause"];
+    let fault = &cause["fault"];
+
+    expect_projection(
+        "fragment compiler cause kind",
+        &cause["kind"],
+        Value::from("fragment"),
+    )?;
+    expect_projection(
+        "fragment prepare phase",
+        &cause["cause"],
+        Value::from("prepare"),
+    )?;
+    expect_projection(
+        "IR build fault family",
+        &fault["family"],
+        Value::from("build"),
+    )?;
+    expect_projection(
+        "source recovery fault class",
+        &fault["facts"]["kind"],
+        Value::from("occurrence_span"),
+    )?;
+    expect_projection("occurrence owner", &fault["facts"]["owner"], Value::from(7))?;
+    expect_projection(
+        "occurrence start",
+        &fault["facts"]["start"],
+        Value::from(18),
+    )?;
+    expect_projection("occurrence end", &fault["facts"]["end"], Value::from(24))?;
+    if !fault["detail"].as_str().is_some_and(|detail| {
+        detail.contains("occurrence span") && detail.contains("escapes entity")
+    }) {
+        return Err(TestError::Projection {
+            channel: "fragment human detail",
+            observed: fault["detail"].clone(),
+        });
+    }
+    expect_projection(
+        "bounded detail truncation",
+        &fault["detail_truncated"],
+        Value::from(false),
+    )?;
+    let wire = encoded.to_string();
+    if wire.contains("wire-source") || wire.contains("bad source") {
+        return Err(TestError::Projection {
+            channel: "fragment output leaked source or native text",
+            observed: Value::String(wire),
+        });
+    }
+    Ok(())
+}
+
+#[test]
+fn fragment_layout_overflow_keeps_the_lane_and_count_operands() -> Result<(), TestError> {
+    let failure = CompilerFragmentFailure::prepare(PrepareError::LayoutOverflow {
+        step: LayoutStep::SemanticData,
+        entity_count: 23,
+        type_node_count: 41,
+    });
+    let encoded: Value =
+        serde_json::from_slice(&encode_cli_reply(fragment_failure_reply(failure))?)?;
+    let fault = &encoded["diagnostic"]["detail"]["terminal"]["cause"]["fault"];
+
+    expect_projection(
+        "fragment prepare family",
+        &fault["family"],
+        Value::from("prepare"),
+    )?;
+    expect_projection(
+        "layout overflow class",
+        &fault["facts"]["kind"],
+        Value::from("layout_overflow"),
+    )?;
+    expect_projection(
+        "layout overflow step",
+        &fault["facts"]["step"],
+        Value::from("semantic_data"),
+    )?;
+    expect_projection(
+        "layout entity count",
+        &fault["facts"]["entity_count"],
+        Value::from(23),
+    )?;
+    expect_projection(
+        "layout type count",
+        &fault["facts"]["type_node_count"],
+        Value::from(41),
+    )?;
+    if fault["detail"].as_str().is_none_or(|detail| {
+        detail.len() > backend_library::interface::MAX_COMPILER_FRAGMENT_DETAIL_BYTES
+            || !detail.contains("overflow")
+    }) {
+        return Err(TestError::Projection {
+            channel: "bounded layout detail",
+            observed: fault["detail"].clone(),
         });
     }
     Ok(())
