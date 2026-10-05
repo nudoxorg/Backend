@@ -115,8 +115,8 @@ pub const COMMANDS: [CommandSpec; 51] = [
     CommandSpec {
         id: CommandId::Add,
         name: "add",
-        title: "Add Package",
-        description: "Compile, publish, and index one pinned package so every surface can read it.",
+        title: "Index Local Project",
+        description: "Index a local project directory, or refresh its existing indexed contents.",
         mutation: CommandMutation::Write,
         domain: CommandDomain::Library,
     },

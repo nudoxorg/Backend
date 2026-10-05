@@ -530,7 +530,7 @@ pub const GRAMMARS: [CommandGrammar; 51] = [
         positional: &[ArgumentSpec::optional(
             "path",
             ArgumentKind::ProjectPath,
-            "Absolute project directory to add to the shelf.",
+            "Absolute local project directory to index or re-index.",
         )],
         options: &[ArgumentSpec::optional_with_json_name(
             "execution-intent",
@@ -538,7 +538,7 @@ pub const GRAMMARS: [CommandGrammar; 51] = [
             ArgumentKind::ExecutionIntent,
             "Compilation class: interactive protects local latency; background permits bounded remote calibration. Defaults to interactive.",
         )],
-        when: "Pass the absolute project directory. This adds that package to the shelf. Call it when packages does not list the project, or when its source changed. Use background execution when the request may be calibrated remotely.",
+        when: "Pass the absolute local project directory to index or re-index it. The CLI also accepts index as an alias for add. Call it when packages does not list the project, or when its source changed. Use background execution when the request may be calibrated remotely.",
     },
     CommandGrammar {
         name: "remove",
