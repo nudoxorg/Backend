@@ -184,7 +184,12 @@ impl LocalEngineClient {
         else {
             unreachable!("root adapter called with a non-root request")
         };
-        let (view, revision) = self.bootstrap_root(true)?;
+        super::trace::mark("root.bootstrap-entered", "worker");
+        let (view, revision) = self.bootstrap_root(true).map_err(|error| {
+            super::trace::mark("root.bootstrap-failed", "proof-or-transport");
+            error
+        })?;
+        super::trace::mark("root.bootstrap-admitted", "exact-attachment");
         if revision.root() != view.root() {
             return Err(EngineFault::Failed(crate::core::ErrorValue::new(
                 FaultCode::Protocol,
