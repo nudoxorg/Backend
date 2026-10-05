@@ -270,7 +270,7 @@ fn assert_refused_without_publication(
 
 #[test]
 fn large_paged_membership_commits_edits_reopens_and_refuses_foreign_or_incomplete_transitions() {
-    const FILE_COUNT: usize = 2043;
+    const FILE_COUNT: usize = 2048;
     let temp = TempWorkspace::new();
     let label = "fixture:membership-pages/main";
     let package = backend_engine::PackageKey::from_value(label);
@@ -278,6 +278,10 @@ fn large_paged_membership_commits_edits_reopens_and_refuses_foreign_or_incomplet
     let foreign_package = backend_engine::PackageKey::from_value(foreign_label);
     let files = file_frontier(FILE_COUNT, package);
     let expected = files.iter().map(|(key, _, _)| *key).collect::<Vec<_>>();
+    assert!(
+        BuiltinPackageRecord::project(label, source_version(&files), expected.clone()).is_err(),
+        "this exact frontier must exceed the actual legacy inline row capacity"
+    );
     let foreign_count = BuiltinPackageRecord::MAX_FRONTIER_FILES.saturating_add(1);
     let foreign_files = file_frontier(foreign_count, foreign_package);
     let foreign_expected = foreign_files
