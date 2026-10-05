@@ -2,6 +2,10 @@
 //! The compiler environment is deliberately closed and empty. This proves
 //! authenticated first send, durable terminal refusal and Retry, not successful
 //! semantic compilation or native window acceptance.
+//! Add occurs while Starting, before any index claim exists. Saved-preflight
+//! publication/recovery lineage is covered by the controlled writer regressions.
+//! The cold assertion reloads desktop persisted state while this service stays
+//! alive; it does not prove a service-journal stop/reopen or native cold restart.
 use super::*;
 use crate::model::{IndexOperationClaim, ProjectPhase};
 use crate::navigation::Intent;
@@ -88,6 +92,7 @@ fn wait_for_terminal(
 
 fn assert_actual_receipt(session: &mut Session, claim: &IndexOperationClaim) -> TestResult {
     let observed = session.index_operation_status(claim.key)?;
+    assert_eq!(claim.observation.as_ref(), Some(&observed), "the UI holds the exact terminal receipt returned by the real socket");
     assert!(
         claim.admits_observation(&observed),
         "the socket receipt owns the exact saved package, key and execution digest"
@@ -119,6 +124,7 @@ fn late_launch_snapshot_still_dispatches_a_real_index_and_retry() -> TestResult 
     )?;
     std::fs::write(app.join("index.js"), "export const firstSend = 1;\n")?;
     let project = LocalProjectId::from_path(&app)?;
+    let native = project.native_wire()?;
     let paths = WorkspacePaths::discover(
         Some(host),
         Some(data.clone()),
@@ -182,6 +188,12 @@ fn late_launch_snapshot_still_dispatches_a_real_index_and_retry() -> TestResult 
     });
     let first = wait_for_terminal(&graph, &mut cx, &project, None)?;
     assert_actual_receipt(&mut proof, &first)?;
+    crate::runtime::wait::until("the complete first terminal claim is synchronized before Retry", || {
+        persistence.load().is_ok_and(|state| state.shelf.iter().any(|row|
+            row.local_path == project.as_str() && row.native_path.as_ref() == Some(&native)
+                && row.phase == crate::model::PersistedProjectPhase::Failed
+                && row.operation.as_ref() == Some(&first)))
+    });
     graph.root.read_with(&cx, |root, _| {
         let snapshot = root.snapshot();
         assert_eq!(snapshot.route(), &before.route);
@@ -202,10 +214,9 @@ fn late_launch_snapshot_still_dispatches_a_real_index_and_retry() -> TestResult 
         || {
             persistence.load().is_ok_and(|state| {
                 state.shelf.iter().any(|row| {
-                    row.phase == crate::model::PersistedProjectPhase::Failed
-                        && row.operation.as_ref().is_some_and(|claim| {
-                            claim.key == second.key && claim.has_terminal_observation()
-                        })
+                    row.local_path == project.as_str() && row.native_path.as_ref() == Some(&native)
+                        && row.phase == crate::model::PersistedProjectPhase::Failed
+                        && row.operation.as_ref() == Some(&second)
                 })
             })
         },
@@ -216,23 +227,16 @@ fn late_launch_snapshot_still_dispatches_a_real_index_and_retry() -> TestResult 
     let row = disk
         .shelf
         .iter()
-        .find(|row| {
-            row.operation
-                .as_ref()
-                .is_some_and(|claim| claim.key == second.key)
-        })
+        .find(|row| row.local_path == project.as_str() && row.native_path.as_ref() == Some(&native))
         .ok_or("quit must synchronize the exact retry receipt")?;
     assert_eq!(row.phase, crate::model::PersistedProjectPhase::Failed);
-    assert!(
-        row.operation
-            .as_ref()
-            .is_some_and(IndexOperationClaim::has_terminal_observation)
-    );
+    assert_eq!(row.operation.as_ref(), Some(&second));
     let cold = persistence.cold_workspace(&disk);
-    let restored = cold.projects.iter().find(|row| row.id == project).ok_or("cold local folder")?;
+    let restored = cold.projects.iter().find(|row| row.id == project).ok_or("desktop persisted-state reload folder")?;
     assert_eq!(restored.phase, ProjectPhase::Failed);
     assert_eq!(restored.request, None, "a cold terminal receipt carries no ephemeral transport request");
-    assert_eq!(restored.operation.as_ref().map(|claim| claim.key), Some(second.key));
+    assert_eq!(restored.id.native_wire()?, native);
+    assert_eq!(restored.operation.as_ref(), Some(&second));
     drop(graph);
     drop(cx);
     drop(proof);
