@@ -660,7 +660,8 @@ fn graceful_checkpoint_retains_the_exact_pending_claim_and_commit_never_sends(cx
         let Intent::IndexProject { operation, .. } = &pending.intent else { panic!("index preflight"); };
         operation.clone()
     });
-    let (saved, _) = rig.root.update(cx, |root, cx| root.begin_close(cx)).expect("close checkpoint");
+    let checkpoint = rig.root.update(cx, |root, cx| root.begin_close(cx)).expect("close checkpoint");
+    let saved = checkpoint.saved;
     rig.gate.publish(OwnerState::Starting);
     rig.release();
     let acknowledged = crate::runtime::wait::until_some("exact close checkpoint", || {
@@ -669,9 +670,52 @@ fn graceful_checkpoint_retains_the_exact_pending_claim_and_commit_never_sends(cx
     }).expect("checkpoint synchronized");
     assert!(acknowledged.state.shelf.iter().any(|row| row.operation.as_ref() == Some(&operation)));
     assert_eq!(rig.sent.load(Ordering::SeqCst), 0, "first-send remains frozen after its save acknowledgement");
-    rig.root.update(cx, |root, cx| root.commit_close(cx));
+    let finish = rig.root.update(cx, |root, cx| root.commit_close(cx));
+    rig.release_actor();
+    cx.executor().block_test(finish.wait(cx.executor()));
     cx.run_until_parked();
     assert_eq!(rig.sent.load(Ordering::SeqCst), 0, "commit revokes transport admission");
     assert_eq!(rig.persistence.load().expect("durable checkpoint").shelf[0].operation.as_ref(), Some(&operation));
     rig.finished.set(true);
+}
+
+
+#[gpui::test]
+fn failed_close_checkpoint_freezes_menu_admission_until_cancel(cx: &mut TestAppContext) {
+    let rig = Rig::new(cx);
+    let before = rig.root.read_with(cx, |root, _| root.snapshot());
+    let persistence = rig.root.update(cx, |root, cx| {
+        let persistence = root.persistence.take();
+        assert!(root.begin_close(cx).is_err(), "missing path cannot confirm a close");
+        assert!(root.quitting, "failed checkpoint keeps admission frozen");
+        root.dispatch(Intent::SetDensity(crate::model::DensityPreference::Dense), cx);
+        assert!(Arc::ptr_eq(&root.snapshot(), &before), "global edit cannot mutate behind failure cover");
+        persistence
+    });
+    assert_eq!(rig.sent.load(Ordering::SeqCst), 0);
+    rig.root.update(cx, |root, cx| {
+        root.persistence = persistence;
+        root.cancel_close(cx);
+        assert!(!root.quitting);
+        root.dispatch(Intent::SetDensity(crate::model::DensityPreference::Dense), cx);
+        assert!(!Arc::ptr_eq(&root.snapshot(), &before), "cancel restores editing admission");
+    });
+    rig.release();
+    rig.finish(cx);
+}
+
+#[gpui::test]
+fn close_rejects_an_unmatched_store_capture_before_admitting_durable_state(cx: &mut TestAppContext) {
+    let rig = Rig::new(cx);
+    let snapshot = rig.root.read_with(cx, |root, _| root.snapshot());
+    let unmatched = Arc::new(snapshot.as_ref().clone());
+    rig.store.update(cx, |store, cx| store.admit_snapshot(unmatched, cx));
+    let checkpoint = rig.root.update(cx, |root, cx| root.begin_close(cx));
+    assert!(checkpoint.is_err(), "claims and pages require the same captured snapshot");
+    assert!(rig.root.read_with(cx, |root, _| root.quitting));
+    assert_eq!(rig.sent.load(Ordering::SeqCst), 0);
+    rig.store.update(cx, |store, cx| store.admit_snapshot(snapshot, cx));
+    rig.root.update(cx, |root, cx| root.cancel_close(cx));
+    rig.release();
+    rig.finish(cx);
 }

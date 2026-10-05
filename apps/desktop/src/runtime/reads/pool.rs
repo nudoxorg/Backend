@@ -1010,6 +1010,11 @@ impl ReadPool {
     /// Revoke admission and interrupt readers without joining on the UI thread.
     pub(crate) fn stop(&self) { self.shared.close(); self.shared.wake.close(); }
 
+    pub(crate) fn take_finish(&mut self) -> crate::runtime::worker_finish::WorkerFinish {
+        self.stop();
+        crate::runtime::worker_finish::WorkerFinish::from_workers(std::mem::take(&mut self.workers))
+    }
+
     fn close_and_join(&mut self) {
         self.stop();
         for handle in self.workers.drain(..) {

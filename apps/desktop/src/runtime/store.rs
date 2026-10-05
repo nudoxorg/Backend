@@ -551,10 +551,10 @@ impl DataStore {
         if !paused { self.drain(cx); }
     }
 
-    pub(crate) fn commit_close(&mut self) {
+    pub(crate) fn commit_close(&mut self) -> super::worker_finish::WorkerFinish {
         self.close_committed = true;
         self.close_paused = true;
-        if let Some(pool) = &self.pool { pool.stop(); }
+        self.pool.as_mut().map(ReadPool::take_finish).unwrap_or_default()
     }
 
     pub(crate) fn close_checkpoint(&self) -> Option<PendingSave> {

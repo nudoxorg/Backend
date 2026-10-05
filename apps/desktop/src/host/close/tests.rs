@@ -72,6 +72,7 @@ fn held_native_path(cx: &mut TestAppContext, entry: Entry) {
     assert!(rig.cx.update(|window, _| window.painted_texts().iter().any(|text| text.text.contains("Saving your latest changes"))));
     release(&mut held);
     crate::runtime::wait::until("close checkpoint acknowledged", || {
+        rig.cx.cx.executor().advance_clock(Duration::from_millis(25));
         rig.cx.run_until_parked();
         close.read_with(rig.cx, |close, _| close.phase == Phase::Committed)
     });
@@ -159,6 +160,7 @@ fn last_window_policy_never_requests_quit_before_the_native_close_ack(cx: &mut T
     assert_eq!(rig.cx.cx.platform_quit_requests(), 0);
     release(&mut held);
     crate::runtime::wait::until("last-window policy commits after acknowledgement", || {
+        rig.cx.cx.executor().advance_clock(Duration::from_millis(25));
         rig.cx.run_until_parked();
         close.read_with(rig.cx, |close, _| close.phase == Phase::Committed)
     });
@@ -187,4 +189,53 @@ fn an_old_close_choice_cannot_approve_or_cancel_a_later_attempt(cx: &mut TestApp
     assert_eq!(rig.cx.cx.platform_quit_requests(), 0);
     close.update(rig.cx, |close, cx| close.cancel(cx));
     release(&mut held);
+}
+
+
+#[gpui::test]
+fn unfinished_workers_keep_one_responsive_finish_job_and_cannot_resume_editing(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    let close = closing(&mut rig);
+    let mut held = held_writer(&mut rig);
+    let (release_worker, worker_released) = mpsc::channel();
+    // A real, finite held thread exercises join ownership independently of the
+    // production reader's cancellation implementation, not a fake save ack.
+    let worker = std::thread::spawn(move || { let _ = worker_released.recv_timeout(Duration::from_secs(20)); });
+    close.update(rig.cx, |close, _| {
+        close.extra_finish = Some(crate::runtime::worker_finish::WorkerFinish::from_workers(vec![worker]));
+    });
+    deliver(Entry::NativeQuit, &mut rig);
+    held.entered.recv_timeout(Duration::from_secs(1)).expect("checkpoint entered");
+    release(&mut held);
+    crate::runtime::wait::until("durable checkpoint enters worker finish", || {
+        rig.cx.run_until_parked();
+        close.read_with(rig.cx, |close, _| matches!(close.phase, Phase::Finishing(_)))
+    });
+    rig.cx.cx.executor().advance_clock(Duration::from_secs(6));
+    rig.draw();
+    let attempt = close.read_with(rig.cx, |close, _| match close.phase {
+        Phase::WorkerBlocked(attempt) => attempt, _ => panic!("worker deadline is visible"),
+    });
+    assert!(held.persistence.load().is_ok(), "durable save preceded worker stop");
+    assert_eq!(rig.cx.cx.windows().len(), 1);
+    assert_eq!(rig.cx.cx.platform_quit_requests(), 0);
+    assert_eq!(rig.cx.cx.native_quit_reply(), None);
+    assert!(rig.cx.update(|window, _| window.painted_texts().iter().any(|text| text.text.contains("background request has not stopped"))));
+    rig.cx.simulate_keystrokes("escape");
+    close.update(rig.cx, |close, cx| {
+        assert!(close.join_task.is_some());
+        close.choose(attempt, Choice::WaitAgain, cx);
+        close.choose(attempt, Choice::WaitAgain, cx); // coalesced: one monitor, same join job
+        assert!(close.join_task.is_some());
+        assert!(close.extra_finish.is_none());
+        assert_eq!(close.phase, Phase::Finishing(attempt));
+    });
+    release_worker.send(()).expect("release worker");
+    crate::runtime::wait::until("tracked workers finish before native approval", || {
+        rig.cx.cx.executor().advance_clock(Duration::from_millis(25));
+        rig.cx.run_until_parked();
+        close.read_with(rig.cx, |close, _| close.phase == Phase::Committed)
+    });
+    assert_eq!(rig.cx.cx.native_quit_reply(), Some(true));
+    assert!(close.read_with(rig.cx, |close, _| close.join_task.is_none() && close.joined.is_none()));
 }

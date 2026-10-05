@@ -29,6 +29,8 @@ pub(crate) struct PendingSave {
 }
 
 impl PendingSave {
+    pub(crate) fn captured_root(&self) -> VersionedRoot { self.root }
+
     /// Writes them, and says how long it took.
     pub(crate) fn write(&self, when: &str) -> std::io::Result<usize> {
         let saving = std::time::Instant::now();

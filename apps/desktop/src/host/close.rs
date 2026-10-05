@@ -16,9 +16,9 @@ pub(crate) enum CloseTarget { Window, Application }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Attempt(u64);
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Phase { Open, Saving(Attempt), NeedsDecision(Attempt, String), Committed }
+enum Phase { Open, Saving(Attempt), NeedsDecision(Attempt, String), Finishing(Attempt), WorkerBlocked(Attempt), Committed }
 #[derive(Clone, Copy)]
-enum Choice { ContinueEditing, Retry, CloseWithPreviousState }
+enum Choice { ContinueEditing, Retry, CloseWithPreviousState, WaitAgain }
 
 pub(crate) struct GracefulClose {
     root: WeakEntity<UiRootEntity>,
@@ -31,8 +31,12 @@ pub(crate) struct GracefulClose {
     target: CloseTarget,
     native_pending: bool,
     task: Option<Task<()>>,
+    join_task: Option<Task<()>>,
+    joined: Option<async_channel::Receiver<()>>,
     deadline: Duration,
     approved: Rc<Cell<bool>>,
+    #[cfg(test)]
+    extra_finish: Option<crate::runtime::worker_finish::WorkerFinish>,
 }
 
 impl GracefulClose {
@@ -41,7 +45,8 @@ impl GracefulClose {
         let approval = approved.clone();
         let close = cx.new(|cx| Self { root: graph.root.downgrade(), store: graph.store.downgrade(),
             window: None, focus: cx.focus_handle(), previous_focus: None, phase: Phase::Open, next: 0, target: CloseTarget::Window,
-            native_pending: false, task: None, deadline: Duration::from_secs(5), approved: approval });
+            native_pending: false, task: None, join_task: None, joined: None, deadline: Duration::from_secs(5), approved: approval,
+            #[cfg(test)] extra_finish: None });
         cx.set_quit_mode(gpui::QuitMode::Explicit);
         let quit = close.downgrade();
         cx.on_action(move |_: &super::menus::Quit, cx| {
@@ -89,12 +94,12 @@ impl GracefulClose {
     fn request(&mut self, target: CloseTarget, cx: &mut Context<Self>) {
         if self.phase == Phase::Committed { return; }
         if target == CloseTarget::Application { self.target = target; }
-        if matches!(self.phase, Phase::Saving(_) | Phase::NeedsDecision(_, _)) { return; }
+        if matches!(self.phase, Phase::Saving(_) | Phase::NeedsDecision(_, _) | Phase::Finishing(_) | Phase::WorkerBlocked(_)) { return; }
         self.target = target;
         let Some(next) = self.next.checked_add(1) else { return; };
         self.next = next;
         let attempt = Attempt(next);
-        let Some(root) = self.root.upgrade() else { self.commit(cx); return; };
+        let Some(root) = self.root.upgrade() else { self.finalize(cx); return; };
         let store = self.store.upgrade();
         if let Some(window) = self.window {
             let focus = self.focus.clone();
@@ -106,10 +111,12 @@ impl GracefulClose {
             if self.previous_focus.is_none() { self.previous_focus = previous; }
         }
         let checkpoint = root.update(cx, |root, cx| root.begin_close(cx));
-        let (saved, pages) = match checkpoint {
+        let checkpoint = match checkpoint {
             Ok(checkpoint) => checkpoint,
             Err(error) => { self.phase = Phase::NeedsDecision(attempt, error.message.to_string()); cx.notify(); return; }
         };
+        let crate::runtime::ui_graph::CloseCheckpoint { saved, pages, basis } = checkpoint;
+        debug_assert!(pages.as_ref().is_none_or(|pages| pages.captured_root() == basis));
         self.phase = Phase::Saving(attempt);
         cx.notify();
         let timer = cx.background_executor().timer(self.deadline);
@@ -141,7 +148,7 @@ impl GracefulClose {
                 if close.phase != Phase::Saving(attempt) { return; }
                 close.task = None;
                 match result {
-                    Ok(()) => close.commit(cx),
+                    Ok(()) => close.begin_finish(attempt, cx),
                     Err(error) => { close.phase = Phase::NeedsDecision(attempt, error); cx.notify(); }
                 }
             });
@@ -150,18 +157,22 @@ impl GracefulClose {
     }
 
     fn choose(&mut self, attempt: Attempt, choice: Choice, cx: &mut Context<Self>) {
-        let current = match self.phase { Phase::Saving(current) | Phase::NeedsDecision(current, _) => current, _ => return };
+        let current = match self.phase {
+            Phase::Saving(current) | Phase::NeedsDecision(current, _) | Phase::Finishing(current) | Phase::WorkerBlocked(current) => current,
+            _ => return,
+        };
         if current != attempt { return; }
         match choice {
-            Choice::ContinueEditing => self.cancel(cx),
+            Choice::ContinueEditing if matches!(self.phase, Phase::Saving(_) | Phase::NeedsDecision(_, _)) => self.cancel(cx),
             Choice::Retry if matches!(self.phase, Phase::NeedsDecision(_, _)) => self.retry(cx),
-            Choice::CloseWithPreviousState if matches!(self.phase, Phase::NeedsDecision(_, _)) => self.commit(cx),
+            Choice::CloseWithPreviousState if matches!(self.phase, Phase::NeedsDecision(_, _)) => self.begin_finish(attempt, cx),
+            Choice::WaitAgain if matches!(self.phase, Phase::WorkerBlocked(_)) => self.monitor_finish(attempt, cx),
             _ => {}
         }
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
-        if self.phase == Phase::Committed { return; }
+        if matches!(self.phase, Phase::Committed | Phase::Finishing(_) | Phase::WorkerBlocked(_)) { return; }
         self.task = None;
         self.phase = Phase::Open;
         self.target = CloseTarget::Window;
@@ -183,10 +194,60 @@ impl GracefulClose {
         self.request(target, cx);
     }
 
-    fn commit(&mut self, cx: &mut Context<Self>) {
+    /// The save decision is now irreversible. Transfer only Send join handles;
+    /// window/root Drop cannot synchronously wait for these workers any more.
+    fn begin_finish(&mut self, attempt: Attempt, cx: &mut Context<Self>) {
+        #[allow(unused_mut)]
+        let mut finish = self.root.update(cx, |root, cx| root.commit_close(cx)).unwrap_or_default();
+        #[cfg(test)]
+        if let Some(extra) = self.extra_finish.take() { finish.extend(extra); }
+        if finish.is_empty() { self.finalize(cx); return; }
+        let (sent, received) = async_channel::bounded(1);
+        self.joined = Some(received);
+        let executor = cx.background_executor().clone();
+        self.join_task = Some(cx.background_executor().spawn(async move {
+            finish.wait(executor).await;
+            let _ = sent.try_send(());
+        }));
+        self.monitor_finish(attempt, cx);
+    }
+
+    fn monitor_finish(&mut self, attempt: Attempt, cx: &mut Context<Self>) {
+        let Some(joined) = self.joined.clone() else { return; };
+        self.phase = Phase::Finishing(attempt);
+        cx.notify();
+        let timer = cx.background_executor().timer(self.deadline);
+        self.task = Some(cx.spawn(async move |this, cx| {
+            use std::future::Future as _;
+            let stopped = {
+                let mut joined = std::pin::pin!(joined.recv());
+                let mut timer = std::pin::pin!(timer);
+                std::future::poll_fn(|cx| {
+                    if let std::task::Poll::Ready(result) = joined.as_mut().poll(cx) { return std::task::Poll::Ready(result.is_ok()); }
+                    if timer.as_mut().poll(cx).is_ready() { return std::task::Poll::Ready(false); }
+                    std::task::Poll::Pending
+                }).await
+            };
+            let _ = this.update(cx, |close, cx| {
+                if close.phase != Phase::Finishing(attempt) { return; }
+                close.task = None;
+                if stopped {
+                    close.join_task = None;
+                    close.joined = None;
+                    close.finalize(cx);
+                } else {
+                    // The Send-only join remains tracked by this live window.
+                    // Retry watches that same job; it never creates another.
+                    close.phase = Phase::WorkerBlocked(attempt);
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    fn finalize(&mut self, cx: &mut Context<Self>) {
         self.phase = Phase::Committed;
         self.approved.set(true);
-        let _ = self.root.update(cx, |root, cx| root.commit_close(cx));
         cx.notify();
         if self.target == CloseTarget::Application {
             if std::mem::take(&mut self.native_pending) { cx.reply_to_app_quit(true); }
@@ -218,9 +279,17 @@ impl Render for CloseView {
         let cancel = self.close.downgrade();
         let retry = self.close.downgrade();
         let force = self.close.downgrade();
-        let active = matches!(phase, Phase::Saving(_) | Phase::NeedsDecision(_, _));
-        let attempt = match &phase { Phase::Saving(attempt) | Phase::NeedsDecision(attempt, _) => *attempt, _ => Attempt(0) };
+        let active = matches!(phase, Phase::Saving(_) | Phase::NeedsDecision(_, _) | Phase::Finishing(_) | Phase::WorkerBlocked(_));
+        let can_cancel = matches!(phase, Phase::Saving(_) | Phase::NeedsDecision(_, _));
+        let worker_blocked = matches!(phase, Phase::WorkerBlocked(_));
+        let attempt = match &phase { Phase::Saving(attempt) | Phase::NeedsDecision(attempt, _) | Phase::Finishing(attempt) | Phase::WorkerBlocked(attempt) => *attempt, _ => Attempt(0) };
         let failure = match &phase { Phase::NeedsDecision(_, error) => Some(error.clone()), _ => None };
+        let message = match &phase {
+            Phase::Finishing(_) => "Waiting for background requests to stop…".to_owned(),
+            Phase::WorkerBlocked(_) => "A background request has not stopped. This window remains open. You can try waiting again.".to_owned(),
+            _ => failure.clone().unwrap_or_else(|| "Saving your latest changes…".into()),
+        };
+        let wait = self.close.downgrade();
         div().relative().size_full().child(self.shell.clone()).when(active, |view| view.child(
             div().id("graceful-close").role(gpui::Role::Dialog).aria_label("Save before closing")
                 .focus_trap("graceful-close", &focus)
@@ -229,17 +298,20 @@ impl Render for CloseView {
                 })
                 .absolute().inset_0().occlude().flex().items_center().justify_center()
                 .bg(gpui::rgba(0x17191eee)).child(div().flex().flex_col().gap(px(12.0)).p(px(24.0))
-                    .text_color(gpui::rgb(0xffffff)).child(failure.clone().unwrap_or_else(|| "Saving your latest changes…".into()))
-                    .child(Button::new("close-continue").label("Continue editing").on_click(move |_, _, cx| {
+                    .text_color(gpui::rgb(0xffffff)).child(message)
+                    .when(can_cancel, |view| view.child(Button::new("close-continue").label("Continue editing").on_click(move |_, _, cx| {
                         let _ = cancel.update(cx, |close, cx| close.choose(attempt, Choice::ContinueEditing, cx));
-                    }))
+                    })))
                     .when(failure.is_some(), |view| view
                         .child(Button::new("close-retry").label("Try saving again").on_click(move |_, _, cx| {
                             let _ = retry.update(cx, |close, cx| close.choose(attempt, Choice::Retry, cx));
                         }))
-                        .child(Button::new("close-previous").label("Close with previously saved state").on_click(move |_, _, cx| {
+                        .child(Button::new("close-previous").label("Close without confirming the latest save").on_click(move |_, _, cx| {
                             let _ = force.update(cx, |close, cx| close.choose(attempt, Choice::CloseWithPreviousState, cx));
                         })))
+                    .when(worker_blocked, |view| view.child(Button::new("close-wait-again").label("Try waiting again").on_click(move |_, _, cx| {
+                        let _ = wait.update(cx, |close, cx| close.choose(attempt, Choice::WaitAgain, cx));
+                    })))
                 )
         ))
     }

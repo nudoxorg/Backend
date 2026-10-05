@@ -196,6 +196,13 @@ fn index_preflight_basis(
     Ok(current)
 }
 
+/// One UI-turn capture of the durable claims and exact served reading scope.
+pub(crate) struct CloseCheckpoint {
+    pub(crate) saved: WriteReceiver,
+    pub(crate) pages: Option<super::store::PendingSave>,
+    pub(crate) basis: crate::core::VersionedRoot,
+}
+
 /// The complete UI-thread state owner for one desktop window.
 pub struct UiRootEntity {
     runtime: DesktopRuntime,
@@ -554,21 +561,36 @@ impl UiRootEntity {
     }
 
     /// Freeze admission at one exact UI turn; the checkpoint remains cancellable.
-    pub(crate) fn begin_close(&mut self, cx: &mut Context<Self>) -> Result<(WriteReceiver, Option<super::store::PendingSave>), WriteFailure> {
+    pub(crate) fn begin_close(&mut self, cx: &mut Context<Self>) -> Result<CloseCheckpoint, WriteFailure> {
         self.flush_pending(cx);
         self.drain_engine(cx);
-        self.ensure_persistence_writer(cx)?;
-        let state = overlay_claims(PersistentState::project(&self.snapshot()), self.pending_claims(&self.snapshot()));
-        let (revision, saved) = self.persistence_writer.as_ref().expect("writer admitted").checkpoint(state)?;
-        self.close_revision = Some(revision);
+        // Freeze before any fallible save admission: the decision cover must
+        // never allow global menus or owner replies to mutate behind it.
         self.quitting = true;
         self.index_poll = None;
-        let pages = self.store.as_ref().and_then(|store| store.update(cx, |store, cx| {
-            store.drain(cx);
-            store.set_close_paused(true, cx);
-            store.close_checkpoint()
-        }));
-        Ok((saved, pages))
+        let snapshot = self.snapshot();
+        let pages = if let Some(store) = &self.store {
+            store.update(cx, |store, cx| {
+                store.drain(cx);
+                store.set_close_paused(true, cx);
+                if !Arc::ptr_eq(&store.snapshot(), &snapshot) {
+                    return Err(WriteFailure { message: "The reading scope changed before its final save was captured. Try saving again.".into() });
+                }
+                let pages = store.close_checkpoint();
+                if pages.as_ref().is_some_and(|pages| pages.captured_root() != snapshot.key()) {
+                    return Err(WriteFailure { message: "The final reading snapshot does not belong to this exact saved root. Try saving again.".into() });
+                }
+                Ok(pages)
+            })?
+        } else { None };
+        if self.persistence.is_none() {
+            return Err(WriteFailure { message: "The workspace has not supplied a state file yet. The latest edits could not be confirmed.".into() });
+        }
+        self.ensure_persistence_writer(cx)?;
+        let state = overlay_claims(PersistentState::project(&snapshot), self.pending_claims(&snapshot));
+        let (revision, saved) = self.persistence_writer.as_ref().expect("writer admitted").checkpoint(state)?;
+        self.close_revision = Some(revision);
+        Ok(CloseCheckpoint { saved, pages, basis: snapshot.key() })
     }
 
     pub(crate) fn cancel_close(&mut self, cx: &mut Context<Self>) {
@@ -586,15 +608,16 @@ impl UiRootEntity {
         self.schedule_operation_observation(cx);
     }
 
-    pub(crate) fn commit_close(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn commit_close(&mut self, cx: &mut Context<Self>) -> super::worker_finish::WorkerFinish {
         self.quitting = true;
         self.close_committed = true;
         self.pending.clear();
         self.index_poll = None;
         self.folder_picker_task = None;
-        self.runtime.stop();
-        if let Some(store) = &self.store { store.update(cx, |store, _| store.commit_close()); }
+        let mut finish = self.runtime.take_finish();
+        if let Some(store) = &self.store { finish.extend(store.update(cx, |store, _| store.commit_close())); }
         if let Some(writer) = &self.persistence_writer { let _ = writer.finish(); }
+        finish
     }
 
     fn finish_persistence(&mut self, cx: &mut Context<Self>) -> Option<WriteReceiver> {
