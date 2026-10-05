@@ -740,7 +740,14 @@ impl Rig {
     }
 
     pub(crate) fn keys(&mut self, keys: &str) {
-        self.cx.simulate_keystrokes(keys);
+        for key in keys.split_whitespace() {
+            // Preserve GPUI's simulated IME/character delivery on Down,
+            // then complete the same native gesture on Up. Native controls
+            // commit Click only after that uninterrupted release.
+            self.cx.simulate_keystrokes(key);
+            let keystroke = gpui::Keystroke::parse(key).expect("native test key");
+            self.cx.simulate_event(gpui::KeyUpEvent { keystroke });
+        }
         self.settle();
     }
 
@@ -1285,7 +1292,12 @@ fn library_tab_owns_mounted_native_controls_and_back_restores_the_opened_chip(cx
     }
     let package_id = package_id.expect("Tab reaches the indexed package chip");
     rig.keys("shift-tab");
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some("find-packages"),
+        "the new Add package door is between Add folder and indexed packages");
+    rig.keys("shift-tab");
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some("add-folder"));
+    rig.keys("tab");
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some("find-packages"));
     rig.keys("tab");
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1, Some(package_id.clone()));
     rig.native_press("space");
@@ -1455,7 +1467,7 @@ fn unserved_starting_library_keeps_add_folder_mounted_and_actionable(cx: &mut Te
     assert_eq!(targets.focused().as_deref(), Some("add-folder"));
     assert!(rig.cx.update(|window, _| targets.focused_native_is_live(window)));
     assert!(!rig.cx.did_prompt_for_paths());
-    rig.cx.simulate_keystrokes("enter");
+    rig.native_press("enter");
     rig.draw();
     assert!(rig.cx.did_prompt_for_paths(), "local Add folder still opens while the owner starts");
 }
