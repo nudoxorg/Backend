@@ -485,3 +485,68 @@ fn a_removed_projects_late_terminal_receipt_cannot_retarget_root_context(cx: &mu
         "only a receipt admitted for a current row/request can retarget hydration"
     );
 }
+
+#[gpui::test]
+fn unknown_saved_key_replaces_an_obsolete_queued_check_after_owner_recovery(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    let project = LocalProjectId::new("/fixture/operation-stale-status").expect("project");
+    let gate = OwnerGate::starting();
+    gate.publish(OwnerState::Ready {
+        key: basis(),
+        mode: ServiceMode::Embedded,
+    });
+    let (client, entered, observations, _release) = client();
+    let mut snapshot = active_snapshot(&project);
+    let mut workspace = snapshot.workspace().clone();
+    let mut rows = workspace.projects.to_vec();
+    rows[0].phase = ProjectPhase::Unconfirmed;
+    let claim = rows[0].operation.as_mut().expect("saved claim");
+    claim.observation = Some(backend_library::IndexOperationObservation::Unknown {
+        operation_key: claim.key,
+    });
+    workspace.projects = rows.into();
+    snapshot = snapshot.with_workspace(workspace);
+    let graph = cx.update(|cx| {
+        UiEntityGraph::install_with_owner(
+            cx,
+            DesktopRuntime::new(snapshot, EngineActor::start(client, 4).expect("lanes")),
+            None,
+            None,
+            Some(gate.clone()),
+            None,
+        )
+    });
+    let _release = _release; // release worker before the graph can drop
+    cx.run_until_parked();
+    entered
+        .recv_timeout(Duration::from_secs(1))
+        .expect("hydration held");
+    graph.root.update(cx, |root, cx| {
+        root.index_poll = None;
+        root.schedule_index_check(project.clone(), cx);
+    });
+    gate.publish(OwnerState::Starting);
+    gate.publish(OwnerState::Ready {
+        key: basis(),
+        mode: ServiceMode::Embedded,
+    });
+    graph.store.update(cx, |store, cx| store.owner_ready(cx));
+    graph.root.update(cx, |root, cx| {
+        root.schedule_index_check(project.clone(), cx);
+        assert_eq!(
+            root.pending.len(),
+            1,
+            "new owner replaces the obsolete read"
+        );
+        root.flush_pending(cx);
+    });
+    crate::runtime::wait::until("new attachment receives one fresh status", || {
+        cx.run_until_parked();
+        graph.root.read_with(cx, |root, _| {
+            root.snapshot().workspace().projects[0].phase == ProjectPhase::Ready
+        })
+    });
+    assert_eq!(observations.load(Ordering::SeqCst), 1);
+}

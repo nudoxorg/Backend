@@ -1115,17 +1115,56 @@ impl UiRootEntity {
         self.schedule_flush(cx);
     }
 
-    fn schedule_index_check(&mut self, project: crate::core::LocalProjectId, cx: &mut Context<Self>) {
-        if self.quitting || self.index_preflights.contains_key(&project) { return; }
-        if self.pending.iter().any(|queued| matches!(queued.intent(), Intent::ReconcileIndexProject { project: candidate, .. } if candidate == &project)) { return; }
+    fn schedule_index_check(
+        &mut self,
+        project: crate::core::LocalProjectId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.quitting || self.index_preflights.contains_key(&project) {
+            return;
+        }
         let snapshot = self.snapshot();
-        let Some(row) = snapshot.workspace().projects.iter().find(|row| row.id == project && row.request.is_none()) else { return; };
-        let Some(operation) = row.operation.as_ref().filter(|operation| operation.belongs_to(&project)).cloned() else { return; };
-        let Some(store) = self.store.as_ref() else { return; };
-        let Some(attachment) = store.read(cx).current_owner_attachment() else { return; };
+        let Some(row) = snapshot
+            .workspace()
+            .projects
+            .iter()
+            .find(|row| row.id == project && row.request.is_none())
+        else {
+            return;
+        };
+        let Some(operation) = row
+            .operation
+            .as_ref()
+            .filter(|operation| operation.belongs_to(&project))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let Some(attachment) = store.read(cx).current_owner_attachment() else {
+            return;
+        };
+        // A deferred owner recovery may run before the old queued callback.
+        // Only an exact current packet can suppress its one fresh observation.
+        self.pending.retain(|queued| {
+            !matches!(queued,
+            QueuedIntent::IndexStatus { intent: Intent::ReconcileIndexProject {
+                project: candidate, operation: saved, basis, .. }, attachment: captured }
+            if candidate == &project && (captured != &attachment
+                || !basis.same_authority(snapshot.key()) || saved != &operation))
+        });
+        if self.pending.iter().any(|queued| matches!(queued.intent(), Intent::ReconcileIndexProject { project: candidate, .. } if candidate == &project)) { return; }
         let request = self.runtime.allocate_request();
         self.pending.push(QueuedIntent::IndexStatus {
-            intent: Intent::ReconcileIndexProject { project, operation, basis: snapshot.key(), request }, attachment,
+            intent: Intent::ReconcileIndexProject {
+                project,
+                operation,
+                basis: snapshot.key(),
+                request,
+            },
+            attachment,
         });
         self.schedule_flush(cx);
     }
