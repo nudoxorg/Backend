@@ -331,10 +331,50 @@ mod tests {
     use super::*;
     use crate::model::pages::{Known, OrbitModel, PageValue};
 
+    fn landed_orbit(root: VersionedRoot) -> PageStore {
+        let mut pages = PageStore::default();
+        let generation = pages
+            .begin(&PageKey::Orbit, root)
+            .expect("served read generation admission")
+            .expect("fresh served read");
+        let model = OrbitModel {
+            indexed: Known::Known(Arc::from([])),
+            projects: Known::Known(Arc::from([])),
+            explore: Known::Known(Arc::from([])),
+            tree: Known::Known(Arc::from([])),
+        };
+        assert_eq!(
+            pages.land(&PageKey::Orbit, generation, Ok(PageValue::Orbit(model))),
+            crate::model::pages::Landing::Applied
+        );
+        assert!(
+            !pages.is_seeded(&PageKey::Orbit),
+            "fixture has current read provenance, never cached seed authority"
+        );
+        assert!(
+            pages.inflight(&PageKey::Orbit).is_none(),
+            "served read actually completed"
+        );
+        let resource = pages.orbit();
+        assert!(resource.is_loaded());
+        assert_eq!(
+            resource.value_root(),
+            Some(root),
+            "landing belongs to the exact served root"
+        );
+        pages
+    }
+
     #[test]
     fn a_delayed_old_at_rest_packet_cannot_overwrite_a_new_close_checkpoint() {
-        let directory = crate::host::scratch_base().join(format!("nx-close-fence-{}-{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos()));
+        let directory = crate::host::scratch_base().join(format!(
+            "nx-close-fence-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
         crate::host::private_dir(&directory).expect("fixture");
         let file = SnapshotFile::in_data(&directory);
         let mut keeper = SnapshotKeeper::default();
@@ -342,26 +382,40 @@ mod tests {
         let view = backend_library::view_state_root(&[("fence".into(), "close".into())]);
         let first = VersionedRoot::synthetic(view.clone(), 1);
         let last = VersionedRoot::synthetic(view, 2);
-        let model = Arc::new(OrbitModel { indexed: Known::Known(Arc::from([])), projects: Known::Known(Arc::from([])),
-            explore: Known::Known(Arc::from([])), tree: Known::Known(Arc::from([])) });
         let packet = |root, keeper: &SnapshotKeeper| {
-            let mut pages = PageStore::default();
-            assert!(pages.seed(SeedEntry::Orbit(model.clone()), root));
-            keeper.to_save(&pages, &AppSnapshot::empty(root), true).expect("served packet")
+            let pages = landed_orbit(root);
+            keeper
+                .to_save(&pages, &AppSnapshot::empty(root), true)
+                .expect("served packet")
         };
         let older = packet(first, &keeper);
         let newer = packet(last, &keeper);
         let (release, wait) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            wait.recv_timeout(Duration::from_secs(5)).expect("release delayed worker");
+            wait.recv_timeout(Duration::from_secs(5))
+                .expect("release delayed worker");
             older.write("delayed at rest")
         });
-        assert!(newer.write("close checkpoint").expect("new final packet") > 0);
+        assert!(newer.write_checkpoint().expect("new final packet") > 0);
         let final_bytes = std::fs::read(file.path()).expect("final snapshot");
         release.send(()).expect("release old worker");
-        assert_eq!(worker.join().expect("old worker").expect("obsolete packet skipped"), 0);
-        assert_eq!(std::fs::read(file.path()).expect("still final"), final_bytes);
-        assert!(file.read(&[PageKey::Orbit]).expect("read final snapshot").root.serves(last));
+        assert_eq!(
+            worker
+                .join()
+                .expect("old worker")
+                .expect("obsolete packet skipped"),
+            0
+        );
+        assert_eq!(
+            std::fs::read(file.path()).expect("still final"),
+            final_bytes
+        );
+        assert!(
+            file.read(&[PageKey::Orbit])
+                .expect("read final snapshot")
+                .root
+                .serves(last)
+        );
         std::fs::remove_dir_all(directory).expect("fixture removed");
     }
 
@@ -384,16 +438,7 @@ mod tests {
             1,
         );
         let snapshot = AppSnapshot::empty(root);
-        let mut pages = PageStore::default();
-        assert!(pages.seed(
-            SeedEntry::Orbit(Arc::new(OrbitModel {
-                indexed: Known::Known(Arc::from([])),
-                projects: Known::Known(Arc::from([])),
-                explore: Known::Known(Arc::from([])),
-                tree: Known::Known(Arc::from([])),
-            })),
-            root
-        ));
+        let pages = landed_orbit(root);
         let obsolete = keeper
             .to_save(&pages, &snapshot, true)
             .expect("obsolete packet");
