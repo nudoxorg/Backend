@@ -73,6 +73,138 @@ class SourceContractTests(unittest.TestCase):
         self.assertGreater(capacity["compiler_workspace_total_file_maximum_bytes"], 0)
 
 
+class SnapshotToolchainAdmissionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.extensions = {"javascript": ".js", "typescript": ".ts", "tsx": ".tsx"}
+        self.extension_languages = {
+            extension: "TypeScript" for extension in self.extensions.values()
+        }
+
+    def executable(self, name: str) -> str:
+        path = self.root / name
+        path.write_text("static toolchain admission fixture\n", encoding="utf-8")
+        path.chmod(0o755)
+        return str(path)
+
+    def regular_file(self, name: str) -> str:
+        path = self.root / name
+        path.write_text("static path-kind fixture\n", encoding="utf-8")
+        path.chmod(0o644)
+        return str(path)
+
+    def directory(self, name: str) -> str:
+        path = self.root / name
+        path.mkdir()
+        return str(path)
+
+    def admit(self, selected: dict[str, str], profile: str) -> dict[str, list[str]]:
+        extension = self.extensions[profile]
+        case = runner.ProjectCase(
+            project_id="typescript-fixture",
+            path=self.root,
+            large=False,
+            min_candidates=0,
+            symbols=(
+                {
+                    "profile": profile,
+                    "path": f"src/app{extension}",
+                    "name": "app",
+                },
+            ),
+        )
+        return runner.validate_snapshot_toolchains(
+            selected, [case], self.extension_languages
+        )
+
+    def test_typescript_authority_requires_compiler_and_one_complete_program_route(self) -> None:
+        tsc = self.executable("tsc")
+        report = self.executable("typescript-report")
+        node = self.executable("node")
+        module_root = self.directory("node_modules")
+
+        accepted = (
+            {"NUDOX_TSC": tsc, "NUDOX_TYPESCRIPT_REPORT_PROGRAM": report},
+            {
+                "NUDOX_TSC": tsc,
+                "NUDOX_TYPESCRIPT_NODE": node,
+                "NUDOX_TYPESCRIPT_MODULE_ROOT": module_root,
+            },
+            {
+                "NUDOX_TSC": tsc,
+                "NUDOX_TYPESCRIPT_REPORT_PROGRAM": report,
+                "NUDOX_TYPESCRIPT_NODE": node,
+                "NUDOX_TYPESCRIPT_MODULE_ROOT": module_root,
+            },
+        )
+        for selected in accepted:
+            for profile in self.extensions:
+                with self.subTest(profile=profile, selected=tuple(sorted(selected))):
+                    self.assertEqual(self.admit(selected, profile), {profile: []})
+
+        incomplete = (
+            {"NUDOX_TSC": tsc},
+            {"NUDOX_TYPESCRIPT_REPORT_PROGRAM": report},
+            {"NUDOX_TYPESCRIPT_NODE": node},
+            {"NUDOX_TYPESCRIPT_MODULE_ROOT": module_root},
+            {"NUDOX_TYPESCRIPT_NODE": node, "NUDOX_TYPESCRIPT_MODULE_ROOT": module_root},
+            {"NUDOX_TSC": tsc, "NUDOX_TYPESCRIPT_NODE": node},
+            {"NUDOX_TSC": tsc, "NUDOX_TYPESCRIPT_MODULE_ROOT": module_root},
+        )
+        for selected in incomplete:
+            for profile in self.extensions:
+                with self.subTest(profile=profile, selected=tuple(sorted(selected))):
+                    with self.assertRaises(runner.Blocked):
+                        self.admit(selected, profile)
+
+    def test_selected_typescript_roles_enforce_executable_file_and_directory_kinds(self) -> None:
+        tsc = self.executable("tsc")
+        report = self.executable("typescript-report")
+        node = self.executable("node")
+        module_root = self.directory("node_modules")
+        invalid = (
+            {
+                "NUDOX_TSC": self.regular_file("not-executable"),
+                "NUDOX_TYPESCRIPT_REPORT_PROGRAM": report,
+            },
+            {
+                "NUDOX_TSC": self.directory("tsc-directory"),
+                "NUDOX_TYPESCRIPT_REPORT_PROGRAM": report,
+            },
+            {
+                "NUDOX_TSC": tsc,
+                "NUDOX_TYPESCRIPT_REPORT_PROGRAM": self.regular_file("report-file"),
+            },
+            {
+                "NUDOX_TSC": tsc,
+                "NUDOX_TYPESCRIPT_REPORT_PROGRAM": self.directory("report-directory"),
+            },
+            {
+                "NUDOX_TSC": tsc,
+                "NUDOX_TYPESCRIPT_NODE": self.directory("node-directory"),
+                "NUDOX_TYPESCRIPT_MODULE_ROOT": module_root,
+            },
+            {
+                "NUDOX_TSC": tsc,
+                "NUDOX_TYPESCRIPT_NODE": node,
+                "NUDOX_TYPESCRIPT_MODULE_ROOT": self.regular_file("module-root-file"),
+            },
+            {
+                "NUDOX_TSC": tsc,
+                "NUDOX_TYPESCRIPT_REPORT_PROGRAM": report,
+                "NUDOX_TYPESCRIPT_NODE": node,
+                "NUDOX_TYPESCRIPT_MODULE_ROOT": self.regular_file("unused-invalid-root"),
+            },
+        )
+        for selected in invalid:
+            for profile in self.extensions:
+                with self.subTest(profile=profile, selected=tuple(sorted(selected))):
+                    with self.assertRaises(runner.Blocked):
+                        self.admit(selected, profile)
+
+
 class SelectedProjectFrontierTests(unittest.TestCase):
     def setUp(self) -> None:
         self.capacity = runner.source_capacity_contract(REPOSITORY)

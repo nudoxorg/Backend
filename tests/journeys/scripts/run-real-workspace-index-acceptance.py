@@ -1274,51 +1274,56 @@ def validate_snapshot_toolchains(
     cases: list[ProjectCase],
     extension_languages: dict[str, str],
 ) -> dict[str, list[str]]:
+    def has_admitted_path_kind(role: str) -> bool:
+        raw_path = selected.get(role)
+        if raw_path is None:
+            return False
+        path = Path(raw_path)
+        try:
+            info = path.stat()
+        except OSError:
+            return False
+        if role in PROFILE_DIRECTORY_ROLES:
+            return stat.S_ISDIR(info.st_mode)
+        if role in PROFILE_EXECUTABLE_ROLES:
+            return stat.S_ISREG(info.st_mode) and os.access(path, os.X_OK)
+        return stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)
+
     required_profiles = {symbol["profile"] for case in cases for symbol in case.symbols}
     blocked: dict[str, list[str]] = {}
     for profile in sorted(required_profiles):
         missing: list[str] = []
         for role in PROFILE_REQUIRED_ROLES[profile]:
-            if role not in selected:
-                missing.append(role)
-                continue
-            expected_directory = role in PROFILE_DIRECTORY_ROLES
-            expected_executable = role in PROFILE_EXECUTABLE_ROLES
-            path = Path(selected[role])
-            try:
-                info = path.stat()
-            except OSError:
-                missing.append(role)
-                continue
-            if expected_directory and not stat.S_ISDIR(info.st_mode):
-                missing.append(role)
-            elif expected_executable and not (
-                stat.S_ISREG(info.st_mode) and os.access(path, os.X_OK)
-            ):
-                missing.append(role)
-            elif not expected_directory and not expected_executable and not (
-                stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)
-            ):
+            if not has_admitted_path_kind(role):
                 missing.append(role)
         if profile in {"javascript", "typescript", "tsx"}:
-            direct = selected.get("NUDOX_TSC")
-            report = selected.get("NUDOX_TYPESCRIPT_REPORT_PROGRAM")
-            node = selected.get("NUDOX_TYPESCRIPT_NODE")
-            module_root = selected.get("NUDOX_TYPESCRIPT_MODULE_ROOT")
-            available = any(
-                [
-                    direct is not None and Path(direct).is_file() and os.access(direct, os.X_OK),
-                    report is not None and Path(report).is_file() and os.access(report, os.X_OK),
-                    node is not None
-                    and Path(node).is_file()
-                    and os.access(node, os.X_OK)
-                    and module_root is not None
-                    and Path(module_root).is_dir(),
-                ]
+            # Match LocalCompilerHost::package_authority: the compiler is
+            # mandatory, plus either a direct report program or both Node and
+            # its module root. Every configured role must also keep its path
+            # kind valid, even when the alternate route is complete.
+            typescript_roles = (
+                "NUDOX_TSC",
+                "NUDOX_TYPESCRIPT_REPORT_PROGRAM",
+                "NUDOX_TYPESCRIPT_NODE",
+                "NUDOX_TYPESCRIPT_MODULE_ROOT",
             )
-            if not available:
+            invalid_selected_roles = [
+                role
+                for role in typescript_roles
+                if role in selected and not has_admitted_path_kind(role)
+            ]
+            missing.extend(invalid_selected_roles)
+            compiler_available = has_admitted_path_kind("NUDOX_TSC")
+            report_available = has_admitted_path_kind("NUDOX_TYPESCRIPT_REPORT_PROGRAM")
+            node_route_available = (
+                has_admitted_path_kind("NUDOX_TYPESCRIPT_NODE")
+                and has_admitted_path_kind("NUDOX_TYPESCRIPT_MODULE_ROOT")
+            )
+            if not compiler_available and "NUDOX_TSC" not in missing:
+                missing.append("NUDOX_TSC")
+            if not (report_available or node_route_available):
                 missing.append(
-                    "NUDOX_TSC or NUDOX_TYPESCRIPT_REPORT_PROGRAM or "
+                    "NUDOX_TYPESCRIPT_REPORT_PROGRAM or "
                     "(NUDOX_TYPESCRIPT_NODE and NUDOX_TYPESCRIPT_MODULE_ROOT)"
                 )
         if missing:
