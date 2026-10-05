@@ -25,6 +25,9 @@ impl DataStore {
         if let Some(pool) = &self.pool {
             pool.invalidate_package_outlines(packages);
         }
+        let authority = self.snapshot.key().authority();
+        super::super::indexed_world::invalidate_publication(authority, cx);
+        self.emit(super::StoreEvent::PackagesPublished(authority), cx);
         for key in &changed {
             let before = self.pages.stamp(key);
             self.pages.invalidate_publication(key);

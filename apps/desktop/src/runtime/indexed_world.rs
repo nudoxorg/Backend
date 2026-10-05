@@ -365,7 +365,7 @@ impl Global for Reads {}
 /// Holds an already-started projection future while navigation supersedes it.
 /// Releasing it still returns a successful value to test Memo's discard path.
 pub(crate) struct TestProjectionGate {
-    state: Mutex<(bool, bool)>, // entered, released
+    state: Mutex<(usize, bool)>, // reads entered, released
     release_sender: async_channel::Sender<()>,
     release_receiver: async_channel::Receiver<()>,
 }
@@ -375,7 +375,7 @@ impl Default for TestProjectionGate {
     fn default() -> Self {
         let (release_sender, release_receiver) = async_channel::bounded(1);
         Self {
-            state: Mutex::new((false, false)),
+            state: Mutex::new((0, false)),
             release_sender,
             release_receiver,
         }
@@ -387,7 +387,7 @@ impl TestProjectionGate {
     pub(crate) async fn wait_for_read(&self) -> Result<(), Arc<str>> {
         let already_released = {
             let mut state = self.state.lock().expect("projection gate");
-            state.0 = true;
+            state.0 += 1;
             state.1
         };
         if !already_released {
@@ -400,6 +400,10 @@ impl TestProjectionGate {
     }
 
     pub(crate) fn entered(&self) -> bool {
+        self.reads_entered() > 0
+    }
+
+    pub(crate) fn reads_entered(&self) -> usize {
         self.state.lock().expect("projection gate").0
     }
 
@@ -439,6 +443,15 @@ impl Reads {
 pub(crate) fn read_in_flight(key: &Key, cx: &App) -> bool {
     cx.try_global::<Reads>()
         .is_some_and(|reads| reads.0.is_reading(key))
+}
+
+/// Withdraw every aggregate observation of the newly published package facts
+/// at this authority. In-flight reads keep their bounded slot until exit, and
+/// Memo discards their result before waking the current requester to reread.
+pub(crate) fn invalidate_publication(authority: ProducerAuthority, cx: &App) {
+    if let Some(reads) = cx.try_global::<Reads>() {
+        reads.0.retain_keys(|key| key.authority != authority);
+    }
 }
 
 #[cfg(test)]

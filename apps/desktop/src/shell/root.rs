@@ -804,6 +804,7 @@ impl Shell {
             }
             StoreEvent::Snapshot(Branch::Root) => cx.notify(),
             StoreEvent::Snapshot(_) => {}
+            StoreEvent::PackagesPublished(_) => {}
         }
     }
 

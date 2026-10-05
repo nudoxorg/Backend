@@ -744,6 +744,54 @@ fn mounted_graph_recovers_from_owner_renewal_without_navigation_or_forced_redraw
 }
 
 #[gpui::test]
+fn package_publication_refreshes_a_retained_graph_without_changing_the_place(cx: &mut TestAppContext) {
+    let mut rig = world_rig(cx, Route::World);
+    let before = rig.shell.read_with(rig.cx, |shell, cx|
+        shell.graph_entity(cx).expect("mounted graph").entity_id());
+    let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let published = std::collections::BTreeSet::from([
+        PackageRef::parse(PACKAGE).expect("exact package"),
+    ]);
+    rig.graph.store.update(rig.cx, |store, cx| store.packages_published(&published, cx));
+    // Only publication/Memo/dirty-view effects may wake the graph. No
+    // navigation, synthetic input, explicit draw or settle hides the boundary.
+    rig.cx.run_until_parked();
+    assert_eq!(rig.route(), Route::World);
+    assert!(rig.graph.store.read_with(rig.cx, |store, _|
+        Arc::ptr_eq(&snapshot, &store.snapshot())), "publication preserves route/history/root");
+    let after = rig.shell.read_with(rig.cx, |shell, cx|
+        shell.graph_entity(cx).expect("fresh graph mounts autonomously").entity_id());
+    assert_ne!(after, before, "cached aggregate facts must be withdrawn at publication");
+}
+
+#[gpui::test]
+fn package_publication_discards_an_older_in_flight_graph_before_rereading(cx: &mut TestAppContext) {
+    use crate::runtime::indexed_world::TestProjectionGate;
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    let gate = Arc::new(TestProjectionGate::default());
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture_with_gate(root, Some(gate.clone()), cx));
+    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
+    rig.draw_frame();
+    rig.cx.run_until_parked();
+    assert_eq!(gate.reads_entered(), 1, "first real Memo read is blocked");
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+    let published = std::collections::BTreeSet::from([
+        PackageRef::parse(PACKAGE).expect("exact package"),
+    ]);
+    rig.graph.store.update(rig.cx, |store, cx| store.packages_published(&published, cx));
+    rig.cx.run_until_parked();
+    assert_eq!(gate.reads_entered(), 1, "cancelled work retains its capacity slot until it exits");
+    gate.release();
+    rig.cx.run_until_parked();
+    assert_eq!(gate.reads_entered(), 2, "the pre-publication success is discarded, then facts are reread");
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_some(),
+        "only the fresh read may mount the same visible graph");
+    assert_eq!(rig.route(), Route::World);
+}
+
+#[gpui::test]
 fn stale_graph_row_pointer_and_ax_cannot_take_current_focus_before_redraw(cx: &mut TestAppContext) {
     let (mut rig, gate) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);
     tab_to_graph_control(&mut rig, "Declarations");
