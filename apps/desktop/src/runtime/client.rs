@@ -163,6 +163,14 @@ impl LocalEngineClient {
             Err(error) => Err(self.client_fault(error)),
         }?;
         let (view, cursor) = admitted;
+        if self.subscription.as_ref().is_some_and(|transport| {
+            transport.authenticated_peer().is_none()
+        }) {
+            // A fully checked root can survive an acknowledged release whose
+            // socket was retired. It does not authorize reuse of that socket.
+            self.subscription = None;
+            super::trace::mark("root.bootstrap-retired-stream", "verified-root-preserved");
+        }
         let view = Arc::new(view);
         if let (Some(gate), Some(attachment)) = (&self.gate, attachment) {
             if gate.publish_view(attachment, Arc::clone(&view), cursor)
