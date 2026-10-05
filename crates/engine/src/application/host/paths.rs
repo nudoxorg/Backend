@@ -90,6 +90,26 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         first_existing(role, candidates)
     }
 
+    /// Locates the Node runtime used by request-scoped project TypeScript admission.
+    ///
+    /// Node is a host runtime for a compiler package already selected beneath the exact
+    /// project root; it is not a globally admitted native compiler capability. Keep its
+    /// discovery finite even when the long-running service uses `ExplicitOnly`, so ordinary
+    /// local projects can use their own `node_modules/typescript` without enabling ambient
+    /// `PATH` search or discovering other native compilers.
+    pub(super) fn typescript_node_executable(
+        &self,
+        home: Option<&Path>,
+    ) -> Result<Option<PathBuf>, LocalCompilerHostError> {
+        let variable = LocalHostVariable::NudoxTypeScriptNode;
+        let role = LocalHostPathRole::TypeScriptNode;
+        if let Some(path) = self.optional_absolute_path(variable)? {
+            return self.validate_file(role, variable, path).map(Some);
+        }
+
+        first_existing(role, typescript_node_candidates(home))
+    }
+
     pub(super) fn directory(
         &self,
         variable: LocalHostVariable,
@@ -468,6 +488,137 @@ fn push_candidate(candidates: &mut ArrayVec<PathBuf, PLATFORM_PATH_CAPACITY>, ca
     }
 }
 
+fn typescript_node_candidates(home: Option<&Path>) -> ArrayVec<PathBuf, PLATFORM_PATH_CAPACITY> {
+    let mut candidates = ArrayVec::new();
+    if let Some(home) = home {
+        push_candidate(&mut candidates, home.join(".local/bin/node"));
+        push_candidate(&mut candidates, home.join(".nix-profile/bin/node"));
+        if let Some(user) = home.file_name().filter(|name| single_component(name)) {
+            push_candidate(
+                &mut candidates,
+                Path::new("/etc/profiles/per-user")
+                    .join(user)
+                    .join("bin/node"),
+            );
+        }
+    }
+    push_candidate(&mut candidates, PathBuf::from("/opt/homebrew/bin/node"));
+    push_candidate(&mut candidates, PathBuf::from("/usr/local/bin/node"));
+    push_candidate(
+        &mut candidates,
+        PathBuf::from("/run/current-system/sw/bin/node"),
+    );
+    push_candidate(
+        &mut candidates,
+        PathBuf::from("/nix/var/nix/profiles/default/bin/node"),
+    );
+    push_candidate(&mut candidates, PathBuf::from("/usr/bin/node"));
+    candidates
+}
+
 fn single_component(value: &OsStr) -> bool {
     !value.is_empty() && Path::new(value).components().count() == 1
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    struct TestEnvironment {
+        home: PathBuf,
+        node: Option<PathBuf>,
+    }
+
+    impl LocalHostEnvironment for TestEnvironment {
+        fn value(&self, variable: LocalHostVariable) -> Option<std::ffi::OsString> {
+            match variable {
+                LocalHostVariable::Home => Some(self.home.as_os_str().to_os_string()),
+                LocalHostVariable::NudoxTypeScriptNode => self
+                    .node
+                    .as_ref()
+                    .map(|path| path.as_os_str().to_os_string()),
+                _ => None,
+            }
+        }
+    }
+
+    fn private_test_directory(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "backend-typescript-host-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos(),
+        ));
+        fs::create_dir_all(&path).expect("create private test directory");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+            .expect("make test directory private");
+        path
+    }
+
+    fn executable(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create executable parent");
+        }
+        fs::write(path, b"#!/bin/sh\nexit 0\n").expect("write executable fixture");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .expect("make executable fixture executable");
+    }
+
+    #[test]
+    fn explicit_only_service_finds_node_from_the_finite_user_host_locations() {
+        let root = private_test_directory("node-runtime");
+        let home = root.join("home with spaces");
+        let node = home.join(".local/bin/node");
+        executable(&node);
+
+        let host = LocalCompilerHost::new(
+            TestEnvironment {
+                home: home.clone(),
+                node: None,
+            },
+            LocalHostDiscovery::ExplicitOnly,
+        );
+        assert_eq!(
+            host.typescript_node_executable(Some(&home))
+                .expect("finite node admission")
+                .as_deref(),
+            Some(fs::canonicalize(&node).expect("canonical node").as_path()),
+            "project TypeScript gets a finite Node runtime without enabling ambient PATH discovery",
+        );
+
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn explicit_node_override_precedes_finite_host_locations() {
+        let root = private_test_directory("node-override");
+        let home = root.join("home");
+        let candidate = home.join(".local/bin/node");
+        let explicit = root.join("chosen node");
+        executable(&candidate);
+        executable(&explicit);
+
+        let host = LocalCompilerHost::new(
+            TestEnvironment {
+                home: home.clone(),
+                node: Some(explicit.clone()),
+            },
+            LocalHostDiscovery::ExplicitOnly,
+        );
+        assert_eq!(
+            host.typescript_node_executable(Some(&home))
+                .expect("explicit node admission")
+                .as_deref(),
+            Some(
+                fs::canonicalize(&explicit)
+                    .expect("canonical explicit node")
+                    .as_path()
+            ),
+        );
+
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
 }

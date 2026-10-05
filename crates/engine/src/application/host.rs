@@ -212,7 +212,8 @@ impl LocalHostEnvironment for WorkspaceCompilerEnvironment {
 /// Whether host admission may inspect its finite documented platform locations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LocalHostDiscovery {
-    /// Only explicitly supplied typed environment paths participate.
+    /// Only explicitly supplied typed environment paths participate, except that project-scoped
+    /// TypeScript admission may use the finite Node host-runtime table.
     ExplicitOnly,
     /// Explicit paths take precedence, followed by the finite platform table.
     PlatformDefaults,
@@ -531,7 +532,9 @@ impl LocalCompilerHost<ProcessHostEnvironment> {
 
 impl LocalCompilerHost<WorkspaceCompilerEnvironment> {
     /// Production compiler ownership with an explicit workspace-owned durable
-    /// root and explicitly configured native authorities.
+    /// root and explicitly configured native authorities. Project-scoped TypeScript is the narrow
+    /// exception: it may use a Node host runtime from the finite platform table so its
+    /// package-owned compiler can be admitted without ambient PATH search.
     ///
     /// A long-running service must bind its listener independently of ambient
     /// developer toolchains. Missing authority variables therefore enter the

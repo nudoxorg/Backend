@@ -82,11 +82,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalHostPathRole::TypeScriptReportProgram,
             ArrayVec::new(),
         )?;
-        let node = self.executable(
-            LocalHostVariable::NudoxTypeScriptNode,
-            LocalHostPathRole::TypeScriptNode,
-            self.auxiliary_candidates(home, "node"),
-        )?;
+        let node = self.typescript_node_executable(home)?;
         let typescript_module_root =
             self.typescript_module_root(executables.typescript.as_deref())?;
         let typescript_project_host = TypeScriptProjectHost::new(
