@@ -488,8 +488,10 @@ impl LocalSubscriptionTransport {
     }
 
     /// Releases a one-shot bootstrap lease on its last correlated socket. An
-    /// exact acknowledgement restores normal timeouts and leaves the
-    /// transport usable; any ambiguous exchange retires the exact socket.
+    /// exact acknowledgement permits the verified root to be returned.
+    /// The socket is reusable only if restoring normal timeouts succeeds;
+    /// otherwise it is retired and future requests must authenticate anew.
+    /// Any ambiguous exchange still fails and retires the exact socket.
     fn release_bootstrap_lease_current(
         &mut self,
         lease: LocalSubscriptionId,
