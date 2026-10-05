@@ -39,6 +39,138 @@ export def ci-step [lane: string, name: string, body: closure]: nothing -> bool 
     $passed
 }
 
+# Whether this is a CI run: the scheduler exports CI_HEAD_SHA for every
+# lane. The helpers below change the machine they run on, so they act only
+# inside CI's throwaway task containers.
+def in-ci []: nothing -> bool {
+    ($env.CI_HEAD_SHA? | default "") | is-not-empty
+}
+
+# Process tests start children with PATH=/usr/bin:/bin and absolute
+# /bin/true, /bin/sleep, /usr/bin/python3 and the like, as a Mac or an
+# ordinary Linux machine provides them. The CI task image (nixos/nix) has
+# only /bin/sh and /usr/bin/env, so those children could not start
+# (Terminal(Exit), Process(Io), "grandchild PID was not published").
+# Link the dev shell's coreutils and python3 into /bin and /usr/bin. Nix's
+# coreutils dispatches on the name it is run by, and each link keeps the
+# tool's own name. Never replaces an existing file, and does nothing on a
+# machine that already has /bin/true.
+export def provide-fhs-tools []: nothing -> nothing {
+    if not (in-ci) or ("/bin/true" | path exists) { return }
+    let sleep = which --all sleep | where type == "external" | get --optional 0.path
+    if $sleep == null { return }
+    let tools = ls ($sleep | path dirname) | get name
+    for dir in ["/bin" "/usr/bin"] {
+        mkdir $dir
+        for tool in $tools {
+            let link = $dir | path join ($tool | path basename)
+            if not ($link | path exists) { ^ln -s $tool $link }
+        }
+    }
+    let python = (
+        $env.NUDOX_PYTHON?
+        | default (
+            which --all python3
+            | where type == "external"
+            | get --optional 0.path
+            | default ""
+        )
+    )
+    if ($python | is-not-empty) and not ("/usr/bin/python3" | path exists) {
+        ^ln -s $python /usr/bin/python3
+    }
+    print $"ci: linked ($tools | length) coreutils tools and python3 into /bin and /usr/bin"
+}
+
+# Concourse keeps the container of a job's most recent failed build, and a
+# lane's build output (over 100 GB for the Linux lane) with it, until that
+# job's next build finishes. That next build then found too little free disk
+# for the heavy-job lock and failed every lane (2026-10-04, builds 50 and
+# 51). Delete the lane's build output when it ends, pass or fail. A managed
+# cache (NUDOX_BUILD_CACHE_ROOT) is left alone.
+export def reclaim-build-output []: nothing -> nothing {
+    if not (in-ci) { return }
+    let outputs = [
+        ($env.CARGO_TARGET_DIR? | default ".local/target")
+        ".local/zig-cache"
+    ]
+    | append (
+        if ($env.NUDOX_BUILD_CACHE_ROOT? | default "" | is-empty) {
+            [($env.HOME? | default "/root" | path join ".cache" "nudox")]
+        } else { [] }
+    )
+    for output in $outputs {
+        if ($output | path exists) { rm --recursive --force $output }
+    }
+}
+
+# The Linux lane's persistent build cache (NUDOX_BUILD_CACHE_ROOT, set by the
+# scheduler from a Concourse task cache): Cargo's build directories and
+# sccache, kept from one run to the next. Empty when this run has none.
+def build-cache-root []: nothing -> string {
+    $env.NUDOX_BUILD_CACHE_ROOT? | default ""
+}
+
+# restore-mtimes.py's manifest, beside the cache it describes.
+def source-mtimes-manifest [root: string]: nothing -> string {
+    $root | path dirname | path join "source-mtimes.json"
+}
+
+# Bounds the build cache. It grows with every Cargo graph change and is
+# never pruned by Cargo, and the disk is shared with Forgejo, Postgres and
+# the other lanes. Past `max_gib` it is deleted, and the next build is cold.
+export def cap-build-cache [max_gib: int = 80]: nothing -> nothing {
+    let root = build-cache-root
+    if not (in-ci) or ($root | is-empty) or not ($root | path exists) { return }
+    let gib = ^du -s --block-size=1G $root | split row "	" | first | into int
+    if $gib > $max_gib {
+        print $"ci: build cache is ($gib) GiB, over ($max_gib); starting cold"
+        rm --recursive --force $root (source-mtimes-manifest $root)
+    } else {
+        print $"ci: build cache is ($gib) GiB"
+    }
+}
+
+const RESTORE_MTIMES = path self "restore-mtimes.py"
+
+# Prints how much disk this lane's build output and the build cache hold,
+# as a CI-DISK line, before reclaim-build-output deletes the former. The
+# heavy lock's per-lane free-disk requests and the cache cap are sized from
+# these numbers. CI only.
+export def report-build-size []: nothing -> nothing {
+    if not (in-ci) { return }
+    let measured = [
+        {
+            name: "target"
+            path: ($env.CARGO_TARGET_DIR? | default ".local/target")
+        }
+        {
+            name: "cache"
+            path: (build-cache-root)
+        }
+        {
+            name: "home-cache"
+            path: ($env.HOME? | default "/root" | path join ".cache" "nudox")
+        }
+    ]
+    | where {|entry| ($entry.path | is-not-empty) and ($entry.path | path exists) }
+    | each {|entry|
+        let gib = ^du -s --block-size=1G $entry.path | split row "\t" | first | into int
+        $"($entry.name)=($gib)GiB"
+    }
+    print $"CI-DISK lane=linux ($measured | str join ' ')"
+}
+
+# Restores unchanged sources' mtimes from the cache's manifest, so Cargo
+# reuses the cached build output instead of seeing a fresh clone as all new
+# (restore-mtimes.py). Only with a build cache, only in CI.
+export def restore-source-mtimes []: nothing -> nothing {
+    let root = build-cache-root
+    if not (in-ci) or ($root | is-empty) { return }
+    let python = $env.NUDOX_PYTHON? | default "python3"
+    run-external $python $RESTORE_MTIMES (source-mtimes-manifest $root)
+}
+
 # Runs `body` with the temporary directory at plain /tmp. `nix develop` points
 # TMPDIR at a nested directory: a check derivation's sandbox cannot see it
 # ("$env.PWD points to a non-existent directory"), and test socket paths under
@@ -60,10 +192,12 @@ export def emulated-lane [lane: string, platform: string]: nothing -> nothing {
         return
     }
     stop-if-superseded $lane
+    provide-fhs-tools
     let emulated = $EMULATED_RUNNER
     let passed = ci-step $lane $"($platform) platform tests" {||
         with-plain-tmp {|| run-external "nu" "--no-config-file" $emulated $platform }
     }
+    reclaim-build-output
     if not $passed { error make {msg: $"($lane) lane failed"} }
 }
 

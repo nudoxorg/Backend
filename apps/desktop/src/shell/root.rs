@@ -302,9 +302,23 @@ impl Shell {
         })
         .detach();
         let weak = cx.entity().downgrade();
-        let keystrokes = cx.intercept_keystrokes(move |_, _, cx| {
+        let input_window = window.window_handle().window_id();
+        let keystrokes = cx.intercept_keystrokes(move |event, window, cx| {
+            if window.window_handle().window_id() != input_window { return; }
             // Any keystroke is a chord, not a hold: disarm a pending reveal.
-            let _ = weak.update(cx, |shell, _| shell.hold.key_down());
+            // Bound editor actions run before raw capture listeners, so
+            // input intent must retire delayed focus claims here as well.
+            let _ = weak.update(cx, |shell, cx| {
+                shell.hold.key_down();
+                shell.advance_transient_generation();
+                // The key dismissing Add belongs to the covered editor;
+                // every later key is a new input choice, including Tab.
+                if event.keystroke.key == "tab"
+                    || shell.links.snapshot(cx).overlay() != Some(Overlay::AddProject)
+                {
+                    shell.input_left_find_visit(cx);
+                }
+            });
         });
         // Twins: what a hovered declaration lights elsewhere is drawn above the regions.
         let twins = cx.observe_global::<super::side::twin::Lit>(|_, cx| cx.notify());
@@ -898,7 +912,11 @@ impl Shell {
                 let input = self.ask.read(cx).input().clone();
                 Some((Overlay::CommandPalette, input.read(cx).focus_handle(cx)))
             }
-            (Some(overlay @ Overlay::Settings(_)), _, true) => {
+            (Some(overlay @ Overlay::Settings(_)), _, true)
+                if !super::titlebar::menu_open(window, cx) => {
+                // A menu retained above Settings remains the top keyboard
+                // owner. Stealing its focus makes its Escape binding
+                // unreachable while the Shell also steps aside for Menu.
                 Some((overlay, self.focus.clone()))
             }
             _ => None,
@@ -1735,16 +1753,6 @@ impl Shell {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        self.advance_transient_generation();
-        // Add's dismissing key is part of the covered editor session. Once
-        // its snapshot has cleared, any new key is a fresh input choice,
-        // including one delivered before the overlay observer arms the
-        // deferred Find-query return. Tab also changes focus inside Add.
-        if event.keystroke.key == "tab"
-            || self.links.snapshot(cx).overlay() != Some(Overlay::AddProject)
-        {
-            self.input_left_find_visit(cx);
-        }
         if self.ask_presentation.blocks_background_input(self.ask_open)
             && self.links.snapshot(cx).overlay() != Some(Overlay::AddProject) {
             // The exit's painted plate still covers the page. The shell's

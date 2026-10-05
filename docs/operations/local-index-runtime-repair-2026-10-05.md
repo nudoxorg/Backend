@@ -194,6 +194,68 @@ facts. The desktop declares its test-support dependency explicitly. These
 fixture changes still require actual test execution; existing unrelated POSIX
 project-binding fixtures are not Windows portability evidence.
 
+## Subsequent execution — 2026-10-05 16:16 UTC
+
+Clean integration `7acee6ffb9b3974e9ef56cc1af58cf671dafb7c6`, tree
+`11bdfdb5677ee3722827b55c67e7a9338f124ede`, passed the full workspace/all-targets
+check at 13:55 UTC. The source and lockfile remained unchanged throughout its
+subsequent execution. Check log SHA-256:
+`f9fedf171bd0029ecc9b977017917a14e044f0c817a30d2639e5eda1f0736291`.
+
+Its entire desktop library suite reports **1,181 passed, 141 failed and ten
+ignored** in 364.61 seconds. The parent observed exit 101 and retained the
+completed result receipt. This improves the older broad result but does not
+establish GUI or release readiness. Add Folder, native focus and activation,
+graph navigation, source history, compact/200% layouts and real package
+compilation still have failures. Completed artifacts:
+`/private/tmp/nudox-gui-transport-integration-tests-7acee6-20261005/`.
+Full desktop log SHA-256:
+`3cde16dc91f16c16af341a9f63a0974045972f23ff08ff665e7e44ec34b1a339`.
+
+The separately selected real embedded-owner Rust reproduction executed and
+failed, rather than merely compiling its test. Its newly exposed cause is
+`semantic image 0 failed its independent full reopen`. This occurs before
+provenance comparison, canonical publication, generation binding and storage.
+The encoder output must pass the existing independent validator; structural
+publication alone cannot clear this semantic acceptance gate. A bounded typed
+cause renderer is being tested separately to expose the exact grammar fault.
+
+The remaining older frozen `cd1e4a189e` lane completed **49 passes and two
+presentation-fixture failures**. These are not added to the 53 indexing passes
+as a count of unique tests. Both presentation failures concern absent request
+bindings; source corrections preserve their authority assertions and await
+execution. The paged-membership selector executed two tests in **583.72
+seconds**. It covers commit/edit/reopen, foreign ownership and corruption on a
+synthetic storage fixture, not real multi-language ingest throughput. Its log
+SHA-256 is `6780ca1269154e5326d835f38ce6f5ff0424c31528d50eabf338d06564257dd7`.
+Completed artifacts:
+`/private/tmp/nudox-index-remaining-runtime-tests-cd1e4a-20261005/`.
+
+The Java25 toolchain gap is now partially resolved: the pinned Nix source's
+JDK25 was substituted without local compilation, and both actual java and
+javac report 25.0.3. A new closed compiler-host snapshot records that pair and
+the complete eleven-case corpus across ten profiles. Snapshot SHA-256:
+`ec8eac1e2941ba9733943466e78b03cdcabd875823b89eefaba4ac965730b96f`.
+Receipt:
+`/private/tmp/nudox-real-corpus-admission-20261005-evidence-v5-java25/receipt.json`.
+This is toolchain/path/corpus admission only. Java owner compilation, accepted
+large-frontier counts, native GUI journeys and restart equivalence remain
+unverified. The user's original Nix configuration edit remains untouched.
+
+Source audits found two further release gaps. Native graceful close must run
+its cancellable durable checkpoint before GPUI's 200ms shutdown budget, and
+must not block the UI on worker joins. The versioned-engine brief requires
+source publication with explicit pending/stale semantic coverage, whereas
+current compilation refusal discards the new source capture. Both are being
+implemented as separate reviewed slices with durable ownership and replay
+contracts. Neither is covered by the execution evidence above.
+
+This is a source checkpoint, not an investor bundle or a Linux runtime pass.
+Matching GUI/locald/CLI/MCP builds, actual public corpus compilation, fresh Add
+and Retry, same-page refresh, graph/header actions, offline operation and true
+cold restart remain mandatory. Fleet compiler admission retains the four-build
+ceiling and does not terminate unrelated work to obtain a slot.
+
 The startup oracle uses real BootClient, persistence and an embedded service
 after a forced launch-snapshot timeout. Its closed compiler set deliberately
 produces a real failed operation to exercise exact receipts and retry. It is

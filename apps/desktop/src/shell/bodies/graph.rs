@@ -255,7 +255,21 @@ impl Map {
                         && map.links.store.read(cx).graph_view_eligibility() == request.selection
                         && map.visible
                     {
-                        map.open_current(request.target, window, cx);
+                        // Focus events publish through the GPUI effect queue.
+                        // The graph can already hold a newer selection while
+                        // the store still names the one this action captured.
+                        // Never resolve the request from that later focus.
+                        match &request.selection {
+                            crate::runtime::graph_focus::GraphViewEligibility::Selected { node, .. }
+                                if map.graph.as_ref().is_some_and(|graph| graph.read(cx).focused() == Some(*node)) => {
+                                map.open(*node, request.target, OpenOrigin::Graph, window, cx);
+                            }
+                            crate::runtime::graph_focus::GraphViewEligibility::Declaration { .. }
+                                if map.graph.as_ref().is_none_or(|graph| graph.read(cx).focused().is_none()) => {
+                                map.open_current(request.target, window, cx);
+                            }
+                            _ => {}
+                        }
                     }
                 },
             )

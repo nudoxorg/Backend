@@ -835,8 +835,20 @@ pub enum PublicationPhase {
 }
 
 /// One concrete cold allocation retaining a native diagnostic after its scratch lease ends.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub struct CompilerDiagnostic(Box<CompilerDiagnosticFacts>);
+
+impl core::fmt::Debug for CompilerDiagnostic {
+    /// Renders the retained diagnostic as text rather than its zero-filled
+    /// fixed buffer, so failure messages stay readable.
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let retained = self.bytes.get(..self.byte_len).unwrap_or_default();
+        formatter
+            .debug_tuple("CompilerDiagnostic")
+            .field(&String::from_utf8_lossy(retained))
+            .finish()
+    }
+}
 
 /// Full admitted native diagnostic facts exposed through [`CompilerDiagnostic`] dereferencing.
 #[derive(Debug, Eq, PartialEq)]

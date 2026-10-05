@@ -1643,7 +1643,7 @@ pub enum PackageSemanticError {
         source: backend_semantic::ir::FragmentError,
     },
     /// Immutable package publication failed.
-    #[error("package semantic publication failed")]
+    #[error("package semantic publication failed: {0}")]
     Publish(#[source] crate::publication::PublishSemanticError),
     /// A canonical compiler output failed preparation before any local publication.
     #[error("package semantic output could not be prepared for transport: {0}")]
@@ -2955,7 +2955,11 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                 binding_output: &mut self.scratch.binding_output,
             },
         )
-        .map_err(PackageSemanticError::StagedOutput)?;
+        .map_err(|error| {
+            // The typed cause is nested well below the user-facing words.
+            eprintln!("nudox: semantic output preparation failed: {error:?}");
+            PackageSemanticError::StagedOutput(error)
+        })?;
         drop(compiled);
 
         let required_claims = count
@@ -3567,6 +3571,20 @@ fn package_authority_terminal(
         }
         cause => {
             let (phase, class) = package_authority_projection(&cause);
+            // Keep the concrete cause chain instead of an empty diagnostic, so
+            // a checker that ran but failed (or never ran) explains itself.
+            let mut message = cause.to_string();
+            let mut next = std::error::Error::source(&cause);
+            while let Some(inner) = next {
+                message.push_str(": ");
+                message.push_str(&inner.to_string());
+                next = inner.source();
+            }
+            let diagnostic = backend_library::interface::CompilerDiagnostic::from_native(
+                message.as_bytes(),
+                message.len(),
+                false,
+            );
             compiler_attempt_terminal(
                 request,
                 source,
@@ -3574,7 +3592,7 @@ fn package_authority_terminal(
                 CompilerCause::Authority {
                     phase,
                     class,
-                    diagnostic: None,
+                    diagnostic,
                 },
             )
         }

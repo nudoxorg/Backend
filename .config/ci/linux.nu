@@ -145,6 +145,9 @@ def main [
     # The flake closes over ~1,100 pinned corpus archives; the default 1,024
     # soft descriptor limit is exhausted before any check fails.
     ulimit --file-descriptor-count --soft 65536
+    provide-fhs-tools
+    cap-build-cache
+    restore-source-mtimes
 
     let flake = if $skip_flake_check {
         true
@@ -167,7 +170,14 @@ def main [
     # The owner's Rust authority also needs a Cargo home, which the dev shell
     # cannot name because it is per-user.
     let cargo_home = $env.CARGO_HOME? | default ($env.HOME? | default "" | path join ".cargo")
-    let test_env = {BACKEND_PROCESS_ARTIFACT_POLICY: "private-debug"}
+    #
+    # No debug info for the test build. Each of the workspace's few hundred
+    # test executables statically links its dependencies, so with the
+    # profile's `debug = 1` one run wrote ~200 GB and filled ilo's 468 GB
+    # disk (2026-10-05, build 54). Panics still name their file and line
+    # (Rust embeds that apart from debug info); only RUST_BACKTRACE frames
+    # lose line numbers. It also shortens every link.
+    let test_env = {BACKEND_PROCESS_ARTIFACT_POLICY: "private-debug", CARGO_PROFILE_DEV_DEBUG: "0", CARGO_PROFILE_TEST_DEBUG: "0"}
     | merge (
         if ($cargo_home | path exists) { {NUDOX_CARGO_HOME: $cargo_home} } else { {} }
     )
@@ -182,6 +192,8 @@ def main [
     })
     if not $tests { print-captured-failures }
 
+    report-build-size
+    reclaim-build-output
     if not ($flake and $tests) {
         error make {msg: "linux lane failed"}
     }
