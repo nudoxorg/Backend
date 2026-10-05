@@ -29,9 +29,7 @@ pub(crate) use call_join::{
     join_project_field, join_project_mention, join_project_value, project_paths_for_package,
 };
 #[cfg(test)]
-pub(crate) use call_join::{
-    foreign_display_name, join_project_call,
-};
+pub(crate) use call_join::{foreign_display_name, join_project_call};
 
 #[cfg(test)]
 pub(crate) use identity::query_semantic_id;
@@ -44,8 +42,7 @@ pub(super) use semantic::{ForeignPublication, rows_for_indexed_sources};
 pub(crate) use structural::{
     structural_call_coordinate_pairs, structural_call_graph_relations,
     structural_call_graph_relations_mapped, structural_call_span, structural_file_span,
-    structural_reference_facts,
-    structural_symbol_identity, view_row_for_structural_coordinate,
+    structural_reference_facts, structural_symbol_identity, view_row_for_structural_coordinate,
 };
 
 #[cfg(test)]

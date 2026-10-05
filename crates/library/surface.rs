@@ -1001,6 +1001,231 @@ impl IndexOperationPublicationReceipt {
     }
 }
 
+/// Coverage of one exact generation carried by a source-capture receipt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "coverage", content = "detail", rename_all = "kebab-case")]
+pub enum IndexOperationSemanticCoverage {
+    /// Every member of the declared semantic scope was covered.
+    Complete,
+    /// A checked portion of the declared scope was covered.
+    Partial {
+        /// Number of units the generation completed.
+        completed: u32,
+        /// Total units in the declared semantic scope.
+        total: u32,
+    },
+}
+
+/// Coherent old generation retained while a new source capture is pending or
+/// failed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexOperationPriorSemantic {
+    /// Exact generation identity.
+    #[serde(with = "hex_32")]
+    pub generation: [u8; 32],
+    /// Coverage written with the same generation.
+    pub coverage: IndexOperationSemanticCoverage,
+}
+
+/// Typed reason a source-captured semantic profile did not publish.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IndexOperationSemanticUnavailableReason {
+    /// The selected compiler or oracle was absent.
+    Toolchain,
+    /// Required project/package authority was absent.
+    ProjectAuthority,
+    /// The refresh was cancelled.
+    Cancelled,
+    /// Source or compiler admission refused the refresh.
+    Rejected,
+}
+
+/// Independent semantic outcome for one captured profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "detail", rename_all = "kebab-case")]
+pub enum IndexOperationSemanticProfileState {
+    /// Semantic work has not reached a terminal result for this capture.
+    Pending {
+        /// Previous coherent generation retained as stale evidence, if any.
+        prior: Option<IndexOperationPriorSemantic>,
+    },
+    /// No coherent semantic generation was selected.
+    Unavailable {
+        /// Typed reason the profile has no selected generation.
+        reason: IndexOperationSemanticUnavailableReason,
+    },
+    /// Refresh failed while preserving the prior generation as stale evidence.
+    Failed {
+        /// Previous coherent generation retained as stale evidence.
+        prior: IndexOperationPriorSemantic,
+        /// Typed reason the refresh failed.
+        reason: IndexOperationSemanticUnavailableReason,
+    },
+    /// A generation was selected for this source capture.
+    Published {
+        /// Exact selected semantic generation.
+        #[serde(with = "hex_32")]
+        generation: [u8; 32],
+        /// Coverage selected with the generation.
+        coverage: IndexOperationSemanticCoverage,
+    },
+}
+
+/// Exact source and compiler-observation facts for one closed profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexOperationSourceProfile {
+    /// Closed compiler profile identity.
+    pub profile: SemanticLanguageProfile,
+    /// Product source frontier compiled for this profile.
+    #[serde(with = "hex_32")]
+    pub source_version: [u8; 32],
+    /// Exact compiler input digest named by the authority observation.
+    #[serde(with = "hex_32")]
+    pub input_digest: [u8; 32],
+    /// Exact durable authority observation sequence.
+    pub observation_sequence: u64,
+    /// Number of files in this profile's source frontier.
+    pub source_count: u64,
+    /// Typed state of the semantic refresh.
+    pub state: IndexOperationSemanticProfileState,
+}
+
+/// Durable receipt for structural source admission, independent of semantic
+/// publication and its later outcome.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexOperationSourceCaptureReceipt {
+    /// Caller-owned operation identity bound into the source workspace intent.
+    pub operation_key: IndexOperationKey,
+    /// Exact selected source-capture commit identity.
+    #[serde(with = "hex_32")]
+    pub commit_identity: [u8; 32],
+    /// Workspace root containing the structural source rows and capture marker.
+    #[serde(with = "hex_32")]
+    pub workspace_root: [u8; 32],
+    /// Workspace sequence that selected the source capture.
+    pub workspace_sequence: u64,
+    /// Closed profiles, sorted by their canonical encoded identity.
+    pub profiles: Box<[IndexOperationSourceProfile]>,
+}
+
+impl IndexOperationSourceCaptureReceipt {
+    /// Admits a source receipt copied from the selected owner root.
+    ///
+    /// # Errors
+    /// Rejects a mismatched key, reserved root identity, invalid sequence,
+    /// empty/oversized profile list, duplicate profile, or malformed state.
+    pub fn from_checked_parts(
+        operation_key: IndexOperationKey,
+        commit_identity: [u8; 32],
+        workspace_root: [u8; 32],
+        workspace_sequence: u64,
+        profiles: Box<[IndexOperationSourceProfile]>,
+    ) -> Result<Self, ProductAdmissionError> {
+        if [commit_identity, workspace_root]
+            .iter()
+            .any(|identity| identity.iter().all(|byte| *byte == 0))
+            || workspace_sequence == 0
+            || profiles.is_empty()
+            || profiles.len() > 16
+            || profiles
+                .windows(2)
+                .any(|window| window[0].profile >= window[1].profile)
+            || profiles.iter().any(|profile| {
+                profile.source_version.iter().all(|byte| *byte == 0)
+                    || profile.input_digest.iter().all(|byte| *byte == 0)
+                    || profile.observation_sequence == 0
+                    || !valid_index_operation_profile_state(profile.state)
+            })
+        {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+        Ok(Self {
+            operation_key,
+            commit_identity,
+            workspace_root,
+            workspace_sequence,
+            profiles,
+        })
+    }
+
+    /// Returns the key bound by this structural root marker.
+    #[must_use]
+    pub const fn operation_key(&self) -> IndexOperationKey {
+        self.operation_key
+    }
+
+    /// Returns the exact checked source-capture commit identity.
+    #[must_use]
+    pub const fn commit_identity(&self) -> &[u8; 32] {
+        &self.commit_identity
+    }
+
+    /// Returns the workspace root containing the structural source rows.
+    #[must_use]
+    pub const fn workspace_root(&self) -> &[u8; 32] {
+        &self.workspace_root
+    }
+
+    /// Returns the sequence that selected the source-capture root.
+    #[must_use]
+    pub const fn workspace_sequence(&self) -> u64 {
+        self.workspace_sequence
+    }
+
+    /// Returns the exact per-profile capture and semantic states.
+    #[must_use]
+    pub fn profiles(&self) -> &[IndexOperationSourceProfile] {
+        &self.profiles
+    }
+
+    fn admit(&self, operation_key: IndexOperationKey) -> Result<(), ProductAdmissionError> {
+        if self.operation_key != operation_key {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+        Self::from_checked_parts(
+            self.operation_key,
+            self.commit_identity,
+            self.workspace_root,
+            self.workspace_sequence,
+            self.profiles.clone(),
+        )
+        .map(|_| ())
+    }
+}
+
+fn valid_index_operation_profile_state(state: IndexOperationSemanticProfileState) -> bool {
+    let valid_prior = |prior: IndexOperationPriorSemantic| {
+        prior.generation.iter().any(|byte| *byte != 0)
+            && match prior.coverage {
+                IndexOperationSemanticCoverage::Complete => true,
+                IndexOperationSemanticCoverage::Partial { completed, total } => {
+                    completed > 0 && total > completed
+                }
+            }
+    };
+    match state {
+        IndexOperationSemanticProfileState::Pending { prior } => prior.is_none_or(valid_prior),
+        IndexOperationSemanticProfileState::Unavailable { .. } => true,
+        IndexOperationSemanticProfileState::Failed { prior, .. } => valid_prior(prior),
+        IndexOperationSemanticProfileState::Published {
+            generation,
+            coverage,
+        } => {
+            generation.iter().any(|byte| *byte != 0)
+                && match coverage {
+                    IndexOperationSemanticCoverage::Complete => true,
+                    IndexOperationSemanticCoverage::Partial { completed, total } => {
+                        completed > 0 && total > completed
+                    }
+                }
+        }
+    }
+}
+
 /// Durable state retained for one caller-owned index operation key.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", content = "detail", rename_all = "kebab-case")]
@@ -1053,6 +1278,9 @@ pub enum IndexOperationUnresolvedReason {
     /// The owner restarted after recording the expected commit but before it
     /// could prove the resulting view publication.
     RestartedDuringPublication,
+    /// Structural source capture committed, but the owner restarted before
+    /// the semantic worker delivered a terminal result.
+    SemanticWorkInterruptedAfterCapture,
     /// The selected workspace is neither the recorded base nor the exact
     /// request identity recorded before commit.
     WorkspaceEvidenceMismatch,
@@ -1077,6 +1305,9 @@ pub struct IndexOperationStatus {
     pub execution_intent: crate::CompileExecutionIntent,
     /// Current or terminal evidence for this operation.
     pub state: IndexOperationState,
+    /// Structural source receipt with separate per-profile semantic results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_capture: Option<IndexOperationSourceCaptureReceipt>,
 }
 
 impl IndexOperationStatus {
@@ -1095,7 +1326,18 @@ impl IndexOperationStatus {
             package,
             execution_intent,
             state,
+            source_capture: None,
         }
+    }
+
+    /// Adds the exact source capture independently of the operation outcome.
+    #[must_use]
+    pub fn with_source_capture(
+        mut self,
+        source_capture: Option<IndexOperationSourceCaptureReceipt>,
+    ) -> Self {
+        self.source_capture = source_capture;
+        self
     }
 }
 
@@ -1127,6 +1369,30 @@ impl IndexOperationObservation {
             Self::Unknown { .. } => Ok(()),
             Self::OutsideReceiptWindow { .. } => Ok(()),
             Self::Known(status) => {
+                if let Some(source_capture) = &status.source_capture {
+                    source_capture.admit(status.operation_key)?;
+                    let any_pending = source_capture.profiles().iter().any(|profile| {
+                        matches!(
+                            profile.state,
+                            IndexOperationSemanticProfileState::Pending { .. }
+                        )
+                    });
+                    let any_published = source_capture.profiles().iter().any(|profile| {
+                        matches!(
+                            profile.state,
+                            IndexOperationSemanticProfileState::Published { .. }
+                        )
+                    });
+                    match &status.state {
+                        IndexOperationState::Published(_) if any_pending => {
+                            return Err(ProductAdmissionError::IndexOperationShape);
+                        }
+                        IndexOperationState::Failed { .. } if any_pending || any_published => {
+                            return Err(ProductAdmissionError::IndexOperationShape);
+                        }
+                        _ => {}
+                    }
+                }
                 match &status.state {
                     IndexOperationState::Active { ticket, .. }
                         if ticket.package() != &status.package =>
@@ -4273,6 +4539,51 @@ mod tests {
                 cursor,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn operation_status_does_not_treat_source_capture_as_semantic_publication() {
+        let key = IndexOperationKey::from_bytes([0x19; 32]).expect("operation key");
+        let package = PackageReference::parse("/workspace/demo").expect("package");
+        let profile = IndexOperationSourceProfile {
+            profile: SemanticLanguageProfile::from_name("rust").expect("Rust profile"),
+            source_version: [5; 32],
+            input_digest: [6; 32],
+            observation_sequence: 7,
+            source_count: 1,
+            state: IndexOperationSemanticProfileState::Pending { prior: None },
+        };
+        let capture = IndexOperationSourceCaptureReceipt::from_checked_parts(
+            key,
+            [2; 32],
+            [3; 32],
+            8,
+            vec![profile].into_boxed_slice(),
+        )
+        .expect("checked structural receipt");
+        let view = operation_receipt_view();
+        let publication = IndexOperationPublicationReceipt::from_published_view(
+            Some([1; 32]),
+            [2; 32],
+            [3; 32],
+            9,
+            &view,
+            crate::Cursor::for_view_root(&view),
+        )
+        .expect("checked publication receipt");
+        let status = IndexOperationStatus::new(
+            key,
+            package,
+            crate::CompileExecutionIntent::Interactive,
+            IndexOperationState::Published(publication),
+        )
+        .with_source_capture(Some(capture));
+        let reply = SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status));
+        assert_eq!(
+            reply.admit(CommandId::IndexProgress),
+            Err(ProductAdmissionError::IndexOperationShape),
+            "a semantic terminal cannot carry a source profile that is still pending"
         );
     }
 

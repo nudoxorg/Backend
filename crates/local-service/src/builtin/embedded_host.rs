@@ -31,7 +31,9 @@ fn probe_retired_layout(workspace: &std::path::Path) -> Result<RetiredLayoutEvid
         .with_relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| format!("register source relation: {error:?}"))?
         .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| format!("register semantic relation: {error:?}"))?;
+        .map_err(|error| format!("register semantic relation: {error:?}"))?
+        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+        .map_err(|error| format!("register semantic capture relation: {error:?}"))?;
     let owner = WorkspaceOwner::open_with_registry(
         workspace,
         RetiredSourceProbe::new(workspace),
@@ -193,7 +195,9 @@ pub fn write_state_from_another_build(
         .with_relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| format!("register source relation: {error:?}"))?
         .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| format!("register semantic relation: {error:?}"))?;
+        .map_err(|error| format!("register semantic relation: {error:?}"))?
+        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+        .map_err(|error| format!("register semantic capture relation: {error:?}"))?;
     let mut owner = WorkspaceOwner::open_with_registry(
         workspace,
         RetiredFixtureWriter,

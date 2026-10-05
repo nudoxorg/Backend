@@ -719,14 +719,12 @@ fn package_dependency_source_facts_witness(
                 )
             }
         }
-        DependencyFacts::Unknown(reason) => package_dependency_source_witness_v1(
-            source,
-            SourceWitnessState::Unknown(reason),
-        ),
-        DependencyFacts::Unavailable(reason) => package_dependency_source_witness_v1(
-            source,
-            SourceWitnessState::Unavailable(reason),
-        ),
+        DependencyFacts::Unknown(reason) => {
+            package_dependency_source_witness_v1(source, SourceWitnessState::Unknown(reason))
+        }
+        DependencyFacts::Unavailable(reason) => {
+            package_dependency_source_witness_v1(source, SourceWitnessState::Unavailable(reason))
+        }
     }
 }
 
@@ -2506,14 +2504,17 @@ mod tests {
             source_witness_hex(unavailable.digest()),
             "ba21d04b26c0ef39ddb1d061e8ab0b348b644885377487ced6ee2a63d4c45b87"
         );
-        assert_eq!(unavailable.digest(), &legacy_unavailable.source_witnesses()[0]);
+        assert_eq!(
+            unavailable.digest(),
+            &legacy_unavailable.source_witnesses()[0]
+        );
     }
 
     #[test]
     fn borrowed_source_witness_separates_typed_identity_and_state() {
         let spelling = "pkg:cargo/witness-kind@1.0.0";
-        let purl = PackageReference::from_kind(crate::PackageReferenceKind::Purl, spelling)
-            .expect("PURL");
+        let purl =
+            PackageReference::from_kind(crate::PackageReferenceKind::Purl, spelling).expect("PURL");
         let local = PackageReference::from_kind(crate::PackageReferenceKind::Local, spelling)
             .expect("local label that begins with pkg:");
         assert_eq!(purl.as_str(), local.as_str());
@@ -2562,9 +2563,9 @@ mod tests {
         .expect("different authority kind");
         let other_authority_id = PackageGraphSourceKey::new(
             purl_key.coordinate.clone(),
-            PackageGraphSourceAuthority::Registry(
-                RegistryAuthorityId::from_configured_source([0x25; 32]),
-            ),
+            PackageGraphSourceAuthority::Registry(RegistryAuthorityId::from_configured_source(
+                [0x25; 32],
+            )),
         );
         let other_authority_id_witness = CheckedPackageGraphSourceWitness::admit(
             &other_authority_id,
@@ -2589,65 +2590,82 @@ mod tests {
             PackageReference::Purl(crate::PackageCoordinate::ordering_floor()),
             authority,
         );
-        assert!(CheckedPackageGraphSourceWitness::admit(
-            &floor,
-            BorrowedPackageGraphSourceState::KnownEmpty,
-        )
-        .is_err());
-        assert!(CheckedPackageGraphFacts::new(vec![(
-            floor.clone(),
-            DependencyFacts::Known(Vec::<PackageDependencyRecord>::new().into_boxed_slice()),
-        )])
-        .is_err());
+        assert!(
+            CheckedPackageGraphSourceWitness::admit(
+                &floor,
+                BorrowedPackageGraphSourceState::KnownEmpty,
+            )
+            .is_err()
+        );
+        assert!(
+            CheckedPackageGraphFacts::new(vec![(
+                floor.clone(),
+                DependencyFacts::Known(Vec::<PackageDependencyRecord>::new().into_boxed_slice()),
+            )])
+            .is_err()
+        );
 
         let padded_source = PackageGraphSourceKey::new(
             PackageReference::Local(ProductText::from_static(" padded local label ")),
             authority,
         );
-        assert!(CheckedPackageGraphSourceWitness::admit(
-            &padded_source,
-            BorrowedPackageGraphSourceState::KnownEmpty,
-        )
-        .is_err());
-        assert!(CheckedPackageGraphFacts::new(vec![(
-            padded_source,
-            DependencyFacts::Known(Vec::<PackageDependencyRecord>::new().into_boxed_slice()),
-        )])
-        .is_err());
+        assert!(
+            CheckedPackageGraphSourceWitness::admit(
+                &padded_source,
+                BorrowedPackageGraphSourceState::KnownEmpty,
+            )
+            .is_err()
+        );
+        assert!(
+            CheckedPackageGraphFacts::new(vec![(
+                padded_source,
+                DependencyFacts::Known(Vec::<PackageDependencyRecord>::new().into_boxed_slice()),
+            )])
+            .is_err()
+        );
 
         let source = PackageGraphSourceKey::unattributed(source());
         let padded_reason = ProductText::from_static(" padded reason ");
-        assert!(CheckedPackageGraphSourceWitness::admit(
-            &source,
-            BorrowedPackageGraphSourceState::Unknown(&padded_reason),
-        )
-        .is_err());
-        assert!(CheckedPackageGraphSourceWitness::admit(
-            &source,
-            BorrowedPackageGraphSourceState::Unavailable(&padded_reason),
-        )
-        .is_err());
-        assert!(CheckedPackageGraphFacts::new(vec![(
-            source.clone(),
-            DependencyFacts::Unknown(padded_reason.clone()),
-        )])
-        .is_err());
-        assert!(CheckedPackageGraphFacts::new(vec![(
-            source.clone(),
-            DependencyFacts::Unavailable(padded_reason),
-        )])
-        .is_err());
+        assert!(
+            CheckedPackageGraphSourceWitness::admit(
+                &source,
+                BorrowedPackageGraphSourceState::Unknown(&padded_reason),
+            )
+            .is_err()
+        );
+        assert!(
+            CheckedPackageGraphSourceWitness::admit(
+                &source,
+                BorrowedPackageGraphSourceState::Unavailable(&padded_reason),
+            )
+            .is_err()
+        );
+        assert!(
+            CheckedPackageGraphFacts::new(vec![(
+                source.clone(),
+                DependencyFacts::Unknown(padded_reason.clone()),
+            )])
+            .is_err()
+        );
+        assert!(
+            CheckedPackageGraphFacts::new(vec![(
+                source.clone(),
+                DependencyFacts::Unavailable(padded_reason),
+            )])
+            .is_err()
+        );
 
-        assert!(CheckedPackageGraphSourceWitness::admit(
-            &source,
-            BorrowedPackageGraphSourceState::Unknown(&reason),
-        )
-        .is_ok());
-        assert!(CheckedPackageGraphFacts::new(vec![(
-            source,
-            DependencyFacts::Unknown(reason),
-        )])
-        .is_ok());
+        assert!(
+            CheckedPackageGraphSourceWitness::admit(
+                &source,
+                BorrowedPackageGraphSourceState::Unknown(&reason),
+            )
+            .is_ok()
+        );
+        assert!(
+            CheckedPackageGraphFacts::new(vec![(source, DependencyFacts::Unknown(reason),)])
+                .is_ok()
+        );
     }
 
     #[cfg(not(debug_assertions))]
@@ -2668,26 +2686,34 @@ mod tests {
             leaked_text("r".repeat(MAX_PRODUCT_TEXT_BYTES + 1)),
         ];
         for reason in &invalid_reasons {
-            assert!(CheckedPackageGraphSourceWitness::admit(
-                &valid_source,
-                BorrowedPackageGraphSourceState::Unknown(reason),
-            )
-            .is_err());
-            assert!(CheckedPackageGraphSourceWitness::admit(
-                &valid_source,
-                BorrowedPackageGraphSourceState::Unavailable(reason),
-            )
-            .is_err());
-            assert!(CheckedPackageGraphFacts::new(vec![(
-                valid_source.clone(),
-                DependencyFacts::Unknown(reason.clone()),
-            )])
-            .is_err());
-            assert!(CheckedPackageGraphFacts::new(vec![(
-                valid_source.clone(),
-                DependencyFacts::Unavailable(reason.clone()),
-            )])
-            .is_err());
+            assert!(
+                CheckedPackageGraphSourceWitness::admit(
+                    &valid_source,
+                    BorrowedPackageGraphSourceState::Unknown(reason),
+                )
+                .is_err()
+            );
+            assert!(
+                CheckedPackageGraphSourceWitness::admit(
+                    &valid_source,
+                    BorrowedPackageGraphSourceState::Unavailable(reason),
+                )
+                .is_err()
+            );
+            assert!(
+                CheckedPackageGraphFacts::new(vec![(
+                    valid_source.clone(),
+                    DependencyFacts::Unknown(reason.clone()),
+                )])
+                .is_err()
+            );
+            assert!(
+                CheckedPackageGraphFacts::new(vec![(
+                    valid_source.clone(),
+                    DependencyFacts::Unavailable(reason.clone()),
+                )])
+                .is_err()
+            );
         }
 
         let invalid_sources = [
@@ -2696,20 +2722,23 @@ mod tests {
             leaked_text("s".repeat(MAX_PRODUCT_TEXT_BYTES + 1)),
         ];
         for coordinate in invalid_sources {
-            let source = PackageGraphSourceKey::new(
-                PackageReference::Local(coordinate),
-                authority,
+            let source = PackageGraphSourceKey::new(PackageReference::Local(coordinate), authority);
+            assert!(
+                CheckedPackageGraphSourceWitness::admit(
+                    &source,
+                    BorrowedPackageGraphSourceState::KnownEmpty,
+                )
+                .is_err()
             );
-            assert!(CheckedPackageGraphSourceWitness::admit(
-                &source,
-                BorrowedPackageGraphSourceState::KnownEmpty,
-            )
-            .is_err());
-            assert!(CheckedPackageGraphFacts::new(vec![(
-                source,
-                DependencyFacts::Known(Vec::<PackageDependencyRecord>::new().into_boxed_slice()),
-            )])
-            .is_err());
+            assert!(
+                CheckedPackageGraphFacts::new(vec![(
+                    source,
+                    DependencyFacts::Known(
+                        Vec::<PackageDependencyRecord>::new().into_boxed_slice()
+                    ),
+                )])
+                .is_err()
+            );
         }
     }
 

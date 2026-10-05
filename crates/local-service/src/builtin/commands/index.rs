@@ -1,8 +1,9 @@
 use super::super::{
-    BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
+    BuiltinAuthorityVerifier, BuiltinCaptureChange, BuiltinIntent, BuiltinModel, BuiltinModelError,
     BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinValidator,
     BuiltinWorkspaceRelation, ProductSourceRecord, ingest,
 };
+use super::index_operation::IndexOperationJournal;
 use backend_engine::application::{
     CaptureWorkspaceIdentityV2, CapturedFullWorkspaceV2, CompilerBalancingRequest,
     CompilerByteCredits, CompilerCpuCredits, CompilerDemand, CompilerInputAdmissionError,
@@ -575,7 +576,7 @@ pub(super) fn finish_index_scan(
     // read set, so its source/configuration digest cannot authorize reuse.
     // Every live semantic profile rebuilds until the authority can prove its
     // complete input closure.
-    let (semantic_changes, selected, cargo_alias_observations) = {
+    let (semantic_changes, selected, cargo_alias_observations, capture_changes) = {
         let fresh_profiles = scan
             .compiler_sources
             .iter()
@@ -612,7 +613,7 @@ pub(super) fn finish_index_scan(
             &dirty,
         );
         if dirty.is_empty() {
-            (Vec::new(), Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
         } else {
             let sources = ingest::admit_compiler_sources(source_root, fresh, reused)
                 .map_err(BuiltinModelError)?;
@@ -675,15 +676,22 @@ pub(super) fn finish_index_scan(
         },
         cargo_alias_observations,
     )?;
-    let intent = if changes.is_empty() && semantic_changes.is_empty() {
+    let intent = if changes.is_empty() && semantic_changes.is_empty() && capture_changes.is_empty()
+    {
         None
     } else {
-        Some(BuiltinIntent::index_with_semantics(
-            package,
-            &label,
-            changes,
-            semantic_changes,
-        )?)
+        let intent = if capture_changes.is_empty() {
+            BuiltinIntent::index_with_semantics(package, &label, changes, semantic_changes)?
+        } else {
+            BuiltinIntent::index_with_capture(
+                package,
+                &label,
+                changes,
+                semantic_changes,
+                capture_changes,
+            )?
+        };
+        Some(intent)
     };
     Ok(PreparedIndex::Ready(PreparedProductSelection {
         intent,
@@ -1474,15 +1482,29 @@ pub(super) fn finish_deferred_index(
             .into_values()
             .collect(),
     )?;
-    let intent = if job.source_changes.is_empty() && job.semantic_changes.is_empty() {
+    let intent = if job.source_changes.is_empty()
+        && job.semantic_changes.is_empty()
+        && capture_changes.is_empty()
+    {
         None
     } else {
-        Some(BuiltinIntent::index_with_semantics(
-            job.package,
-            &job.label,
-            job.source_changes,
-            job.semantic_changes,
-        )?)
+        let intent = if capture_changes.is_empty() {
+            BuiltinIntent::index_with_semantics(
+                job.package,
+                &job.label,
+                job.source_changes,
+                job.semantic_changes,
+            )?
+        } else {
+            BuiltinIntent::index_with_capture(
+                job.package,
+                &job.label,
+                job.source_changes,
+                job.semantic_changes,
+                capture_changes,
+            )?
+        };
+        Some(intent)
     };
     Ok(PreparedProductSelection {
         intent,
@@ -4682,6 +4704,8 @@ pub(super) fn semantic_versions(
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic version history: {error}")))?;
+    let capture_relation = semantic_capture_relation(&snapshot)
+        .map_err(|error| BuiltinModelError(format!("open semantic capture history: {error}")))?;
     let mut selected = BTreeMap::<(PackageUrl, LanguageProfile), [u8; 32]>::new();
     let mut unavailable = None;
     let mut generations = Vec::new();
@@ -4708,7 +4732,21 @@ pub(super) fn semantic_versions(
                 // The typed refusal is kept for a package with no published
                 // target at all, below.
                 ProductSemanticPublicationRecord::Unavailable(reason) if key.is_selected() => {
-                    unavailable.get_or_insert(*reason);
+                    let capture_outcome = capture_relation
+                        .as_ref()
+                        .map(|relation| relation.lookup(key))
+                        .transpose()
+                        .map_err(|error| {
+                            BuiltinModelError(format!("read semantic capture outcome: {error}"))
+                        })?
+                        .flatten()
+                        .map(|record| record.outcome());
+                    let reason = match capture_outcome {
+                        Some(ProductSemanticCaptureOutcome::Unavailable { reason })
+                        | Some(ProductSemanticCaptureOutcome::Failed { reason, .. }) => reason,
+                        _ => *reason,
+                    };
+                    unavailable.get_or_insert(reason);
                     continue;
                 }
                 ProductSemanticPublicationRecord::Unavailable(_) => continue,

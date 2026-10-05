@@ -15,8 +15,9 @@ use super::{
 };
 use crate::compiler_trust::{TRUSTED_COMPILER_POLICY_FILE_NAME, TrustedCompilerWorkerPolicy};
 use backend_engine::builtin::{
-    PartialSemanticCoverage, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
-    SemanticPublicationClaim, SemanticPublicationCoverage,
+    PartialSemanticCoverage, ProductSemanticCaptureOutcome, ProductSemanticPublicationKey,
+    ProductSemanticPublicationRecord, SemanticPublicationClaim, SemanticPublicationCoverage,
+    semantic_capture_relation,
 };
 use backend_engine::cluster_transport::EndpointId;
 use backend_extension_turso::{
@@ -3516,17 +3517,18 @@ impl SemanticAuthority {
         if journey_trace {
             eprintln!("journey startup phase: reconcile_workspace begin");
         }
-        let relation = daemon
-            .engine()
-            .daemon()
-            .owner()
-            .snapshot()
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let relation = snapshot
             .relation::<BuiltinSemanticRelation>()
             .map_err(|error| {
                 BuiltinModelError(format!("open semantic selection marker: {error}"))
             })?;
+        let capture_relation = semantic_capture_relation(&snapshot).map_err(|error| {
+            BuiltinModelError(format!("open semantic capture markers: {error}"))
+        })?;
         let mut selected_rows =
             BTreeMap::<ProductSemanticPublicationKey, ProductSemanticPublicationRecord>::new();
+        let mut capture_rows = BTreeMap::new();
         let mut generation_rows = BTreeMap::<HistoryKey, ProductSemanticPublicationRecord>::new();
         let mut relation_after = None;
         loop {
@@ -3568,6 +3570,25 @@ impl SemanticAuthority {
                 break;
             };
             relation_after = Some(next);
+        }
+        if let Some(capture_relation) = capture_relation {
+            let mut after = None;
+            loop {
+                let page = capture_relation
+                    .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+                    .map_err(|error| {
+                        BuiltinModelError(format!("page semantic capture markers: {error}"))
+                    })?;
+                for (key, record) in page.entries() {
+                    if key.is_selected() {
+                        capture_rows.insert(key.clone(), *record);
+                    }
+                }
+                let Some(next) = page.next().cloned() else {
+                    break;
+                };
+                after = Some(next);
+            }
         }
 
         // Reopen authority history only to verify exact product references and

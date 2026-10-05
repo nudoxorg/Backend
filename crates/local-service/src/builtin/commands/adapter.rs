@@ -113,12 +113,15 @@ fn index_operation_published_observation(
     operation_key: backend_library::IndexOperationKey,
     receipt: backend_library::IndexOperationPublicationReceipt,
 ) -> backend_library::IndexOperationObservation {
-    backend_library::IndexOperationObservation::Known(backend_library::IndexOperationStatus::new(
-        operation_key,
-        entry.package.clone(),
-        entry.execution_intent,
-        backend_library::IndexOperationState::Published(receipt),
-    ))
+    backend_library::IndexOperationObservation::Known(
+        backend_library::IndexOperationStatus::new(
+            operation_key,
+            entry.package.clone(),
+            entry.execution_intent,
+            backend_library::IndexOperationState::Published(receipt),
+        )
+        .with_source_capture(entry.source_capture.clone()),
+    )
 }
 
 fn index_attempt_retirement_reason(
@@ -678,6 +681,22 @@ impl CommandAdapter {
             }
         }
 
+        let acceptance_head = daemon.engine().daemon().owner().head();
+        if let Err(error) = self.index_operations.bind_source_capture_base(
+            operation_key,
+            *acceptance_head.root().as_bytes(),
+            acceptance_head.sequence(),
+        ) {
+            return self.fail_accepted_index_operation(
+                daemon,
+                operation_key,
+                package,
+                execution_intent,
+                request_id,
+                bounded_index_detail(format!("record accepted workspace base: {error}")),
+            );
+        }
+
         let owner_ticket = match self.issue_index_ticket(package.clone()) {
             Ok(ticket) => ticket,
             Err(error) => {
@@ -743,6 +762,42 @@ impl CommandAdapter {
         request_id: u64,
         detail: backend_library::ProductText,
     ) -> Result<Executed, BuiltinModelError> {
+        if let Ok(Some(JournalEntry::Retained(mut entry))) =
+            self.index_operations.entry(operation_key)
+            && matches!(entry.state, StoredOperationState::Accepted)
+            && let Some(base) = entry.source_capture_base
+            && daemon.engine().daemon().owner().head().sequence() > base.workspace_sequence
+        {
+            let recovered = self
+                .resolve_index_operation(daemon, operation_key, None)
+                .map_err(|error| {
+                    BuiltinModelError(format!("recover source-captured operation: {error}"))
+                })?;
+            if let backend_library::IndexOperationObservation::Known(status) = &recovered
+                && (status.source_capture.is_some()
+                    || matches!(
+                        &status.state,
+                        backend_library::IndexOperationState::Unresolved { .. }
+                    ))
+            {
+                return Self::encode_index_operation(daemon, request_id, recovered, true);
+            }
+            // The root has advanced but the operation marker was not recovered.
+            // Keep an explicit unresolved result instead of falsely claiming
+            // that no structural commit occurred.
+            entry.source_capture = None;
+            return Self::encode_index_operation(
+                daemon,
+                request_id,
+                Self::unresolved_index_operation(
+                    operation_key,
+                    &entry,
+                    backend_library::IndexOperationUnresolvedReason::WorkspaceEvidenceMismatch,
+                    "the workspace advanced before the source-capture receipt could be recovered",
+                ),
+                true,
+            );
+        }
         let observation = if self
             .index_operations
             .failed(
@@ -767,6 +822,8 @@ impl CommandAdapter {
                     ),
                     package,
                     execution_intent,
+                    source_capture: None,
+                    source_capture_base: None,
                     state: StoredOperationState::Accepted,
                 },
                 backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
@@ -841,7 +898,7 @@ impl CommandAdapter {
         let Some(entry) = self.index_operations.entry(operation_key)? else {
             return Ok(backend_library::IndexOperationObservation::Unknown { operation_key });
         };
-        let entry = match entry {
+        let mut entry = match entry {
             JournalEntry::Retained(entry) => entry,
             JournalEntry::OutsideReceiptWindow { request_digest } => {
                 return Ok(
@@ -864,6 +921,124 @@ impl CommandAdapter {
                         .unwrap_or(backend_library::IndexJobStage::Scanning),
                 )
             });
+        if matches!(entry.state, StoredOperationState::Accepted) && active.is_none() {
+            if entry.source_capture.is_none() {
+                if let Some(base) = entry.source_capture_base {
+                    let head = daemon.engine().daemon().owner().head();
+                    if head.sequence() == base.workspace_sequence.saturating_add(1) {
+                        if let Some(receipt) = super::index::source_capture_receipt_for_root(
+                            daemon,
+                            &entry.package,
+                            operation_key,
+                            Some(head.request_identity()),
+                        )
+                        .map_err(|error| IndexOperationJournalError::Corrupt(error.to_string()))?
+                        {
+                            if self
+                                .index_operations
+                                .source_captured(operation_key, receipt.clone())
+                                .is_err()
+                            {
+                                entry.source_capture = Some(receipt);
+                                return Ok(Self::unresolved_index_operation(
+                                    operation_key,
+                                    &entry,
+                                    backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                                    "the exact source-capture root is selected but its separate durable receipt could not be persisted",
+                                ));
+                            }
+                            if let Some(JournalEntry::Retained(recovered)) =
+                                self.index_operations.entry(operation_key)?
+                            {
+                                entry = recovered;
+                            }
+                        }
+                    } else if head.sequence() > base.workspace_sequence.saturating_add(1) {
+                        return Ok(Self::unresolved_index_operation(
+                            operation_key,
+                            &entry,
+                            backend_library::IndexOperationUnresolvedReason::WorkspaceEvidenceMismatch,
+                            "the owner restarted after the recorded base advanced, so the exact source-capture root cannot be identified",
+                        ));
+                    }
+                }
+            }
+            if let Some(original) = entry.source_capture.clone() {
+                let _ = self.refresh_index_operation_source_capture(
+                    daemon,
+                    operation_key,
+                    &entry.package,
+                    &original,
+                );
+                if let Some(JournalEntry::Retained(refreshed)) =
+                    self.index_operations.entry(operation_key)?
+                {
+                    entry = refreshed;
+                }
+                let profiles = entry
+                    .source_capture
+                    .as_ref()
+                    .map(backend_library::IndexOperationSourceCaptureReceipt::profiles)
+                    .unwrap_or_default();
+                let all_terminal = !profiles.is_empty()
+                    && profiles.iter().all(|profile| {
+                        !matches!(
+                            profile.state,
+                            backend_library::IndexOperationSemanticProfileState::Pending { .. }
+                        )
+                    });
+                let any_published = profiles.iter().any(|profile| {
+                    matches!(
+                        profile.state,
+                        backend_library::IndexOperationSemanticProfileState::Published { .. }
+                    )
+                });
+                if all_terminal && !any_published {
+                    let (reason, detail) = index_operation_failure(terminal_outcome);
+                    if self
+                        .index_operations
+                        .failed(operation_key, reason, detail)
+                        .is_ok()
+                    {
+                        return Ok(self
+                            .index_operations
+                            .observation(operation_key, None)?
+                            .expect("failed operation remains in the journal"));
+                    }
+                    return Ok(Self::unresolved_index_operation(
+                        operation_key,
+                        &entry,
+                        backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                        "semantic profiles reached terminal source-capture outcomes but the operation failure could not be persisted",
+                    ));
+                }
+                if any_published {
+                    return Ok(Self::unresolved_index_operation(
+                        operation_key,
+                        &entry,
+                        backend_library::IndexOperationUnresolvedReason::WorkspaceEvidenceMismatch,
+                        "semantic publication is present after restart without its prepared operation receipt",
+                    ));
+                }
+                if profiles.iter().any(|profile| {
+                    matches!(
+                        profile.state,
+                        backend_library::IndexOperationSemanticProfileState::Pending { .. }
+                    )
+                }) {
+                    return Ok(Self::unresolved_index_operation(
+                        operation_key,
+                        &entry,
+                        backend_library::IndexOperationUnresolvedReason::SemanticWorkInterruptedAfterCapture,
+                        "the exact source root is durable, but the owner restarted before recording a semantic worker result",
+                    ));
+                }
+                return Ok(self
+                    .index_operations
+                    .observation(operation_key, None)?
+                    .expect("accepted source-captured operation remains in the journal"));
+            }
+        }
         match entry.state.clone() {
             StoredOperationState::Accepted if active.is_some() => Ok(self
                 .index_operations
@@ -911,6 +1086,19 @@ impl CommandAdapter {
                     (selected_exactly, base_still_selected)
                 };
                 if selected_exactly {
+                    if let Some(source_capture) = entry.source_capture.clone() {
+                        let _ = self.refresh_index_operation_source_capture(
+                            daemon,
+                            operation_key,
+                            &entry.package,
+                            &source_capture,
+                        );
+                        if let Some(JournalEntry::Retained(refreshed)) =
+                            self.index_operations.entry(operation_key)?
+                        {
+                            entry = refreshed;
+                        }
+                    }
                     let receipt = self
                         .current_index_operation_receipt(
                             daemon,
@@ -985,6 +1173,46 @@ impl CommandAdapter {
         }
     }
 
+    fn refresh_index_operation_source_capture(
+        &mut self,
+        daemon: &ProductDaemon,
+        operation_key: backend_library::IndexOperationKey,
+        package: &backend_library::PackageReference,
+        original: &backend_library::IndexOperationSourceCaptureReceipt,
+    ) -> Result<(), IndexOperationJournalError> {
+        let Some(latest) =
+            super::index::source_capture_receipt_for_root(daemon, package, operation_key, None)
+                .map_err(|error| IndexOperationJournalError::Corrupt(error.to_string()))?
+        else {
+            return Ok(());
+        };
+        if original.profiles().len() != latest.profiles().len()
+            || !original
+                .profiles()
+                .iter()
+                .zip(latest.profiles())
+                .all(|(left, right)| {
+                    left.profile == right.profile
+                        && left.source_version == right.source_version
+                        && left.input_digest == right.input_digest
+                        && left.observation_sequence == right.observation_sequence
+                        && left.source_count == right.source_count
+                })
+        {
+            return Err(IndexOperationJournalError::InvalidTransition);
+        }
+        let refreshed = backend_library::IndexOperationSourceCaptureReceipt::from_checked_parts(
+            operation_key,
+            *original.commit_identity(),
+            *original.workspace_root(),
+            original.workspace_sequence(),
+            latest.profiles().to_vec().into_boxed_slice(),
+        )
+        .map_err(|_| IndexOperationJournalError::InvalidTransition)?;
+        self.index_operations
+            .source_capture_updated(operation_key, refreshed)
+    }
+
     fn current_index_operation_receipt(
         &self,
         daemon: &ProductDaemon,
@@ -1045,7 +1273,8 @@ impl CommandAdapter {
                         },
                     ),
                 },
-            ),
+            )
+            .with_source_capture(entry.source_capture.clone()),
         )
     }
 
@@ -1358,6 +1587,17 @@ impl CommandAdapter {
         legacy_reply: Option<Result<Vec<u8>, BuiltinModelError>>,
     ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
         if let Some(operation_key) = indexing.operation_key {
+            if let Ok(Some(JournalEntry::Retained(entry))) =
+                self.index_operations.entry(operation_key)
+                && let Some(source_capture) = entry.source_capture.as_ref()
+            {
+                let _ = self.refresh_index_operation_source_capture(
+                    daemon,
+                    operation_key,
+                    &entry.package,
+                    source_capture,
+                );
+            }
             let _ = self.resolve_index_operation(daemon, operation_key, Some(&outcome));
         }
         let mut ready = Vec::new();
@@ -2112,6 +2352,22 @@ impl CommandAdapter {
         )?;
         self.publish_view(daemon, committed.as_ref())?;
         if let Some(operation_key) = operation_key {
+            if let Ok(Some(JournalEntry::Retained(entry))) =
+                self.index_operations.entry(operation_key)
+                && let Some(source_capture) = entry.source_capture.as_ref()
+            {
+                self.refresh_index_operation_source_capture(
+                    daemon,
+                    operation_key,
+                    &entry.package,
+                    source_capture,
+                )
+                .map_err(|error| {
+                    BuiltinModelError(format!(
+                        "record semantic outcome for source capture: {error}"
+                    ))
+                })?;
+            }
             let receipt = self
                 .current_index_operation_receipt(
                     daemon,
@@ -3844,7 +4100,9 @@ mod tests {
                 .with_relation::<BuiltinWorkspaceRelation>()
                 .expect("workspace relation registry")
                 .with_relation::<BuiltinSemanticRelation>()
-                .expect("semantic relation registry");
+                .expect("semantic relation registry")
+                .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+                .expect("semantic capture relation registry");
             let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
                 &workspace,
                 BuiltinModel,

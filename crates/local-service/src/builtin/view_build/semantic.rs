@@ -20,7 +20,10 @@ use super::{
 use backend_engine::application::{
     DocumentationFragment, DocumentationSession, LocalCompilerClient,
 };
-use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticUnavailableReason};
+use backend_engine::builtin::{
+    ProductSemanticCaptureOutcome, ProductSemanticPublicationRecord, SemanticUnavailableReason,
+    semantic_capture_relation,
+};
 use backend_engine::{Fragment, Row, RowId, ViewRoot, product_source_file_key};
 use backend_semantic::ir::{
     DeclarationIdentity, ExternalId, ExternalTargetIdentity, LinkTarget, SemanticCoreReader as _,
@@ -511,6 +514,8 @@ fn semantic_rows(
         .map_err(|error| {
             BuiltinModelError(format!("open semantic publication relation: {error}"))
         })?;
+    let capture_relation = semantic_capture_relation(snapshot)
+        .map_err(|error| BuiltinModelError(format!("open semantic capture relation: {error}")))?;
     let mut rows = Vec::new();
     let mut complete = BTreeSet::new();
     let mut stale_paths = ProfileStalePaths::new();

@@ -80,9 +80,11 @@ fn v14_view_snapshot_is_refused_by_v15_and_left_unchanged() {
         .expect("seed a complete v14 snapshot frame");
     let before = fs::read(&path).expect("read seeded v14 journal");
 
-    assert!(journal
-        .load_for_workspace(head.root(), &capability)
-        .is_err());
+    assert!(
+        journal
+            .load_for_workspace(head.root(), &capability)
+            .is_err()
+    );
     let refusal = journal
         .written_by_another_build()
         .expect("identify old wire version");

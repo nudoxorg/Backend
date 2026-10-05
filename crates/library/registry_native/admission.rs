@@ -7,8 +7,8 @@ use super::{
     MAX_REGISTRY_NATIVE_METADATA_BYTES, MAX_REGISTRY_NATIVE_ROWS, REGISTRY_NATIVE_METADATA_VERSION,
     RegistryGoSourceFacts, RegistryMavenChecksum, RegistryNativeArtifact,
     RegistryNativeAvailability, RegistryNativeChecksum, RegistryNativeChecksumAlgorithm,
-    RegistryNativeDetails, RegistryNativeEvidenceClaim, RegistryNativeFeature, RegistryNativeMetadata,
-    RegistryNativeObservation, RegistryNativeProvenance,
+    RegistryNativeDetails, RegistryNativeEvidenceClaim, RegistryNativeFeature,
+    RegistryNativeMetadata, RegistryNativeObservation, RegistryNativeProvenance,
 };
 
 impl RegistryNativeMetadata {
@@ -92,8 +92,7 @@ fn validate_details(
                 return Err(ProductAdmissionError::NativeMetadata);
             }
             validate_optional_text(value.rust_version.as_ref())?;
-            if schema_version == 1
-                && (value.published_at.is_some() || value.rust_version.is_some())
+            if schema_version == 1 && (value.published_at.is_some() || value.rust_version.is_some())
             {
                 return Err(ProductAdmissionError::NativeMetadata);
             }

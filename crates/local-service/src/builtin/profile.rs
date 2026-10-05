@@ -18,8 +18,10 @@ use super::{
 #[cfg(test)]
 use backend_engine::builtin::SemanticPublicationClaim;
 use backend_engine::builtin::{
+    ProductSemanticCaptureOutcome, ProductSemanticCaptureRecord, ProductSemanticCaptureRelation,
     ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
-    ProductSemanticPublicationRelation,
+    ProductSemanticPublicationRelation, SemanticPublicationVersion, SemanticSourceCapture,
+    semantic_capture_relation, semantic_capture_root_object,
 };
 use backend_engine::{
     CanonicalRelation, LazyPreparedUpdate, Relation, SemanticCoverageValidator, TransitionWork,
@@ -448,6 +450,7 @@ pub struct BuiltinIntent {
     pub(super) label: String,
     changes: Box<[BuiltinSourceChange]>,
     semantic_changes: Box<[BuiltinSemanticChange]>,
+    capture_changes: Box<[BuiltinCaptureChange]>,
     semantic_selection: Option<BuiltinSemanticSelectionIntent>,
     operation_key: Option<[u8; 32]>,
 }
@@ -462,6 +465,17 @@ pub(super) struct BuiltinSourceChange {
 pub(super) struct BuiltinSemanticChange {
     pub(super) key: ProductSemanticPublicationKey,
     pub(super) after: Option<ProductSemanticPublicationRecord>,
+}
+
+/// Exact before-state and requested capture outcome for one profile marker.
+/// The target workspace root and commit are filled by the model only after it
+/// has derived the immutable source transition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct BuiltinCaptureChange {
+    pub(super) key: ProductSemanticPublicationKey,
+    pub(super) expected: Option<ProductSemanticCaptureRecord>,
+    pub(super) capture: SemanticSourceCapture,
+    pub(super) outcome: ProductSemanticCaptureOutcome,
 }
 
 /// Exact before/after evidence for changing the selected compiler generation.
@@ -489,6 +503,7 @@ pub(super) enum BuiltinIntentOperation {
 impl BuiltinIntent {
     const VERSION: u8 = 4;
     const KEYED_VERSION: u8 = 5;
+    const CAPTURE_VERSION: u8 = 6;
     const ADD: u8 = 1;
     const REMOVE: u8 = 2;
     const INDEX: u8 = 3;
@@ -630,6 +645,26 @@ impl BuiltinIntent {
         )
     }
 
+    pub(super) fn index_with_capture(
+        package: backend_engine::PackageKey,
+        label: impl Into<String>,
+        changes: Vec<BuiltinSourceChange>,
+        semantic_changes: Vec<BuiltinSemanticChange>,
+        capture_changes: Vec<BuiltinCaptureChange>,
+    ) -> Result<Self, BuiltinModelError> {
+        Self::new_with_version(
+            Self::CAPTURE_VERSION,
+            BuiltinIntentOperation::Index,
+            package,
+            label,
+            changes,
+            semantic_changes,
+            None,
+            None,
+            capture_changes,
+        )
+    }
+
     pub(super) fn select_semantic_generation(
         package: backend_engine::PackageKey,
         label: impl Into<String>,
@@ -674,6 +709,7 @@ impl BuiltinIntent {
             semantic_changes,
             semantic_selection,
             None,
+            Vec::new(),
         )
     }
 
@@ -686,14 +722,19 @@ impl BuiltinIntent {
         mut semantic_changes: Vec<BuiltinSemanticChange>,
         semantic_selection: Option<BuiltinSemanticSelectionIntent>,
         operation_key: Option<[u8; 32]>,
+        mut capture_changes: Vec<BuiltinCaptureChange>,
     ) -> Result<Self, BuiltinModelError> {
-        if !matches!(encoding_version, 3 | Self::VERSION | Self::KEYED_VERSION)
-            || (encoding_version < Self::VERSION
-                && (matches!(operation, BuiltinIntentOperation::SelectSemanticGeneration)
-                    || semantic_selection.is_some()))
+        if !matches!(
+            encoding_version,
+            3 | Self::VERSION | Self::KEYED_VERSION | Self::CAPTURE_VERSION
+        ) || (encoding_version < Self::VERSION
+            && (matches!(operation, BuiltinIntentOperation::SelectSemanticGeneration)
+                || semantic_selection.is_some()))
             || (encoding_version == Self::KEYED_VERSION
                 && operation_key.is_none_or(|key| key.iter().all(|byte| *byte == 0)))
-            || (encoding_version != Self::KEYED_VERSION && operation_key.is_some())
+            || (encoding_version != Self::KEYED_VERSION
+                && encoding_version != Self::CAPTURE_VERSION
+                && operation_key.is_some())
         {
             return Err(BuiltinModelError(
                 "unsupported builtin intent encoding version".to_owned(),
@@ -737,7 +778,27 @@ impl BuiltinIntent {
                 })?;
             }
         }
-        if (changes.is_empty() && semantic_changes.is_empty())
+        capture_changes.sort_by(|left, right| left.key.cmp(&right.key));
+        if capture_changes.len() > backend_engine::application::MAX_MANIFEST_ENTRIES
+            || (encoding_version == Self::CAPTURE_VERSION && capture_changes.is_empty())
+            || capture_changes
+                .windows(2)
+                .any(|window| window[0].key >= window[1].key)
+            || capture_changes.iter().any(|change| {
+                !change.key.is_selected()
+                    || change.key.package_key() != package
+                    || change.capture.operation_key().is_some_and(|key| {
+                        key.iter().all(|byte| *byte == 0)
+                            || operation_key.is_some_and(|bound| &bound != key)
+                    })
+            })
+        {
+            return Err(BuiltinModelError(
+                "semantic capture intent is unordered, oversized, or crosses its package boundary"
+                    .to_owned(),
+            ));
+        }
+        if (changes.is_empty() && semantic_changes.is_empty() && capture_changes.is_empty())
             || semantic_changes.len() > backend_engine::application::MAX_MANIFEST_ENTRIES
             || semantic_changes
                 .windows(2)
@@ -770,6 +831,7 @@ impl BuiltinIntent {
             label,
             changes: changes.into_boxed_slice(),
             semantic_changes: semantic_changes.into_boxed_slice(),
+            capture_changes: capture_changes.into_boxed_slice(),
             semantic_selection,
             operation_key,
         })
@@ -781,17 +843,42 @@ impl BuiltinIntent {
         mut self,
         operation_key: backend_library::IndexOperationKey,
     ) -> Result<Self, BuiltinModelError> {
-        self.encoding_version = Self::KEYED_VERSION;
+        if self.encoding_version != Self::CAPTURE_VERSION {
+            self.encoding_version = Self::KEYED_VERSION;
+        }
         self.operation_key = Some(operation_key.to_bytes());
         if self
             .operation_key
             .is_none_or(|key| key.iter().all(|byte| *byte == 0))
+            || self.capture_changes.iter().any(|change| {
+                change
+                    .capture
+                    .operation_key()
+                    .is_some_and(|key| key != &operation_key.to_bytes())
+            })
         {
             return Err(BuiltinModelError(
                 "keyed builtin intent has invalid operation identity".to_owned(),
             ));
         }
         Ok(self)
+    }
+
+    pub(super) fn with_capture_changes(
+        self,
+        capture_changes: Vec<BuiltinCaptureChange>,
+    ) -> Result<Self, BuiltinModelError> {
+        Self::new_with_version(
+            Self::CAPTURE_VERSION,
+            self.operation,
+            self.package,
+            self.label,
+            self.changes.into_vec(),
+            self.semantic_changes.into_vec(),
+            self.semantic_selection,
+            self.operation_key,
+            capture_changes,
+        )
     }
 
     pub(super) fn encode(&self) -> Vec<u8> {
@@ -804,7 +891,8 @@ impl BuiltinIntent {
         bytes.extend_from_slice(match self.encoding_version {
             3 => b"BPI3",
             4 => b"BPI4",
-            _ => b"BPI5",
+            5 => b"BPI5",
+            _ => b"BPI6",
         });
         bytes.push(self.encoding_version);
         bytes.push(match self.operation {
@@ -872,6 +960,25 @@ impl BuiltinIntent {
                     .operation_key
                     .expect("keyed intents are validated at construction"),
             );
+        } else if self.encoding_version == Self::CAPTURE_VERSION {
+            match self.operation_key {
+                Some(key) => {
+                    bytes.push(1);
+                    bytes.extend_from_slice(&key);
+                }
+                None => bytes.push(0),
+            }
+            bytes.extend_from_slice(
+                &u32::try_from(self.capture_changes.len())
+                    .unwrap_or(u32::MAX)
+                    .to_be_bytes(),
+            );
+            for change in &self.capture_changes {
+                encode_semantic_key(&change.key, &mut bytes);
+                encode_optional_capture_record(change.expected.as_ref(), &mut bytes);
+                encode_source_capture(change.capture, &mut bytes);
+                encode_capture_outcome(change.outcome, &mut bytes);
+            }
         }
         bytes
     }
@@ -889,8 +996,9 @@ impl BuiltinIntent {
         let semantic_changes = decoder.semantic_changes()?;
         let semantic_selection = decoder.semantic_selection()?;
         let operation_key = decoder.operation_key()?;
+        let capture_changes = decoder.capture_changes()?;
         decoder.finish()?;
-        Self::new_with_version(
+        let mut intent = Self::new_with_version(
             encoding_version,
             operation,
             package,
@@ -899,7 +1007,14 @@ impl BuiltinIntent {
             semantic_changes,
             semantic_selection,
             operation_key,
-        )
+            capture_changes,
+        )?;
+        if encoding_version != Self::CAPTURE_VERSION && !intent.capture_changes.is_empty() {
+            return Err(BuiltinModelError(
+                "capture markers require the v6 intent encoding".to_owned(),
+            ));
+        }
+        Ok(intent)
     }
 
     pub(super) fn record(&self) -> Result<BuiltinPackageRecord, BuiltinModelError> {
@@ -916,6 +1031,10 @@ impl BuiltinIntent {
 
     pub(super) fn semantic_changes(&self) -> &[BuiltinSemanticChange] {
         &self.semantic_changes
+    }
+
+    pub(super) fn capture_changes(&self) -> &[BuiltinCaptureChange] {
+        &self.capture_changes
     }
 
     fn admit_semantic_selection_against(
@@ -1023,6 +1142,85 @@ fn encode_optional_semantic_record(
     }
 }
 
+fn encode_optional_capture_record(
+    record: Option<&ProductSemanticCaptureRecord>,
+    output: &mut Vec<u8>,
+) {
+    match record {
+        None => output.push(0),
+        Some(record) => {
+            output.push(1);
+            let mut encoded = Vec::new();
+            ProductSemanticCaptureRelation::encode_value(record, &mut encoded);
+            output.extend_from_slice(
+                &u32::try_from(encoded.len())
+                    .unwrap_or(u32::MAX)
+                    .to_be_bytes(),
+            );
+            output.extend_from_slice(&encoded);
+        }
+    }
+}
+
+fn encode_source_capture(capture: SemanticSourceCapture, output: &mut Vec<u8>) {
+    match capture.operation_key() {
+        None => output.push(0),
+        Some(key) => {
+            output.push(1);
+            output.extend_from_slice(key);
+        }
+    }
+    output.extend_from_slice(capture.source_version());
+    output.extend_from_slice(capture.input_digest());
+    output.extend_from_slice(&capture.observation_sequence().to_be_bytes());
+    output.extend_from_slice(&capture.source_count().to_be_bytes());
+}
+
+fn encode_capture_outcome(outcome: ProductSemanticCaptureOutcome, output: &mut Vec<u8>) {
+    match outcome {
+        ProductSemanticCaptureOutcome::Pending { prior } => {
+            output.push(1);
+            encode_optional_prior(prior, output);
+        }
+        ProductSemanticCaptureOutcome::Unavailable { reason } => {
+            output.push(2);
+            output.push(reason as u8);
+        }
+        ProductSemanticCaptureOutcome::Failed { prior, reason } => {
+            output.push(3);
+            encode_prior(prior, output);
+            output.push(reason as u8);
+        }
+        ProductSemanticCaptureOutcome::Published { coverage, claim } => {
+            output.push(4);
+            encode_semantic_record(
+                &ProductSemanticPublicationRecord::Published { coverage, claim },
+                output,
+            );
+        }
+    }
+}
+
+fn encode_optional_prior(prior: Option<SemanticPublicationVersion>, output: &mut Vec<u8>) {
+    match prior {
+        None => output.push(0),
+        Some(prior) => {
+            output.push(1);
+            encode_prior(prior, output);
+        }
+    }
+}
+
+fn encode_prior(prior: SemanticPublicationVersion, output: &mut Vec<u8>) {
+    encode_semantic_record(
+        &ProductSemanticPublicationRecord::Published {
+            coverage: prior.coverage(),
+            claim: prior.claim(),
+        },
+        output,
+    );
+}
+
 /// A version-pinned package URL already selects a compiler family. Adding it
 /// without a checked source/project authority records that exact semantic
 /// terminal instead of manufacturing declarations from package metadata.
@@ -1110,7 +1308,7 @@ impl<'a> IntentDecoder<'a> {
         if bytes.len() < 50
             || !matches!(
                 (bytes.get(..4), version),
-                (Some(b"BPI3"), 3) | (Some(b"BPI4"), 4) | (Some(b"BPI5"), 5)
+                (Some(b"BPI3"), 3) | (Some(b"BPI4"), 4) | (Some(b"BPI5"), 5) | (Some(b"BPI6"), 6)
             )
         {
             return Err(BuiltinModelError(
@@ -1275,8 +1473,142 @@ impl<'a> IntentDecoder<'a> {
                 }
                 Ok(Some(key))
             }
+            Some(0) if self.version == BuiltinIntent::CAPTURE_VERSION => Ok(None),
             _ => Err(BuiltinModelError(
                 "malformed index operation key marker".to_owned(),
+            )),
+        }
+    }
+
+    fn capture_changes(&mut self) -> Result<Vec<BuiltinCaptureChange>, BuiltinModelError> {
+        if self.version != BuiltinIntent::CAPTURE_VERSION {
+            return Ok(Vec::new());
+        }
+        let count = self.read_u32()? as usize;
+        if count == 0 || count > backend_engine::application::MAX_MANIFEST_ENTRIES {
+            return Err(BuiltinModelError(
+                "malformed semantic capture change count".to_owned(),
+            ));
+        }
+        (0..count).map(|_| self.capture_change()).collect()
+    }
+
+    fn capture_change(&mut self) -> Result<BuiltinCaptureChange, BuiltinModelError> {
+        let key = self.semantic_key()?;
+        let expected = match self.take(1)?.first().copied() {
+            Some(0) => None,
+            Some(1) => {
+                let length = self.read_u32()? as usize;
+                Some(
+                    ProductSemanticCaptureRelation::decode_value(self.take(length)?).map_err(
+                        |_| BuiltinModelError("malformed semantic capture record".to_owned()),
+                    )?,
+                )
+            }
+            _ => {
+                return Err(BuiltinModelError(
+                    "malformed semantic capture before tag".to_owned(),
+                ));
+            }
+        };
+        let capture = self.source_capture()?;
+        let outcome = self.capture_outcome()?;
+        Ok(BuiltinCaptureChange {
+            key,
+            expected,
+            capture,
+            outcome,
+        })
+    }
+
+    fn source_capture(&mut self) -> Result<SemanticSourceCapture, BuiltinModelError> {
+        let operation_key =
+            match self.take(1)?.first().copied() {
+                Some(0) => None,
+                Some(1) => Some(self.take(32)?.try_into().map_err(|_| {
+                    BuiltinModelError("malformed semantic operation key".to_owned())
+                })?),
+                _ => {
+                    return Err(BuiltinModelError(
+                        "malformed semantic operation key tag".to_owned(),
+                    ));
+                }
+            };
+        let source_version = self
+            .take(32)?
+            .try_into()
+            .map_err(|_| BuiltinModelError("malformed semantic source version".to_owned()))?;
+        let input_digest = self
+            .take(32)?
+            .try_into()
+            .map_err(|_| BuiltinModelError("malformed semantic input digest".to_owned()))?;
+        let observation_sequence = self.read_u64()?;
+        let source_count = self.read_u64()?;
+        SemanticSourceCapture::new(
+            operation_key,
+            source_version,
+            input_digest,
+            observation_sequence,
+            source_count,
+        )
+        .map_err(|error| BuiltinModelError(error.to_owned()))
+    }
+
+    fn capture_outcome(&mut self) -> Result<ProductSemanticCaptureOutcome, BuiltinModelError> {
+        match self.take(1)?.first().copied() {
+            Some(1) => Ok(ProductSemanticCaptureOutcome::Pending {
+                prior: self.optional_prior()?,
+            }),
+            Some(2) => Ok(ProductSemanticCaptureOutcome::Unavailable {
+                reason: self.unavailable_reason()?,
+            }),
+            Some(3) => Ok(ProductSemanticCaptureOutcome::Failed {
+                prior: self.prior()?,
+                reason: self.unavailable_reason()?,
+            }),
+            Some(4) => match self.semantic_record()? {
+                ProductSemanticPublicationRecord::Published { coverage, claim } => {
+                    Ok(ProductSemanticCaptureOutcome::Published { coverage, claim })
+                }
+                ProductSemanticPublicationRecord::Unavailable(_) => Err(BuiltinModelError(
+                    "malformed published semantic capture outcome".to_owned(),
+                )),
+            },
+            _ => Err(BuiltinModelError(
+                "malformed semantic capture outcome".to_owned(),
+            )),
+        }
+    }
+
+    fn optional_prior(&mut self) -> Result<Option<SemanticPublicationVersion>, BuiltinModelError> {
+        match self.take(1)?.first().copied() {
+            Some(0) => Ok(None),
+            Some(1) => self.prior().map(Some),
+            _ => Err(BuiltinModelError("malformed semantic prior tag".to_owned())),
+        }
+    }
+
+    fn prior(&mut self) -> Result<SemanticPublicationVersion, BuiltinModelError> {
+        match self.semantic_record()? {
+            ProductSemanticPublicationRecord::Published { coverage, claim } => {
+                Ok(SemanticPublicationVersion::new(coverage, claim))
+            }
+            ProductSemanticPublicationRecord::Unavailable(_) => Err(BuiltinModelError(
+                "semantic prior does not contain a published generation".to_owned(),
+            )),
+        }
+    }
+
+    fn unavailable_reason(
+        &mut self,
+    ) -> Result<backend_engine::builtin::SemanticUnavailableReason, BuiltinModelError> {
+        match self.take(1)?.first().copied() {
+            Some(1) => Ok(backend_engine::builtin::SemanticUnavailableReason::Toolchain),
+            Some(2) => Ok(backend_engine::builtin::SemanticUnavailableReason::ProjectAuthority),
+            Some(3) => Ok(backend_engine::builtin::SemanticUnavailableReason::Cancelled),
+            Some(4) => Ok(backend_engine::builtin::SemanticUnavailableReason::Rejected),
+            _ => Err(BuiltinModelError(
+                "malformed semantic unavailable reason".to_owned(),
             )),
         }
     }
@@ -1311,6 +1643,14 @@ impl<'a> IntentDecoder<'a> {
             .try_into()
             .map_err(|_| BuiltinModelError("malformed product source length".to_owned()))?;
         Ok(u32::from_be_bytes(value))
+    }
+
+    fn read_u64(&mut self) -> Result<u64, BuiltinModelError> {
+        let value = self
+            .take(8)?
+            .try_into()
+            .map_err(|_| BuiltinModelError("malformed semantic source count".to_owned()))?;
+        Ok(u64::from_be_bytes(value))
     }
 
     fn take(&mut self, length: usize) -> Result<&'a [u8], BuiltinModelError> {
@@ -1414,7 +1754,8 @@ pub(super) fn prepare_transition_with_source_update(
         .delta()
         .changes()
         .count()
-        .saturating_add(semantic_update.delta().changes().count());
+        .saturating_add(semantic_update.delta().changes().count())
+        .saturating_add(intent.capture_changes().len());
     if changed_items == 0 {
         return Err(BuiltinModelError(
             "product source intent is a no-op".to_owned(),
@@ -1430,6 +1771,7 @@ pub(super) fn prepare_transition_with_source_update(
     let target_manifest =
         workspace_manifest_from_root(&update.target_root(), &semantic_update.target_root())?;
     let target_root = update.target().root();
+    let target_workspace_root = target_manifest.root();
     let semantic_target_root = semantic_update.target().root();
     let request = BuiltinModel.request_id(intent);
     let changed_nodes = update.changed_nodes().to_vec();
@@ -1460,6 +1802,15 @@ pub(super) fn prepare_transition_with_source_update(
     );
     let commit = backend_engine::commit_checked(&target_manifest, Vec::new(), provenance)
         .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let capture_update = prepare_capture_relation_update(
+        base,
+        intent,
+        target_workspace_root,
+        base.sequence(),
+        request,
+        *commit.id().as_bytes(),
+        &semantic,
+    )?;
     let closure = transition_closure_lazy(
         base.closure(),
         &target_manifest,
@@ -1472,13 +1823,19 @@ pub(super) fn prepare_transition_with_source_update(
             semantic_root: semantic_target_root,
             transaction,
             intent,
+            capture_objects: &capture_update.node_objects,
+            capture_pointer: capture_update.pointer.as_ref(),
         },
     )?;
     let registry = RelationAdmissionRegistry::new()
         .with_relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
         .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?;
+        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+        .map_err(|error| {
+            BuiltinModelError(format!("register semantic capture relation: {error:?}"))
+        })?;
     let intent_bytes = intent.encode();
     let intent_key = ObjectKey::<BuiltinIntentSchema>::from_value(&intent_bytes);
     let intent_object = TypedObject::from_value(&intent_key, &intent_bytes);
@@ -1491,10 +1848,237 @@ pub(super) fn prepare_transition_with_source_update(
         &registry,
     )
     .map_err(|error| BuiltinModelError(format!("construct prepared transition: {error}")))?;
+    let transition = transition
+        .retain_objects(capture_update.node_objects, &registry)
+        .map_err(|error| BuiltinModelError(format!("retain semantic capture nodes: {error}")))?;
+    let transition = if let Some(pointer) = capture_update.pointer {
+        transition
+            .replace_object_family([pointer], &registry)
+            .map_err(|error| BuiltinModelError(format!("select semantic capture root: {error}")))?
+    } else {
+        transition
+    };
     transition
         .replace_object_family([intent_object], &registry)
         .map(|transition| transition.with_work(work))
         .map_err(|error| BuiltinModelError(format!("retain current intent: {error}")))
+}
+
+struct PreparedCaptureRelationUpdate {
+    node_objects: Vec<TypedObject>,
+    pointer: Option<TypedObject>,
+}
+
+fn prepare_capture_relation_update(
+    base: &WorkspaceSnapshot,
+    intent: &BuiltinIntent,
+    target_root: backend_engine::WorkspaceRoot,
+    base_sequence: u64,
+    request_identity: [u8; 32],
+    source_commit: [u8; 32],
+    semantic: &WorkspaceRelationHandle<BuiltinSemanticRelation>,
+) -> Result<PreparedCaptureRelationUpdate, BuiltinModelError> {
+    if intent.capture_changes().is_empty() {
+        return Ok(PreparedCaptureRelationUpdate {
+            node_objects: Vec::new(),
+            pointer: None,
+        });
+    }
+    let selected_capture_relation = semantic_capture_relation(base)
+        .map_err(|error| BuiltinModelError(format!("open semantic capture relation: {error}")))?;
+    let mut capture_changes = Vec::with_capacity(intent.capture_changes().len());
+    let mut capture_entries = Vec::with_capacity(intent.capture_changes().len());
+    for change in intent.capture_changes() {
+        let current = selected_capture_relation
+            .as_ref()
+            .map(|relation| relation.lookup(&change.key))
+            .transpose()
+            .map_err(|error| BuiltinModelError(format!("read current semantic capture: {error}")))?
+            .flatten();
+        if current != change.expected {
+            return Err(BuiltinModelError(
+                "semantic capture base does not match its persisted before value".to_owned(),
+            ));
+        }
+        let after = match (current.as_ref(), change.outcome) {
+            (None, ProductSemanticCaptureOutcome::Pending { prior })
+            | (Some(_), ProductSemanticCaptureOutcome::Pending { prior }) => {
+                if current.as_ref().is_some_and(|current| {
+                    matches!(
+                        current.outcome(),
+                        ProductSemanticCaptureOutcome::Pending { .. }
+                    )
+                }) {
+                    return Err(BuiltinModelError(
+                        "semantic capture refresh cannot replace an in-flight source marker"
+                            .to_owned(),
+                    ));
+                }
+                let selected = semantic.lookup(&change.key).map_err(|error| {
+                    BuiltinModelError(format!("read captured semantic selection: {error}"))
+                })?;
+                let selected_prior = selected.as_ref().and_then(|record| {
+                    record
+                        .selected_claim()
+                        .copied()
+                        .zip(record.selected_coverage())
+                        .map(|(claim, coverage)| SemanticPublicationVersion::new(coverage, claim))
+                });
+                if selected_prior != prior {
+                    return Err(BuiltinModelError(
+                        "semantic capture prior does not match the selected coherent generation"
+                            .to_owned(),
+                    ));
+                }
+                let source_sequence = base_sequence.checked_add(1).ok_or_else(|| {
+                    BuiltinModelError("semantic capture workspace sequence overflow".to_owned())
+                })?;
+                ProductSemanticCaptureRecord::new(
+                    change.capture.operation_key().copied(),
+                    request_identity,
+                    change.capture,
+                    *base.root().as_bytes(),
+                    base_sequence,
+                    *target_root.as_bytes(),
+                    source_sequence,
+                    source_commit,
+                    change.outcome,
+                )
+                .map_err(|error| BuiltinModelError(error.to_owned()))?
+            }
+            (Some(current), outcome) => {
+                let ProductSemanticCaptureOutcome::Pending {
+                    prior: pending_prior,
+                } = current.outcome()
+                else {
+                    return Err(BuiltinModelError(
+                        "semantic capture terminal has no pending source marker".to_owned(),
+                    ));
+                };
+                if current.capture() != change.capture {
+                    return Err(BuiltinModelError(
+                        "semantic capture terminal does not match its exact pending source marker"
+                            .to_owned(),
+                    ));
+                }
+                match outcome {
+                    ProductSemanticCaptureOutcome::Unavailable { .. }
+                        if pending_prior.is_some() =>
+                    {
+                        return Err(BuiltinModelError(
+                            "unavailable semantic capture would discard its prior generation"
+                                .to_owned(),
+                        ));
+                    }
+                    ProductSemanticCaptureOutcome::Failed { prior, .. }
+                        if Some(prior) != pending_prior =>
+                    {
+                        return Err(BuiltinModelError(
+                            "failed semantic capture changed its prior generation".to_owned(),
+                        ));
+                    }
+                    ProductSemanticCaptureOutcome::Pending { .. } => {
+                        return Err(BuiltinModelError(
+                            "semantic capture refresh cannot replace an in-flight source marker"
+                                .to_owned(),
+                        ));
+                    }
+                    ProductSemanticCaptureOutcome::Unavailable { .. }
+                    | ProductSemanticCaptureOutcome::Failed { .. }
+                    | ProductSemanticCaptureOutcome::Published { .. } => {}
+                }
+                let terminal = current
+                    .with_outcome(outcome)
+                    .map_err(|error| BuiltinModelError(error.to_owned()))?;
+                terminal
+            }
+            (None, _) => {
+                return Err(BuiltinModelError(
+                    "semantic capture terminal has no exact pending source marker".to_owned(),
+                ));
+            }
+        };
+        if let ProductSemanticCaptureOutcome::Published { coverage, claim } = after.outcome() {
+            let selected = intent
+                .semantic_changes()
+                .iter()
+                .find(|semantic_change| semantic_change.key == change.key)
+                .and_then(|semantic_change| semantic_change.after.as_ref());
+            if !selected.is_some_and(|record| {
+                matches!(record, ProductSemanticPublicationRecord::Published {
+                    coverage: selected_coverage,
+                    claim: selected_claim,
+                } if *selected_coverage == coverage && *selected_claim == claim)
+            }) {
+                return Err(BuiltinModelError(
+                    "published semantic capture lacks its exact selected generation change"
+                        .to_owned(),
+                ));
+            }
+        }
+        capture_entries.push((change.key.clone(), after.clone()));
+        capture_changes.push(TreeChange {
+            key: change.key.clone(),
+            after: Some(after),
+        });
+    }
+    if let Some(relation) = selected_capture_relation {
+        let update = relation.prepare_update(&capture_changes).map_err(|error| {
+            BuiltinModelError(format!("prepare semantic capture delta: {error}"))
+        })?;
+        let node_objects = update
+            .changed_nodes()
+            .iter()
+            .map(|node| {
+                TypedObject::from_state_root(node.commitment(), node).map_err(|error| {
+                    BuiltinModelError(format!("retain semantic capture node: {error:?}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let pointer = semantic_capture_root_object(update.target().root());
+        Ok(PreparedCaptureRelationUpdate {
+            node_objects,
+            pointer: Some(pointer),
+        })
+    } else {
+        if intent
+            .capture_changes()
+            .iter()
+            .any(|change| change.expected.is_some())
+        {
+            return Err(BuiltinModelError(
+                "semantic capture pointer disappeared before its expected row".to_owned(),
+            ));
+        }
+        let state = backend_engine::RelationState::<ProductSemanticCaptureRelation>::from_entries(
+            capture_entries,
+            super::admitted_coverage()?,
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("build initial semantic capture relation: {error}"))
+        })?;
+        let mut closure = state.node_closure();
+        let mut node_objects = Vec::new();
+        while let Some(node) = closure.try_next().map_err(|error| {
+            BuiltinModelError(format!(
+                "traverse initial semantic capture nodes: {error:?}"
+            ))
+        })? {
+            node_objects.push(
+                TypedObject::from_state_root(node.state_root(), node.canonical()).map_err(
+                    |error| {
+                        BuiltinModelError(format!(
+                            "retain initial semantic capture node: {error:?}"
+                        ))
+                    },
+                )?,
+            );
+        }
+        Ok(PreparedCaptureRelationUpdate {
+            node_objects,
+            pointer: Some(semantic_capture_root_object(state.root())),
+        })
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1835,7 +2419,11 @@ fn admit_persisted_relations(
         .with_relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
         .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?;
+        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+        .map_err(|error| {
+            BuiltinModelError(format!("register semantic capture relation: {error:?}"))
+        })?;
     // Reopen the exact authenticated closure selected by the physical HEAD.
     // The compact transition envelope intentionally contains only recovery
     // pointers, so rebuilding a new manifest from that subset would produce a

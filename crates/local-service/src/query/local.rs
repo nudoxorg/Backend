@@ -3,9 +3,9 @@ use backend_extension_tantivy as lexical;
 use backend_extension_trustfall::{
     SemanticQueryCorpus, SemanticQueryEvidence, SemanticQueryFact, SemanticQueryPresentation,
 };
-use backend_semantic::{Entity, EntityId, Source};
 #[cfg(test)]
 use backend_semantic::ir::SemanticCoreReader;
+use backend_semantic::{Entity, EntityId, Source};
 use backend_version::{CoverageWitness, RelationState};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -65,8 +65,8 @@ impl LocalQuery {
             }
             searchable.push(' ');
         }
-        let terms = lexical::normalize_query_terms(&searchable, limits)
-            .map_err(QueryError::Lexical)?;
+        let terms =
+            lexical::normalize_query_terms(&searchable, limits).map_err(QueryError::Lexical)?;
         if terms.is_empty() {
             return Err(QueryError::EmptyQuery);
         }

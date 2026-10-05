@@ -7,8 +7,8 @@ use crate::journal::ChainHash;
 use crate::schema::{RecordId, WorkspaceLog};
 use backend_store::{FileStore, ObjectId, RelationAdmissionRegistry, WorkspaceClosure};
 use backend_version::{
-    CheckedCommit, CommitProvenance, ObjectClosure as VersionObjectClosure, WorkspaceManifest,
-    WorkspaceRoot, commit_capability, commit_checked,
+    CheckedCommit, CommitProvenance, ObjectClosure as VersionObjectClosure, SchemaIdentity,
+    WorkspaceManifest, WorkspaceRoot, commit_capability, commit_checked,
 };
 use std::sync::Arc;
 
@@ -177,6 +177,43 @@ impl WorkspaceSnapshot {
             .find(|binding| binding.schema() == schema)
             .ok_or(WorkspaceRelationError::MissingRelation)?;
         WorkspaceRelationHandle::open(store, binding.root())
+    }
+
+    /// Opens a canonical relation root named by a typed auxiliary object in
+    /// this exact immutable closure. Auxiliary roots are useful for product
+    /// state that must commit atomically with a workspace transition while
+    /// remaining orthogonal to the selected workspace relation set.
+    ///
+    /// The pointer object is matched by its full schema identity and object
+    /// key. Its bytes must be exactly one relation-root digest, and the
+    /// returned handle re-admits that root through the snapshot's store.
+    ///
+    /// # Errors
+    /// Returns an error when the snapshot has no store, the pointer value is
+    /// malformed, or the pointed relation root fails canonical admission.
+    pub fn auxiliary_relation<R: backend_version::CanonicalRelation>(
+        &self,
+        pointer_schema: SchemaIdentity,
+        pointer_key: [u8; backend_version::ID_BYTES],
+    ) -> Result<Option<WorkspaceRelationHandle<R>>, WorkspaceRelationError> {
+        let Some(pointer) = self
+            .closure()
+            .manifest()
+            .objects()
+            .iter()
+            .find(|object| object.schema() == pointer_schema && object.key() == &pointer_key)
+        else {
+            return Ok(None);
+        };
+        let root: [u8; backend_version::ID_BYTES] = pointer
+            .bytes()
+            .try_into()
+            .map_err(|_| WorkspaceRelationError::InvalidRoot)?;
+        let store = self
+            .store
+            .clone()
+            .ok_or(WorkspaceRelationError::StoreUnavailable)?;
+        WorkspaceRelationHandle::open(store, root).map(Some)
     }
 
     /// Alias emphasizing the lazy, read-only relation capability.

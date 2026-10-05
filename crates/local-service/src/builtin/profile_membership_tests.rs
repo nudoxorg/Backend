@@ -35,7 +35,9 @@ fn open_daemon(workspace: &Path) -> super::super::ProductDaemon {
         .with_relation::<BuiltinWorkspaceRelation>()
         .expect("workspace relation registry")
         .with_relation::<BuiltinSemanticRelation>()
-        .expect("semantic relation registry");
+        .expect("semantic relation registry")
+        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+        .expect("semantic capture relation registry");
     crate::Locald::open_with_dispatcher_and_registry(
         workspace,
         BuiltinModel,

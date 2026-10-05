@@ -11,6 +11,7 @@ mod manifest;
 mod output;
 mod profile;
 mod relation;
+mod semantic_capture_relation;
 mod semantic_relation;
 
 pub use authority::WorkspaceViewProducerAdmission;
@@ -55,6 +56,10 @@ pub use relation::{
     ProductSourceTransition, RetainedDeclarations, SourceDeclaration, SourceLanguage,
     SourceLocation, SourceUnavailableReason, legacy_product_source_file_key,
     product_source_file_key, product_source_membership_page_key,
+};
+pub use semantic_capture_relation::{
+    ProductSemanticCaptureOutcome, ProductSemanticCaptureRecord, ProductSemanticCaptureRelation,
+    ProductSemanticCaptureRootSchema, semantic_capture_relation, semantic_capture_root_object,
 };
 pub use semantic_relation::{
     ActivatedSemanticPublication, PartialSemanticCoverage, ProductSemanticPublicationKey,

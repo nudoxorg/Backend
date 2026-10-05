@@ -22,7 +22,9 @@ fn registry() -> TestResult<RelationAdmissionRegistry> {
         .with_relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| std::io::Error::other(format!("source registry: {error:?}")))?
         .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| std::io::Error::other(format!("semantic registry: {error:?}")))?)
+        .map_err(|error| std::io::Error::other(format!("semantic registry: {error:?}")))?
+        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+        .map_err(|error| std::io::Error::other(format!("semantic capture registry: {error:?}")))?)
 }
 
 fn open_current(

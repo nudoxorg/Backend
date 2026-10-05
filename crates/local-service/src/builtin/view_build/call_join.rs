@@ -1,6 +1,6 @@
 use super::super::{BuiltinModelError, IndexedSources};
-use super::structural::resolve_specifier_paths;
 use super::compiled_source_path;
+use super::structural::resolve_specifier_paths;
 use backend_engine::PackageKey;
 use backend_engine::application::DocumentationSession;
 use backend_semantic::ir::{

@@ -34,7 +34,7 @@ const IDENTITY_BYTES: usize = size_of::<[u8; 32]>();
 const GENERATION_BYTES: usize = IDENTITY_BYTES * 2;
 const MANIFEST_BYTES: usize = IDENTITY_BYTES + size_of::<u8>() + size_of::<u32>() * 2;
 const BINDING_FACT_BYTES: usize = IDENTITY_BYTES + GENERATION_BYTES + IDENTITY_BYTES;
-const CLAIM_BYTES: usize = MANIFEST_BYTES + BINDING_FACT_BYTES;
+pub(super) const CLAIM_BYTES: usize = MANIFEST_BYTES + BINDING_FACT_BYTES;
 
 /// Package-scoped identity of one compiler authority transaction.
 ///
@@ -471,11 +471,11 @@ impl PartialSemanticCoverage {
         Ok(Self { completed, total })
     }
 
-    const fn completed(self) -> NonZeroU32 {
+    pub const fn completed(self) -> NonZeroU32 {
         self.completed
     }
 
-    const fn total(self) -> NonZeroU32 {
+    pub const fn total(self) -> NonZeroU32 {
         self.total
     }
 }
@@ -835,7 +835,7 @@ pub(super) fn semantic_publication_fixture_with_authority(
         .map_err(|error| error.to_string())
 }
 
-fn encode_coverage(coverage: SemanticPublicationCoverage, output: &mut Vec<u8>) {
+pub(super) fn encode_coverage(coverage: SemanticPublicationCoverage, output: &mut Vec<u8>) {
     match coverage {
         SemanticPublicationCoverage::Complete => output.push(1),
         SemanticPublicationCoverage::Partial(partial) => {
@@ -867,7 +867,7 @@ fn decode_published(bytes: &[u8]) -> Result<ProductSemanticPublicationRecord, Re
     Ok(ProductSemanticPublicationRecord::Published { coverage, claim })
 }
 
-fn encode_claim(claim: SemanticPublicationClaim, output: &mut Vec<u8>) {
+pub(super) fn encode_claim(claim: SemanticPublicationClaim, output: &mut Vec<u8>) {
     let manifest = claim.manifest();
     let binding = claim.binding();
     output.extend_from_slice(manifest.identity.as_ref());
@@ -879,7 +879,7 @@ fn encode_claim(claim: SemanticPublicationClaim, output: &mut Vec<u8>) {
     output.extend_from_slice(binding.manifest.as_ref());
 }
 
-fn decode_claim(bytes: &[u8]) -> Result<SemanticPublicationClaim, RelationDecodeError> {
+pub(super) fn decode_claim(bytes: &[u8]) -> Result<SemanticPublicationClaim, RelationDecodeError> {
     if bytes.len() != CLAIM_BYTES {
         return Err(RelationDecodeError::Malformed);
     }
