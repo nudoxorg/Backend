@@ -63,13 +63,19 @@ fn settings_unmatched_markdown_origin_never_restores_a_stale_logical_row(cx: &mu
     });
     rig.repaint();
     let document = rig.cx.debug_bounds("unmatched-markdown").expect("actual mounted Markdown");
+    let before_click = rig.cx.update(|window, cx| window.focused(cx));
     rig.cx.simulate_click(document.origin + gpui::point(gpui::px(8.0), gpui::px(8.0)), gpui::Modifiers::none());
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
     let origin = rig.cx.update(|window, cx| window.focused(cx)).expect("native text selection owns focus");
+    assert_ne!(Some(origin.clone()), before_click, "the actual Markdown click moved native focus");
     assert!(rig.cx.update(|window, _| window.is_focus_handle_mounted(&origin)));
     assert!(targets.target_for_native_handle(&origin).is_none(), "Markdown is an unmatched native receiver");
     assert!(targets.focused().is_some(), "the adversarial stale logical selection exists");
-    rig.keys("secondary-, escape");
+    // The test document is a real native sibling of the Shell. Opening via
+    // the same local intent exercises its captured receiver without lending
+    // that sibling the Shell's keyboard action context.
+    rig.go(Intent::OpenSettings(SettingsPage::Appearance));
+    rig.keys("escape");
     assert!(targets.focused().is_none(), "the native receipt must retire the stale logical row");
     assert_ne!(rig.cx.update(|window, cx| window.focused(cx)), Some(origin));
     rig.keys("secondary-,");
