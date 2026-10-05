@@ -7,6 +7,7 @@ use crate::{
 use backend_advisory::{AdvisoryPackageDto, OverrideEvidence};
 pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::num::NonZeroU64;
 use std::{fmt, str::FromStr};
@@ -15,6 +16,11 @@ use std::{fmt, str::FromStr};
 pub const MAX_PRODUCT_TEXT_BYTES: usize = 4096;
 /// Largest row collection in one product request or reply.
 pub const MAX_PRODUCT_ROWS: usize = 256;
+/// Maximum number of source-file members admitted in one selected Project frontier.
+///
+/// The engine's canonical Project membership validator uses this same bound;
+/// semantic query annotations preserve the validated count without widening it.
+pub const MAX_SELECTED_PROJECT_FRONTIER_FILES: usize = 100_000;
 /// Largest opaque continuation token accepted by the shared index-search surface.
 pub const MAX_INDEX_SEARCH_CURSOR_BYTES: usize = 64 * 1024;
 /// Maximum number of owner progress events returned by one index progress read.
@@ -633,6 +639,10 @@ impl SemanticVersionRecord {
                 !self.selected
                     || self.package != frontier.package
                     || !matches!(&frontier.package, PackageReference::Local(_))
+                    || match usize::try_from(frontier.file_count) {
+                        Ok(count) => count > MAX_SELECTED_PROJECT_FRONTIER_FILES,
+                        Err(_) => true,
+                    }
             })
         {
             return Err(ProductAdmissionError::SemanticVersionShape);
@@ -3892,6 +3902,23 @@ mod tests {
         record
             .admit()
             .expect("frontier belongs to selected local row");
+        let mut empty_frontier = record.clone();
+        if let Some(frontier) = &mut empty_frontier.selected_source_frontier {
+            frontier.file_count = 0;
+        }
+        empty_frontier
+            .admit()
+            .expect("an empty Project membership is a valid observed state");
+
+        let mut oversized_frontier = record.clone();
+        if let Some(frontier) = &mut oversized_frontier.selected_source_frontier {
+            frontier.file_count = u32::try_from(MAX_SELECTED_PROJECT_FRONTIER_FILES + 1)
+                .expect("frontier limit fits the wire count");
+        }
+        assert_eq!(
+            oversized_frontier.admit(),
+            Err(ProductAdmissionError::SemanticVersionShape)
+        );
         let encoded = serde_json::to_vec(&record).expect("frontier JSON");
         let decoded: SemanticVersionRecord =
             serde_json::from_slice(&encoded).expect("frontier JSON decode");

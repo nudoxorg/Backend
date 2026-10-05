@@ -977,6 +977,7 @@ def source_capacity_contract(source: Path) -> dict[str, int]:
         )
         tree = (source / "crates/version/src/tree/mod.rs").read_text(encoding="utf-8")
         cut = (source / "crates/version/src/tree/cut.rs").read_text(encoding="utf-8")
+        surface = (source / "crates/library/surface.rs").read_text(encoding="utf-8")
         capture = (source / "crates/engine/src/compiler_input_capture_v2.rs").read_text(
             encoding="utf-8"
         )
@@ -990,10 +991,15 @@ def source_capacity_contract(source: Path) -> dict[str, int]:
         return int(match.group(1).replace("_", ""))
 
     max_project_files = integer(
-        relation,
-        r"pub const MAX_PROJECT_FILES: usize = ([0-9][0-9_]*);",
+        surface,
+        r"pub const MAX_SELECTED_PROJECT_FRONTIER_FILES: usize = ([0-9][0-9_]*);",
         "project file count",
     )
+    if not re.search(
+        r"pub const MAX_PROJECT_FILES: usize = backend_library::MAX_SELECTED_PROJECT_FRONTIER_FILES;",
+        relation,
+    ):
+        raise Blocked("engine Project membership cap no longer shares the surface limit")
     max_label = integer(
         relation,
         r"pub const MAX_LABEL_BYTES: usize = ([0-9][0-9_]*);",

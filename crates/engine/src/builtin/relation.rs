@@ -656,7 +656,7 @@ impl ProductSourceRecord {
     /// Maximum admitted coordinate or relative-path length.
     pub const MAX_LABEL_BYTES: usize = 4096;
     /// Maximum source files selected by one project across its membership.
-    pub const MAX_PROJECT_FILES: usize = 100_000;
+    pub const MAX_PROJECT_FILES: usize = backend_library::MAX_SELECTED_PROJECT_FRONTIER_FILES;
     /// Maximum declarations retained in one source file.
     pub const MAX_FILE_DECLARATIONS: usize = 16_384;
     /// Largest encoded value one row of this relation may carry.
