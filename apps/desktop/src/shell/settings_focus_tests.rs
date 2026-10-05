@@ -56,7 +56,10 @@ fn settings_unmatched_markdown_origin_never_restores_a_stale_logical_row(cx: &mu
     rig.keys("j");
     let shell = rig.shell.clone();
     rig.cx.update(|window, cx| {
-        window.replace_root(cx, |_, cx| cx.new(|_| WithMarkdown { shell }));
+        window.replace_root(cx, |window, cx| {
+            let view = cx.new(|_| WithMarkdown { shell });
+            cx.new(|cx| gpui_component::Root::new(view, window, cx).bordered(false))
+        });
     });
     rig.repaint();
     let document = rig.cx.debug_bounds("unmatched-markdown").expect("actual mounted Markdown");

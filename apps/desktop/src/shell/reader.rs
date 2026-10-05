@@ -1143,6 +1143,7 @@ impl Reader {
         });
         let find = self.mounted_find_query.as_ref().filter(|mounted| {
             mounted.focus.as_ref() == origin && origin.is_some()
+                && self.painted == Some(mounted.place)
                 && mounted.state.focus_handle(cx).as_ref() == origin
                 && mounted.route == *self.links.snapshot(cx).route()
                 && mounted.root.same_authority(self.links.snapshot(cx).key())
@@ -1244,7 +1245,10 @@ impl Reader {
                 && self.painted == Some(place.key)
                 && self.links.snapshot(cx).overlay().is_none()
                 && self.links.snapshot(cx).key().same_authority(source_root)) {
-            if let Some(mounted) = &mut self.mounted_find_query {
+            if let Some(mounted) = &mut self.mounted_find_query
+                && mounted.visit == place.visit
+                && mounted.state.focus_handle(cx).as_ref() == Some(&query)
+            {
                 mounted.place = place.key;
                 mounted.route = place.route.clone();
                 mounted.root = self.links.snapshot(cx).key();
