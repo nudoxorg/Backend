@@ -63,10 +63,116 @@ class SourceContractTests(unittest.TestCase):
         capacity = runner.source_capacity_contract(REPOSITORY)
         self.assertGreater(capacity["project_file_record_maximum"], 0)
         self.assertGreater(capacity["project_row_value_maximum_bytes"], 0)
-        self.assertGreater(capacity["project_frontier_file_maximum"], 0)
+        self.assertGreater(capacity["project_frontier_file_conservative_maximum"], 0)
+        absolute = capacity["project_frontier_absolute_inline_maximum"]
+        self.assertEqual(absolute, capacity["project_row_value_maximum_bytes"] // 32)
+        self.assertGreater(absolute, capacity["project_frontier_file_conservative_maximum"])
         self.assertGreater(capacity["compiler_workspace_build_charge_maximum_bytes"], 0)
         self.assertGreater(capacity["compiler_workspace_total_file_maximum_bytes"], 0)
 
+
+class SelectedProjectFrontierTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.case = runner.ProjectCase(
+            project_id="large-fixture",
+            path=Path("/real/project").resolve(),
+            large=True,
+            min_candidates=2900,
+            symbols=(),
+        )
+        self.absolute_inline_maximum = runner.source_capacity_contract(REPOSITORY)[
+            "project_frontier_absolute_inline_maximum"
+        ]
+        self.maximum_files = 100_000
+
+    def frontier(self, count: int, root_byte: int = 1) -> dict[str, object]:
+        return {
+            "package": {"kind": "local", "value": str(self.case.path)},
+            "source_relation_root": [root_byte] * 32,
+            "source_version": [2] * 32,
+            "file_count": count,
+        }
+
+    def test_large_project_must_exceed_absolute_old_inline_upper_bound(self) -> None:
+        with self.assertRaises(runner.Blocked):
+            runner.assert_selected_source_frontier(
+                {"selected_source_frontier": self.frontier(self.absolute_inline_maximum)},
+                self.case,
+                self.absolute_inline_maximum,
+                self.maximum_files,
+                "large accepted count",
+            )
+        admitted = runner.assert_selected_source_frontier(
+            {
+                "selected_source_frontier": self.frontier(
+                    self.absolute_inline_maximum + 1
+                )
+            },
+            self.case,
+            self.absolute_inline_maximum,
+            self.maximum_files,
+            "large accepted count",
+        )
+        self.assertEqual(admitted["file_count"], self.absolute_inline_maximum + 1)
+
+    def test_missing_or_malformed_frontier_never_counts_candidates_as_members(self) -> None:
+        with self.assertRaises(runner.Blocked):
+            runner.assert_selected_source_frontier(
+                {"recognized_source_candidates": 33196},
+                self.case,
+                self.absolute_inline_maximum,
+                self.maximum_files,
+                "missing membership",
+            )
+        malformed = self.frontier(2900)
+        malformed["source_relation_root"] = [0] * 31
+        with self.assertRaises(runner.AcceptanceError):
+            runner.assert_selected_source_frontier(
+                {"selected_source_frontier": malformed},
+                self.case,
+                self.absolute_inline_maximum,
+                self.maximum_files,
+                "malformed membership",
+            )
+
+    def test_zero_or_over_limit_membership_is_rejected(self) -> None:
+        for count, expected in ((0, runner.Blocked), (100_001, runner.AcceptanceError)):
+            with self.subTest(count=count), self.assertRaises(expected):
+                runner.assert_selected_source_frontier(
+                    {"selected_source_frontier": self.frontier(count)},
+                    self.case,
+                    self.absolute_inline_maximum,
+                    self.maximum_files,
+                    "bounded membership",
+                )
+
+    def test_cold_replay_identity_includes_exact_root_and_count(self) -> None:
+        before = runner.assert_selected_source_frontier(
+            {"selected_source_frontier": self.frontier(2900)},
+            self.case,
+            self.absolute_inline_maximum,
+            self.maximum_files,
+            "before restart",
+        )
+        after_same = runner.assert_selected_source_frontier(
+            {"selected_source_frontier": self.frontier(2900)},
+            self.case,
+            self.absolute_inline_maximum,
+            self.maximum_files,
+            "after restart",
+        )
+        after_changed = runner.assert_selected_source_frontier(
+            {"selected_source_frontier": self.frontier(2901, root_byte=3)},
+            self.case,
+            self.absolute_inline_maximum,
+            self.maximum_files,
+            "changed restart",
+        )
+        self.assertEqual(before, after_same)
+        self.assertNotEqual(before, after_changed)
+
+
+class HarnessContractTests(unittest.TestCase):
     def test_source_file_inventory_hashes_in_bounded_stream_reads(self) -> None:
         payload = b"actual source bytes\n" * 7000
         with tempfile.TemporaryDirectory() as directory:

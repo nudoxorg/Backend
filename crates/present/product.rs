@@ -22,9 +22,10 @@ use backend_library::{
     RegistryMetadata, RegistryNativeAvailability, RegistryNativeDetails, RegistryNativeMetadata,
     RegistryPackageFactAuthority, RegistryPackageFactFreshness, RegistryPackageRecord,
     RegistryPackageSearchGroup, RegistryReleaseMatchScope, RegistrySearchGroupKind,
-    RegistrySearchHit, RegistrySearchRelease, ReleaseRecord, SemanticHistoryPublicationStatus,
-    SemanticLanguageProfile, SemanticVersionFreshness, SemanticVersionRecord, SubscriptionRecord,
-    SurfaceReply, TreeNodeRecord, TreeOpener, TreeSubject, encode_id,
+    RegistrySearchHit, RegistrySearchRelease, ReleaseRecord, SelectedProjectSourceFrontier,
+    SemanticHistoryPublicationStatus, SemanticLanguageProfile, SemanticVersionFreshness,
+    SemanticVersionRecord, SubscriptionRecord, SurfaceReply, TreeNodeRecord, TreeOpener,
+    TreeSubject, encode_id,
 };
 use backend_library::{
     IndexCancelReceipt, IndexCancelStatus, IndexJobObservation, IndexJobOutcome,
@@ -176,6 +177,7 @@ impl ProductRecord {
     pub const fn compiler_profile(&self) -> Option<SemanticLanguageProfile> {
         self.compiler_profile
     }
+
 }
 
 /// One rendered product answer.
@@ -188,6 +190,7 @@ pub struct ProductView {
     index_search_page: Option<IndexSearchPageInfo>,
     index_job: Option<IndexJobProjection>,
     index_operation: Option<backend_library::IndexOperationObservation>,
+    selected_source_frontier: Option<SelectedProjectSourceFrontier>,
 }
 
 /// Exact owner-issued indexing state retained alongside its readable projection.
@@ -381,6 +384,12 @@ impl ProductView {
         self.index_operation.as_ref()
     }
 
+    /// Returns the exact selected Project membership captured with this semantic query.
+    #[must_use]
+    pub fn selected_source_frontier(&self) -> Option<&SelectedProjectSourceFrontier> {
+        self.selected_source_frontier.as_ref()
+    }
+
     /// Returns this product answer's typed owner cursor, when it has one.
     #[must_use]
     pub fn cursor_family(&self) -> Option<&ContinuationCursor> {
@@ -431,6 +440,14 @@ impl ProductView {
         self
     }
 
+    fn with_selected_source_frontier(
+        mut self,
+        frontier: Option<SelectedProjectSourceFrontier>,
+    ) -> Self {
+        self.selected_source_frontier = frontier;
+        self
+    }
+
     /// Records one product answer a surface assembled itself.
     ///
     /// An accepted intent is not a [`SurfaceReply`], but it is the same shape
@@ -445,6 +462,7 @@ impl ProductView {
             index_search_page: None,
             index_job: None,
             index_operation: None,
+            selected_source_frontier: None,
         }
     }
 
@@ -459,6 +477,7 @@ impl ProductView {
             index_search_page: None,
             index_job: None,
             index_operation: None,
+            selected_source_frontier: None,
         }
     }
 
@@ -471,6 +490,7 @@ impl ProductView {
             index_search_page: None,
             index_job: None,
             index_operation: None,
+            selected_source_frontier: None,
         }
     }
 
@@ -483,6 +503,7 @@ impl ProductView {
             index_search_page: None,
             index_job: None,
             index_operation: None,
+            selected_source_frontier: None,
         }
     }
 
@@ -495,6 +516,7 @@ impl ProductView {
             index_search_page: None,
             index_job: None,
             index_operation: None,
+            selected_source_frontier: None,
         }
     }
 }
@@ -556,6 +578,11 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::SemanticVersions(records) => ProductView::rows(
             "semantic-versions",
             records.iter().map(semantic_row).collect(),
+        )
+        .with_selected_source_frontier(
+            records
+                .iter()
+                .find_map(|record| record.selected_source_frontier.clone()),
         ),
         SurfaceReply::SemanticVersionSelected(record) => {
             ProductView::rows("select-semantic-version", vec![semantic_row(record)])
@@ -2301,6 +2328,7 @@ mod tests {
             selected,
             freshness,
             history_status,
+            selected_source_frontier: None,
         }
     }
 
@@ -2339,6 +2367,43 @@ mod tests {
         let decoded: crate::dto::ProductDto =
             serde_json::from_value(old_value).expect("older DTO without compiler profile");
         assert_eq!(decoded.records[0].compiler_profile, None);
+    }
+
+    #[test]
+    fn selected_source_frontier_survives_product_and_older_dto_projection() {
+        let mut record = semantic_version(
+            SemanticHistoryPublicationStatus::NotSelected,
+            true,
+            true,
+            SemanticVersionFreshness::Current {
+                input_digest: [0x81; 32],
+            },
+        );
+        let package =
+            PackageReference::parse("/workspace/large-project").expect("local project package");
+        record.package = package.clone();
+        let frontier = SelectedProjectSourceFrontier {
+            package,
+            source_relation_root: [0x82; 32],
+            source_version: [0x83; 32],
+            file_count: 2_916,
+        };
+        record.selected_source_frontier = Some(frontier.clone());
+
+        let view = semantic_versions_view(record);
+        assert_eq!(view.selected_source_frontier(), Some(&frontier));
+        let dto = crate::dto::ProductDto::new(&view);
+        assert_eq!(dto.selected_source_frontier, Some(frontier.clone()));
+
+        let mut old_value = serde_json::to_value(&dto).expect("selected frontier DTO");
+        assert_eq!(old_value["selected_source_frontier"]["file_count"], 2_916);
+        old_value
+            .as_object_mut()
+            .expect("product object")
+            .remove("selected_source_frontier");
+        let older: crate::dto::ProductDto =
+            serde_json::from_value(old_value).expect("older product row decodes");
+        assert_eq!(older.selected_source_frontier, None);
     }
 
     #[test]

@@ -739,6 +739,9 @@ pub struct ProductDto {
     /// typed failure/unresolved reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_operation: Option<backend_library::IndexOperationObservation>,
+    /// Exact checked Project membership captured with the selected semantic generations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_source_frontier: Option<backend_library::SelectedProjectSourceFrontier>,
 }
 
 /// Shared page envelope projected for CLI, MCP, and desktop product replies.
@@ -823,6 +826,7 @@ impl ProductDto {
                 }),
             index_job: view.index_job().cloned(),
             index_operation: view.index_operation().cloned(),
+            selected_source_frontier: view.selected_source_frontier().cloned(),
         }
     }
 }

@@ -1012,6 +1012,7 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
             input_digest: [35; 32],
         },
         history_status: Default::default(),
+        selected_source_frontier: None,
     };
     let request = crate::SemanticShapeRequest::new(
         root.root(),

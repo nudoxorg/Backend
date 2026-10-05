@@ -445,6 +445,31 @@ pub struct SemanticVersionRecord {
     /// or refused.
     #[serde(default)]
     pub history_status: SemanticHistoryPublicationStatus,
+    /// Current checked Project membership associated with this selected local
+    /// generation in the immutable owner snapshot that answered the query.
+    /// This is a query-time annotation, not part of the retained compiler
+    /// history or its generation identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_source_frontier: Option<SelectedProjectSourceFrontier>,
+}
+
+/// Exact selected local Project frontier observed by one semantic-version query.
+///
+/// The relation root binds the result to one immutable owner snapshot, while
+/// `source_version` and `file_count` come from the Project row and its fully
+/// resolved, validated membership. This value is only attached to selected
+/// semantic rows as current-view evidence; it is not persisted compiler history.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectedProjectSourceFrontier {
+    /// Exact local package label requested by the caller.
+    pub package: PackageReference,
+    /// Selected source-relation root in the answering owner snapshot.
+    pub source_relation_root: [u8; 32],
+    /// Content identity recorded by the canonical Project row.
+    pub source_version: [u8; 32],
+    /// Number of resolved file keys in the complete canonical Project membership.
+    pub file_count: u32,
 }
 
 /// Exact selected-generation stamp captured by native history publication.
@@ -598,6 +623,17 @@ impl SemanticVersionRecord {
         self.profile.profile()?;
         if self.coordinate.package_type().language() != self.profile.profile()?.language()
             || self.artifacts == 0
+        {
+            return Err(ProductAdmissionError::SemanticVersionShape);
+        }
+        if self
+            .selected_source_frontier
+            .as_ref()
+            .is_some_and(|frontier| {
+                !self.selected
+                    || self.package != frontier.package
+                    || !matches!(&frontier.package, PackageReference::Local(_))
+            })
         {
             return Err(ProductAdmissionError::SemanticVersionShape);
         }
@@ -3193,9 +3229,18 @@ impl SurfaceReply {
             }
             Self::SemanticVersions(records) => {
                 let mut selected = 0_usize;
+                let mut selected_frontier = None;
                 for record in records {
                     record.admit()?;
                     selected = selected.saturating_add(usize::from(record.selected));
+                    if record.selected
+                        && let Some(frontier) = &record.selected_source_frontier
+                    {
+                        if selected_frontier.is_some_and(|prior| prior != frontier) {
+                            return Err(ProductAdmissionError::SemanticVersionShape);
+                        }
+                        selected_frontier = Some(frontier);
+                    }
                 }
                 if selected > 1 {
                     return Err(ProductAdmissionError::SemanticVersionShape);
@@ -3404,11 +3449,13 @@ impl SurfaceReply {
                     .saturating_add(package_reference_bound(&record.package))
                     .saturating_add(record.coordinate.as_str().len())
                     .saturating_add(serialized_json_size(&record.history_status))
+                    .saturating_add(serialized_json_size(&record.selected_source_frontier))
             }),
             Self::SemanticVersionSelected(record) => fixed_record_bound()
                 .saturating_add(package_reference_bound(&record.package))
                 .saturating_add(record.coordinate.as_str().len())
-                .saturating_add(serialized_json_size(&record.history_status)),
+                .saturating_add(serialized_json_size(&record.history_status))
+                .saturating_add(serialized_json_size(&record.selected_source_frontier)),
             Self::IndexStarted(result) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(result).map_or(0, |bytes| bytes.len())),
             Self::IndexOperationStarted(observation) | Self::IndexOperationStatus(observation) => {
@@ -3809,6 +3856,81 @@ mod tests {
             )
             .expect("tagged local decoding"),
             local
+        );
+    }
+
+    #[test]
+    fn selected_source_frontier_is_bound_to_the_selected_local_package() {
+        let package =
+            PackageReference::parse("/workspace/large-project").expect("local project package");
+        let coordinate = PackageCoordinate::parse("pkg:cargo/large-project@1.0.0")
+            .expect("semantic package coordinate");
+        let frontier = SelectedProjectSourceFrontier {
+            package: package.clone(),
+            source_relation_root: [0x21; 32],
+            source_version: [0x22; 32],
+            file_count: 2_916,
+        };
+        let record = SemanticVersionRecord {
+            package: package.clone(),
+            coordinate,
+            profile: SemanticLanguageProfile::from_name("rust").expect("Rust profile"),
+            generation: SemanticGenerationId::new([0x23; 32]),
+            generation_root: [0x24; 32],
+            dependency_set: [0x25; 32],
+            manifest: [0x26; 32],
+            artifacts: 1,
+            semantic_bytes: 1,
+            complete: true,
+            selected: true,
+            freshness: SemanticVersionFreshness::Current {
+                input_digest: [0x27; 32],
+            },
+            history_status: SemanticHistoryPublicationStatus::NotSelected,
+            selected_source_frontier: Some(frontier.clone()),
+        };
+        record
+            .admit()
+            .expect("frontier belongs to selected local row");
+        let encoded = serde_json::to_vec(&record).expect("frontier JSON");
+        let decoded: SemanticVersionRecord =
+            serde_json::from_slice(&encoded).expect("frontier JSON decode");
+        assert_eq!(decoded, record);
+
+        let mut older = serde_json::to_value(&record).expect("semantic record JSON");
+        older
+            .as_object_mut()
+            .expect("record JSON object")
+            .remove("selected_source_frontier");
+        let older: SemanticVersionRecord =
+            serde_json::from_value(older).expect("older semantic record decodes");
+        assert_eq!(older.selected_source_frontier, None);
+
+        let mut wrong_package = record.clone();
+        wrong_package.selected_source_frontier = Some(SelectedProjectSourceFrontier {
+            package: PackageReference::parse("/workspace/other-project")
+                .expect("other local project"),
+            ..frontier.clone()
+        });
+        assert_eq!(
+            wrong_package.admit(),
+            Err(ProductAdmissionError::SemanticVersionShape)
+        );
+
+        let mut unselected = record.clone();
+        unselected.selected = false;
+        assert_eq!(
+            unselected.admit(),
+            Err(ProductAdmissionError::SemanticVersionShape)
+        );
+
+        let mut registry_package = record;
+        registry_package.package = PackageReference::Purl(
+            PackageCoordinate::parse("pkg:cargo/large-project@1.0.0").expect("registry package"),
+        );
+        assert_eq!(
+            registry_package.admit(),
+            Err(ProductAdmissionError::SemanticVersionShape)
         );
     }
 

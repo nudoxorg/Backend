@@ -4229,7 +4229,73 @@ pub(super) fn semantic_version_record(
         selected,
         freshness,
         history_status: backend_engine::SemanticHistoryPublicationStatus::NotSelected,
+        selected_source_frontier: None,
     }
+}
+
+fn selected_project_source_frontier(
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    package: &backend_engine::PackageReference,
+) -> Result<Option<backend_engine::SelectedProjectSourceFrontier>, BuiltinModelError> {
+    let backend_engine::PackageReference::Local(label) = package else {
+        return Ok(None);
+    };
+    let package_key = backend_engine::PackageKey::from_value(label.as_str());
+    let source_key = package_key.to_bytes();
+    let relation = snapshot
+        .relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("open selected source relation: {error}")))?;
+    let Some(record) = relation
+        .lookup(&source_key)
+        .map_err(|error| BuiltinModelError(format!("read selected source Project row: {error}")))?
+    else {
+        return Ok(None);
+    };
+    let fields = record.project_fields().ok_or_else(|| {
+        BuiltinModelError("selected source key does not name a Project row".to_owned())
+    })?;
+    if fields.label != label.as_str()
+        || backend_engine::PackageKey::from_value(fields.label) != package_key
+    {
+        return Err(BuiltinModelError(
+            "selected source frontier does not match the requested local package".to_owned(),
+        ));
+    }
+    let file_keys =
+        super::super::profile::resolve_project_file_keys(source_key, &record, |page_key| {
+            relation
+                .lookup(page_key)
+                .map_err(|error| BuiltinModelError(format!("read source membership page: {error}")))
+        })?;
+    match relation
+        .visit_many_sorted(&file_keys, |file_key, file| match file {
+            Some(file) => {
+                match super::super::profile::validate_project_file(source_key, *file_key, file) {
+                    Ok(()) => std::ops::ControlFlow::Continue(()),
+                    Err(error) => std::ops::ControlFlow::Break(error),
+                }
+            }
+            None => std::ops::ControlFlow::Break(BuiltinModelError(
+                "Project membership refers to a missing source file row".to_owned(),
+            )),
+        })
+        .map_err(|error| {
+            BuiltinModelError(format!(
+                "validate selected Project file membership: {error}"
+            ))
+        })? {
+        std::ops::ControlFlow::Continue(()) => {}
+        std::ops::ControlFlow::Break(error) => return Err(error),
+    }
+    let file_count = u32::try_from(file_keys.len()).map_err(|_| {
+        BuiltinModelError("selected source membership count exceeds u32".to_owned())
+    })?;
+    Ok(Some(backend_engine::SelectedProjectSourceFrontier {
+        package: package.clone(),
+        source_relation_root: *relation.root().as_bytes(),
+        source_version: fields.source_version,
+        file_count,
+    }))
 }
 
 pub(super) fn semantic_versions(
@@ -4238,11 +4304,9 @@ pub(super) fn semantic_versions(
     workspace: Option<&Path>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
 ) -> Result<Box<[backend_engine::SemanticVersionRecord]>, BuiltinModelError> {
-    let relation = daemon
-        .engine()
-        .daemon()
-        .owner()
-        .snapshot()
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let selected_source_frontier = selected_project_source_frontier(&snapshot, package)?;
+    let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic version history: {error}")))?;
     let mut selected = BTreeMap::<(PackageUrl, LanguageProfile), [u8; 32]>::new();
@@ -4341,6 +4405,7 @@ pub(super) fn semantic_versions(
     for (target, history_key, claim, record) in &mut generations {
         record.selected = selected.get(target).copied() == Some(record.generation.to_bytes());
         if record.selected {
+            record.selected_source_frontier = selected_source_frontier.clone();
             record.history_status =
                 semantic_authority.native_history_status(history_key, *claim)?;
         }

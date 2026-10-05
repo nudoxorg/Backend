@@ -1033,12 +1033,22 @@ def source_capacity_contract(source: Path) -> dict[str, int]:
     )
     row_bytes = max_node_kib * 1024 - key_bytes - node_overhead - 2 * field_frame
     frontier_files = (row_bytes - max_label - 64) // 32
-    if row_bytes <= max_label + 64 or frontier_files <= 0:
+    absolute_inline_files = row_bytes // key_bytes if key_bytes else 0
+    if (
+        row_bytes <= max_label + 64
+        or frontier_files <= 0
+        or key_bytes <= 0
+        or absolute_inline_files <= frontier_files
+    ):
         raise Blocked("source project-row capacity arithmetic is invalid")
     return {
         "project_file_record_maximum": max_project_files,
         "project_row_value_maximum_bytes": row_bytes,
-        "project_frontier_file_maximum": frontier_files,
+        "project_frontier_file_conservative_maximum": frontier_files,
+        # This deliberately ignores label and field overhead. It is the
+        # absolute theoretical upper bound (row capacity / key width) on the
+        # old inline format, so a large-project pass must exceed it.
+        "project_frontier_absolute_inline_maximum": absolute_inline_files,
         "compiler_workspace_build_charge_maximum_bytes": workspace_charge_mib
         * 1024
         * 1024,
@@ -1974,10 +1984,60 @@ def assert_cli_published(
     return receipt
 
 
+def assert_selected_source_frontier(
+    value: dict[str, Any],
+    case: ProjectCase,
+    absolute_inline_maximum: int,
+    maximum_files: int,
+    label: str,
+) -> dict[str, Any]:
+    frontier = value.get("selected_source_frontier")
+    if not isinstance(frontier, dict):
+        raise Blocked(
+            f"{label} omitted typed accepted Project membership evidence; "
+            "source-candidate counts cannot establish indexed membership"
+        )
+    if set(frontier) != {
+        "package",
+        "source_relation_root",
+        "source_version",
+        "file_count",
+    }:
+        raise AcceptanceError(f"{label} selected source frontier changed its typed field shape")
+    if frontier.get("package") != {"kind": "local", "value": str(case.path)}:
+        raise AcceptanceError(f"{label} selected source frontier belongs to another package")
+
+    def byte_array(candidate: Any) -> bool:
+        return (
+            isinstance(candidate, list)
+            and len(candidate) == 32
+            and all(type(byte) is int and 0 <= byte <= 255 for byte in candidate)
+        )
+
+    if not byte_array(frontier.get("source_relation_root")) or not byte_array(
+        frontier.get("source_version")
+    ):
+        raise AcceptanceError(f"{label} selected source frontier lacks exact source identities")
+    count = frontier.get("file_count")
+    if type(count) is not int or not 0 <= count <= maximum_files:
+        raise AcceptanceError(f"{label} selected source frontier has an invalid accepted file count")
+    if count == 0:
+        raise Blocked(f"{label} selected source frontier contains no accepted files")
+    if case.large and count <= absolute_inline_maximum:
+        raise Blocked(
+            f"large project {case.project_id} has {count} accepted Project members, "
+            "not more than the absolute old inline upper bound "
+            f"{absolute_inline_maximum}"
+        )
+    return frontier
+
+
 def assert_semantic_versions(
     value: Any,
     case: ProjectCase,
     profile_codes: dict[str, tuple[int, int]],
+    absolute_inline_maximum: int,
+    maximum_files: int,
     label: str,
 ) -> dict[str, Any]:
     if (
@@ -1989,6 +2049,9 @@ def assert_semantic_versions(
     rows = value.get("records")
     if not isinstance(rows, list):
         raise AcceptanceError(f"{label} omitted semantic generation records")
+    frontier = assert_selected_source_frontier(
+        value, case, absolute_inline_maximum, maximum_files, label
+    )
 
     selected_by_profile: dict[str, dict[str, Any]] = {}
     expected_profiles = sorted({symbol["profile"] for symbol in case.symbols})
@@ -2113,9 +2176,19 @@ def assert_semantic_versions(
                 f"{label} expected one selected, complete, current, history-published "
                 f"generation for profile {list(code)}; found {len(eligible)}"
             )
+        if eligible[0].get("selected_source_frontier") != frontier:
+            if eligible[0].get("selected_source_frontier") is None:
+                raise Blocked(
+                    f"{label} selected semantic row omitted its exact Project membership evidence"
+                )
+            raise AcceptanceError(
+                f"{label} selected semantic row is bound to a different Project frontier"
+            )
         selected_by_profile["-".join(str(byte) for byte in code)] = eligible[0]
     return {
         "profile_rows": selected_by_profile,
+        "selected_source_frontier": frontier,
+        "accepted_project_membership_files": frontier["file_count"],
         "identity_sha256": sha256_bytes(canonical_json(selected_by_profile)),
         "freshness_evidence": "typed product tag `current source input`",
         "history_state": "published",
@@ -2427,6 +2500,10 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
             "recognized source candidates from an independent extension/ignore traversal; "
             "this is not an indexed-file count"
         ),
+        "membership_count_semantics": (
+            "accepted files from the exact checked Project membership attached to the selected "
+            "semantic query; source candidates are not substituted for this count"
+        ),
         "source_capacity": None,
         "source_capacity_note": (
             "source candidate bytes/count are independent inventory measurements, not compiler "
@@ -2516,12 +2593,14 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
             "recognized_source_tree_sha256_before_restart": before_census[
                 case.project_id
             ].sha256,
+            "accepted_project_membership_files_before_restart": None,
+            "accepted_project_membership_files_after_restart": None,
             "symbols": list(case.symbols),
         }
         for case in cases
     ]
     if any(
-        census.files > source_capacity["project_frontier_file_maximum"]
+        census.files > source_capacity["project_frontier_file_conservative_maximum"]
         for census in before_census.values()
     ):
         result["source_capacity_warning"] = (
@@ -2684,6 +2763,7 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
                 raise AcceptanceError("CLI and MCP pre-restart receipts differ")
 
         semantic_before: dict[str, dict[str, Any]] = {}
+        project_results = {project["id"]: project for project in result["projects"]}
         for case in cases:
             owner.require_running(f"before semantic profile checks for {case.project_id}")
             cli_semantic = cli_call(
@@ -2701,6 +2781,8 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
                 cli_semantic,
                 case,
                 profile_codes,
+                source_capacity["project_frontier_absolute_inline_maximum"],
+                source_capacity["project_file_record_maximum"],
                 f"CLI before restart {case.project_id}",
             )
             mcp_semantic = mcp_call(
@@ -2719,6 +2801,8 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
                 mcp_semantic,
                 case,
                 profile_codes,
+                source_capacity["project_frontier_absolute_inline_maximum"],
+                source_capacity["project_file_record_maximum"],
                 f"MCP before restart {case.project_id}",
             )
             if cli_semantic_identity != mcp_semantic_identity:
@@ -2726,6 +2810,12 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
                     f"CLI and MCP semantic profile/history evidence differs for {case.project_id}"
                 )
             semantic_before[case.project_id] = cli_semantic_identity
+            project_results[case.project_id][
+                "accepted_project_membership_files_before_restart"
+            ] = cli_semantic_identity["accepted_project_membership_files"]
+            project_results[case.project_id]["selected_source_frontier_before_restart"] = (
+                cli_semantic_identity["selected_source_frontier"]
+            )
         result["semantic_versions_before_restart"] = semantic_before
         write_json_atomic(output / "run.json", result)
 
@@ -2880,6 +2970,8 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
                 cli_semantic,
                 case,
                 profile_codes,
+                source_capacity["project_frontier_absolute_inline_maximum"],
+                source_capacity["project_file_record_maximum"],
                 f"CLI after restart {case.project_id}",
             )
             mcp_semantic = mcp_call(
@@ -2898,6 +2990,8 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
                 mcp_semantic,
                 case,
                 profile_codes,
+                source_capacity["project_frontier_absolute_inline_maximum"],
+                source_capacity["project_file_record_maximum"],
                 f"MCP after restart {case.project_id}",
             )
             if cli_semantic_identity != mcp_semantic_identity:
@@ -2909,6 +3003,12 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
                     f"semantic selection/history changed across cold restart for {case.project_id}"
                 )
             semantic_after[case.project_id] = cli_semantic_identity
+            project_results[case.project_id][
+                "accepted_project_membership_files_after_restart"
+            ] = cli_semantic_identity["accepted_project_membership_files"]
+            project_results[case.project_id]["selected_source_frontier_after_restart"] = (
+                cli_semantic_identity["selected_source_frontier"]
+            )
         result["semantic_versions_after_restart"] = semantic_after
         write_json_atomic(output / "run.json", result)
 
