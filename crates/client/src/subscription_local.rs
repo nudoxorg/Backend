@@ -69,6 +69,14 @@ enum Lifecycle {
     Released,
 }
 
+/// Disposition of the exact socket after a correlated bootstrap release.
+#[cfg(any(unix, windows))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BootstrapRelease {
+    Reusable,
+    RetiredAfterAcknowledgement,
+}
+
 /// Failure starting or completing one resumable local-control request.
 #[cfg(any(unix, windows))]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -483,7 +491,7 @@ impl LocalSubscriptionTransport {
         lease: LocalSubscriptionId,
         cleanup_on: ConnectionId,
         timeout: Duration,
-    ) -> Result<(), ClientError> {
+    ) -> Result<BootstrapRelease, ClientError> {
         if self.connection != cleanup_on {
             return Err(ClientError::Protocol(
                 "bootstrap lease cleanup socket is no longer current".to_owned(),
@@ -544,7 +552,12 @@ impl LocalSubscriptionTransport {
             });
         }
         self.frames_on_connection = self.frames_on_connection.saturating_add(1);
-        if let Err(error) = self
+        Ok(self.restore_after_bootstrap_ack())
+    }
+
+    // Called only after the exact request and lease release acknowledgement.
+    fn restore_after_bootstrap_ack(&mut self) -> BootstrapRelease {
+        if self
             .client
             .stream()
             .set_read_timeout(Some(self.io_timeout))
@@ -553,11 +566,16 @@ impl LocalSubscriptionTransport {
                     .stream()
                     .set_write_timeout(Some(self.io_timeout))
             })
+            .is_err()
         {
+            // The complete root and exact release acknowledgement were
+            // already admitted. macOS can refuse socket options once the
+            // peer closes. Retire that socket without discarding the proof;
+            // future requests must authenticate a replacement connection.
             self.retire_connection();
-            return Err(ClientError::Io(error.to_string()));
+            return BootstrapRelease::RetiredAfterAcknowledgement;
         }
-        Ok(())
+        BootstrapRelease::Reusable
     }
 
     fn request(
@@ -1000,6 +1018,71 @@ mod bootstrap_exhaustion_tests {
     use super::*;
     use backend_replication::{decode_request, encode_response, read_frame, write_frame};
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn acknowledged_bootstrap_cleanup_retires_a_peer_closed_stream() {
+        let (stream, owner) = crate::test_socket::local_pair();
+        let mut transport = LocalSubscriptionTransport::from_stream(stream);
+        drop(owner);
+        assert_eq!(
+            transport.restore_after_bootstrap_ack(),
+            BootstrapRelease::RetiredAfterAcknowledgement
+        );
+        assert!(transport.interrupt.is_none());
+        assert!(transport.peer.is_none());
+        assert_eq!(transport.frames_on_connection, CONNECTION_FRAME_BUDGET);
+        assert!(
+            transport.prepare_request().is_err(),
+            "a retired stream without an endpoint cannot be reused"
+        );
+    }
+
+    #[test]
+    fn a_mismatched_bootstrap_release_ack_never_preserves_success() {
+        let (stream, mut owner) = crate::test_socket::local_pair();
+        owner
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("bounded owner read");
+        owner
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .expect("bounded owner write");
+        let mut transport = LocalSubscriptionTransport::from_stream(stream);
+        let connection = transport.connection();
+        let lease = LocalSubscriptionId::from_bytes([84; 16]);
+        let worker = std::thread::spawn(move || {
+            let body = read_frame(&mut owner, control_limits()).expect("cancel request");
+            let LocalControlRequest::Subscription(request) =
+                decode_request(&body, control_limits()).expect("cancel frame")
+            else {
+                panic!("subscription request");
+            };
+            assert!(
+                matches!(request.operation, LocalSubscriptionOperation::Cancel { lease: id } if id == lease)
+            );
+            write_frame(
+                &mut owner,
+                &encode_response(
+                    &LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                        request_id: request.request_id,
+                        lease: LocalSubscriptionId::from_bytes([85; 16]),
+                    }),
+                    control_limits(),
+                )
+                .expect("wrong lease response"),
+                control_limits(),
+            )
+            .expect("send complete correlated response");
+        });
+        assert!(
+            transport
+                .release_bootstrap_lease_current(lease, connection, Duration::from_millis(50))
+                .is_err()
+        );
+        assert!(transport.interrupt.is_none());
+        assert!(transport.prepare_request().is_err());
+        worker.join().expect("bounded release owner");
+    }
+
     #[test]
     fn exhausted_bootstrap_cancel_retires_the_exact_socket_without_sending_cancel() {
         let (stream, mut owner) = crate::test_socket::local_pair();
@@ -1048,6 +1131,25 @@ mod bootstrap_exhaustion_tests {
         });
 
         let mut transport = LocalSubscriptionTransport::from_stream(stream);
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                transport
+                    .client
+                    .stream()
+                    .read_timeout()
+                    .expect("initial read timeout"),
+                Some(Duration::from_secs(30))
+            );
+            assert_eq!(
+                transport
+                    .client
+                    .stream()
+                    .write_timeout()
+                    .expect("initial write timeout"),
+                Some(Duration::from_secs(30))
+            );
+        }
         transport.next_request_id = u64::MAX - 1;
         let correlated_socket = transport.connection();
         let error = transport
@@ -1074,14 +1176,22 @@ mod bootstrap_exhaustion_tests {
         );
         #[cfg(unix)]
         {
+            // Darwin clears socket timeout options on shutdown. The socket
+            // is retired on every platform; none of these options authorize
+            // another request or reconnect without a new authenticated peer.
+            let expected = if cfg!(target_os = "macos") {
+                None
+            } else {
+                Some(Duration::from_secs(30))
+            };
             assert_eq!(
                 transport
                     .client
                     .stream()
                     .read_timeout()
                     .expect("read timeout getter"),
-                Some(Duration::from_secs(30)),
-                "retirement preserves the exact socket's read timeout"
+                expected,
+                "native shutdown read timeout disposition"
             );
             assert_eq!(
                 transport
@@ -1089,8 +1199,8 @@ mod bootstrap_exhaustion_tests {
                     .stream()
                     .write_timeout()
                     .expect("write timeout getter"),
-                Some(Duration::from_secs(30)),
-                "retirement preserves the exact socket's write timeout"
+                expected,
+                "native shutdown write timeout disposition"
             );
         }
 

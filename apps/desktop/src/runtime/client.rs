@@ -186,7 +186,13 @@ impl LocalEngineClient {
         };
         super::trace::mark("root.bootstrap-entered", "worker");
         let (view, revision) = self.bootstrap_root(true).map_err(|error| {
-            super::trace::mark("root.bootstrap-failed", "proof-or-transport");
+            let category = match &error {
+                EngineFault::Cancelled => "cancelled".to_owned(),
+                EngineFault::Superseded => "attachment-or-root-superseded".to_owned(),
+                EngineFault::Failed(fault) => format!("fault:{:?}", fault.code()),
+                _ => "unexpected-adapter-fault".to_owned(),
+            };
+            super::trace::mark("root.bootstrap-failed", category);
             error
         })?;
         super::trace::mark("root.bootstrap-admitted", "exact-attachment");
