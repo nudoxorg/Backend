@@ -38,6 +38,21 @@ const TYPE_PARAMETERS: u8 = 6;
 const TYPE_PARAMETER_BOUNDS: u8 = 7;
 const FREE_PREDICATES: u8 = 8;
 
+#[cfg(test)]
+std::thread_local! {
+    static TUPLE_ELEMENT_VISITS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn reset_tuple_element_visits() {
+    TUPLE_ELEMENT_VISITS.with(|visits| visits.set(0));
+}
+
+#[cfg(test)]
+pub(super) fn tuple_element_visits() -> u64 {
+    TUPLE_ELEMENT_VISITS.with(core::cell::Cell::get)
+}
+
 /// Proves every type/list node has exactly one closed semantic
 /// interpretation.  It intentionally performs no recursive descent: all
 /// child coordinates were already bounds-checked by structural admission.
@@ -299,72 +314,38 @@ pub(crate) fn tuple_element(
     Ok(TupleElement { label, ty, kind })
 }
 
-/// Returns the validated tuple-list row count without materializing cells.
-pub(crate) fn tuple_elements_len(
+/// Visits the validated cells in one tuple-list edge run without materializing a list.
+///
+/// The returned count is the logical cell count, not the raw edge count: each cell has a
+/// presence scalar, an optional name edge, a type edge, and a kind scalar.
+pub(crate) fn visit_tuple_elements(
     bytes: &[u8],
     layout: FullImageLayout,
     typed: TypedLayout,
     id: TupleElementListId,
+    mut visit: impl FnMut(u32, TupleElement) -> Result<(), FullSemanticImageFault>,
 ) -> Result<u32, FullSemanticImageFault> {
-    let mut count = 0_u32;
-    walk_tuple_elements(bytes, layout, typed, id, |_, _| {
-        count = count.checked_add(1).ok_or(FullSemanticImageFault::LengthOverflow {
-            field: FullSemanticImageField::TypedEdges,
-        })?;
-        Ok(false)
-    })?;
-    Ok(count)
-}
-
-/// Reads one tuple cell's exact type coordinate without allocating a decoded
-/// list. The containing typed graph validator proves all adjacent fields.
-pub(crate) fn tuple_element_type(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    id: TupleElementListId,
-    index: u32,
-) -> Result<Option<TypeId>, FullSemanticImageFault> {
-    let mut found = None;
-    walk_tuple_elements(bytes, layout, typed, id, |element, ty| {
-        if element == index {
-            found = Some(ty);
-            return Ok(true);
-        }
-        Ok(false)
-    })?;
-    Ok(found)
-}
-
-/// Visits each tuple element in order. One element is several edges (a
-/// name-presence scalar, the name atom when present, the type, and the kind),
-/// so the list's raw edge count is not its element count. `visit` receives
-/// the element index and type and returns `true` to stop early.
-fn walk_tuple_elements(
-    bytes: &[u8],
-    layout: FullImageLayout,
-    typed: TypedLayout,
-    id: TupleElementListId,
-    mut visit: impl FnMut(u32, TypeId) -> Result<bool, FullSemanticImageFault>,
-) -> Result<(), FullSemanticImageFault> {
     let mut edges = Edges::for_node(bytes, layout, typed, TUPLE_ELEMENTS, id.raw)?;
     let mut index = 0_u32;
     while edges.next < edges.count {
-        if boolean(edges.scalar(3, index)?, edges.node)? {
-            let _ = edges.atom(3, index)?;
-        }
+        let label = if boolean(edges.scalar(3, index)?, edges.node)? {
+            Some(edges.atom(3, index)?)
+        } else {
+            None
+        };
         let ty = edges.type_node(4, index)?;
-        let _ = edges.scalar(5, index)?;
-        if visit(index, ty)? {
-            return Ok(());
-        }
+        let kind = tuple_kind(edges.scalar(5, index)?, edges.node)?;
+        visit(index, TupleElement { label, ty, kind })?;
+        #[cfg(test)]
+        TUPLE_ELEMENT_VISITS.with(|visits| visits.set(visits.get().saturating_add(1)));
         index = index
             .checked_add(1)
             .ok_or(FullSemanticImageFault::LengthOverflow {
                 field: FullSemanticImageField::TypedEdges,
             })?;
     }
-    Ok(())
+    edges.finish()?;
+    Ok(index)
 }
 
 pub(crate) fn object_member(
@@ -557,21 +538,7 @@ fn validate_tuple_elements(
     typed: TypedLayout,
     id: TupleElementListId,
 ) -> Result<(), FullSemanticImageFault> {
-    let mut edges = Edges::for_node(bytes, layout, typed, TUPLE_ELEMENTS, id.raw)?;
-    let mut index = 0_u32;
-    while edges.next < edges.count {
-        if boolean(edges.scalar(3, index)?, edges.node)? {
-            let _ = edges.atom(3, index)?;
-        }
-        let _ = edges.type_node(4, index)?;
-        let _ = tuple_kind(edges.scalar(5, index)?, edges.node)?;
-        index = index
-            .checked_add(1)
-            .ok_or(FullSemanticImageFault::LengthOverflow {
-                field: FullSemanticImageField::TypedEdges,
-            })?;
-    }
-    edges.finish()
+    visit_tuple_elements(bytes, layout, typed, id, |_, _| Ok(())).map(|_| ())
 }
 fn validate_object_members(
     bytes: &[u8],

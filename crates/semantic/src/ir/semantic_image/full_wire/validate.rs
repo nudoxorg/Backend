@@ -19,7 +19,8 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use crate::ir::{
-    ConcreteType, FactAvailability, ParentageAuthority, SignatureCarrierBindingRole, TypeExpr,
+    ConcreteType, FactAvailability, ParentageAuthority, SignatureCarrierBindingRole,
+    TupleElementListId, TypeExpr,
 };
 
 use super::{
@@ -29,7 +30,7 @@ use super::{
     wire::{
         ATOM_ROW_BYTES, ENTITY_ROW_BYTES, FullDirectoryEntry, FullDirectoryKind, FullImageLayout,
         NONE, RANGE_ROW_BYTES, SCHEMA_CARRIER_BINDINGS, SCHEMA_CARRIER_ROLES,
-        SIGNATURE_CARRIER_RANGE_ROW_BYTES, get_u32,
+        SIGNATURE_CARRIER_RANGE_ROW_BYTES, SIGNATURE_CARRIER_TARGET_ROW_BYTES, get_u32,
     },
 };
 
@@ -327,10 +328,22 @@ fn validate_signature_carrier_bindings(
                     results: result_count,
                 });
             };
-            if typed_decode::tuple_elements_len(bytes, layout, typed, parameters)?
-                != parameter_count
-                || typed_decode::tuple_elements_len(bytes, layout, typed, results)? != result_count
-            {
+            let mut first_target_fault = None;
+            let parameter_cells = validate_signature_carrier_cells(
+                bytes,
+                layout,
+                typed,
+                parameters,
+                owner,
+                SignatureCarrierBindingRole::Parameter,
+                parameter_count,
+                start,
+                0,
+                targets.offset,
+                &mut derived_roles,
+                &mut first_target_fault,
+            )?;
+            if parameter_cells != parameter_count {
                 return Err(FullSemanticImageFault::SignatureCarrierBindingRange {
                     row: range_row,
                     owner,
@@ -339,84 +352,31 @@ fn validate_signature_carrier_bindings(
                     results: result_count,
                 });
             }
-            for relative in 0..total {
-                let target_row = start.checked_add(relative).ok_or(
-                    FullSemanticImageFault::SignatureCarrierBindingRange {
-                        row: range_row,
-                        owner,
-                        start,
-                        parameters: parameter_count,
-                        results: result_count,
-                    },
-                )?;
-                let target_offset = targets
-                    .offset
-                    .checked_add(
-                        usize::try_from(target_row)
-                            .map_err(|_| FullSemanticImageFault::LengthOverflow {
-                                field: FullSemanticImageField::SignatureCarrierBindingTargets,
-                            })?
-                            .checked_mul(4)
-                            .ok_or(FullSemanticImageFault::LengthOverflow {
-                                field: FullSemanticImageField::SignatureCarrierBindingTargets,
-                            })?,
-                    )
-                    .ok_or(FullSemanticImageFault::LengthOverflow {
-                        field: FullSemanticImageField::SignatureCarrierBindingTargets,
-                    })?;
-                let target = get_u32(
-                    bytes,
-                    target_offset,
-                    FullSemanticImageField::SignatureCarrierBindingTargets,
-                )?;
-                let carrier = decode::entity(bytes, layout, target)?;
-                let (role, position, tuple_list) = if relative < parameter_count {
-                    (SignatureCarrierBindingRole::Parameter, relative, parameters)
-                } else {
-                    (
-                        SignatureCarrierBindingRole::Result,
-                        relative - parameter_count,
-                        results,
-                    )
-                };
-                if carrier.kind != crate::ir::ItemKind::Parameter {
-                    return Err(FullSemanticImageFault::SignatureCarrierBindingTargetKind {
-                        owner,
-                        role,
-                        position,
-                        target,
-                        kind: carrier.kind,
-                    });
-                }
-                let expected_type =
-                    typed_decode::tuple_element_type(bytes, layout, typed, tuple_list, position)?;
-                if carrier.semantic_type != expected_type {
-                    return Err(FullSemanticImageFault::SignatureCarrierBindingType {
-                        owner,
-                        role,
-                        position,
-                        target,
-                        expected: expected_type,
-                        observed: carrier.semantic_type,
-                    });
-                }
-                let code = match role {
-                    SignatureCarrierBindingRole::Parameter => 1_u8,
-                    SignatureCarrierBindingRole::Result => 2_u8,
-                };
-                let slot = usize::try_from(target / 4).map_err(|_| {
-                    FullSemanticImageFault::LengthOverflow {
-                        field: FullSemanticImageField::SignatureCarrierRoles,
-                    }
-                })?;
-                let shift = (target % 4) * 2;
-                let byte =
-                    derived_roles
-                        .get_mut(slot)
-                        .ok_or(FullSemanticImageFault::LengthOverflow {
-                            field: FullSemanticImageField::SignatureCarrierRoles,
-                        })?;
-                *byte |= code << shift;
+            let result_cells = validate_signature_carrier_cells(
+                bytes,
+                layout,
+                typed,
+                results,
+                owner,
+                SignatureCarrierBindingRole::Result,
+                result_count,
+                start,
+                parameter_count,
+                targets.offset,
+                &mut derived_roles,
+                &mut first_target_fault,
+            )?;
+            if result_cells != result_count {
+                return Err(FullSemanticImageFault::SignatureCarrierBindingRange {
+                    row: range_row,
+                    owner,
+                    start,
+                    parameters: parameter_count,
+                    results: result_count,
+                });
+            }
+            if let Some(fault) = first_target_fault {
+                return Err(fault);
             }
             target_cursor = end;
         }
@@ -495,6 +455,95 @@ fn validate_signature_carrier_bindings(
         }
     }
     Ok(())
+}
+
+fn validate_signature_carrier_cells(
+    bytes: &[u8],
+    layout: FullImageLayout,
+    typed: TypedLayout,
+    tuple_list: TupleElementListId,
+    owner: u32,
+    role: SignatureCarrierBindingRole,
+    expected_count: u32,
+    target_start: u32,
+    target_role_offset: u32,
+    targets_offset: usize,
+    derived_roles: &mut [u8],
+    first_target_fault: &mut Option<FullSemanticImageFault>,
+) -> Result<u32, FullSemanticImageFault> {
+    typed_decode::visit_tuple_elements(bytes, layout, typed, tuple_list, |position, element| {
+        if first_target_fault.is_some() || position >= expected_count {
+            return Ok(());
+        }
+        let target_result = (|| {
+            let target_row = target_start
+                .checked_add(target_role_offset)
+                .and_then(|start| start.checked_add(position))
+                .ok_or(FullSemanticImageFault::LengthOverflow {
+                    field: FullSemanticImageField::SignatureCarrierBindingTargets,
+                })?;
+            let target_offset = targets_offset
+                .checked_add(
+                    usize::try_from(target_row)
+                        .map_err(|_| FullSemanticImageFault::LengthOverflow {
+                            field: FullSemanticImageField::SignatureCarrierBindingTargets,
+                        })?
+                        .checked_mul(SIGNATURE_CARRIER_TARGET_ROW_BYTES)
+                        .ok_or(FullSemanticImageFault::LengthOverflow {
+                            field: FullSemanticImageField::SignatureCarrierBindingTargets,
+                        })?,
+                )
+                .ok_or(FullSemanticImageFault::LengthOverflow {
+                    field: FullSemanticImageField::SignatureCarrierBindingTargets,
+                })?;
+            let target = get_u32(
+                bytes,
+                target_offset,
+                FullSemanticImageField::SignatureCarrierBindingTargets,
+            )?;
+            let carrier = decode::entity(bytes, layout, target)?;
+            if carrier.kind != crate::ir::ItemKind::Parameter {
+                return Err(FullSemanticImageFault::SignatureCarrierBindingTargetKind {
+                    owner,
+                    role,
+                    position,
+                    target,
+                    kind: carrier.kind,
+                });
+            }
+            if carrier.semantic_type != Some(element.ty) {
+                return Err(FullSemanticImageFault::SignatureCarrierBindingType {
+                    owner,
+                    role,
+                    position,
+                    target,
+                    expected: Some(element.ty),
+                    observed: carrier.semantic_type,
+                });
+            }
+            let code = match role {
+                SignatureCarrierBindingRole::Parameter => 1_u8,
+                SignatureCarrierBindingRole::Result => 2_u8,
+            };
+            let slot = usize::try_from(target / 4).map_err(|_| {
+                FullSemanticImageFault::LengthOverflow {
+                    field: FullSemanticImageField::SignatureCarrierRoles,
+                }
+            })?;
+            let shift = (target % 4) * 2;
+            let byte = derived_roles
+                .get_mut(slot)
+                .ok_or(FullSemanticImageFault::LengthOverflow {
+                    field: FullSemanticImageField::SignatureCarrierRoles,
+                })?;
+            *byte |= code << shift;
+            Ok(())
+        })();
+        if let Err(fault) = target_result {
+            *first_target_fault = Some(fault);
+        }
+        Ok(())
+    })
 }
 
 fn validate_entities(
