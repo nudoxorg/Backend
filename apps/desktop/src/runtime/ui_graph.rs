@@ -561,7 +561,10 @@ impl UiRootEntity {
     }
 
     /// Freeze admission at one exact UI turn; the checkpoint remains cancellable.
-    pub(crate) fn begin_close(&mut self, cx: &mut Context<Self>) -> Result<CloseCheckpoint, WriteFailure> {
+    pub(crate) fn begin_close(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Result<CloseCheckpoint, WriteFailure> {
         self.flush_pending(cx);
         self.drain_engine(cx);
         // Freeze before any fallible save admission: the decision cover must
@@ -576,47 +579,81 @@ impl UiRootEntity {
                 if !Arc::ptr_eq(&store.snapshot(), &snapshot) {
                     return Err(WriteFailure { message: "The reading scope changed before its final save was captured. Try saving again.".into() });
                 }
-                let pages = store.close_checkpoint();
+                let pages = store.close_checkpoint().map_err(|error| WriteFailure { message: error.to_string().into() })?;
                 if pages.as_ref().is_some_and(|pages| pages.captured_root() != snapshot.key()) {
                     return Err(WriteFailure { message: "The final reading snapshot does not belong to this exact saved root. Try saving again.".into() });
                 }
                 Ok(pages)
             })?
-        } else { None };
+        } else {
+            None
+        };
         if self.persistence.is_none() {
             return Err(WriteFailure { message: "The workspace has not supplied a state file yet. The latest edits could not be confirmed.".into() });
         }
         self.ensure_persistence_writer(cx)?;
-        let state = overlay_claims(PersistentState::project(&snapshot), self.pending_claims(&snapshot));
-        let (revision, saved) = self.persistence_writer.as_ref().expect("writer admitted").checkpoint(state)?;
+        let state = overlay_claims(
+            PersistentState::project(&snapshot),
+            self.pending_claims(&snapshot),
+        );
+        let (revision, saved) = self
+            .persistence_writer
+            .as_ref()
+            .expect("writer admitted")
+            .checkpoint(state)?;
         self.close_revision = Some(revision);
-        Ok(CloseCheckpoint { saved, pages, basis: snapshot.key() })
+        Ok(CloseCheckpoint {
+            saved,
+            pages,
+            basis: snapshot.key(),
+        })
     }
 
     pub(crate) fn cancel_close(&mut self, cx: &mut Context<Self>) {
-        if self.close_committed { return; }
+        if self.close_committed {
+            return;
+        }
         if let Some(revision) = self.close_revision.take() {
-            if let Some(writer) = &self.persistence_writer { writer.cancel_checkpoint(revision); }
+            if let Some(writer) = &self.persistence_writer {
+                writer.cancel_checkpoint(revision);
+            }
         }
         self.quitting = false;
-        if let Some(store) = &self.store { store.update(cx, |store, cx| store.set_close_paused(false, cx)); }
-        if let Some((key, mode)) = self.close_owner.take() { self.admit_owner(key, mode, cx); }
+        if let Some(store) = &self.store {
+            store.update(cx, |store, cx| store.set_close_paused(false, cx));
+        }
+        if let Some((key, mode)) = self.close_owner.take() {
+            self.admit_owner(key, mode, cx);
+        }
         self.drain_engine(cx);
-        let saved = self.index_preflights.iter().filter(|(_, pending)| matches!(pending.save, IndexPreflightSave::Saved))
-            .map(|(project, _)| project.clone()).collect::<Vec<_>>();
-        for project in saved { self.resume_saved_index(project, cx); }
+        let saved = self
+            .index_preflights
+            .iter()
+            .filter(|(_, pending)| matches!(pending.save, IndexPreflightSave::Saved))
+            .map(|(project, _)| project.clone())
+            .collect::<Vec<_>>();
+        for project in saved {
+            self.resume_saved_index(project, cx);
+        }
         self.schedule_operation_observation(cx);
     }
 
-    pub(crate) fn commit_close(&mut self, cx: &mut Context<Self>) -> super::worker_finish::WorkerFinish {
+    pub(crate) fn commit_close(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> super::worker_finish::WorkerFinish {
         self.quitting = true;
         self.close_committed = true;
         self.pending.clear();
         self.index_poll = None;
         self.folder_picker_task = None;
         let mut finish = self.runtime.take_finish();
-        if let Some(store) = &self.store { finish.extend(store.update(cx, |store, _| store.commit_close())); }
-        if let Some(writer) = &self.persistence_writer { let _ = writer.finish(); }
+        if let Some(store) = &self.store {
+            finish.extend(store.update(cx, |store, _| store.commit_close()));
+        }
+        if let Some(writer) = &self.persistence_writer {
+            let _ = writer.finish();
+        }
         finish
     }
 

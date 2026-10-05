@@ -233,19 +233,46 @@ impl PersistenceWriter {
 
     /// A close checkpoint uses the reserved ordinary slot, acknowledges this
     /// exact state, and leaves the lane open if the person cancels closing.
-    pub(crate) fn checkpoint(&self, state: PersistedDesktopState) -> Result<(WriteRevision, WriteReceiver), WriteFailure> {
-        let mut inner = self.shared.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        if inner.closing { return Err(WriteFailure::new("The local state writer is already closing.")); }
-        if inner.jobs.back().is_some_and(|job| job.barrier.is_none()) { inner.jobs.pop_back(); }
-        if inner.jobs.len() >= CAPACITY {
-            return Err(WriteFailure::new("The local writer is still finishing a previous checkpoint. Try again after it settles."));
+    pub(crate) fn checkpoint(
+        &self,
+        state: PersistedDesktopState,
+    ) -> Result<(WriteRevision, WriteReceiver), WriteFailure> {
+        let mut inner = self
+            .shared
+            .inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if inner.closing {
+            return Err(WriteFailure::new(
+                "The local state writer is already closing.",
+            ));
         }
-        let revision = WriteRevision { writer: self.shared.id, sequence: inner.next };
-        inner.next = inner.next.checked_add(1).ok_or_else(|| WriteFailure::new("The local write revision is exhausted."))?;
+        let next = inner
+            .next
+            .checked_add(1)
+            .ok_or_else(|| WriteFailure::new("The local write revision is exhausted."))?;
+        if inner.jobs.back().is_some_and(|job| job.barrier.is_none()) {
+            inner.jobs.pop_back();
+        }
+        if inner.jobs.len() >= CAPACITY {
+            return Err(WriteFailure::new(
+                "The local writer is still finishing a previous checkpoint. Try again after it settles.",
+            ));
+        }
+        let revision = WriteRevision {
+            writer: self.shared.id,
+            sequence: inner.next,
+        };
+        inner.next = next;
         let state = Arc::new(state);
         let (sent, received) = async_channel::bounded(1);
         inner.desired = Some((revision, state.clone()));
-        inner.jobs.push_back(Job { checkpoint: true, revision, state, barrier: Some(sent) });
+        inner.jobs.push_back(Job {
+            checkpoint: true,
+            revision,
+            state,
+            barrier: Some(sent),
+        });
         drop(inner);
         self.shared.changed.notify_one();
         Ok((revision, received))
@@ -254,8 +281,16 @@ impl PersistenceWriter {
     /// Cancelling close reclaims its reserved ordinary slot synchronously.
     /// Immutable first-send mutation barriers are never changed by this API.
     pub(crate) fn cancel_checkpoint(&self, revision: WriteRevision) {
-        let mut inner = self.shared.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(job) = inner.jobs.iter_mut().find(|job| job.checkpoint && job.revision == revision) {
+        let mut inner = self
+            .shared
+            .inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(job) = inner
+            .jobs
+            .iter_mut()
+            .find(|job| job.checkpoint && job.revision == revision)
+        {
             job.checkpoint = false;
             job.barrier = None;
         }
@@ -434,6 +469,48 @@ mod tests {
         assert_eq!(receive(&current).expect("new exact checkpoint").state.window.expect("window").width, 30);
         receive(&writer.finish()).expect("irreversible finish only after checkpoint");
         assert_eq!(*trace.lock().expect("trace"), [10, 30]);
+    }
+
+    #[test]
+    fn exhausted_close_revision_preserves_the_reserved_ordinary_state() {
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let (writer, entered, release) = blocked(trace.clone());
+        writer.ordinary(state(10)).expect("first write");
+        entered
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("first save held");
+        writer
+            .ordinary(state(20))
+            .expect("latest ordinary state queued");
+        {
+            let mut inner = writer.shared.inner.lock().expect("writer state");
+            inner.next = u64::MAX;
+        }
+        assert!(
+            writer.checkpoint(state(30)).is_err(),
+            "exhaustion cannot admit an exact acknowledgement"
+        );
+        {
+            let inner = writer.shared.inner.lock().expect("writer state");
+            assert_eq!(inner.next, u64::MAX);
+            assert_eq!(
+                inner.jobs.len(),
+                1,
+                "failed close cannot erase the reserved ordinary save"
+            );
+            assert_eq!(inner.jobs[0].state.window.expect("window").width, 20);
+        }
+        release.send(()).expect("release first save");
+        assert_eq!(
+            receive(&writer.finish())
+                .expect("ordinary state remains durable")
+                .state
+                .window
+                .expect("window")
+                .width,
+            20
+        );
+        assert_eq!(*trace.lock().expect("trace"), [10, 20]);
     }
 
     #[test]

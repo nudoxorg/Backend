@@ -516,7 +516,7 @@ impl DataStore {
             }
             // Ordinary window release saves pages without retaining the store.
             cx.on_release(|store: &mut Self, cx| {
-                if let Some(save) = store.close_checkpoint() {
+                if let Ok(Some(save)) = store.close_checkpoint() {
                     cx.background_executor().spawn(async move {
                         if let Err(error) = save.write("on release") { eprintln!("backend-desktop: save launch snapshot: {error}"); }
                     }).detach();
@@ -554,12 +554,18 @@ impl DataStore {
     pub(crate) fn commit_close(&mut self) -> super::worker_finish::WorkerFinish {
         self.close_committed = true;
         self.close_paused = true;
-        self.pool.as_mut().map(ReadPool::take_finish).unwrap_or_default()
+        self.pool
+            .as_mut()
+            .map(ReadPool::take_finish)
+            .unwrap_or_default()
     }
 
-    pub(crate) fn close_checkpoint(&self) -> Option<PendingSave> {
-        if self.close_committed { return None; }
-        self.keeper.checkpoint(&self.pages, &self.snapshot, self.current_owner_attachment())
+    pub(crate) fn close_checkpoint(&self) -> std::io::Result<Option<PendingSave>> {
+        if self.close_committed {
+            return Ok(None);
+        }
+        self.keeper
+            .checkpoint(&self.pages, &self.snapshot, self.current_owner_attachment())
     }
 
     pub(crate) fn save_on_close(&self) {

@@ -28,28 +28,70 @@ pub(crate) struct PendingSave {
     prepared: Option<Arc<RetainedDisplay>>,
 }
 
-impl PendingSave {
-    pub(crate) fn captured_root(&self) -> VersionedRoot { self.root }
+enum SnapshotWrite {
+    Written(usize),
+    Superseded,
+    OwnerLost,
+}
 
-    /// Writes them, and says how long it took.
+impl PendingSave {
+    pub(crate) fn captured_root(&self) -> VersionedRoot {
+        self.root
+    }
+
+    pub(crate) fn write_checkpoint(&self) -> std::io::Result<usize> {
+        match self.write_outcome("graceful close")? {
+            SnapshotWrite::Written(bytes) => Ok(bytes),
+            SnapshotWrite::Superseded => Err(std::io::Error::other(
+                "A newer reading snapshot superseded this close attempt. Try saving again.",
+            )),
+            SnapshotWrite::OwnerLost => Err(std::io::Error::other(
+                "The reading owner changed before the final snapshot was saved. The previous valid snapshot remains available.",
+            )),
+        }
+    }
+
+    /// Ordinary at-rest saves may become obsolete without an error. A close
+    /// checkpoint must use write_checkpoint and acknowledge only publication.
     pub(crate) fn write(&self, when: &str) -> std::io::Result<usize> {
+        self.write_outcome(when).map(|outcome| match outcome {
+            SnapshotWrite::Written(bytes) => bytes,
+            SnapshotWrite::Superseded | SnapshotWrite::OwnerLost => 0,
+        })
+    }
+
+    fn write_outcome(&self, when: &str) -> std::io::Result<SnapshotWrite> {
         let saving = std::time::Instant::now();
-        let display = self.capture.as_ref().and_then(DisplayCapture::prepare).map(Arc::new)
+        let display = self
+            .capture
+            .as_ref()
+            .and_then(DisplayCapture::prepare)
+            .map(Arc::new)
             .or_else(|| self.prepared.clone());
         let displays = display.into_iter().collect::<Vec<_>>();
         // Prepare outside the lock; publish in admission order. A cancelled
         // older at-rest task can finish its I/O, but cannot overwrite a newer
         // successful close checkpoint once it eventually reaches this fence.
-        let mut committed = self.committed.lock().unwrap_or_else(PoisonError::into_inner);
-        if self.sequence <= *committed || self.owner.as_ref().is_some_and(|owner| !owner.is_current()) { return Ok(0); }
-        let written = self.file.write_displays(self.root, &self.pages, &displays)?;
+        let mut committed = self
+            .committed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.sequence <= *committed {
+            return Ok(SnapshotWrite::Superseded);
+        }
+        if self.owner.as_ref().is_some_and(|owner| !owner.is_current()) {
+            return Ok(SnapshotWrite::OwnerLost);
+        }
+        let written = self
+            .file
+            .write_displays(self.root, &self.pages, &displays)?;
         *committed = self.sequence;
         crate::runtime::trace::span(
             "snapshot.write",
             saving,
             format_args!("{} pages, {written} bytes, {when}", self.pages.len()),
         );
-        Ok(written)
+        Ok(SnapshotWrite::Written(written))
     }
 }
 
@@ -113,7 +155,12 @@ impl SnapshotKeeper {
 
     /// The route's pages as they are now, when all are current at a served
     /// root: what the next launch paints first.
-    fn to_save(&self, pages: &PageStore, snapshot: &AppSnapshot, owner_serving: bool) -> Option<PendingSave> {
+    fn to_save(
+        &self,
+        pages: &PageStore,
+        snapshot: &AppSnapshot,
+        owner_serving: bool,
+    ) -> Option<PendingSave> {
         // Gate loss may precede the store's revocation events. Such bytes
         // must not be saved as current during that intervening UI turn.
         if !owner_serving {
@@ -136,7 +183,10 @@ impl SnapshotKeeper {
             // A staged page is useful on screen, but its read is still in
             // flight. Never replay that partial model as a complete page on
             // the next launch.
-            if pages.is_seeded(key) || pages.is_owner_read_revoked(key) || pages.inflight(key).is_some() {
+            if pages.is_seeded(key)
+                || pages.is_owner_read_revoked(key)
+                || pages.inflight(key).is_some()
+            {
                 return None;
             }
             match key {
@@ -147,7 +197,10 @@ impl SnapshotKeeper {
                 PageKey::Package(package) => at(&pages.package(package), root)
                     .map(|dossier| SeedEntry::Package(package.clone(), dossier)),
                 PageKey::Orbit => at(&pages.orbit(), root).map(SeedEntry::Orbit),
-                PageKey::CargoSource(_) | PageKey::Search(_) | PageKey::Health | PageKey::Browse(_) => None,
+                PageKey::CargoSource(_)
+                | PageKey::Search(_)
+                | PageKey::Health
+                | PageKey::Browse(_) => None,
             }
         };
         let kept = kept_keys(snapshot.route())
@@ -155,20 +208,54 @@ impl SnapshotKeeper {
             .filter_map(current)
             .collect::<Vec<_>>();
         let capture = DisplayCapture::select(pages, snapshot.route(), root);
-        let prepared = self.prepared.as_ref().filter(|display| display.source_matches_route(snapshot.route())
-            && display.observation().cursor.as_slice() == root.revision().encode_control().as_ref()
-            && display.observation().producer_epoch == root.producer_epoch()).cloned();
-        (!kept.is_empty() || capture.is_some() || prepared.is_some()).then_some(PendingSave {
-            sequence: self.next_write.fetch_add(1, Ordering::Relaxed) + 1,
-            committed: self.committed.clone(), owner: None,
-            file, root, pages: kept, capture, prepared,
+        let prepared = self
+            .prepared
+            .as_ref()
+            .filter(|display| {
+                display.source_matches_route(snapshot.route())
+                    && display.observation().cursor.as_slice()
+                        == root.revision().encode_control().as_ref()
+                    && display.observation().producer_epoch == root.producer_epoch()
+            })
+            .cloned();
+        if kept.is_empty() && capture.is_none() && prepared.is_none() {
+            return None;
+        }
+        let sequence = self
+            .next_write
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .ok()?
+            .checked_add(1)?;
+        Some(PendingSave {
+            sequence,
+            committed: self.committed.clone(),
+            owner: None,
+            file,
+            root,
+            pages: kept,
+            capture,
+            prepared,
         })
     }
 
-    pub(super) fn checkpoint(&self, pages: &PageStore, snapshot: &AppSnapshot, owner: Option<super::OwnerAttachment>) -> Option<PendingSave> {
-        let mut save = self.to_save(pages, snapshot, owner.is_some())?;
-        save.owner = owner;
-        Some(save)
+    pub(super) fn checkpoint(
+        &self,
+        pages: &PageStore,
+        snapshot: &AppSnapshot,
+        owner: Option<super::OwnerAttachment>,
+    ) -> std::io::Result<Option<PendingSave>> {
+        let save = self.to_save(pages, snapshot, owner.is_some());
+        if save.is_none() && self.next_write.load(Ordering::Relaxed) == u64::MAX {
+            return Err(std::io::Error::other(
+                "The reading snapshot revision is exhausted. The previous valid snapshot was preserved.",
+            ));
+        }
+        Ok(save.map(|mut save| {
+            save.owner = owner;
+            save
+        }))
     }
 
     /// Saves the launch snapshot now, on this thread (quit).
@@ -205,7 +292,8 @@ impl SnapshotKeeper {
         }
         self.saving = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SAVE_IDLE).await;
-            let Ok(Some(save)) = this.update(cx, |store, _| {
+            let Ok(Ok(Some(save))) = this.update(cx, |store, _| {
+                if store.close_paused { return Ok(None); }
                 store.keeper.checkpoint(&store.pages, &store.snapshot, store.current_owner_attachment())
             }) else {
                 return;
@@ -274,6 +362,84 @@ mod tests {
         assert_eq!(worker.join().expect("old worker").expect("obsolete packet skipped"), 0);
         assert_eq!(std::fs::read(file.path()).expect("still final"), final_bytes);
         assert!(file.read(&[PageKey::Orbit]).expect("read final snapshot").root.serves(last));
+        std::fs::remove_dir_all(directory).expect("fixture removed");
+    }
+
+    #[test]
+    fn close_packet_skip_and_sequence_exhaustion_cannot_acknowledge_publication() {
+        let directory = crate::host::scratch_base().join(format!(
+            "nx-close-exhaust-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        crate::host::private_dir(&directory).expect("fixture");
+        let file = SnapshotFile::in_data(&directory);
+        let mut keeper = SnapshotKeeper::default();
+        keeper.file = Some(file.clone());
+        let root = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("close".into(), "skip".into())]),
+            1,
+        );
+        let snapshot = AppSnapshot::empty(root);
+        let mut pages = PageStore::default();
+        assert!(pages.seed(
+            SeedEntry::Orbit(Arc::new(OrbitModel {
+                indexed: Known::Known(Arc::from([])),
+                projects: Known::Known(Arc::from([])),
+                explore: Known::Known(Arc::from([])),
+                tree: Known::Known(Arc::from([])),
+            })),
+            root
+        ));
+        let obsolete = keeper
+            .to_save(&pages, &snapshot, true)
+            .expect("obsolete packet");
+        let current = keeper
+            .to_save(&pages, &snapshot, true)
+            .expect("current packet");
+        assert!(current.write_checkpoint().expect("published packet") > 0);
+        let valid = std::fs::read(file.path()).expect("valid bytes");
+        assert!(
+            obsolete.write_checkpoint().is_err(),
+            "a skipped packet is not a close acknowledgement"
+        );
+        let gate = crate::runtime::owner::OwnerGate::starting();
+        gate.publish(crate::runtime::owner::OwnerState::Ready {
+            key: root,
+            mode: crate::model::ServiceMode::Embedded,
+        });
+        let attachment = super::super::OwnerLink::behind(gate.clone()).current_attachment();
+        let owner_packet = keeper
+            .checkpoint(&pages, &snapshot, attachment)
+            .expect("admission")
+            .expect("owned packet");
+        gate.publish(crate::runtime::owner::OwnerState::Starting);
+        assert!(
+            owner_packet.write_checkpoint().is_err(),
+            "lost owner preserves old bytes and requires a close decision"
+        );
+        assert_eq!(std::fs::read(file.path()).expect("preserved file"), valid);
+        keeper.next_write.store(u64::MAX - 1, Ordering::Relaxed);
+        let last = keeper
+            .to_save(&pages, &snapshot, true)
+            .expect("last representable revision");
+        assert_eq!(last.sequence, u64::MAX);
+        assert!(last.write_checkpoint().is_ok());
+        let attachment = super::super::OwnerLink::serving().current_attachment();
+        assert!(
+            keeper.checkpoint(&pages, &snapshot, attachment).is_err(),
+            "revision exhaustion is explicit"
+        );
+        assert!(keeper.to_save(&pages, &snapshot, true).is_none());
+        assert_eq!(
+            keeper.next_write.load(Ordering::Relaxed),
+            u64::MAX,
+            "counter never wraps"
+        );
+        assert_eq!(std::fs::read(file.path()).expect("last valid file"), valid);
         std::fs::remove_dir_all(directory).expect("fixture removed");
     }
 

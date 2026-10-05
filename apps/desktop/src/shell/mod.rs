@@ -50,7 +50,7 @@ mod status;
 #[cfg(test)]
 mod symbol_links;
 mod system;
-mod text_fit;
+pub(crate) mod text_fit;
 mod titlebar;
 
 #[cfg(test)]
