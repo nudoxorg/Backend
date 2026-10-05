@@ -118,7 +118,7 @@ pub(crate) struct GraphViewRequest {
 
 enum QueuedIntent {
     Plain(Intent),
-    Index { intent: Intent, attachment: OwnerAttachment },
+    Index { intent: Intent, attachment: super::actor::IndexMutationLease },
     IndexStatus { intent: Intent, attachment: OwnerAttachment },
     Read { intent: Intent, lease: RouteReadLease, sequence: u64 },
 }
@@ -127,11 +127,69 @@ impl QueuedIntent {
     fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::Index { intent, .. } | Self::IndexStatus { intent, .. } | Self::Read { intent, .. } => intent } }
 }
 
+enum IndexPreflightSave { Writing, Saved }
+
 struct IndexPreflight {
     intent: Intent,
-    attachment: OwnerAttachment,
+    attachment: super::actor::IndexMutationLease,
+    save: IndexPreflightSave,
     revision: WriteRevision,
     _task: Option<Task<()>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IndexPreflightRefusal {
+    ProjectRemoved,
+    ProjectChanged,
+    ClaimChanged,
+    OwnerUnavailable,
+    OwnerAttachmentChanged,
+    ProducerStreamChanged,
+    AuthorityRegressed,
+}
+
+impl IndexPreflightRefusal {
+    fn message(self) -> &'static str {
+        match self {
+            Self::ProjectRemoved => "The folder was removed while its index request was being saved. Nothing was sent.",
+            Self::ProjectChanged => "This folder's index state changed while its request was being saved. Nothing was sent.",
+            Self::ClaimChanged => "This folder now belongs to a different index attempt. Nothing was sent for the saved request.",
+            Self::OwnerUnavailable => "The local service is unavailable. Nothing was sent; retry when it is ready.",
+            Self::OwnerAttachmentChanged => "The local service attachment changed while this request was being saved. Nothing was sent; retry against its current attachment.",
+            Self::ProducerStreamChanged => "The index producer stream changed while this request was being saved. Nothing was sent; retry against the current index.",
+            Self::AuthorityRegressed => "The index authority regressed or conflicted while this request was being saved. Nothing was sent.",
+        }
+    }
+}
+
+/// A saved mutation retains its caller operation across ordinary publications.
+/// This does not authorize a read at the old root or cross an owner attachment.
+fn index_preflight_basis(
+    snapshot: &AppSnapshot,
+    project: &crate::core::LocalProjectId,
+    operation: &crate::model::IndexOperationClaim,
+    basis: crate::core::VersionedRoot,
+) -> Result<crate::core::VersionedRoot, IndexPreflightRefusal> {
+    let row = snapshot.workspace().projects.iter().find(|row| row.id == *project)
+        .ok_or(IndexPreflightRefusal::ProjectRemoved)?;
+    if row.phase != crate::model::ProjectPhase::Indexing || row.request.is_some() {
+        return Err(IndexPreflightRefusal::ProjectChanged);
+    }
+    if !operation.belongs_to(project) || row.operation.as_ref().is_some_and(|saved|
+        !saved.same_request(operation) || saved.observation.is_some()) {
+        return Err(IndexPreflightRefusal::ClaimChanged);
+    }
+    let current = snapshot.key();
+    if current.same_authority(basis) { return Ok(current); }
+    let (old, next) = (basis.revision(), current.revision());
+    if current.producer_epoch() != basis.producer_epoch() || old.recipe() != next.recipe()
+        || old.branch() != next.branch() || old.log() != next.log() || old.schema() != next.schema() {
+        return Err(IndexPreflightRefusal::ProducerStreamChanged);
+    }
+    if next.sequence() <= old.sequence() {
+        return Err(IndexPreflightRefusal::AuthorityRegressed);
+    }
+    Ok(current)
 }
 
 /// The complete UI-thread state owner for one desktop window.
@@ -286,10 +344,11 @@ impl UiRootEntity {
             match queued {
                 QueuedIntent::Plain(intent) => self.dispatch(intent, cx),
                 QueuedIntent::Index { intent, attachment }
-                    if self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&attachment))
-                        && matches!(&intent, Intent::IndexProject { basis, project, .. } if self.snapshot().key().same_authority(*basis)
-                            && self.snapshot().workspace().projects.iter().any(|item| item.id == *project
-                                && item.phase == crate::model::ProjectPhase::Indexing && item.request.is_none() && item.operation.is_none())) => self.dispatch_index(intent, attachment, cx),
+                    if matches!(&intent, Intent::IndexProject { project, operation, basis, .. }
+                        if index_preflight_basis(&self.snapshot(), project, operation, *basis).is_ok()
+                            && matches!(attachment.admission(*basis), super::owner::MutationAdmission::Ready(_) | super::owner::MutationAdmission::Observing)) => {
+                        self.dispatch_index(intent, attachment, cx);
+                    }
                 QueuedIntent::IndexStatus { intent, attachment }
                     if self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&attachment))
                         && matches!(&intent, Intent::ReconcileIndexProject { project, operation, basis, .. }
@@ -310,16 +369,16 @@ impl UiRootEntity {
     /// A crash after this save is conservatively Unconfirmed on restart; a
     /// failed save leaves the folder unsent. Persistence already belongs to
     /// this root, and the exact owner lease is checked again after publication.
-    fn dispatch_index(&mut self, intent: Intent, attachment: OwnerAttachment, cx: &mut Context<Self>) {
+    fn dispatch_index(&mut self, intent: Intent, attachment: super::actor::IndexMutationLease, cx: &mut Context<Self>) {
         let Intent::IndexProject { project, .. } = &intent else { return; };
         let project = project.clone();
         if self.quitting || self.index_preflights.contains_key(&project) { return; }
         if self.index_preflights.len() >= super::persistence_writer::MAX_INDEX_PREFLIGHTS {
-            self.reject_index_preflight(&intent, &attachment, "Several index requests are already waiting to be saved. Nothing was sent for this folder; try again after they settle.".into(), cx);
+            self.reject_index_preflight(&intent, "Several index requests are already waiting to be saved. Nothing was sent for this folder; try again after they settle.".into(), cx);
             return;
         }
         if let Err(error) = self.ensure_persistence_writer(cx) {
-            self.reject_index_preflight(&intent, &attachment, error.message, cx);
+            self.reject_index_preflight(&intent, error.message, cx);
             return;
         }
         let submitted = crate::navigation::reduce(&self.snapshot(), intent.clone()).snapshot;
@@ -328,9 +387,9 @@ impl UiRootEntity {
         let saved = writer.barrier(move || overlay_claims(PersistentState::project(&submitted), claims));
         let (revision, acknowledgment) = match saved {
             Ok(saved) => saved,
-            Err(error) => { self.reject_index_preflight(&intent, &attachment, error.message, cx); return; }
+            Err(error) => { self.reject_index_preflight(&intent, error.message, cx); return; }
         };
-        self.index_preflights.insert(project.clone(), IndexPreflight { intent, attachment, revision, _task: None });
+        self.index_preflights.insert(project.clone(), IndexPreflight { intent, attachment, save: IndexPreflightSave::Writing, revision, _task: None });
         let completed_project = project.clone();
         let task = cx.spawn(async move |root, cx| {
             let saved = acknowledgment.recv().await.unwrap_or_else(|_| Err(WriteFailure { message: "The local state writer closed before confirming this index request. Nothing was sent.".into() }));
@@ -340,14 +399,11 @@ impl UiRootEntity {
     }
 
     fn complete_index_preflight(&mut self, project: crate::core::LocalProjectId, revision: WriteRevision, result: Result<WriteAck, WriteFailure>, cx: &mut Context<Self>) {
-        if self.quitting || !self.index_preflights.get(&project).is_some_and(|pending| pending.revision == revision)
+        if self.quitting || !self.index_preflights.get(&project).is_some_and(|pending| pending.revision == revision
+            && matches!(pending.save, IndexPreflightSave::Writing))
             || !self.persistence_writer.as_ref().is_some_and(|writer| writer.accepts(revision)) { return; }
-        let Some(pending) = self.index_preflights.remove(&project) else { return; };
-        let Intent::IndexProject { basis, operation, request, .. } = &pending.intent else { return; };
-        let live = self.snapshot().key().same_authority(*basis)
-            && self.snapshot().workspace().projects.iter().any(|row| row.id == project
-                && row.phase == crate::model::ProjectPhase::Indexing && row.request.is_none() && row.operation.is_none())
-            && self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&pending.attachment));
+        let Some(pending) = self.index_preflights.get(&project) else { return; };
+        let Intent::IndexProject { operation, .. } = &pending.intent else { return; };
         let result = result.and_then(|ack| {
             if ack.revision != revision || !ack.state.shelf.iter().any(|row| row.local_path == project.as_str()
                 && row.phase == crate::model::PersistedProjectPhase::Indexing
@@ -355,35 +411,69 @@ impl UiRootEntity {
                 && row.operation.as_ref().is_some_and(|saved| saved == operation && saved.belongs_to(&project))) {
                 return Err(WriteFailure { message: "The saved state did not confirm this exact index operation. Nothing was sent.".into() });
             }
-            Ok(ack)
+            Ok(()) // retain the validated claim state, never the full acknowledgment
         });
-        self.record_persistence_outcome(revision, result.as_ref().map(|_| ()).map_err(Clone::clone), cx);
-        if !live {
-            // A removed/cancelled row is never resurrected. A still-unsent row
-            // gets an explicit local refusal, without an owner terminal claim.
-            let current_basis = self.snapshot().key();
-            let events = self.runtime.reject_unsent_index(&project, current_basis,
-                "The index owner changed while this request was being saved. Nothing was sent; retry when the owner is available.".into());
-            self.apply_events(events, cx);
-            return;
-        }
+        self.record_persistence_outcome(revision, result.clone(), cx);
         match result {
-            Ok(_) => {
-                // The saved claim is the authorization; request identity is
-                // still the exact root-owned request captured before saving.
-                debug_assert!(matches!(&pending.intent, Intent::IndexProject { request: current, .. } if current == request));
-                self.dispatch_runtime(pending.intent, cx);
+            Ok(()) => {
+                if let Some(pending) = self.index_preflights.get_mut(&project) {
+                    pending.save = IndexPreflightSave::Saved;
+                    pending._task = None;
+                }
+                self.resume_saved_index(project, cx);
             }
-            Err(error) => self.reject_index_preflight(&pending.intent, &pending.attachment, error.message, cx),
+            Err(error) => {
+                if let Some(pending) = self.index_preflights.remove(&project) {
+                    self.reject_index_preflight(&pending.intent, format!("This index request could not be saved: {}", error.message).into(), cx);
+                }
+            }
         }
     }
 
-    fn reject_index_preflight(&mut self, intent: &Intent, attachment: &OwnerAttachment, message: Arc<str>, cx: &mut Context<Self>) {
-        if let Intent::IndexProject { project, basis, .. } = intent
-            && self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(attachment)) {
-            let message = format!("The folder remains on your shelf, but this index request could not be saved: {message}")
-                .chars().filter(|c| !c.is_control()).take(300).collect::<String>().into();
-            let events = self.runtime.reject_unsent_index(project, *basis, message);
+    fn resume_saved_indexes(&mut self, cx: &mut Context<Self>) {
+        let saved = self.index_preflights.iter().filter(|(_, pending)| matches!(pending.save, IndexPreflightSave::Saved))
+            .map(|(project, _)| project.clone()).collect::<Vec<_>>();
+        for project in saved { self.resume_saved_index(project, cx); }
+    }
+
+    fn resume_saved_index(&mut self, project: crate::core::LocalProjectId, cx: &mut Context<Self>) {
+        if self.quitting { return; }
+        let Some(pending) = self.index_preflights.get(&project) else { return; };
+        if !matches!(pending.save, IndexPreflightSave::Saved) { return; }
+        let Intent::IndexProject { basis, operation, request, .. } = &pending.intent else { return; };
+        let live = index_preflight_basis(&self.snapshot(), &project, operation, *basis);
+        let admitted = live.and_then(|current| match pending.attachment.admission(*basis) {
+            super::owner::MutationAdmission::Ready(certified) if certified.same_authority(current) => Ok(Some(current)),
+            super::owner::MutationAdmission::Ready(_) | super::owner::MutationAdmission::Observing => Ok(None),
+            super::owner::MutationAdmission::Replaced => Err(IndexPreflightRefusal::OwnerAttachmentChanged),
+            super::owner::MutationAdmission::Unavailable(_) => Err(IndexPreflightRefusal::OwnerUnavailable),
+        });
+        match admitted {
+            Ok(None) => {
+                super::trace::mark("index.preflight.waiting", format_args!("saved request {request:?}; waiting for certified owner observation"));
+            }
+            Ok(Some(current)) => {
+                if !current.same_authority(*basis) {
+                    super::trace::mark("index.preflight.rebased", format_args!("captured {basis}; current {current}; request {request:?}"));
+                }
+                let intent = Intent::IndexProject { project: project.clone(), operation: operation.clone(), basis: current, request: *request };
+                let owner = pending.attachment.clone();
+                self.index_preflights.remove(&project);
+                let events = self.runtime.dispatch_saved_index(intent, owner);
+                self.apply_events(events, cx);
+            }
+            Err(reason) => {
+                super::trace::mark("index.preflight.refused", format_args!("{reason:?}; captured {basis}; current {}; request {request:?}", self.snapshot().key()));
+                let intent = pending.intent.clone();
+                self.index_preflights.remove(&project);
+                self.reject_index_preflight(&intent, reason.message().into(), cx);
+            }
+        }
+    }
+
+    fn reject_index_preflight(&mut self, intent: &Intent, message: Arc<str>, cx: &mut Context<Self>) {
+        if let Intent::IndexProject { project, operation, .. } = intent {
+            let events = self.runtime.reject_unsent_index(project, self.snapshot().key(), Some(operation), message);
             self.apply_events(events, cx);
         }
     }
@@ -524,7 +614,7 @@ impl UiRootEntity {
     /// Applies a typed intent immediately from a harness or startup phase.
     pub fn dispatch(&mut self, intent: Intent, cx: &mut Context<Self>) {
         if matches!(&intent, Intent::IndexProject { .. }) {
-            if let Some(attachment) = self.store.as_ref().and_then(|store| store.read(cx).current_owner_attachment()) {
+            if let Some(attachment) = self.store.as_ref().and_then(|store| store.read(cx).current_index_owner()) {
                 self.dispatch_index(intent, attachment, cx);
             }
             return;
@@ -532,7 +622,11 @@ impl UiRootEntity {
         if let Intent::ResolveCargoBrowse { expected, context } = &intent
             && self.cargo_resolution_dependency(expected, context, cx).is_none() { return; }
         match &intent {
-            Intent::RemoveProject(project) | Intent::CancelIndex(project) | Intent::RetryIndex(project) => { self.index_preflights.remove(project); }
+            Intent::RemoveProject(project) | Intent::CancelIndex(project) | Intent::RetryIndex(project) => {
+                if let Some(pending) = self.index_preflights.remove(project) {
+                    self.runtime.release_unsent_claim(&pending.intent);
+                }
+            }
             _ => {}
         }
         self.reduced = self.reduced.saturating_add(1);
@@ -733,11 +827,13 @@ impl UiRootEntity {
     pub(crate) fn owner_starting(&mut self, cx: &mut Context<Self>) {
         self.connection_probe.clear();
         self.dispatch_runtime(Intent::OwnerStarting, cx);
+        self.resume_saved_indexes(cx);
     }
 
     pub(crate) fn owner_unavailable(&mut self, cx: &mut Context<Self>) {
         self.connection_probe.clear();
         self.dispatch_runtime(Intent::OwnerUnavailable, cx);
+        self.resume_saved_indexes(cx);
     }
 
     fn dispatch_runtime(&mut self, intent: Intent, cx: &mut Context<Self>) {
@@ -792,7 +888,7 @@ impl UiRootEntity {
     fn resume_indexes_after_owner(&self, cx: &mut Context<Self>) {
         let root = cx.weak_entity();
         cx.defer(move |cx| {
-            let _ = root.update(cx, Self::schedule_pending_indexes);
+            let _ = root.update(cx, |root, cx| { root.resume_saved_indexes(cx); root.schedule_pending_indexes(cx); });
         });
     }
 
@@ -827,13 +923,13 @@ impl UiRootEntity {
         }
         let Some(store) = &self.store else { return; };
         let store = store.read(cx);
-        let Some(attachment) = store.current_owner_attachment() else { return; };
+        let Some(attachment) = store.current_index_owner() else { return; };
         let basis = self.snapshot().key();
         if !store.snapshot().key().same_authority(basis) { return; }
         let operation = match crate::model::IndexOperationClaim::fresh(&project) {
             Ok(operation) => operation,
             Err(message) => {
-                let events = self.runtime.reject_unsent_index(&project, basis, message.into());
+                let events = self.runtime.reject_unsent_index(&project, basis, None, message.into());
                 self.apply_events(events, cx);
                 return;
             }
@@ -928,6 +1024,7 @@ impl UiRootEntity {
         super::acquire::follow_indexed_projects(before.as_deref(), &self.snapshot(), cx.weak_entity(), cx);
         // Cold restart restores durable Indexing rows without an ephemeral
         // request; reattach them once through the typed intent path.
+        self.resume_saved_indexes(cx);
         self.schedule_pending_indexes(cx);
         self.schedule_operation_observation(cx);
     }

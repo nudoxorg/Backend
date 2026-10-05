@@ -109,16 +109,18 @@ impl DesktopRuntime {
 
     /// A synchronous local preflight refusal, callable only inside the runtime
     /// boundary. It cannot be queued as an unrestricted late UI intent.
-    pub(crate) fn reject_unsent_index(&mut self, project: &LocalProjectId, basis: crate::core::VersionedRoot, message: Arc<str>) -> Vec<RuntimeEvent> {
+    pub(crate) fn reject_unsent_index(&mut self, project: &LocalProjectId, basis: crate::core::VersionedRoot, operation: Option<&crate::model::IndexOperationClaim>, message: Arc<str>) -> Vec<RuntimeEvent> {
         if !self.snapshot.key().same_authority(basis) { return Vec::new(); }
         let mut workspace = self.snapshot.workspace().clone();
         let mut projects = workspace.projects.to_vec();
         let Some(row) = projects.iter_mut().find(|row| row.id == *project
-            && row.phase == crate::model::ProjectPhase::Indexing && row.request.is_none() && row.operation.is_none()) else { return Vec::new(); };
+            && row.phase == crate::model::ProjectPhase::Indexing && row.request.is_none()
+            && row.operation.as_ref().is_none_or(|saved| operation.is_some_and(|operation| saved.same_request(operation) && saved.observation.is_none()))) else { return Vec::new(); };
         row.phase = crate::model::ProjectPhase::Failed;
         row.error = Some(message);
         row.progress = None;
         row.files_indexed = None;
+        row.operation = None; // this boundary proves no mutation was sent
         workspace.projects = projects.into();
         self.snapshot = Arc::new(self.snapshot.with_workspace(workspace));
         vec![RuntimeEvent::SnapshotChanged(self.snapshot.clone()), RuntimeEvent::PersistRequested(self.snapshot.clone())]
@@ -143,12 +145,36 @@ impl DesktopRuntime {
 
     /// Applies a typed intent and submits only the effects it emits.
     pub fn dispatch(&mut self, intent: Intent) -> Vec<RuntimeEvent> {
+        self.dispatch_with_owner(intent, None)
+    }
+
+    /// Only the root's checked durable acknowledgment may use this boundary.
+    pub(crate) fn dispatch_saved_index(&mut self, intent: Intent, owner: super::actor::IndexMutationLease) -> Vec<RuntimeEvent> {
+        self.release_unsent_claim(&intent);
+        self.dispatch_with_owner(intent, Some(owner))
+    }
+
+    /// A root-owned preflight proves this exact claim has never reached transport.
+    pub(crate) fn release_unsent_claim(&mut self, intent: &Intent) {
+        let Intent::IndexProject { project, operation, .. } = intent else { return; };
+        let mut workspace = self.snapshot.workspace().clone();
+        let mut projects = workspace.projects.to_vec();
+        if let Some(row) = projects.iter_mut().find(|row| row.id == *project
+            && row.phase == crate::model::ProjectPhase::Indexing && row.request.is_none()
+            && row.operation.as_ref().is_some_and(|saved| saved.same_request(operation) && saved.observation.is_none())) {
+            row.operation = None;
+            workspace.projects = projects.into();
+            self.snapshot = Arc::new(self.snapshot.with_workspace(workspace));
+        }
+    }
+
+    fn dispatch_with_owner(&mut self, intent: Intent, owner: Option<super::actor::IndexMutationLease>) -> Vec<RuntimeEvent> {
         let reduction = reduce(&self.snapshot, intent);
         self.snapshot = Arc::new(reduction.snapshot);
         let mut events = vec![RuntimeEvent::SnapshotChanged(Arc::clone(&self.snapshot))];
         for effect in reduction.effects {
             match effect {
-                Effect::Engine(command) => events.extend(self.submit(command)),
+                Effect::Engine(command) => events.extend(self.submit(command, owner.clone())),
                 Effect::Persist => {
                     events.push(RuntimeEvent::PersistRequested(Arc::clone(&self.snapshot)));
                 }
@@ -160,7 +186,7 @@ impl DesktopRuntime {
     }
 
     #[allow(clippy::too_many_lines)] // one arm per engine command, kept flat
-    fn submit(&mut self, command: EngineCommand) -> Vec<RuntimeEvent> {
+    fn submit(&mut self, command: EngineCommand, owner: Option<super::actor::IndexMutationLease>) -> Vec<RuntimeEvent> {
         let (request, engine_request, basis, cancel) = match command {
             EngineCommand::CheckConnection { basis, request } => {
                 let cancel = CancellationToken::new();
@@ -201,6 +227,7 @@ impl DesktopRuntime {
                 (
                     request,
                     EngineRequest::IndexProject {
+                        owner,
                         request,
                         project,
                         operation,
@@ -303,13 +330,17 @@ impl DesktopRuntime {
         events
     }
 
-    /// Queue refusal is not an owner terminal answer, especially for a
-    /// status read of already accepted work. Release the local request while
-    /// retaining the exact durable claim for a later read.
+    /// A refused first-send request never entered the adapter and can release
+    /// its claim. A refused status read says nothing about already accepted
+    /// work, so that request retains its exact durable claim for reconciliation.
     fn hold_refused_index(&mut self, request: &EngineRequest) -> Vec<RuntimeEvent> {
         let (EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. }) = request else { return Vec::new(); };
+        let fault = if matches!(request, EngineRequest::IndexProject { .. }) {
+            super::actor::EngineFault::IndexNotSent { project: project.clone(), error: crate::core::ErrorValue::new(
+                FaultCode::Transport, "The local index queue did not accept this request. Nothing was sent; try again after it settles.") }
+        } else { super::actor::EngineFault::IndexUnconfirmed { project: project.clone() } };
         let event = super::actor::EngineEvent { basis: self.inflight.get(&request.request()).map_or(self.snapshot.key(), |entry| entry.basis), request: request.request(), lane: None,
-            result: Err(super::actor::EngineFault::IndexUnconfirmed { project: project.clone() }) };
+            result: Err(fault) };
         let Ok(snapshot) = map_event(&self.snapshot, event) else { return Vec::new(); };
         self.snapshot = Arc::new(snapshot);
         vec![RuntimeEvent::SnapshotChanged(self.snapshot.clone()), RuntimeEvent::PersistRequested(self.snapshot.clone())]
@@ -440,7 +471,7 @@ impl DesktopRuntime {
                     | super::actor::EngineFault::IndexCancelled { .. },
                 ) => RequestOutcome::Cancelled,
                 Err(super::actor::EngineFault::Superseded) => RequestOutcome::Superseded,
-                Err(super::actor::EngineFault::Failed(error) | super::actor::EngineFault::IndexFailed { error, .. }) => RequestOutcome::Failed(error.code()),
+                Err(super::actor::EngineFault::Failed(error) | super::actor::EngineFault::IndexFailed { error, .. } | super::actor::EngineFault::IndexNotSent { error, .. }) => RequestOutcome::Failed(error.code()),
                 Err(_) => RequestOutcome::Failed(FaultCode::Protocol),
                 Ok(_) => RequestOutcome::Succeeded,
             };
@@ -472,7 +503,8 @@ impl DesktopRuntime {
                             | super::actor::EngineFault::IndexCancelled { .. },
                         ) => RequestOutcome::Cancelled,
                         MappingError::Engine(super::actor::EngineFault::Failed(error)
-                            | super::actor::EngineFault::IndexFailed { error, .. }) => RequestOutcome::Failed(error.code()),
+                            | super::actor::EngineFault::IndexFailed { error, .. }
+                            | super::actor::EngineFault::IndexNotSent { error, .. }) => RequestOutcome::Failed(error.code()),
                         MappingError::Engine(super::actor::EngineFault::IndexUnconfirmed { .. }
                             | super::actor::EngineFault::MutationUnconfirmed) => RequestOutcome::Failed(FaultCode::Transport),
                         MappingError::BasisMismatch { .. }

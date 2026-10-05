@@ -287,20 +287,43 @@ impl LocalEngineClient {
     }
 
     fn request_index(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
-        let EngineRequest::IndexProject { request: request_id, project, operation, basis, .. } = request else {
+        let EngineRequest::IndexProject { request: request_id, project, operation, basis, owner, .. } = request else {
             unreachable!("index adapter called with a non-index request")
         };
         if !operation.belongs_to(project) {
-            return Err(EngineFault::IndexFailed { project: project.clone(), error: crate::core::ErrorValue::new(
+            return Err(EngineFault::IndexNotSent { project: project.clone(), error: crate::core::ErrorValue::new(
                 FaultCode::Protocol, "The saved index operation does not belong to this project.") });
         }
         let mut session = Session::connect_with_timeouts(&self.endpoint, DESKTOP_CONNECT_TIMEOUT, Duration::from_secs(30))
-            .map_err(|error| index_fault(project.clone(), self.client_fault(error)))?;
+            .map_err(|error| EngineFault::IndexNotSent { project: project.clone(), error: crate::core::ErrorValue::new(
+                FaultCode::Transport, format!("The first-send connection could not be opened: {error}. Nothing was sent.")) })?;
         let cancel = self.current_cancel()?;
         let result = {
             let _wake = cancel_wake(&cancel, session.interrupt_handle())
-                .map_err(|error| index_fault(project.clone(), error))?;
-            if cancel.is_cancelled() { return Err(EngineFault::IndexUnconfirmed { project: project.clone() }); }
+                .map_err(|error| EngineFault::IndexNotSent { project: project.clone(), error: crate::core::ErrorValue::new(
+                    FaultCode::Transport, format!("The first-send connection could not be cancelled safely: {error:?}. Nothing was sent.")) })?;
+            if let Some(owner) = owner {
+                let certified = owner.ready_for_send(*basis, &cancel).map_err(|message| EngineFault::IndexNotSent {
+                    project: project.clone(), error: crate::core::ErrorValue::new(FaultCode::Transport, message),
+                })?;
+                let revision = session.revision().map_err(|error| EngineFault::IndexNotSent {
+                    project: project.clone(), error: crate::core::ErrorValue::new(FaultCode::Transport,
+                        format!("The first-send connection could not confirm its index authority: {error}. Nothing was sent.")),
+                })?;
+                let socket = VersionedRoot::from_revision(certified.producer_epoch(), revision.cursor(), 0);
+                if !super::actor::admits_mutation_root(certified, socket) {
+                    return Err(EngineFault::IndexNotSent { project: project.clone(), error: crate::core::ErrorValue::new(
+                        FaultCode::Protocol, "The first-send connection did not match the current index producer stream. Nothing was sent.") });
+                }
+                // A later ordinary publication may overtake this revision
+                // read. Recheck lifetime/readiness against the captured basis;
+                // do not mistake that later observation for a socket regression.
+                owner.ready_for_send(*basis, &cancel).map_err(|message| EngineFault::IndexNotSent {
+                    project: project.clone(), error: crate::core::ErrorValue::new(FaultCode::Transport, message),
+                })?;
+            }
+            if cancel.is_cancelled() { return Err(EngineFault::IndexNotSent { project: project.clone(),
+                error: crate::core::ErrorValue::new(FaultCode::Transport, "This index request stopped before its first send. Nothing was sent.") }); }
             // Exactly one mutation send. Every interrupted answer is reconciled
             // by this persisted key; it never starts a new request implicitly.
             session.start_index_operation(operation.key, operation.package.clone(), operation.execution_intent)
@@ -437,11 +460,25 @@ fn cancel_wake(
 impl EngineClient for LocalEngineClient {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
         self.active_cancel = Some(request.cancellation().clone());
+        let _lifetime = match request {
+            EngineRequest::IndexProject { owner: Some(owner), project, basis, .. } => {
+                let lifetime = owner.bind_cancellation(request.cancellation());
+                if let Err(message) = owner.ready_for_send(*basis, request.cancellation()) {
+                    self.active_cancel = None;
+                    return Err(EngineFault::IndexNotSent { project: project.clone(),
+                        error: crate::core::ErrorValue::new(FaultCode::Transport, message) });
+                }
+                lifetime
+            }
+            _ => None,
+        };
         if let Some(gate) = &self.gate {
             if let Err(error) = gate.wait_cancelled(request.cancellation()) {
                 self.active_cancel = None;
                 return Err(match request {
-                    EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. } =>
+                    EngineRequest::IndexProject { project, .. } => EngineFault::IndexNotSent { project: project.clone(),
+                        error: crate::core::ErrorValue::new(FaultCode::Transport, format!("The owner stopped before this request's first send: {error}. Nothing was sent.")) },
+                    EngineRequest::IndexOperationStatus { project, .. } =>
                         EngineFault::IndexUnconfirmed { project: project.clone() },
                     _ => owner_fault(error),
                 });
@@ -449,7 +486,12 @@ impl EngineClient for LocalEngineClient {
             // Superseded while it waited (the startup root read, once the
             // owner's own root arrived): not run.
             if request.cancelled() {
-                return Err(EngineFault::Cancelled);
+                self.active_cancel = None;
+                return Err(match request {
+                    EngineRequest::IndexProject { project, .. } => EngineFault::IndexNotSent { project: project.clone(),
+                        error: crate::core::ErrorValue::new(FaultCode::Transport, "This index request stopped before its first send. Nothing was sent.") },
+                    _ => EngineFault::Cancelled,
+                });
             }
             // An attached owner may restart under the same root. Discard
             // sockets admitted by its prior serving generation before this
@@ -506,6 +548,7 @@ fn owner_change_result(
         return result;
     }
     match (request, result) {
+            (EngineRequest::IndexProject { .. }, Err(error @ EngineFault::IndexNotSent { .. })) => Err(error),
             (EngineRequest::IndexProject { .. } | EngineRequest::IndexOperationStatus { .. }, Ok(dto @ EngineDto::IndexOperation { .. }))
                 if matches!(&dto, EngineDto::IndexOperation { observation: backend_library::IndexOperationObservation::Known(status), .. }
                     if matches!(status.state, backend_library::IndexOperationState::Published(_) | backend_library::IndexOperationState::Failed { .. })) => Ok(dto),
@@ -550,13 +593,6 @@ fn project_label(project: &LocalProjectId) -> Arc<str> {
         .filter(|name| !name.is_empty())
         .map(Arc::<str>::from)
         .unwrap_or_else(|| Arc::from(project.as_str()))
-}
-
-fn index_fault(project: LocalProjectId, fault: EngineFault) -> EngineFault {
-    match fault {
-        EngineFault::Failed(error) => EngineFault::IndexFailed { project, error },
-        other => other,
-    }
 }
 
 pub(crate) fn package_summary(
@@ -627,6 +663,7 @@ mod tests {
         let basis = VersionedRoot::unserved();
         let request_id = RequestId::new(17);
         let request = EngineRequest::IndexProject {
+            owner: None,
             operation: crate::model::index_operation::tests::claim(&project, 0x51),
             request: request_id, project: project.clone(), basis,
             cancel: CancellationToken::new(),

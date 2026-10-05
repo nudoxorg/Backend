@@ -114,6 +114,11 @@ impl OwnerLink {
         })
     }
 
+    pub(super) fn current_mutation(&self) -> Option<crate::runtime::actor::IndexMutationLease> {
+        if !self.is_current_serving() { return None; }
+        crate::runtime::actor::IndexMutationLease::capture(self.gate.as_ref(), self.served_epoch)
+    }
+
     pub(super) fn current_fault(&self) -> Option<OwnerFault> {
         if let Some(gate) = &self.gate {
             return match gate.state() {

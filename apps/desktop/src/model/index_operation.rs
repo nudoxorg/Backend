@@ -100,6 +100,16 @@ impl IndexOperationClaim {
         self.key == other.key && self.package == other.package && self.execution_intent == other.execution_intent
     }
 
+    /// Exact owner terminal evidence permits replacing an attempt. A missing,
+    /// active, unknown or unresolved receipt cannot authorize another mutation.
+    #[must_use]
+    pub fn has_terminal_observation(&self) -> bool {
+        self.observation.as_ref().is_some_and(|observation| self.admits_observation(observation)
+            && matches!(observation, backend_library::IndexOperationObservation::Known(status)
+                if matches!(status.state, backend_library::IndexOperationState::Published(_)
+                    | backend_library::IndexOperationState::Failed { .. })))
+    }
+
     /// Whether the owner still owes a terminal observation. This is a work
     /// lifecycle, never a guess from package coverage or elapsed time.
     #[must_use]

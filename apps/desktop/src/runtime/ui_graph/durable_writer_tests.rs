@@ -14,11 +14,12 @@ struct HeldMutation {
     store: PersistentState,
     sent: Arc<AtomicUsize>,
     release: Arc<(Mutex<bool>, Condvar)>,
+    observed: Arc<Mutex<Vec<(crate::navigation::RequestId, crate::model::IndexOperationClaim, VersionedRoot)>>>,
 }
 impl EngineClient for HeldMutation {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
         if let EngineRequest::IndexProject {
-            project, operation, ..
+            project, operation, request, basis, ..
         } = request
         {
             let disk = self
@@ -31,6 +32,7 @@ impl EngineClient for HeldMutation {
                     .any(|row| row.operation.as_ref() == Some(operation)),
                 "every first mutation owns an exact synchronized claim"
             );
+            self.observed.lock().expect("request lineage").push((*request, operation.clone(), *basis));
             self.sent.fetch_add(1, Ordering::SeqCst);
             let (lock, changed) = &*self.release;
             let mut released = lock.lock().unwrap_or_else(PoisonError::into_inner);
@@ -58,9 +60,11 @@ struct Rig {
     release_mutation: Arc<(Mutex<bool>, Condvar)>,
     sent: Arc<AtomicUsize>,
     writes: Arc<Mutex<Vec<crate::model::PersistedDesktopState>>>,
+    observed: Arc<Mutex<Vec<(crate::navigation::RequestId, crate::model::IndexOperationClaim, VersionedRoot)>>>,
 }
 impl Drop for Rig {
     fn drop(&mut self) {
+        self.gate.close();
         let _ = self.release_save.send(());
         let (lock, changed) = &*self.release_mutation;
         *lock.lock().unwrap_or_else(PoisonError::into_inner) = true;
@@ -82,10 +86,8 @@ impl Rig {
         ));
         crate::host::private_dir(&directory).expect("private fixture");
         let project = LocalProjectId::from_path(&directory).expect("project identity");
-        let key = VersionedRoot::synthetic(
-            backend_library::view_state_root(&[("async-save".into(), "one".into())]),
-            1,
-        );
+        let view = crate::runtime::owner::publication_tests::view();
+        let key = VersionedRoot::from_revision(1, backend_library::Cursor::for_view_root_at(&view, 0), 0);
         let snapshot = crate::navigation::reduce(
             &AppSnapshot::empty(key),
             Intent::AddProject {
@@ -106,11 +108,13 @@ impl Rig {
         });
         let sent = Arc::new(AtomicUsize::new(0));
         let release_mutation = Arc::new((Mutex::new(false), Condvar::new()));
+        let observed = Arc::new(Mutex::new(Vec::new()));
         let actor = EngineActor::start(
             HeldMutation {
                 store: persistence.clone(),
                 sent: sent.clone(),
                 release: release_mutation.clone(),
+                observed: observed.clone(),
             },
             4,
         )
@@ -165,6 +169,7 @@ impl Rig {
             release_mutation,
             sent,
             writes,
+            observed,
         }
     }
     fn release(&self) {
@@ -372,4 +377,181 @@ fn same_claim_with_an_obsolete_revision_cannot_send_or_clear_a_newer_save_error(
         rig.sent.load(Ordering::SeqCst) == 1
     });
     rig.finish(cx);
+}
+
+type RegressionResult = Result<(), Box<dyn std::error::Error>>;
+
+fn lineage(rig: &Rig, cx: &TestAppContext) -> Result<Intent, Box<dyn std::error::Error>> {
+    rig.root.read_with(cx, |root, _| root.index_preflights.get(&rig.project).map(|pending| pending.intent.clone()))
+        .ok_or_else(|| "the exact first-send preflight must exist".into())
+}
+
+fn advance(rig: &Rig) -> Result<VersionedRoot, Box<dyn std::error::Error>> {
+    use backend_library::{Cursor, Row, RowId, ViewDelta, symbol_key};
+    let view = crate::runtime::owner::publication_tests::view();
+    let prepared = view.prepare(ViewDelta::Upsert {
+        row: Row::new(RowId::Symbol(symbol_key("preflight-publication")), view.basis(), "New publication"),
+    }, view.capability().ok_or("checked publication capability")?).map_err(|error| format!("{error:?}"))?;
+    let (next, _) = prepared.commit(&view).map_err(|error| format!("{error:?}"))?;
+    let cursor = Cursor::for_view_root_at(&next, 1);
+    let attachment = rig.gate.ready_epoch().ok_or("live read attachment")?;
+    assert_eq!(rig.gate.publish_view(attachment, Arc::new(next), cursor), crate::runtime::owner::PublicationAdmission::Admitted);
+    Ok(VersionedRoot::from_revision(1, cursor, 0))
+}
+
+fn assert_sent_lineage(rig: &Rig, intent: &Intent, basis: VersionedRoot) -> RegressionResult {
+    let Intent::IndexProject { request, operation, .. } = intent else { return Err("expected index intent".into()); };
+    crate::runtime::wait::until("one exact first send", || rig.sent.load(Ordering::SeqCst) == 1);
+    let observed = rig.observed.lock().map_err(|_| "request trace poisoned")?;
+    assert_eq!(observed.as_slice(), &[(*request, operation.clone(), basis)], "a root advance cannot allocate a new request or claim");
+    Ok(())
+}
+
+fn wait_saved(rig: &Rig, cx: &mut TestAppContext) {
+    crate::runtime::wait::until("the saved proof waits for certified readiness", || {
+        cx.run_until_parked();
+        rig.root.read_with(cx, |root, _| root.index_preflights.get(&rig.project)
+            .is_some_and(|pending| matches!(pending.save, IndexPreflightSave::Saved)))
+    });
+}
+
+#[gpui::test]
+fn delayed_save_survives_a_checked_same_owner_publication_with_exact_lineage(cx: &mut TestAppContext) {
+    let result = exercise_publication(cx);
+    assert!(result.is_ok(), "index preflight regression: {result:?}");
+}
+fn exercise_publication(cx: &mut TestAppContext) -> RegressionResult {
+    let rig = Rig::new(cx);
+    let intent = lineage(&rig, cx)?;
+    cx.update(|cx| crate::runtime::owner::watch(rig.gate.clone(), &rig.root, &rig.store, cx));
+    let next = advance(&rig)?;
+    cx.run_until_parked();
+    assert_eq!(rig.sent.load(Ordering::SeqCst), 0, "publication cannot bypass synchronization");
+    rig.release();
+    rig.settle(cx);
+    assert_sent_lineage(&rig, &intent, next)?;
+    rig.root.update(cx, |root, cx| root.resume_saved_indexes(cx));
+    assert_eq!(rig.sent.load(Ordering::SeqCst), 1, "one validated receipt can dispatch only once");
+    rig.finish(cx);
+    Ok(())
+}
+
+#[gpui::test]
+fn saved_request_waits_through_freshness_recovery_without_a_false_failure(cx: &mut TestAppContext) {
+    let result = exercise_recovery(cx, false);
+    assert!(result.is_ok(), "index preflight regression: {result:?}");
+}
+#[gpui::test]
+fn rejected_read_lease_reacquisition_retains_the_unsent_mutation_lifetime(cx: &mut TestAppContext) {
+    let result = exercise_recovery(cx, true);
+    assert!(result.is_ok(), "index preflight regression: {result:?}");
+}
+fn exercise_recovery(cx: &mut TestAppContext, replace: bool) -> RegressionResult {
+    let rig = Rig::new(cx);
+    let intent = lineage(&rig, cx)?;
+    let before = rig.root.read_with(cx, |root, _| root.snapshot());
+    let old = rig.gate.ready_epoch().ok_or("old read lease")?;
+    let view = crate::runtime::owner::publication_tests::view();
+    assert_eq!(rig.gate.publish_view(old, view.clone(), before.key().revision()), crate::runtime::owner::PublicationAdmission::Admitted);
+    cx.update(|cx| crate::runtime::owner::watch(rig.gate.clone(), &rig.root, &rig.store, cx));
+    let renewed = if replace {
+        rig.gate.replace_observation(old).ok_or("replace rejected read lease")?.0
+    } else { rig.gate.suspend_observation(old).ok_or("suspend freshness")? };
+    assert_ne!(old, renewed);
+    rig.release();
+    wait_saved(&rig, cx);
+    assert_eq!(rig.sent.load(Ordering::SeqCst), 0);
+    let saved = rig.persistence.load()?;
+    let Intent::IndexProject { operation, .. } = &intent else { return Err("index lineage".into()); };
+    assert_eq!(saved.shelf[0].operation.as_ref(), Some(operation));
+    assert_eq!(saved.shelf[0].phase, crate::model::PersistedProjectPhase::Indexing);
+    rig.root.read_with(cx, |root, _| {
+        let snapshot = root.snapshot();
+        assert_eq!(snapshot.workspace().projects[0].phase, ProjectPhase::Indexing);
+        assert!(snapshot.workspace().projects[0].error.is_none());
+        assert_eq!(snapshot.route(), before.route());
+        assert_eq!(snapshot.session().back, before.session().back);
+    });
+    assert_eq!(rig.gate.publish_view(renewed, view, before.key().revision()), crate::runtime::owner::PublicationAdmission::Admitted);
+    assert!(rig.gate.complete_observation(renewed));
+    rig.settle(cx);
+    assert_sent_lineage(&rig, &intent, before.key())?;
+    rig.finish(cx);
+    Ok(())
+}
+
+#[gpui::test]
+fn saved_wait_cancellation_and_retry_persist_a_new_claim_and_ignore_the_old_ack(cx: &mut TestAppContext) {
+    let result = exercise_saved_retry(cx);
+    assert!(result.is_ok(), "index preflight regression: {result:?}");
+}
+fn exercise_saved_retry(cx: &mut TestAppContext) -> RegressionResult {
+    let rig = Rig::new(cx);
+    let original = lineage(&rig, cx)?;
+    let (revision, state) = rig.root.read_with(cx, |root, _| {
+        let pending = root.index_preflights.get(&rig.project).ok_or("old preflight")?;
+        Ok::<_, Box<dyn std::error::Error>>((pending.revision,
+            PersistentState::project(&crate::navigation::reduce(&root.snapshot(), pending.intent.clone()).snapshot)))
+    })?;
+    let key = rig.root.read_with(cx, |root, _| root.snapshot().key());
+    let old = rig.gate.ready_epoch().ok_or("old read lease")?;
+    let renewed = rig.gate.suspend_observation(old).ok_or("withdraw freshness")?;
+    rig.release();
+    wait_saved(&rig, cx);
+    rig.root.update(cx, |root, cx| root.dispatch(Intent::CancelIndex(rig.project.clone()), cx));
+    assert_eq!(rig.root.read_with(cx, |root, _| root.snapshot().workspace().projects[0].phase), ProjectPhase::Cancelled);
+    rig.root.update(cx, |root, cx| root.dispatch(Intent::RetryIndex(rig.project.clone()), cx));
+    assert_eq!(rig.sent.load(Ordering::SeqCst), 0, "Retry remains local while freshness is withdrawn");
+    assert_eq!(rig.gate.publish_view(renewed, crate::runtime::owner::publication_tests::view(), key.revision()), crate::runtime::owner::PublicationAdmission::Admitted);
+    assert!(rig.gate.complete_observation(renewed));
+    rig.store.update(cx, |store, cx| store.owner_ready(cx));
+    rig.root.update(cx, |root, cx| {
+        root.schedule_pending_indexes(cx);
+        root.flush_pending(cx);
+        root.complete_index_preflight(rig.project.clone(), revision, Ok(WriteAck { revision, state: Arc::new(state) }), cx);
+    });
+    rig.settle(cx);
+    crate::runtime::wait::until("Retry actually dispatches", || rig.sent.load(Ordering::SeqCst) == 1);
+    let Intent::IndexProject { request, operation, .. } = original else { return Err("old index lineage".into()); };
+    let observed = rig.observed.lock().map_err(|_| "lineage trace poisoned")?;
+    assert_eq!(observed.len(), 1);
+    assert_ne!(observed[0].0, request);
+    assert_ne!(observed[0].1.key, operation.key);
+    assert_eq!(rig.persistence.load()?.shelf[0].operation.as_ref(), Some(&observed[0].1));
+    drop(observed);
+    rig.finish(cx);
+    Ok(())
+}
+
+#[gpui::test]
+fn changed_producer_epoch_refuses_the_saved_claim_and_retry_really_rewrites_it(cx: &mut TestAppContext) {
+    let result = exercise_epoch_replacement(cx);
+    assert!(result.is_ok(), "index preflight regression: {result:?}");
+}
+fn exercise_epoch_replacement(cx: &mut TestAppContext) -> RegressionResult {
+    let rig = Rig::new(cx);
+    let original = lineage(&rig, cx)?;
+    let key = rig.root.read_with(cx, |root, _| root.snapshot().key());
+    let replacement = VersionedRoot::from_revision(key.producer_epoch() + 1, key.revision(), 0);
+    rig.gate.publish(OwnerState::Starting);
+    rig.gate.publish(OwnerState::Ready { key: replacement, mode: ServiceMode::Embedded });
+    rig.store.update(cx, |store, cx| store.owner_ready(cx));
+    rig.root.update(cx, |root, cx| root.dispatch_runtime(Intent::OwnerReady { key: replacement, mode: ServiceMode::Embedded }, cx));
+    rig.release();
+    rig.settle(cx);
+    assert_eq!(rig.sent.load(Ordering::SeqCst), 0);
+    let failed = rig.root.read_with(cx, |root, _| root.snapshot());
+    assert_eq!(failed.workspace().projects[0].phase, ProjectPhase::Failed);
+    assert!(failed.workspace().projects[0].error.as_deref().is_some_and(|error| error.contains("producer stream")));
+    rig.root.update(cx, |root, cx| root.dispatch(Intent::RetryIndex(rig.project.clone()), cx));
+    rig.settle(cx);
+    crate::runtime::wait::until("explicit Retry reaches the new lifetime", || rig.sent.load(Ordering::SeqCst) == 1);
+    let Intent::IndexProject { request, operation, .. } = original else { return Err("old request".into()); };
+    let observed = rig.observed.lock().map_err(|_| "request trace poisoned")?;
+    assert_ne!(observed[0].0, request);
+    assert_ne!(observed[0].1.key, operation.key);
+    assert_eq!(observed[0].2, replacement);
+    drop(observed);
+    rig.finish(cx);
+    Ok(())
 }

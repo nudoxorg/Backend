@@ -48,6 +48,21 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
         ..
     } = event;
     let dto = match result {
+        Err(EngineFault::IndexNotSent { project, error }) => {
+            let mut workspace = current.workspace().clone();
+            workspace.projects = workspace.projects.iter().cloned().map(|mut row| {
+                if row.id == project && row.request == Some(event_request) {
+                    row.phase = if row.phase == ProjectPhase::Cancelling { ProjectPhase::Cancelled } else { ProjectPhase::Failed };
+                    row.operation = None;
+                    row.request = None;
+                    row.progress = None;
+                    row.files_indexed = None;
+                    row.error = Some(error.message().into());
+                }
+                row
+            }).collect::<Vec<_>>().into();
+            return Ok(current.with_workspace(workspace));
+        }
         Ok(dto) => dto,
         Err(EngineFault::IndexFailed { project, error }) => {
             return Ok(mark_index_failed(

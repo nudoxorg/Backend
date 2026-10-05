@@ -281,13 +281,16 @@ impl BootClient {
 impl EngineClient for BootClient {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
         if self.local.is_none() {
-            self.gate.wait_cancelled(request.cancellation()).map_err(|fault| {
-                if request.cancelled() { EngineFault::Cancelled }
-                else { EngineFault::Failed(ErrorValue::new(FaultCode::Transport, fault.to_string())) }
-            })?;
-            let bound = self.binding.get().ok_or_else(|| EngineFault::Failed(ErrorValue::new(
-                FaultCode::Transport, "the owner answered without a local workspace binding",
-            )))?;
+            let not_bound = |message: String| match request {
+                EngineRequest::IndexProject { project, .. } => EngineFault::IndexNotSent {
+                    project: project.clone(), error: ErrorValue::new(FaultCode::Transport,
+                        format!("The first-send workspace could not be admitted: {message}. Nothing was sent.")),
+                },
+                _ if request.cancelled() => EngineFault::Cancelled,
+                _ => EngineFault::Failed(ErrorValue::new(FaultCode::Transport, message)),
+            };
+            self.gate.wait_cancelled(request.cancellation()).map_err(|fault| not_bound(fault.to_string()))?;
+            let bound = self.binding.get().ok_or_else(|| not_bound("the owner answered without a local workspace binding".into()))?;
             self.local = Some(Box::new(LocalEngineClient::gated(bound.paths.endpoint(), bound.project.clone(), self.gate.clone())));
         }
         self.local.as_mut().expect("client installed after workspace admission").execute(request)

@@ -1246,6 +1246,10 @@ impl DataStore {
         self.owner.current_attachment()
     }
 
+    pub(crate) fn current_index_owner(&self) -> Option<super::actor::IndexMutationLease> {
+        self.owner.current_mutation()
+    }
+
     /// A captured visit cannot act through a later same-root attachment.
     pub(crate) fn admits_owner_attachment(&self, expected: &OwnerAttachment) -> bool {
         self.current_owner_attachment().as_ref() == Some(expected)

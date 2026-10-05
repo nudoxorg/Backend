@@ -305,7 +305,9 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             if next.workspace().projects.iter().any(|item| item.id == *project && (item.phase == ProjectPhase::Cancelling
                 || (item.phase == ProjectPhase::Unconfirmed && !(item.request.is_none() && item.operation.as_ref()
                     .is_some_and(|operation| operation.belongs_to(project) && operation.permits_new_attempt())))
-                || (item.phase == ProjectPhase::Indexing && (item.request.is_some() || item.operation.is_some())))) {
+                || (item.phase == ProjectPhase::Indexing && (item.request.is_some() || item.operation.is_some()))
+                || (item.operation.as_ref().is_some_and(|operation| !operation.belongs_to(project)
+                    || !(operation.has_terminal_observation() || operation.permits_new_attempt()))))) {
                 let mut workspace = next.workspace().clone();
                 workspace.path_error = Some(Arc::from("The previous index may have committed. Check its exact owner operation before starting another."));
                 next = next.with_workspace(workspace);
@@ -340,7 +342,10 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 .iter()
                 .find(|item| item.id == *project)
                 .and_then(|item| item.request);
-            next = set_project_phase(&next, project, ProjectPhase::Cancelling, None, request);
+            let unsent = next.workspace().projects.iter().any(|row|
+                row.id == *project && row.request.is_none() && row.operation.is_none());
+            next = set_project_phase(&next, project,
+                if unsent { ProjectPhase::Cancelled } else { ProjectPhase::Cancelling }, None, request);
             if let Some(request) = request {
                 effects.push(Effect::Cancel(request));
             }
@@ -495,11 +500,17 @@ fn admit_project_identity(
         // and uncertain mutations retain their exact request; a ready folder
         // does not need another compile merely because it was picked again.
         if matches!(existing.phase, ProjectPhase::Failed | ProjectPhase::Cancelled | ProjectPhase::Missing) {
-            existing.phase = ProjectPhase::Indexing;
-            existing.progress = None;
-            existing.files_indexed = None;
-            existing.error = None;
-            existing.request = None;
+            if existing.request.is_none() && existing.operation.as_ref().is_none_or(|operation|
+                operation.belongs_to(&project) && (operation.has_terminal_observation() || operation.permits_new_attempt())) {
+                existing.phase = ProjectPhase::Indexing;
+                existing.operation = None;
+                existing.progress = None;
+                existing.files_indexed = None;
+                existing.error = None;
+            } else if existing.request.is_none() {
+                existing.phase = ProjectPhase::Unconfirmed;
+                existing.error = Some("Check this folder's saved index operation before another attempt starts.".into());
+            }
         }
         existing.recent = true;
     } else {
@@ -582,6 +593,9 @@ fn set_project_phase(
         .into();
     snapshot.with_workspace(workspace)
 }
+
+#[cfg(test)]
+mod index_reselection_tests;
 
 #[cfg(test)]
 mod tests {

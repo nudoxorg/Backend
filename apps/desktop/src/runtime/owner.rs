@@ -178,6 +178,18 @@ impl Epoch {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RetryGeneration(Epoch);
 
+/// Index mutations belong to an owner lifetime, not a read-freshness lease.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MutationGeneration(u64);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MutationAdmission {
+    Ready(VersionedRoot),
+    Observing,
+    Replaced,
+    Unavailable(OwnerFault),
+}
+
 /// What the window knows about its owner.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(clippy::large_enum_variant, reason = "a handful are published per process")]
@@ -225,6 +237,10 @@ struct Inner {
     epoch: Epoch,
     /// Stable attachment identity; root publications only bump `epoch`.
     attachment: Epoch,
+    /// Freshness recovery rotates read attachments but retains this lifetime.
+    /// Exhaustion permanently disables new mutation capabilities.
+    mutation_generation: Option<MutationGeneration>,
+    mutation_cancel: super::actor::CancellationToken,
     /// One latest complete admitted worker root, shared with the actor.
     publication: Option<(Arc<backend_library::ViewRoot>, backend_library::Cursor)>,
     observation_cancel: super::actor::CancellationToken,
@@ -263,6 +279,8 @@ impl OwnerGate {
                 state,
                 epoch: Epoch::default(),
                 attachment: Epoch::default(),
+                mutation_generation: Some(MutationGeneration(0)),
+                mutation_cancel: super::actor::CancellationToken::new(),
                 publication: None,
                 observation_cancel: super::actor::CancellationToken::new(),
                 observation_suspended: false,
@@ -292,6 +310,58 @@ impl OwnerGate {
         Arc::ptr_eq(&self.0, &other.0)
     }
 
+    pub(crate) fn mutation_generation(&self, expected: Option<Epoch>) -> Option<(MutationGeneration, super::actor::CancellationToken)> {
+        let inner = self.lock();
+        (!inner.closed && !inner.observation_suspended && Some(inner.attachment) == expected
+            && matches!(inner.state, OwnerState::Ready { .. }))
+            .then(|| inner.mutation_generation.map(|generation| (generation, inner.mutation_cancel.clone()))).flatten()
+    }
+
+    /// Read lifetime, readiness and its certified root under one lock.
+    pub(crate) fn admit_mutation(&self, expected: MutationGeneration) -> MutationAdmission {
+        let inner = self.lock();
+        if inner.closed { return MutationAdmission::Unavailable(OwnerFault::Closed); }
+        if let OwnerState::Failed(fault) = &inner.state {
+            return MutationAdmission::Unavailable(fault.clone());
+        }
+        if inner.mutation_generation != Some(expected) { return MutationAdmission::Replaced; }
+        match inner.state {
+            OwnerState::Ready { .. } if inner.observation_suspended => MutationAdmission::Observing,
+            OwnerState::Ready { key, .. } => MutationAdmission::Ready(key),
+            OwnerState::Starting => MutationAdmission::Replaced,
+            OwnerState::Failed(_) => unreachable!("failure returned above"),
+        }
+    }
+
+    pub(crate) fn wait_mutation(&self, expected: MutationGeneration, cancel: &super::actor::CancellationToken) -> Result<VersionedRoot, Arc<str>> {
+        let weak = Arc::downgrade(&self.0);
+        let _wake = cancel.on_cancel(move || {
+            if let Some(shared) = weak.upgrade() {
+                let _inner = shared.inner.lock().unwrap_or_else(PoisonError::into_inner);
+                shared.changed.notify_all();
+            }
+        });
+        let waiting = Instant::now();
+        let mut inner = self.lock();
+        loop {
+            if cancel.is_cancelled() || inner.closed {
+                return Err("This index request stopped before its first send. Nothing was sent.".into());
+            }
+            if inner.mutation_generation != Some(expected) {
+                return Err("The local service owner was replaced before this request's first send. Nothing was sent.".into());
+            }
+            match &inner.state {
+                OwnerState::Ready { key, .. } if !inner.observation_suspended => return Ok(*key),
+                OwnerState::Ready { .. } => {}
+                OwnerState::Starting => return Err("The local service owner is starting again. Nothing was sent.".into()),
+                OwnerState::Failed(fault) => return Err(format!("The local service is unavailable: {fault}. Nothing was sent.").into()),
+            }
+            let left = PATIENCE.saturating_sub(waiting.elapsed());
+            if left.is_zero() { return Err("The index observation did not become ready before the first-send wait expired. Nothing was sent.".into()); }
+            inner = self.0.changed.wait_timeout(inner, left).unwrap_or_else(PoisonError::into_inner).0;
+        }
+    }
+
     /// Generation of the attached owner currently answering. A page worker
     /// must retain this before its request so an old failure cannot fail a
     /// newly attached owner with the same root.
@@ -312,7 +382,7 @@ impl OwnerGate {
     /// Reports confirmed endpoint loss only for the attached generation that
     /// issued the failed read. This is atomic with the epoch/state check.
     pub(crate) fn attached_lost_at(&self, expected: Epoch, reason: Arc<str>) -> bool {
-        let (waker, cancel) = {
+        let (waker, cancel, mutation_cancel) = {
             let mut inner = self.lock();
             if inner.closed || inner.attachment != expected
                 || !matches!(inner.state, OwnerState::Ready { mode: ServiceMode::Attached, .. })
@@ -323,12 +393,16 @@ impl OwnerGate {
             inner.since = Instant::now();
             inner.epoch = inner.epoch.next();
             inner.attachment = inner.epoch;
+            inner.mutation_generation = inner.mutation_generation
+                .and_then(|generation| generation.0.checked_add(1).map(MutationGeneration));
+            let mutation_cancel = std::mem::replace(&mut inner.mutation_cancel, super::actor::CancellationToken::new());
             inner.publication = None;
             let cancel = inner.observation_cancel.clone();
-            (inner.waker.take(), cancel)
+            (inner.waker.take(), cancel, mutation_cancel)
         };
         // Callbacks may reenter the gate; never invoke them under its mutex.
         cancel.cancel();
+        mutation_cancel.cancel();
         self.0.changed.notify_all();
         if let Some(waker) = waker { waker.wake(); }
         crate::runtime::trace::mark("owner.failed", OwnerFault::Lost(reason));
@@ -337,7 +411,7 @@ impl OwnerGate {
 
     /// Publishes a new state: wakes every waiting worker and the UI.
     pub fn publish(&self, state: OwnerState) {
-        let (waker, cancel) = {
+        let (waker, cancel, mutation_cancel) = {
             let mut inner = self.lock();
             if inner.closed {
                 return;
@@ -356,10 +430,14 @@ impl OwnerGate {
             inner.since = Instant::now();
             inner.epoch = inner.epoch.next();
             inner.attachment = inner.epoch;
-            (inner.waker.take(), cancel)
+            inner.mutation_generation = inner.mutation_generation
+                .and_then(|generation| generation.0.checked_add(1).map(MutationGeneration));
+            let mutation_cancel = std::mem::replace(&mut inner.mutation_cancel, super::actor::CancellationToken::new());
+            (inner.waker.take(), cancel, mutation_cancel)
         };
         // Callbacks may reenter the gate; never invoke them under its mutex.
         cancel.cancel();
+        mutation_cancel.cancel();
         self.0.changed.notify_all();
         if let Some(waker) = waker {
             waker.wake();
@@ -590,7 +668,7 @@ impl OwnerGate {
     pub(crate) fn observation_failed(&self, expected: Epoch, reason: ObservationFailure) -> bool {
         // The publication worker is the only writer until this attachment is
         // withdrawn. Use one lock rather than a check followed by `publish`.
-        let (waker, cancel) = {
+        let (waker, cancel, mutation_cancel) = {
             let mut inner = self.lock();
             if inner.closed
                 || inner.attachment != expected
@@ -603,10 +681,14 @@ impl OwnerGate {
             inner.publication = None;
             inner.epoch = inner.epoch.next();
             inner.attachment = inner.epoch;
-            (inner.waker.take(), cancel)
+            inner.mutation_generation = inner.mutation_generation
+                .and_then(|generation| generation.0.checked_add(1).map(MutationGeneration));
+            let mutation_cancel = std::mem::replace(&mut inner.mutation_cancel, super::actor::CancellationToken::new());
+            (inner.waker.take(), cancel, mutation_cancel)
         };
         // Callbacks may reenter the gate; never invoke them under its mutex.
         cancel.cancel();
+        mutation_cancel.cancel();
         self.0.changed.notify_all();
         if let Some(waker) = waker {
             waker.wake();
@@ -701,7 +783,7 @@ impl OwnerGate {
     pub fn restart(&self) -> bool { self.restart_current(None) }
 
     fn restart_current(&self, expected: Option<RetryGeneration>) -> bool {
-        let (cancel, waker) = {
+        let (cancel, waker, mutation_cancel) = {
             let mut inner = self.lock();
             if !inner.retry_enabled || inner.closed || !matches!(inner.state, OwnerState::Failed(_))
                 || expected.is_some_and(|expected| expected.0 != inner.epoch) {
@@ -717,11 +799,15 @@ impl OwnerGate {
             inner.since = Instant::now();
             inner.epoch = inner.epoch.next();
             inner.attachment = inner.epoch;
-            (cancel, inner.waker.take())
+            inner.mutation_generation = inner.mutation_generation
+                .and_then(|generation| generation.0.checked_add(1).map(MutationGeneration));
+            let mutation_cancel = std::mem::replace(&mut inner.mutation_cancel, super::actor::CancellationToken::new());
+            (cancel, inner.waker.take(), mutation_cancel)
         };
         // Cancellation may synchronously call back into this same gate.
         // Keep the atomic admission above, then release the lock first.
         cancel.cancel();
+        mutation_cancel.cancel();
         crate::runtime::trace::mark("owner.starting", "retry");
         self.0.changed.notify_all();
         if let Some(waker) = waker { waker.wake(); }
@@ -764,7 +850,7 @@ impl OwnerGate {
 
     /// The app is quitting: releases the owner thread and every waiter.
     pub fn close(&self) {
-        let (waker, cancel) = {
+        let (waker, cancel, mutation_cancel) = {
             let mut inner = self.lock();
             inner.closed = true;
             let cancel = inner.observation_cancel.clone();
@@ -772,10 +858,14 @@ impl OwnerGate {
             inner.state = OwnerState::Failed(OwnerFault::Closed);
             inner.epoch = inner.epoch.next();
             inner.attachment = inner.epoch;
-            (inner.waker.take(), cancel)
+            inner.mutation_generation = inner.mutation_generation
+                .and_then(|generation| generation.0.checked_add(1).map(MutationGeneration));
+            let mutation_cancel = std::mem::replace(&mut inner.mutation_cancel, super::actor::CancellationToken::new());
+            (inner.waker.take(), cancel, mutation_cancel)
         };
         // Callbacks may reenter the gate; never invoke them under its mutex.
         cancel.cancel();
+        mutation_cancel.cancel();
         self.0.changed.notify_all();
         if let Some(waker) = waker {
             waker.wake();
@@ -1029,7 +1119,7 @@ mod tests {
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
-mod publication_tests {
+pub(crate) mod publication_tests {
     use super::*;
     use backend_library::{
         AuthorityScopeClaim, Basis, CoverageCapability, Cursor, Frontier,
@@ -1056,7 +1146,7 @@ mod publication_tests {
             ))
         }
     }
-    fn view() -> Arc<ViewRoot> {
+    pub(crate) fn view() -> Arc<ViewRoot> {
         let basis = Basis::new(view_state_root(&[]), object_version(b"publication-source"));
         let scope = ScopeRoot::from_bytes(basis.object.to_bytes());
         let observation = admit_producer_observation(

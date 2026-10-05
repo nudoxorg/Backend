@@ -369,6 +369,91 @@ mod cancellation_tests {
     }
 }
 
+/// Opaque owner lifetime for a first index send. Only the desktop owner
+/// boundary can create it; read attachment epochs cannot stand in for it.
+#[derive(Clone, Debug)]
+pub struct IndexMutationLease(IndexMutationOwner);
+
+#[derive(Clone, Debug)]
+enum IndexMutationOwner {
+    Gated {
+        gate: super::owner::OwnerGate,
+        generation: super::owner::MutationGeneration,
+        lifetime: CancellationToken,
+    },
+    #[cfg(any(test, feature = "visual-harness"))]
+    UngatedFixture,
+}
+
+impl PartialEq for IndexMutationLease {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (IndexMutationOwner::Gated { gate: left, generation: first, .. },
+                IndexMutationOwner::Gated { gate: right, generation: second, .. }) =>
+                first == second && left.same_gate(right),
+            #[cfg(any(test, feature = "visual-harness"))]
+            (IndexMutationOwner::UngatedFixture, IndexMutationOwner::UngatedFixture) => true,
+            #[cfg(any(test, feature = "visual-harness"))]
+            _ => false,
+        }
+    }
+}
+impl Eq for IndexMutationLease {}
+
+impl IndexMutationLease {
+    pub(crate) fn capture(gate: Option<&super::owner::OwnerGate>, attachment: Option<super::owner::Epoch>) -> Option<Self> {
+        match gate {
+            Some(gate) => {
+                let (generation, lifetime) = gate.mutation_generation(attachment)?;
+                Some(Self(IndexMutationOwner::Gated { generation, gate: gate.clone(), lifetime }))
+            },
+            None => {
+                #[cfg(any(test, feature = "visual-harness"))]
+                { Some(Self(IndexMutationOwner::UngatedFixture)) }
+                #[cfg(not(any(test, feature = "visual-harness")))]
+                { None }
+            },
+        }
+    }
+
+    pub(crate) fn admission(&self, _basis: VersionedRoot) -> super::owner::MutationAdmission {
+        match &self.0 {
+            IndexMutationOwner::Gated { gate, generation, .. } => gate.admit_mutation(*generation),
+            #[cfg(any(test, feature = "visual-harness"))]
+            IndexMutationOwner::UngatedFixture => super::owner::MutationAdmission::Ready(_basis),
+        }
+    }
+
+    pub(crate) fn bind_cancellation(&self, cancel: &CancellationToken) -> Option<CancellationWake> {
+        match &self.0 {
+            IndexMutationOwner::Gated { lifetime, .. } => {
+                let cancel = cancel.clone();
+                Some(lifetime.on_cancel(move || cancel.cancel()))
+            },
+            #[cfg(any(test, feature = "visual-harness"))]
+            IndexMutationOwner::UngatedFixture => None,
+        }
+    }
+
+    pub(crate) fn ready_for_send(&self, basis: VersionedRoot, cancel: &CancellationToken) -> Result<VersionedRoot, Arc<str>> {
+        if cancel.is_cancelled() { return Err("This index request stopped before its first send. Nothing was sent.".into()); }
+        let current = match &self.0 {
+            IndexMutationOwner::Gated { gate, generation, .. } => gate.wait_mutation(*generation, cancel)?,
+            #[cfg(any(test, feature = "visual-harness"))]
+            IndexMutationOwner::UngatedFixture => basis,
+        };
+        if admits_mutation_root(basis, current) { Ok(current) }
+        else { Err("The index producer stream changed before this request's first send. Nothing was sent.".into()) }
+    }
+}
+
+pub(crate) fn admits_mutation_root(basis: VersionedRoot, current: VersionedRoot) -> bool {
+    let (old, next) = (basis.revision(), current.revision());
+    current.producer_epoch() == basis.producer_epoch() && old.recipe() == next.recipe()
+        && old.branch() == next.branch() && old.log() == next.log() && old.schema() == next.schema()
+        && (current.same_authority(basis) || next.sequence() > old.sequence())
+}
+
 /// Typed work executed by the background engine/client actor.
 #[derive(Clone, Debug)]
 pub enum EngineRequest {
@@ -417,6 +502,9 @@ pub enum EngineRequest {
     },
     /// Start one exact durable caller operation through the canonical service.
     IndexProject {
+        /// Owner lifetime captured before durable admission. Ungated callers
+        /// have no lifetime proof and cannot establish real-owner acceptance.
+        owner: Option<IndexMutationLease>,
         /// Exact caller operation persisted before the first mutation send.
         operation: crate::model::IndexOperationClaim,
         /// Request identity retained until the owner replies.
@@ -633,6 +721,8 @@ impl ProjectDto {
 /// Typed actor failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EngineFault {
+    /// The adapter proved no first mutation send occurred. A new attempt is safe.
+    IndexNotSent { project: LocalProjectId, error: ErrorValue },
     /// Request was cancelled or superseded.
     Cancelled,
     /// Worker refused an older producer root.
@@ -961,7 +1051,7 @@ fn run_actor(
                     basis,
                     request: id,
                     lane,
-                    result: Err(cancelled_fault(&request)),
+                    result: Err(cancelled_before_execute(&request)),
                 },
                 lane,
             ) {
@@ -996,14 +1086,25 @@ fn run_actor(
             if active.closed { request.cancellation().cancel(); }
             active.cancel = Some(request.cancellation().clone());
         }
-        let result = if request.cancelled() {
-            Err(cancelled_fault(&request))
+        let _lifetime = match &request {
+            EngineRequest::IndexProject { owner: Some(owner), .. } => owner.bind_cancellation(request.cancellation()),
+            _ => None,
+        };
+        let admission = match &request {
+            EngineRequest::IndexProject { owner: Some(owner), project, .. } => owner.ready_for_send(basis, request.cancellation()).map(|_| ())
+                .map_err(|message| EngineFault::IndexNotSent { project: project.clone(), error: ErrorValue::new(crate::core::FaultCode::Transport, message) }),
+            _ => Ok(()),
+        };
+        let result = if let Err(error) = admission {
+            Err(error)
+        } else if request.cancelled() {
+            Err(cancelled_before_execute(&request))
         } else { match client.execute(&request) {
             // A cancellation request cannot revoke a synchronous producer
             // commit after it has returned. Admit that committed result; a
             // producer error after cancellation is terminal cancellation.
             Ok(dto) => Ok(dto),
-            Err(error @ (EngineFault::IndexUnconfirmed { .. } | EngineFault::MutationUnconfirmed)) => Err(error),
+            Err(error @ (EngineFault::IndexUnconfirmed { .. } | EngineFault::MutationUnconfirmed | EngineFault::IndexNotSent { .. })) => Err(error),
             Err(_error) if request.cancelled() => Err(cancelled_fault(&request)),
             Err(error) => Err(error),
         }};
@@ -1065,6 +1166,19 @@ fn run_local_reads(
         }
         wake.wake();
     }
+}
+
+/// The actor has not entered the adapter, so a first mutation cannot have
+/// crossed the transport boundary. Status reads still describe older work.
+fn cancelled_before_execute(request: &EngineRequest) -> EngineFault {
+    if let EngineRequest::IndexProject { project, .. } = request {
+        return EngineFault::IndexNotSent {
+            project: project.clone(),
+            error: ErrorValue::new(crate::core::FaultCode::Transport,
+                "This index request stopped before its first send. Nothing was sent."),
+        };
+    }
+    cancelled_fault(request)
 }
 
 fn cancelled_fault(request: &EngineRequest) -> EngineFault {
@@ -1163,6 +1277,7 @@ mod tests {
         let project = LocalProjectId::from_path(std::path::Path::new("/tmp"))
             .expect("project identity");
         assert!(matches!(actor.try_submit(EngineRequest::IndexProject {
+            owner: None,
             operation: crate::model::index_operation::tests::claim(&project, 0x51),
             request: RequestId::new(2),
             project,
