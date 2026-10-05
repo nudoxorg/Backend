@@ -119,7 +119,7 @@ def source-mtimes-manifest [root: string]: nothing -> string {
 # Bounds the build cache. It grows with every Cargo graph change and is
 # never pruned by Cargo, and the disk is shared with Forgejo, Postgres and
 # the other lanes. Past `max_gib` it is deleted, and the next build is cold.
-export def cap-build-cache [max_gib: int = 120]: nothing -> nothing {
+export def cap-build-cache [max_gib: int = 80]: nothing -> nothing {
     let root = build-cache-root
     if not (in-ci) or ($root | is-empty) or not ($root | path exists) { return }
     let gib = ^du -s --block-size=1G $root | split row "	" | first | into int
@@ -132,6 +132,34 @@ export def cap-build-cache [max_gib: int = 120]: nothing -> nothing {
 }
 
 const RESTORE_MTIMES = path self "restore-mtimes.py"
+
+# Prints how much disk this lane's build output and the build cache hold,
+# as a CI-DISK line, before reclaim-build-output deletes the former. The
+# heavy lock's per-lane free-disk requests and the cache cap are sized from
+# these numbers. CI only.
+export def report-build-size []: nothing -> nothing {
+    if not (in-ci) { return }
+    let measured = [
+        {
+            name: "target"
+            path: ($env.CARGO_TARGET_DIR? | default ".local/target")
+        }
+        {
+            name: "cache"
+            path: (build-cache-root)
+        }
+        {
+            name: "home-cache"
+            path: ($env.HOME? | default "/root" | path join ".cache" "nudox")
+        }
+    ]
+    | where {|entry| ($entry.path | is-not-empty) and ($entry.path | path exists) }
+    | each {|entry|
+        let gib = ^du -s --block-size=1G $entry.path | split row "\t" | first | into int
+        $"($entry.name)=($gib)GiB"
+    }
+    print $"CI-DISK lane=linux ($measured | str join ' ')"
+}
 
 # Restores unchanged sources' mtimes from the cache's manifest, so Cargo
 # reuses the cached build output instead of seeing a fresh clone as all new
