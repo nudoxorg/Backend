@@ -84,7 +84,8 @@ pub(crate) struct Map {
     error: Option<String>,
     load_error: Option<String>,
     visible: bool,
-    focus_on_mount: bool,
+    focus_on_mount: Option<crate::shell::keyboard::NativeReturnLease>,
+    mounted_focus: Option<crate::shell::keyboard::NativeReturnLease>,
     route: Option<Route>,
     routed_focus: Option<NodeId>,
     semantic_focus: Option<NodeId>,
@@ -296,7 +297,8 @@ impl Map {
             error: None,
             load_error: None,
             visible: false,
-            focus_on_mount: false,
+            focus_on_mount: None,
+            mounted_focus: None,
             route: None,
             routed_focus: None,
             semantic_focus: None,
@@ -327,7 +329,9 @@ impl Map {
         self.painted_focus = None;
         self.entry_origin = None;
         self.canvas_transform = gpui::LayerTransform::IDENTITY;
-        self.focus_on_mount = self.visible;
+        // A replacement may inherit only the focus actually owned by its
+        // mounted predecessor (or an unconsumed arrival), never visibility.
+        self.focus_on_mount = self.mounted_focus.take().or(self.focus_on_mount);
         self._graph_events = None;
         self.load_error = None;
         self.toured = 0;
@@ -560,6 +564,8 @@ impl Map {
             }
         }
         self.visible = false;
+        self.focus_on_mount = None;
+        self.mounted_focus = None;
         self.publish_focus(cx);
     }
 
@@ -573,7 +579,7 @@ impl Map {
         let changed_route = self.route.as_ref() != Some(route);
         let arriving = !self.visible || changed_route;
         if arriving {
-            self.focus_on_mount = true;
+            self.focus_on_mount = self.mount_focus_lease(window, cx);
             self.painted_focus = None;
             self.entry_origin = route_symbol(route).and_then(|symbol| {
                 let key = crate::shell::kit::shared_id(&symbol);
@@ -714,6 +720,14 @@ impl Map {
         self.graph
             .as_ref()
             .is_some_and(|graph| graph.read(cx).focused().is_some())
+    }
+
+    fn mount_focus_lease(&self, window: &Window, cx: &App) -> Option<crate::shell::keyboard::NativeReturnLease> {
+        if !window.is_window_active() { return None; }
+        let shell = self.links.shell.upgrade()?;
+        crate::shell::keyboard::NativeReturnLease::new(
+            window.window_handle().window_id(), shell.read(cx).focus_return_generation(), window.focus_epoch(),
+        )
     }
 
     /// Uses the same indexed open path as Enter/double-click; the graph's
@@ -1540,10 +1554,16 @@ impl Render for Map {
         }
         let mut root = div().relative().size_full();
         if let Some(graph) = &self.graph {
-            if self.focus_on_mount && self.visible {
-                graph.focus_handle(cx).focus(window, cx);
-                self.focus_on_mount = false;
+            if let Some(lease) = self.focus_on_mount.take() {
+                let snapshot = self.links.snapshot(cx);
+                let current = window.is_window_active() && self.visible
+                    && self.route.as_ref() == Some(snapshot.route()) && snapshot.page_overlay().is_none()
+                    && self.links.shell.upgrade().is_some_and(|shell| lease.current(
+                        window.window_handle().window_id(), shell.read(cx).focus_return_generation(), window.focus_epoch()));
+                if current { graph.focus_handle(cx).focus(window, cx); }
             }
+            self.mounted_focus = graph.focus_handle(cx).is_focused(window)
+                .then(|| self.mount_focus_lease(window, cx)).flatten();
             root = root.child(graph.clone()).child(
                 div()
                     .absolute()

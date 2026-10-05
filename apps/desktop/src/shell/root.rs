@@ -553,7 +553,7 @@ impl Shell {
     }
 
     pub(crate) fn allows_reader_native_return(&self, window: &Window) -> bool {
-        self.zone == Zone::Reader && !self.ask_open && self.focus.is_focused(window)
+        window.is_window_active() && self.zone == Zone::Reader && !self.ask_open && self.focus.is_focused(window)
     }
 
     /// How many descents the reader played and which way the last went.
@@ -870,10 +870,10 @@ impl Shell {
         // still the old view's return origin, even if its handle has left the
         // rendered tree by the time the new view finishes painting.
         let origin = window.focused(cx);
-        if entering_settings && origin.as_ref().is_some_and(|origin| {
-            self.reader.update(cx, |reader, _| reader.capture_settings_native_origin(origin))
-        }) {
-            self.set_zone(Zone::Reader, cx);
+        if entering_settings {
+            if self.reader.update(cx, |reader, cx| reader.capture_settings_native_origin(origin.as_ref(), cx)) {
+                self.set_zone(Zone::Reader, cx);
+            }
         }
         let wants_ask = snapshot.overlay() == Some(Overlay::CommandPalette);
         let opening = wants_ask && !self.ask_open;
@@ -942,7 +942,7 @@ impl Shell {
                 }
             }
         }
-        if leaving_settings && !super::titlebar::menu_open(window, cx) {
+        if leaving_settings && window.is_window_active() && !super::titlebar::menu_open(window, cx) {
             // The selected radio/editor belongs to the retired Settings page.
             // Keep global dispatch reachable while the destination mounts.
             self.keyboard_claim = None;

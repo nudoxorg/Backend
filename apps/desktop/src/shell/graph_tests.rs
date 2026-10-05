@@ -853,6 +853,45 @@ fn indexed_projection_callback_mounts_on_its_first_announced_draw(cx: &mut TestA
 }
 
 #[gpui::test]
+fn delayed_graph_mount_respects_native_focus_intent(cx: &mut TestAppContext) {
+    use crate::runtime::indexed_world::TestProjectionGate;
+    use gpui::Focusable as _;
+    for change in ["unchanged", "focus", "blur", "key", "inactive"] {
+        let root = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+        let owner = crate::runtime::owner::OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+        let mut rig = super::tests::rig_with_engine_gate(cx, None, 1440.0, 900.0,
+            crate::runtime::reads::ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), super::tests::RootOnly, Some(owner));
+        rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+        let gate = Arc::new(TestProjectionGate::default());
+        rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture_with_gate(root, Some(gate.clone()), cx));
+        rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
+        rig.draw_frame();
+        rig.cx.run_until_parked();
+        assert!(gate.entered(), "the actual asynchronous projection is held");
+        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+        match change {
+            "focus" => rig.cx.update(|window, cx| window.focus_next(cx)),
+            "blur" => rig.cx.update(|window, _| window.blur()),
+            "key" => rig.native_press("left"),
+            "inactive" => { rig.cx.deactivate_window(); rig.cx.update(|window, _| window.blur()); }
+            _ => {}
+        }
+        let later = rig.cx.update(|window, cx| window.focused(cx));
+        gate.release();
+        // The Memo's ordinary notification paints its first ready frame. No
+        // input, refresh or explicit draw grants it another focus opportunity.
+        rig.cx.run_until_parked();
+        let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("mounted projection");
+        if change == "unchanged" {
+            assert!(rig.cx.update(|window, cx| graph.focus_handle(cx).is_focused(window)), "an uninterrupted arrival owns native focus");
+        } else {
+            assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), later, "a later {change} must win over asynchronous mount");
+            assert!(!rig.cx.update(|window, cx| graph.focus_handle(cx).is_focused(window)));
+        }
+    }
+}
+
+#[gpui::test]
 fn native_graph_admission_does_not_reenter_its_leased_graph(cx: &mut TestAppContext) {
     let (mut rig, _) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
     // Both pointer and keyboard invoke the production predicate inside a
