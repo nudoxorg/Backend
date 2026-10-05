@@ -5,31 +5,21 @@
 
 use super::*;
 use backend_engine::{CanonicalRelation, SourceLanguage};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 type TestFile = ([u8; 32], String, [u8; 32]);
 
-struct TempWorkspace(PathBuf);
+struct TempWorkspace(tempfile::TempDir);
 
 impl TempWorkspace {
     fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "nudox-membership-owner-{}-{sequence}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).expect("temporary workspace directory");
-        Self(path.canonicalize().expect("physical workspace directory"))
-    }
-}
-
-impl Drop for TempWorkspace {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let directory = tempfile::Builder::new()
+            .prefix("nudox-membership-owner-")
+            .tempdir()
+            .expect("create unique private temporary workspace");
+        Self(directory)
     }
 }
 
@@ -95,7 +85,7 @@ fn paged_index_intent(
     let update = BuiltinPackageRecord::project_with_membership_pages(
         label,
         source_version(files),
-        files.iter().map(|(key, _, _)| *key).collect(),
+        files.iter().map(|(key, _, _)| *key).collect::<Vec<_>>(),
         None,
     )
     .expect("bounded project membership update");
@@ -114,6 +104,8 @@ fn paged_index_intent(
             }),
     );
     changes.extend(files.iter().map(|(key, path, content_version)| {
+        let declarations: Arc<[backend_compile::SourceDeclaration]> =
+            Vec::new().into_boxed_slice().into();
         BuiltinSourceChange {
             key: *key,
             after: Some(
@@ -123,7 +115,7 @@ fn paged_index_intent(
                     SourceLanguage::Rust,
                     *content_version,
                     [0x61; 32],
-                    Arc::from(Vec::<backend_compile::SourceDeclaration>::new().into_boxed_slice()),
+                    declarations,
                 )
                 .expect("synthetic source file row"),
             ),
@@ -131,6 +123,78 @@ fn paged_index_intent(
     }));
     let intent = BuiltinIntent::index_with_semantics(package, label, changes, Vec::new())
         .expect("large indexed source intent");
+    (intent, update)
+}
+
+fn paged_membership_edit_intent(
+    package: backend_engine::PackageKey,
+    label: &str,
+    previous: &backend_engine::ProductSourceProjectUpdate,
+    previous_files: &[TestFile],
+    next_files: &[TestFile],
+) -> (BuiltinIntent, backend_engine::ProductSourceProjectUpdate) {
+    let update = BuiltinPackageRecord::project_with_membership_pages(
+        label,
+        source_version(next_files),
+        next_files
+            .iter()
+            .map(|(key, _, _)| *key)
+            .collect::<Vec<_>>(),
+        None,
+    )
+    .expect("replacement project membership update");
+    let previous_page_keys = previous
+        .project_record()
+        .project_fields()
+        .expect("previous project fields")
+        .files
+        .page_keys()
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let next_page_keys = update
+        .project_record()
+        .project_fields()
+        .expect("replacement project fields")
+        .files
+        .page_keys()
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let next_file_keys = next_files
+        .iter()
+        .map(|(key, _, _)| *key)
+        .collect::<BTreeSet<_>>();
+
+    let mut changes = vec![BuiltinSourceChange {
+        key: package.to_bytes(),
+        after: Some(update.project_record().clone()),
+    }];
+    changes.extend(
+        update
+            .membership_pages()
+            .iter()
+            .filter(|page| !previous_page_keys.contains(&page.0))
+            .map(|(key, page)| BuiltinSourceChange {
+                key: *key,
+                after: Some(page.clone()),
+            }),
+    );
+    changes.extend(
+        previous_page_keys
+            .difference(&next_page_keys)
+            .copied()
+            .map(|key| BuiltinSourceChange { key, after: None }),
+    );
+    changes.extend(
+        previous_files
+            .iter()
+            .map(|(key, _, _)| *key)
+            .filter(|key| !next_file_keys.contains(key))
+            .map(|key| BuiltinSourceChange { key, after: None }),
+    );
+    let intent = BuiltinIntent::index_with_semantics(package, label, changes, Vec::new())
+        .expect("replacement membership intent");
     (intent, update)
 }
 
@@ -155,6 +219,28 @@ fn resolved_frontier(
     .expect("complete authenticated file frontier")
 }
 
+fn assert_complete_frontier(
+    daemon: &super::super::ProductDaemon,
+    package: backend_engine::PackageKey,
+    expected: &[[u8; 32]],
+) {
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let relation = snapshot
+        .relation::<BuiltinWorkspaceRelation>()
+        .expect("source relation");
+    let keys = resolved_frontier(daemon, package);
+    assert_eq!(keys.as_slice(), expected);
+    let records = relation
+        .lookup_many_sorted(&keys)
+        .expect("batch read all selected file rows");
+    assert_eq!(records.len(), expected.len());
+    for (key, record) in expected.iter().copied().zip(records) {
+        let record = record.expect("every selected file row exists");
+        super::validate_project_file(package.to_bytes(), key, &record)
+            .expect("selected file row has its exact owning project and path key");
+    }
+}
+
 fn assert_refused_without_publication(
     daemon: &mut super::super::ProductDaemon,
     package: backend_engine::PackageKey,
@@ -162,26 +248,28 @@ fn assert_refused_without_publication(
     request_id: u64,
     changes: Vec<BuiltinSourceChange>,
     expected_frontier: &[[u8; 32]],
+    expected_error: &str,
 ) {
     let before = daemon.engine().daemon().owner().head().root();
     let intent = BuiltinIntent::index_with_semantics(package, label, changes, Vec::new())
         .expect("hostile but well-formed source intent");
     let error = super::super::commands::commit_builtin_intent(daemon, request_id, &intent)
         .expect_err("invalid membership transition must be refused");
-    assert!(!error.to_string().is_empty());
+    let detail = error.to_string();
+    assert!(
+        detail.contains(expected_error),
+        "expected refusal containing {expected_error:?}, got {detail:?}"
+    );
     assert_eq!(
         daemon.engine().daemon().owner().head().root(),
         before,
         "refusal leaves the durable workspace root unchanged"
     );
-    assert_eq!(
-        resolved_frontier(daemon, package).as_slice(),
-        expected_frontier
-    );
+    assert_complete_frontier(daemon, package, expected_frontier);
 }
 
 #[test]
-fn large_paged_membership_commits_reopens_and_refuses_incomplete_transitions_atomically() {
+fn large_paged_membership_commits_edits_reopens_and_refuses_foreign_or_incomplete_transitions() {
     const FILE_COUNT: usize = 2043;
     let temp = TempWorkspace::new();
     let label = "fixture:membership-pages/main";
@@ -190,8 +278,14 @@ fn large_paged_membership_commits_reopens_and_refuses_incomplete_transitions_ato
     let foreign_package = backend_engine::PackageKey::from_value(foreign_label);
     let files = file_frontier(FILE_COUNT, package);
     let expected = files.iter().map(|(key, _, _)| *key).collect::<Vec<_>>();
+    let foreign_count = BuiltinPackageRecord::MAX_FRONTIER_FILES.saturating_add(1);
+    let foreign_files = file_frontier(foreign_count, foreign_package);
+    let foreign_expected = foreign_files
+        .iter()
+        .map(|(key, _, _)| *key)
+        .collect::<Vec<_>>();
 
-    let mut daemon = open_daemon(&temp.0);
+    let mut daemon = open_daemon(temp.0.path());
     let main_add = BuiltinIntent::add(package, label).expect("main project intent");
     super::super::commands::commit_builtin_intent(&mut daemon, 1, &main_add)
         .expect("commit main project row");
@@ -200,9 +294,9 @@ fn large_paged_membership_commits_reopens_and_refuses_incomplete_transitions_ato
     super::super::commands::commit_builtin_intent(&mut daemon, 2, &foreign_add)
         .expect("commit foreign project row");
 
-    let (intent, update) = paged_index_intent(package, label, &files);
+    let (intent, initial_update) = paged_index_intent(package, label, &files);
     assert_eq!(
-        update
+        initial_update
             .project_record()
             .project_fields()
             .expect("project fields")
@@ -210,52 +304,150 @@ fn large_paged_membership_commits_reopens_and_refuses_incomplete_transitions_ato
             .file_count(),
         FILE_COUNT
     );
-    assert!(!update.membership_pages().is_empty());
+    assert!(!initial_update.membership_pages().is_empty());
     super::super::commands::commit_builtin_intent(&mut daemon, 3, &intent)
         .expect("commit complete paged source membership");
-    assert_eq!(resolved_frontier(&daemon, package), expected);
-    let published_root = daemon.engine().daemon().owner().head().root();
+    let (foreign_intent, foreign_update) =
+        paged_index_intent(foreign_package, foreign_label, &foreign_files);
+    assert!(
+        !foreign_update.membership_pages().is_empty(),
+        "foreign project must have an independently paged frontier"
+    );
+    super::super::commands::commit_builtin_intent(&mut daemon, 4, &foreign_intent)
+        .expect("commit paged foreign project membership");
+    assert_complete_frontier(&daemon, package, &expected);
+    assert_complete_frontier(&daemon, foreign_package, &foreign_expected);
+
+    // A successful shrink must remove every page and file that leaves the
+    // project's selected membership, while retaining the exact sorted prefix.
+    let edited_files = files.iter().take(2000).cloned().collect::<Vec<_>>();
+    let edited_expected = edited_files
+        .iter()
+        .map(|(key, _, _)| *key)
+        .collect::<Vec<_>>();
+    let (edit_intent, edited_update) =
+        paged_membership_edit_intent(package, label, &initial_update, &files, &edited_files);
+    let old_page_keys = initial_update
+        .project_record()
+        .project_fields()
+        .expect("original project fields")
+        .files
+        .page_keys()
+        .to_vec();
+    let new_page_keys = edited_update
+        .project_record()
+        .project_fields()
+        .expect("edited project fields")
+        .files
+        .page_keys()
+        .to_vec();
+    let removed_page_keys = old_page_keys
+        .iter()
+        .copied()
+        .filter(|key| !new_page_keys.contains(key))
+        .collect::<Vec<_>>();
+    let reused_page_keys = old_page_keys
+        .iter()
+        .copied()
+        .filter(|key| new_page_keys.contains(key))
+        .collect::<Vec<_>>();
+    let removed_file_keys = files
+        .iter()
+        .map(|(key, _, _)| *key)
+        .filter(|key| !edited_expected.contains(key))
+        .collect::<Vec<_>>();
+    assert!(!removed_file_keys.is_empty());
+    assert!(
+        !new_page_keys.is_empty(),
+        "the edited frontier remains paged"
+    );
+    assert!(!old_page_keys.is_empty());
+    assert!(
+        !removed_page_keys.is_empty(),
+        "the final page changes or disappears"
+    );
+    assert!(
+        !reused_page_keys.is_empty(),
+        "unchanged page identities are reused"
+    );
+    let before_edit_root = daemon.engine().daemon().owner().head().root();
+    super::super::commands::commit_builtin_intent(&mut daemon, 5, &edit_intent)
+        .expect("commit successful membership shrink");
+    assert_ne!(
+        daemon.engine().daemon().owner().head().root(),
+        before_edit_root
+    );
+    assert_complete_frontier(&daemon, package, &edited_expected);
+    assert_complete_frontier(&daemon, foreign_package, &foreign_expected);
+
+    let edited_snapshot = daemon.engine().daemon().owner().snapshot();
+    let edited_relation = edited_snapshot
+        .relation::<BuiltinWorkspaceRelation>()
+        .expect("edited source relation");
+    for key in removed_page_keys.iter().chain(&removed_file_keys) {
+        assert!(
+            edited_relation
+                .lookup(key)
+                .expect("read removed source row")
+                .is_none(),
+            "successful edit deletes stale page and file rows"
+        );
+    }
+    let edited_root = daemon.engine().daemon().owner().head().root();
 
     // Closing the owner forces journal recovery and persisted relation replay;
-    // the exact selected file keys must survive both.
+    // the replacement frontier and successful stale-row deletions survive both.
     drop(daemon);
-    let mut daemon = open_daemon(&temp.0);
-    assert_eq!(
-        daemon.engine().daemon().owner().head().root(),
-        published_root
-    );
-    assert_eq!(resolved_frontier(&daemon, package), expected);
-    let reopened_snapshot = daemon.engine().daemon().owner().snapshot();
-    let reopened_relation = reopened_snapshot
+    let mut daemon = open_daemon(temp.0.path());
+    assert_eq!(daemon.engine().daemon().owner().head().root(), edited_root);
+    assert_complete_frontier(&daemon, package, &edited_expected);
+    assert_complete_frontier(&daemon, foreign_package, &foreign_expected);
+    let reopened_relation = daemon
+        .engine()
+        .daemon()
+        .owner()
+        .snapshot()
         .relation::<BuiltinWorkspaceRelation>()
         .expect("reopened source relation");
-    let file_rows = reopened_relation
-        .lookup_many_sorted(&expected)
-        .expect("batch read reopened file rows");
-    assert_eq!(file_rows.len(), FILE_COUNT);
-    for ((key, _, _), record) in files.iter().zip(file_rows) {
-        let record = record.expect("every selected file row replays");
-        super::validate_project_file(package.to_bytes(), *key, &record)
-            .expect("replayed file remains owned at its canonical path");
+    for key in removed_page_keys.iter().chain(&removed_file_keys) {
+        assert!(
+            reopened_relation
+                .lookup(key)
+                .expect("read replayed deletion")
+                .is_none(),
+            "journal replay retains successful page and file deletions"
+        );
     }
 
     let original_root = daemon.engine().daemon().owner().head().root();
-    let foreign_deletion = BuiltinSourceChange {
-        key: foreign_package.to_bytes(),
-        after: None,
-    };
-    assert_refused_without_publication(
-        &mut daemon,
-        package,
-        label,
-        4,
-        vec![foreign_deletion],
-        &expected,
-    );
-    assert_eq!(
-        daemon.engine().daemon().owner().head().root(),
-        original_root
-    );
+    let foreign_page_key = foreign_update
+        .membership_pages()
+        .first()
+        .map(|(key, _)| *key)
+        .expect("foreign membership page");
+    let foreign_file_key = *foreign_expected.first().expect("foreign file key");
+    let deletion_error = "source update deletes a row outside its prior project frontier";
+    for (request_id, key, kind) in [
+        (6, foreign_package.to_bytes(), "foreign project"),
+        (7, foreign_page_key, "foreign membership page"),
+        (8, foreign_file_key, "foreign file"),
+    ] {
+        assert_refused_without_publication(
+            &mut daemon,
+            package,
+            label,
+            request_id,
+            vec![BuiltinSourceChange { key, after: None }],
+            &edited_expected,
+            deletion_error,
+        );
+        assert_complete_frontier(&daemon, foreign_package, &foreign_expected);
+        assert_eq!(
+            daemon.engine().daemon().owner().head().root(),
+            original_root,
+            "refused deletion of a {kind} leaves both projects selected"
+        );
+    }
 
     // An updated root that names newly derived pages without including those
     // page rows must be rejected before the owner can publish the new root.
@@ -275,17 +467,10 @@ fn large_paged_membership_commits_reopens_and_refuses_incomplete_transitions_ato
         ),
     );
     let (expanded_intent, expanded_update) = paged_index_intent(package, label, &expanded_files);
-    let old_page_keys = update
-        .project_record()
-        .project_fields()
-        .expect("original project fields")
-        .files
-        .page_keys()
-        .to_vec();
     let omitted_new_page = expanded_update
         .membership_pages()
         .iter()
-        .find(|(key, _)| !old_page_keys.contains(key))
+        .find(|page| !new_page_keys.contains(&page.0))
         .map(|(key, _)| *key)
         .expect("expanded frontier derives at least one new page");
     let changed_project = expanded_intent
@@ -297,36 +482,40 @@ fn large_paged_membership_commits_reopens_and_refuses_incomplete_transitions_ato
         &mut daemon,
         package,
         label,
-        5,
+        9,
         vec![changed_project.clone()],
-        &expected,
+        &edited_expected,
+        "project membership page is missing",
     );
     let after_missing_page = daemon.engine().daemon().owner().head().root();
     assert_eq!(after_missing_page, original_root);
-    assert!(!old_page_keys.contains(&omitted_new_page));
+    assert!(!new_page_keys.contains(&omitted_new_page));
+    assert_complete_frontier(&daemon, foreign_package, &foreign_expected);
 
     // A valid page body is still invalid as a change if no resulting project
     // references its content-derived key.
     let orphan_page = expanded_update
         .membership_pages()
         .iter()
-        .find(|(key, _)| !old_page_keys.contains(key))
+        .find(|page| !new_page_keys.contains(&page.0))
         .expect("new page for orphan-row refusal");
     assert_refused_without_publication(
         &mut daemon,
         package,
         label,
-        6,
+        10,
         vec![BuiltinSourceChange {
             key: orphan_page.0,
             after: Some(orphan_page.1.clone()),
         }],
-        &expected,
+        &edited_expected,
+        "source update adds an unreferenced membership page",
     );
     assert_eq!(
         daemon.engine().daemon().owner().head().root(),
         original_root
     );
+    assert_complete_frontier(&daemon, foreign_package, &foreign_expected);
 }
 
 fn raw_psrd_project(file_count: u32, page_keys: &[[u8; 32]]) -> Vec<u8> {
@@ -410,7 +599,7 @@ fn raw_psrd_decoder_rejects_truncation_count_reference_and_order_corruption() {
         !psrd_decodes(&empty_refs),
         "a paged project names at least one page"
     );
-    let excessive_refs = vec![[0x33; 32]; ProductSourceRecord::MAX_PROJECT_MEMBERSHIP_PAGES + 1];
+    let excessive_refs = vec![[0x33; 32]; BuiltinPackageRecord::MAX_PROJECT_MEMBERSHIP_PAGES + 1];
     assert!(
         !psrd_decodes(&raw_psrd_project(100_000, &excessive_refs)),
         "page-reference count is bounded"
