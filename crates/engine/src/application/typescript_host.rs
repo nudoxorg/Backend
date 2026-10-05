@@ -695,7 +695,11 @@ mod tests {
         else {
             panic!("pnpm TypeScript package should be selected");
         };
-        assert!(project.compiler.starts_with(modules.join(".pnpm")));
+        assert!(
+            project.compiler.starts_with(
+                fs::canonicalize(modules.join(".pnpm")).expect("canonical pnpm store")
+            )
+        );
 
         fs::remove_file(modules.join(".bin/tsc")).expect("remove package manager shim");
         fs::write(modules.join(".bin/tsc"), "#!/bin/sh\nexit 0\n").expect("write unknown wrapper");
@@ -743,7 +747,8 @@ mod tests {
             r##"#!/bin/sh
 test -z "${HOME+x}" || exit 31
 test -z "${NODE_OPTIONS+x}" || exit 32
-test "$PATH" = "$(dirname "$0")" || exit 33
+node_directory=${0%/*}
+test "$PATH" = "$node_directory" || exit 33
 test -f "$1" || exit 34
 test "$2" = "--version" || exit 35
 printf 'Version 5.9.3\n'
