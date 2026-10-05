@@ -187,6 +187,7 @@ pub struct ProductView {
     fault: Option<Fault>,
     index_search_page: Option<IndexSearchPageInfo>,
     index_job: Option<IndexJobProjection>,
+    index_operation: Option<backend_library::IndexOperationObservation>,
 }
 
 /// Exact owner-issued indexing state retained alongside its readable projection.
@@ -373,6 +374,13 @@ impl ProductView {
         self.index_job.as_ref()
     }
 
+    /// Returns the exact durable index-operation observation carried by this
+    /// product reply, when present.
+    #[must_use]
+    pub const fn index_operation(&self) -> Option<&backend_library::IndexOperationObservation> {
+        self.index_operation.as_ref()
+    }
+
     /// Returns this product answer's typed owner cursor, when it has one.
     #[must_use]
     pub fn cursor_family(&self) -> Option<&ContinuationCursor> {
@@ -415,6 +423,14 @@ impl ProductView {
         self
     }
 
+    fn with_index_operation(
+        mut self,
+        index_operation: backend_library::IndexOperationObservation,
+    ) -> Self {
+        self.index_operation = Some(index_operation);
+        self
+    }
+
     /// Records one product answer a surface assembled itself.
     ///
     /// An accepted intent is not a [`SurfaceReply`], but it is the same shape
@@ -428,6 +444,7 @@ impl ProductView {
             fault: None,
             index_search_page: None,
             index_job: None,
+            index_operation: None,
         }
     }
 
@@ -441,6 +458,7 @@ impl ProductView {
             fault: None,
             index_search_page: None,
             index_job: None,
+            index_operation: None,
         }
     }
 
@@ -452,6 +470,7 @@ impl ProductView {
             fault: None,
             index_search_page: None,
             index_job: None,
+            index_operation: None,
         }
     }
 
@@ -463,6 +482,7 @@ impl ProductView {
             fault: None,
             index_search_page: None,
             index_job: None,
+            index_operation: None,
         }
     }
 
@@ -474,6 +494,7 @@ impl ProductView {
             fault: Some(fault),
             index_search_page: None,
             index_job: None,
+            index_operation: None,
         }
     }
 }
@@ -543,7 +564,9 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             index_start_view(result).with_index_job(IndexJobProjection::Started(result.clone()))
         }
         SurfaceReply::IndexOperationStarted(observation)
-        | SurfaceReply::IndexOperationStatus(observation) => index_operation_view(observation),
+        | SurfaceReply::IndexOperationStatus(observation) => {
+            index_operation_view(observation).with_index_operation(observation.clone())
+        }
         SurfaceReply::IndexTerminal(terminal) => index_terminal_view(terminal)
             .with_index_job(IndexJobProjection::Terminal(terminal.clone())),
         SurfaceReply::IndexProgress(observation) => index_observation_view(observation)
@@ -2316,6 +2339,121 @@ mod tests {
         let decoded: crate::dto::ProductDto =
             serde_json::from_value(old_value).expect("older DTO without compiler profile");
         assert_eq!(decoded.records[0].compiler_profile, None);
+    }
+
+    #[test]
+    fn durable_index_operation_projection_preserves_all_states_and_published_receipt() {
+        use backend_library::{
+            CompileExecutionIntent, IndexOperationFailureReason, IndexOperationKey,
+            IndexOperationObservation, IndexOperationPublicationReceipt, IndexOperationState,
+            IndexOperationStatus, IndexOperationUnresolvedReason, ProductText,
+        };
+
+        let package = PackageReference::parse("/workspace/project").expect("local package");
+        let key = IndexOperationKey::from_bytes([0x31; 32]).expect("operation key");
+        let status = |state| {
+            IndexOperationStatus::new(
+                key,
+                package.clone(),
+                CompileExecutionIntent::Interactive,
+                state,
+            )
+        };
+        let receipt_root = backend_library::view_state_root(&[]);
+        let basis = backend_library::Basis::new(
+            receipt_root,
+            backend_library::object_version(b"index-operation-projection-test"),
+        );
+        let frontier = backend_library::Frontier::new(
+            backend_library::branch_key("main"),
+            backend_library::log_key("library"),
+            backend_library::CURSOR_SCHEMA,
+            receipt_root,
+            0,
+        );
+        let view = backend_library::ViewRoot::new_incomplete(
+            backend_library::view_key(b"index-operation-projection-test-view"),
+            basis,
+            frontier,
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("incomplete projection view");
+        let receipt = IndexOperationPublicationReceipt::from_published_view(
+            Some([0x41; 32]),
+            [0x42; 32],
+            [0x43; 32],
+            9,
+            &view,
+            backend_library::Cursor::for_view_root(&view),
+        )
+        .expect("checked published receipt");
+        let observations = [
+            IndexOperationObservation::Unknown { operation_key: key },
+            IndexOperationObservation::OutsideReceiptWindow {
+                operation_key: key,
+                request_digest: [0x51; 32],
+            },
+            IndexOperationObservation::Known(status(IndexOperationState::Accepted)),
+            IndexOperationObservation::Known(status(IndexOperationState::Active {
+                ticket: backend_library::IndexJobTicket::new(
+                    std::num::NonZeroU64::new(7).expect("nonzero job ticket"),
+                    [0x61; 16],
+                    package.clone(),
+                ),
+                stage: backend_library::IndexJobStage::Compiling,
+            })),
+            IndexOperationObservation::Known(status(IndexOperationState::Published(receipt))),
+            IndexOperationObservation::Known(status(IndexOperationState::Failed {
+                reason: IndexOperationFailureReason::WorkerFailed,
+                detail: ProductText::new("bounded worker detail").expect("failure detail"),
+            })),
+            IndexOperationObservation::Known(status(IndexOperationState::Unresolved {
+                reason: IndexOperationUnresolvedReason::RestartedDuringPublication,
+                detail: ProductText::new("bounded unresolved detail").expect("unresolved detail"),
+            })),
+        ];
+
+        for observation in observations {
+            let expected = serde_json::to_value(&observation).expect("exact observation encoding");
+            for reply in [
+                SurfaceReply::IndexOperationStarted(observation.clone()),
+                SurfaceReply::IndexOperationStatus(observation.clone()),
+            ] {
+                let view = product_view(&reply);
+                assert_eq!(view.index_operation(), Some(&observation));
+                let dto = crate::dto::ProductDto::new(&view);
+                assert_eq!(dto.index_operation.as_ref(), Some(&observation));
+                let encoded = serde_json::to_value(&dto).expect("full product DTO");
+                assert_eq!(encoded["index_operation"], expected);
+                let decoded: crate::dto::ProductDto =
+                    serde_json::from_value(encoded.clone()).expect("typed observation roundtrip");
+                assert_eq!(decoded.index_operation.as_ref(), Some(&observation));
+
+                let mut older = encoded.clone();
+                older
+                    .as_object_mut()
+                    .expect("product object")
+                    .remove("index_operation");
+                let decoded_older: crate::dto::ProductDto =
+                    serde_json::from_value(older).expect("older DTO without operation field");
+                assert_eq!(decoded_older.index_operation, None);
+
+                let answer = crate::drive::Answer::Product(Box::new(view));
+                for detail in [crate::Detail::Summary, crate::Detail::Full] {
+                    let payload = crate::encode_answer(
+                        &answer,
+                        detail,
+                        None,
+                        crate::DEFAULT_RESPONSE_BUDGET_BYTES,
+                    )
+                    .expect("bounded index-operation projection");
+                    let value: serde_json::Value =
+                        serde_json::from_slice(&payload.bytes).expect("typed answer JSON");
+                    assert_eq!(value["index_operation"], expected);
+                }
+            }
+        }
     }
 
     fn published_history_proof(

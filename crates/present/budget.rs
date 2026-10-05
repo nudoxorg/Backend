@@ -276,6 +276,7 @@ pub fn encode_answer(
                         fault: product.fault,
                         index_search_page: product.index_search_page,
                         index_job: product.index_job,
+                        index_operation: product.index_operation,
                     },
                     budget,
                 )
@@ -581,6 +582,8 @@ struct SummaryProductDto {
     index_search_page: Option<ProductIndexSearchPageDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     index_job: Option<crate::product::IndexJobProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index_operation: Option<backend_library::IndexOperationObservation>,
 }
 
 #[derive(Default)]

@@ -735,6 +735,10 @@ pub struct ProductDto {
     /// Exact owner-issued indexing ticket, observation, or terminal receipt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_job: Option<IndexJobProjection>,
+    /// Exact durable index-operation status, including a Published receipt or
+    /// typed failure/unresolved reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_operation: Option<backend_library::IndexOperationObservation>,
 }
 
 /// Shared page envelope projected for CLI, MCP, and desktop product replies.
@@ -818,6 +822,7 @@ impl ProductDto {
                     next_cursor: page.next_cursor().map(ToOwned::to_owned),
                 }),
             index_job: view.index_job().cloned(),
+            index_operation: view.index_operation().cloned(),
         }
     }
 }
