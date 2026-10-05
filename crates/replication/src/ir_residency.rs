@@ -2987,7 +2987,7 @@ mod batch_verification_tests {
 
         fn verify_historical_segment(
             &mut self,
-            _binding: crate::HistoricalSemanticPlaneBinding,
+            _binding: HistoricalSemanticPlaneBinding,
             _base_manifest: &SemanticPlaneManifest,
             _base_segment: &SemanticPlaneSegment,
             _target_selection: SelectedSemanticPlane,

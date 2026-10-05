@@ -387,6 +387,7 @@ fn open_the_window(cx: &mut App, parts: AppParts, starting_platform: Instant) {
     let installing_graph = Instant::now();
     let graph = UiEntityGraph::install_with_bootstrap(cx, runtime, persistence, reads, Some(gate), keep, binding);
     super::menus::install_local_actions(&graph, cx);
+    let closing = super::close::GracefulClose::install(&graph, cx);
     crate::runtime::trace::span("boot.ui_graph", installing_graph, "UiEntityGraph::install_with_owner");
     // Temporary: `NUDOX_DEBUG_PAGE="search:Engine;orbit;health"` opens a plain-text
     // window onto the data plane (see runtime::debug_page).
@@ -404,7 +405,9 @@ fn open_the_window(cx: &mut App, parts: AppParts, starting_platform: Instant) {
         super::window_size::remember(window, &graph.root, cx);
         // gpui_component::Root hosts the component layer the Ask field's input
         // engine (IME) expects; the shell is its view.
-        cx.new(|cx| gpui_component::Root::new(shell, window, cx).bordered(false))
+        super::close::GracefulClose::attach(&closing, window, cx);
+        let view = cx.new(|cx| super::close::CloseView::new(shell, closing, cx));
+        cx.new(|cx| gpui_component::Root::new(view, window, cx).bordered(false))
     }) {
         eprintln!("backend-desktop: open window: {error}");
     }

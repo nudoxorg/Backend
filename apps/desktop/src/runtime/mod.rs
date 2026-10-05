@@ -32,6 +32,7 @@ pub mod trace;
 pub(crate) mod traffic;
 pub mod ui_graph;
 pub mod wake;
+pub(crate) mod worker_finish;
 pub(crate) mod workspace_lines;
 pub mod wiring;
 

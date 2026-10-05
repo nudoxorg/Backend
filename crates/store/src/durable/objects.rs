@@ -315,22 +315,6 @@ pub(super) fn encode_object(object: &TypedObject, max_bytes: usize) -> Result<Ve
     Ok(output)
 }
 
-pub(super) fn decode_object(
-    bytes: &[u8],
-    max_bytes: usize,
-    registry: &RelationAdmissionRegistry,
-    expected: UntrustedObjectId,
-) -> Result<TypedObject, StoreError> {
-    let view = verify_object_view(bytes, max_bytes, registry, Some(expected))?;
-    let object = TypedObject::from_wire_parts(
-        view.schema,
-        view.key,
-        view.version,
-        view.bytes.to_vec().into_boxed_slice(),
-    );
-    Ok(object)
-}
-
 /// Parses and authenticates one complete object envelope while retaining only
 /// borrows into its caller-owned, already bounded byte buffer.
 fn verify_object_view<'a>(
@@ -467,9 +451,42 @@ impl FileStore {
         if !pin.covers_identity(self.gc_identity) {
             return Err(StoreError::Corrupt);
         }
+        self.with_verified_object_claim_if_present(claim, visit)?
+            .ok_or(StoreError::Corrupt)
+    }
+
+    /// Opens and admits the object named by `claim`, returning `None` when
+    /// the object path is absent. The safe artifact opener owns path, link,
+    /// and immutability checks before the descriptor reaches the decoder.
+    pub(in crate::durable) fn with_verified_object_claim_if_present<T, F>(
+        &self,
+        claim: UntrustedObjectId,
+        visit: F,
+    ) -> Result<Option<T>, StoreError>
+    where
+        F: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<T, StoreError>,
+    {
         let claimed_id = ObjectId::from_bytes(*claim.as_bytes());
-        let mut file =
-            super::artifact_fs::open_object(self, claimed_id)?.ok_or(StoreError::Corrupt)?;
+        let Some(file) = super::artifact_fs::open_object(self, claimed_id)? else {
+            return Ok(None);
+        };
+        self.with_verified_object_file(file, claim, visit).map(Some)
+    }
+
+    /// Admits one object from an already-open immutable object descriptor.
+    ///
+    /// Keeping the descriptor through bounded reading and envelope admission
+    /// ensures callers that have already checked the object path do not reopen
+    /// a potentially different file by name.
+    fn with_verified_object_file<T, F>(
+        &self,
+        mut file: File,
+        claim: UntrustedObjectId,
+        visit: F,
+    ) -> Result<T, StoreError>
+    where
+        F: for<'a> FnOnce(VerifiedObjectView<'a>) -> Result<T, StoreError>,
+    {
         let maximum = self.object_envelope_limit()?;
         let metadata = file.metadata().map_err(|error| io_error(&error))?;
         let maximum_u64 = u64::try_from(maximum).map_err(|_| StoreError::Bounds)?;
@@ -685,6 +702,59 @@ mod tests {
             Err(StoreError::Corrupt)
         );
         replace_fixture(&path, &original);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn opened_object_admission_uses_the_supplied_descriptor() {
+        let (store, root) = test_store("opened-descriptor");
+        let expected = bytes_object(b"expected object".to_vec());
+        let opened = bytes_object(b"different object".to_vec());
+        store
+            .write_object(&expected)
+            .expect("write expected object");
+        store.write_object(&opened).expect("write other object");
+
+        let file = super::super::artifact_fs::open_object(&store, opened.id())
+            .expect("open other object")
+            .expect("other object exists");
+        assert_eq!(
+            store.with_verified_object_file(
+                file,
+                UntrustedObjectId::from_bytes(*expected.id().as_bytes()),
+                |_| Ok(()),
+            ),
+            Err(StoreError::Corrupt)
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_object_read_rejects_a_symlinked_object_path() {
+        let (store, root) = test_store("symlink-object");
+        let object = bytes_object(b"symlink target".to_vec());
+        let target = root.join("outside-object");
+        fs::write(&target, b"not an object envelope").expect("write symlink target");
+        let path = store.object_path(object.id());
+        std::os::unix::fs::symlink(&target, &path).expect("replace path with symlink");
+
+        assert_eq!(store.read_object(object.id()), Err(StoreError::UnsafePath));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_object_read_rejects_a_hard_linked_object_path() {
+        let (store, root) = test_store("hardlink-object");
+        let object = bytes_object(b"hard-linked object".to_vec());
+        store.write_object(&object).expect("write object");
+        let path = store.object_path(object.id());
+        let alias = root.join("object-alias");
+        fs::hard_link(&path, &alias).expect("create hostile hard link");
+
+        assert_eq!(store.read_object(object.id()), Err(StoreError::UnsafePath));
         let _ = fs::remove_dir_all(root);
     }
 

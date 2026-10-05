@@ -1767,7 +1767,7 @@ mod tests {
                 cas,
                 crate::TransportLimits {
                     max_frame: 32 * 1024,
-                    max_chunk: crate::MAX_RANGE_BYTES,
+                    max_chunk: MAX_RANGE_BYTES,
                     ..crate::TransportLimits::default()
                 },
             )
@@ -1789,7 +1789,7 @@ mod tests {
             cas,
             crate::TransportLimits {
                 max_frame: 32 * 1024,
-                max_chunk: crate::MAX_RANGE_BYTES,
+                max_chunk: MAX_RANGE_BYTES,
                 ..crate::TransportLimits::default()
             },
         )

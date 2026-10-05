@@ -39,6 +39,7 @@ pub(crate) use self::dependencies::{
     ContentAdmission, ContentFailure, RouteDependencies, RouteReadLease,
 };
 use self::keeper::SnapshotKeeper;
+pub(crate) use self::keeper::PendingSave;
 pub(crate) use self::owner_link::{OwnerAttachment, OwnerRetryAttachment};
 use self::owner_link::{OwnerLink, OwnerPhase};
 use super::actor::CancellationToken;
@@ -223,6 +224,8 @@ pub struct DataStore {
     owner: OwnerLink,
     /// The launch snapshot: seeded pages, and saving them for next time.
     keeper: SnapshotKeeper,
+    close_paused: bool,
+    close_committed: bool,
 }
 
 impl std::fmt::Debug for DataStore {
@@ -398,6 +401,8 @@ impl DataStore {
             notice: None,
             owner: OwnerLink::serving(),
             keeper: SnapshotKeeper::default(),
+            close_paused: false,
+            close_committed: false,
         }
     }
 
@@ -510,7 +515,13 @@ impl DataStore {
                 store.keeper.keep(&mut store.pages, root, keep);
             }
             // Ordinary window release saves pages without retaining the store.
-            cx.on_release(|store: &mut Self, _| store.save_on_close()).detach();
+            cx.on_release(|store: &mut Self, cx| {
+                if let Ok(Some(save)) = store.close_checkpoint() {
+                    cx.background_executor().spawn(async move {
+                        if let Err(error) = save.write("on release") { eprintln!("backend-desktop: save launch snapshot: {error}"); }
+                    }).detach();
+                }
+            }).detach();
             store.start(cx);
             // The first route is focused like every later one.
             store.focus(route, cx);
@@ -535,7 +546,30 @@ impl DataStore {
         }));
     }
 
+    pub(crate) fn set_close_paused(&mut self, paused: bool, cx: &mut Context<Self>) {
+        self.close_paused = paused;
+        if !paused { self.drain(cx); }
+    }
+
+    pub(crate) fn commit_close(&mut self) -> super::worker_finish::WorkerFinish {
+        self.close_committed = true;
+        self.close_paused = true;
+        self.pool
+            .as_mut()
+            .map(ReadPool::take_finish)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn close_checkpoint(&self) -> std::io::Result<Option<PendingSave>> {
+        if self.close_committed {
+            return Ok(None);
+        }
+        self.keeper
+            .checkpoint(&self.pages, &self.snapshot, self.current_owner_attachment())
+    }
+
     pub(crate) fn save_on_close(&self) {
+        if self.close_committed { return; }
         if let Err(error) = self.save_now() {
             eprintln!("backend-desktop: save the launch snapshot: {error}");
         }
@@ -698,6 +732,7 @@ impl DataStore {
     /// that is current or in flight costs nothing, so views may call this
     /// from render. A queued prefetch for the key is promoted.
     pub fn ensure(&mut self, key: PageKey, cx: &mut Context<Self>) -> Stamp {
+        if self.close_paused { return self.pages.stamp(&key); }
         self.keep_focused_resident();
         match self.owner.phase() {
             OwnerPhase::Serving => {}
@@ -979,6 +1014,7 @@ impl DataStore {
         affinity: Option<usize>,
         cx: &mut Context<Self>,
     ) {
+        if self.close_paused { return; }
         let Some(pool) = &self.pool else {
             // No read lane: say so once instead of leaving the page working.
             let landing = self.pages.land(
@@ -1180,6 +1216,7 @@ impl DataStore {
     /// Lands one bounded batch. Called by the wake task; public so tests
     /// and harnesses can drive it deterministically.
     pub fn drain(&mut self, cx: &mut Context<Self>) -> usize {
+        if self.close_paused { return 0; }
         if self.owner.attachment_changed() {
             self.revoke_inflight(cx);
         }

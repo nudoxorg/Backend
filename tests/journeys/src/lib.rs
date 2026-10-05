@@ -1085,7 +1085,7 @@ fn desktop_rekeys_one_snapshot_without_copying_unchanged_branches() {
     let base = library.view().clone();
     let desktop = AppSnapshot::empty(VersionedRoot::from_revision(
         7,
-        backend_library::Cursor::at(base.root(), 0),
+        Cursor::at(base.root(), 0),
         0,
     ));
     let shelf = desktop.shelf() as *const _;
@@ -1097,7 +1097,7 @@ fn desktop_rekeys_one_snapshot_without_copying_unchanged_branches() {
     );
     let (library, _) = advance_library(library, ViewDelta::Upsert { row }, &capability);
     let rekeyed = desktop.with_key(
-        VersionedRoot::from_revision(7, backend_library::Cursor::at(library.view().root(), 1), 0),
+        VersionedRoot::from_revision(7, Cursor::at(library.view().root(), 1), 0),
         None,
     );
     assert_eq!(rekeyed.root(), library.view().root());

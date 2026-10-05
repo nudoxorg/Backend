@@ -605,7 +605,7 @@ struct PlaneIdentity {
 struct ImageIdentity {
     image: SemanticPlaneImageKey,
     manifest_root: SemanticManifestRoot,
-    semantic_generation: backend_semantic::ir::GenerationId,
+    semantic_generation: GenerationId,
     planes: Vec<PlaneIdentity>,
 }
 
@@ -810,7 +810,6 @@ fn exercise_remote_s3_range_interrupt(
     let corruption_refusal = transfer_remote_semantic_segment(
         &mut client,
         s3,
-        &target,
         &manifest,
         image,
         kind,
@@ -839,7 +838,6 @@ fn exercise_remote_s3_range_interrupt(
     let verified_segment = transfer_remote_semantic_segment(
         &mut client,
         s3,
-        &target,
         &manifest,
         image,
         kind,
@@ -1031,7 +1029,7 @@ fn exercise_remote_s3_range_interrupt(
         .expect("read durable remote range checkpoint after owner restart");
     let checkpoint = SemanticRangeClientCheckpoint::decode(&checkpoint_bytes)
         .expect("decode exact selected range checkpoint after owner restart");
-    let (mut resumed_cursor, coverage, mut poll) = resumed_client
+    let (mut resumed_cursor, _coverage, mut poll) = resumed_client
         .resume_semantic_range(
             &checkpoint,
             &resumed_manifest,
@@ -1040,7 +1038,6 @@ fn exercise_remote_s3_range_interrupt(
             &mut range_store,
         )
         .expect("resume verified sparse range under the unchanged selected stamp");
-    let mut partial = Some(coverage);
     let mut resumed_ranges = 0usize;
     let verified = loop {
         match poll {
@@ -1061,7 +1058,6 @@ fn exercise_remote_s3_range_interrupt(
                         coverage,
                         checkpoint,
                     } => {
-                        partial = Some(coverage);
                         std::fs::write(
                             &checkpoint_path,
                             checkpoint
@@ -1072,7 +1068,7 @@ fn exercise_remote_s3_range_interrupt(
                         poll = resumed_client
                             .next_request(
                                 &mut resumed_cursor,
-                                partial.as_ref(),
+                                Some(&coverage),
                                 HydrationCredits::new(1, 16 * 1024),
                             )
                             .expect("plan next bounded resumed range");
@@ -1262,7 +1258,6 @@ fn request_unselected_generation(
 fn transfer_remote_semantic_segment(
     client: &mut LocalSemanticIndexClient,
     s3: &LoopbackS3,
-    target: &SemanticTargetKey,
     manifest: &backend_semantic::ir::SemanticPlaneManifest,
     image: SemanticPlaneImageKey,
     kind: SemanticPlaneKind,
@@ -1276,7 +1271,6 @@ fn transfer_remote_semantic_segment(
     let mut cursor = client
         .new_cursor(manifest, image, kind, &have, limits)
         .map_err(|error| error.to_string())?;
-    let mut partial = None;
     let mut poll = client
         .next_request(&mut cursor, None, HydrationCredits::new(1, 16 * 1024))
         .map_err(|error| error.to_string())?;
@@ -1289,11 +1283,10 @@ fn transfer_remote_semantic_segment(
                 match client.request_and_accept(&mut cursor, &request, store, limits) {
                     Ok(SemanticRangeClientProgress::Complete(segment)) => return Ok(segment),
                     Ok(SemanticRangeClientProgress::Staged { coverage, .. }) => {
-                        partial = Some(coverage);
                         poll = client
                             .next_request(
                                 &mut cursor,
-                                partial.as_ref(),
+                                Some(&coverage),
                                 HydrationCredits::new(1, 16 * 1024),
                             )
                             .map_err(|error| error.to_string())?;
@@ -1821,11 +1814,11 @@ fn cold_selected_closure_matches_between_filestore_and_real_s3_processes() {
 fn hydrate_one_segment(
     client: &mut LocalSemanticIndexClient,
     manifest: &backend_semantic::ir::SemanticPlaneManifest,
-    image: backend_semantic::ir::SemanticPlaneImageKey,
+    image: SemanticPlaneImageKey,
     kind: SemanticPlaneKind,
     store: &mut FileSemanticRangeStore,
     limits: TransportLimits,
-) -> backend_replication::VerifiedSemanticSegment {
+) -> VerifiedSemanticSegment {
     let have = client
         .verified_local_segments(manifest, image, kind, store)
         .expect("read and verify local selected segments");

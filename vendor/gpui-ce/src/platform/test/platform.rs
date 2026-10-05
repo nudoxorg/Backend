@@ -10,6 +10,7 @@ use anyhow::Result;
 use collections::VecDeque;
 use futures::channel::oneshot;
 use parking_lot::Mutex;
+use std::cell::Cell;
 use std::{
     cell::RefCell,
     path::{Path, PathBuf},
@@ -36,6 +37,9 @@ pub(crate) struct TestPlatform {
     pub(crate) system_notifications: RefCell<TestSystemNotifications>,
     pub text_system: Arc<dyn PlatformTextSystem>,
     pub expect_restart: RefCell<Option<oneshot::Sender<Option<PathBuf>>>>,
+    should_quit: RefCell<Option<Box<dyn FnMut() -> bool>>>,
+    quit_reply: Cell<Option<bool>>,
+    quit_requests: Cell<usize>,
     headless_renderer_factory: Option<Box<dyn Fn() -> Option<Box<dyn PlatformHeadlessRenderer>>>>,
     weak: Weak<Self>,
 }
@@ -137,6 +141,9 @@ impl TestPlatform {
             active_display: Rc::new(TestDisplay::new()),
             active_window: Default::default(),
             expect_restart: Default::default(),
+            should_quit: Default::default(),
+            quit_reply: Default::default(),
+            quit_requests: Default::default(),
             current_clipboard_item: Mutex::new(None),
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             current_primary_item: Mutex::new(None),
@@ -278,6 +285,18 @@ impl TestPlatform {
         self.system_notifications.borrow().shown.clone()
     }
 
+    pub(crate) fn simulate_native_quit(&self) -> bool {
+        self.quit_reply.set(None);
+        let callback = self.should_quit.borrow_mut().take();
+        let Some(mut callback) = callback else { return true; };
+        let approved = callback();
+        self.should_quit.borrow_mut().replace(callback);
+        approved
+    }
+
+    pub(crate) fn native_quit_reply(&self) -> Option<bool> { self.quit_reply.get() }
+    pub(crate) fn quit_requests(&self) -> usize { self.quit_requests.get() }
+
     pub(crate) fn delivered_system_notifications(&self) -> Vec<SystemNotification> {
         self.system_notifications.borrow().delivered.clone()
     }
@@ -338,7 +357,10 @@ impl Platform for TestPlatform {
         unimplemented!()
     }
 
-    fn quit(&self) {}
+    fn quit(&self) { self.quit_requests.set(self.quit_requests.get() + 1); }
+    fn on_should_quit(&self, callback: Box<dyn FnMut() -> bool>) { self.should_quit.borrow_mut().replace(callback); }
+    fn reply_to_quit(&self, approve: bool) { self.quit_reply.set(Some(approve)); if approve { self.quit(); } }
+
 
     fn restart(&self, path: Option<PathBuf>) {
         if let Some(tx) = self.expect_restart.take() {

@@ -10,7 +10,7 @@ use std::{
     collections::VecDeque,
     fs::{File, symlink_metadata},
     io::{self, Read, Seek, Write},
-    path::{Path, PathBuf},
+    path::Path,
     process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     sync::{
         Arc, Condvar, Mutex, OnceLock,
@@ -20,6 +20,9 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+
+#[cfg(test)]
+use std::path::PathBuf;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const CHILD_REAP_TIMEOUT: Duration = Duration::from_millis(500);
@@ -69,8 +72,7 @@ struct ChildReapJob {
 static CHILD_REAPER: OnceLock<Mutex<Option<Arc<ChildReaperState>>>> = OnceLock::new();
 
 #[cfg(test)]
-static GROUP_RETIREMENT_ATTEMPTS: std::sync::Mutex<Vec<(u32, usize)>> =
-    std::sync::Mutex::new(Vec::new());
+static GROUP_RETIREMENT_ATTEMPTS: Mutex<Vec<(u32, usize)>> = Mutex::new(Vec::new());
 
 #[cfg(test)]
 pub(crate) fn group_retirement_attempts(process_id: u32) -> usize {
@@ -2759,12 +2761,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn temp_stream_files_are_private_under_umask_022_and_cleaned_up() {
-        let status =
-            std::process::Command::new(std::env::current_exe().expect("current test executable"))
-                .args(["temp_output_permission_probe_child", "--nocapture"])
-                .env("BACKEND_COMPILE_TEMP_PERMISSION_PROBE", "1")
-                .status()
-                .expect("launch isolated umask test process");
+        let status = Command::new(std::env::current_exe().expect("current test executable"))
+            .args(["temp_output_permission_probe_child", "--nocapture"])
+            .env("BACKEND_COMPILE_TEMP_PERMISSION_PROBE", "1")
+            .status()
+            .expect("launch isolated umask test process");
         assert!(status.success());
     }
 

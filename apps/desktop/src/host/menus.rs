@@ -27,15 +27,9 @@ pub(crate) fn install(cx: &mut App) {
         KeyBinding::new("cmd-w", CloseWindow, None),
         KeyBinding::new("cmd-m", MinimizeWindow, None),
     ]);
-    cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-    cx.on_action(|_: &CloseWindow, cx| {
-        if let Some(window) = cx.active_window() {
-            let _ = window.update(cx, |_, window, _| window.remove_window());
-        }
-    });
     cx.on_action(|_: &MinimizeWindow, cx| {
         if let Some(window) = cx.active_window() {
             let _ = window.update(cx, |_, window, _| window.minimize_window());
@@ -87,12 +81,7 @@ pub(crate) fn install(cx: &mut App) {
         ]),
     ]);
 
-    cx.on_window_closed(|cx, _| {
-        if cx.windows().is_empty() {
-            cx.quit();
-        }
-    })
-    .detach();
+
 }
 
 /// App-menu commands are local application actions. They must validate and

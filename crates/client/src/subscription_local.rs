@@ -1043,7 +1043,7 @@ mod bootstrap_exhaustion_tests {
             // its finite bootstrap term for owner-side expiry.
             matches!(
                 read_frame(&mut owner, control_limits()),
-                Err(backend_replication::LocalControlError::Closed)
+                Err(LocalControlError::Closed)
             )
         });
 

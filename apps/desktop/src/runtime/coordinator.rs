@@ -84,6 +84,11 @@ impl std::fmt::Debug for DesktopRuntime {
 }
 
 impl DesktopRuntime {
+    /// Revoke worker admission and transfer join ownership to graceful close.
+    pub(crate) fn take_finish(&mut self) -> super::worker_finish::WorkerFinish {
+        self.actor.take_finish()
+    }
+
     /// Creates a runtime around one admitted snapshot and actor.
     #[must_use]
     pub fn new(snapshot: AppSnapshot, actor: EngineActor) -> Self {

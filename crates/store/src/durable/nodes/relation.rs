@@ -4,6 +4,7 @@ use super::super::{
     FileStore, Hash, ObjectEdge, ObjectId, StoreError, TypedObject, fs, io_error, sync_directory,
 };
 use super::{TreeWriteStats, wire};
+use crate::UntrustedObjectId;
 use backend_version::{
     CanonicalRelation, CheckedCanonicalRoot, CommittedChild, IdContext, SchemaIdentity, StateRoot,
     TreeNodeLoader, TreeNodeView, UntrustedId, admit_canonical_root_claim,
@@ -566,14 +567,16 @@ impl FileStore {
                 // a miss so a later closure can reinstall the deterministic
                 // node. An existing but malformed or conflicting object is
                 // still rejected below.
-                if super::super::artifact_fs::open_object(self, object_id)?.is_none() {
-                    return Ok(false);
-                }
-                let object = self.read_object(object_id)?;
-                if object.schema() != schema || object.version() != version {
-                    return Err(StoreError::Corrupt);
-                }
-                Ok(true)
+                self.with_verified_object_claim_if_present(
+                    UntrustedObjectId::from_bytes(*object_id.as_bytes()),
+                    |object| {
+                        if object.schema() != schema || object.version() != version {
+                            return Err(StoreError::Corrupt);
+                        }
+                        Ok(true)
+                    },
+                )
+                .map(|matches| matches.unwrap_or(false))
             }
             None => Ok(false),
         }
@@ -651,5 +654,183 @@ impl<R: CanonicalRelation> TreeNodeLoader<R> for FileStore {
 
     fn load(&self, claim: UntrustedId<R>) -> Result<CheckedCanonicalRoot<R>, Self::Error> {
         self.read_relation_node_claim(claim)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+    use backend_version::{ObjectKey, Schema};
+    use std::fs::File;
+    use std::path::PathBuf;
+
+    struct BytesSchema;
+
+    impl Schema for BytesSchema {
+        const DOMAIN: u8 = 0xf2;
+        const TYPE: u16 = 0x5102;
+        type Value = Vec<u8>;
+
+        fn encode(value: &Self::Value, output: &mut Vec<u8>) {
+            output.extend_from_slice(value);
+        }
+    }
+
+    fn test_store(label: &str) -> (FileStore, PathBuf) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "backend-store-relation-ref-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let store = FileStore::open(&root, 1024 * 1024).expect("open test store");
+        (store, root)
+    }
+
+    fn bytes_object(bytes: Vec<u8>) -> TypedObject {
+        let key = ObjectKey::<BytesSchema>::from_value(&bytes);
+        TypedObject::from_value(&key, &bytes)
+    }
+
+    fn write_reference(store: &FileStore, object: &TypedObject, target: ObjectId) {
+        let schema = object.schema();
+        let version = *object.version();
+        let path = store.relation_ref_path(schema, &version);
+        wire::write_relation_ref(&path, schema, &version, target, &store.root.join("nodes"))
+            .expect("write relation reference");
+    }
+
+    fn index_object(store: &FileStore, object: &TypedObject) {
+        store.write_object(object).expect("write relation object");
+        write_reference(store, object, object.id());
+    }
+
+    fn replace_object(store: &FileStore, id: ObjectId, bytes: &[u8]) {
+        let path = store.object_path(id);
+        fs::remove_file(&path).expect("remove immutable object fixture");
+        fs::write(path, bytes).expect("write replacement object fixture");
+    }
+
+    #[test]
+    fn dangling_relation_reference_is_a_miss() {
+        let (store, root) = test_store("dangling");
+        let object = bytes_object(b"dangling relation node".to_vec());
+        index_object(&store, &object);
+        let schema = object.schema();
+        let version = *object.version();
+        fs::remove_file(store.object_path(object.id())).expect("remove referenced object");
+
+        assert_eq!(store.relation_ref_matches(schema, &version), Ok(false));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn relation_reference_rejects_a_different_object_descriptor() {
+        let (store, root) = test_store("wrong-descriptor");
+        let expected = bytes_object(b"expected relation node".to_vec());
+        let actual = bytes_object(b"different relation node".to_vec());
+        store.write_object(&actual).expect("write actual object");
+        let schema = expected.schema();
+        let version = *expected.version();
+        write_reference(&store, &expected, actual.id());
+
+        assert_eq!(
+            store.relation_ref_matches(schema, &version),
+            Err(StoreError::Corrupt)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn relation_reference_rejects_a_corrupt_or_wrong_hash_envelope() {
+        let (store, root) = test_store("corrupt-object");
+        let object = bytes_object(b"relation node bytes".to_vec());
+        index_object(&store, &object);
+        let schema = object.schema();
+        let version = *object.version();
+        let original = fs::read(store.object_path(object.id())).expect("read object envelope");
+        let mut corrupt = original.clone();
+        corrupt[0] ^= 0x01;
+        replace_object(&store, object.id(), &corrupt);
+        assert_eq!(
+            store.relation_ref_matches(schema, &version),
+            Err(StoreError::Corrupt)
+        );
+
+        let mut wrong_hash = original;
+        wrong_hash[super::super::super::OBJECT_MAGIC.len()] ^= 0x01;
+        replace_object(&store, object.id(), &wrong_hash);
+
+        assert_eq!(
+            store.relation_ref_matches(schema, &version),
+            Err(StoreError::Corrupt)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn relation_reference_rejects_an_oversized_object() {
+        let (store, root) = test_store("oversized-object");
+        let object = bytes_object(b"relation node bytes".to_vec());
+        index_object(&store, &object);
+        let schema = object.schema();
+        let version = *object.version();
+        let path = store.object_path(object.id());
+        fs::remove_file(&path).expect("remove immutable object fixture");
+        let file = File::create(path).expect("create sparse object fixture");
+        let oversized_len = u64::try_from(store.object_envelope_limit().expect("envelope limit"))
+            .expect("limit fits")
+            + 1;
+        file.set_len(oversized_len)
+            .expect("grow object past the bounded envelope");
+
+        assert_eq!(
+            store.relation_ref_matches(schema, &version),
+            Err(StoreError::Bounds)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relation_reference_rejects_a_symlinked_object_path() {
+        let (store, root) = test_store("symlink-object");
+        let object = bytes_object(b"relation node bytes".to_vec());
+        index_object(&store, &object);
+        let schema = object.schema();
+        let version = *object.version();
+        let path = store.object_path(object.id());
+        let target = root.join("outside-object");
+        fs::write(&target, b"not an object envelope").expect("write symlink target");
+        fs::remove_file(&path).expect("remove immutable object fixture");
+        std::os::unix::fs::symlink(&target, &path).expect("replace object with symlink");
+
+        assert_eq!(
+            store.relation_ref_matches(schema, &version),
+            Err(StoreError::UnsafePath)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relation_reference_rejects_a_hard_linked_object_path() {
+        let (store, root) = test_store("hardlink-object");
+        let object = bytes_object(b"relation node bytes".to_vec());
+        index_object(&store, &object);
+        let schema = object.schema();
+        let version = *object.version();
+        let path = store.object_path(object.id());
+        let alias = root.join("object-alias");
+        fs::hard_link(&path, &alias).expect("create hostile hard link");
+
+        assert_eq!(
+            store.relation_ref_matches(schema, &version),
+            Err(StoreError::UnsafePath)
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

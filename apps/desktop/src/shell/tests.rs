@@ -589,6 +589,7 @@ fn rig_with_engine_gate_at_root_keep(
         root: graph.root.clone(),
         store: graph.store.clone(),
     };
+    let closing = cx.update(|cx| crate::host::close::GracefulClose::install(&graph, cx));
     let window = cx.update(|cx| {
         cx.bind_keys(super::keys::bindings());
         cx.open_window(
@@ -601,13 +602,15 @@ fn rig_with_engine_gate_at_root_keep(
             },
             |window, cx| {
                 let shell = cx.new(|cx| Shell::new(&window_graph, window, cx));
-                cx.new(|cx| gpui_component::Root::new(shell, window, cx).bordered(false))
+                crate::host::close::GracefulClose::attach(&closing, window, cx);
+                let view = cx.new(|cx| crate::host::close::CloseView::new(shell, closing, cx));
+                cx.new(|cx| gpui_component::Root::new(view, window, cx).bordered(false))
             },
         )
         .expect("window")
     });
-    let shell = window.root(cx).expect("component root").read_with(cx, |root, _| {
-        root.view().clone().downcast::<Shell>().expect("shell")
+    let shell = window.root(cx).expect("component root").read_with(cx, |root, cx| {
+        root.view().clone().downcast::<crate::host::close::CloseView>().expect("close view").read(cx).shell()
     });
     let visual = VisualTestContext::from_window(window.into(), cx).into_mut();
     visual.update(|window, _| window.activate_window());

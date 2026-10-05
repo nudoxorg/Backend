@@ -6,10 +6,9 @@ use super::recovery;
 use super::{
     Arc, ClosureId, ClosureManifest, DurableManifest, DurableTree, FileStore, Mutex, ObjectEdge,
     ObjectId, ObjectWriteReceipt, Pack, PackId, Path, RawRelation, RelationAdmissionRegistry,
-    SelectedHead, StoreError, TreeWriteStats, TypedObject, decode_object, decode_pack_file,
-    encode_object, encode_pack_file, envelope_limit, fs, hex, io_error, map_read_error,
-    relation_object_limit, sync_directory, write_immutable, write_immutable_file_with_status,
-    write_immutable_with_status,
+    SelectedHead, StoreError, TreeWriteStats, TypedObject, decode_pack_file, encode_object,
+    encode_pack_file, envelope_limit, fs, io_error, map_read_error, relation_object_limit,
+    sync_directory, write_immutable, write_immutable_file_with_status, write_immutable_with_status,
 };
 use crate::{UntrustedObjectId, WorkspaceClosure};
 use std::collections::HashSet;
@@ -269,17 +268,15 @@ impl FileStore {
     /// Returns [`StoreError::Corrupt`] for a missing, malformed, or
     /// mismatched object and [`StoreError::Io`] for other filesystem errors.
     pub fn read_object_claim(&self, claim: UntrustedObjectId) -> Result<TypedObject, StoreError> {
-        let path = self
-            .root
-            .join("objects")
-            .join(format!("{}.object", hex(claim.as_bytes())));
-        let metadata = fs::metadata(&path).map_err(|error| map_read_error(&error))?;
-        let limit = self.object_envelope_limit()?;
-        if metadata.len() > u64::try_from(limit).map_err(|_| StoreError::Bounds)? {
-            return Err(StoreError::Bounds);
-        }
-        let bytes = fs::read(path).map_err(|error| map_read_error(&error))?;
-        decode_object(&bytes, limit, &self.relation_registry, claim)
+        self.with_verified_object_claim_if_present(claim, |view| {
+            Ok(TypedObject::from_wire_parts(
+                view.schema(),
+                *view.key(),
+                *view.version(),
+                view.bytes().to_vec().into_boxed_slice(),
+            ))
+        })?
+        .ok_or(StoreError::Corrupt)
     }
 
     /// Durably writes an immutable, complete closure manifest.

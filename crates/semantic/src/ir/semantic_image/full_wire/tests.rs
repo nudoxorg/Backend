@@ -296,6 +296,173 @@ fn signature_binding_image(reversed: bool) -> Result<Ir, crate::ir::BuildError> 
     builder.finish()
 }
 
+#[test]
+fn large_mixed_tuple_signature_reopens_with_linear_binding_cell_advances()
+-> Result<(), crate::ir::BuildError> {
+    const PARAMETER_COUNT: usize = 64;
+
+    let mut builder = IrBuilder::new();
+    let scalar = builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(
+        BuiltinType::U32,
+    )))?;
+    let argument_name = builder.intern_atom(b"argument")?;
+    let result_name = builder.intern_atom(b"result")?;
+    let mut parameters = Vec::with_capacity(PARAMETER_COUNT);
+    for position in 0..PARAMETER_COUNT {
+        parameters.push(TupleElement {
+            label: (position % 2 == 0).then_some(argument_name),
+            ty: scalar,
+            kind: if position + 1 == PARAMETER_COUNT {
+                TupleElementKind::Optional
+            } else {
+                TupleElementKind::Required
+            },
+        });
+    }
+    let parameter_list = builder.intern_tuple_elements(&parameters)?;
+    let result_list = builder.intern_tuple_elements(&[TupleElement {
+        label: Some(result_name),
+        ty: scalar,
+        kind: TupleElementKind::Required,
+    }])?;
+    let function_type = builder.intern_type(TypeExpr::Concrete(ConcreteType::Function {
+        parameters: parameter_list,
+        results: result_list,
+        abi: None,
+        variadic: VariadicForm::None,
+        unsafe_: false,
+    }))?;
+    let function = TreeItemInput {
+        name: b"large",
+        kind: ItemKind::Function,
+        visibility: Visibility::Private,
+        authority: authority(),
+        parent: None,
+        semantic_type: Some(function_type),
+        members: &[],
+        docs: &[],
+        attributes: &[],
+        source: None,
+        extension: None,
+    };
+    let carrier = TreeItemInput {
+        name: b"carrier",
+        kind: ItemKind::Parameter,
+        semantic_type: Some(scalar),
+        ..function
+    };
+    let items = [function, carrier];
+    let versions = [version(30), version(31)];
+    builder.add_borrowed_tree(BorrowedTree {
+        versions: &versions,
+        items: &items,
+        links: &[],
+    })?;
+    builder.capture_signature_carrier_bindings(
+        &[SignatureCarrierOwnerInput::captured(
+            EntityId::new(0),
+            u32::try_from(PARAMETER_COUNT).expect("fixture count fits the wire width"),
+            1,
+        )],
+        &vec![EntityId::new(1); PARAMETER_COUNT + 1],
+    )?;
+
+    let ir = builder.finish()?;
+    let bytes = encoded(&ir)?;
+    super::typed_decode::reset_tuple_element_visits();
+    let view = SemanticImageView::reopen(&bytes).expect("mixed signature image reopens");
+    assert_eq!(
+        super::typed_decode::tuple_element_visits(),
+        u64::try_from((PARAMETER_COUNT + 1) * 2).expect("fixture work fits the metric"),
+        "grammar admission and binding validation each advance through every tuple cell once"
+    );
+
+    let entity_by_name = |name: &[u8]| {
+        view.canonical_entities()
+            .find_map(|entity| (view.atom(entity.name) == Some(name)).then_some(entity.id))
+    };
+    let owner = entity_by_name(b"large").expect("canonical function owner");
+    let carrier = entity_by_name(b"carrier").expect("canonical shared carrier");
+    let function_type = view
+        .entity(owner)
+        .and_then(|entity| entity.semantic_type)
+        .expect("function semantic type");
+    let TypeExpr::Concrete(ConcreteType::Function {
+        parameters,
+        results,
+        ..
+    }) = view.ty(function_type).expect("reopened function type")
+    else {
+        panic!("function declaration has a function type");
+    };
+    let parameter_cells = view
+        .tuple_elements(parameters)
+        .expect("parameter tuple cells")
+        .collect::<Vec<_>>();
+    assert_eq!(parameter_cells.len(), PARAMETER_COUNT);
+    for (position, cell) in parameter_cells.iter().enumerate() {
+        if position % 2 == 0 {
+            let label = cell.label.expect("alternating parameter label");
+            assert_eq!(view.atom(label), Some(&b"argument"[..]));
+        } else {
+            assert_eq!(cell.label, None, "anonymous tuple cell at {position}");
+        }
+        assert_eq!(
+            cell.kind,
+            if position + 1 == PARAMETER_COUNT {
+                TupleElementKind::Optional
+            } else {
+                TupleElementKind::Required
+            }
+        );
+    }
+    let result_cells = view
+        .tuple_elements(results)
+        .expect("result tuple cell")
+        .collect::<Vec<_>>();
+    assert_eq!(result_cells.len(), 1);
+    assert_eq!(
+        result_cells[0]
+            .label
+            .and_then(|label| view.atom(label)),
+        Some(&b"result"[..])
+    );
+    assert_eq!(result_cells[0].kind, TupleElementKind::Required);
+
+    let Some(SignatureCarrierBindingsObservation::Captured(bindings)) =
+        SemanticReader::signature_carrier_bindings(&view, owner)
+    else {
+        panic!("mixed tuple signature has captured carrier bindings");
+    };
+    let bindings = bindings.collect::<Vec<_>>();
+    assert_eq!(bindings.len(), PARAMETER_COUNT + 1);
+    for (position, binding) in bindings[..PARAMETER_COUNT].iter().enumerate() {
+        assert_eq!(
+            *binding,
+            SignatureCarrierBinding {
+                owner,
+                role: SignatureCarrierBindingRole::Parameter,
+                position: u32::try_from(position).expect("fixture index fits wire width"),
+                carrier,
+            }
+        );
+    }
+    assert_eq!(
+        bindings[PARAMETER_COUNT],
+        SignatureCarrierBinding {
+            owner,
+            role: SignatureCarrierBindingRole::Result,
+            position: 0,
+            carrier,
+        }
+    );
+    assert_eq!(
+        SemanticReader::signature_carrier_role(&view, carrier),
+        Some(SignatureCarrierRoleObservation::Captured(SignatureCarrierRole::Both))
+    );
+    Ok(())
+}
+
 fn encoded(ir: &Ir) -> Result<alloc::vec::Vec<u8>, crate::ir::BuildError> {
     let length = full_semantic_image_len(ir).expect("full image plan is admitted");
     let mut bytes = vec![0; length];
@@ -1003,6 +1170,16 @@ fn signature_binding_image_rejects_bad_owner_ranges_targets_and_role_union()
     set_u32(&mut wrong_count, bind_range + 8, 1);
     assert!(matches!(
         SemanticImageView::reopen(&wrong_count),
+        Err(FullSemanticImageError::Full(
+            FullSemanticImageFault::SignatureCarrierBindingRange { .. }
+        ))
+    ));
+
+    let mut count_precedes_bad_target = bytes.clone();
+    set_u32(&mut count_precedes_bad_target, bind_range + 8, 1);
+    set_u32(&mut count_precedes_bad_target, target_offset, different.raw);
+    assert!(matches!(
+        SemanticImageView::reopen(&count_precedes_bad_target),
         Err(FullSemanticImageError::Full(
             FullSemanticImageFault::SignatureCarrierBindingRange { .. }
         ))

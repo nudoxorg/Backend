@@ -18,6 +18,12 @@ pub(crate) struct OwnerAttachment {
     epoch: Option<Epoch>,
 }
 
+impl OwnerAttachment {
+    pub(super) fn is_current(&self) -> bool {
+        self.gate.as_ref().is_none_or(|gate| gate.serves_attachment(self.epoch))
+    }
+}
+
 impl PartialEq for OwnerAttachment {
     fn eq(&self, other: &Self) -> bool {
         self.epoch == other.epoch

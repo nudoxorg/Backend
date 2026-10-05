@@ -97,6 +97,10 @@ unsafe fn build_classes() {
                 should_handle_reopen as extern "C" fn(&mut Object, Sel, id, bool),
             );
             decl.add_method(
+                sel!(applicationShouldTerminate:),
+                should_terminate as extern "C" fn(&mut Object, Sel, id) -> NSUInteger,
+            );
+            decl.add_method(
                 sel!(applicationWillTerminate:),
                 will_terminate as extern "C" fn(&mut Object, Sel, id),
             );
@@ -183,6 +187,8 @@ pub(crate) struct MacPlatformState {
     on_system_wake: Option<Box<dyn FnMut()>>,
     system_wake_observer_registered: bool,
     quit: Option<Box<dyn FnMut()>>,
+    should_quit: Option<Box<dyn FnMut() -> bool>>,
+    quit_deferred: bool,
     menu_command: Option<Box<dyn FnMut(&dyn Action)>>,
     validate_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
     will_open_menu: Option<Box<dyn FnMut()>>,
@@ -230,6 +236,8 @@ impl MacPlatform {
             find_pasteboard: Pasteboard::find(),
             reopen: None,
             quit: None,
+            should_quit: None,
+            quit_deferred: false,
             menu_command: None,
             validate_menu_command: None,
             will_open_menu: None,
@@ -545,6 +553,27 @@ impl Platform for MacPlatform {
             unsafe {
                 let app = NSApplication::sharedApplication(nil);
                 let _: () = msg_send![app, terminate: nil];
+            }
+        }
+    }
+
+    fn on_should_quit(&self, callback: Box<dyn FnMut() -> bool>) {
+        self.0.lock().should_quit = Some(callback);
+    }
+
+    fn reply_to_quit(&self, approve: bool) {
+        let deferred = std::mem::take(&mut self.0.lock().quit_deferred);
+        if !deferred { return; }
+        // AppKit can run termination callbacks synchronously. Reply only after
+        // the caller has released the application's RefCell borrow.
+        unsafe {
+            DispatchQueue::main().exec_async_f(Box::into_raw(Box::new(approve)).cast(), reply);
+        }
+        extern "C" fn reply(context: *mut c_void) {
+            unsafe {
+                let approve = *Box::from_raw(context.cast::<bool>());
+                let app = NSApplication::sharedApplication(nil);
+                let _: () = msg_send![app, replyToApplicationShouldTerminate: approve as BOOL];
             }
         }
     }
@@ -1370,6 +1399,21 @@ extern "C" fn should_handle_reopen(this: &mut Object, _: Sel, _: id, has_open_wi
             platform.0.lock().reopen.get_or_insert(callback);
         }
     }
+}
+
+// AppKit NSTerminateNow = 1, NSTerminateLater = 2. This does not intercept
+// forced termination, process signals, or power loss.
+extern "C" fn should_terminate(this: &mut Object, _: Sel, _: id) -> NSUInteger {
+    let platform = unsafe { get_mac_platform(this) };
+    let mut lock = platform.0.lock();
+    if lock.quit_deferred { return 2; }
+    let Some(mut callback) = lock.should_quit.take() else { return 1; };
+    drop(lock);
+    let approved = callback();
+    let mut lock = platform.0.lock();
+    lock.should_quit = Some(callback);
+    lock.quit_deferred = !approved;
+    if approved { 1 } else { 2 }
 }
 
 extern "C" fn will_terminate(this: &mut Object, _: Sel, _: id) {

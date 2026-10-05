@@ -872,7 +872,6 @@ fn cache_size_error() -> io::Error {
 mod tests {
     use super::*;
     use crate::{EmbeddingInvocation, EmbeddingPurpose};
-    use std::collections::BTreeMap;
     use std::fs;
 
     fn input_identity(seed: u8) -> EmbeddingInputIdentity {
