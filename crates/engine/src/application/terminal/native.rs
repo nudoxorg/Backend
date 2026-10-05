@@ -87,7 +87,16 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
             recipe,
             lowering(backend_semantic::vocabulary::LoweringUnsupported::ClangDeclarationForm),
         ),
-        CompileFailure::Build { source_identity, recipe, .. } | CompileFailure::Prepare { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Prepare),
+        CompileFailure::Build { source_identity, recipe, ref cause } => {
+            // `FragmentCause` carries no diagnostic; keep the concrete build
+            // cause visible in the process log instead of discarding it.
+            eprintln!("nudox: semantic IR build failed for {:?}: {cause:?}", recipe.profile);
+            fragment_terminal(source_identity, recipe, FragmentCause::Prepare)
+        }
+        CompileFailure::Prepare { source_identity, recipe, ref cause } => {
+            eprintln!("nudox: semantic fragment prepare failed for {:?}: {cause:?}", recipe.profile);
+            fragment_terminal(source_identity, recipe, FragmentCause::Prepare)
+        }
         CompileFailure::Write { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Write),
         CompileFailure::Validate { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Validate),
     }

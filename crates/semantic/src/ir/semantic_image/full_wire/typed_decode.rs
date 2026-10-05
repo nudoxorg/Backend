@@ -306,7 +306,14 @@ pub(crate) fn tuple_elements_len(
     typed: TypedLayout,
     id: TupleElementListId,
 ) -> Result<u32, FullSemanticImageFault> {
-    Ok(Edges::for_node(bytes, layout, typed, TUPLE_ELEMENTS, id.raw)?.count)
+    let mut count = 0_u32;
+    walk_tuple_elements(bytes, layout, typed, id, |_, _| {
+        count = count.checked_add(1).ok_or(FullSemanticImageFault::LengthOverflow {
+            field: FullSemanticImageField::TypedEdges,
+        })?;
+        Ok(false)
+    })?;
+    Ok(count)
 }
 
 /// Reads one tuple cell's exact type coordinate without allocating a decoded
@@ -318,11 +325,46 @@ pub(crate) fn tuple_element_type(
     id: TupleElementListId,
     index: u32,
 ) -> Result<Option<TypeId>, FullSemanticImageFault> {
+    let mut found = None;
+    walk_tuple_elements(bytes, layout, typed, id, |element, ty| {
+        if element == index {
+            found = Some(ty);
+            return Ok(true);
+        }
+        Ok(false)
+    })?;
+    Ok(found)
+}
+
+/// Visits each tuple element in order. One element is several edges (a
+/// name-presence scalar, the name atom when present, the type, and the kind),
+/// so the list's raw edge count is not its element count. `visit` receives
+/// the element index and type and returns `true` to stop early.
+fn walk_tuple_elements(
+    bytes: &[u8],
+    layout: FullImageLayout,
+    typed: TypedLayout,
+    id: TupleElementListId,
+    mut visit: impl FnMut(u32, TypeId) -> Result<bool, FullSemanticImageFault>,
+) -> Result<(), FullSemanticImageFault> {
     let mut edges = Edges::for_node(bytes, layout, typed, TUPLE_ELEMENTS, id.raw)?;
-    if index >= edges.count {
-        return Ok(None);
+    let mut index = 0_u32;
+    while edges.next < edges.count {
+        if boolean(edges.scalar(3, index)?, edges.node)? {
+            let _ = edges.atom(3, index)?;
+        }
+        let ty = edges.type_node(4, index)?;
+        let _ = edges.scalar(5, index)?;
+        if visit(index, ty)? {
+            return Ok(());
+        }
+        index = index
+            .checked_add(1)
+            .ok_or(FullSemanticImageFault::LengthOverflow {
+                field: FullSemanticImageField::TypedEdges,
+            })?;
     }
-    edges.type_node(4, index).map(Some)
+    Ok(())
 }
 
 pub(crate) fn object_member(
