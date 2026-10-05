@@ -194,7 +194,7 @@ pub(crate) fn dossier() -> PackageDossier {
         readme_markdown: Known::unknown(GapReason::NotCaptured, "fixture has no Markdown source"),
         readme_links: Known::unknown(GapReason::NotCaptured, "fixture has no link index"),
         readme_headings: Known::unknown(GapReason::NotCaptured, "fixture has no heading index"),
-        readme_exact_targets: Known::unknown(GapReason::NotCaptured, "fixture has no exact README targets"),
+        readme_exact_targets: Known::unknown(GapReason::NotCaptured, "exact README declaration targets were not prepared for this live read"),
     }
 }
 
@@ -2888,6 +2888,39 @@ fn graph_without_a_projection_keeps_its_current_declaration_page_and_code_action
         if view == View::Page {
             rig.go(Intent::Navigate(view_route("RelationLabel", View::Graph)));
         }
+    }
+}
+
+#[gpui::test]
+fn pending_graph_titlebar_opens_the_exact_declaration_with_current_owner_admission(cx: &mut TestAppContext) {
+    use crate::runtime::indexed_world::TestProjectionGate;
+
+    for (id, view) in [("view-page", View::Page), ("view-code", View::Code)] {
+        let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
+        let gate = Arc::new(TestProjectionGate::default());
+        let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+        rig.cx.update(|_, cx| {
+            super::bodies::graph::install_test_fixture_with_gate(root, Some(Arc::clone(&gate)), cx);
+        });
+        rig.repaint();
+        rig.cx.run_until_parked();
+        assert!(gate.entered());
+        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+        rig.repaint();
+        let action = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_action(id, cx))
+            .expect("the exact declaration's mounted mode action");
+        let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds(id, cx))
+            .expect("the exact declaration's native mode button");
+        rig.cx.simulate_click(bounds.center(), Modifiers::default());
+        rig.frame(16);
+        gate.release();
+        rig.settle();
+        assert_eq!(rig.route(), view_route("RelationLabel", view));
+        rig.go(Intent::Navigate(view_route("RelationLabel", View::Graph)));
+        rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+        rig.cx.update(|window, cx| action(window, cx));
+        assert_eq!(rig.route(), view_route("RelationLabel", View::Graph),
+            "a retired declaration action cannot borrow a replacement owner's admission");
     }
 }
 

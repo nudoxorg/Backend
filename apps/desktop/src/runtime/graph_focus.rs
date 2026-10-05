@@ -47,12 +47,15 @@ impl Eq for GraphFocus {}
 /// Whether the current graph visit has a selected node for a Page/Code
 /// action. Its indexed coordinate is retained when known; the map's guarded
 /// resolver still decides whether a source identity or exact search opens it.
-/// The route that entered the graph is never a replacement for this choice.
+/// A selected node always takes priority over the route that entered the
+/// graph. While the optional projection has no selection, an exact typed
+/// declaration still has its own Page and Code destinations.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum GraphViewEligibility {
     Covered,
     OutsideGraph,
     Selected { node: u32, indexed: Option<(PackageRef, SymbolRef)> },
+    Declaration { package: PackageRef, symbol: SymbolRef },
     ChooseSymbol,
 }
 
@@ -69,30 +72,36 @@ impl GraphViewEligibility {
                 node: *node,
                 indexed: indexed.clone(),
             },
-            None => Self::ChooseSymbol,
+            None => match (
+                super::store::route_package(snapshot.route()),
+                super::store::route_symbol(snapshot.route()),
+            ) {
+                (Some(package), Some(symbol)) => Self::Declaration { package, symbol },
+                _ => Self::ChooseSymbol,
+            },
         }
     }
 
     pub(crate) const fn can_open(&self) -> bool {
-        matches!(self, Self::Selected { .. })
+        matches!(self, Self::Selected { .. } | Self::Declaration { .. })
     }
 
     pub(crate) const fn allows(&self, view: View) -> bool {
         !matches!(self, Self::Covered)
-            && (matches!(view, View::Graph) || matches!(self, Self::OutsideGraph | Self::Selected { .. }))
+            && (matches!(view, View::Graph) || matches!(self, Self::OutsideGraph | Self::Selected { .. } | Self::Declaration { .. }))
     }
 
     pub(crate) const fn guidance(&self) -> Option<&'static str> {
         match self {
             Self::ChooseSymbol => Some("Choose a graph symbol to open Page or Code."),
-            Self::Covered | Self::OutsideGraph | Self::Selected { .. } => None,
+            Self::Covered | Self::OutsideGraph | Self::Selected { .. } | Self::Declaration { .. } => None,
         }
     }
 
     pub(crate) const fn brief_guidance(&self) -> Option<&'static str> {
         match self {
             Self::ChooseSymbol => Some("Choose a graph symbol"),
-            Self::Covered | Self::OutsideGraph | Self::Selected { .. } => None,
+            Self::Covered | Self::OutsideGraph | Self::Selected { .. } | Self::Declaration { .. } => None,
         }
     }
 }
@@ -219,5 +228,36 @@ mod tests {
             "an old-root selection cannot enable Page or Code");
         assert!(!focus.active(&snapshot(root("same", 4, 9, 2))));
         assert!(!focus.active(&snapshot(root("same", 3, 10, 2))));
+    }
+
+    #[test]
+    fn an_exact_graph_declaration_remains_a_destination_until_a_node_is_selected() {
+        let route = crate::shell::tests::view_route("RelationLabel", View::Graph);
+        let snapshot = AppSnapshot::empty(root("declaration", 1, 2, 0)).with_session(SessionState {
+            route: route.clone(),
+            ..SessionState::default()
+        });
+        let declaration = GraphViewEligibility::Declaration {
+            package: super::super::store::route_package(&route).expect("exact package"),
+            symbol: super::super::store::route_symbol(&route).expect("exact declaration"),
+        };
+        assert_eq!(GraphViewEligibility::from_current(&snapshot, None), declaration);
+        assert!(declaration.can_open());
+        assert!(declaration.allows(View::Page));
+        assert!(declaration.allows(View::Code));
+        let selected = GraphFocus {
+            visit: route,
+            root: snapshot.key(),
+            node: 4,
+            name: Arc::from("another declaration"),
+            package: Arc::from("fixture"),
+            module: Arc::from("glyph.rs"),
+            kind: DeclarationKind::Struct,
+            origin: Origin::IndexedOwner,
+            indexed: None,
+        };
+        assert_eq!(GraphViewEligibility::from_current(&snapshot, Some(&selected)),
+            GraphViewEligibility::Selected { node: 4, indexed: None },
+            "a selected node must never borrow the entry declaration's destination");
     }
 }

@@ -121,6 +121,15 @@ fn go_route() -> Route {
     })
 }
 
+// Companion summaries are wrapped text painted by the anatomy component;
+// the Reader's `said` list only records the host's own synchronous words.
+fn companion_is_painted(rig: &mut Rig, words: &str) -> bool {
+    rig.repaint();
+    rig.cx.update(|window, _| {
+        window.painted_texts().iter().any(|text| text.text.to_string().contains(words))
+    })
+}
+
 #[gpui::test]
 fn mounted_shelf_refreshes_its_unfocused_orbit_and_leaves_hidden_packages_lazy(cx: &mut TestAppContext) {
     let (mut rig, observed) = open(cx, package_route());
@@ -170,14 +179,14 @@ fn mounted_go_companion_refreshes_without_navigation_and_stays_lazy_after_leavin
     });
     let companion_reads = observed.count(&companion);
     assert!(companion_reads > 0, "the mounted Go page requested its actual companion");
-    assert!(rig.said().iter().any(|text| text.contains("Before publication")));
+    assert!(companion_is_painted(&mut rig, "Before publication"));
     observed.published.store(true, Ordering::Release);
     rig.graph.store.update(rig.cx, |store, cx| {
         store.packages_published(&BTreeSet::from([package()]), cx);
     });
     rig.settle();
     assert_eq!(observed.count(&companion), companion_reads + 1, "the companion renews once at the same route and authority");
-    assert!(rig.said().iter().any(|text| text.contains("After publication")), "fresh companion words reach the mounted Reader");
+    assert!(companion_is_painted(&mut rig, "After publication"), "fresh companion words reach the mounted Reader");
     rig.graph.store.read_with(rig.cx, |store, _| {
         assert!(before.key().same_authority(store.snapshot().key()));
         assert_eq!(before.route(), store.snapshot().route());

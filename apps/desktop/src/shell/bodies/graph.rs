@@ -706,7 +706,7 @@ impl Map {
         cx: &mut Context<Self>,
     ) {
         let snapshot = self.links.snapshot(cx);
-        if self.graph.is_none() {
+        if self.graph.as_ref().is_none_or(|graph| graph.read(cx).focused().is_none()) {
             // A symbol page and its source are independent of the optional
             // whole-index projection. Retain the declaration's exact typed
             // route when the map has no selected node to override it.
