@@ -2195,3 +2195,7 @@ mod persisted_intent_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "profile_membership_tests.rs"]
+mod membership_tests;
