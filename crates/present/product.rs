@@ -23,8 +23,8 @@ use backend_library::{
     RegistryPackageFactAuthority, RegistryPackageFactFreshness, RegistryPackageRecord,
     RegistryPackageSearchGroup, RegistryReleaseMatchScope, RegistrySearchGroupKind,
     RegistrySearchHit, RegistrySearchRelease, ReleaseRecord, SemanticHistoryPublicationStatus,
-    SemanticVersionFreshness, SemanticVersionRecord, SubscriptionRecord, SurfaceReply,
-    TreeNodeRecord, TreeOpener, TreeSubject, encode_id,
+    SemanticLanguageProfile, SemanticVersionFreshness, SemanticVersionRecord, SubscriptionRecord,
+    SurfaceReply, TreeNodeRecord, TreeOpener, TreeSubject, encode_id,
 };
 use backend_library::{
     IndexCancelReceipt, IndexCancelStatus, IndexJobObservation, IndexJobOutcome,
@@ -46,6 +46,7 @@ pub struct ProductRecord {
     discovery_details: Option<RegistryDiscoveryCandidate>,
     package_group: Option<RegistryPackageSearchGroup>,
     history_status: Option<SemanticHistoryPublicationStatus>,
+    compiler_profile: Option<SemanticLanguageProfile>,
 }
 
 impl ProductRecord {
@@ -62,6 +63,7 @@ impl ProductRecord {
             discovery_details: None,
             package_group: None,
             history_status: None,
+            compiler_profile: None,
         }
     }
 
@@ -105,6 +107,13 @@ impl ProductRecord {
     #[must_use]
     pub fn with_history_status(mut self, status: SemanticHistoryPublicationStatus) -> Self {
         self.history_status = Some(status);
+        self
+    }
+
+    /// Attaches the exact closed compiler profile to one semantic generation row.
+    #[must_use]
+    pub fn with_compiler_profile(mut self, profile: SemanticLanguageProfile) -> Self {
+        self.compiler_profile = Some(profile);
         self
     }
 
@@ -160,6 +169,12 @@ impl ProductRecord {
     #[must_use]
     pub fn history_status(&self) -> Option<&SemanticHistoryPublicationStatus> {
         self.history_status.as_ref()
+    }
+
+    /// Returns the exact compiler profile carried by a semantic generation row.
+    #[must_use]
+    pub const fn compiler_profile(&self) -> Option<SemanticLanguageProfile> {
+        self.compiler_profile
     }
 }
 
@@ -1902,6 +1917,7 @@ fn semantic_row(record: &SemanticVersionRecord) -> ProductRecord {
         tags,
     )
     .with_history_status(record.history_status.clone())
+    .with_compiler_profile(record.profile)
 }
 
 fn semantic_history_label(status: &SemanticHistoryPublicationStatus) -> &'static str {
@@ -2269,6 +2285,37 @@ mod tests {
         product_view(&SurfaceReply::SemanticVersions(
             vec![record].into_boxed_slice(),
         ))
+    }
+
+    #[test]
+    fn semantic_generation_projection_preserves_profile_and_decodes_older_dto() {
+        let profile = SemanticLanguageProfile::from_name("rust").expect("Rust profile");
+        let view = semantic_versions_view(semantic_version(
+            SemanticHistoryPublicationStatus::NotSelected,
+            false,
+            true,
+            SemanticVersionFreshness::Current {
+                input_digest: [0x71; 32],
+            },
+        ));
+        let row = view.records().first().expect("semantic generation row");
+        assert_eq!(row.compiler_profile(), Some(profile));
+
+        let dto = crate::dto::ProductDto::new(&view);
+        assert_eq!(dto.records[0].compiler_profile, Some(profile));
+        let mut old_value = serde_json::to_value(&dto).expect("serialized product DTO");
+        assert_eq!(
+            old_value["records"][0]["compiler_profile"],
+            serde_json::json!(profile.to_bytes()),
+            "the typed projection preserves the existing two-byte wire shape"
+        );
+        old_value["records"][0]
+            .as_object_mut()
+            .expect("record object")
+            .remove("compiler_profile");
+        let decoded: crate::dto::ProductDto =
+            serde_json::from_value(old_value).expect("older DTO without compiler profile");
+        assert_eq!(decoded.records[0].compiler_profile, None);
     }
 
     fn published_history_proof(

@@ -780,6 +780,9 @@ pub struct ProductRecordDto {
     /// compiler generation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_status: Option<backend_library::SemanticHistoryPublicationStatus>,
+    /// Exact canonical two-byte profile of an immutable semantic generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler_profile: Option<backend_library::SemanticLanguageProfile>,
 }
 
 impl ProductDto {
@@ -801,6 +804,7 @@ impl ProductDto {
                     discovery: record.discovery_details().cloned(),
                     package_group: record.package_group().cloned(),
                     history_status: record.history_status().cloned(),
+                    compiler_profile: record.compiler_profile(),
                 })
                 .collect(),
             note: view.note().map(ToOwned::to_owned),
