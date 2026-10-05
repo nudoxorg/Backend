@@ -146,6 +146,8 @@ def main [
     # soft descriptor limit is exhausted before any check fails.
     ulimit --file-descriptor-count --soft 65536
     provide-fhs-tools
+    cap-build-cache
+    restore-source-mtimes
 
     let flake = if $skip_flake_check {
         true
