@@ -11,8 +11,8 @@ use crate::compiler_read_observation_v2::{
 };
 use crate::driver::{
     AuthorityFailure, CompileControl, CompileOutput, CompileRequest, CompileScratch,
-    CompiledFragment, DeclarationScope, PackageDeclarationScopeFault, ToolchainSelection,
-    compile_semantic as compile_fused_semantic, rust_authority_diagnostic,
+    CompiledFragment, DeclarationScope, PackageDeclarationScopeFault, ResolvedToolchain,
+    ToolchainSelection, compile_semantic as compile_fused_semantic, rust_authority_diagnostic,
 };
 use crate::publication::{
     OpenSemanticPublicationScratch, PreparedSemanticOutput, PublishControl, PublishedCompilation,
@@ -30,6 +30,7 @@ use backend_frontend_rust::legacy::{
     RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
     RustWorkspaceSessionLease,
 };
+use backend_frontend_typescript::legacy::TypeScriptInvocationModeV1;
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerFragmentFailure, CompilerReadiness,
     CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, FragmentCause,
@@ -45,7 +46,7 @@ use backend_semantic::ir::{
     SemanticTypedPlaneVerificationTierV2,
 };
 use backend_semantic::registry::{AdapterRoute, FullRegistry};
-use backend_semantic::vocabulary::AuthorityDiagnosticClass;
+use backend_semantic::vocabulary::{AuthorityDiagnosticClass, NativeTool};
 use backend_store::FileStore;
 use backend_store::journal::{
     DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError,
@@ -1949,6 +1950,77 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         timeout: *timeout,
                     }),
                 })?;
+        let use_report_program = self.package_authority.typescript.is_some_and(|checker| {
+            checker.portable_invocation_mode() == TypeScriptInvocationModeV1::ReportProgram
+        });
+        let typescript_project = if target.profile.language()
+            == backend_semantic::vocabulary::Language::TypeScript
+            && !use_report_program
+        {
+            if let Some(host) = self.package_authority.typescript_project_host {
+                match host.admit(package.package_root) {
+                    Ok(project) => project,
+                    Err(cause) => {
+                        let toolchain = self.toolchain(first_application_request).unwrap_or(
+                            ToolchainSelection::ExplicitlyUnavailable {
+                                tool: NativeTool::TypeScriptCompiler,
+                            },
+                        );
+                        let terminal = package_authority_terminal(
+                            package.package_target.target(),
+                            first_application_request,
+                            first_authority,
+                            toolchain,
+                            PackageAuthorityError::TypeScriptProjectHost(cause),
+                        );
+                        return Err(PackageSemanticError::Compile {
+                            path: first_source.relative_path.into(),
+                            terminal: Box::new(terminal),
+                        });
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let typescript_toolchain = match typescript_project.as_ref() {
+            Some(project) => match ResolvedToolchain::from_version(
+                NativeTool::TypeScriptCompiler,
+                &project.compiler,
+                &project.compiler_version,
+            ) {
+                Ok(toolchain) => Some(toolchain),
+                Err(source) => {
+                    let toolchain = self.toolchain(first_application_request).unwrap_or(
+                        ToolchainSelection::ExplicitlyUnavailable {
+                            tool: NativeTool::TypeScriptCompiler,
+                        },
+                    );
+                    let terminal = package_authority_terminal(
+                        package.package_target.target(),
+                        first_application_request,
+                        first_authority,
+                        toolchain,
+                        PackageAuthorityError::TypeScriptProjectHost(
+                            crate::application::TypeScriptProjectHostError::ToolchainResolution {
+                                source,
+                            },
+                        ),
+                    );
+                    return Err(PackageSemanticError::Compile {
+                        path: first_source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    });
+                }
+            },
+            None => None,
+        };
+        let mut package_authority_configuration = self.package_authority;
+        if let Some(project) = typescript_project.as_ref() {
+            package_authority_configuration.typescript = Some(&project.checker);
+        }
         let source_count = package.compilation_sources().count();
         if target.profile.language() == backend_semantic::vocabulary::Language::Rust
             && let Some(configuration) = self.package_authority.rust
@@ -2279,7 +2351,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     terminal: Box::new(terminal),
                 })?;
             let toolchain = self
-                .toolchain(application_request)
+                .toolchain_for_package(application_request, typescript_toolchain)
                 .map_err(|cause| toolchain_terminal(source_authority, application_request, cause))
                 .map_err(|terminal| PackageSemanticError::Compile {
                     path: source.relative_path.into(),
@@ -2303,7 +2375,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             profile: target.profile,
                             toolchain,
                             control,
-                            configuration: self.package_authority,
+                            configuration: package_authority_configuration,
                         },
                         package.go_authority_witness,
                     )
@@ -2521,6 +2593,17 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 Coverage::Partial,
             );
         }
+        let project_plane_seed = typescript_toolchain.and_then(|toolchain| {
+            typescript_project.as_ref().and_then(|project| {
+                LocalCompilerPlaneExecutionSeed::for_typescript_project(
+                    package.package_target.target(),
+                    target.profile,
+                    target.stage,
+                    toolchain.identity,
+                    project.fingerprint,
+                )
+            })
+        });
         let staged = StagedPackageCompilation {
             compilation_attempt_id,
             artifacts,
@@ -2533,7 +2616,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             stage: target.stage,
             input,
             execution_identity,
-            plane_execution_identity: plane_execution_seed.map(|seed| seed.bind_input(input)),
+            plane_execution_identity: plane_execution_seed
+                .or(project_plane_seed)
+                .map(|seed| seed.bind_input(input)),
             cargo_workspace_facts: rust_workspace_lease.as_ref().and_then(|lease| {
                 lease
                     .workspace()
@@ -2665,6 +2750,19 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             .route(request.profile.language(), request.stage)
             .map_err(ToolchainRouteError::UnsupportedStage)?;
         select_toolchain(self.config.toolchains, route)
+    }
+
+    fn toolchain_for_package<'toolchain>(
+        &'toolchain self,
+        request: ApplicationCompilerRequest<'_>,
+        typescript_project: Option<ResolvedToolchain<'toolchain>>,
+    ) -> Result<ToolchainSelection<'toolchain>, ToolchainRouteError> {
+        if request.profile.language() == backend_semantic::vocabulary::Language::TypeScript
+            && let Some(toolchain) = typescript_project
+        {
+            return Ok(ToolchainSelection::ResolvedNative(toolchain));
+        }
+        self.toolchain(request)
     }
 }
 
@@ -3956,7 +4054,9 @@ const fn package_authority_projection(
             (Phase::Resolve, Class::Authority)
         }
         PackageAuthorityError::CSharp(_) => (Phase::TypeCheck, Class::Authority),
-        PackageAuthorityError::TypeScript(_) => (Phase::TypeCheck, Class::Authority),
+        PackageAuthorityError::TypeScript(_) | PackageAuthorityError::TypeScriptProjectHost(_) => {
+            (Phase::TypeCheck, Class::Authority)
+        }
         PackageAuthorityError::JavaHarness(_)
         | PackageAuthorityError::GoAuthorityWitness(_)
         | PackageAuthorityError::ImageTooLarge { .. }
@@ -3982,10 +4082,10 @@ const fn source_terminal(cause: SourceError) -> CompilerTerminal {
 enum ToolchainRouteError {
     UnsupportedStage(backend_semantic::vocabulary::FrontendError),
     Missing {
-        selected: backend_semantic::vocabulary::NativeTool,
+        selected: NativeTool,
     },
     ToolingUnavailable {
-        tool: backend_semantic::vocabulary::NativeTool,
+        tool: NativeTool,
     },
 }
 

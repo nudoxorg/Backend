@@ -15,6 +15,7 @@ mod package_source;
 mod runtime;
 mod terminal;
 mod toolchain_probe;
+mod typescript_host;
 mod unit_authority_v2;
 
 pub use self::cluster_coordinator::{
@@ -99,6 +100,7 @@ pub use self::toolchain_probe::{
     ToolchainProbeLimits, ToolchainProbeLimitsView, ToolchainProbePrimary,
     ToolchainProbeStreamError,
 };
+pub use self::typescript_host::{TypeScriptProjectHost, TypeScriptProjectHostError};
 pub use self::unit_authority_v2::{
     AdmittedCompilationUnitV2, CapturedUnitMemberV2, CompilationUnitKindV2, CompilationUnitPlanV2,
     PortableOptionSnapshotV2, SelectedUnitSourceV2, SelectedUnitSourcesV2, UnitAuthorityV2Error,

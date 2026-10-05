@@ -422,7 +422,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             .iter()
             .find(|root| root.ecosystem == backend_library::interface::PackageEcosystem::Golang)
             .map(|root| root.path.to_path_buf());
-        let package_authority = self.package_authority(
+        let (package_authority, typescript_project_host) = self.package_authority(
             home.as_deref(),
             &executables,
             jdk_root,
@@ -442,6 +442,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             )?,
             LocalCompilerScratch::with_fragment_capacity(nonzero(FRAGMENT_SCRATCH_BYTES))?,
         )?
+        .with_typescript_project_host(typescript_project_host)
         .with_embedding_requirement(embedding_requirement);
         let configuration = match embedding_runtime.as_ref() {
             Some(runtime) => {
