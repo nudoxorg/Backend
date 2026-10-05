@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import shlex
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,8 @@ from unittest.mock import patch
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
+if str(PACKAGE_DIR) not in sys.path:
+    sys.path.insert(0, str(PACKAGE_DIR))
 
 
 def load_module(filename: str, name: str) -> Any:
