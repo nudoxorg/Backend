@@ -1237,13 +1237,25 @@ mod tests {
         loop {
             let page = target.page(page_cursor, CREDIT).expect("bounded view page");
             let following_cursor = page.next();
-            let dto = SnapshotPageDto::try_new(
-                previous,
-                cursor,
-                target.descriptor(),
-                page,
-                CursorResetReason::Pruned,
-            )
+            let dto = if bootstrap_previous.is_some() {
+                // The actual producer constructs bootstrap pages without a
+                // predecessor. Admission still checks every descriptor,
+                // certificate and continuation against the receiving cursor.
+                SnapshotPageDto::from_owner(
+                    cursor,
+                    target.descriptor(),
+                    page,
+                    CursorResetReason::Pruned,
+                )
+            } else {
+                SnapshotPageDto::try_new(
+                    previous,
+                    cursor,
+                    target.descriptor(),
+                    page,
+                    CursorResetReason::Pruned,
+                )
+            }
             .expect("checked snapshot page")
             .with_certificate(certificate.clone());
             let next = dto.next_token().expect("continuation token");
@@ -2469,8 +2481,10 @@ mod tests {
             assert!(read_frame(stream, crate::limits()).is_err());
         });
         let cancelled = || false;
+        let wrote = std::cell::Cell::new(false);
         let mut tick = |progress: PublicationObservationProgress| {
             if progress.exchange.write_offset > 0 {
+                wrote.set(true);
                 PublicationObservationDecision::Cancel
             } else {
                 PublicationObservationDecision::Continue
@@ -2485,16 +2499,14 @@ mod tests {
             Err(error) => error,
             Ok(_) => panic!("cancelled incomplete request returned a lease"),
         };
-        assert!(matches!(
-            error,
-            PublicationExchangeError::Exchange(LocalControlExchangeError {
-                failure: backend_replication::LocalControlExchangeFailure::Cancelled,
-                progress: LocalControlExchangeProgress {
-                    write_offset,
-                    ..
-                },
-            }) if write_offset > 0
-        ));
+        assert!(
+            wrote.get(),
+            "cancellation followed bytes on the original request"
+        );
+        assert!(
+            matches!(error, PublicationExchangeError::Cancelled),
+            "observed cancellation must preserve its typed terminal cause"
+        );
         drop(control);
         owner.join().expect("owner");
     }
