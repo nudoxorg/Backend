@@ -22,5 +22,7 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tree-sitter-typescript = "=0.23.2"
+tsz = { package = "tsz-core", git = "https://github.com/tsz-org/tsz.git", rev = "153b25adb393f134c61ddde7a14cc1ff1954fc2a", default-features = false }
+tsz-common = { git = "https://github.com/tsz-org/tsz.git", rev = "153b25adb393f134c61ddde7a14cc1ff1954fc2a" }
 [lib]
 path = "lib.rs"

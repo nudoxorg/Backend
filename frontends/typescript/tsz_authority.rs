@@ -1,0 +1,618 @@
+//! Native, project-scoped TSZ parser, binder, and checker authority.
+//!
+//! A worker owns this cache exclusively. Source edits reparse only changed
+//! files; unchanged TSZ `BindResult`s retain their arenas and are borrowed by
+//! the cross-file merge. An exact repeat of a project revision reuses the
+//! merged program and checker result as well. TSZ currently exposes a whole-
+//! project merge/check API, so a changed project revision rebuilds those two
+//! project-wide views while preserving the unchanged per-file parse/bind data.
+//!
+//! The source list is caller-resolved and includes project, declaration, and
+//! dependency files. Project configuration, module-resolution inputs, the
+//! resolved library set, package-manager identity, and compiler version belong
+//! in the explicit environment fingerprint supplied by the owning project
+//! authority. This module does not discover files or read ambient
+//! configuration from disk.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+use crate::Utf8Span;
+use sha2::{Digest, Sha256};
+use thiserror::Error;
+
+pub use tsz::binder::BinderState as TszBinderState;
+pub use tsz::binder::SymbolId as TszSymbolId;
+pub use tsz::checker::context::CheckerOptions as TszCheckerOptions;
+pub use tsz::checker::diagnostics::Diagnostic as TszDiagnostic;
+pub use tsz::checker::state::CheckerState as TszCheckerState;
+pub use tsz::common::{ModuleKind as TszModuleKind, ScriptTarget as TszScriptTarget};
+pub use tsz::parser::{NodeIndex as TszNodeIndex, ParseDiagnostic as TszParseDiagnostic};
+pub use tsz::tsz_solver::type_handles::TypeId as TszTypeId;
+pub use tsz_common::options::module_detection::ModuleDetectionKind as TszModuleDetectionKind;
+
+/// Caller-computed identity for a fully resolved TypeScript project context.
+///
+/// Include the normalized compiler options, tsconfig inheritance and project
+/// references, module-resolution inputs, package-manager/lockfile identity,
+/// resolved dependency and library content, and the selected TSZ revision.
+/// A change invalidates all parse/bind cache entries because TSZ binding may
+/// depend on those inputs.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TszEnvironmentFingerprint([u8; 32]);
+
+impl TszEnvironmentFingerprint {
+    /// Creates an identity from the SHA-256 digest owned by the project layer.
+    #[must_use]
+    pub const fn from_sha256(digest: [u8; 32]) -> Self {
+        Self(digest)
+    }
+
+    /// Returns the underlying digest bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// One caller-admitted project, declaration, or dependency source file.
+/// `path` is the stable virtual or canonical project path used for module
+/// identity; no filesystem lookup or implicit source discovery is performed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TszFileInput {
+    /// Stable source path, including a supported TypeScript/JavaScript suffix.
+    pub path: String,
+    /// UTF-8 source text, moved into TSZ's owning parser.
+    pub source: String,
+}
+
+/// A source profile TSZ's path-sensitive parser recognizes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TszSourceError {
+    /// The source path has no usable filename or extension.
+    InvalidPath,
+    /// The source extension is outside the TS/JS/JSX/MTS/CTS/CJS set.
+    UnsupportedExtension,
+    /// A project listed the same stable source path more than once.
+    DuplicatePath,
+    /// TSZ needs at least one source file to construct a project program.
+    EmptyProject,
+}
+
+impl std::fmt::Display for TszSourceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidPath => "TypeScript source path must include a filename and extension",
+            Self::UnsupportedExtension => "TSZ source path extension is not supported",
+            Self::DuplicatePath => "TypeScript project contains a duplicate source path",
+            Self::EmptyProject => "TypeScript project requires at least one source file",
+        })
+    }
+}
+
+impl std::error::Error for TszSourceError {}
+
+/// Typed failures at the TSZ adapter boundary.
+#[derive(Debug, Error)]
+pub enum TszAuthorityError {
+    /// The project input could not be admitted before parsing.
+    #[error(transparent)]
+    Source(#[from] TszSourceError),
+    /// A caller queried a file index that is absent from the merged program.
+    #[error("TSZ project has no bound file at index {0}")]
+    MissingFile(usize),
+}
+
+/// Explicit TSZ checker/binder options resolved by the project configuration layer.
+#[derive(Clone, Debug)]
+pub struct TszProjectOptions {
+    /// Checker options after tsconfig inheritance and defaults are resolved.
+    pub checker: TszCheckerOptions,
+    /// Identity for all configuration and dependency inputs described above.
+    pub environment: TszEnvironmentFingerprint,
+}
+
+struct CachedBind {
+    digest: [u8; 32],
+    result: Arc<tsz::parallel::BindResult>,
+}
+
+/// Counts work performed by one project update.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TszUpdateReport {
+    /// Source files parsed and bound by TSZ during this update.
+    pub parsed_and_bound: usize,
+    /// Source files whose typed TSZ bind results were reused.
+    pub reused_binds: usize,
+    /// Removed source files evicted from the project's cache.
+    pub removed_sources: usize,
+    /// Whether the complete merged/check result was reused unchanged.
+    pub reused_project_result: bool,
+}
+
+/// Exclusive owner of one TypeScript project's persistent TSZ compile state.
+///
+/// Keep this value on the project worker and update it serially. The cache has
+/// no global mutex; edits invalidate source digests and parse only files whose
+/// text or project environment changed.
+#[derive(Default)]
+pub struct TszProjectAuthority {
+    environment: Option<TszEnvironmentFingerprint>,
+    bound_sources: BTreeMap<String, CachedBind>,
+    project: Option<TszProject>,
+}
+
+/// One real in-process TSZ program, including its typed parser/binder state,
+/// merged cross-file symbols, and checker diagnostics.
+pub struct TszProject {
+    options: TszProjectOptions,
+    checker_options_digest: [u8; 32],
+    bound_sources: BTreeMap<String, Arc<tsz::parallel::BindResult>>,
+    program: tsz::parallel::MergedProgram,
+    check: tsz::parallel::CheckResult,
+}
+
+impl TszProjectAuthority {
+    /// Creates an empty project worker cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Parses, binds, merges, and checks a caller-resolved TypeScript project.
+    ///
+    /// Unchanged files retain their TSZ arenas and bind results. A changed
+    /// source causes TSZ's current project-wide merge/check operations to run
+    /// again over borrowed cached results. The explicit `lib_files` must be
+    /// the resolved project library set whose identity is covered by
+    /// `options.environment`.
+    ///
+    /// Parse and checker diagnostics remain native typed TSZ diagnostics on
+    /// [`TszProject`]; a successful method call means the adapter ran, not
+    /// that the source has no diagnostics or that TSZ fully conforms to tsc.
+    ///
+    /// # Errors
+    /// Returns a typed input error for an empty project, unsupported source
+    /// suffix, duplicate path, or malformed path.
+    pub fn update(
+        &mut self,
+        sources: Vec<TszFileInput>,
+        options: TszProjectOptions,
+        lib_files: &[Arc<tsz::lib_loader::LibFile>],
+    ) -> Result<TszUpdateReport, TszAuthorityError> {
+        if sources.is_empty() {
+            return Err(TszSourceError::EmptyProject.into());
+        }
+
+        let mut unique_paths = BTreeSet::new();
+        let mut pending = BTreeMap::new();
+        for source in sources {
+            validate_source_path(&source.path)?;
+            if !unique_paths.insert(source.path.clone()) {
+                return Err(TszSourceError::DuplicatePath.into());
+            }
+            let digest = source_digest(&source.path, &source.source);
+            pending.insert(source.path.clone(), (digest, source.source));
+        }
+
+        let mut report = TszUpdateReport::default();
+        let environment_changed = self.environment != Some(options.environment);
+        let checker_digest = checker_options_digest(&options.checker);
+        let checker_options_changed = self
+            .project
+            .as_ref()
+            .is_some_and(|current| current.checker_options_digest != checker_digest);
+        if environment_changed || checker_options_changed {
+            self.bound_sources.clear();
+            self.project = None;
+            self.environment = Some(options.environment);
+        }
+
+        report.removed_sources = self
+            .bound_sources
+            .keys()
+            .filter(|path| !pending.contains_key(*path))
+            .count();
+        self.bound_sources
+            .retain(|path, _| pending.contains_key(path));
+
+        let mut files_to_parse = Vec::new();
+        for (path, (digest, source_text)) in pending {
+            let is_cached = self
+                .bound_sources
+                .get(&path)
+                .is_some_and(|cached| cached.digest == digest);
+            if is_cached {
+                report.reused_binds += 1;
+            } else {
+                files_to_parse.push((path.clone(), source_text));
+                self.bound_sources.remove(&path);
+            }
+        }
+
+        if files_to_parse.is_empty()
+            && !environment_changed
+            && self.project.as_ref().is_some_and(|current| {
+                current.options.environment == options.environment
+                    && current.checker_options_digest == checker_digest
+            })
+            && report.removed_sources == 0
+        {
+            report.reused_project_result = true;
+            return Ok(report);
+        }
+
+        report.parsed_and_bound = files_to_parse.len();
+        if !files_to_parse.is_empty() {
+            let parsed = tsz::parallel::parse_and_bind_parallel_with_libs_and_options(
+                files_to_parse,
+                lib_files,
+                options.checker.target,
+                options.checker.module_detection,
+            );
+            for result in parsed {
+                let path = result.file_name.clone();
+                let source = result
+                    .arena
+                    .get_source_file_at(result.source_file)
+                    .map(|file| file.text.as_ref())
+                    .unwrap_or_default();
+                let digest = source_digest(&path, source);
+                self.bound_sources.insert(
+                    path,
+                    CachedBind {
+                        digest,
+                        result: Arc::new(result),
+                    },
+                );
+            }
+        }
+
+        let bound_sources: BTreeMap<_, _> = self
+            .bound_sources
+            .iter()
+            .map(|(path, cached)| (path.clone(), Arc::clone(&cached.result)))
+            .collect();
+        let bind_refs: Vec<_> = bound_sources.values().map(Arc::as_ref).collect();
+        let program = tsz::parallel::merge_bind_results_ref(&bind_refs);
+        let check = tsz::parallel::check_files_parallel(&program, &options.checker, lib_files);
+        self.project = Some(TszProject {
+            checker_options_digest: checker_digest,
+            options,
+            bound_sources,
+            program,
+            check,
+        });
+        Ok(report)
+    }
+
+    /// Returns the most recently updated real TSZ project, if one exists.
+    #[must_use]
+    pub fn project(&self) -> Option<&TszProject> {
+        self.project.as_ref()
+    }
+}
+
+impl TszProject {
+    /// TSZ's project-wide merged cross-file program.
+    #[must_use]
+    pub const fn program(&self) -> &tsz::parallel::MergedProgram {
+        &self.program
+    }
+
+    /// TSZ's typed checker result and every checker diagnostic it retained.
+    #[must_use]
+    pub const fn check_result(&self) -> &tsz::parallel::CheckResult {
+        &self.check
+    }
+
+    /// Source files in deterministic path order, with their retained native binds.
+    #[must_use]
+    pub fn source_paths(&self) -> impl Iterator<Item = &str> {
+        self.bound_sources.keys().map(String::as_str)
+    }
+
+    /// The native parse/bind result for one source path.
+    #[must_use]
+    pub fn bind_result(&self, path: &str) -> Option<&tsz::parallel::BindResult> {
+        self.bound_sources.get(path).map(Arc::as_ref)
+    }
+
+    /// Source text retained by the TSZ parser for a source path.
+    #[must_use]
+    pub fn source_text(&self, path: &str) -> Option<&str> {
+        let result = self.bind_result(path)?;
+        result
+            .arena
+            .get_source_file_at(result.source_file)
+            .map(|file| file.text.as_ref())
+    }
+
+    /// Admits a TSZ diagnostic's byte range against the exact retained source.
+    ///
+    /// TSZ's native diagnostic offsets are UTF-8 bytes. This rejects overflow,
+    /// out-of-bounds offsets, and ranges that split a UTF-8 scalar before the
+    /// range can enter the backend's source-coordinate-aware IR.
+    #[must_use]
+    pub fn diagnostic_utf8_span(&self, diagnostic: &TszDiagnostic) -> Option<Utf8Span> {
+        self.source_utf8_span(&diagnostic.file, diagnostic.start, diagnostic.length)
+    }
+
+    /// Admits a TSZ parser diagnostic's byte range against its exact source.
+    #[must_use]
+    pub fn parse_diagnostic_utf8_span(
+        &self,
+        path: &str,
+        diagnostic: &TszParseDiagnostic,
+    ) -> Option<Utf8Span> {
+        self.source_utf8_span(path, diagnostic.start, diagnostic.length)
+    }
+
+    fn source_utf8_span(&self, path: &str, start: u32, length: u32) -> Option<Utf8Span> {
+        let source = self.source_text(path)?;
+        let end = start.checked_add(length)?;
+        let span = Utf8Span::try_from(start..end).ok()?;
+        source
+            .get(usize::try_from(span.start).ok()?..usize::try_from(span.end).ok()?)
+            .map(|_| span)
+    }
+
+    /// Runs a typed checker query inside a non-escaping per-file transaction.
+    ///
+    /// The callback can walk the TSZ arena and bound symbols, ask TSZ for
+    /// `TypeId`s, and map those typed facts into the existing compiler IR while
+    /// the exact program interner and arena are alive. Return values cannot
+    /// borrow the temporary checker, binder, or query cache.
+    ///
+    /// # Errors
+    /// Returns [`TszAuthorityError::MissingFile`] for an invalid merged index.
+    pub fn with_file_checker<Output>(
+        &self,
+        file_index: usize,
+        consume: impl for<'checker> FnOnce(
+            &mut TszCheckerState<'checker>,
+            &TszBinderState,
+            &tsz::parallel::BoundFile,
+        ) -> Output,
+    ) -> Result<Output, TszAuthorityError> {
+        let file = self
+            .program
+            .files
+            .get(file_index)
+            .ok_or(TszAuthorityError::MissingFile(file_index))?;
+        let binder = tsz::parallel::create_binder_from_bound_file(file, &self.program, file_index);
+        let query_cache =
+            tsz::tsz_solver::construction::QueryCache::new(&self.program.type_interner)
+                .with_definition_store(&self.program.definition_store);
+        let mut checker = TszCheckerState::new_with_shared_def_store(
+            &file.arena,
+            &binder,
+            &query_cache,
+            file.file_name.clone(),
+            self.options.checker.clone(),
+            Arc::clone(&self.program.definition_store),
+        );
+        checker.check_source_file(file.source_file);
+        Ok(consume(&mut checker, &binder, file))
+    }
+}
+
+fn validate_source_path(path: &str) -> Result<(), TszSourceError> {
+    let Some((basename, extension)) = path.rsplit_once('.') else {
+        return Err(TszSourceError::InvalidPath);
+    };
+    let filename = basename.rsplit(['/', '\\']).next().unwrap_or(basename);
+    if path.is_empty() || filename.is_empty() || extension.is_empty() {
+        return Err(TszSourceError::InvalidPath);
+    }
+    match extension.to_ascii_lowercase().as_str() {
+        "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" => Ok(()),
+        _ => Err(TszSourceError::UnsupportedExtension),
+    }
+}
+
+fn source_digest(path: &str, source: &str) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(path.as_bytes());
+    digest.update([0]);
+    digest.update(source.as_bytes());
+    digest.finalize().into()
+}
+
+fn checker_options_digest(options: &TszCheckerOptions) -> [u8; 32] {
+    // TSZ's options are a broad non-serializable struct. Its Debug output is
+    // a same-revision in-process cache key only; the external environment
+    // fingerprint remains the durable content-addressed identity.
+    Sha256::digest(format!("{options:?}").as_bytes()).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options() -> TszProjectOptions {
+        let mut checker = TszCheckerOptions::default();
+        checker.no_lib = true;
+        TszProjectOptions {
+            checker,
+            environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
+        }
+    }
+
+    fn input(path: &str, source: &str) -> TszFileInput {
+        TszFileInput {
+            path: path.to_owned(),
+            source: source.to_owned(),
+        }
+    }
+
+    #[test]
+    fn native_checker_queries_bind_same_named_exports_by_project_path() {
+        let mut authority = TszProjectAuthority::new();
+        let report = authority
+            .update(
+                vec![
+                    input("packages/a/index.ts", "export let shared: number = 1;"),
+                    input("packages/b/index.ts", "export let shared: string = 'b';"),
+                ],
+                options(),
+                &[],
+            )
+            .expect("TSZ should build the project");
+        assert_eq!(report.parsed_and_bound, 2);
+
+        let project = authority.project().expect("project result exists");
+        let mut observed = BTreeMap::new();
+        for (index, file) in project.program().files.iter().enumerate() {
+            let path = file.file_name.clone();
+            let (symbol, display) = project
+                .with_file_checker(index, |checker, binder, _bound_file| {
+                    let symbol = binder
+                        .file_locals
+                        .get("shared")
+                        .expect("same-named exported symbol is bound");
+                    let type_id = checker.get_type_of_symbol(symbol);
+                    (symbol, checker.format_type(type_id))
+                })
+                .expect("file checker exists");
+            observed.insert(path, (symbol, display));
+        }
+
+        let (number_symbol, number_type) = observed
+            .get("packages/a/index.ts")
+            .expect("first file is retained");
+        let (string_symbol, string_type) = observed
+            .get("packages/b/index.ts")
+            .expect("second file is retained");
+        assert_ne!(number_symbol, string_symbol);
+        assert_eq!(number_type, "number");
+        assert_eq!(string_type, "string");
+    }
+
+    #[test]
+    fn changed_source_reuses_unchanged_native_bind_and_exact_revision_result() {
+        let mut authority = TszProjectAuthority::new();
+        let initial = vec![
+            input("src/a.ts", "export const a: number = 1;"),
+            input("src/b.ts", "export const b: string = 'b';"),
+        ];
+        authority
+            .update(initial.clone(), options(), &[])
+            .expect("initial TSZ project builds");
+        let previous_b = Arc::clone(
+            authority
+                .project()
+                .expect("initial project exists")
+                .bound_sources
+                .get("src/b.ts")
+                .expect("unchanged file has native bind"),
+        );
+
+        let report = authority
+            .update(
+                vec![
+                    input("src/a.ts", "export const a: number = 2;"),
+                    initial[1].clone(),
+                ],
+                options(),
+                &[],
+            )
+            .expect("edited project builds");
+        assert_eq!(report.parsed_and_bound, 1);
+        assert_eq!(report.reused_binds, 1);
+        let project = authority.project().expect("updated project exists");
+        assert!(Arc::ptr_eq(
+            &previous_b,
+            project
+                .bound_sources
+                .get("src/b.ts")
+                .expect("unchanged native bind survives")
+        ));
+
+        let exact = authority
+            .update(
+                vec![
+                    input("src/a.ts", "export const a: number = 2;"),
+                    initial[1].clone(),
+                ],
+                options(),
+                &[],
+            )
+            .expect("exact project revision is reusable");
+        assert!(exact.reused_project_result);
+        assert_eq!(exact.parsed_and_bound, 0);
+    }
+
+    #[test]
+    fn tsz_diagnostics_admit_exact_utf8_source_ranges() {
+        let source = "const café = 1;\nconst value: number = 'wrong';";
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update(vec![input("src/unicode.ts", source)], options(), &[])
+            .expect("TSZ should report diagnostics instead of rejecting the run");
+        let project = authority.project().expect("project result exists");
+        let diagnostics: Vec<_> = project
+            .check_result()
+            .file_results
+            .iter()
+            .flat_map(|file| file.diagnostics.iter())
+            .filter(|diagnostic| diagnostic.code == 2322)
+            .collect();
+        assert!(
+            !diagnostics.is_empty(),
+            "TSZ should report the assignment error"
+        );
+        let diagnostic = diagnostics[0];
+        let span = project
+            .diagnostic_utf8_span(diagnostic)
+            .expect("diagnostic is a valid UTF-8 byte range");
+        let expected_start = source.find("value").expect("declaration offset");
+        assert_eq!(span.start as usize, expected_start);
+        assert_eq!(span.end as usize, expected_start + "value".len());
+    }
+
+    #[test]
+    fn ts_and_javascript_profiles_parse_through_tsz_without_file_discovery() {
+        let paths = [
+            "src/a.ts",
+            "src/a.tsx",
+            "src/a.mts",
+            "src/a.cts",
+            "src/a.js",
+            "src/a.jsx",
+            "src/a.mjs",
+            "src/a.cjs",
+        ];
+        for path in paths {
+            validate_source_path(path).expect("supported TS/JS path");
+        }
+        let mut authority = TszProjectAuthority::new();
+        let inputs = paths
+            .iter()
+            .map(|path| input(path, "export const value = 1;"))
+            .collect();
+        let report = authority
+            .update(inputs, options(), &[])
+            .expect("TSZ parses all supported profiles");
+        assert_eq!(report.parsed_and_bound, paths.len());
+        let project = authority.project().expect("project result exists");
+        for path in paths {
+            assert!(
+                project
+                    .bind_result(path)
+                    .expect("source is retained")
+                    .parse_diagnostics
+                    .is_empty(),
+                "TSZ parser accepts {path}"
+            );
+        }
+        assert_eq!(
+            validate_source_path("src/a.vue"),
+            Err(TszSourceError::UnsupportedExtension)
+        );
+        assert_eq!(
+            validate_source_path("src/.ts"),
+            Err(TszSourceError::InvalidPath)
+        );
+    }
+}

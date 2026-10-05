@@ -1,6 +1,5 @@
-//! Builds one in-process OXC syntax-and-binding authority from caller-owned source.
-//! Holds the resulting program facts in the caller's arena for a single lowering transaction.
-//! Selects grammar solely from the closed compiler TypeScript profile.
+//! Retains OXC's structural syntax projection for callers that need it.
+//! The project-scoped TypeScript syntax and semantic authority is TSZ.
 
 use backend_compile::TypeScriptSource;
 use oxc_allocator::Allocator;
@@ -81,7 +80,7 @@ pub struct OxcDeclaration {
     pub kind: OxcDeclarationKind,
 }
 
-/// One parsed and lexically resolved TypeScript or TSX module.
+/// One parsed and lexically resolved OXC projection of a TypeScript or TSX module.
 ///
 /// The OXC values borrow `source` and `arena`; callers must lower them before
 /// dropping either owner. The fields are deliberately direct so downstream
@@ -96,6 +95,15 @@ pub struct OxcModule<'source> {
     /// OXC lexical scopes, symbols, references, syntax nodes, and diagnostics-free bindings.
     pub semantic: Semantic<'source>,
 }
+
+/// An OXC structural view retained for syntax-only or migration consumers.
+pub type OxcSyntaxProjection<'source> = OxcModule<'source>;
+
+/// The project-scoped TSZ parser and binder selected as TypeScript syntax authority.
+pub type TypeScriptSyntaxAuthority = crate::TszProjectAuthority;
+
+/// The genuine project-scoped semantic authority selected for TypeScript.
+pub type TypeScriptSemanticAuthority = crate::TszProjectAuthority;
 
 impl OxcModule<'_> {
     /// Streams every bound symbol with its exact original name span.
@@ -112,8 +120,9 @@ impl OxcModule<'_> {
 /// Parses and lexically resolves `source` under one closed TypeScript profile.
 ///
 /// Parser and resolver diagnostics remain typed, complete, and distinct. This
-/// boundary intentionally does not claim TypeScript checker-derived types;
-/// those require the future typed TSZ authority adapter.
+/// boundary provides syntax and lexical bindings only. Project-wide checker
+/// types and diagnostics are supplied by [`crate::TszProjectAuthority`], which
+/// calls TSZ's in-process parser, binder, merger, and checker APIs.
 ///
 /// # Errors
 ///

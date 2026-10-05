@@ -1,17 +1,19 @@
-//! TypeScript OXC/checker native authority adapter.
+//! TypeScript OXC syntax and native TSZ project checker authority adapters.
 #![forbid(unsafe_code)]
 
 mod authority;
 mod coordinate;
 mod error;
 mod package;
+mod tsz_authority;
 
 #[path = "src/legacy/mod.rs"]
 pub mod legacy;
 
 pub use authority::{
-    OxcDeclaration, OxcDeclarationKind, OxcModule, SyntaxMappedModifier, analyze,
-    syntax_mapped_modifier, with_analysis,
+    OxcDeclaration, OxcDeclarationKind, OxcModule, OxcSyntaxProjection, SyntaxMappedModifier,
+    TypeScriptSemanticAuthority, TypeScriptSyntaxAuthority, analyze, syntax_mapped_modifier,
+    with_analysis,
 };
 pub use coordinate::{CoordinateError, Utf8Span, Utf8ToUtf16Cursor, Utf16Span};
 pub use error::{OxcAuthorityError, OxcAuthorityError as AuthorityError};
@@ -19,6 +21,12 @@ pub use package::{
     LocatedPackage, MAX_TARBALL_MEMBERS, MAX_TARBALL_UNCOMPRESSED_BYTES, PackageError, PackagePurl,
     PackagePurlError, RegistryMetadata, TarballMember, TarballMemberKind, decode_packument,
     locate_package, read_tarball,
+};
+pub use tsz_authority::{
+    TszAuthorityError, TszBinderState, TszCheckerOptions, TszCheckerState, TszDiagnostic,
+    TszEnvironmentFingerprint, TszFileInput, TszModuleDetectionKind, TszModuleKind, TszNodeIndex,
+    TszParseDiagnostic, TszProject, TszProjectAuthority, TszProjectOptions, TszScriptTarget,
+    TszSourceError, TszSymbolId, TszTypeId, TszUpdateReport,
 };
 
 use backend_compile::{
