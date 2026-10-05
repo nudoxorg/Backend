@@ -3052,7 +3052,7 @@ impl Render for Reader {
                             // restores the retained native input after AX paint.
                             self.pending_settings_focus = Some(pending);
                         }
-                        _ => { self.targets.clear_focus(); }
+                        _ => { self.pending_page_focus = None; self.targets.clear_focus(); }
                     }
                 }
             } else {
