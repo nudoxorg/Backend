@@ -1781,6 +1781,18 @@ fn stage_package(
             source: cause,
         })?;
         if metadata.is_dir() {
+            // Version-control history never participates in a type check and
+            // routinely dwarfs the byte budget on real projects.
+            if is_vcs_directory(&file_name) {
+                continue;
+            }
+            // Installed dependencies are resolved in place rather than copied:
+            // a populated `node_modules` exceeds the budget and is full of
+            // `.bin` symlinks the staging walk cannot copy.
+            if file_name == "node_modules" {
+                link_dependency_directory(&child, &target)?;
+                continue;
+            }
             stage_package(
                 &child,
                 &target,
@@ -1792,6 +1804,13 @@ fn stage_package(
                 selected_file_seen,
             )?;
         } else if metadata.is_file() {
+            // Only sources and JSON configuration reach the checker; assets
+            // such as images would otherwise consume the whole byte budget.
+            if !is_checker_input(&child)
+                && !selected_relative.is_some_and(|selected| relative == selected)
+            {
+                continue;
+            }
             let remaining = PACKAGE_BYTE_LIMIT.saturating_sub(budget.bytes);
             let mut bytes = Vec::new();
             std::fs::File::open(&child)
@@ -1834,6 +1853,10 @@ fn stage_package(
                 phase: "stage write",
                 source: cause,
             })?;
+        } else if metadata.file_type().is_symlink() {
+            // Links (for example editor or tool shims) are not package
+            // sources; skipping them keeps staging inside the package tree.
+            continue;
         } else {
             return Err(CheckerError::Work {
                 phase: "stage entry",
@@ -1841,6 +1864,34 @@ fn stage_package(
             });
         }
     }
+    Ok(())
+}
+
+fn is_vcs_directory(name: &std::ffi::OsStr) -> bool {
+    matches!(name.to_str(), Some(".git" | ".hg" | ".svn"))
+}
+
+/// Files the checker reads: TypeScript and JavaScript sources plus JSON
+/// configuration (`tsconfig.json`, `package.json`, imported JSON modules).
+fn is_checker_input(path: &Path) -> bool {
+    path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| {
+        matches!(
+            extension,
+            "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "json"
+        )
+    })
+}
+
+#[cfg(unix)]
+fn link_dependency_directory(source: &Path, target: &Path) -> Result<(), CheckerError> {
+    std::os::unix::fs::symlink(source, target).map_err(|cause| CheckerError::Work {
+        phase: "stage dependencies",
+        source: cause,
+    })
+}
+
+#[cfg(not(unix))]
+fn link_dependency_directory(_source: &Path, _target: &Path) -> Result<(), CheckerError> {
     Ok(())
 }
 
