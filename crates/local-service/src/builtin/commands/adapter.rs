@@ -1646,21 +1646,23 @@ impl CommandAdapter {
                                     }
                                 }
                             }
-                            Ok(PreparedIndex::Compile(job)) => match finish_deferred_index(job) {
-                                Ok(prepared) => {
-                                    terminal = Some(self.finish_prepared_index_selection(
-                                        daemon,
-                                        &mut indexing,
-                                        prepared,
-                                        &mut legacy_reply,
-                                    ));
+                            Ok(PreparedIndex::Compile(job)) => {
+                                match finish_deferred_index(daemon, job) {
+                                    Ok(prepared) => {
+                                        terminal = Some(self.finish_prepared_index_selection(
+                                            daemon,
+                                            &mut indexing,
+                                            prepared,
+                                            &mut legacy_reply,
+                                        ));
+                                    }
+                                    Err(refusal) => {
+                                        terminal = Some(backend_library::IndexJobOutcome::Refused(
+                                            bounded_index_detail(refusal),
+                                        ));
+                                    }
                                 }
-                                Err(refusal) => {
-                                    terminal = Some(backend_library::IndexJobOutcome::Refused(
-                                        bounded_index_detail(refusal),
-                                    ));
-                                }
-                            },
+                            }
                             Err(refusal) => {
                                 terminal = Some(backend_library::IndexJobOutcome::Refused(
                                     bounded_index_detail(refusal),
@@ -1745,7 +1747,7 @@ impl CommandAdapter {
                                         }
                                     }
                                 } else {
-                                    match finish_deferred_index(job) {
+                                    match finish_deferred_index(daemon, job) {
                                         Ok(prepared) => {
                                             terminal = Some(self.finish_prepared_index_selection(
                                                 daemon,

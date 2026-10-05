@@ -187,7 +187,7 @@ pub(super) fn measure_package_source_lookup() -> (u128, u128) {
         let fields = project.project_fields().expect("project fields");
         let file_keys = fields
             .iter_file_keys(target_key, |page_key| {
-                tree.lookup(page_key).map_err(|error| error.to_string())
+                tree.lookup(page_key).map_err(|error| format!("{error:?}"))
             })
             .collect::<Result<Vec<_>, _>>()
             .expect("resolve complete package frontier");
@@ -236,7 +236,7 @@ pub(super) fn measure_package_source_lookup() -> (u128, u128) {
         let fields = project.project_fields().expect("project fields");
         let file_keys = fields
             .iter_file_keys(target_key, |page_key| {
-                tree.lookup(page_key).map_err(|error| error.to_string())
+                tree.lookup(page_key).map_err(|error| format!("{error:?}"))
             })
             .collect::<Result<Vec<_>, _>>()
             .expect("resolve complete package frontier");
@@ -449,6 +449,7 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::{shared_declarations, snapshot_holding};
+    use std::sync::Arc;
 
     #[test]
     fn one_package_lookup_matches_its_rows_in_the_full_page() {

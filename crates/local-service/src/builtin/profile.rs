@@ -114,7 +114,7 @@ fn validate_source_membership_transition(
     }
     if old_project
         .as_ref()
-        .and_then(ProductSourceRecord::project_fields)
+        .and_then(BuiltinPackageRecord::project_fields)
         .is_some_and(|fields| backend_engine::package_key(fields.label).to_bytes() != project_key)
     {
         return Err(BuiltinModelError(
@@ -132,7 +132,7 @@ fn validate_source_membership_transition(
     }
     if new_project
         .as_ref()
-        .and_then(ProductSourceRecord::project_fields)
+        .and_then(BuiltinPackageRecord::project_fields)
         .is_some_and(|fields| backend_engine::package_key(fields.label).to_bytes() != project_key)
     {
         return Err(BuiltinModelError(
@@ -200,11 +200,11 @@ fn validate_source_membership_transition(
 
     let old_pages = old_project
         .as_ref()
-        .and_then(ProductSourceRecord::project_fields)
+        .and_then(BuiltinPackageRecord::project_fields)
         .map_or(&[][..], |fields| fields.files.page_keys());
     let new_pages = new_project
         .as_ref()
-        .and_then(ProductSourceRecord::project_fields)
+        .and_then(BuiltinPackageRecord::project_fields)
         .map_or(&[][..], |fields| fields.files.page_keys());
     let old_page_set = old_pages
         .iter()
@@ -273,7 +273,7 @@ fn validate_source_membership_transition(
         if change
             .after
             .as_ref()
-            .and_then(ProductSourceRecord::membership_page_fields)
+            .and_then(BuiltinPackageRecord::membership_page_fields)
             .is_some()
             && !old_page_set.contains(&change.key)
             && lookup_before(relation, change.key)?.is_some()
@@ -309,7 +309,7 @@ fn validate_source_membership_transition(
         let after_page = change
             .after
             .as_ref()
-            .and_then(ProductSourceRecord::membership_page_fields);
+            .and_then(BuiltinPackageRecord::membership_page_fields);
         if after_page.is_some() && !new_page_set.contains(&change.key) {
             return Err(BuiltinModelError(
                 "source update adds an unreferenced membership page".to_owned(),

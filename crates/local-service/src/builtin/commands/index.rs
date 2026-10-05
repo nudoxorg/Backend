@@ -620,6 +620,8 @@ pub(super) fn finish_index_scan(
                     &label,
                     project_key,
                     project.clone(),
+                    before.clone(),
+                    file_keys,
                     changes,
                     &semantic_context,
                     sources,
@@ -850,6 +852,8 @@ pub(super) struct DeferredIndex {
     label: String,
     project_key: [u8; 32],
     project_record: ProductSourceRecord,
+    prior_project: Option<ProductSourceRecord>,
+    file_keys: Vec<[u8; 32]>,
     source_root: PathBuf,
     source_changes: Vec<BuiltinSourceChange>,
     revision_fence: ingest::CompilerRevisionFence,
@@ -945,6 +949,8 @@ fn prepare_deferred_compile(
     label: &str,
     project_key: [u8; 32],
     project_record: ProductSourceRecord,
+    prior_project: Option<ProductSourceRecord>,
+    file_keys: Vec<[u8; 32]>,
     source_changes: Vec<BuiltinSourceChange>,
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
@@ -1052,6 +1058,8 @@ fn prepare_deferred_compile(
         label: label.to_owned(),
         project_key,
         project_record,
+        prior_project,
+        file_keys,
         source_root: context.source_root.to_path_buf(),
         source_changes,
         revision_fence,
@@ -1183,18 +1191,64 @@ pub(super) fn finish_deferred_profile<E: std::fmt::Display>(
 /// have been admitted. The caller commits this one intent before advancing
 /// the process-local serving selector.
 pub(super) fn finish_deferred_index(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     mut job: DeferredIndex,
 ) -> Result<PreparedProductSelection, BuiltinModelError> {
     if !job.profiles.is_empty() || job.completed_profiles != job.expected_profiles {
         return Err(BuiltinModelError(
             "the deferred compile did not answer every profile; prior selected semantic generation was preserved"
+            .to_owned(),
+        ));
+    }
+    let owner = daemon.engine().daemon().owner();
+    let relation = owner
+        .snapshot()
+        .relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("open deferred project source: {error}")))?;
+    let prior_project = relation
+        .lookup(&job.project_key)
+        .map_err(|error| BuiltinModelError(format!("read deferred prior project row: {error}")))?;
+    // The root record commits source_version, aliases, and the exact ordered
+    // inline keys or content-addressed page keys. Comparing this package row
+    // lets unrelated projects advance while refusing a stale package scan.
+    if prior_project != job.prior_project {
+        return Err(BuiltinModelError(
+            "project source changed while deferred profiles were compiling; retry indexing"
                 .to_owned(),
         ));
+    }
+    let prior_file_keys = match prior_project.as_ref() {
+        Some(record) => {
+            super::super::profile::resolve_project_file_keys(job.project_key, record, |page_key| {
+                relation.lookup(page_key).map_err(|error| {
+                    BuiltinModelError(format!("read deferred project membership page: {error}"))
+                })
+            })?
+        }
+        None => Vec::new(),
+    };
+    let prior_file_rows = relation
+        .lookup_many_sorted(&prior_file_keys)
+        .map_err(|error| BuiltinModelError(format!("read deferred project files: {error}")))?;
+    for (key, record) in prior_file_keys.iter().copied().zip(prior_file_rows) {
+        let record = record.ok_or_else(|| {
+            BuiltinModelError(
+                "deferred project frontier refers to a missing source file".to_owned(),
+            )
+        })?;
+        super::super::profile::validate_project_file(job.project_key, key, &record)?;
     }
     replace_project_cargo_aliases(
         &mut job.source_changes,
         job.project_key,
         job.project_record,
+        job.file_keys,
+        prior_project.as_ref(),
+        |key| {
+            relation.lookup(key).map_err(|error| {
+                BuiltinModelError(format!("read deferred project membership page: {error}"))
+            })
+        },
         std::mem::take(&mut job.cargo_alias_observations)
             .into_values()
             .collect(),
@@ -4147,8 +4201,16 @@ mod compiler_input_witness_tests {
             key: project_key,
             after: Some(fresh_project.clone()),
         }];
-        replace_project_cargo_aliases(&mut changes, project_key, fresh_project, vec![current])
-            .expect("current observation replaces previous source authority");
+        replace_project_cargo_aliases(
+            &mut changes,
+            project_key,
+            fresh_project,
+            Vec::new(),
+            Some(&previously_indexed),
+            |_| Ok(None),
+            vec![current],
+        )
+        .expect("current observation replaces previous source authority");
 
         let indexed = changes[0]
             .after
