@@ -14,6 +14,7 @@ struct InflightRequest {
     cancel: CancellationToken,
     lane: Option<CoalesceKey>,
     index_project: Option<LocalProjectId>,
+    observation_owner: Option<super::store::OwnerAttachment>,
     /// Whether the result is producer-root state that a newer root makes
     /// stale. Local manifest reads are not.
     rooted: bool,
@@ -154,13 +155,24 @@ impl DesktopRuntime {
         let owner = super::actor::IndexMutationLease::capture(None, None);
         #[cfg(not(any(test, feature = "visual-harness")))]
         let owner = None;
-        self.dispatch_with_owner(intent, owner)
+        self.dispatch_with_owner(intent, owner, None)
     }
 
     /// Only the root's checked durable acknowledgment may use this boundary.
     pub(crate) fn dispatch_saved_index(&mut self, intent: Intent, owner: super::actor::IndexMutationLease) -> Vec<RuntimeEvent> {
         self.release_unsent_claim(&intent);
-        self.dispatch_with_owner(intent, Some(owner))
+        self.dispatch_with_owner(intent, Some(owner), None)
+    }
+
+    pub(crate) fn dispatch_observation(
+        &mut self,
+        intent: Intent,
+        owner: super::store::OwnerAttachment,
+    ) -> Vec<RuntimeEvent> {
+        if !matches!(intent, Intent::ReconcileIndexProject { .. }) {
+            return Vec::new();
+        }
+        self.dispatch_with_owner(intent, None, Some(owner))
     }
 
     /// A root-owned preflight proves this exact claim has never reached transport.
@@ -177,13 +189,20 @@ impl DesktopRuntime {
         }
     }
 
-    fn dispatch_with_owner(&mut self, intent: Intent, owner: Option<super::actor::IndexMutationLease>) -> Vec<RuntimeEvent> {
+    fn dispatch_with_owner(
+        &mut self,
+        intent: Intent,
+        owner: Option<super::actor::IndexMutationLease>,
+        observation_owner: Option<super::store::OwnerAttachment>,
+    ) -> Vec<RuntimeEvent> {
         let reduction = reduce(&self.snapshot, intent);
         self.snapshot = Arc::new(reduction.snapshot);
         let mut events = vec![RuntimeEvent::SnapshotChanged(Arc::clone(&self.snapshot))];
         for effect in reduction.effects {
             match effect {
-                Effect::Engine(command) => events.extend(self.submit(command, owner.clone())),
+                Effect::Engine(command) => {
+                    events.extend(self.submit(command, owner.clone(), observation_owner.clone()))
+                }
                 Effect::Persist => {
                     events.push(RuntimeEvent::PersistRequested(Arc::clone(&self.snapshot)));
                 }
@@ -195,11 +214,25 @@ impl DesktopRuntime {
     }
 
     #[allow(clippy::too_many_lines)] // one arm per engine command, kept flat
-    fn submit(&mut self, command: EngineCommand, owner: Option<super::actor::IndexMutationLease>) -> Vec<RuntimeEvent> {
+    fn submit(
+        &mut self,
+        command: EngineCommand,
+        owner: Option<super::actor::IndexMutationLease>,
+        observation_owner: Option<super::store::OwnerAttachment>,
+    ) -> Vec<RuntimeEvent> {
         let (request, engine_request, basis, cancel) = match command {
             EngineCommand::CheckConnection { basis, request } => {
                 let cancel = CancellationToken::new();
-                (request, EngineRequest::ConnectionProbe { request, basis, cancel: cancel.clone() }, basis, cancel)
+                (
+                    request,
+                    EngineRequest::ConnectionProbe {
+                        request,
+                        basis,
+                        cancel: cancel.clone(),
+                    },
+                    basis,
+                    cancel,
+                )
             }
             EngineCommand::ReadLocalPackage {
                 project,
@@ -247,11 +280,26 @@ impl DesktopRuntime {
                     cancel,
                 )
             }
-            EngineCommand::IndexOperationStatus { project, operation, basis, request } => {
+            EngineCommand::IndexOperationStatus {
+                project,
+                operation,
+                basis,
+                request,
+            } => {
                 let cancel = CancellationToken::new();
-                (request, EngineRequest::IndexOperationStatus {
-                    request, project, operation, basis, cancel: cancel.clone(),
-                }, basis, cancel)
+                (
+                    request,
+                    EngineRequest::IndexOperationStatus {
+                        owner: observation_owner.clone(),
+                        request,
+                        project,
+                        operation,
+                        basis,
+                        cancel: cancel.clone(),
+                    },
+                    basis,
+                    cancel,
+                )
             }
             EngineCommand::ReadObject {
                 object,
@@ -301,9 +349,11 @@ impl DesktopRuntime {
                 cancel,
                 lane,
                 index_project: match &engine_request {
-                    EngineRequest::IndexProject { project, .. } | EngineRequest::IndexOperationStatus { project, .. } => Some(project.clone()),
+                    EngineRequest::IndexProject { project, .. }
+                    | EngineRequest::IndexOperationStatus { project, .. } => Some(project.clone()),
                     _ => None,
                 },
+                observation_owner,
                 rooted: true,
                 connection_probe: matches!(&engine_request, EngineRequest::ConnectionProbe { .. }),
             },
@@ -311,8 +361,7 @@ impl DesktopRuntime {
         match self.actor.try_submit_coalesced(engine_request) {
             super::mailbox::PushResult::Enqueued => {}
             super::mailbox::PushResult::Coalesced(old) => {
-                if let Some(event) =
-                    self.retire_request(old.request(), RequestOutcome::Superseded)
+                if let Some(event) = self.retire_request(old.request(), RequestOutcome::Superseded)
                 {
                     events.push(event);
                 }
@@ -368,6 +417,7 @@ impl DesktopRuntime {
                 cancel: read.cancel.clone(),
                 lane,
                 index_project: None,
+                observation_owner: None,
                 rooted: false,
                 connection_probe: false,
             },
@@ -436,7 +486,7 @@ impl DesktopRuntime {
     /// Polls actor events without waiting on the UI thread.
     pub fn poll(&mut self) -> Vec<RuntimeEvent> {
         let mut events = Vec::new();
-        for event in self.actor.drain_events() {
+        for mut event in self.actor.drain_events() {
             let request = event.request;
             let Some(inflight) = self.inflight.remove(&request) else {
                 events.push(RuntimeEvent::RejectedStale(MappingError::Engine(
@@ -444,6 +494,23 @@ impl DesktopRuntime {
                 )));
                 continue;
             };
+            if inflight
+                .observation_owner
+                .as_ref()
+                .is_some_and(|owner| !owner.is_current())
+            {
+                let terminal = matches!(&event.result, Ok(super::actor::EngineDto::IndexOperation {
+                    observation: backend_library::IndexOperationObservation::Known(status), .. })
+                    if matches!(status.state, backend_library::IndexOperationState::Published(_)
+                        | backend_library::IndexOperationState::Failed { .. }));
+                if !terminal {
+                    if let Some(project) = &inflight.index_project {
+                        event.result = Err(super::actor::EngineFault::IndexUnconfirmed {
+                            project: project.clone(),
+                        });
+                    }
+                }
+            }
             let index_request = inflight.index_project.is_some();
             if !event.basis.same_authority(inflight.basis)
                 || (!index_request
@@ -465,7 +532,8 @@ impl DesktopRuntime {
             {
                 events.push(RuntimeEvent::RejectedStale(MappingError::Engine(
                     super::actor::EngineFault::Failed(crate::core::ErrorValue::new(
-                        FaultCode::Protocol, "connection check returned a non-revision reply",
+                        FaultCode::Protocol,
+                        "connection check returned a non-revision reply",
                     )),
                 )));
                 events.push(RuntimeEvent::RequestCompleted {
@@ -480,17 +548,60 @@ impl DesktopRuntime {
                     | super::actor::EngineFault::IndexCancelled { .. },
                 ) => RequestOutcome::Cancelled,
                 Err(super::actor::EngineFault::Superseded) => RequestOutcome::Superseded,
-                Err(super::actor::EngineFault::Failed(error) | super::actor::EngineFault::IndexFailed { error, .. } | super::actor::EngineFault::IndexNotSent { error, .. }) => RequestOutcome::Failed(error.code()),
+                Err(
+                    super::actor::EngineFault::Failed(error)
+                    | super::actor::EngineFault::IndexFailed { error, .. }
+                    | super::actor::EngineFault::IndexNotSent { error, .. },
+                ) => RequestOutcome::Failed(error.code()),
                 Err(_) => RequestOutcome::Failed(FaultCode::Protocol),
                 Ok(_) => RequestOutcome::Succeeded,
             };
             events.extend(self.retire_lane(request, inflight.lane, RequestOutcome::Superseded));
+            let published = match &event.result {
+                Ok(super::actor::EngineDto::IndexOperation {
+                    project,
+                    operation,
+                    observation: backend_library::IndexOperationObservation::Known(status),
+                    ..
+                }) if matches!(
+                    status.state,
+                    backend_library::IndexOperationState::Published(_)
+                ) && self.snapshot.workspace().projects.iter().any(|row| {
+                    row.id == *project
+                        && row.request == Some(event.request)
+                        && row.operation.as_ref().is_some_and(|saved| {
+                            saved.same_request(operation)
+                                && saved.admits_observation(
+                                    &backend_library::IndexOperationObservation::Known(
+                                        status.clone(),
+                                    ),
+                                )
+                        })
+                }) =>
+                {
+                    Some((project.clone(), operation.key))
+                }
+                _ => None,
+            };
             match map_event(&self.snapshot, event) {
                 Ok(snapshot) => {
+                    if let Some((project, key)) = &published {
+                        if snapshot.workspace().projects.iter().any(|row| {
+                            row.id == *project
+                                && row.phase == crate::model::ProjectPhase::Ready
+                                && row
+                                    .operation
+                                    .as_ref()
+                                    .is_some_and(|claim| claim.key == *key)
+                        }) {
+                            self.actor.admit_published_project(project);
+                        }
+                    }
                     // An index that finished, failed or was stopped changes what
                     // the shelf says about a project; a relaunch must find it as
                     // it was left, not wait for the next intent to write it.
-                    let shelf_moved = snapshot.workspace().projects != self.snapshot.workspace().projects;
+                    let shelf_moved =
+                        snapshot.workspace().projects != self.snapshot.workspace().projects;
                     self.snapshot = Arc::new(snapshot);
                     events.push(RuntimeEvent::SnapshotChanged(Arc::clone(&self.snapshot)));
                     if shelf_moved {
@@ -511,13 +622,19 @@ impl DesktopRuntime {
                             super::actor::EngineFault::Cancelled
                             | super::actor::EngineFault::IndexCancelled { .. },
                         ) => RequestOutcome::Cancelled,
-                        MappingError::Engine(super::actor::EngineFault::Failed(error)
+                        MappingError::Engine(
+                            super::actor::EngineFault::Failed(error)
                             | super::actor::EngineFault::IndexFailed { error, .. }
-                            | super::actor::EngineFault::IndexNotSent { error, .. }) => RequestOutcome::Failed(error.code()),
-                        MappingError::Engine(super::actor::EngineFault::IndexUnconfirmed { .. }
-                            | super::actor::EngineFault::MutationUnconfirmed) => RequestOutcome::Failed(FaultCode::Transport),
+                            | super::actor::EngineFault::IndexNotSent { error, .. },
+                        ) => RequestOutcome::Failed(error.code()),
+                        MappingError::Engine(
+                            super::actor::EngineFault::IndexUnconfirmed { .. }
+                            | super::actor::EngineFault::MutationUnconfirmed,
+                        ) => RequestOutcome::Failed(FaultCode::Transport),
                         MappingError::BasisMismatch { .. }
-                        | MappingError::RequestMismatch { .. } => RequestOutcome::Failed(FaultCode::Protocol),
+                        | MappingError::RequestMismatch { .. } => {
+                            RequestOutcome::Failed(FaultCode::Protocol)
+                        }
                     };
                     events.push(RuntimeEvent::RejectedStale(error));
                     events.push(RuntimeEvent::RequestCompleted { request, outcome });

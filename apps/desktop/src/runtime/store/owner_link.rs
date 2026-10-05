@@ -19,8 +19,16 @@ pub(crate) struct OwnerAttachment {
 }
 
 impl OwnerAttachment {
-    pub(super) fn is_current(&self) -> bool {
+    pub(crate) fn is_current(&self) -> bool {
         self.gate.as_ref().is_none_or(|gate| gate.serves_attachment(self.epoch))
+    }
+    pub(crate) fn bind_cancellation(
+        &self,
+        cancel: &crate::runtime::actor::CancellationToken,
+    ) -> Option<crate::runtime::actor::CancellationWake> {
+        let owner = self.gate.as_ref()?.observation_scope(self.epoch?)?;
+        let cancel = cancel.clone();
+        Some(owner.on_cancel(move || cancel.cancel()))
     }
 }
 

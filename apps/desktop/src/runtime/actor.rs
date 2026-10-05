@@ -526,6 +526,8 @@ pub enum EngineRequest {
     },
     /// Read-only reconciliation of an exact saved caller operation.
     IndexOperationStatus {
+        /// Read attachment captured when this exact status was admitted.
+        owner: Option<super::store::OwnerAttachment>,
         operation: crate::model::IndexOperationClaim,
         project: LocalProjectId,
         request: RequestId,
@@ -799,6 +801,20 @@ pub trait EngineClient: Send + 'static {
     /// # Errors
     /// Returns the typed [`EngineFault`] the producer or transport reported.
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault>;
+
+    /// A separate session for read-only exact operation receipts. Production
+    /// clients provide it so hydration cannot monopolize completion progress.
+    /// The actor routes only IndexOperationStatus into this client.
+    fn operation_observer(&self) -> Option<Box<dyn EngineClient>> {
+        None
+    }
+
+    /// Shared root-read context is updated only after the UI admits an exact
+    /// published operation receipt; a worker cannot retarget it by itself.
+    fn published_project_context(&self) -> Option<super::client::PublishedProjectContext> {
+        None
+    }
+
 }
 
 /// Handle for a dedicated background engine actor.
@@ -808,6 +824,8 @@ pub struct EngineActor {
     events: CoalescingMailbox<EngineEvent>,
     join: Option<JoinHandle<()>>,
     local_join: Option<JoinHandle<()>>,
+    operation: Option<OperationLane>,
+    published_project: Option<super::client::PublishedProjectContext>,
     /// The synchronous producer request currently owned by the worker.
     /// Shutdown revokes it before joining, including when it awaits startup.
     active: Arc<Mutex<ActiveRequest>>,
@@ -817,6 +835,13 @@ pub struct EngineActor {
     wake: WakeSender,
     /// The UI half, taken once by the entity that drains events.
     wake_receiver: Option<WakeReceiver>,
+}
+
+/// Bounded read-only status ownership, independent of root and Start requests.
+struct OperationLane {
+    mailbox: CoalescingMailbox<EngineRequest>,
+    active: Arc<Mutex<ActiveRequest>>,
+    join: Option<JoinHandle<()>>,
 }
 
 #[derive(Default)]
@@ -884,18 +909,21 @@ impl EngineActor {
         Self::start_with_loader(client, capacity, LocalPackageLoader::default())
     }
 
-    /// Starts the producer lane and the local-read lane.
+    /// Starts the producer and local-read lanes, plus a bounded read-only
+    /// operation lane when the production client supplies an observer.
     ///
-    /// Both lanes have their own bounded request mailbox and deliver into one
+    /// All lanes have their own bounded request mailbox and deliver into one
     /// bounded result mailbox, so the UI polls a single event stream.
     ///
     /// # Errors
-    /// Returns [`ActorStartError`] when either worker thread cannot start.
+    /// Returns [`ActorStartError`] when an owned worker thread cannot start.
     pub fn start_with_loader(
         client: impl EngineClient,
         capacity: usize,
         loader: LocalPackageLoader,
     ) -> Result<Self, ActorStartError> {
+        let observer = client.operation_observer();
+        let published_project = client.published_project_context();
         let mailbox = CoalescingMailbox::new(capacity);
         let local = CoalescingMailbox::new(capacity);
         let events = CoalescingMailbox::new(capacity);
@@ -910,7 +938,13 @@ impl EngineActor {
         let join = thread::Builder::new()
             .name("nudox-engine-actor".to_owned())
             .spawn(move || {
-                run_actor(Box::new(client), &worker_mailbox, &worker_events, &worker_wake, &worker_active);
+                run_actor(
+                    Box::new(client),
+                    &worker_mailbox,
+                    &worker_events,
+                    &worker_wake,
+                    &worker_active,
+                );
             })
             .map_err(|error| ActorStartError::from_spawn(&error))?;
         let local_mailbox = local.clone();
@@ -918,13 +952,23 @@ impl EngineActor {
         let local_wake = wake.clone();
         let local_join = thread::Builder::new()
             .name("nudox-local-reads".to_owned())
-            .spawn(move || run_local_reads(&loader, &local_mailbox, &local_events, &local_wake, &worker_local_active));
+            .spawn(move || {
+                run_local_reads(
+                    &loader,
+                    &local_mailbox,
+                    &local_events,
+                    &local_wake,
+                    &worker_local_active,
+                )
+            });
         let mut actor = Self {
             mailbox,
             local,
             events,
             join: Some(join),
             local_join: None,
+            operation: None,
+            published_project,
             active,
             local_active,
             wake,
@@ -935,7 +979,38 @@ impl EngineActor {
             // Dropping the actor closes and joins the producer lane.
             Err(error) => return Err(ActorStartError::from_spawn(&error)),
         }
+        if let Some(observer) = observer {
+            let mailbox = CoalescingMailbox::new(capacity);
+            let active = Arc::new(Mutex::new(ActiveRequest::default()));
+            let worker_mailbox = mailbox.clone();
+            let worker_active = active.clone();
+            let worker_events = actor.events.clone();
+            let worker_wake = actor.wake.clone();
+            let join = thread::Builder::new()
+                .name("nudox-operation-observer".to_owned())
+                .spawn(move || {
+                    run_actor(
+                        observer,
+                        &worker_mailbox,
+                        &worker_events,
+                        &worker_wake,
+                        &worker_active,
+                    )
+                })
+                .map_err(|error| ActorStartError::from_spawn(&error))?;
+            actor.operation = Some(OperationLane {
+                mailbox,
+                active,
+                join: Some(join),
+            });
+        }
         Ok(actor)
+    }
+
+    pub(crate) fn admit_published_project(&self, project: &LocalProjectId) {
+        if let Some(context) = &self.published_project {
+            context.record(project);
+        }
     }
 
     /// Submits one local read without waiting for lane capacity.
@@ -959,7 +1034,14 @@ impl EngineActor {
     #[must_use]
     pub fn try_submit_coalesced(&self, request: EngineRequest) -> PushResult<EngineRequest> {
         let key = request.coalesce_key();
-        let result = self.mailbox.try_push(request, key);
+        let mailbox = if matches!(&request, EngineRequest::IndexOperationStatus { .. }) {
+            self.operation
+                .as_ref()
+                .map_or(&self.mailbox, |lane| &lane.mailbox)
+        } else {
+            &self.mailbox
+        };
+        let result = mailbox.try_push(request, key);
         if let PushResult::Coalesced(old) = &result {
             match old {
                 EngineRequest::ConnectionProbe { cancel, .. }
@@ -977,6 +1059,9 @@ impl EngineActor {
     pub(crate) fn close_request_channels_for_test(&self) {
         self.mailbox.close();
         self.local.close();
+        if let Some(lane) = &self.operation {
+            lane.mailbox.close();
+        }
     }
 
     /// Drains currently available events without waiting.
@@ -1014,16 +1099,24 @@ impl EngineActor {
 
     /// Revoke all worker admission without joining on the UI thread.
     pub(crate) fn stop(&self) {
-        for state in [&self.active, &self.local_active] {
+        for state in [&self.active, &self.local_active]
+            .into_iter()
+            .chain(self.operation.as_ref().map(|lane| &lane.active))
+        {
             let cancel = {
                 let mut active = state.lock().unwrap_or_else(PoisonError::into_inner);
                 active.closed = true;
                 active.cancel.clone()
             };
-            if let Some(cancel) = cancel { cancel.cancel(); }
+            if let Some(cancel) = cancel {
+                cancel.cancel();
+            }
         }
         self.mailbox.close();
         self.local.close();
+        if let Some(lane) = &self.operation {
+            lane.mailbox.close();
+        }
         self.events.close();
         self.wake.close();
     }
@@ -1034,6 +1127,9 @@ impl EngineActor {
         let mut finish = super::worker_finish::WorkerFinish::default();
         finish.push(self.join.take());
         finish.push(self.local_join.take());
+        if let Some(lane) = &mut self.operation {
+            finish.push(lane.join.take());
+        }
         finish
     }
 
@@ -1043,6 +1139,9 @@ impl EngineActor {
             let _ = join.join();
         }
         if let Some(join) = self.local_join.take() {
+            let _ = join.join();
+        }
+        if let Some(join) = self.operation.as_mut().and_then(|lane| lane.join.take()) {
             let _ = join.join();
         }
     }
@@ -1066,7 +1165,10 @@ fn run_actor(
         let basis = request.basis();
         let id = request.request();
         let lane = request.coalesce_key();
-        let index_lane = matches!(&request, EngineRequest::IndexProject { .. } | EngineRequest::IndexOperationStatus { .. });
+        let index_lane = matches!(
+            &request,
+            EngineRequest::IndexProject { .. } | EngineRequest::IndexOperationStatus { .. }
+        );
         if request.cancelled() {
             if !events.push_wait(
                 EngineEvent {
@@ -1102,22 +1204,57 @@ fn run_actor(
         }
         // A read (not an index) counts as one the owner should answer before
         // the next package compile (`traffic`).
-        let _reading = (!index_lane).then(super::traffic::Reading::begin);
+        let _reading = (!matches!(&request, EngineRequest::IndexProject { .. }))
+            .then(super::traffic::Reading::begin);
         {
             let mut active = active.lock().unwrap_or_else(PoisonError::into_inner);
-            if active.closed { request.cancellation().cancel(); }
+            if active.closed {
+                request.cancellation().cancel();
+            }
             active.cancel = Some(request.cancellation().clone());
         }
         let _lifetime = match &request {
-            EngineRequest::IndexProject { owner: Some(owner), .. } => owner.bind_cancellation(request.cancellation()),
+            EngineRequest::IndexProject {
+                owner: Some(owner), ..
+            } => owner.bind_cancellation(request.cancellation()),
+            EngineRequest::IndexOperationStatus {
+                owner: Some(owner), ..
+            } => owner.bind_cancellation(request.cancellation()),
             _ => None,
         };
         let admission = match &request {
-            EngineRequest::IndexProject { owner: Some(owner), project, .. } => owner.ready_for_send(basis, request.cancellation()).map(|_| ())
-                .map_err(|message| EngineFault::IndexNotSent { project: project.clone(), error: ErrorValue::new(crate::core::FaultCode::Transport, message) }),
-            EngineRequest::IndexProject { owner: None, project, .. } => Err(EngineFault::IndexNotSent {
-                project: project.clone(), error: ErrorValue::new(crate::core::FaultCode::Protocol,
-                    "This index request has no certified owner lifetime. Nothing was sent."),
+            EngineRequest::IndexOperationStatus { owner, project, .. }
+                if !owner
+                    .as_ref()
+                    .map_or(cfg!(any(test, feature = "visual-harness")), |owner| {
+                        owner.is_current()
+                    }) =>
+            {
+                Err(EngineFault::IndexUnconfirmed {
+                    project: project.clone(),
+                })
+            }
+            EngineRequest::IndexProject {
+                owner: Some(owner),
+                project,
+                ..
+            } => owner
+                .ready_for_send(basis, request.cancellation())
+                .map(|_| ())
+                .map_err(|message| EngineFault::IndexNotSent {
+                    project: project.clone(),
+                    error: ErrorValue::new(crate::core::FaultCode::Transport, message),
+                }),
+            EngineRequest::IndexProject {
+                owner: None,
+                project,
+                ..
+            } => Err(EngineFault::IndexNotSent {
+                project: project.clone(),
+                error: ErrorValue::new(
+                    crate::core::FaultCode::Protocol,
+                    "This index request has no certified owner lifetime. Nothing was sent.",
+                ),
             }),
             _ => Ok(()),
         };
@@ -1125,15 +1262,21 @@ fn run_actor(
             Err(error)
         } else if request.cancelled() {
             Err(cancelled_before_execute(&request))
-        } else { match client.execute(&request) {
-            // A cancellation request cannot revoke a synchronous producer
-            // commit after it has returned. Admit that committed result; a
-            // producer error after cancellation is terminal cancellation.
-            Ok(dto) => Ok(dto),
-            Err(error @ (EngineFault::IndexUnconfirmed { .. } | EngineFault::MutationUnconfirmed | EngineFault::IndexNotSent { .. })) => Err(error),
-            Err(_error) if request.cancelled() => Err(cancelled_fault(&request)),
-            Err(error) => Err(error),
-        }};
+        } else {
+            match client.execute(&request) {
+                // A cancellation request cannot revoke a synchronous producer
+                // commit after it has returned. Admit that committed result; a
+                // producer error after cancellation is terminal cancellation.
+                Ok(dto) => Ok(dto),
+                Err(
+                    error @ (EngineFault::IndexUnconfirmed { .. }
+                    | EngineFault::MutationUnconfirmed
+                    | EngineFault::IndexNotSent { .. }),
+                ) => Err(error),
+                Err(_error) if request.cancelled() => Err(cancelled_fault(&request)),
+                Err(error) => Err(error),
+            }
+        };
         active.lock().unwrap_or_else(PoisonError::into_inner).cancel = None;
         let event = EngineEvent {
             basis,
@@ -1218,6 +1361,8 @@ fn cancelled_fault(request: &EngineRequest) -> EngineFault {
 
 #[cfg(test)]
 mod index_mutation_tests;
+#[cfg(test)]
+mod operation_lane_tests;
 
 #[cfg(test)]
 mod tests {
