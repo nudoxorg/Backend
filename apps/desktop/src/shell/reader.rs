@@ -1155,6 +1155,15 @@ impl Reader {
         } else {
             SettingsNativeOrigin::Unmatched
         };
+        // Ask/Add can cover the Settings page itself. Returning to that same
+        // page must not replace its original Reader receipt with the retiring
+        // cover's native editor. A fresh opening starts with Unmatched, so its
+        // actual origin is still captured regardless of subscriber order.
+        if matches!(receipt, SettingsNativeOrigin::Unmatched)
+            && self.settings_departure.as_ref().is_some_and(|departure|
+                !matches!(departure.origin, SettingsNativeOrigin::Unmatched)) {
+            return false;
+        }
         let reader_origin = !matches!(receipt, SettingsNativeOrigin::Unmatched);
         if let Some(mounted) = &self.mounted_find_query { mounted.state.suspend(cx); }
         if let Some(departure) = &mut self.settings_departure {
@@ -3024,7 +3033,7 @@ impl Render for Reader {
                 cx.notify();
             }
         }
-        if let Some(mut pending) = self.pending_settings_focus.take()
+        if let Some(pending) = self.pending_settings_focus.take()
             && pending.focus.place == current.key
         {
             let lease_current = pending.lease.map(|lease| {

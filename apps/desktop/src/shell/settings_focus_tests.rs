@@ -138,6 +138,20 @@ fn settings_find_return_respects_later_native_focus_blur_and_inactive_window(cx:
 }
 
 #[gpui::test]
+fn settings_find_native_origin_survives_an_ask_cover_of_settings(cx: &mut TestAppContext) {
+    use crate::navigation::{BrowseRoute, OrbitRoute, Route};
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))));
+    let query = focus_find(&mut rig);
+    rig.cx.simulate_input("covered draft");
+    rig.keys("secondary-, secondary-k escape escape");
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay().is_none()));
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(query), "Ask returns to Settings, whose original Reader native origin still owns the final return");
+    rig.keys("x enter");
+    assert!(matches!(rig.route(), Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query))) if query.text.as_ref() == "covered draftx"));
+}
+
+#[gpui::test]
 fn closing_a_focused_settings_radio_keeps_global_shortcuts_reachable(cx: &mut TestAppContext) {
     let route = page_route("RelationLabel");
     let mut rig = rig(cx, Some(route.clone()), 900.0, 700.0);

@@ -870,10 +870,8 @@ impl Shell {
         // still the old view's return origin, even if its handle has left the
         // rendered tree by the time the new view finishes painting.
         let origin = window.focused(cx);
-        if entering_settings {
-            if self.reader.update(cx, |reader, cx| reader.capture_settings_native_origin(origin.as_ref(), cx)) {
-                self.set_zone(Zone::Reader, cx);
-            }
+        if entering_settings && self.reader.update(cx, |reader, cx| reader.capture_settings_native_origin(origin.as_ref(), cx)) {
+            self.set_zone(Zone::Reader, cx);
         }
         let wants_ask = snapshot.overlay() == Some(Overlay::CommandPalette);
         let opening = wants_ask && !self.ask_open;
