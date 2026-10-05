@@ -1646,7 +1646,7 @@ pub enum PackageSemanticError {
     #[error("package semantic publication failed")]
     Publish(#[source] crate::publication::PublishSemanticError),
     /// A canonical compiler output failed preparation before any local publication.
-    #[error("package semantic output could not be prepared for transport")]
+    #[error("package semantic output could not be prepared for transport: {0}")]
     StagedOutput(#[source] crate::publication::PublishSemanticError),
     /// The publication owner could not reopen its selected closure.
     #[error("package semantic publication could not be reopened")]
@@ -3720,11 +3720,27 @@ mod tests {
     use backend_frontend_rust::legacy::RustAuthorityError;
 
     use super::{
-        CompilerTerminal, EmbeddingProvisioningFailure, PackageSource, PackageSourceSet,
-        PackageSourceSetError, StagedEmbeddingStatus, ToolchainRouteError,
+        CompilerTerminal, EmbeddingProvisioningFailure, PackageSemanticError, PackageSource,
+        PackageSourceSet, PackageSourceSetError, StagedEmbeddingStatus, ToolchainRouteError,
         package_authority_terminal, request_source, select_toolchain,
     };
     use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
+
+    #[test]
+    fn staged_output_diagnostic_exposes_typed_transport_cause_and_keeps_source_chain() {
+        let cause = crate::publication::PublishSemanticError::ImageBytesLength {
+            expected: 512,
+            observed: 256,
+        };
+        let error = PackageSemanticError::StagedOutput(cause);
+
+        assert_eq!(
+            error.to_string(),
+            "package semantic output could not be prepared for transport: semantic image bytes contain 256 bytes, expected exactly 512"
+        );
+        let source = std::error::Error::source(&error).expect("typed publication source");
+        assert!(source.is::<crate::publication::PublishSemanticError>());
+    }
 
     #[derive(Debug, Error)]
     enum RouteTestError {
