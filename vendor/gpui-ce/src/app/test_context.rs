@@ -174,6 +174,13 @@ impl TestAppContext {
         Self::build(self.dispatcher.clone(), self.fn_name)
     }
 
+    /// Deliver the platform graceful-termination decision without invoking shutdown.
+    pub fn simulate_native_quit(&self) -> bool { self.test_platform.simulate_native_quit() }
+    /// Observe approval/cancellation of a deferred platform termination.
+    pub fn native_quit_reply(&self) -> Option<bool> { self.test_platform.native_quit_reply() }
+    /// Number of approved platform quit requests, without terminating the test.
+    pub fn platform_quit_requests(&self) -> usize { self.test_platform.quit_requests() }
+
     /// Called by the test helper to end the test.
     /// public so the macro can call it.
     pub fn quit(&self) {
