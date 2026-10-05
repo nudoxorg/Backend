@@ -239,6 +239,7 @@ fn serve_with_timing(
                 reconnects = 0;
             }
             Ok(reply) => {
+                let acquired = matches!(&reply, ObservedReply::Acquired(_));
                 if let ObservedReply::Acquired(state) = reply {
                     lease = Some(state);
                 }
@@ -263,6 +264,16 @@ fn serve_with_timing(
                                 ),
                             );
                             break;
+                        }
+                        if acquired || suspended || state.cursor() != cursor {
+                            crate::runtime::trace::mark(
+                                "observation.certified",
+                                format!(
+                                    "sequence {} root {:?}",
+                                    state.cursor().sequence(),
+                                    state.cursor().root()
+                                ),
+                            );
                         }
                         suspended = false;
                         reacquiring = false;
