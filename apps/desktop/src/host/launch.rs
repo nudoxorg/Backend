@@ -443,6 +443,9 @@ fn window_options(cx: &mut App, saved: Option<WindowSize>) -> WindowOptions {
 }
 
 #[cfg(test)]
+mod index_startup_tests;
+
+#[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
