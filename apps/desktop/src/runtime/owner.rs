@@ -685,7 +685,8 @@ impl OwnerGate {
                 return false;
             }
             inner.observation_suspended = false;
-            inner.fresh_publication = None;
+            // Preserve the proof just checked above for the exact UI wake.
+            // Suspension/replacement clears it before any later admission.
             inner.epoch = inner.epoch.next();
             inner.waker.take()
         };
@@ -1332,6 +1333,52 @@ pub(crate) mod publication_tests {
             PublicationAdmission::Withdrawn
         );
         assert!(!gate.certified_at(responding_wake, key, replacement));
+    }
+
+    #[test]
+    fn completed_reacquisition_supplies_current_proof_until_the_next_withdrawal() {
+        let root = view();
+        let (gate, old, cursor) = attached(&root);
+        let key = VersionedRoot::from_revision(1, cursor, 0);
+        assert_eq!(
+            gate.publish_view(old, Arc::clone(&root), cursor),
+            PublicationAdmission::Admitted
+        );
+        let old_wake = gate.lock().epoch;
+        let (new, _) = gate.replace_observation(old).expect("new observation");
+        assert!(!gate.certified_at(old_wake, key, old));
+        assert!(
+            !gate.complete_observation(new),
+            "retained data alone is not fresh proof"
+        );
+        assert_eq!(
+            gate.publish_view(new, Arc::clone(&root), cursor),
+            PublicationAdmission::Admitted
+        );
+        let suspended_wake = gate.lock().epoch;
+        assert!(
+            !gate.certified_at(suspended_wake, key, new),
+            "suspended proof cannot serve"
+        );
+        assert!(gate.complete_observation(new));
+        let admitted_wake = gate.lock().epoch;
+        assert!(gate.certified_at(admitted_wake, key, new));
+        assert!(
+            !gate.certified_at(old_wake, key, new),
+            "a stale wake cannot clear failure"
+        );
+        assert!(
+            !gate.certified_at(admitted_wake, key, old),
+            "the old attachment cannot clear failure"
+        );
+        let suspended = gate.suspend_observation(new).expect("withdraw freshness");
+        assert!(!gate.certified_at(admitted_wake, key, new));
+        assert!(
+            !gate.complete_observation(suspended),
+            "withdrawal requires another complete proof"
+        );
+        gate.close();
+        assert!(!gate.certified_at(admitted_wake, key, new));
     }
 
     #[test]
