@@ -9,10 +9,11 @@ use crate::browse::read_tree;
 use backend_advisory::{AdvisoryAuthority, AdvisorySource, AuthorityFeed, normalize_package};
 use backend_library::browse::{
     CargoTreeError, LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership,
-    PackageOrigin, ProjectTree, RoleId, TreeInput, TreeSource, build_tree, lockfile_input,
-    metadata_input, metadata_input_with_stable_source_witness,
+    PackageOrigin, ProjectTree, ProjectTreeRequestBindingV1, RoleId, TreeInput, TreeSource,
+    build_tree, lockfile_input, metadata_input, metadata_input_with_stable_source_witness,
 };
 use backend_library::native_test_paths::localize_cargo_metadata;
+use std::path::Path;
 
 /// Reads the recorded document the way the owner does: through the one entry
 /// point that emits exact Cargo source authority, with the roots spelled in the
@@ -29,6 +30,16 @@ fn owner_metadata_input(
         lockfile,
         [0x42; 32],
     )
+}
+
+/// These presentation fixtures model a Cargo request made at the workspace
+/// root. The request binding makes that invocation explicit without adding
+/// per-package source evidence to the historical capture.
+fn bind_workspace_root_request(tree: &mut ProjectTree) {
+    tree.request_binding = Some(
+        ProjectTreeRequestBindingV1::for_paths(Path::new(&tree.root), &tree.root)
+            .expect("fixture workspace root is an absolute UTF-8 path"),
+    );
 }
 
 const METADATA: &[u8] = include_bytes!("../library/browse/fixtures/tree-2026-09-27/metadata.json");
@@ -51,7 +62,9 @@ fn tree() -> ProjectTree {
     let observe = |name: &str, version: &str| {
         authority.observe(&normalize_package("cargo", name).expect("identity"), version, false, false, 1, false)
     };
-    build_tree(&input, &observe)
+    let mut tree = build_tree(&input, &observe);
+    bind_workspace_root_request(&mut tree);
+    tree
 }
 
 #[test]
@@ -191,6 +204,7 @@ fn dependency_rows_retain_aligned_source_references_even_at_the_same_version() {
             false,
         )
     });
+    bind_workspace_root_request(&mut source);
     assert!(source.has_admissible_shape());
     let reading = read_tree(&source);
     let common = reading
