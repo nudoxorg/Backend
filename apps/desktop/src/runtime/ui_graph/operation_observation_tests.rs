@@ -5,7 +5,6 @@ use super::*;
 use crate::core::{LocalProjectId, VersionedRoot};
 use crate::model::{ProjectPhase, ServiceMode};
 use crate::runtime::actor::{EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest};
-use crate::runtime::client::PublishedProjectContext;
 use crate::runtime::owner::{OwnerGate, OwnerState};
 use gpui::TestAppContext;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -48,7 +47,7 @@ struct HeldRoot {
     hold: Arc<Hold>,
     entered: mpsc::Sender<()>,
     observations: Arc<AtomicUsize>,
-    context: PublishedProjectContext,
+    root_projects: Arc<Mutex<Vec<Option<LocalProjectId>>>>,
     terminal: Arc<AtomicBool>,
 }
 struct Status {
@@ -61,7 +60,11 @@ impl EngineClient for HeldRoot {
             !matches!(request, EngineRequest::IndexOperationStatus { .. }),
             "production-shaped observer owns all status reads"
         );
-        if matches!(request, EngineRequest::Root { .. }) {
+        if let EngineRequest::Root { project, .. } = request {
+            self.root_projects
+                .lock()
+                .expect("root request contexts")
+                .push(project.clone());
             let _ = self.entered.send(());
             self.hold.wait();
         }
@@ -72,9 +75,6 @@ impl EngineClient for HeldRoot {
             observations: self.observations.clone(),
             terminal: self.terminal.clone(),
         }))
-    }
-    fn published_project_context(&self) -> Option<PublishedProjectContext> {
-        Some(self.context.clone())
     }
 }
 impl EngineClient for Status {
@@ -141,7 +141,7 @@ fn client() -> (HeldRoot, mpsc::Receiver<()>, Arc<AtomicUsize>, Release) {
             hold: hold.clone(),
             entered,
             observations: observations.clone(),
-            context: Default::default(),
+            root_projects: Default::default(),
             terminal: Arc::new(AtomicBool::new(true)),
         },
         seen,
@@ -157,6 +157,7 @@ fn terminal_receipt_updates_live_root_and_store_before_held_hydration_returns(
     cx.executor().allow_parking();
     let project = LocalProjectId::new("/fixture/operation-independent").expect("project");
     let (client, entered, observations, _release) = client();
+    let contexts = client.root_projects.clone();
     let actor = EngineActor::start(client, 4).expect("all worker lanes");
     let graph = cx.update(|cx| {
         UiEntityGraph::install(
@@ -195,6 +196,21 @@ fn terminal_receipt_updates_live_root_and_store_before_held_hydration_returns(
             .expect("exact claim")
             .has_terminal_observation()
     }));
+    assert_eq!(contexts.lock().expect("captured root contexts")[0], None);
+    _release.0.release();
+    crate::runtime::wait::until("next root captures the admitted project", || {
+        cx.run_until_parked();
+        contexts
+            .lock()
+            .expect("contexts")
+            .iter()
+            .any(|context| context.as_ref() == Some(&project))
+    });
+    assert_eq!(
+        contexts.lock().expect("contexts")[0],
+        None,
+        "the entered root retains its original context after another receipt lands"
+    );
 }
 
 #[gpui::test]
@@ -443,9 +459,8 @@ fn uncertain_saved_key_is_checked_once_after_initial_store_owner_admission(
 fn a_removed_projects_late_terminal_receipt_cannot_retarget_root_context(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
     let project = LocalProjectId::new("/fixture/operation-removed").expect("project");
-    let fallback = LocalProjectId::new("/fixture/root-original").expect("root context");
     let (client, entered, observations, _release) = client();
-    let context = client.context.clone();
+    let contexts = client.root_projects.clone();
     let graph = cx.update(|cx| {
         UiEntityGraph::install(
             cx,
@@ -479,10 +494,19 @@ fn a_removed_projects_late_terminal_receipt_cannot_retarget_root_context(cx: &mu
     assert!(graph.root.read_with(cx, |root, _| {
         root.snapshot().workspace().projects.is_empty()
     }));
-    assert_eq!(
-        context.project(&fallback),
-        fallback,
-        "only a receipt admitted for a current row/request can retarget hydration"
+    graph.root.update(cx, |root, cx| root.refresh_root(cx));
+    _release.0.release();
+    crate::runtime::wait::until("new root request executes after removal", || {
+        cx.run_until_parked();
+        contexts.lock().expect("contexts").len() >= 2
+    });
+    assert!(
+        contexts
+            .lock()
+            .expect("contexts")
+            .iter()
+            .all(Option::is_none),
+        "a rejected receipt cannot retarget a subsequent root request"
     );
 }
 

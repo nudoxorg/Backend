@@ -272,7 +272,6 @@ pub(crate) struct BootClient {
     binding: Binding,
     gate: OwnerGate,
     local: Option<Box<LocalEngineClient>>,
-    published_project: crate::runtime::client::PublishedProjectContext,
 }
 
 impl BootClient {
@@ -281,22 +280,17 @@ impl BootClient {
             binding,
             gate,
             local: None,
-            published_project: Default::default(),
         }
     }
 }
 
 impl EngineClient for BootClient {
-    fn published_project_context(&self) -> Option<crate::runtime::client::PublishedProjectContext> {
-        Some(self.published_project.clone())
-    }
 
     fn operation_observer(&self) -> Option<Box<dyn EngineClient>> {
         Some(Box::new(Self {
             binding: self.binding.clone(),
             gate: self.gate.clone(),
             local: None,
-            published_project: self.published_project.clone(),
         }))
     }
 
@@ -321,14 +315,11 @@ impl EngineClient for BootClient {
             let bound = self.binding.get().ok_or_else(|| {
                 not_bound("the owner answered without a local workspace binding".into())
             })?;
-            self.local = Some(Box::new(
-                LocalEngineClient::gated(
-                    bound.paths.endpoint(),
-                    bound.project.clone(),
-                    self.gate.clone(),
-                )
-                .with_published_project_context(self.published_project.clone()),
-            ));
+            self.local = Some(Box::new(LocalEngineClient::gated(
+                bound.paths.endpoint(),
+                bound.project.clone(),
+                self.gate.clone(),
+            )));
         }
         self.local
             .as_mut()
@@ -523,18 +514,10 @@ mod operation_observer_tests {
     use super::*;
 
     #[test]
-    fn production_boot_client_forks_an_unbound_read_only_session_with_shared_context() {
+    fn production_boot_client_forks_an_unbound_read_only_session() {
         let client = BootClient::new(Binding::default(), OwnerGate::starting());
         assert!(client.local.is_none());
-        let observer = client.operation_observer().expect("production observer");
-        let root_context = client.published_project_context().expect("root context");
-        let observer_context = observer
-            .published_project_context()
-            .expect("observer context");
-        let fallback = LocalProjectId::new("/fixture/fallback").expect("fallback");
-        let admitted = LocalProjectId::new("/fixture/admitted").expect("admitted");
-        root_context.record(&admitted);
-        assert_eq!(observer_context.project(&fallback), admitted);
+        assert!(client.operation_observer().is_some(), "production observer");
         assert!(
             client.local.is_none(),
             "constructing the observer opens no socket"

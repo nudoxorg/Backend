@@ -111,7 +111,6 @@ fn actor(
 fn status(project: &str, id: u64) -> EngineRequest {
     let project = LocalProjectId::new(project).expect("project");
     EngineRequest::IndexOperationStatus {
-        owner: None,
         request: crate::navigation::RequestId::new(id),
         operation: crate::model::index_operation::tests::claim(
             &project,
@@ -163,6 +162,7 @@ fn status_coalescing_preserves_bounded_capacity_and_other_project_fifo_fairness(
     );
     assert!(matches!(
         actor.try_submit(EngineRequest::Root {
+            project: None,
             request: crate::navigation::RequestId::new(6),
             basis: VersionedRoot::synthetic(backend_library::view_state_root(&[]), 1),
             cancel: CancellationToken::new()

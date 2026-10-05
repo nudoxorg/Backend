@@ -477,6 +477,8 @@ pub enum EngineRequest {
     },
     /// Read a versioned root.
     Root {
+        /// Project context captured when the UI submits this root read.
+        project: Option<LocalProjectId>,
         /// Request identity.
         request: RequestId,
         /// Producer root basis.
@@ -526,8 +528,6 @@ pub enum EngineRequest {
     },
     /// Read-only reconciliation of an exact saved caller operation.
     IndexOperationStatus {
-        /// Read attachment captured when this exact status was admitted.
-        owner: Option<super::store::OwnerAttachment>,
         operation: crate::model::IndexOperationClaim,
         project: LocalProjectId,
         request: RequestId,
@@ -809,23 +809,17 @@ pub trait EngineClient: Send + 'static {
         None
     }
 
-    /// Shared root-read context is updated only after the UI admits an exact
-    /// published operation receipt; a worker cannot retarget it by itself.
-    fn published_project_context(&self) -> Option<super::client::PublishedProjectContext> {
-        None
-    }
 
 }
 
 /// Handle for a dedicated background engine actor.
 pub struct EngineActor {
-    mailbox: CoalescingMailbox<EngineRequest>,
+    mailbox: CoalescingMailbox<WorkerRequest>,
     local: CoalescingMailbox<LocalRead>,
     events: CoalescingMailbox<EngineEvent>,
     join: Option<JoinHandle<()>>,
     local_join: Option<JoinHandle<()>>,
     operation: Option<OperationLane>,
-    published_project: Option<super::client::PublishedProjectContext>,
     /// The synchronous producer request currently owned by the worker.
     /// Shutdown revokes it before joining, including when it awaits startup.
     active: Arc<Mutex<ActiveRequest>>,
@@ -837,9 +831,15 @@ pub struct EngineActor {
     wake_receiver: Option<WakeReceiver>,
 }
 
+/// Private transport admission metadata never escapes into the public DTO.
+struct WorkerRequest {
+    request: EngineRequest,
+    observation_owner: Option<super::store::OwnerAttachment>,
+}
+
 /// Bounded read-only status ownership, independent of root and Start requests.
 struct OperationLane {
-    mailbox: CoalescingMailbox<EngineRequest>,
+    mailbox: CoalescingMailbox<WorkerRequest>,
     active: Arc<Mutex<ActiveRequest>>,
     join: Option<JoinHandle<()>>,
 }
@@ -923,7 +923,6 @@ impl EngineActor {
         loader: LocalPackageLoader,
     ) -> Result<Self, ActorStartError> {
         let observer = client.operation_observer();
-        let published_project = client.published_project_context();
         let mailbox = CoalescingMailbox::new(capacity);
         let local = CoalescingMailbox::new(capacity);
         let events = CoalescingMailbox::new(capacity);
@@ -968,7 +967,6 @@ impl EngineActor {
             join: Some(join),
             local_join: None,
             operation: None,
-            published_project,
             active,
             local_active,
             wake,
@@ -1007,11 +1005,6 @@ impl EngineActor {
         Ok(actor)
     }
 
-    pub(crate) fn admit_published_project(&self, project: &LocalProjectId) {
-        if let Some(context) = &self.published_project {
-            context.record(project);
-        }
-    }
 
     /// Submits one local read without waiting for lane capacity.
     #[must_use]
@@ -1033,6 +1026,22 @@ impl EngineActor {
     /// Submits using the request's coalescing key.
     #[must_use]
     pub fn try_submit_coalesced(&self, request: EngineRequest) -> PushResult<EngineRequest> {
+        self.submit_owned(request, None)
+    }
+
+    pub(crate) fn try_submit_observation(
+        &self,
+        request: EngineRequest,
+        owner: super::store::OwnerAttachment,
+    ) -> PushResult<EngineRequest> {
+        self.submit_owned(request, Some(owner))
+    }
+
+    fn submit_owned(
+        &self,
+        request: EngineRequest,
+        observation_owner: Option<super::store::OwnerAttachment>,
+    ) -> PushResult<EngineRequest> {
         let key = request.coalesce_key();
         let mailbox = if matches!(&request, EngineRequest::IndexOperationStatus { .. }) {
             self.operation
@@ -1041,18 +1050,21 @@ impl EngineActor {
         } else {
             &self.mailbox
         };
-        let result = mailbox.try_push(request, key);
-        if let PushResult::Coalesced(old) = &result {
-            match old {
-                EngineRequest::ConnectionProbe { cancel, .. }
-                | EngineRequest::Root { cancel, .. }
-                | EngineRequest::Object { cancel, .. }
-                | EngineRequest::Surface { cancel, .. }
-                | EngineRequest::IndexProject { cancel, .. }
-                | EngineRequest::IndexOperationStatus { cancel, .. } => cancel.cancel(),
+        match mailbox.try_push(
+            WorkerRequest {
+                request,
+                observation_owner,
+            },
+            key,
+        ) {
+            PushResult::Enqueued => PushResult::Enqueued,
+            PushResult::Coalesced(old) => {
+                old.request.cancellation().cancel();
+                PushResult::Coalesced(old.request)
             }
+            PushResult::Full(old) => PushResult::Full(old.request),
+            PushResult::Closed(old) => PushResult::Closed(old.request),
         }
-        result
     }
 
     #[cfg(test)]
@@ -1155,13 +1167,17 @@ impl Drop for EngineActor {
 
 fn run_actor(
     mut client: Box<dyn EngineClient>,
-    mailbox: &CoalescingMailbox<EngineRequest>,
+    mailbox: &CoalescingMailbox<WorkerRequest>,
     events: &CoalescingMailbox<EngineEvent>,
     wake: &WakeSender,
     active: &Mutex<ActiveRequest>,
 ) {
     let mut newest: Option<VersionedRoot> = None;
-    while let Some(request) = mailbox.recv() {
+    while let Some(WorkerRequest {
+        request,
+        observation_owner,
+    }) = mailbox.recv()
+    {
         let basis = request.basis();
         let id = request.request();
         let lane = request.coalesce_key();
@@ -1217,14 +1233,14 @@ fn run_actor(
             EngineRequest::IndexProject {
                 owner: Some(owner), ..
             } => owner.bind_cancellation(request.cancellation()),
-            EngineRequest::IndexOperationStatus {
-                owner: Some(owner), ..
-            } => owner.bind_cancellation(request.cancellation()),
+            EngineRequest::IndexOperationStatus { .. } => observation_owner
+                .as_ref()
+                .and_then(|owner| owner.bind_cancellation(request.cancellation())),
             _ => None,
         };
         let admission = match &request {
-            EngineRequest::IndexOperationStatus { owner, project, .. }
-                if !owner
+            EngineRequest::IndexOperationStatus { project, .. }
+                if !observation_owner
                     .as_ref()
                     .map_or(cfg!(any(test, feature = "visual-harness")), |owner| {
                         owner.is_current()
@@ -1394,6 +1410,7 @@ mod tests {
         let client = LocalEngineClient::gated("/tmp/nudox-no-owner-for-cancellation.sock", project, gate.clone());
         let actor = EngineActor::start(client, 4).expect("actor");
         let request = EngineRequest::Root {
+            project: None,
             request: RequestId::new(1),
             basis: VersionedRoot::unserved(),
             cancel: CancellationToken::new(),
@@ -1442,6 +1459,7 @@ mod tests {
             mutations: Arc::clone(&mutations),
         }, 4).expect("actor");
         assert!(matches!(actor.try_submit(EngineRequest::Root {
+            project: None,
             request: RequestId::new(1),
             basis: VersionedRoot::unserved(),
             cancel: CancellationToken::new(),

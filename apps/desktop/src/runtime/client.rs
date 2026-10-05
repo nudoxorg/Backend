@@ -13,34 +13,15 @@ use crate::model::{ObjectId, PackageSummary};
 use backend_client::{ClientError, LocalSubscriptionTransport, Session, TransportInterrupt};
 use backend_library::{RegistryDownloadCount, RowId, SurfaceCommand, SurfaceReply};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
 const DESKTOP_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
-
-/// Exact published receipts choose the project context shared by the root and
-/// status sessions. This small context carries no root or producer authority.
-#[derive(Clone, Default)]
-pub struct PublishedProjectContext(Arc<Mutex<Option<LocalProjectId>>>);
-impl PublishedProjectContext {
-    pub(crate) fn project(&self, fallback: &LocalProjectId) -> LocalProjectId {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .unwrap_or(fallback)
-            .clone()
-    }
-    pub(crate) fn record(&self, project: &LocalProjectId) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(project.clone());
-    }
-}
 
 /// A worker-owned local service session with typed read replay.
 pub struct LocalEngineClient {
     endpoint: PathBuf,
     project: LocalProjectId,
-    published_project: PublishedProjectContext,
     session: Option<Session>,
     subscription: Option<LocalSubscriptionTransport>,
     /// Attached generation admitted for this actor request and its sockets.
@@ -63,7 +44,6 @@ impl LocalEngineClient {
         Self {
             endpoint: endpoint.as_ref().to_path_buf(),
             project,
-            published_project: PublishedProjectContext::default(),
             session: None,
             subscription: None,
             attached_epoch: None,
@@ -86,13 +66,6 @@ impl LocalEngineClient {
         }
     }
 
-    pub(crate) fn with_published_project_context(
-        mut self,
-        context: PublishedProjectContext,
-    ) -> Self {
-        self.published_project = context;
-        self
-    }
 
     fn session(&mut self) -> Result<&mut Session, EngineFault> {
         if self.session.is_none() {
@@ -205,6 +178,7 @@ impl LocalEngineClient {
         let EngineRequest::Root {
             request: request_id,
             basis,
+            project: captured_project,
             ..
         } = request
         else {
@@ -229,7 +203,7 @@ impl LocalEngineClient {
                 RowId::Symbol(_) | RowId::Object(_) => None,
             })
             .collect::<Vec<_>>();
-        let context = self.published_project.project(&self.project);
+        let context = captured_project.as_ref().unwrap_or(&self.project);
         let project = Some(ProjectDto {
             id: context.clone(),
             label: Arc::from(context.as_str()),
@@ -495,13 +469,9 @@ fn cancel_wake(
 }
 
 impl EngineClient for LocalEngineClient {
-    fn published_project_context(&self) -> Option<PublishedProjectContext> {
-        Some(self.published_project.clone())
-    }
 
     fn operation_observer(&self) -> Option<Box<dyn EngineClient>> {
-        let mut observer = Self::new(&self.endpoint, self.project.clone())
-            .with_published_project_context(self.published_project.clone());
+        let mut observer = Self::new(&self.endpoint, self.project.clone());
         observer.gate = self.gate.clone();
         Some(Box::new(observer))
     }
@@ -706,25 +676,17 @@ mod tests {
     use crate::navigation::RequestId;
 
     #[test]
-    fn production_observer_has_a_distinct_session_and_shared_admitted_project_context() {
+    fn production_observer_has_a_distinct_unopened_session() {
         let original = LocalProjectId::new("/fixture/original-root-context").expect("project");
-        let indexed = LocalProjectId::new("/fixture/new-root-context").expect("project");
-        let client = LocalEngineClient::new("/unused-no-socket-connect", original.clone());
-        let observer = client
-            .operation_observer()
-            .expect("production receipt session");
-        let root_context = client.published_project_context().expect("root context");
-        let status_context = observer
-            .published_project_context()
-            .expect("observer context");
-        assert!(Arc::ptr_eq(&root_context.0, &status_context.0));
+        let client = LocalEngineClient::new("/unused-no-socket-connect", original);
+        assert!(
+            client.operation_observer().is_some(),
+            "production receipt session"
+        );
         assert!(
             client.session.is_none(),
-            "factory creates no foreground socket"
+            "factory opens no foreground socket"
         );
-        root_context.record(&indexed); // the runtime admission boundary owns this update
-        assert_eq!(client.published_project.project(&original), indexed);
-        assert_eq!(status_context.project(&original), indexed);
     }
 
     #[test]

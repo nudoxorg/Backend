@@ -248,6 +248,7 @@ mod tests {
         drop(session);
         assert!(matches!(
             actor.try_submit(EngineRequest::Root {
+                project: None,
                 request: RequestId::new(1),
                 basis: VersionedRoot::unserved(),
                 cancel: CancellationToken::new()

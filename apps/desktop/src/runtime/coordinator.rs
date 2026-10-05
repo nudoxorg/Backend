@@ -73,6 +73,7 @@ pub struct DesktopRuntime {
     actor: EngineActor,
     inflight: BTreeMap<RequestId, InflightRequest>,
     next_request: u64,
+    admitted_project: Option<LocalProjectId>,
 }
 
 impl std::fmt::Debug for DesktopRuntime {
@@ -98,6 +99,7 @@ impl DesktopRuntime {
             actor,
             inflight: BTreeMap::new(),
             next_request: 1,
+            admitted_project: None,
         }
     }
 
@@ -251,6 +253,7 @@ impl DesktopRuntime {
                 (
                     request,
                     EngineRequest::Root {
+                        project: self.admitted_project.clone(),
                         request,
                         basis,
                         cancel: cancel.clone(),
@@ -290,7 +293,6 @@ impl DesktopRuntime {
                 (
                     request,
                     EngineRequest::IndexOperationStatus {
-                        owner: observation_owner.clone(),
                         request,
                         project,
                         operation,
@@ -353,12 +355,16 @@ impl DesktopRuntime {
                     | EngineRequest::IndexOperationStatus { project, .. } => Some(project.clone()),
                     _ => None,
                 },
-                observation_owner,
+                observation_owner: observation_owner.clone(),
                 rooted: true,
                 connection_probe: matches!(&engine_request, EngineRequest::ConnectionProbe { .. }),
             },
         );
-        match self.actor.try_submit_coalesced(engine_request) {
+        let submitted = match observation_owner {
+            Some(owner) => self.actor.try_submit_observation(engine_request, owner),
+            None => self.actor.try_submit_coalesced(engine_request),
+        };
+        match submitted {
             super::mailbox::PushResult::Enqueued => {}
             super::mailbox::PushResult::Coalesced(old) => {
                 if let Some(event) = self.retire_request(old.request(), RequestOutcome::Superseded)
@@ -594,7 +600,7 @@ impl DesktopRuntime {
                                     .as_ref()
                                     .is_some_and(|claim| claim.key == *key)
                         }) {
-                            self.actor.admit_published_project(project);
+                            self.admitted_project = Some(project.clone());
                         }
                     }
                     // An index that finished, failed or was stopped changes what
