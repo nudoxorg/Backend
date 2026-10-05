@@ -75,7 +75,7 @@ impl Element for Inert {
         &mut self,
         id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
+        _: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
@@ -83,10 +83,12 @@ impl Element for Inert {
         if let Some(id) = id {
             let wrapped_child_id = self.child.element_id();
             window.with_inert_subtree_boundary(id, wrapped_child_id, |window| {
-                self.child.prepaint_at(bounds.origin, window, cx)
+                // This boundary shares the child's LayoutId; rebasing to
+                // its absolute bounds would apply its layout origin twice.
+                self.child.prepaint(window, cx)
             });
         } else {
-            window.with_inert_subtree(|window| self.child.prepaint_at(bounds.origin, window, cx));
+            window.with_inert_subtree(|window| self.child.prepaint(window, cx));
         }
         // The wrapper node itself was created before the child scope began. Mark it after the
         // child has had its chance to append synthetic descendants or an active-descendant edge.

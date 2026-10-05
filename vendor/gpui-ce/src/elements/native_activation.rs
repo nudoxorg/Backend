@@ -84,13 +84,15 @@ impl Element for NativeActivationScopeElement {
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
+        _: Bounds<Pixels>,
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
         window.with_native_activation_scope(Some(self.scope), |window| {
-            self.child.prepaint_at(bounds.origin, window, cx)
+            // The wrapper returns the child's own LayoutId. Preserve the
+            // parent's offset so the child applies its layout origin once.
+            self.child.prepaint(window, cx)
         });
     }
     fn paint(
