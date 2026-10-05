@@ -30,6 +30,7 @@ use backend_semantic::vocabulary::Language;
 use backend_semantic::vocabulary::LanguageProfile;
 use backend_version::{Coverage, ScopeRoot, WorkspaceRoot};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt::Write as _;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1312,12 +1313,12 @@ pub(super) fn deferred_compile_was_cancelled(
 /// Admits exactly one profile candidate on the owner loop and then drops its
 /// staged output, releasing the package compiler's bounded output credits.
 /// The serving selector remains untouched until every profile has succeeded.
-pub(super) fn finish_deferred_profile<E: std::fmt::Display>(
+pub(super) fn finish_deferred_profile(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     job: &mut DeferredIndex,
     profile: DeferredProfileTicket,
-    compiled: Result<StagedSemanticPackage, E>,
+    compiled: Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
 ) -> Result<(), BuiltinModelError> {
     if job.completed_profiles >= job.expected_profiles {
         return Err(BuiltinModelError(
@@ -2426,7 +2427,7 @@ fn compile_semantic_publications(
 /// for (an artifact or a typed scope gap), and a gap makes the publication
 /// partial. The words are the owner's refusal when it is not.
 fn admit_local_compile(
-    compiled: Result<StagedSemanticPackage, impl std::fmt::Display>,
+    compiled: Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
     expected_artifacts: u32,
 ) -> Result<(StagedSemanticPackage, SemanticPublicationCoverage), BuiltinModelError> {
     let staged = match compiled {
@@ -2448,9 +2449,7 @@ fn admit_local_compile(
             ));
         }
         Err(error) => {
-            return Err(BuiltinModelError(format!(
-                "local semantic compilation failed; prior selected semantic generation was preserved: {error}"
-            )));
+            return Err(BuiltinModelError(local_compile_error_chain(&error)));
         }
     };
     let publication_coverage = if staged.coverage_gaps().is_empty() {
@@ -2486,6 +2485,142 @@ fn admit_local_compile(
         )
     };
     Ok((staged, publication_coverage))
+}
+
+const MAX_LOCAL_COMPILE_ERROR_BYTES: usize = backend_library::MAX_PRODUCT_TEXT_BYTES;
+const MAX_LOCAL_COMPILE_ERROR_CAUSES: usize = 8;
+const MAX_LOCAL_COMPILE_CAUSE_MESSAGE_BYTES: usize = 1_024;
+
+/// Renders the bounded typed source chain at the product refusal boundary.
+///
+/// The outer wording is a stable product diagnostic. Each distinct typed cause follows it, with
+/// a fixed byte and depth budget so unusually verbose errors cannot grow the reply without bound.
+fn local_compile_error_chain(error: &dyn std::error::Error) -> String {
+    const PREFIX: &str = "local semantic compilation failed; prior selected semantic generation was preserved: ";
+
+    let mut output = BoundedDiagnosticText::new(MAX_LOCAL_COMPILE_ERROR_BYTES);
+    let first = bounded_error_display(error, MAX_LOCAL_COMPILE_CAUSE_MESSAGE_BYTES);
+    let _ = write!(&mut output, "{PREFIX}{first}");
+
+    let mut previous = first;
+    let mut source = error.source();
+    for _ in 0..MAX_LOCAL_COMPILE_ERROR_CAUSES {
+        let Some(cause) = source else {
+            break;
+        };
+        let message = bounded_error_display(cause, MAX_LOCAL_COMPILE_CAUSE_MESSAGE_BYTES);
+        if !previous.ends_with(&message) {
+            let _ = write!(&mut output, "\ncaused by: {message}");
+        }
+        if output.is_truncated() {
+            break;
+        }
+        previous = message;
+        source = cause.source();
+    }
+    output.finish()
+}
+
+fn bounded_error_display(error: &dyn std::fmt::Display, maximum_bytes: usize) -> String {
+    let mut output = BoundedDiagnosticText::new(maximum_bytes);
+    let _ = write!(&mut output, "{error}");
+    output.finish()
+}
+
+struct BoundedDiagnosticText {
+    text: String,
+    maximum_bytes: usize,
+    truncated: bool,
+}
+
+impl BoundedDiagnosticText {
+    fn new(maximum_bytes: usize) -> Self {
+        Self {
+            text: String::new(),
+            maximum_bytes,
+            truncated: false,
+        }
+    }
+
+    fn is_truncated(&self) -> bool {
+        self.truncated
+    }
+
+    fn finish(self) -> String {
+        self.text
+    }
+
+    fn push_sanitized(&mut self, value: &str) {
+        for character in value.chars() {
+            self.text
+                .push(if character == '\0' { ' ' } else { character });
+        }
+    }
+}
+
+impl std::fmt::Write for BoundedDiagnosticText {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        if self.truncated {
+            return Err(std::fmt::Error);
+        }
+        const TRUNCATION_MARKER: &str = "…";
+        let remaining = self.maximum_bytes.saturating_sub(self.text.len());
+        let content_budget = remaining.saturating_sub(TRUNCATION_MARKER.len());
+        if value.len() <= content_budget {
+            self.push_sanitized(value);
+            return Ok(());
+        }
+
+        let mut boundary = value.len().min(content_budget);
+        while !value.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        self.push_sanitized(&value[..boundary]);
+        if remaining >= TRUNCATION_MARKER.len() {
+            self.text.push_str(TRUNCATION_MARKER);
+        }
+        self.truncated = true;
+        Err(std::fmt::Error)
+    }
+}
+
+#[cfg(test)]
+mod local_compile_error_chain_tests {
+    use super::admit_local_compile;
+    use backend_engine::application::{
+        PackageSemanticError, PackageSemanticRuntimeError, StagedSemanticPackage,
+    };
+    use backend_engine::publication::{
+        GenerationBuildError, PublishCompiledError, PublishSemanticError,
+    };
+
+    #[test]
+    fn refusal_includes_numeric_generation_cause_through_typed_source_chain() {
+        let error = PackageSemanticRuntimeError::Package(PackageSemanticError::StagedOutput(
+            PublishSemanticError::Publication(PublishCompiledError::Generation(
+                GenerationBuildError::ReopenedSemanticBytesLength {
+                    expected: 4_096,
+                    observed: 2_048,
+                },
+            )),
+        ));
+        let refusal = match admit_local_compile(Err::<StagedSemanticPackage, _>(error), 1) {
+            Err(refusal) => refusal,
+            Ok(_) => panic!("the package compile failure must remain a refusal"),
+        };
+        let detail = refusal.to_string();
+
+        assert!(detail.starts_with(
+            "local semantic compilation failed; prior selected semantic generation was preserved: package semantic output could not be prepared for transport: semantic publication failed after all paired artifacts were prepared"
+        ));
+        assert!(detail.contains(
+            "caused by: compiler package could not construct a verified complete generation"
+        ));
+        assert!(detail.contains(
+            "caused by: stored semantic-image bytes have 2048 bytes, require 4096"
+        ));
+        assert!(detail.len() <= backend_library::MAX_PRODUCT_TEXT_BYTES);
+    }
 }
 
 /// Selects one local compile's generation, while the source it was compiled
