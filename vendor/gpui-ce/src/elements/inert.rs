@@ -1782,4 +1782,113 @@ mod tests {
             "idle callback delivery must not add a draw"
         );
     }
+
+    struct PositionedInertControl {
+        clicks: Rc<Cell<usize>>,
+    }
+
+    impl Render for PositionedInertControl {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let clicks = self.clicks.clone();
+            div()
+                .id("positioned-inert-control")
+                .debug_selector(|| "positioned-inert-control".to_string())
+                .w(px(100.))
+                .h(px(40.))
+                .role(accesskit::Role::Button)
+                .aria_label("positioned inert control")
+                .on_click(move |_, _, _| clicks.set(clicks.get() + 1))
+        }
+    }
+
+    struct PositionedInertHost {
+        child: Entity<PositionedInertControl>,
+    }
+
+    impl Render for PositionedInertHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let child = self
+                .child
+                .clone()
+                .cached(StyleRefinement::default().w(px(100.)).h(px(40.)));
+            let child = inert(
+                "inner-positioned-inert",
+                "Inner positioned content is unavailable",
+                child,
+            );
+            let child = inert(
+                "outer-positioned-inert",
+                "Positioned content is unavailable",
+                child,
+            );
+            div()
+                .id("translated-inert-parent")
+                .debug_selector(|| "translated-inert-parent".to_string())
+                .size_full()
+                .pl(px(80.))
+                .pt(px(60.))
+                .child(child)
+        }
+    }
+
+    #[gpui::test]
+    fn nested_inert_scopes_preserve_translated_visual_and_accessibility_bounds(
+        cx: &mut TestAppContext,
+    ) {
+        let clicks = Rc::new(Cell::new(0));
+        let (_host, visual) = cx.add_window_view({
+            let clicks = clicks.clone();
+            move |_, cx| PositionedInertHost {
+                child: cx.new(|_| PositionedInertControl { clicks }),
+            }
+        });
+        let accessibility_bounds = visual.update(|window, cx| {
+            window.set_a11y_forced(true);
+            window.draw(cx).clear(cx);
+
+            let tree = window.a11y_tree().expect("accessibility is enabled");
+            let (control_id, control) = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("positioned inert control"))
+                .map(|(id, node)| (*id, node))
+                .expect("the retained control remains accessible");
+            assert!(control.is_disabled());
+            assert!(
+                !control.supports_action(accesskit::Action::Click),
+                "inert controls do not expose an accessibility click"
+            );
+            let accessibility_bounds = window
+                .a11y_node_bounds(control_id)
+                .expect("the retained control has accessibility bounds");
+            window.handle_a11y_action(
+                accesskit::ActionRequest {
+                    action: accesskit::Action::Click,
+                    target_tree: accesskit::TreeId::ROOT,
+                    target_node: control_id,
+                    data: None,
+                },
+                cx,
+            );
+            accessibility_bounds
+        });
+        let visual_bounds = visual
+            .debug_bounds("positioned-inert-control")
+            .expect("the retained control has visual bounds");
+        assert_eq!(visual_bounds, accessibility_bounds);
+        assert_eq!(visual_bounds.size.width, px(100.));
+        assert_eq!(visual_bounds.size.height, px(40.));
+        let parent_bounds = visual
+            .debug_bounds("translated-inert-parent")
+            .expect("the padded parent has rendered bounds");
+        assert_eq!(visual_bounds.origin.x, parent_bounds.origin.x + px(80.));
+        assert_eq!(visual_bounds.origin.y, parent_bounds.origin.y + px(60.));
+
+        visual.simulate_click(visual_bounds.center(), Default::default());
+        assert_eq!(
+            clicks.get(),
+            0,
+            "the disabled visual control cannot activate"
+        );
+    }
 }
