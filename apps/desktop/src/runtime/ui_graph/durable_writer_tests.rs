@@ -672,8 +672,19 @@ fn graceful_checkpoint_retains_the_exact_pending_claim_and_commit_never_sends(cx
     assert_eq!(rig.sent.load(Ordering::SeqCst), 0, "first-send remains frozen after its save acknowledgement");
     let finish = rig.root.update(cx, |root, cx| root.commit_close(cx));
     rig.release_actor();
-    cx.executor().block_test(finish.wait(cx.executor()));
-    cx.run_until_parked();
+    let executor = cx.executor();
+    let waiting = executor.clone();
+    let (stopped, stop_ack) = async_channel::bounded(1);
+    let finish_task = executor.spawn(async move {
+        finish.wait(waiting).await;
+        let _ = stopped.try_send(());
+    });
+    crate::runtime::wait::until("revoked workers have returned", || {
+        cx.executor().advance_clock(std::time::Duration::from_millis(25));
+        cx.run_until_parked();
+        stop_ack.try_recv().is_ok()
+    });
+    drop(finish_task);
     assert_eq!(rig.sent.load(Ordering::SeqCst), 0, "commit revokes transport admission");
     assert_eq!(rig.persistence.load().expect("durable checkpoint").shelf[0].operation.as_ref(), Some(&operation));
     rig.finished.set(true);
