@@ -1182,6 +1182,14 @@ impl UiEntityGraph {
         if let Some(gate) = gate {
             super::owner::watch(gate, &root, &store, cx);
         }
+        // Snapshot pages follow the root's final event drain, as on ordinary
+        // close. This entity-owned observer also uses GPUI's weak handle.
+        store.update(cx, |_, cx| {
+            cx.on_app_quit(|store, _| {
+                store.save_on_close();
+                async {}
+            }).detach();
+        });
         Self { root, store }
     }
 }

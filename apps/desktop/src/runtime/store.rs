@@ -509,12 +509,7 @@ impl DataStore {
                 let root = store.snapshot.key();
                 store.keeper.keep(&mut store.pages, root, keep);
             }
-            // Both quit and ordinary window release save the current route's
-            // pages. Neither callback retains the entity beyond its window.
-            cx.on_app_quit(|store, _| {
-                store.save_on_close();
-                async {}
-            }).detach();
+            // Ordinary window release saves pages without retaining the store.
             cx.on_release(|store, _| store.save_on_close()).detach();
             store.start(cx);
             // The first route is focused like every later one.
@@ -540,7 +535,7 @@ impl DataStore {
         }));
     }
 
-    fn save_on_close(&self) {
+    pub(crate) fn save_on_close(&self) {
         if let Err(error) = self.save_now() {
             eprintln!("backend-desktop: save the launch snapshot: {error}");
         }
