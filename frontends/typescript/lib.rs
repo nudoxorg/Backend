@@ -22,12 +22,21 @@ pub use package::{
     PackagePurlError, RegistryMetadata, TarballMember, TarballMemberKind, decode_packument,
     locate_package, read_tarball,
 };
+/// One merged source file and its TSZ-owned syntax/binder spans.
+pub use tsz::parallel::BoundFile as TszBoundFile;
+/// Read-only view over the native TSZ type interner, exposed so consumers can
+/// map checker results directly into their existing typed IR.
+pub use tsz::tsz_solver::construction::TypeDatabase as TszTypeDatabase;
+/// Native TSZ type handles and structural shapes used by direct IR adapters.
+pub use tsz::tsz_solver::type_handles as tsz_type_handles;
 pub use tsz_authority::{
     TszAuthorityError, TszBinderState, TszCheckerOptions, TszCheckerState, TszDiagnostic,
     TszEnvironmentFingerprint, TszFileInput, TszModuleDetectionKind, TszModuleKind, TszNodeIndex,
     TszParseDiagnostic, TszProject, TszProjectAuthority, TszProjectOptions, TszScriptTarget,
     TszSourceError, TszSymbolId, TszTypeId, TszUpdateReport,
 };
+/// Interned string handle used by TSZ shapes and member names.
+pub use tsz_common::interner::Atom as TszAtom;
 
 use backend_compile::{
     Authority, AuthorityError as CompileAuthorityError, AuthorityIdentity, DiscoverySnapshot,

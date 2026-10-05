@@ -20,6 +20,7 @@ use std::sync::Arc;
 use crate::Utf8Span;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use tsz::tsz_solver::construction::TypeDatabase;
 
 pub use tsz::binder::BinderState as TszBinderState;
 pub use tsz::binder::SymbolId as TszSymbolId;
@@ -101,6 +102,16 @@ pub enum TszAuthorityError {
     /// A caller queried a file index that is absent from the merged program.
     #[error("TSZ project has no bound file at index {0}")]
     MissingFile(usize),
+    /// The selected project has no bound file with this exact stable path.
+    #[error("TSZ project has no bound file at path {0}")]
+    MissingSource(String),
+    /// The engine requested a source path whose retained bytes do not match
+    /// the bytes admitted to the current compile lease.
+    #[error("TSZ project source bytes do not match compile source at {path}")]
+    SourceMismatch {
+        /// Stable source path selected by the package authority.
+        path: String,
+    },
 }
 
 /// Explicit TSZ checker/binder options resolved by the project configuration layer.
@@ -150,6 +161,21 @@ pub struct TszProject {
     bound_sources: BTreeMap<String, Arc<tsz::parallel::BindResult>>,
     program: tsz::parallel::MergedProgram,
     check: tsz::parallel::CheckResult,
+}
+
+impl std::fmt::Debug for TszProject {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TszProject")
+            .field("source_count", &self.bound_sources.len())
+            .field(
+                "source_paths",
+                &self.bound_sources.keys().collect::<Vec<_>>(),
+            )
+            .field("environment", &self.options.environment)
+            .field("diagnostic_count", &self.check.diagnostic_count)
+            .finish()
+    }
 }
 
 impl TszProjectAuthority {
@@ -375,6 +401,28 @@ impl TszProject {
             &tsz::parallel::BoundFile,
         ) -> Output,
     ) -> Result<Output, TszAuthorityError> {
+        self.with_file_checker_and_types(file_index, |checker, binder, file, _types| {
+            consume(checker, binder, file)
+        })
+    }
+
+    /// Runs a typed checker query and exposes the same checker's native type
+    /// database for direct structural IR mapping. All borrows remain scoped to
+    /// this exact project/file transaction; no type handles escape the
+    /// callback.
+    ///
+    /// # Errors
+    /// Returns [`TszAuthorityError::MissingFile`] for an invalid merged index.
+    pub fn with_file_checker_and_types<Output>(
+        &self,
+        file_index: usize,
+        consume: impl for<'checker> FnOnce(
+            &mut TszCheckerState<'checker>,
+            &TszBinderState,
+            &tsz::parallel::BoundFile,
+            &dyn TypeDatabase,
+        ) -> Output,
+    ) -> Result<Output, TszAuthorityError> {
         let file = self
             .program
             .files
@@ -393,7 +441,8 @@ impl TszProject {
             Arc::clone(&self.program.definition_store),
         );
         checker.check_source_file(file.source_file);
-        Ok(consume(&mut checker, &binder, file))
+        let types = checker.ctx.types.as_type_database();
+        Ok(consume(&mut checker, &binder, file, types))
     }
 }
 

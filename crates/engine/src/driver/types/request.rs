@@ -281,6 +281,17 @@ pub enum SemanticAuthorityInput<'source> {
         /// Validated checker facts produced for this source.
         report: &'source backend_frontend_typescript::legacy::Report,
     },
+    /// Borrowed native TSZ project authority for one exact source file.
+    ///
+    /// The project owner must have resolved the complete source, config,
+    /// dependency, and library frontier before constructing this input.
+    /// Lowering verifies that the selected path retains these exact bytes.
+    TypeScriptTsz {
+        /// Project-scoped native TSZ parser, binder, and checker result.
+        project: &'source backend_frontend_typescript::TszProject,
+        /// Exact stable project path for the source bytes in this request.
+        source_path: &'source str,
+    },
     /// Borrowed Python checker report bound to the exact request source.
     Python {
         /// Validated checker facts produced for this source.
