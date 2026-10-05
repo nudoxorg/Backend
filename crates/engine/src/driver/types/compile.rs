@@ -840,6 +840,10 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
                 | EnteredAuthority::Clang { .. }
                 | EnteredAuthority::Rust { .. }
                 | EnteredAuthority::RustWorkspace { .. }
+                // A module whose only content is an anonymous default export
+                // (`export default { … }` in a tool config) or side-effect
+                // statements declares nothing; the checker still succeeded.
+                | EnteredAuthority::TypeScript { .. }
         )
     {
         require_facts(prepared.source, prepared.recipe, facts)?;

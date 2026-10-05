@@ -182,6 +182,10 @@ fn index_preflight_basis(
     let current = snapshot.key();
     if current.same_authority(basis) { return Ok(current); }
     let (old, next) = (basis.revision(), current.revision());
+    // A basis captured before the owner's first publication (the launch
+    // placeholder) carries no index content, so the owner's own initial
+    // stream supersedes it instead of conflicting with it.
+    if old.sequence() == 0 { return Ok(current); }
     if current.producer_epoch() != basis.producer_epoch() || old.recipe() != next.recipe()
         || old.branch() != next.branch() || old.log() != next.log() || old.schema() != next.schema() {
         return Err(IndexPreflightRefusal::ProducerStreamChanged);

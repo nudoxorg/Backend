@@ -1030,6 +1030,45 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         Ok(ordinals)
     }
 
+    /// Pushes the dedicated result carrier for one annotated signature: a
+    /// parameter-kind fact named after the callable and typed exactly as its
+    /// return annotation. Signature carrier bindings admit only parameter
+    /// carriers, so the result never points at the annotation's type fact.
+    fn push_result_carrier(
+        &mut self,
+        name: Span,
+        annotation: Span,
+    ) -> Result<u32, TypeScriptCollectError> {
+        let name_bytes = self.slice_span(name).ok_or(TypeScriptCollectError::Span {
+            start: name.start,
+            end: name.end,
+        })?;
+        let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
+        let member_base = self.staged_members.len();
+        let cells = self.owner_cells(annotation.start, annotation.end, 0)?;
+        let extension = self.extension(type_parameter_start)?;
+        let fact = with_cells(
+            SemanticFact::new(EntityKind::Parameter, name_bytes, LEAF_PRODUCT)
+                .with_extension(extension),
+            cells,
+        );
+        let ordinal = self.push(fact)?;
+        self.claim_staged_members(member_base, ordinal);
+        // The carrier names no binding, so it stays out of the name tables;
+        // its annotation span still places it under the enclosing callable
+        // in the parentage pass, keeping same-name results of different
+        // owners (an interface method and its class implementation) distinct.
+        if let Some(index) = usize::try_from(ordinal).ok() {
+            if let Some(slot) = self.synthetic_starts.get_mut(index) {
+                *slot = annotation.start;
+            }
+            if let Some(slot) = self.synthetic_ends.get_mut(index) {
+                *slot = annotation.end;
+            }
+        }
+        Ok(ordinal)
+    }
+
     /// Pushes one callable signature with its exact facts: generic-parameter
     /// facts and pooled rows, one parameter fact per declared parameter, the
     /// optional result fact, the function product constructor, and the
@@ -1050,7 +1089,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let type_parameter_start = self.push_type_params(rows, 0)?;
         let param_ordinals = self.push_parameter_facts(params)?;
         let result_target = match result {
-            Some(span) => Some(self.child_target(span.start, span.end, 0)?),
+            Some(span) => Some(self.push_result_carrier(name, span)?),
             None => None,
         };
         let name_bytes = self.slice_span(name).ok_or(TypeScriptCollectError::Span {
@@ -8634,25 +8673,12 @@ mod lane_tests {
     fn optional_and_rest_parameters_keep_owner_local_binding_positions() -> Result<(), LaneError> {
         let source = "type GatherResult = string;\nexport function gather(head: string, suffix?: number, ...items: boolean[]): GatherResult { return head; }\n";
         let ir = owned_ir(source, None)?;
-        let alias_declaration = "type GatherResult = string;";
-        let alias_start = u32::try_from(
-            source
-                .find(alias_declaration)
-                .ok_or(LaneError::Missing("GatherResult declaration source span"))?,
-        )?;
-        let alias_end = alias_start + u32::try_from(alias_declaration.len())?;
+        // The result carrier is the signature's own parameter-kind fact, not
+        // the `GatherResult` alias its annotation names.
         let expected_result = ir
             .items()
-            .find(|item| {
-                item.name() == b"GatherResult"
-                    && item.kind() == backend_semantic::ir::ItemKind::Alias
-                    && item
-                        .source()
-                        .is_some_and(|span| span.start() == alias_start && span.end() == alias_end)
-            })
-            .ok_or(LaneError::Missing(
-                "result target from the exact GatherResult source declaration",
-            ))?;
+            .find(|item| item.name() == b"gather" && item.kind() == EntityKind::Parameter)
+            .ok_or(LaneError::Missing("gather result carrier"))?;
         let owner = ir
             .items()
             .find(|item| item.name() == b"gather" && item.kind() == EntityKind::Function)
