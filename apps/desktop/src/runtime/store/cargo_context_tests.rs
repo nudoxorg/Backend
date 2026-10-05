@@ -55,9 +55,16 @@ pub(crate) fn fixture(project: &LocalProjectId) -> (TreeModel, PackageRef, Cargo
     .expect("fixture binding");
     tree.request_binding = Some(binding);
     assert!(tree.has_admissible_shape());
+    // Keep the version and source from this immutable Cargo observation. A
+    // changed capture must not leave a stale, separately pinned test address.
+    let mut observed = tree.packages.iter().filter(|row| row.name == "serde");
+    let row = observed.next().expect("observed serde package");
+    assert!(
+        observed.next().is_none(),
+        "the fixture must have exactly one observed serde coordinate"
+    );
     let package = PackageRef::from_reference(
-        tree.package("serde", "1.0.219")
-            .and_then(|row| row.source_qualified_reference())
+        row.source_qualified_reference()
             .expect("exact observed package"),
     );
     let context =
@@ -207,7 +214,8 @@ fn current_tree_admits_exact_package_without_semantic_dossier_or_history() {
     );
 
     let sibling = PackageRef::parse(&format!(
-        "pkg:cargo/serde@1.0.219?cargo-authority={}",
+        "pkg:cargo/serde@{}?cargo-authority={}",
+        package.version().expect("observed serde version"),
         "b".repeat(64)
     ))
     .expect("other exact receipt");
