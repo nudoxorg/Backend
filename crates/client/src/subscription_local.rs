@@ -397,7 +397,11 @@ impl LocalSubscriptionTransport {
                 let _ = cleanup;
                 Err(error)
             }
-            Ok(root) => cleanup.map(|()| root),
+            Ok(root) => match cleanup? {
+                BootstrapRelease::Reusable | BootstrapRelease::RetiredAfterAcknowledgement => {
+                    Ok(root)
+                }
+            },
         }
     }
 
