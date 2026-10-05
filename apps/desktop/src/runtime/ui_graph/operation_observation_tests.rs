@@ -574,3 +574,44 @@ fn unknown_saved_key_replaces_an_obsolete_queued_check_after_owner_recovery(
     });
     assert_eq!(observations.load(Ordering::SeqCst), 1);
 }
+
+#[gpui::test]
+fn removing_an_admitted_project_retires_its_future_root_context(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let project = LocalProjectId::new("/fixture/operation-admitted-removal").expect("project");
+    let (client, entered, observations, release) = client();
+    let contexts = client.root_projects.clone();
+    let graph = cx.update(|cx| {
+        UiEntityGraph::install(
+            cx,
+            DesktopRuntime::new(
+                active_snapshot(&project),
+                EngineActor::start(client, 4).expect("lanes"),
+            ),
+            None,
+        )
+    });
+    let release = release;
+    cx.run_until_parked();
+    entered.recv_timeout(Duration::from_secs(1)).expect("hydration held");
+    graph.root.update(cx, |root, cx| root.schedule_operation_observation(cx));
+    cx.executor().advance_clock(Duration::from_millis(500));
+    crate::runtime::wait::until("receipt establishes project context", || {
+        cx.run_until_parked();
+        graph.root.read_with(cx, |root, _| {
+            root.snapshot().workspace().projects[0].phase == ProjectPhase::Ready
+        })
+    });
+    assert_eq!(observations.load(Ordering::SeqCst), 1);
+    graph.root.update(cx, |root, cx| {
+        root.dispatch(Intent::RemoveProject(project.clone()), cx);
+        root.refresh_root(cx);
+    });
+    release.0.release();
+    crate::runtime::wait::until("root read follows admitted project removal", || {
+        cx.run_until_parked();
+        contexts.lock().expect("contexts").len() >= 2
+    });
+    assert_eq!(contexts.lock().expect("contexts").last(), Some(&None));
+    assert!(graph.root.read_with(cx, |root, _| root.snapshot().workspace().projects.is_empty()));
+}

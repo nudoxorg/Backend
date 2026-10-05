@@ -199,6 +199,11 @@ impl DesktopRuntime {
     ) -> Vec<RuntimeEvent> {
         let reduction = reduce(&self.snapshot, intent);
         self.snapshot = Arc::new(reduction.snapshot);
+        if self.admitted_project.as_ref().is_some_and(|project| {
+            !self.snapshot.workspace().projects.iter().any(|row| row.id == *project)
+        }) {
+            self.admitted_project = None;
+        }
         let mut events = vec![RuntimeEvent::SnapshotChanged(Arc::clone(&self.snapshot))];
         for effect in reduction.effects {
             match effect {
