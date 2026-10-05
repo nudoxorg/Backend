@@ -5,10 +5,13 @@
 use backend_library::browse::{
     CargoTreeError, TreeInput, metadata_input_with_stable_source_witness,
 };
+use backend_library::native_test_paths::localize_cargo_metadata;
 
 // Cargo 1.97.1 actually observed both dependencies under this target, including
 // their empty resolved-feature arrays. Keeping the original bytes, target, and
 // matching lockfile together avoids claiming authority from trimmed captures.
+// The shared localizer changes only parser-input path spellings to native
+// absolute form; the checked-in capture and its feature observations stay intact.
 const METADATA: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../crates/library/browse/fixtures/filter-platform-cargo-1.97/windows.json"
@@ -23,7 +26,14 @@ pub(crate) const PACKAGE_NAME: &str = "common-proof";
 pub(crate) const PACKAGE_VERSION: &str = "0.1.0";
 
 pub(crate) fn input() -> Result<TreeInput, CargoTreeError> {
-    metadata_input_with_stable_source_witness(METADATA, TARGET, Some(LOCKFILE), [7; 32])
+    // This does not rewrite caller identities. Binding fixtures also require
+    // native absolute requested-project paths at their own construction sites.
+    metadata_input_with_stable_source_witness(
+        &localize_cargo_metadata(METADATA),
+        TARGET,
+        Some(LOCKFILE),
+        [7; 32],
+    )
 }
 
 #[test]
@@ -32,6 +42,16 @@ fn complete_capture_preserves_observed_empty_features_and_exact_path_sources()
     use backend_library::{CargoPackageSourceAuthorityStateV1, CargoPackageSourceV1};
 
     let captured: serde_json::Value = serde_json::from_slice(METADATA)?;
+    let localized: serde_json::Value = serde_json::from_slice(&localize_cargo_metadata(METADATA))?;
+    assert_eq!(localized["resolve"], captured["resolve"]);
+    assert!(
+        std::path::Path::new(
+            localized["workspace_root"]
+                .as_str()
+                .ok_or("native workspace root")?
+        )
+        .is_absolute()
+    );
     let nodes = captured["resolve"]["nodes"]
         .as_array()
         .ok_or("captured resolve nodes")?;
@@ -90,11 +110,12 @@ fn trimmed_legacy_capture_cannot_supply_source_authority_even_with_a_stable_witn
         CargoPackageSourceAuthorityFailureV1, CargoPackageSourceAuthorityStateV1,
     };
 
+    let metadata = localize_cargo_metadata(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"
+    )));
     let input = metadata_input_with_stable_source_witness(
-        include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/library/browse/fixtures/tree-2026-09-27/metadata.json"
-        )),
+        &metadata,
         "aarch64-apple-darwin",
         None,
         [7; 32],

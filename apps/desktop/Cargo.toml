@@ -84,6 +84,8 @@ backend-gui-harness = { path = "../../tools/gui-harness" }
 # Prototype release fixtures are test-only; production release views read the
 # selected local registry and exact owner comparison.
 backend-facet = { path = "../facet", features = ["release-fixture"] }
+# Native absolute path spellings for immutable Cargo producer fixtures.
+backend-library = { path = "../../crates/library", features = ["test-support"] }
 # `write_state_from_another_build`: the host test of a workspace an earlier build wrote.
 backend-local-service = { path = "../../crates/local-service", features = ["test-support"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
