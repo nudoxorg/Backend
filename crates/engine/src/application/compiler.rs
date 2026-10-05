@@ -56,6 +56,8 @@ use backend_version::{
     ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, SourceFactDomain,
 };
 use std::{
+    error::Error as _,
+    fmt::Write as _,
     io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
@@ -85,6 +87,7 @@ pub(crate) const MAX_PACKAGE_FRAGMENT_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_PACKAGE_SEMANTIC_BYTES: usize = 512 * 1024 * 1024;
 /// Maximum optional embedding payload bytes retained for one staged package.
 pub const MAX_PACKAGE_EMBEDDING_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PACKAGE_AUTHORITY_ERROR_CAUSES: usize = 8;
 
 struct RustEditorBufferObservation<'observer> {
     recorder: &'observer mut CompilerReadObservationRecorderV2,
@@ -2956,8 +2959,12 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
             },
         )
         .map_err(|error| {
-            // The typed cause is nested well below the user-facing words.
-            eprintln!("nudox: semantic output preparation failed: {error:?}");
+            // Keep logging on the same bounded typed diagnostic path as the public refusal.
+            let diagnostic = bounded_error_chain(&error);
+            eprintln!(
+                "nudox: semantic output preparation failed: {}",
+                diagnostic.text
+            );
             PackageSemanticError::StagedOutput(error)
         })?;
         drop(compiled);
@@ -3573,17 +3580,11 @@ fn package_authority_terminal(
             let (phase, class) = package_authority_projection(&cause);
             // Keep the concrete cause chain instead of an empty diagnostic, so
             // a checker that ran but failed (or never ran) explains itself.
-            let mut message = cause.to_string();
-            let mut next = std::error::Error::source(&cause);
-            while let Some(inner) = next {
-                message.push_str(": ");
-                message.push_str(&inner.to_string());
-                next = inner.source();
-            }
+            let message = bounded_error_chain(&cause);
             let diagnostic = backend_library::interface::CompilerDiagnostic::from_native(
-                message.as_bytes(),
-                message.len(),
-                false,
+                message.text.as_bytes(),
+                message.text.len(),
+                message.truncated,
             );
             compiler_attempt_terminal(
                 request,
@@ -3597,6 +3598,239 @@ fn package_authority_terminal(
             )
         }
     }
+}
+
+struct BoundedErrorChain {
+    text: String,
+    truncated: bool,
+}
+
+/// Formats the typed source chain without allocating proportional to arbitrary error messages
+/// or following a maliciously cyclic/unbounded `Error::source` chain.
+fn bounded_error_chain(error: &(dyn std::error::Error + 'static)) -> BoundedErrorChain {
+    const MAX_BYTES: usize = backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES;
+    const CAUSE_SEPARATOR: &str = ": ";
+    const INTERMEDIATE_OMISSION: &str = " … intermediate causes omitted … ";
+
+    let mut messages = Vec::with_capacity(MAX_PACKAGE_AUTHORITY_ERROR_CAUSES + 1);
+    let mut seen: [Option<&(dyn std::error::Error + 'static)>;
+        MAX_PACKAGE_AUTHORITY_ERROR_CAUSES + 1] = [None; MAX_PACKAGE_AUTHORITY_ERROR_CAUSES + 1];
+    seen[0] = Some(error);
+    let mut seen_count = 1;
+    let mut previous = bounded_error_display(error, MAX_BYTES);
+    let mut truncated = previous.truncated;
+    messages.push(previous.text.clone());
+    let mut next = error.source();
+    let mut cycle_detected = false;
+
+    for _ in 0..MAX_PACKAGE_AUTHORITY_ERROR_CAUSES {
+        let Some(cause) = next else {
+            break;
+        };
+        if seen[..seen_count]
+            .iter()
+            .flatten()
+            .any(|visited| std::ptr::eq(*visited, cause))
+        {
+            cycle_detected = true;
+            break;
+        }
+        seen[seen_count] = Some(cause);
+        seen_count += 1;
+
+        let message = bounded_error_display(cause, MAX_BYTES);
+        truncated |= message.truncated;
+        if !previous.text.ends_with(&message.text) {
+            messages.push(message.text.clone());
+        }
+        previous = message;
+        next = cause.source();
+    }
+
+    let depth_truncated = if !cycle_detected {
+        if let Some(cause) = next {
+            if seen[..seen_count]
+                .iter()
+                .flatten()
+                .any(|visited| std::ptr::eq(*visited, cause))
+            {
+                cycle_detected = true;
+                false
+            } else {
+                true
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    let status = if cycle_detected {
+        Some(" [error source cycle detected]")
+    } else if depth_truncated {
+        Some(" [additional causes omitted after depth limit]")
+    } else {
+        None
+    };
+    truncated |= cycle_detected || depth_truncated;
+
+    let mut complete_bytes = status.map_or(0, str::len);
+    for (index, message) in messages.iter().enumerate() {
+        if index > 0 {
+            complete_bytes = complete_bytes.saturating_add(CAUSE_SEPARATOR.len());
+        }
+        complete_bytes = complete_bytes.saturating_add(message.len());
+    }
+    let mut text = String::with_capacity(MAX_BYTES);
+    if complete_bytes <= MAX_BYTES {
+        for (index, message) in messages.iter().enumerate() {
+            if index > 0 {
+                text.push_str(CAUSE_SEPARATOR);
+            }
+            text.push_str(message);
+        }
+        if let Some(status) = status {
+            text.push_str(status);
+        }
+    } else {
+        truncated = true;
+        if messages.len() == 1 {
+            let status_bytes = status.map_or(0, str::len);
+            append_error_prefix(
+                &mut text,
+                &messages[0],
+                MAX_BYTES.saturating_sub(status_bytes),
+            );
+        } else {
+            let omission = if messages.len() > 2 {
+                INTERMEDIATE_OMISSION
+            } else {
+                " … "
+            };
+            let status_bytes = status.map_or(0, str::len);
+            let message_budget = MAX_BYTES
+                .saturating_sub(omission.len())
+                .saturating_sub(status_bytes);
+            let first = messages.first().map(String::as_str).unwrap_or_default();
+            let last = messages.last().map(String::as_str).unwrap_or_default();
+            let mut first_budget = first.len().min(message_budget.div_ceil(2));
+            let mut last_budget = last.len().min(message_budget.saturating_sub(first_budget));
+            let mut unused = message_budget.saturating_sub(first_budget + last_budget);
+            let first_extra = unused.min(first.len().saturating_sub(first_budget));
+            first_budget += first_extra;
+            unused -= first_extra;
+            last_budget += unused.min(last.len().saturating_sub(last_budget));
+            append_error_prefix(&mut text, first, first_budget);
+            text.push_str(omission);
+            append_error_suffix(&mut text, last, last_budget);
+        }
+        if let Some(status) = status {
+            text.push_str(status);
+        }
+    }
+    BoundedErrorChain { text, truncated }
+}
+
+struct BoundedErrorMessage {
+    text: String,
+    truncated: bool,
+}
+
+fn bounded_error_display(
+    error: &dyn std::fmt::Display,
+    maximum_bytes: usize,
+) -> BoundedErrorMessage {
+    let mut output = BoundedErrorMessageWriter {
+        text: String::with_capacity(maximum_bytes),
+        maximum_bytes,
+        truncated: false,
+    };
+    let _ = write!(&mut output, "{error}");
+    BoundedErrorMessage {
+        text: output.text,
+        truncated: output.truncated,
+    }
+}
+
+struct BoundedErrorMessageWriter {
+    text: String,
+    maximum_bytes: usize,
+    truncated: bool,
+}
+
+impl std::fmt::Write for BoundedErrorMessageWriter {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        if self.truncated {
+            return Err(std::fmt::Error);
+        }
+        const TRUNCATION_MARKER: &str = "…";
+        let remaining = self.maximum_bytes.saturating_sub(self.text.len());
+        if value.len() <= remaining {
+            self.text.extend(value.chars().map(|character| {
+                if character == '\0' {
+                    ' '
+                } else {
+                    character
+                }
+            }));
+            return Ok(());
+        }
+        let content_budget = remaining.saturating_sub(TRUNCATION_MARKER.len());
+        let mut boundary = value.len().min(content_budget);
+        while !value.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        self.text.extend(
+            value[..boundary]
+                .chars()
+                .map(|character| {
+                    if character == '\0' {
+                        ' '
+                    } else {
+                        character
+                    }
+                }),
+        );
+        if remaining >= TRUNCATION_MARKER.len() {
+            self.text.push_str(TRUNCATION_MARKER);
+        }
+        self.truncated = true;
+        Err(std::fmt::Error)
+    }
+}
+
+fn append_error_prefix(output: &mut String, value: &str, maximum_bytes: usize) {
+    if value.len() <= maximum_bytes {
+        output.push_str(value);
+        return;
+    }
+    const MARKER: &str = "…";
+    let content_budget = maximum_bytes.saturating_sub(MARKER.len());
+    let mut boundary = value.len().min(content_budget);
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    output.push_str(&value[..boundary]);
+    if maximum_bytes >= MARKER.len() {
+        output.push_str(MARKER);
+    }
+}
+
+fn append_error_suffix(output: &mut String, value: &str, maximum_bytes: usize) {
+    if value.len() <= maximum_bytes {
+        output.push_str(value);
+        return;
+    }
+    const MARKER: &str = "…";
+    let suffix_budget = maximum_bytes.saturating_sub(MARKER.len());
+    let mut start = value.len().saturating_sub(suffix_budget);
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    if maximum_bytes >= MARKER.len() {
+        output.push_str(MARKER);
+    }
+    output.push_str(&value[start..]);
 }
 
 fn compiler_attempt_terminal(
@@ -3720,8 +3954,13 @@ const fn toolchain_terminal(
 mod tests {
     use crate::test_support::host_path;
     use std::{
+        error::Error as StdError,
+        fmt,
         path::Path,
-        sync::atomic::{AtomicBool, Ordering},
+        sync::{
+            OnceLock,
+            atomic::{AtomicBool, Ordering},
+        },
     };
 
     use crate::driver::{ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
@@ -3740,9 +3979,143 @@ mod tests {
     use super::{
         CompilerTerminal, EmbeddingProvisioningFailure, PackageSemanticError, PackageSource,
         PackageSourceSet, PackageSourceSetError, StagedEmbeddingStatus, ToolchainRouteError,
-        package_authority_terminal, request_source, select_toolchain,
+        bounded_error_chain, package_authority_terminal, request_source, select_toolchain,
     };
     use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
+
+    #[derive(Debug)]
+    struct ChainDiagnosticError {
+        message: String,
+        source: Option<Box<dyn StdError>>,
+    }
+
+    impl fmt::Display for ChainDiagnosticError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str(&self.message)
+        }
+    }
+
+    impl StdError for ChainDiagnosticError {
+        fn source(&self) -> Option<&(dyn StdError + 'static)> {
+            self.source.as_deref()
+        }
+    }
+
+    #[test]
+    fn bounded_authority_diagnostic_keeps_headline_and_numeric_terminal_cause() {
+        let mut source: Box<dyn StdError> = Box::new(ChainDiagnosticError {
+            message: "stored semantic-image bytes contain 2048 bytes, expected exactly 4096"
+                .to_owned(),
+            source: None,
+        });
+        for ordinal in (0..5).rev() {
+            source = Box::new(ChainDiagnosticError {
+                message: format!("intermediate {ordinal}: {}", "m".repeat(512)),
+                source: Some(source),
+            });
+        }
+        let error = ChainDiagnosticError {
+            message: "package semantic output could not be prepared for transport".to_owned(),
+            source: Some(source),
+        };
+
+        let diagnostic = bounded_error_chain(&error);
+
+        assert!(diagnostic.text.starts_with(
+            "package semantic output could not be prepared for transport"
+        ));
+        assert!(diagnostic.text.contains("stored semantic-image bytes contain 2048"));
+        assert!(diagnostic.text.contains("… intermediate causes omitted …"));
+        assert!(diagnostic.truncated);
+        assert!(
+            diagnostic.text.len()
+                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
+        );
+    }
+
+    #[test]
+    fn bounded_authority_diagnostic_sanitizes_nul_and_preserves_utf8() {
+        let error = ChainDiagnosticError {
+            message: format!("résultat\0{}", "🦀".repeat(200)),
+            source: None,
+        };
+
+        let diagnostic = bounded_error_chain(&error);
+
+        assert!(diagnostic.text.starts_with("résultat "));
+        assert!(!diagnostic.text.contains('\0'));
+        assert!(diagnostic.text.is_char_boundary(diagnostic.text.len()));
+        assert!(diagnostic.text.ends_with('…'));
+        assert!(diagnostic.truncated);
+        assert!(
+            diagnostic.text.len()
+                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
+        );
+    }
+
+    #[derive(Debug)]
+    struct CyclicDiagnosticError;
+
+    static CYCLIC_DIAGNOSTIC_ERROR: OnceLock<CyclicDiagnosticError> = OnceLock::new();
+
+    impl fmt::Display for CyclicDiagnosticError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("cyclic package authority error")
+        }
+    }
+
+    impl StdError for CyclicDiagnosticError {
+        fn source(&self) -> Option<&(dyn StdError + 'static)> {
+            CYCLIC_DIAGNOSTIC_ERROR
+                .get()
+                .map(|error| error as &(dyn StdError + 'static))
+        }
+    }
+
+    #[test]
+    fn bounded_authority_diagnostic_stops_a_cyclic_source_chain() {
+        let error = CYCLIC_DIAGNOSTIC_ERROR.get_or_init(|| CyclicDiagnosticError);
+
+        let diagnostic = bounded_error_chain(error);
+
+        assert!(diagnostic.text.contains("error source cycle detected"));
+        assert!(diagnostic.truncated);
+        assert!(
+            diagnostic.text.len()
+                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
+        );
+    }
+
+    #[test]
+    fn bounded_authority_diagnostic_marks_causes_beyond_its_depth_limit() {
+        let mut source: Box<dyn StdError> = Box::new(ChainDiagnosticError {
+            message: "cause beyond depth limit".to_owned(),
+            source: None,
+        });
+        for ordinal in (0..=super::MAX_PACKAGE_AUTHORITY_ERROR_CAUSES).rev() {
+            source = Box::new(ChainDiagnosticError {
+                message: format!("cause {ordinal}"),
+                source: Some(source),
+            });
+        }
+        let error = ChainDiagnosticError {
+            message: "package authority failed".to_owned(),
+            source: Some(source),
+        };
+
+        let diagnostic = bounded_error_chain(&error);
+
+        assert!(diagnostic.text.contains("cause 7"));
+        assert!(diagnostic
+            .text
+            .contains("additional causes omitted after depth limit"));
+        assert!(!diagnostic.text.contains("cause beyond depth limit"));
+        assert!(diagnostic.truncated);
+        assert!(
+            diagnostic.text.len()
+                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
+        );
+    }
 
     #[test]
     fn staged_output_diagnostic_exposes_typed_transport_cause_and_keeps_source_chain() {
@@ -3758,6 +4131,9 @@ mod tests {
         );
         let source = std::error::Error::source(&error).expect("typed publication source");
         assert!(source.is::<crate::publication::PublishSemanticError>());
+        let diagnostic = bounded_error_chain(&error);
+        assert!(diagnostic.text.contains("semantic image bytes contain 256 bytes"));
+        assert!(!diagnostic.truncated);
     }
 
     #[derive(Debug, Error)]
