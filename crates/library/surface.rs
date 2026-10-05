@@ -3238,22 +3238,25 @@ impl SurfaceReply {
                 page.rows.len()
             }
             Self::SemanticVersions(records) => {
-                let mut selected = 0_usize;
-                let mut selected_frontier = None;
+                let mut selected_targets = BTreeSet::new();
+                let mut response_package = None;
+                let mut selected_frontier: Option<Option<&SelectedProjectSourceFrontier>> = None;
                 for record in records {
                     record.admit()?;
-                    selected = selected.saturating_add(usize::from(record.selected));
-                    if record.selected
-                        && let Some(frontier) = &record.selected_source_frontier
-                    {
+                    if response_package.is_some_and(|prior| prior != &record.package) {
+                        return Err(ProductAdmissionError::SemanticVersionShape);
+                    }
+                    response_package = Some(&record.package);
+                    if record.selected {
+                        if !selected_targets.insert((record.coordinate.as_str(), record.profile)) {
+                            return Err(ProductAdmissionError::SemanticVersionShape);
+                        }
+                        let frontier = record.selected_source_frontier.as_ref();
                         if selected_frontier.is_some_and(|prior| prior != frontier) {
                             return Err(ProductAdmissionError::SemanticVersionShape);
                         }
                         selected_frontier = Some(frontier);
                     }
-                }
-                if selected > 1 {
-                    return Err(ProductAdmissionError::SemanticVersionShape);
                 }
                 records.len()
             }
@@ -3958,6 +3961,88 @@ mod tests {
         assert_eq!(
             registry_package.admit(),
             Err(ProductAdmissionError::SemanticVersionShape)
+        );
+    }
+
+    #[test]
+    fn semantic_versions_admit_one_selection_per_coordinate_and_profile() {
+        let package = PackageReference::parse("/workspace/multi-language").expect("local project");
+        let frontier = SelectedProjectSourceFrontier {
+            package: package.clone(),
+            source_relation_root: [0x31; 32],
+            source_version: [0x32; 32],
+            file_count: 3_000,
+        };
+        let record = |coordinate: &str, profile: &str, generation: u8| SemanticVersionRecord {
+            package: package.clone(),
+            coordinate: PackageCoordinate::parse(coordinate).expect("semantic coordinate"),
+            profile: SemanticLanguageProfile::from_name(profile).expect("profile"),
+            generation: SemanticGenerationId::new([generation; 32]),
+            generation_root: [generation.wrapping_add(1); 32],
+            dependency_set: [generation.wrapping_add(2); 32],
+            manifest: [generation.wrapping_add(3); 32],
+            artifacts: 1,
+            semantic_bytes: 1,
+            complete: true,
+            selected: true,
+            freshness: SemanticVersionFreshness::Current {
+                input_digest: [generation.wrapping_add(4); 32],
+            },
+            history_status: SemanticHistoryPublicationStatus::NotSelected,
+            selected_source_frontier: Some(frontier.clone()),
+        };
+
+        let rust = record("pkg:cargo/workspace@1.0.0", "rust", 0x40);
+        let csharp = record("pkg:nuget/workspace@1.0.0", "csharp", 0x50);
+        let alias = record("pkg:cargo/workspace-helper@1.0.0", "rust", 0x60);
+        assert_eq!(
+            SurfaceReply::SemanticVersions(vec![rust.clone(), csharp, alias].into_boxed_slice())
+                .admit(),
+            Ok(()),
+            "the response contains two profiles and a distinct supported package coordinate"
+        );
+
+        let mut retained_history = rust.clone();
+        retained_history.selected = false;
+        retained_history.selected_source_frontier = None;
+        retained_history.generation = SemanticGenerationId::new([0x61; 32]);
+        retained_history.freshness = SemanticVersionFreshness::Historical {
+            selected_input: [0x62; 32],
+            latest_input: [0x63; 32],
+        };
+        assert_eq!(
+            SurfaceReply::SemanticVersions(vec![rust.clone(), retained_history].into_boxed_slice())
+                .admit(),
+            Ok(()),
+            "a retained unselected generation may share its exact target with the selection"
+        );
+
+        let duplicate_target = record("pkg:cargo/workspace@1.0.0", "rust", 0x70);
+        assert_eq!(
+            SurfaceReply::SemanticVersions(vec![rust.clone(), duplicate_target].into_boxed_slice())
+                .admit(),
+            Err(ProductAdmissionError::SemanticVersionShape),
+            "one coordinate/profile target cannot select two generations"
+        );
+
+        let missing_frontier = record("pkg:nuget/workspace@1.0.0", "csharp", 0x80);
+        let mut missing_frontier = missing_frontier;
+        missing_frontier.selected_source_frontier = None;
+        assert_eq!(
+            SurfaceReply::SemanticVersions(vec![rust.clone(), missing_frontier].into_boxed_slice())
+                .admit(),
+            Err(ProductAdmissionError::SemanticVersionShape),
+            "all selected profiles in one query must share evidence presence and identity"
+        );
+
+        let mut other_frontier = frontier;
+        other_frontier.source_relation_root = [0x99; 32];
+        let mut conflicting = record("pkg:nuget/workspace@1.0.0", "csharp", 0x90);
+        conflicting.selected_source_frontier = Some(other_frontier);
+        assert_eq!(
+            SurfaceReply::SemanticVersions(vec![rust, conflicting].into_boxed_slice()).admit(),
+            Err(ProductAdmissionError::SemanticVersionShape),
+            "selected profiles cannot claim different owner snapshots"
         );
     }
 
