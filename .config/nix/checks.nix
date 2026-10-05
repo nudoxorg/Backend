@@ -264,7 +264,9 @@ in
     };
     build = ''
       backend agents verify
-      nu --no-config-file ${../nu/tests.nu}
+      # From the .config snapshot rather than a lone copy of tests.nu, so its
+      # relative `use ../ci/emulated.nu` resolves.
+      nu --no-config-file ${../.}/nu/tests.nu
       mkdir ($env.out | path join "share")
       "validated" | save ($env.out | path join "share" "tooling-contracts")
     '';
