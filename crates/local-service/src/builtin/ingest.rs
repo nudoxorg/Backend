@@ -2227,6 +2227,7 @@ fn scan_one(
         .strip_prefix(root)
         .map_err(|_| SourceFault::Fatal("source path escaped its project root".to_owned()))?;
     let bytes = root_capability.read(relative_path)?;
+    let source_bytes = bytes.len();
     let relative = relative_path
         .to_string_lossy()
         .replace(std::path::MAIN_SEPARATOR, "/");
@@ -2273,16 +2274,19 @@ fn scan_one(
         .map_err(SourceFault::Fatal);
     }
 
-    let source = std::str::from_utf8(&bytes)
-        .map_err(|_| SourceFault::UnavailableRead(SourceUnavailableReason::NotText, bytes.len()))?
-        .to_owned();
+    // The read is capped by MAX_SOURCE_BYTES. Move that bounded buffer into
+    // its UTF-8 owner to avoid a second per-file source allocation; project-
+    // level retained sources are still governed by their separate budgets.
+    let source = String::from_utf8(bytes).map_err(|error| {
+        SourceFault::UnavailableRead(SourceUnavailableReason::NotText, error.as_bytes().len())
+    })?;
     // Structural parsing is an explicit baseline projection for local browsing.
     // Package semantics are compiled and published by the engine application module.
     let analyzed = frontend
         .baseline
-        .analyze(Path::new(&relative), &bytes)
+        .analyze(Path::new(&relative), source.as_bytes())
         .map_err(|_| {
-            SourceFault::UnavailableRead(SourceUnavailableReason::Unparsed, bytes.len())
+            SourceFault::UnavailableRead(SourceUnavailableReason::Unparsed, source_bytes)
         })?;
     debug_assert_eq!(analyzed.language(), frontend.language());
     debug_assert_eq!(analyzed.content().to_bytes(), content);
@@ -2306,15 +2310,15 @@ fn scan_one(
     // comparing content identity instead of path sets.
     .with_source_identity(backend_version::ContentId::<
         backend_version::SourceFactDomain,
-    >::from_canonical_bytes(&bytes))
+    >::from_canonical_bytes(source.as_bytes()))
     .map_err(SourceFault::Fatal)?;
     scanned_file(
         relative,
         key,
         record,
         source,
-        bytes.len(),
-        bytes.len(),
+        source_bytes,
+        source_bytes,
         path,
         profile,
     )
@@ -4262,11 +4266,16 @@ mod robustness_tests {
     fn a_binary_file_is_reported_as_not_text_without_failing_the_project() -> Result<(), String> {
         let scratch = scratch("binary")?;
         fs::write(scratch.0.join("good.rs"), good_source()).map_err(|e| e.to_string())?;
-        fs::write(scratch.0.join("blob.rs"), [0xffu8, 0xfe, 0x00, 0x80, 0x81])
-            .map_err(|e| e.to_string())?;
+        let invalid = [0xffu8, 0xfe, 0x00, 0x80, 0x81];
+        fs::write(scratch.0.join("blob.rs"), invalid).map_err(|e| e.to_string())?;
 
         let scan = scan(&scratch)?;
 
+        assert_eq!(
+            scan.source_bytes_read,
+            good_source().len() + invalid.len(),
+            "invalid UTF-8 remains charged by its exact original byte length"
+        );
         assert_eq!(
             retention_of(&scan, "blob.rs"),
             Some(DeclarationRetention::Unavailable(
@@ -4275,6 +4284,34 @@ mod robustness_tests {
             "non-UTF-8 bytes are a fact about one file, not about the project"
         );
         assert!(names_of(&scan, "good.rs").iter().any(|n| n == "ferris"));
+        Ok(())
+    }
+
+    #[test]
+    fn valid_non_ascii_source_keeps_exact_bytes_and_content_identity() -> Result<(), String> {
+        let scratch = scratch("non-ascii")?;
+        let source = "pub fn greeting() -> &'static str { \"café\" }\n".as_bytes();
+        fs::write(scratch.0.join("greeting.rs"), source).map_err(|error| error.to_string())?;
+
+        let scan = scan(&scratch)?;
+
+        assert_eq!(scan.source_bytes_read, source.len());
+        assert_eq!(scan.compiler_sources.len(), 1);
+        assert_eq!(scan.compiler_sources[0].source.as_bytes(), source);
+        let fields = scan.files[0]
+            .1
+            .file_fields()
+            .ok_or("expected a source file row")?;
+        assert_eq!(
+            fields.content_version,
+            typed_of::<InputContentSchema>(source).to_bytes(),
+            "source identity remains based on the exact UTF-8 bytes"
+        );
+        assert!(
+            names_of(&scan, "greeting.rs")
+                .iter()
+                .any(|name| name == "greeting")
+        );
         Ok(())
     }
 
