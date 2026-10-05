@@ -3617,9 +3617,9 @@ fn bounded_error_chain(error: &(dyn std::error::Error + 'static)) -> BoundedErro
         MAX_PACKAGE_AUTHORITY_ERROR_CAUSES + 1] = [None; MAX_PACKAGE_AUTHORITY_ERROR_CAUSES + 1];
     seen[0] = Some(error);
     let mut seen_count = 1;
-    let mut previous = bounded_error_display(error, MAX_BYTES);
-    let mut truncated = previous.truncated;
-    messages.push(previous.text.clone());
+    let first = bounded_error_display(error, MAX_BYTES);
+    let mut truncated = first.truncated;
+    messages.push(first.text);
     let mut next = error.source();
     let mut cycle_detected = false;
 
@@ -3640,10 +3640,12 @@ fn bounded_error_chain(error: &(dyn std::error::Error + 'static)) -> BoundedErro
 
         let message = bounded_error_display(cause, MAX_BYTES);
         truncated |= message.truncated;
-        if !previous.text.ends_with(&message.text) {
-            messages.push(message.text.clone());
+        if !messages
+            .last()
+            .is_some_and(|previous| previous.ends_with(&message.text))
+        {
+            messages.push(message.text);
         }
-        previous = message;
         next = cause.source();
     }
 
@@ -3740,62 +3742,76 @@ fn bounded_error_display(
     error: &dyn std::fmt::Display,
     maximum_bytes: usize,
 ) -> BoundedErrorMessage {
+    const HEAD_BYTES: usize = 96;
+    const TRUNCATION_MARKER: &str = "…";
+    let tail_bytes = maximum_bytes
+        .saturating_sub(HEAD_BYTES)
+        .saturating_sub(TRUNCATION_MARKER.len());
     let mut output = BoundedErrorMessageWriter {
         text: String::with_capacity(maximum_bytes),
         maximum_bytes,
-        truncated: false,
+        tail: std::collections::VecDeque::with_capacity(tail_bytes),
+        tail_bytes,
+        current_tail_bytes: 0,
+        observed_bytes: 0,
     };
-    let _ = write!(&mut output, "{error}");
+    let formatting_failed = write!(&mut output, "{error}").is_err();
+    let truncated = formatting_failed || output.observed_bytes > maximum_bytes;
+    let text = if output.observed_bytes > maximum_bytes {
+        let tail: String = output.tail.into_iter().collect();
+        let head_budget = maximum_bytes
+            .saturating_sub(TRUNCATION_MARKER.len())
+            .saturating_sub(tail.len())
+            .min(HEAD_BYTES);
+        let mut boundary = output.text.len().min(head_budget);
+        while !output.text.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        let mut clipped = String::with_capacity(maximum_bytes);
+        clipped.push_str(&output.text[..boundary]);
+        clipped.push_str(TRUNCATION_MARKER);
+        clipped.push_str(&tail);
+        clipped
+    } else {
+        output.text
+    };
     BoundedErrorMessage {
-        text: output.text,
-        truncated: output.truncated,
+        text,
+        truncated,
     }
 }
 
 struct BoundedErrorMessageWriter {
     text: String,
     maximum_bytes: usize,
-    truncated: bool,
+    tail: std::collections::VecDeque<char>,
+    tail_bytes: usize,
+    current_tail_bytes: usize,
+    observed_bytes: usize,
 }
 
 impl std::fmt::Write for BoundedErrorMessageWriter {
     fn write_str(&mut self, value: &str) -> std::fmt::Result {
-        if self.truncated {
-            return Err(std::fmt::Error);
-        }
-        const TRUNCATION_MARKER: &str = "…";
-        let remaining = self.maximum_bytes.saturating_sub(self.text.len());
-        if value.len() <= remaining {
-            self.text.extend(value.chars().map(|character| {
-                if character == '\0' {
-                    ' '
-                } else {
-                    character
-                }
-            }));
-            return Ok(());
-        }
-        let content_budget = remaining.saturating_sub(TRUNCATION_MARKER.len());
-        let mut boundary = value.len().min(content_budget);
-        while !value.is_char_boundary(boundary) {
-            boundary -= 1;
-        }
-        self.text.extend(
-            value[..boundary]
-                .chars()
-                .map(|character| {
-                    if character == '\0' {
-                        ' '
-                    } else {
-                        character
+        // Consume the whole Display stream so an oversized message still retains its true tail;
+        // the prefix and rolling tail buffers have fixed byte limits.
+        for character in value.chars() {
+            let character = if character == '\0' { ' ' } else { character };
+            let character_bytes = character.len_utf8();
+            self.observed_bytes = self.observed_bytes.saturating_add(character_bytes);
+            if self.text.len().saturating_add(character_bytes) <= self.maximum_bytes {
+                self.text.push(character);
+            }
+            if self.tail_bytes != 0 {
+                self.tail.push_back(character);
+                self.current_tail_bytes += character_bytes;
+                while self.current_tail_bytes > self.tail_bytes {
+                    if let Some(removed) = self.tail.pop_front() {
+                        self.current_tail_bytes -= removed.len_utf8();
                     }
-                }),
-        );
-        if remaining >= TRUNCATION_MARKER.len() {
-            self.text.push_str(TRUNCATION_MARKER);
+                }
+            }
         }
-        self.truncated = true;
-        Err(std::fmt::Error)
+        Ok(())
     }
 }
 
@@ -4051,6 +4067,33 @@ mod tests {
             diagnostic.text.len()
                 <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
         );
+    }
+
+    #[test]
+    fn bounded_authority_diagnostic_keeps_long_terminal_tail_at_exact_utf8_limit() {
+        let terminal = format!(
+            "{}🧭 expected length 4096 but observed length 2048",
+            "x".repeat(600)
+        );
+        let error = ChainDiagnosticError {
+            message: "authority failure for résumé".to_owned(),
+            source: Some(Box::new(ChainDiagnosticError {
+                message: terminal,
+                source: None,
+            })),
+        };
+
+        let diagnostic = bounded_error_chain(&error);
+
+        assert_eq!(
+            diagnostic.text.len(),
+            backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
+        );
+        assert!(diagnostic.text.starts_with("authority failure for résumé"));
+        assert!(diagnostic.text.contains('🧭'));
+        assert!(diagnostic.text.ends_with("observed length 2048"));
+        assert!(diagnostic.text.is_char_boundary(diagnostic.text.len()));
+        assert!(diagnostic.truncated);
     }
 
     #[derive(Debug)]
