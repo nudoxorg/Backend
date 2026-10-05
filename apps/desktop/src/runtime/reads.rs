@@ -2727,15 +2727,17 @@ mod tests {
             release: Arc::clone(&release),
         })
         .expect("read pool");
-        pool.submit(ReadJob {
-            key: PageKey::Health,
-            request: ReadRequest::Health,
-            generation: Generation::new(1).expect("nonzero fixture generation"),
-            priority: Priority::Normal,
-            cancel: CancellationToken::new(),
-            affinity: None,
-        })
-        .expect("admitted");
+        let admitted = pool
+            .submit(ReadJob {
+                key: PageKey::Health,
+                request: ReadRequest::Health,
+                generation: Generation::new(1).expect("nonzero fixture generation"),
+                priority: Priority::Normal,
+                cancel: CancellationToken::new(),
+                affinity: None,
+            })
+            .expect("admitted");
+        assert!(admitted.evicted.is_none());
         started
             .recv_timeout(Duration::from_secs(2))
             .expect("stage reached UI queue");
@@ -3002,14 +3004,16 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(harness.started().1, "slow-busy");
-        harness
+        let admitted = harness
             .pool
             .submit(job("fast-hover", 2, Priority::Prefetch))
             .expect("admitted");
-        harness
+        assert!(admitted.evicted.is_none());
+        let admitted = harness
             .pool
             .submit(job("fast-dropped", 3, Priority::Prefetch))
             .expect("admitted");
+        assert!(admitted.evicted.is_none());
         assert!(
             harness
                 .pool
@@ -3038,10 +3042,11 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(harness.started().1, "slow-busy");
-        harness
+        let admitted = harness
             .pool
             .submit(job("fast-hover", 2, Priority::Prefetch))
             .expect("admitted");
+        assert!(admitted.evicted.is_none());
         assert!(
             harness
                 .pool
@@ -3072,10 +3077,11 @@ mod tests {
         let mut harness = harness(2);
         let mut receiver = harness.pool.take_wake().expect("wake receiver");
         for round in 0..8 {
-            harness
+            let admitted = harness
                 .pool
                 .submit(job(&format!("fast-{round}"), round + 1, Priority::Normal))
                 .expect("admitted");
+            assert!(admitted.evicted.is_none());
         }
         crate::runtime::wait::until("all eight terminals published", || {
             harness.pool.load().undelivered == 8 && receiver.counts().0 == 8
