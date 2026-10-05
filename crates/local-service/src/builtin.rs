@@ -66,10 +66,10 @@ mod profile;
 #[path = "builtin/source_frontier.rs"]
 mod source_frontier;
 use profile::{
-    BuiltinAuthorityVerifier, BuiltinProfile, BuiltinSemanticChange, BuiltinSemanticRelation,
-    BuiltinSourceChange, BuiltinValidator, BuiltinWorkspaceRelation, ProfileDescriptor, ProfileIds,
-    builtin_dispatcher, execution_manifest, execution_resources, product_dependency_manifest,
-    profile_descriptor,
+    BuiltinAuthorityVerifier, BuiltinCaptureChange, BuiltinProfile, BuiltinSemanticChange,
+    BuiltinSemanticRelation, BuiltinSourceChange, BuiltinValidator, BuiltinWorkspaceRelation,
+    ProfileDescriptor, ProfileIds, builtin_dispatcher, execution_manifest, execution_resources,
+    product_dependency_manifest, profile_descriptor,
 };
 pub use profile::{BuiltinIntent, BuiltinModel, BuiltinModelError};
 
@@ -369,7 +369,11 @@ fn genesis_closure(
         .with_relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
         .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?;
+        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+        .map_err(|error| {
+            BuiltinModelError(format!("register semantic capture relation: {error:?}"))
+        })?;
     WorkspaceClosure::from_checked_transition_with_registry(
         manifest,
         &checked_transition,
@@ -389,6 +393,8 @@ pub(super) struct LazyClosureUpdate<'a> {
     pub(super) semantic_root: backend_engine::StateRoot<BuiltinSemanticRelation>,
     pub(super) transaction: TransactionId,
     pub(super) intent: &'a BuiltinIntent,
+    pub(super) capture_objects: &'a [TypedObject],
+    pub(super) capture_pointer: Option<&'a TypedObject>,
 }
 
 fn transition_closure_lazy(
@@ -409,11 +415,19 @@ fn transition_closure_lazy(
         &transaction_key,
         &transaction_bytes[..],
     ));
+    objects.extend(update.capture_objects.iter().cloned());
+    if let Some(pointer) = update.capture_pointer {
+        objects.push(pointer.clone());
+    }
     let registry = RelationAdmissionRegistry::new()
         .with_relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
         .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?;
+        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+        .map_err(|error| {
+            BuiltinModelError(format!("register semantic capture relation: {error:?}"))
+        })?;
     if update.changed_sources.is_empty() {
         WorkspaceClosure::extend_checked_nodes_with_registry(
             base,
@@ -486,7 +500,9 @@ pub(crate) fn open_empty_owner(workspace: &Path) -> Result<EmptyOwner, String> {
         .with_relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| format!("register source relation: {error:?}"))?
         .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| format!("register semantic relation: {error:?}"))?;
+        .map_err(|error| format!("register semantic relation: {error:?}"))?
+        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+        .map_err(|error| format!("register semantic capture relation: {error:?}"))?;
     let daemon = crate::Locald::open_with_dispatcher_and_registry(
         workspace,
         BuiltinModel,
@@ -541,7 +557,11 @@ fn head_from_relation(
         .with_relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
         .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?;
+        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+        .map_err(|error| {
+            BuiltinModelError(format!("register semantic capture relation: {error:?}"))
+        })?;
     WorkspaceHead::genesis_with_registry(manifest, closure, &registry)
         .map_err(|error| BuiltinModelError(error.to_string()))
 }
@@ -1486,7 +1506,11 @@ pub(crate) fn compose_owner(
         .with_relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| ProcessError::Profile(format!("register builtin relation: {error:?}")))?
         .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| ProcessError::Profile(format!("register semantic relation: {error:?}")))?;
+        .map_err(|error| ProcessError::Profile(format!("register semantic relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+        .map_err(|error| {
+            ProcessError::Profile(format!("register semantic capture relation: {error:?}"))
+        })?;
     let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
         &config.workspace,
         BuiltinModel,
@@ -2376,7 +2400,9 @@ mod owner_fairness_tests {
             .with_relation::<BuiltinWorkspaceRelation>()
             .expect("workspace relation registry")
             .with_relation::<BuiltinSemanticRelation>()
-            .expect("semantic relation registry");
+            .expect("semantic relation registry")
+            .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+            .expect("semantic capture relation registry");
         let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
             directory,
             BuiltinModel,
