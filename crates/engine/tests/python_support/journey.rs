@@ -2,7 +2,7 @@ use super::python_support;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum Error {
+pub(crate) enum Error {
     #[error(transparent)]
     Support(#[from] python_support::Error),
     #[error("malformed PURL: {input}")]
@@ -14,7 +14,7 @@ pub enum Error {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LayoutClass {
+pub(crate) enum LayoutClass {
     FlatSingleModule,
     FlatPackageDir,
     SrcLayout,
@@ -27,13 +27,13 @@ use std::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Purl {
+pub(crate) struct Purl {
     pub ecosystem: String,
     pub name: String,
     pub version: String,
 }
 impl Purl {
-    pub fn parse(input: &str) -> Result<Self, Error> {
+    pub(crate) fn parse(input: &str) -> Result<Self, Error> {
         let mut parts = input.split('@');
         let Some(left) = parts.next() else {
             return Err(Error::Purl {
@@ -79,7 +79,7 @@ fn transport() -> ureq::Agent {
         .build()
         .new_agent()
 }
-pub fn locate(purl: &Purl) -> Result<(String, [u8; 32], String), Error> {
+pub(crate) fn locate(purl: &Purl) -> Result<(String, [u8; 32], String), Error> {
     let url = format!("https://pypi.org/pypi/{}/{}/json", purl.name, purl.version);
     let response = transport()
         .get(&url)
@@ -158,7 +158,7 @@ fn decode_hex64(text: &str) -> Result<[u8; 32], Error> {
     }
     Ok(out)
 }
-pub fn find_primary(root: &Path, class: LayoutClass, suffix: &[&str]) -> Result<PathBuf, Error> {
+pub(crate) fn find_primary(root: &Path, class: LayoutClass, suffix: &[&str]) -> Result<PathBuf, Error> {
     fn walk(path: &Path, suffix: &[&str], found: &mut Vec<PathBuf>) -> io::Result<()> {
         for entry in std::fs::read_dir(path)? {
             let path = entry?.path();

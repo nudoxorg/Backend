@@ -15,11 +15,11 @@ use std::{
 use thiserror::Error;
 
 /// Per-entry uncompressed-byte bound enforced from the central directory.
-pub const ENTRY_BOUND: usize = 4 * 1024 * 1024;
+pub(crate) const ENTRY_BOUND: usize = 4 * 1024 * 1024;
 /// Total unpacked-byte bound enforced across every entry.
-pub const UNPACK_BOUND: usize = 32 * 1024 * 1024;
+pub(crate) const UNPACK_BOUND: usize = 32 * 1024 * 1024;
 /// Central-entry count bound.
-pub const ENTRY_COUNT_BOUND: usize = 4096;
+pub(crate) const ENTRY_COUNT_BOUND: usize = 4096;
 /// Bounded readback of one produced authority image.
 const IMAGE_BOUND: usize = 32 * 1024 * 1024;
 /// Fixed byte width of one ZIP central-directory entry.
@@ -39,7 +39,7 @@ const END_SIGNATURE: u32 = 0x0605_4b50;
 const U32_SENTINEL: usize = u32::MAX as usize;
 
 #[derive(Debug, Error)]
-pub enum Error {
+pub(crate) enum Error {
     #[error("malformed PURL: {input}")]
     Purl { input: String },
     #[error("network request failed: {source}")]
@@ -84,7 +84,7 @@ pub enum Error {
 
 /// Exact structural cause of one ZIP rejection.
 #[derive(Debug, Error)]
-pub enum ArchiveCause {
+pub(crate) enum ArchiveCause {
     #[error("end-of-central-directory record missing or truncated")]
     EndRecord,
     #[error("central directory escapes the archive bytes")]
@@ -116,7 +116,7 @@ pub enum ArchiveCause {
 /// shares the outcome across every journey, so its failure side must be
 /// cloneable; `From<SetupFault> for Error` maps each variant exactly.
 #[derive(Clone, Debug, Error)]
-pub enum SetupFault {
+pub(crate) enum SetupFault {
     #[error("no C# oracle toolchain: COMPILER_CSHARP_COMPILER is unset and no PATH dotnet exists")]
     Toolchain,
     #[error("oracle publish failed: {cause}")]
@@ -133,7 +133,7 @@ impl From<SetupFault> for Error {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Purl {
+pub(crate) struct Purl {
     pub ecosystem: String,
     pub name: String,
     pub version: String,
@@ -142,7 +142,7 @@ pub struct Purl {
 /// Parses `nuget:ID@VERSION`, rejecting any other ecosystem, a missing or
 /// empty version, a double `@`, or an empty package id.
 impl Purl {
-    pub fn parse(input: &str) -> Result<Self, Error> {
+    pub(crate) fn parse(input: &str) -> Result<Self, Error> {
         let fault = || Error::Purl {
             input: input.into(),
         };
@@ -166,7 +166,7 @@ impl Purl {
     }
 }
 
-pub fn sha512(bytes: &[u8]) -> [u8; 64] {
+pub(crate) fn sha512(bytes: &[u8]) -> [u8; 64] {
     Sha512::digest(bytes).into()
 }
 
@@ -189,7 +189,7 @@ fn transport() -> ureq::Agent {
 /// identical base64 SHA-512 the sidecar used to hold. Whichever source
 /// answers, the bytes travel through the same base64 decoder and the same
 /// typed errors.
-pub fn locate(purl: &Purl) -> Result<(String, [u8; 64]), Error> {
+pub(crate) fn locate(purl: &Purl) -> Result<(String, [u8; 64]), Error> {
     let id = purl.name.to_ascii_lowercase();
     let version = purl.version.to_ascii_lowercase();
     let base = format!("https://api.nuget.org/v3-flatcontainer/{id}/{version}");
@@ -290,7 +290,7 @@ fn decode_base64_sha512(text: &str) -> Result<[u8; 64], Error> {
     Ok(out)
 }
 
-pub fn download(url: &str, cap: usize, deadline: Instant) -> Result<Vec<u8>, Error> {
+pub(crate) fn download(url: &str, cap: usize, deadline: Instant) -> Result<Vec<u8>, Error> {
     let response = transport()
         .get(url)
         .call()
@@ -332,7 +332,7 @@ pub fn download(url: &str, cap: usize, deadline: Instant) -> Result<Vec<u8>, Err
 /// Every bound (entry count, per-entry bytes, total bytes) comes from the
 /// central-directory records, never from the local headers; every written
 /// path is checked against root escape before any byte is written.
-pub fn unpack(bytes: &[u8], root: &Path) -> Result<(), Error> {
+pub(crate) fn unpack(bytes: &[u8], root: &Path) -> Result<(), Error> {
     let end = end_record(bytes)?;
     let total = narrow_u16(bytes, end + 10, ArchiveCause::EndRecord)?;
     let directory_size = narrow_u32(bytes, end + 12, ArchiveCause::EndRecord)?;
@@ -608,7 +608,7 @@ fn entry_data<'bytes>(bytes: &'bytes [u8], entry: &CentralEntry) -> Result<&'byt
 /// Locates the configured dotnet executable: `COMPILER_CSHARP_COMPILER`
 /// first, then a PATH `dotnet`; a missing tool is a typed terminal, never a
 /// skip.
-pub fn dotnet_executable() -> Result<PathBuf, Error> {
+pub(crate) fn dotnet_executable() -> Result<PathBuf, Error> {
     if let Some(configured) = std::env::var_os("COMPILER_CSHARP_COMPILER") {
         let path = PathBuf::from(configured);
         if path.is_file() {
@@ -694,7 +694,7 @@ fn publish_oracle() -> Result<PathBuf, SetupFault> {
 
 /// The one oracle publish per process: every journey reuses the published
 /// `oracle.dll` from the process-wide cache.
-pub fn published_oracle() -> Result<&'static Path, Error> {
+pub(crate) fn published_oracle() -> Result<&'static Path, Error> {
     static PUBLISHED: OnceLock<Result<PathBuf, SetupFault>> = OnceLock::new();
     PUBLISHED
         .get_or_init(publish_oracle)
@@ -715,7 +715,7 @@ fn excerpt(bytes: &[u8]) -> String {
 /// `roots` are the compiled source directories, `binding` is the exact
 /// source file whose raw bytes the image digests, and the run is bounded by
 /// `deadline`: a run that outlives it is killed and rejected typed.
-pub fn authority_image(
+pub(crate) fn authority_image(
     roots: &[&Path],
     assembly: &str,
     binding: &Path,
@@ -786,7 +786,7 @@ pub fn authority_image(
 /// Creates one uniquely-named temporary fixture directory; a leftover
 /// directory from an aborted earlier run must never be silently reused as
 /// this run's journal, artifact store, or unpack root.
-pub fn fresh_dir(label: &str) -> Result<PathBuf, Error> {
+pub(crate) fn fresh_dir(label: &str) -> Result<PathBuf, Error> {
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
@@ -798,7 +798,7 @@ pub fn fresh_dir(label: &str) -> Result<PathBuf, Error> {
 }
 
 /// Resolves the pinned primary source by its exact archive-relative path.
-pub fn primary(root: &Path, relative: &str) -> Result<PathBuf, Error> {
+pub(crate) fn primary(root: &Path, relative: &str) -> Result<PathBuf, Error> {
     let path = root.join(relative);
     if path.is_file() {
         Ok(path)
@@ -809,7 +809,7 @@ pub fn primary(root: &Path, relative: &str) -> Result<PathBuf, Error> {
 
 /// Copies one directory tree recursively, preserving file contents. Used to
 /// stage the second-generation probe copy of an unpacked package.
-pub fn copy_dir(source: &Path, destination: &Path) -> Result<(), Error> {
+pub(crate) fn copy_dir(source: &Path, destination: &Path) -> Result<(), Error> {
     std::fs::create_dir_all(destination).map_err(|source| Error::Io { source })?;
     for entry in std::fs::read_dir(source).map_err(|source| Error::Io { source })? {
         let entry = entry.map_err(|source| Error::Io { source })?;

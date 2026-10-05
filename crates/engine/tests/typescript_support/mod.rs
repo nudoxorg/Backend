@@ -9,19 +9,19 @@ use std::{
 use thiserror::Error;
 
 /// Maximum bytes retained from one registry metadata response.
-pub const METADATA_CAP: usize = 4 * 1024 * 1024;
+pub(crate) const METADATA_CAP: usize = 4 * 1024 * 1024;
 /// Maximum compressed bytes retained from one registry archive.
-pub const ARCHIVE_CAP: usize = 32 * 1024 * 1024;
+pub(crate) const ARCHIVE_CAP: usize = 32 * 1024 * 1024;
 /// Maximum total extracted bytes admitted from one archive.
-pub const UNPACKED_CAP: usize = 128 * 1024 * 1024;
+pub(crate) const UNPACKED_CAP: usize = 128 * 1024 * 1024;
 /// date-fns publishes about 4,100 files; declaration-only extraction avoids the one-file budget overrun while retaining tar-bomb bounds.
-pub const DECLARATION_FILE_EXTENSIONS: [&str; 3] = [".d.ts", ".ts", "package.json"];
+pub(crate) const DECLARATION_FILE_EXTENSIONS: [&str; 3] = [".d.ts", ".ts", "package.json"];
 /// Global transport deadline, including response body consumption.
-pub const NETWORK_DEADLINE: Duration = Duration::from_secs(30);
+pub(crate) const NETWORK_DEADLINE: Duration = Duration::from_secs(30);
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Error)]
-pub enum Error {
+pub(crate) enum Error {
     #[error("malformed npm PURL: {input}")]
     Purl { input: String },
     #[error("network request failed: {source}")]
@@ -67,12 +67,12 @@ pub enum Error {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Purl {
+pub(crate) struct Purl {
     pub name: String,
     pub version: String,
 }
 impl Purl {
-    pub fn parse(input: &str) -> Result<Self, Error> {
+    pub(crate) fn parse(input: &str) -> Result<Self, Error> {
         let rest = input.strip_prefix("npm:").ok_or_else(|| Error::Purl {
             input: input.into(),
         })?;
@@ -94,10 +94,10 @@ impl Purl {
     }
 }
 
-pub fn sha256(bytes: &[u8]) -> [u8; 32] {
+pub(crate) fn sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
-pub fn hex(bytes: &[u8; 32]) -> String {
+pub(crate) fn hex(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -108,7 +108,7 @@ fn transport() -> ureq::Agent {
         .new_agent()
 }
 
-pub fn locate(purl: &Purl) -> Result<String, Error> {
+pub(crate) fn locate(purl: &Purl) -> Result<String, Error> {
     let (directory, base) = match purl.name.rsplit_once('/') {
         Some((scope, name)) if scope.starts_with('@') => {
             (format!("{scope}/{name}"), name.to_owned())
@@ -121,7 +121,7 @@ pub fn locate(purl: &Purl) -> Result<String, Error> {
     ))
 }
 
-pub fn download(url: &str, cap: usize, deadline: Instant) -> Result<Vec<u8>, Error> {
+pub(crate) fn download(url: &str, cap: usize, deadline: Instant) -> Result<Vec<u8>, Error> {
     let response = transport()
         .get(url)
         .call()
@@ -166,7 +166,7 @@ fn safe(path: &str) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn unpack(bytes: &[u8], root: &Path) -> Result<(), Error> {
+pub(crate) fn unpack(bytes: &[u8], root: &Path) -> Result<(), Error> {
     let mut decoder = GzDecoder::new(bytes);
     let mut tar = Vec::new();
     decoder
@@ -220,7 +220,7 @@ pub fn unpack(bytes: &[u8], root: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn unpack_declarations(bytes: &[u8], root: &Path) -> Result<(), Error> {
+pub(crate) fn unpack_declarations(bytes: &[u8], root: &Path) -> Result<(), Error> {
     let mut decoder = GzDecoder::new(bytes);
     let mut tar = Vec::new();
     decoder
@@ -283,7 +283,7 @@ pub fn unpack_declarations(bytes: &[u8], root: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn package_root(root: &Path, name: &str) -> Result<PathBuf, Error> {
+pub(crate) fn package_root(root: &Path, name: &str) -> Result<PathBuf, Error> {
     let wanted = format!("\"name\":\"{name}\"");
     fn walk(path: &Path, wanted: &str) -> io::Result<Option<PathBuf>> {
         for item in std::fs::read_dir(path)? {
@@ -308,7 +308,7 @@ pub fn package_root(root: &Path, name: &str) -> Result<PathBuf, Error> {
         .ok_or_else(|| Error::MissingPackage { name: name.into() })
 }
 
-pub fn entry(root: &Path) -> Result<PathBuf, Error> {
+pub(crate) fn entry(root: &Path) -> Result<PathBuf, Error> {
     let package = root.join("package.json");
     let value: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&package).map_err(|source| Error::Io { source })?)
@@ -338,7 +338,7 @@ pub fn entry(root: &Path) -> Result<PathBuf, Error> {
     Err(Error::MissingTypes { searched })
 }
 
-pub fn sibling_types(purl: &Purl) -> Purl {
+pub(crate) fn sibling_types(purl: &Purl) -> Purl {
     let name = match purl
         .name
         .strip_prefix('@')
@@ -359,7 +359,7 @@ pub fn sibling_types(purl: &Purl) -> Purl {
     }
 }
 
-pub fn fresh_dir(label: &str) -> Result<PathBuf, Error> {
+pub(crate) fn fresh_dir(label: &str) -> Result<PathBuf, Error> {
     let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
         "nudox-typescript-{label}-{}-{sequence}",

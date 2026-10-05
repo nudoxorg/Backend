@@ -8,7 +8,7 @@ use std::{
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum Error {
+pub(crate) enum Error {
     #[error("fixture filesystem operation at {path:?} failed: {source}")]
     Io {
         path: PathBuf,
@@ -28,7 +28,7 @@ fn io(path: &Path, source: io::Error) -> Error {
     }
 }
 
-pub const FIRST: &[(&str, &[u8])] = &[
+pub(crate) const FIRST: &[(&str, &[u8])] = &[
     (
         "Annotated.java",
         br#"/** {@link Record} */
@@ -46,7 +46,7 @@ public class Annotated {
     ),
 ];
 
-pub const CENTRAL_NAMES: [&str; 5] = [
+pub(crate) const CENTRAL_NAMES: [&str; 5] = [
     "org/apache/commons/lang3/tuple/Pair.java",
     "org/apache/commons/lang3/mutable/MutableInt.java",
     "org/apache/commons/lang3/arch/Processor.java",
@@ -56,11 +56,11 @@ pub const CENTRAL_NAMES: [&str; 5] = [
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-pub struct TempDir {
+pub(crate) struct TempDir {
     pub path: PathBuf,
 }
 impl TempDir {
-    pub fn new(label: &str) -> Result<Self, Error> {
+    pub(crate) fn new(label: &str) -> Result<Self, Error> {
         let path = std::env::temp_dir().join(format!(
             "nudox-java-lifecycle-{}-{}-{}-{label}",
             std::process::id(),
@@ -73,7 +73,7 @@ impl TempDir {
         fs::create_dir(&path).map_err(|e| io(&path, e))?;
         Ok(Self { path })
     }
-    pub fn remove(self) -> Result<(), Error> {
+    pub(crate) fn remove(self) -> Result<(), Error> {
         fs::remove_dir_all(&self.path).map_err(|e| io(&self.path, e))
     }
 }
@@ -83,14 +83,14 @@ impl Drop for TempDir {
     }
 }
 
-pub fn write_file(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+pub(crate) fn write_file(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
     }
     fs::write(path, bytes).map_err(|e| io(path, e))
 }
 
-pub fn jar(entries: &[(&str, &[u8], bool)]) -> Result<Vec<u8>, Error> {
+pub(crate) fn jar(entries: &[(&str, &[u8], bool)]) -> Result<Vec<u8>, Error> {
     let mut out = Vec::new();
     let mut central = Vec::new();
     for &(name, data, deflated) in entries {

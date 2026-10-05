@@ -8,7 +8,7 @@ use std::{
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum Error {
+pub(crate) enum Error {
     #[error("malformed PURL: {input}")]
     Purl { input: String },
     #[error("network request failed: {source}")]
@@ -51,14 +51,14 @@ pub enum Error {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Purl {
+pub(crate) struct Purl {
     pub ecosystem: String,
     pub name: String,
     pub version: String,
 }
 
 impl Purl {
-    pub fn parse(input: &str) -> Result<Self, Error> {
+    pub(crate) fn parse(input: &str) -> Result<Self, Error> {
         let (left, version) = input.split_once('@').ok_or_else(|| Error::Purl {
             input: input.into(),
         })?;
@@ -83,7 +83,7 @@ impl Purl {
     }
 }
 
-pub fn sha256(bytes: &[u8]) -> [u8; 32] {
+pub(crate) fn sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
@@ -112,7 +112,7 @@ fn agent() -> ureq::Agent {
         .new_agent()
 }
 
-pub fn locate(purl: &Purl) -> Result<(String, Option<[u8; 32]>), Error> {
+pub(crate) fn locate(purl: &Purl) -> Result<(String, Option<[u8; 32]>), Error> {
     let base = format!(
         "https://proxy.golang.org/{}/@v/{}",
         proxy_path(&purl.name),
@@ -161,7 +161,7 @@ pub fn locate(purl: &Purl) -> Result<(String, Option<[u8; 32]>), Error> {
 
 /// Applies the Go module proxy's case-escaping rule.  Uppercase path bytes
 /// are represented by `!` followed by their lowercase ASCII byte.
-pub fn proxy_path(path: &str) -> String {
+pub(crate) fn proxy_path(path: &str) -> String {
     path.chars()
         .flat_map(|character| {
             character
@@ -173,7 +173,7 @@ pub fn proxy_path(path: &str) -> String {
         .collect()
 }
 
-pub fn download(url: &str, cap: usize, deadline: Instant) -> Result<Vec<u8>, Error> {
+pub(crate) fn download(url: &str, cap: usize, deadline: Instant) -> Result<Vec<u8>, Error> {
     let response = agent()
         .get(url)
         .call()
@@ -236,7 +236,7 @@ fn u32_at(bytes: &[u8], at: usize) -> Result<u32, Error> {
         })
 }
 
-pub fn unpack(bytes: &[u8], root: &Path) -> Result<(), Error> {
+pub(crate) fn unpack(bytes: &[u8], root: &Path) -> Result<(), Error> {
     let mut eocd = None;
     for at in (0..bytes.len().saturating_sub(21)).rev() {
         if bytes[at..].starts_with(b"PK\x05\x06") {
@@ -311,7 +311,7 @@ pub fn unpack(bytes: &[u8], root: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn find_primary(root: &Path, module: &str, relative: &str) -> Result<PathBuf, Error> {
+pub(crate) fn find_primary(root: &Path, module: &str, relative: &str) -> Result<PathBuf, Error> {
     let path = root.join(module).join(relative);
     if path.is_file() {
         Ok(path)
@@ -319,7 +319,7 @@ pub fn find_primary(root: &Path, module: &str, relative: &str) -> Result<PathBuf
         Err(Error::MissingSource)
     }
 }
-pub fn fresh_dir(label: &str) -> Result<PathBuf, Error> {
+pub(crate) fn fresh_dir(label: &str) -> Result<PathBuf, Error> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let path = std::env::temp_dir().join(format!(
         "nudox-go-{label}-{}-{}",
@@ -332,7 +332,7 @@ pub fn fresh_dir(label: &str) -> Result<PathBuf, Error> {
 
 /// Assembles a proxy workspace for pre-module (+incompatible) releases.
 /// Modern module archives already carry their own manifest and are untouched.
-pub fn ensure_module(root: &Path, module: &str) -> Result<bool, Error> {
+pub(crate) fn ensure_module(root: &Path, module: &str) -> Result<bool, Error> {
     let module_root = root.join(module);
     let manifest = module_root.join("go.mod");
     if manifest.is_file() {
@@ -350,7 +350,7 @@ pub fn ensure_module(root: &Path, module: &str) -> Result<bool, Error> {
 /// proxy; `GOSUMDB=off` is used only for dependency resolution inside this
 /// pinned test harness, with the proxy selected explicitly to avoid inherited
 /// direct-VCS settings.
-pub fn prepare_module(root: &Path, module: &str) -> Result<(), Error> {
+pub(crate) fn prepare_module(root: &Path, module: &str) -> Result<(), Error> {
     let module_root = root.join(module);
     let compiler = std::env::var_os("COMPILER_GO_COMPILER").unwrap_or_else(|| "go".into());
     let output = std::process::Command::new(compiler)
