@@ -17,6 +17,8 @@ pub(crate) enum CloseTarget { Window, Application }
 struct Attempt(u64);
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Phase { Open, Saving(Attempt), NeedsDecision(Attempt, String), Committed }
+#[derive(Clone, Copy)]
+enum Choice { ContinueEditing, Retry, CloseWithPreviousState }
 
 pub(crate) struct GracefulClose {
     root: WeakEntity<UiRootEntity>,
@@ -147,6 +149,17 @@ impl GracefulClose {
         }));
     }
 
+    fn choose(&mut self, attempt: Attempt, choice: Choice, cx: &mut Context<Self>) {
+        let current = match self.phase { Phase::Saving(current) | Phase::NeedsDecision(current, _) => current, _ => return };
+        if current != attempt { return; }
+        match choice {
+            Choice::ContinueEditing => self.cancel(cx),
+            Choice::Retry if matches!(self.phase, Phase::NeedsDecision(_, _)) => self.retry(cx),
+            Choice::CloseWithPreviousState if matches!(self.phase, Phase::NeedsDecision(_, _)) => self.commit(cx),
+            _ => {}
+        }
+    }
+
     fn cancel(&mut self, cx: &mut Context<Self>) {
         if self.phase == Phase::Committed { return; }
         self.task = None;
@@ -206,25 +219,26 @@ impl Render for CloseView {
         let retry = self.close.downgrade();
         let force = self.close.downgrade();
         let active = matches!(phase, Phase::Saving(_) | Phase::NeedsDecision(_, _));
+        let attempt = match &phase { Phase::Saving(attempt) | Phase::NeedsDecision(attempt, _) => *attempt, _ => Attempt(0) };
         let failure = match &phase { Phase::NeedsDecision(_, error) => Some(error.clone()), _ => None };
         div().relative().size_full().child(self.shell.clone()).when(active, |view| view.child(
             div().id("graceful-close").role(gpui::Role::Dialog).aria_label("Save before closing")
                 .focus_trap("graceful-close", &focus)
                 .on_key_down(move |event, _, cx| {
-                    if event.keystroke.key == "escape" { let _ = escape.update(cx, |close, cx| close.cancel(cx)); cx.stop_propagation(); }
+                    if event.keystroke.key == "escape" { let _ = escape.update(cx, |close, cx| close.choose(attempt, Choice::ContinueEditing, cx)); cx.stop_propagation(); }
                 })
                 .absolute().inset_0().occlude().flex().items_center().justify_center()
                 .bg(gpui::rgba(0x17191eee)).child(div().flex().flex_col().gap(px(12.0)).p(px(24.0))
                     .text_color(gpui::rgb(0xffffff)).child(failure.clone().unwrap_or_else(|| "Saving your latest changes…".into()))
                     .child(Button::new("close-continue").label("Continue editing").on_click(move |_, _, cx| {
-                        let _ = cancel.update(cx, |close, cx| close.cancel(cx));
+                        let _ = cancel.update(cx, |close, cx| close.choose(attempt, Choice::ContinueEditing, cx));
                     }))
                     .when(failure.is_some(), |view| view
                         .child(Button::new("close-retry").label("Try saving again").on_click(move |_, _, cx| {
-                            let _ = retry.update(cx, |close, cx| close.retry(cx));
+                            let _ = retry.update(cx, |close, cx| close.choose(attempt, Choice::Retry, cx));
                         }))
                         .child(Button::new("close-previous").label("Close with previously saved state").on_click(move |_, _, cx| {
-                            let _ = force.update(cx, |close, cx| close.commit(cx));
+                            let _ = force.update(cx, |close, cx| close.choose(attempt, Choice::CloseWithPreviousState, cx));
                         })))
                 )
         ))

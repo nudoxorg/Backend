@@ -166,3 +166,25 @@ fn last_window_policy_never_requests_quit_before_the_native_close_ack(cx: &mut T
     assert!(rig.cx.cx.platform_quit_requests() > 0);
     assert!(held.persistence.load().is_ok());
 }
+
+#[gpui::test]
+fn an_old_close_choice_cannot_approve_or_cancel_a_later_attempt(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    let close = closing(&mut rig);
+    let mut held = held_writer(&mut rig);
+    deliver(Entry::RedClose, &mut rig);
+    held.entered.recv_timeout(Duration::from_secs(1)).expect("first write entered");
+    let first = close.read_with(rig.cx, |close, _| match close.phase { Phase::Saving(attempt) => attempt, _ => panic!("first close saving") });
+    close.update(rig.cx, |close, cx| close.choose(first, Choice::ContinueEditing, cx));
+    deliver(Entry::RedClose, &mut rig);
+    let current = close.read_with(rig.cx, |close, _| close.phase.clone());
+    assert_ne!(current, Phase::Saving(first));
+    close.update(rig.cx, |close, cx| {
+        close.choose(first, Choice::CloseWithPreviousState, cx);
+        close.choose(first, Choice::ContinueEditing, cx);
+    });
+    assert_eq!(close.read_with(rig.cx, |close, _| close.phase.clone()), current);
+    assert_eq!(rig.cx.cx.platform_quit_requests(), 0);
+    close.update(rig.cx, |close, cx| close.cancel(cx));
+    release(&mut held);
+}
