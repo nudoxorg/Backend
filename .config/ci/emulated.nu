@@ -17,7 +17,10 @@ use lib.nu [platform-packages]
 # selection and must never be followed by a run.
 export def validate-nextest-list [listed: record]: nothing -> record {
     if $listed.exit_code != 0 {
-        return {tests: [], failure: "list-failed"}
+        return {
+            tests: []
+            failure: "list-failed"
+        }
     }
     let tests = (
         $listed.stdout
@@ -25,7 +28,10 @@ export def validate-nextest-list [listed: record]: nothing -> record {
         | where {|line| not ($line | str trim | is-empty) }
     )
     if ($tests | is-empty) {
-        return {tests: [], failure: "empty-selection"}
+        return {
+            tests: []
+            failure: "empty-selection"
+        }
     }
     {tests: $tests, failure: null}
 }
