@@ -272,18 +272,23 @@ fn a_window_before_its_owner_holds_its_reads_then_says_why_the_owner_failed(cx: 
         .store
         .update(cx, |store, cx| store.retry(PageKey::Package(package.clone()), cx));
     assert_eq!(gate.state(), OwnerState::Starting, "Try again restarts the owner");
-    let key = VersionedRoot::from_revision(
-        1,
-        backend_library::Cursor::at(
-            backend_library::view_state_root(&[("owner".to_owned(), "answered".to_owned())]),
-            7,
-        ),
-        0,
-    );
+    let complete = crate::runtime::owner::publication_tests::view();
+    let cursor = backend_library::Cursor::for_view_root_at(&complete, 0);
+    let key = VersionedRoot::from_revision(1, cursor, 0);
     gate.publish(OwnerState::Ready {
         key,
         mode: ServiceMode::Attached,
     });
+    until(cx, "the responding owner basis is admitted", |cx| {
+        graph.root.read_with(cx, |root, _| root.snapshot().key().same_authority(key))
+    });
+    assert_eq!(submitted(cx), 0,
+        "a revision-only answer cannot clear the failed reading");
+    assert!(!graph.store.read_with(cx, |store, _|
+        store.package(&package).loaded_value().is_some()));
+    let attachment = gate.ready_epoch().expect("retry attachment");
+    assert_eq!(gate.publish_view(attachment, complete, cursor),
+        crate::runtime::owner::PublicationAdmission::Admitted);
     until(cx, "the dossier is in the store and drawn", |cx| {
         let landed = graph
             .store

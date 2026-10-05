@@ -2287,8 +2287,12 @@ mod tests {
             .expect("bind authenticated local endpoint");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
             .expect("restrict authenticated local endpoint");
+        let (authenticated, may_close) = std::sync::mpsc::channel();
         let owner = std::thread::spawn(move || {
             let (first, _) = listener.accept().expect("accept original connection");
+            // The tested closure is before reset Ack, not before the original
+            // socket has supplied its same-user authentication proof.
+            may_close.recv_timeout(Duration::from_secs(3)).expect("original peer authenticated");
             drop(first);
             let (mut replacement, _) = listener.accept().expect("accept replacement connection");
             replacement
@@ -2318,6 +2322,7 @@ mod tests {
             Duration::from_millis(200),
         )
         .expect("connect and authenticate local producer");
+        authenticated.send(()).expect("release original authenticated connection");
         let mut state = lease_on(&transport, lease, Arc::clone(&initial), previous);
         let original_connection = transport.connection();
         transport.exhaust_connection_budget_for_test();
