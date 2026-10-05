@@ -104,6 +104,45 @@ export def reclaim-build-output []: nothing -> nothing {
     }
 }
 
+# The Linux lane's persistent build cache (NUDOX_BUILD_CACHE_ROOT, set by the
+# scheduler from a Concourse task cache): Cargo's build directories and
+# sccache, kept from one run to the next. Empty when this run has none.
+def build-cache-root []: nothing -> string {
+    $env.NUDOX_BUILD_CACHE_ROOT? | default ""
+}
+
+# restore-mtimes.py's manifest, beside the cache it describes.
+def source-mtimes-manifest [root: string]: nothing -> string {
+    $root | path dirname | path join "source-mtimes.json"
+}
+
+# Bounds the build cache. It grows with every Cargo graph change and is
+# never pruned by Cargo, and the disk is shared with Forgejo, Postgres and
+# the other lanes. Past `max_gib` it is deleted, and the next build is cold.
+export def cap-build-cache [max_gib: int = 120]: nothing -> nothing {
+    let root = build-cache-root
+    if not (in-ci) or ($root | is-empty) or not ($root | path exists) { return }
+    let gib = ^du -s --block-size=1G $root | split row "	" | first | into int
+    if $gib > $max_gib {
+        print $"ci: build cache is ($gib) GiB, over ($max_gib); starting cold"
+        rm --recursive --force $root (source-mtimes-manifest $root)
+    } else {
+        print $"ci: build cache is ($gib) GiB"
+    }
+}
+
+const RESTORE_MTIMES = path self "restore-mtimes.py"
+
+# Restores unchanged sources' mtimes from the cache's manifest, so Cargo
+# reuses the cached build output instead of seeing a fresh clone as all new
+# (restore-mtimes.py). Only with a build cache, only in CI.
+export def restore-source-mtimes []: nothing -> nothing {
+    let root = build-cache-root
+    if not (in-ci) or ($root | is-empty) { return }
+    let python = $env.NUDOX_PYTHON? | default "python3"
+    run-external $python $RESTORE_MTIMES (source-mtimes-manifest $root)
+}
+
 # Runs `body` with the temporary directory at plain /tmp. `nix develop` points
 # TMPDIR at a nested directory: a check derivation's sandbox cannot see it
 # ("$env.PWD points to a non-existent directory"), and test socket paths under
