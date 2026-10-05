@@ -582,6 +582,86 @@ fn package_outline_and_graph_pages_share_root_and_query_bound_continuations() {
 }
 
 #[test]
+fn graph_page_recovered_coordinate_preserves_claimed_cursor_and_rejects_foreign_address() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let package = package_key("semantic-page");
+    let actual = symbol_key("compiler-owned-root");
+    let child = symbol_key("compiler-owned-child");
+    let address = SymbolAddress::canonical(symbol_key("pkg::semantic::digest::Root"));
+    let library = projection(vec![
+        Row::new(RowId::Package(package), basis, "semantic-page"),
+        Row::in_package(RowId::Symbol(actual), basis, package, "Root"),
+        Row::in_package(RowId::Symbol(child), basis, package, "Child").with_parent(actual),
+    ]);
+    let request = PageRequest::new(library.revision_root(), QueryLimit::new(1).expect("limit"));
+    let first = library
+        .graph_page_for_address(actual, address, request)
+        .expect("first page");
+    let PageTerminal::More(next) = first.terminal else {
+        panic!("must continue")
+    };
+    let dto = CommandDto::new(
+        44,
+        Command::GraphPage {
+            symbol: address,
+            page: request,
+        },
+    );
+    assert_eq!(
+        admit_reply(
+            &dto,
+            &ReplyDto::new(44, CommandReply::ProjectionPage(first.clone()))
+        ),
+        Ok(())
+    );
+    let second = library
+        .graph_page_for_address(actual, address, request.with_continuation(next))
+        .expect("same claimed address resumes");
+    assert_eq!(second.terminal, PageTerminal::Complete);
+    assert_ne!(
+        first.snapshot.root.rows()[0].id,
+        second.snapshot.root.rows()[0].id
+    );
+    assert!(matches!(
+        library.graph_page_for_address(
+            actual,
+            SymbolAddress::canonical(symbol_key("foreign-coordinate")),
+            request.with_continuation(next)
+        ),
+        Err(LibraryError::CursorMismatch)
+    ));
+    assert!(matches!(
+        library.graph_page_for_address(symbol_key("absent-typed-row"), address, request),
+        Err(LibraryError::NotFound)
+    ));
+}
+
+#[test]
+fn graph_page_selected_neighbors_refuses_duplicates_reordering_and_foreign_cursors() {
+    let (root, object) = source();let basis = Basis::new(root, object);
+    let package = package_key("semantic-neighbors");
+    let symbol = symbol_key("semantic-origin");let neighbor = symbol_key("nonparent-neighbor");
+    let address = SymbolAddress::canonical(symbol_key("public::semantic::origin"));
+    let library = projection(vec![Row::new(RowId::Package(package), basis, "semantic-neighbors"),
+        Row::in_package(RowId::Symbol(symbol), basis, package, "Origin"),
+        Row::in_package(RowId::Symbol(neighbor), basis, package, "Nonparent")]);
+    let mut ids = vec![RowId::Symbol(symbol), RowId::Symbol(neighbor)];ids.sort();
+    let request = PageRequest::new(library.revision_root(), QueryLimit::new(1).expect("limit"));
+    let first = library.graph_page_from_ids(symbol, address, request, &ids).expect("first");
+    let PageTerminal::More(next) = first.terminal else {panic!("next")};
+    let second = library.graph_page_from_ids(symbol, address, request.with_continuation(next), &ids).expect("second");
+    let mut union = vec![first.snapshot.root.rows()[0].id, second.snapshot.root.rows()[0].id];union.sort();
+    assert_eq!(union, ids);assert_eq!(second.terminal, PageTerminal::Complete);
+    let mut duplicate = ids.clone();duplicate.insert(0, duplicate[0]);
+    assert!(library.graph_page_from_ids(symbol, address, request, &duplicate).is_err());
+    let mut reordered = ids.clone();reordered.reverse();
+    assert!(library.graph_page_from_ids(symbol, address, request, &reordered).is_err());
+    assert!(matches!(library.graph_page_from_ids(symbol, SymbolAddress::canonical(symbol_key("foreign")),
+        request.with_continuation(next), &ids), Err(LibraryError::CursorMismatch)));
+}
+
+#[test]
 fn view_transition_consumes_preparation_and_binds_root() {
     let library = Library::with_coverage(capability(Library::new().view().basis.object))
         .expect("checked library");

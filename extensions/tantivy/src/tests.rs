@@ -1669,6 +1669,68 @@ fn term_hits(source: &TantivySource, term: &str) -> Vec<EntityId> {
 }
 
 #[test]
+fn durable_cache_verified_fence_is_control_metadata_and_unknown_entries_are_refused() {
+    let root = std::env::temp_dir().join(format!("backend-tantivy-fence-prune-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos()));
+    let state = state_for(vec![(document(1), vec![("name".into(), "fenceproof".into())])], [61; 32]);
+    let source = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root).expect("own fence is admitted");
+    assert_eq!(term_hits(&source, "fenceproof"), vec![document(1)]);
+    drop(source);
+    let reopened = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root).expect("reopen with held fence");
+    assert_eq!(term_hits(&reopened, "fenceproof"), vec![document(1)]);
+    drop(reopened);
+    let version = root.join(DURABLE_ROOTS_DIRECTORY);
+    std::fs::write(version.join("unrecognized.lock"), b"not a typed fence").expect("unknown entry");
+    assert!(matches!(TantivySource::open_or_build_in_dir(&state, Limits::default(), &root), Err(TantivySourceError::Io(_))));
+    std::fs::remove_file(version.join("unrecognized.lock")).expect("remove fixture only");
+    let reopened = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root).expect("valid root was preserved");
+    assert_eq!(term_hits(&reopened, "fenceproof"), vec![document(1)]);
+    drop(reopened);
+    std::fs::remove_dir_all(root).expect("remove private fixture");
+}
+
+#[test]
+fn durable_cache_parallel_writers_keep_verified_stages_and_fixed_search_answers() {
+    let root = std::env::temp_dir().join(format!("backend-tantivy-parallel-fence-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos()));
+    let first = state_for((1..=256).map(|n| (document(n), vec![("name".into(), format!("parallelfirst{n}"))])).collect(), [62;32]);
+    let second = state_for((257..=512).map(|n| (document(n), vec![("name".into(), format!("parallelsecond{n}"))])).collect(), [63;32]);
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        let a = scope.spawn(|| {barrier.wait();TantivySource::open_or_build_in_dir(&first, Limits::default(), &root).expect("writer first")});
+        let b = scope.spawn(|| {barrier.wait();TantivySource::open_or_build_in_dir(&second, Limits::default(), &root).expect("writer second")});
+        assert_eq!(term_hits(&a.join().expect("first thread"), "parallelfirst1"), vec![document(1)]);
+        assert_eq!(term_hits(&b.join().expect("second thread"), "parallelsecond257"), vec![document(257)]);
+    });
+    for (state, term, expected) in [(&first, "parallelfirst1", document(1)), (&second, "parallelsecond257", document(257))] {
+        let reopened = TantivySource::open_or_build_in_dir(state, Limits::default(), &root).expect("cold root reopened");
+        assert_eq!(term_hits(&reopened, term), vec![expected]);
+    }
+    std::fs::remove_dir_all(root).expect("remove fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn durable_cache_fence_symlink_and_replaced_inode_are_refused() {
+    let root = std::env::temp_dir().join(format!("backend-tantivy-fence-identity-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos()));
+    std::fs::create_dir(&root).expect("root");
+    let namespace = crate::publish::PrivateNamespace::open_child(&root, "v4").expect("private namespace");
+    let fence = namespace.acquire_fence(crate::publish::NamespaceFenceKind::DurableCache).expect("held fence");
+    let path = namespace.path().join("durable-cache.lock");
+    assert!(fence.is_control_entry(&path).expect("exact fence"));
+    std::fs::remove_file(&path).expect("unlink fixture fence");
+    std::fs::write(&path, b"replacement").expect("replace inode");
+    assert!(fence.is_control_entry(&path).is_err());
+    std::fs::remove_file(&path).expect("unlink replacement");
+    let target = root.join("foreign");std::fs::write(&target, b"foreign").expect("target");
+    std::os::unix::fs::symlink(&target, &path).expect("symlink fence");
+    assert!(fence.is_control_entry(&path).is_err());
+    assert!(namespace.acquire_fence(crate::publish::NamespaceFenceKind::DurableCache).is_err());
+    drop(fence);std::fs::remove_dir_all(root).expect("remove fixture");
+}
+
+#[test]
 fn durable_selected_roots_reopen_update_and_roll_back_against_fixed_answers() {
     static NEXT_ROOT: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(0);
