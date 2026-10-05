@@ -3877,12 +3877,16 @@ mod tests {
                 observation_witness_with_context(workspace, paths, [1; 32], [2; 32])
             },
         );
+        let refusal = result
+            .err()
+            .expect("required absent manifest must refuse authority");
         assert!(
-            result
-                .err()
-                .expect("required absent manifest must refuse authority")
-                .contains("metadata-listed package manifest was absent"),
-            "the refusal must identify the required-input condition without exposing a path"
+            refusal.contains("input-kind=package-manifest cause=not-found"),
+            "the refusal must type the missing required input"
+        );
+        assert!(
+            refusal.contains(&dependency_manifest.display().to_string()),
+            "the refusal must name the exact missing manifest"
         );
         assert_eq!(
             cargo_runs, 1,
