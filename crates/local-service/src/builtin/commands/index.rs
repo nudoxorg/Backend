@@ -902,10 +902,11 @@ impl CapturedProjectFileFrontier {
         hash.update(&encoded_count.to_be_bytes());
 
         let mut observed = 0usize;
+        let mut encoded = Vec::new();
         for row in rows {
             let (key, record) = row?;
             super::super::profile::validate_project_file(project_key, key, record)?;
-            let mut encoded = Vec::new();
+            encoded.clear();
             <BuiltinWorkspaceRelation as backend_engine::Relation>::encode_value(
                 record,
                 &mut encoded,
@@ -959,6 +960,7 @@ mod captured_project_file_frontier_tests {
             [7; 32],
             reason,
         )
+        .map_err(BuiltinModelError)
     }
 
     fn capture_one(
