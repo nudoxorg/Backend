@@ -33,7 +33,8 @@
 //! no node (the world), the plate leaves and enters through the right edge.
 
 use super::bodies::{self, Ctx, Lens, Pages};
-use super::focus::Targets;
+use super::focus::{NativeFocusDeparture, Targets};
+use super::keyboard::NativeReturnLease;
 use super::kit::HoverIntent;
 use super::region::{Links, Region, RegionCore, a11y_inert};
 use super::jump::route_symbol;
@@ -676,7 +677,7 @@ pub(crate) struct Reader {
     /// Reader focus when Settings covered a painted place.
     settings_departure: Option<SettingsDeparture>,
     /// One return focus attempt after the uncovered page actually registers targets.
-    pending_settings_focus: Option<SettingsReturn>,
+    pending_settings_focus: Option<PendingSettingsReturn>,
     /// A place change seen, waiting for the next render to start it.
     arrival: Option<Arrival>,
     /// The place change in flight.
@@ -1125,6 +1126,30 @@ impl Reader {
         self.native_return_interruption = self.native_return_interruption.wrapping_add(1);
         for entry in &self.library_state.entries {
             entry.state.borrow_mut().cancel_return();
+        }
+    }
+
+    /// Region observation can retire the old controls before the Shell sees
+    /// the overlay event. Match its actual displaced native handle against
+    /// that short-lived identity receipt, never against logical selection.
+    pub(super) fn capture_settings_native_origin(&mut self, origin: &FocusHandle) -> bool {
+        if let Some(departure) = &mut self.settings_departure {
+            if let Some(target) = departure.native.target_for(origin) {
+                departure.target = Some(target);
+                return true;
+            }
+        } else if let Some(target) = self.targets.target_for_native_handle(origin) {
+            // The Shell may also receive the event before this Region.
+            self.targets.focus(target);
+            return true;
+        }
+        false
+    }
+
+    pub(super) fn arm_settings_focus_return(&mut self, lease: NativeReturnLease, cx: &mut Context<Self>) {
+        if let Some(pending) = &mut self.pending_settings_focus {
+            pending.lease = Some(lease);
+            cx.notify();
         }
     }
 
@@ -2079,6 +2104,12 @@ struct SettingsDeparture {
     route: Route,
     root: crate::core::VersionedRoot,
     target: Option<SharedString>,
+    native: NativeFocusDeparture,
+}
+
+struct PendingSettingsReturn {
+    focus: SettingsReturn,
+    lease: Option<NativeReturnLease>,
 }
 
 struct SettingsReturn {
@@ -2435,12 +2466,13 @@ impl Region for Reader {
                             route: self.route.clone(),
                             root,
                             target: self.targets.is_active().then(|| self.targets.focused()).flatten(),
+                            native: self.targets.take_native_departure(),
                         });
                 }
                 let departure = if closing_settings { self.settings_departure.take() } else { None };
                 self.arrive(snapshot.route(), overlay, &snapshot.session().reading.current);
                 self.pending_settings_focus = if closing_settings && overlay.is_none() {
-                    Some(SettingsReturn {
+                    Some(PendingSettingsReturn { focus: SettingsReturn {
                         place: self.descents,
                         root: snapshot.key(),
                         target: departure.filter(|departure| {
@@ -2448,7 +2480,7 @@ impl Region for Reader {
                                 && departure.root.same_authority(snapshot.key())
                         })
                             .and_then(|departure| departure.target),
-                    })
+                    }, lease: None })
                 } else {
                     None
                 };
@@ -2916,12 +2948,22 @@ impl Render for Reader {
             }
         }
         if let Some(mut pending) = self.pending_settings_focus.take()
-            && pending.place == current.key
+            && pending.focus.place == current.key
         {
-            if self.painted == Some(current.key) && self.native_input_allowed() {
-                if !pending.has_same_authority(snapshot.key()) { pending.target = None; }
+            let lease_current = pending.lease.map(|lease| {
+                self.links.shell.upgrade().is_some_and(|shell| {
+                    let shell = shell.read(cx);
+                    lease.current(window.window_handle().window_id(), shell.focus_return_generation(), window.focus_epoch())
+                        && shell.allows_reader_native_return(window)
+                        && !super::titlebar::menu_open(window, cx)
+                })
+            });
+            if lease_current == Some(false) {
+                // A newer input choice wins even if this page is still landing.
+            } else if lease_current == Some(true) && self.painted == Some(current.key) && self.native_input_allowed() {
+                if !pending.focus.has_same_authority(snapshot.key()) { pending.focus.target = None; }
                 if self.targets.is_active() {
-                    if let Some(target) = pending.target {
+                    if let Some(target) = pending.focus.target {
                         self.targets.focus(target);
                         if self.targets.current().is_none() {
                             self.targets.clear_focus();
@@ -2930,7 +2972,8 @@ impl Render for Reader {
                     } else {
                         self.targets.walk(1);
                     }
-                    if self.targets.focused().is_some() {
+                    if let Some(target) = self.targets.focused() {
+                        self.targets.focus_native(&target, window, cx);
                         self.reveal.set(true);
                         cx.notify();
                     }

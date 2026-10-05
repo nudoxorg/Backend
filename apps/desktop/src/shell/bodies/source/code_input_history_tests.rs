@@ -230,3 +230,23 @@ fn settings_returns_to_the_native_line_editor_even_without_a_logical_selection(
     assert!(rig.said().iter().any(|line| line.contains("Lines 178")),
         "Return submits the restored editor without clicking it again");
 }
+
+#[gpui::test]
+fn settings_native_return_cannot_steal_focus_after_a_later_explicit_blur(cx: &mut TestAppContext) {
+    let code = view_route("RelationLabel", View::Code);
+    let pool = ReadPool::start(2, |_| LongSource).expect("source read pool");
+    let mut rig = rig_with_reads(cx, Some(code.clone()), 900.0, 700.0, pool);
+    let _input = focus_line_input(&mut rig);
+    rig.keys("secondary-,");
+    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+    let links = reader.read_with(rig.cx, |reader, _| reader.navigation_links());
+    rig.cx.update(|_, cx| links.dispatch(Intent::DismissOverlay, cx));
+    assert_eq!(rig.route(), code);
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay().is_none()));
+    rig.cx.update(|window, _| window.blur());
+    rig.settle();
+    assert!(rig.cx.update(|window, cx| window.focused(cx).is_none()),
+        "the landing Code page must respect a newer explicit blur");
+    assert!(!rig.cx.update(|window, cx| window.has_focused_input(cx)),
+        "the former line editor cannot reacquire native input after that choice");
+}

@@ -864,10 +864,17 @@ impl Shell {
         let previous_overlay = std::mem::replace(&mut self.observed_overlay, snapshot.overlay());
         let entering_settings = !matches!(previous_overlay, Some(Overlay::Settings(_)))
             && matches!(snapshot.overlay(), Some(Overlay::Settings(_)));
+        let leaving_settings = matches!(previous_overlay, Some(Overlay::Settings(_)))
+            && snapshot.overlay().is_none();
         // Capture before Ask, Add, or Settings changes native focus. This is
         // still the old view's return origin, even if its handle has left the
         // rendered tree by the time the new view finishes painting.
         let origin = window.focused(cx);
+        if entering_settings && origin.as_ref().is_some_and(|origin| {
+            self.reader.update(cx, |reader, _| reader.capture_settings_native_origin(origin))
+        }) {
+            self.set_zone(Zone::Reader, cx);
+        }
         let wants_ask = snapshot.overlay() == Some(Overlay::CommandPalette);
         let opening = wants_ask && !self.ask_open;
         let fresh_ask = opening && self.ask_return.is_none();
@@ -933,6 +940,27 @@ impl Shell {
                 if self.links.snapshot(cx).overlay().is_none() && self.background_input_allowed() {
                     self.focus.focus(window, cx);
                 }
+            }
+        }
+        if leaving_settings && !super::titlebar::menu_open(window, cx) {
+            // The selected radio/editor belongs to the retired Settings page.
+            // Keep global dispatch reachable while the destination mounts.
+            self.keyboard_claim = None;
+            self.keyboard_claim_scheduled = false;
+            self.focus.focus(window, cx);
+            if let Some(lease) = super::keyboard::NativeReturnLease::new(
+                window.window_handle().window_id(), self.transient_generation, window.focus_epoch(),
+            ) {
+                let reader = self.reader.clone();
+                let shell = cx.weak_entity();
+                let generation = self.transient_generation;
+                // Both Region and Shell subscribe to the same store. Arm only
+                // after every subscriber has observed this uncovered place.
+                cx.defer(move |cx| {
+                    if shell.upgrade().is_some_and(|shell| shell.read(cx).focus_return_generation() == generation) {
+                        reader.update(cx, |reader, cx| reader.arm_settings_focus_return(lease, cx));
+                    }
+                });
             }
         }
         cx.notify();

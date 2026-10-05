@@ -7,6 +7,26 @@
 use crate::navigation::{Overlay, presentation::VisitId};
 use gpui::{FocusHandle, WindowId};
 
+/// A deferred return may run only while its stable handoff still owns input.
+/// Window identity, native focus changes, and user navigation independently
+/// revoke it; an exhausted generation can never grant a new return.
+#[derive(Clone, Copy)]
+pub(super) struct NativeReturnLease {
+    window: WindowId,
+    generation: u64,
+    focus_epoch: u64,
+}
+
+impl NativeReturnLease {
+    pub(super) fn new(window: WindowId, generation: Option<u64>, focus_epoch: u64) -> Option<Self> {
+        Some(Self { window, generation: generation?, focus_epoch })
+    }
+
+    pub(super) fn current(&self, window: WindowId, generation: Option<u64>, focus_epoch: u64) -> bool {
+        self.window == window && generation == Some(self.generation) && self.focus_epoch == focus_epoch
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct KeyboardClaim {
     overlay: Overlay,

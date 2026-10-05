@@ -280,6 +280,25 @@ struct NativeTargets {
     handles: HashMap<SharedString, (FocusHandle, u64)>,
 }
 
+impl NativeTargets {
+    fn target_for(&self, origin: &FocusHandle) -> Option<SharedString> {
+        self.handles.iter().find_map(|(id, (handle, seen))| {
+            (*seen == self.frame && handle == origin).then(|| id.clone())
+        })
+    }
+}
+
+/// Identity-only receipt for controls a covering page retired. It owns no
+/// callbacks and can only name an origin; returning resolves that name against
+/// the destination's newly registered handles.
+pub(crate) struct NativeFocusDeparture(NativeTargets);
+
+impl NativeFocusDeparture {
+    pub(crate) fn target_for(&self, origin: &FocusHandle) -> Option<SharedString> {
+        self.0.target_for(origin)
+    }
+}
+
 impl Targets {
     /// The targets of the region called `name`.
     pub(crate) fn named(name: &'static str) -> Self {
@@ -413,6 +432,18 @@ impl Targets {
         self.recall.clear_focus();
         self.native.borrow_mut().handles.clear();
         self.fresh.set(true);
+    }
+
+    pub(crate) fn take_native_departure(&self) -> NativeFocusDeparture {
+        let mut native = self.native.borrow_mut();
+        NativeFocusDeparture(NativeTargets {
+            frame: native.frame,
+            handles: std::mem::take(&mut native.handles),
+        })
+    }
+
+    pub(crate) fn target_for_native_handle(&self, origin: &FocusHandle) -> Option<SharedString> {
+        self.native.borrow().target_for(origin)
     }
 
     /// Attach a real GPUI focus handle to a target already in this frame's
