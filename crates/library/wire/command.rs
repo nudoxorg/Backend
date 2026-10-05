@@ -523,7 +523,9 @@ pub(crate) fn ensure_version(version: u16, kind: &str) -> Result<(), String> {
     if version == DTO_VERSION {
         Ok(())
     } else {
-        Err(format!("unsupported {kind} DTO version"))
+        Err(format!(
+            "unsupported {kind} DTO version {version}; this build supports {DTO_VERSION}. Use Nudox clients and local service from the same build; rebuild your CLI/MCP client or restart the outdated service"
+        ))
     }
 }
 
@@ -731,9 +733,7 @@ impl Serialize for CommandDto {
 impl<'de> Deserialize<'de> for CommandDto {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let envelope = CommandEnvelope::deserialize(deserializer)?;
-        if envelope.version != DTO_VERSION {
-            return Err(serde::de::Error::custom("unsupported command DTO version"));
-        }
+        ensure_version(envelope.version, "command").map_err(serde::de::Error::custom)?;
         let command = command_from_wire(envelope.command, envelope.certificate.as_ref())
             .map_err(serde::de::Error::custom)?;
         Ok(Self {
