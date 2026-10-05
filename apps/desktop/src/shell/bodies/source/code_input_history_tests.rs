@@ -41,6 +41,14 @@ fn focus_line_input(rig: &mut crate::shell::tests::Rig) -> gpui::Entity<gpui_com
     targets.focus("source-jump-field");
     rig.cx.update(|window, cx| {
         assert!(targets.focus_native("source-jump-field", window, cx), "mounted line editor");
+    });
+    // Focus changes the native handle and requests a frame. The component
+    // registers its focused InputState during that frame's Input::render,
+    // rather than synchronously inside FocusHandle::focus.
+    rig.draw_frame();
+    rig.cx.update(|window, cx| {
+        assert_eq!(targets.native_focused(window).as_deref(), Some("source-jump-field"),
+            "the rendered line editor retains the native focus we requested");
         window.focused_input(cx).and_then(|input| input.as_input().cloned())
             .expect("the focused Reader target is the actual input engine")
     })
