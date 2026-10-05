@@ -485,6 +485,23 @@ impl OwnerGate {
             .then_some(inner.attachment)
     }
 
+    /// A complete root proof for this exact UI wake and attachment.
+    fn certified_at(&self, publication: Epoch, key: VersionedRoot, attachment: Epoch) -> bool {
+        let inner = self.lock();
+        !inner.closed
+            && !inner.observation_suspended
+            && inner.epoch == publication
+            && inner.attachment == attachment
+            && inner.fresh_publication == Some(attachment)
+            && matches!(inner.state, OwnerState::Ready { key: current, .. } if current.same_authority(key))
+            && inner.publication.as_ref().is_some_and(|(view, cursor)| {
+                *cursor == key.revision()
+                    && view.root() == cursor.root()
+                    && view.is_coherent()
+                    && view.capability().is_some()
+            })
+    }
+
     /// Current serving attachment, independent of publication wakes.
     pub(crate) fn ready_epoch(&self) -> Option<Epoch> {
         let inner = self.lock();
@@ -568,9 +585,10 @@ impl OwnerGate {
                 return PublicationAdmission::Invalid;
             }
             let changed = !next.same_authority(key);
+            let first_proof = inner.fresh_publication != Some(expected);
             inner.fresh_publication = Some(expected);
             inner.publication = Some((view, cursor));
-            if !changed {
+            if !changed && !first_proof {
                 self.0.changed.notify_all();
                 return PublicationAdmission::Admitted;
             }
@@ -961,6 +979,8 @@ pub(crate) fn watch(
     cx.spawn(async move |cx| {
         let mut seen = Epoch::default();
         let mut serving = None;
+        let mut resources_serving = None;
+        let mut recovery_requires_proof = false;
         loop {
             let (epoch, state) = gate.next(seen).await;
             seen = epoch;
@@ -987,13 +1007,22 @@ pub(crate) fn watch(
                         } else {
                             root.update(cx, |root, cx| root.admit_owner(key, mode, cx));
                         }
-                        if Some(attachment) != serving {
+                        // Responding to a revision probe does not clear a
+                        // previous failed reading. Recovery needs a complete
+                        // root proved at this exact wake and attachment.
+                        if Some(attachment) != resources_serving
+                            && (!recovery_requires_proof || gate.certified_at(epoch, key, attachment))
+                        {
                             store.update(cx, super::store::DataStore::owner_ready);
+                            resources_serving = Some(attachment);
+                            recovery_requires_proof = false;
                         }
                         serving = Some(attachment);
                     }
                     OwnerState::Failed(OwnerFault::Closed) => return false,
                     OwnerState::Failed(fault) => {
+                        recovery_requires_proof = true;
+                        resources_serving = None;
                         root.update(cx, |root, cx| root.owner_unavailable(cx));
                         store.update(cx, |store, cx| store.owner_failed(&fault, cx));
                     }
@@ -1269,12 +1298,51 @@ pub(crate) mod publication_tests {
     }
 
     #[test]
+    fn first_complete_root_wakes_recovery_without_accepting_a_stale_wake() {
+        let root = view();
+        let (gate, attachment, cursor) = attached(&root);
+        let key = VersionedRoot::from_revision(1, cursor, 0);
+        let responding_wake = gate.lock().epoch;
+        assert_eq!(gate.ready_at(responding_wake, key), Some(attachment));
+        assert!(!gate.certified_at(responding_wake, key, attachment));
+        assert_eq!(
+            gate.publish_view(attachment, Arc::clone(&root), cursor),
+            PublicationAdmission::Admitted
+        );
+        let proof_wake = gate.lock().epoch;
+        assert!(proof_wake > responding_wake);
+        assert!(!gate.certified_at(responding_wake, key, attachment));
+        assert!(gate.certified_at(proof_wake, key, attachment));
+        assert!(gate.observation_failed(
+            attachment,
+            ObservationFailure::InvalidAuthority(ClientError::Protocol("fixture loss".into()))
+        ));
+        assert!(!gate.certified_at(proof_wake, key, attachment));
+        assert!(gate.restart());
+        gate.publish(OwnerState::Ready {
+            key,
+            mode: ServiceMode::Attached,
+        });
+        let replacement = gate.ready_epoch().expect("replacement attachment");
+        let responding_wake = gate.lock().epoch;
+        assert_ne!(replacement, attachment);
+        assert!(!gate.certified_at(responding_wake, key, replacement));
+        assert_eq!(
+            gate.publish_view(attachment, root, cursor),
+            PublicationAdmission::Withdrawn
+        );
+        assert!(!gate.certified_at(responding_wake, key, replacement));
+    }
+
+    #[test]
     fn same_authority_observation_does_not_wake_or_cancel_resources() {
         let root = view();
         let (gate, attachment, cursor) = attached(&root);
         let cancel = gate
             .observation_scope(attachment)
             .expect("observation scope");
+        assert_eq!(gate.publish_view(attachment, Arc::clone(&root), cursor),
+            PublicationAdmission::Admitted);
         let wake = gate.lock().epoch;
         for _ in 0..16 {
             assert_eq!(
