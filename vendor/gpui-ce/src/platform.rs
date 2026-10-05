@@ -143,6 +143,12 @@ pub trait Platform: 'static {
     fn set_mac_activation_policy(&self, _policy: MacActivationPolicy) {}
     fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>);
     fn quit(&self);
+    /// Installs a native graceful-termination decision. False defers termination
+    /// until `reply_to_quit`; unsupported platforms retain ordinary quit behavior.
+    fn on_should_quit(&self, _callback: Box<dyn FnMut() -> bool>) {}
+    /// Replies to a deferred native termination request. No forced-exit promise.
+    fn reply_to_quit(&self, approve: bool) { if approve { self.quit(); } }
+
     fn restart(&self, binary_path: Option<PathBuf>);
     fn activate(&self, ignoring_other_apps: bool);
     fn hide(&self);

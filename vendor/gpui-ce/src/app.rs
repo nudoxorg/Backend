@@ -1011,6 +1011,20 @@ impl App {
         self.quitting = false;
     }
 
+    /// Intercept a native graceful termination before the shutdown timeout.
+    /// Return false while asynchronous application work is pending, then reply.
+    pub fn on_app_should_quit(&self, mut callback: impl FnMut(&mut App) -> bool + 'static) {
+        let app = self.this.clone();
+        self.platform.on_should_quit(Box::new(move || {
+            app.upgrade().is_none_or(|app| callback(&mut app.borrow_mut()))
+        }));
+    }
+
+    /// Complete or cancel a native graceful termination previously deferred.
+    pub fn reply_to_app_quit(&self, approve: bool) {
+        self.platform.reply_to_quit(approve);
+    }
+
     /// Get the id of the current keyboard layout
     pub fn keyboard_layout(&self) -> &dyn PlatformKeyboardLayout {
         self.keyboard_layout.as_ref()
