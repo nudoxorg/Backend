@@ -89,6 +89,8 @@ impl Drop for Rig {
 }
 impl Rig {
     fn new(cx: &mut TestAppContext) -> Self {
+        // Controlled barriers still use real writer and actor threads.
+        cx.executor().allow_parking();
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
