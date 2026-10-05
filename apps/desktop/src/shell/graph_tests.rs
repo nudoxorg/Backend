@@ -763,6 +763,17 @@ fn retained_graph_replacement_cannot_steal_a_later_native_blur(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn retained_graph_waiting_for_owner_keeps_global_settings_reachable(cx: &mut TestAppContext) {
+    let (mut rig, gate) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+    gate.publish(crate::runtime::owner::OwnerState::Starting);
+    rig.cx.run_until_parked();
+    rig.native_press("secondary-,");
+    rig.cx.run_until_parked();
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))),
+        "a retired Graph receiver must not strand global dispatch during the read");
+}
+
+#[gpui::test]
 fn stale_graph_row_pointer_and_ax_cannot_take_current_focus_before_redraw(cx: &mut TestAppContext) {
     let (mut rig, gate) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);
     tab_to_graph_control(&mut rig, "Declarations");
