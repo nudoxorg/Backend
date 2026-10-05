@@ -65,7 +65,9 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version; version 15 preserves nested registry-
-/// advisory alias coverage. See `docs/operations/registry-discovery-dto-v15.md`
-/// for the compatibility and persisted-view refusal contract.
-pub const DTO_VERSION: u16 = 15;
+/// Current transport DTO version; version 16 adds the selected local Project
+/// membership frontier to strict semantic-generation replies. Version 15's
+/// registry-advisory alias coverage remains intact. Clients and services must
+/// use the same version rather than treating missing frontier evidence as a
+/// verified indexed-file count.
+pub const DTO_VERSION: u16 = 16;

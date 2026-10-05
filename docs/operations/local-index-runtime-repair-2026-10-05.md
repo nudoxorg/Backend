@@ -56,6 +56,11 @@ than transferred automatically to newer source revisions.
 * CLI help exposes the existing `index /absolute/folder` alias. Durable
   acceptance must use keyed IndexOperationStart/Status; legacy Add success
   alone does not prove the desktop operation lifecycle.
+* The selected-frontier field changes a strict semantic reply shape, so the
+  transport DTO version advances to 16. Version mismatch diagnostics name the
+  observed and supported versions and direct the operator to matching builds.
+  Deploy GUI, locald, CLI and MCP together; do not reuse a v15 client and
+  interpret a nested decoding failure as an indexing failure.
 
 ## Evidence and its limits
 
@@ -102,10 +107,12 @@ Actual test results from that exact source, with one compiler job, are:
 
 The receipts and full logs are retained at
 `/private/tmp/nudox-index-repaired-runtime-tests-db8bc8-20261005/`.
-The remaining owner/replay/membership suites are still running at this
-checkpoint; they are not credited before their test summaries exist. Newer
-selected-frontier and multi-profile reply changes are not covered by the
-`db8bc805ef` execution evidence.
+The retired-layout test build was subsequently stopped with exit 143 after
+two fleet censuses found five compiler workloads. Only Root's process group
+was stopped; no retired-layout tests ran, and the parent did not execute its
+remaining membership/frontier/DTO selectors. The warm compilation cache is
+retained. Newer selected-frontier, multi-profile reply and transport-version
+changes are not covered by the `db8bc805ef` execution evidence.
 
 The startup oracle uses real BootClient, persistence and an embedded service
 after a forced launch-snapshot timeout. Its closed compiler set deliberately
