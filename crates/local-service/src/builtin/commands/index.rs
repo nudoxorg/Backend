@@ -2641,11 +2641,11 @@ impl std::fmt::Write for BoundedDiagnosticText {
         }
         const TRUNCATION_MARKER: &str = "…";
         let remaining = self.maximum_bytes.saturating_sub(self.text.len());
-        let content_budget = remaining.saturating_sub(TRUNCATION_MARKER.len());
-        if value.len() <= content_budget {
+        if value.len() <= remaining {
             self.push_sanitized(value);
             return Ok(());
         }
+        let content_budget = remaining.saturating_sub(TRUNCATION_MARKER.len());
 
         let mut boundary = value.len().min(content_budget);
         while !value.is_char_boundary(boundary) {
@@ -2749,6 +2749,39 @@ mod local_compile_error_chain_tests {
             "stored semantic-image bytes have 2048 bytes, require 4096"
         ));
         assert!(detail.len() <= MAX_LOCAL_COMPILE_ERROR_BYTES);
+        assert!(backend_library::ProductText::new(detail).is_ok());
+    }
+
+    #[test]
+    fn exact_product_text_boundary_keeps_the_complete_terminal_cause() {
+        let terminal = "terminal numeric cause: expected 4096 bytes, observed 2048";
+        let make_error = |terminal_message: String| {
+            let mut source: Box<dyn Error> = Box::new(DiagnosticCause {
+                message: terminal_message,
+                source: None,
+            });
+            for ordinal in (0..2).rev() {
+                source = Box::new(DiagnosticCause {
+                    message: format!("middle{ordinal}: {}", "m".repeat(991)),
+                    source: Some(source),
+                });
+            }
+            DiagnosticCause {
+                message: format!("root: {}", "r".repeat(994)),
+                source: Some(source),
+            }
+        };
+        let initial = make_error(terminal.to_owned());
+        let initial_detail = local_compile_error_chain(&initial);
+        let padding_bytes = MAX_LOCAL_COMPILE_ERROR_BYTES - initial_detail.len();
+        assert!(terminal.len() + padding_bytes <= MAX_LOCAL_COMPILE_CAUSE_MESSAGE_BYTES);
+
+        let error = make_error(format!("{}{terminal}", "x".repeat(padding_bytes)));
+        let detail = local_compile_error_chain(&error);
+
+        assert_eq!(detail.len(), MAX_LOCAL_COMPILE_ERROR_BYTES);
+        assert!(detail.ends_with(terminal));
+        assert!(!detail.contains('…'));
         assert!(backend_library::ProductText::new(detail).is_ok());
     }
 
