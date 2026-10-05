@@ -415,10 +415,10 @@ impl CargoMetadataDocument {
 /// by the exact metadata-output witness, but are not filesystem inputs to the
 /// tree the library parser returns. A null or omitted resolve graph is Cargo's
 /// `--no-deps` shape, where every listed package row remains an input.
-fn resolved_input_package_ids(
-    value: &serde_json::Value,
+fn resolved_input_package_ids<'metadata>(
+    value: &'metadata serde_json::Value,
     workspace_members: &BTreeSet<String>,
-) -> Result<Option<BTreeSet<String>>, String> {
+) -> Result<Option<BTreeSet<&'metadata str>>, String> {
     let Some(resolve) = value.get("resolve").filter(|resolve| !resolve.is_null()) else {
         return Ok(None);
     };
@@ -430,8 +430,7 @@ fn resolved_input_package_ids(
         return Err("Cargo metadata resolve graph exceeds the package limit".to_owned());
     }
 
-    let mut edges = BTreeMap::<String, Vec<String>>::new();
-    let mut node_ids = BTreeSet::new();
+    let mut edges = BTreeMap::<&str, Vec<&str>>::new();
     let mut edge_count = 0_usize;
     let mut total_id_bytes = 0_usize;
     for node in nodes {
@@ -442,9 +441,6 @@ fn resolved_input_package_ids(
             .filter(|id| !id.is_empty())
             .ok_or_else(|| "Cargo metadata resolve node omitted id".to_owned())?;
         account_metadata_identifier_bytes(&mut total_id_bytes, id)?;
-        if !node_ids.insert(id.to_owned()) {
-            return Err("Cargo metadata resolve graph repeated a node id".to_owned());
-        }
         let dependencies = node
             .get("deps")
             .and_then(serde_json::Value::as_array)
@@ -462,34 +458,44 @@ fn resolved_input_package_ids(
                 .filter(|package| !package.is_empty())
                 .ok_or_else(|| "Cargo metadata resolve dependency omitted package id".to_owned())?;
             account_metadata_identifier_bytes(&mut total_id_bytes, package)?;
-            targets.push(package.to_owned());
+            targets.push(package);
         }
-        edges.insert(id.to_owned(), targets);
+        if edges.insert(id, targets).is_some() {
+            return Err("Cargo metadata resolve graph repeated a node id".to_owned());
+        }
     }
 
     if workspace_members
         .iter()
-        .any(|member| !node_ids.contains(member))
+        .any(|member| !edges.contains_key(member.as_str()))
     {
         return Err("Cargo metadata resolve graph omitted a workspace member".to_owned());
     }
     if edges
         .values()
         .flatten()
-        .any(|dependency| !node_ids.contains(dependency))
+        .any(|dependency| !edges.contains_key(*dependency))
     {
         return Err("Cargo metadata resolve graph referenced a missing node".to_owned());
     }
 
-    let mut reachable = workspace_members.clone();
-    let mut pending = workspace_members.iter().cloned().collect::<VecDeque<_>>();
+    let mut reachable = BTreeSet::<&str>::new();
+    let mut pending = VecDeque::new();
+    for member in workspace_members {
+        let (id, _) = edges
+            .get_key_value(member.as_str())
+            .expect("workspace member existence checked above");
+        if reachable.insert(*id) {
+            pending.push_back(*id);
+        }
+    }
     while let Some(package) = pending.pop_front() {
         observation_budget()?;
         if let Some(dependencies) = edges.get(&package) {
             for dependency in dependencies {
                 observation_budget()?;
-                if reachable.insert(dependency.clone()) {
-                    pending.push_back(dependency.clone());
+                if reachable.insert(*dependency) {
+                    pending.push_back(*dependency);
                 }
             }
         }
