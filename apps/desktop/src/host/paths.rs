@@ -184,6 +184,7 @@ fn ambient_gui_launch() -> bool {
 }
 
 /// Returns whether a directory is a plausible project boundary.
+/// This launch heuristic does not admit the folder's source or compiler inputs.
 pub(crate) fn looks_like_project(path: &Path) -> bool {
     path.join(".git").exists()
         || [
@@ -198,6 +199,29 @@ pub(crate) fn looks_like_project(path: &Path) -> bool {
         ]
         .into_iter()
         .any(|marker| path.join(marker).is_file())
+        || has_msbuild_marker(path)
+}
+
+/// MSBuild project and solution names are chosen by their author. Inspect only
+/// direct regular files, without following marker links or retaining a listing.
+fn has_msbuild_marker(path: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(path) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            return false;
+        }
+        let name = entry.file_name();
+        Path::new(&name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                ["csproj", "sln", "slnx"]
+                    .into_iter()
+                    .any(|suffix| extension.eq_ignore_ascii_case(suffix))
+            })
+    })
 }
 
 /// Returns the per-user data root without adding a runtime dependency just to
@@ -243,6 +267,9 @@ fn absolute_env_path(name: &str) -> Option<PathBuf> {
     let path = PathBuf::from(std::env::var_os(name)?);
     (!path.as_os_str().is_empty() && path.is_absolute()).then_some(path)
 }
+
+#[cfg(test)]
+mod csharp_boundary_tests;
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
