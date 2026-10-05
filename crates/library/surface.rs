@@ -4035,12 +4035,13 @@ mod tests {
             "all selected profiles in one query must share evidence presence and identity"
         );
 
-        let mut other_frontier = frontier;
+        let mut other_frontier = frontier.clone();
         other_frontier.source_relation_root = [0x99; 32];
         let mut conflicting = record("pkg:nuget/workspace@1.0.0", "csharp", 0x90);
         conflicting.selected_source_frontier = Some(other_frontier);
         assert_eq!(
-            SurfaceReply::SemanticVersions(vec![rust, conflicting].into_boxed_slice()).admit(CommandId::SemanticVersions),
+            SurfaceReply::SemanticVersions(vec![rust, conflicting].into_boxed_slice())
+                .admit(CommandId::SemanticVersions),
             Err(ProductAdmissionError::SemanticVersionShape),
             "selected profiles cannot claim different owner snapshots"
         );
