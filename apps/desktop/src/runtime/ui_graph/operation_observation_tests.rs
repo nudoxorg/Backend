@@ -291,17 +291,23 @@ fn stale_status_callback_rearms_a_new_read_for_the_same_root_replacement(cx: &mu
     entered
         .recv_timeout(Duration::from_secs(1))
         .expect("hydration held");
-    graph.root.update(cx, |root, cx| {
-        root.index_poll = None;
-        root.schedule_index_check(project.clone(), cx);
+    // An entity update flushes deferred effects before returning. Keep the
+    // replacement inside one outer App update so this is genuinely an old
+    // queued callback, rather than an already entered status request.
+    cx.update(|cx| {
+        graph.root.update(cx, |root, cx| {
+            root.index_poll = None;
+            root.schedule_index_check(project.clone(), cx);
+            assert_eq!(root.pending.len(), 1, "old status remains queued");
+        });
+        gate.publish(OwnerState::Starting);
+        gate.publish(OwnerState::Ready {
+            key: basis(),
+            mode: ServiceMode::Embedded,
+        });
+        graph.store.update(cx, |store, cx| store.owner_ready(cx));
+        graph.root.update(cx, |root, cx| root.flush_pending(cx));
     });
-    gate.publish(OwnerState::Starting);
-    gate.publish(OwnerState::Ready {
-        key: basis(),
-        mode: ServiceMode::Embedded,
-    });
-    graph.store.update(cx, |store, cx| store.owner_ready(cx));
-    graph.root.update(cx, |root, cx| root.flush_pending(cx));
     assert_eq!(
         observations.load(Ordering::SeqCst),
         0,
@@ -517,10 +523,6 @@ fn unknown_saved_key_replaces_an_obsolete_queued_check_after_owner_recovery(
     cx.executor().allow_parking();
     let project = LocalProjectId::new("/fixture/operation-stale-status").expect("project");
     let gate = OwnerGate::starting();
-    gate.publish(OwnerState::Ready {
-        key: basis(),
-        mode: ServiceMode::Embedded,
-    });
     let (client, entered, observations, _release) = client();
     let mut snapshot = active_snapshot(&project);
     let mut workspace = snapshot.workspace().clone();
@@ -547,24 +549,35 @@ fn unknown_saved_key_replaces_an_obsolete_queued_check_after_owner_recovery(
     entered
         .recv_timeout(Duration::from_secs(1))
         .expect("hydration held");
-    graph.root.update(cx, |root, cx| {
-        root.index_poll = None;
-        root.schedule_index_check(project.clone(), cx);
-    });
-    gate.publish(OwnerState::Starting);
-    gate.publish(OwnerState::Ready {
-        key: basis(),
-        mode: ServiceMode::Embedded,
-    });
-    graph.store.update(cx, |store, cx| store.owner_ready(cx));
-    graph.root.update(cx, |root, cx| {
-        root.schedule_index_check(project.clone(), cx);
-        assert_eq!(
-            root.pending.len(),
-            1,
-            "new owner replaces the obsolete read"
-        );
-        root.flush_pending(cx);
+    // The initial owner is still starting: its automatic cold reconciliation
+    // must not race this deliberately queued callback. Both admissions and
+    // the replacement happen before the outer update flushes any callback.
+    cx.update(|cx| {
+        gate.publish(OwnerState::Ready {
+            key: basis(),
+            mode: ServiceMode::Embedded,
+        });
+        graph.store.update(cx, |store, cx| store.owner_ready(cx));
+        graph.root.update(cx, |root, cx| {
+            root.index_poll = None;
+            root.schedule_index_check(project.clone(), cx);
+            assert_eq!(root.pending.len(), 1, "unknown key is queued at old owner");
+        });
+        gate.publish(OwnerState::Starting);
+        gate.publish(OwnerState::Ready {
+            key: basis(),
+            mode: ServiceMode::Embedded,
+        });
+        graph.store.update(cx, |store, cx| store.owner_ready(cx));
+        graph.root.update(cx, |root, cx| {
+            root.schedule_index_check(project.clone(), cx);
+            assert_eq!(
+                root.pending.len(),
+                1,
+                "new owner replaces the obsolete read"
+            );
+            root.flush_pending(cx);
+        });
     });
     crate::runtime::wait::until("new attachment receives one fresh status", || {
         cx.run_until_parked();
