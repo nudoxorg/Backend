@@ -6,14 +6,14 @@
 
 use super::{
     CargoMetadataLockState, CargoToolSelection, CargoToolWitnessReuse, CoherentMetadata,
-    InputObservation, MAX_CARGO_CONFIG_BYTES, MAX_CARGO_CONFIG_INPUTS,
-    MAX_CARGO_METADATA_PACKAGES, MAX_CARGO_METADATA_TARGETS_PER_PACKAGE,
-    MAX_CARGO_OBSERVATION_FILE_BYTES, MAX_CARGO_OBSERVATION_PATHS, MAX_METADATA_BYTES,
-    RequestedCargoManifest, basic_input_paths, cargo_config_paths, cargo_config_relative_path_base,
-    cargo_environment_witness, cargo_tool_selection, metadata_tool_witness, observation_budget,
-    observation_path_key, read_observation_file, requested_cargo_manifest, run,
-    run_with_default_rustc, run_with_default_rustc_and_overrides, rustup_selection_paths,
-    sccache_configuration_paths, selected_cargo_program, strict_observation_witness,
+    InputObservation, MAX_CARGO_CONFIG_BYTES, MAX_CARGO_CONFIG_INPUTS, MAX_CARGO_METADATA_PACKAGES,
+    MAX_CARGO_METADATA_TARGETS_PER_PACKAGE, MAX_CARGO_OBSERVATION_FILE_BYTES,
+    MAX_CARGO_OBSERVATION_PATHS, MAX_METADATA_BYTES, RequestedCargoManifest, basic_input_paths,
+    cargo_config_paths, cargo_config_relative_path_base, cargo_environment_witness,
+    cargo_tool_selection, metadata_tool_witness, observation_budget, observation_path_key,
+    read_observation_file, requested_cargo_manifest, run, run_with_default_rustc,
+    run_with_default_rustc_and_overrides, rustup_selection_paths, sccache_configuration_paths,
+    selected_cargo_program, strict_observation_witness,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -23,6 +23,7 @@ const MAX_LOCK_SOURCE_CLOSURE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LOCK_SOURCE_CLOSURE_PACKAGES: usize = MAX_CARGO_METADATA_PACKAGES;
 const MAX_LOCK_SOURCE_CLOSURE_ROOTS: usize = MAX_CARGO_METADATA_PACKAGES;
 const MAX_CARGO_METADATA_DEPENDENCIES_PER_PACKAGE: usize = 65_536;
+const MAX_CARGO_METADATA_RESOLVE_EDGES: usize = 1_000_000;
 
 /// Describes where the Cargo.lock bytes used for one metadata answer came
 /// from. This is an internal data distinction, not a cryptographic proof or
@@ -107,11 +108,22 @@ fn coherent_metadata_with<R: Into<CargoMetadataRun>>(
     let required_manifests = discovery_document
         .inputs
         .required_manifests(&requested.manifest, &discovery_workspace);
-    let required_registry_checksums = discovery_document.inputs.registry_checksums.clone();
+    let required_registry_checksums = discovery_document
+        .inputs
+        .required_registry_checksums
+        .clone();
     let before = observe(&discovery_workspace, &discovery_paths)?;
     observation_budget()?;
-    require_required_manifests_present(&before, &required_manifests)?;
-    require_required_manifests_present(&before, &required_registry_checksums)?;
+    require_required_paths_present(
+        &before,
+        &required_manifests,
+        CargoMetadataInputKind::PackageManifest,
+    )?;
+    require_required_paths_present(
+        &before,
+        &required_registry_checksums,
+        CargoMetadataInputKind::RegistryChecksum,
+    )?;
     require_lock_path_state(&before, &discovery)?;
 
     let observed = run_metadata(&requested.manifest)?.into();
@@ -148,8 +160,16 @@ fn coherent_metadata_with<R: Into<CargoMetadataRun>>(
     }
     let after = observe(&effective_workspace, &watched)?;
     observation_budget()?;
-    require_required_manifests_present(&after, &required_manifests)?;
-    require_required_manifests_present(&after, &required_registry_checksums)?;
+    require_required_paths_present(
+        &after,
+        &required_manifests,
+        CargoMetadataInputKind::PackageManifest,
+    )?;
+    require_required_paths_present(
+        &after,
+        &required_registry_checksums,
+        CargoMetadataInputKind::RegistryChecksum,
+    )?;
     require_lock_path_state(&after, &observed)?;
     if before.digest != after.digest {
         return Err(
@@ -190,8 +210,14 @@ struct CargoMetadataDocument {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CargoMetadataInputs {
+    /// Every path named by Cargo's complete package rows is sampled so edits
+    /// to inactive rows still fence the metadata invocation's input set.
     package_manifests: Vec<PathBuf>,
+    /// Only manifests selected by the filtered resolve graph authorize source
+    /// admission; absent inactive rows remain an observed absence, not a refusal.
+    required_package_manifests: Vec<PathBuf>,
     registry_checksums: Vec<PathBuf>,
+    required_registry_checksums: Vec<PathBuf>,
     target_sources: Vec<PathBuf>,
     package_roots: Vec<PathBuf>,
     local_dependency_roots: Vec<PathBuf>,
@@ -236,9 +262,12 @@ impl CargoMetadataDocument {
                 return Err("Cargo metadata repeated a workspace member id".to_owned());
             }
         }
+        let resolved_inputs = resolved_input_package_ids(&value, &workspace_members)?;
 
         let mut manifests = BTreeSet::new();
+        let mut required_manifests = BTreeSet::new();
         let mut checksums = BTreeSet::new();
+        let mut required_checksums = BTreeSet::new();
         let mut target_sources = BTreeSet::new();
         let mut package_roots = BTreeSet::new();
         let mut local_dependency_roots = BTreeSet::new();
@@ -253,11 +282,21 @@ impl CargoMetadataDocument {
             account_metadata_identifier_bytes(&mut total_id_bytes, id)?;
             package_ids.push((id.to_owned(), manifest.clone()));
             account_metadata_path_bytes(&mut total_path_bytes, &manifest)?;
+            let input_is_resolved = resolved_inputs
+                .as_ref()
+                .is_none_or(|resolved| resolved.contains(id));
             let package_root = manifest
                 .parent()
                 .ok_or_else(|| "Cargo metadata package manifest has no parent".to_owned())?;
+            // Every package manifest is part of Cargo's returned metadata
+            // input set, even when the target-filtered tree later excludes
+            // that package. Its bytes or absence are sampled below; only
+            // reachable rows must exist to admit the selected source graph.
             manifests.insert(manifest.clone());
-            package_roots.insert(package_root.to_path_buf());
+            if input_is_resolved {
+                required_manifests.insert(manifest.clone());
+                package_roots.insert(package_root.to_path_buf());
+            }
 
             let dependencies = package
                 .get("dependencies")
@@ -272,7 +311,9 @@ impl CargoMetadataDocument {
                 observation_budget()?;
                 if let Some(root) = metadata_local_dependency_root(dependency)? {
                     account_metadata_path_bytes(&mut total_path_bytes, &root)?;
-                    local_dependency_roots.insert(root);
+                    if input_is_resolved {
+                        local_dependency_roots.insert(root);
+                    }
                     if package_roots.len() + local_dependency_roots.len()
                         > MAX_LOCK_SOURCE_CLOSURE_ROOTS
                     {
@@ -288,7 +329,11 @@ impl CargoMetadataDocument {
                     source.starts_with("registry+") || source.starts_with("sparse+")
                 })
             {
-                checksums.insert(package_root.join(".cargo-checksum.json"));
+                let checksum = package_root.join(".cargo-checksum.json");
+                checksums.insert(checksum.clone());
+                if input_is_resolved {
+                    required_checksums.insert(checksum);
+                }
             }
 
             let targets = package
@@ -302,7 +347,9 @@ impl CargoMetadataDocument {
                 observation_budget()?;
                 let source = metadata_target_source_path(target)?;
                 account_metadata_path_bytes(&mut total_path_bytes, &source)?;
-                target_sources.insert(source);
+                if input_is_resolved {
+                    target_sources.insert(source);
+                }
                 if manifests.len() + checksums.len() + target_sources.len()
                     > MAX_CARGO_OBSERVATION_PATHS
                 {
@@ -316,7 +363,9 @@ impl CargoMetadataDocument {
             package_ids,
             inputs: CargoMetadataInputs {
                 package_manifests: manifests.into_iter().collect(),
+                required_package_manifests: required_manifests.into_iter().collect(),
                 registry_checksums: checksums.into_iter().collect(),
+                required_registry_checksums: required_checksums.into_iter().collect(),
                 target_sources: target_sources.into_iter().collect(),
                 package_roots: package_roots.into_iter().collect(),
                 local_dependency_roots: local_dependency_roots.into_iter().collect(),
@@ -360,6 +409,100 @@ impl CargoMetadataDocument {
     }
 }
 
+/// Returns the package ids whose manifests and source roots contribute to the
+/// filtered Cargo graph. `packages` may contain metadata rows that the
+/// platform-filtered `resolve` graph does not reach; those rows remain covered
+/// by the exact metadata-output witness, but are not filesystem inputs to the
+/// tree the library parser returns. A null or omitted resolve graph is Cargo's
+/// `--no-deps` shape, where every listed package row remains an input.
+fn resolved_input_package_ids<'metadata>(
+    value: &'metadata serde_json::Value,
+    workspace_members: &BTreeSet<String>,
+) -> Result<Option<BTreeSet<&'metadata str>>, String> {
+    let Some(resolve) = value.get("resolve").filter(|resolve| !resolve.is_null()) else {
+        return Ok(None);
+    };
+    let nodes = resolve
+        .get("nodes")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Cargo metadata resolve graph has no node array".to_owned())?;
+    if nodes.len() > MAX_CARGO_METADATA_PACKAGES {
+        return Err("Cargo metadata resolve graph exceeds the package limit".to_owned());
+    }
+
+    let mut edges = BTreeMap::<&str, Vec<&str>>::new();
+    let mut edge_count = 0_usize;
+    let mut total_id_bytes = 0_usize;
+    for node in nodes {
+        observation_budget()?;
+        let id = node
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| "Cargo metadata resolve node omitted id".to_owned())?;
+        account_metadata_identifier_bytes(&mut total_id_bytes, id)?;
+        let dependencies = node
+            .get("deps")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| "Cargo metadata resolve node omitted deps".to_owned())?;
+        edge_count = edge_count.saturating_add(dependencies.len());
+        if edge_count > MAX_CARGO_METADATA_RESOLVE_EDGES {
+            return Err("Cargo metadata resolve graph exceeds its edge limit".to_owned());
+        }
+        let mut targets = Vec::with_capacity(dependencies.len());
+        for dependency in dependencies {
+            observation_budget()?;
+            let package = dependency
+                .get("pkg")
+                .and_then(serde_json::Value::as_str)
+                .filter(|package| !package.is_empty())
+                .ok_or_else(|| "Cargo metadata resolve dependency omitted package id".to_owned())?;
+            account_metadata_identifier_bytes(&mut total_id_bytes, package)?;
+            targets.push(package);
+        }
+        if edges.insert(id, targets).is_some() {
+            return Err("Cargo metadata resolve graph repeated a node id".to_owned());
+        }
+    }
+
+    if workspace_members
+        .iter()
+        .any(|member| !edges.contains_key(member.as_str()))
+    {
+        return Err("Cargo metadata resolve graph omitted a workspace member".to_owned());
+    }
+    if edges
+        .values()
+        .flatten()
+        .any(|dependency| !edges.contains_key(*dependency))
+    {
+        return Err("Cargo metadata resolve graph referenced a missing node".to_owned());
+    }
+
+    let mut reachable = BTreeSet::<&str>::new();
+    let mut pending = VecDeque::new();
+    for member in workspace_members {
+        let (id, _) = edges
+            .get_key_value(member.as_str())
+            .expect("workspace member existence checked above");
+        if reachable.insert(*id) {
+            pending.push_back(*id);
+        }
+    }
+    while let Some(package) = pending.pop_front() {
+        observation_budget()?;
+        if let Some(dependencies) = edges.get(&package) {
+            for dependency in dependencies {
+                observation_budget()?;
+                if reachable.insert(*dependency) {
+                    pending.push_back(*dependency);
+                }
+            }
+        }
+    }
+    Ok(Some(reachable))
+}
+
 impl CargoMetadataInputs {
     fn observation_paths(
         &self,
@@ -401,7 +544,7 @@ impl CargoMetadataInputs {
     }
 
     fn required_manifests(&self, requested: &Path, workspace: &Path) -> Vec<PathBuf> {
-        self.package_manifests
+        self.required_package_manifests
             .iter()
             .cloned()
             .chain([requested.to_path_buf(), workspace.join("Cargo.toml")])
@@ -1051,18 +1194,36 @@ fn metadata_required_manifests(
         .required_manifests(requested_manifest, workspace))
 }
 
-fn require_required_manifests_present(
+#[derive(Clone, Copy)]
+enum CargoMetadataInputKind {
+    PackageManifest,
+    RegistryChecksum,
+}
+
+impl CargoMetadataInputKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PackageManifest => "package-manifest",
+            Self::RegistryChecksum => "registry-checksum",
+        }
+    }
+}
+
+fn require_required_paths_present(
     observation: &InputObservation,
-    required_manifests: &[PathBuf],
+    required_paths: &[PathBuf],
+    input_kind: CargoMetadataInputKind,
 ) -> Result<(), String> {
-    if required_manifests.iter().any(|path| {
+    if let Some(path) = required_paths.iter().find(|path| {
         observation
             .missing_path_keys
             .contains(&observation_path_key(path))
     }) {
-        return Err(
-            "a Cargo metadata-listed package manifest was absent during observation".to_owned(),
-        );
+        return Err(format!(
+            "a required Cargo input was absent during observation (input-kind={} cause=not-found path={})",
+            input_kind.as_str(),
+            path.display(),
+        ));
     }
     Ok(())
 }
@@ -2875,6 +3036,315 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_package_rows_do_not_become_required_source_inputs() {
+        let scratch = scratch("backend-cargo-metadata-resolved-inputs");
+        let workspace = scratch.0.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("fixture workspace");
+        let workspace = workspace
+            .canonicalize()
+            .expect("canonical fixture workspace");
+        let app_id = "app 0.1.0 (path+file:///workspace/app)";
+        let tool_id = "tool 0.1.0 (path+file:///workspace/tool)";
+        let normal_id = "normal 1.0.0 (registry)";
+        let build_id = "build 1.0.0 (registry)";
+        let dev_id = "dev 1.0.0 (registry)";
+        let transitive_id = "transitive 1.0.0 (registry)";
+        let disconnected_id = "disconnected 1.0.0 (registry)";
+        let filtered_id = "filtered 1.0.0 (registry)";
+        let app_manifest = workspace.join("app/Cargo.toml");
+        let tool_manifest = workspace.join("tool/Cargo.toml");
+        let normal_manifest = scratch.0.join("registry/normal/Cargo.toml");
+        let build_manifest = scratch.0.join("registry/build/Cargo.toml");
+        let dev_manifest = scratch.0.join("registry/dev/Cargo.toml");
+        let transitive_manifest = scratch.0.join("registry/transitive/Cargo.toml");
+        let disconnected_manifest = scratch.0.join("registry/disconnected/Cargo.toml");
+        let filtered_manifest = scratch.0.join("registry/filtered/Cargo.toml");
+        let metadata = serde_json::to_vec(&serde_json::json!({
+            "workspace_root": workspace,
+            "workspace_members": [app_id, tool_id],
+            "packages": [
+                {
+                    "id": app_id,
+                    "source": null,
+                    "manifest_path": app_manifest,
+                    "dependencies": [],
+                    "targets": []
+                },
+                {
+                    "id": tool_id,
+                    "source": null,
+                    "manifest_path": tool_manifest,
+                    "dependencies": [],
+                    "targets": []
+                },
+                {
+                    "id": normal_id,
+                    "source": "registry+https://example.test/index",
+                    "manifest_path": normal_manifest,
+                    "dependencies": [],
+                    "targets": []
+                },
+                {
+                    "id": build_id,
+                    "source": "registry+https://example.test/index",
+                    "manifest_path": build_manifest,
+                    "dependencies": [],
+                    "targets": []
+                },
+                {
+                    "id": dev_id,
+                    "source": "registry+https://example.test/index",
+                    "manifest_path": dev_manifest,
+                    "dependencies": [],
+                    "targets": []
+                },
+                {
+                    "id": transitive_id,
+                    "source": "registry+https://example.test/index",
+                    "manifest_path": transitive_manifest,
+                    "dependencies": [],
+                    "targets": []
+                },
+                {
+                    "id": disconnected_id,
+                    "source": "registry+https://example.test/index",
+                    "manifest_path": disconnected_manifest,
+                    "dependencies": [],
+                    "targets": []
+                },
+                {
+                    "id": filtered_id,
+                    "source": "registry+https://example.test/index",
+                    "manifest_path": filtered_manifest,
+                    "dependencies": [],
+                    "targets": []
+                }
+            ],
+            "resolve": {"nodes": [
+                {"id": app_id, "deps": [
+                    {"pkg": normal_id, "dep_kinds": [{"kind": null, "target": null}]},
+                    {"pkg": build_id, "dep_kinds": [{"kind": "build", "target": null}]},
+                    {"pkg": dev_id, "dep_kinds": [{"kind": "dev", "target": null}]}
+                ]},
+                {"id": tool_id, "deps": []},
+                {"id": normal_id, "deps": [{"pkg": transitive_id, "dep_kinds": [{"kind": null, "target": null}]}]},
+                {"id": build_id, "deps": []},
+                {"id": dev_id, "deps": []},
+                {"id": transitive_id, "deps": []},
+                {"id": disconnected_id, "deps": []}
+            ]}
+        }))
+        .expect("metadata with active, disconnected, and platform-filtered package rows");
+
+        let document = CargoMetadataDocument::parse(&metadata).expect("bounded metadata inputs");
+        let required = document
+            .inputs
+            .required_manifests(&app_manifest, Path::new(&document.workspace_root));
+        assert!(required.contains(&app_manifest));
+        assert!(
+            required.contains(&tool_manifest),
+            "every workspace member is a root"
+        );
+        assert!(required.contains(&normal_manifest));
+        assert!(
+            required.contains(&build_manifest),
+            "active build dependencies are traversed"
+        );
+        assert!(
+            required.contains(&dev_manifest),
+            "active dev dependencies are traversed"
+        );
+        assert!(
+            required.contains(&transitive_manifest),
+            "resolved dependencies are followed transitively"
+        );
+        assert!(
+            !required.contains(&disconnected_manifest),
+            "an unreferenced resolve node is outside the workspace graph"
+        );
+        assert!(
+            !required.contains(&filtered_manifest),
+            "a package row removed by Cargo's platform filter is outside the graph"
+        );
+        let expected_registry_checksums = [
+            normal_manifest.clone(),
+            build_manifest.clone(),
+            dev_manifest.clone(),
+            transitive_manifest.clone(),
+            disconnected_manifest.clone(),
+            filtered_manifest.clone(),
+        ]
+        .into_iter()
+        .map(|manifest| {
+            manifest
+                .parent()
+                .expect("active package root")
+                .join(".cargo-checksum.json")
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+        assert_eq!(
+            document.inputs.registry_checksums,
+            expected_registry_checksums
+        );
+        let expected_required_registry_checksums = [
+            normal_manifest.clone(),
+            build_manifest.clone(),
+            dev_manifest.clone(),
+            transitive_manifest.clone(),
+        ]
+        .into_iter()
+        .map(|manifest| {
+            manifest
+                .parent()
+                .expect("active package root")
+                .join(".cargo-checksum.json")
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+        assert_eq!(
+            document.inputs.required_registry_checksums,
+            expected_required_registry_checksums
+        );
+        assert_eq!(document.inputs.package_manifests.len(), 8);
+        assert!(document.inputs.package_manifests.contains(&app_manifest));
+        assert!(document.inputs.package_manifests.contains(&tool_manifest));
+        assert!(document.inputs.package_manifests.contains(&normal_manifest));
+        assert!(document.inputs.package_manifests.contains(&build_manifest));
+        assert!(document.inputs.package_manifests.contains(&dev_manifest));
+        assert!(
+            document
+                .inputs
+                .package_manifests
+                .contains(&transitive_manifest)
+        );
+        assert!(
+            document
+                .inputs
+                .package_manifests
+                .contains(&disconnected_manifest)
+        );
+        assert!(
+            document
+                .inputs
+                .package_manifests
+                .contains(&filtered_manifest)
+        );
+        assert_eq!(document.inputs.required_package_manifests.len(), 6);
+        assert!(
+            !document
+                .inputs
+                .required_package_manifests
+                .contains(&disconnected_manifest)
+        );
+        assert!(
+            !document
+                .inputs
+                .required_package_manifests
+                .contains(&filtered_manifest)
+        );
+        let witnessed_paths = document
+            .inputs
+            .assemble_observation_paths(&workspace, &[], &[], &[])
+            .expect("complete metadata package rows are observed");
+        assert!(witnessed_paths.contains(&disconnected_manifest));
+        assert!(witnessed_paths.contains(&filtered_manifest));
+
+        let no_deps = serde_json::to_vec(&serde_json::json!({
+            "workspace_root": workspace,
+            "workspace_members": [app_id, tool_id],
+            "packages": [
+                {
+                    "id": app_id,
+                    "source": null,
+                    "manifest_path": app_manifest,
+                    "dependencies": [],
+                    "targets": []
+                },
+                {
+                    "id": tool_id,
+                    "source": null,
+                    "manifest_path": tool_manifest,
+                    "dependencies": [],
+                    "targets": []
+                }
+            ],
+            "resolve": null
+        }))
+        .expect("null-resolve no-deps metadata");
+        let no_deps_document =
+            CargoMetadataDocument::parse(&no_deps).expect("no-deps workspace package inputs");
+        assert_eq!(
+            no_deps_document.inputs.package_manifests,
+            [app_manifest.clone(), tool_manifest.clone()]
+        );
+
+        let observation_with_missing = |path: &Path| InputObservation {
+            digest: [0; 32],
+            missing_path_keys: BTreeSet::from([observation_path_key(path)]),
+            tool_witness_reuse: None,
+            lockfile: None,
+            manifest: None,
+        };
+        assert!(
+            require_required_paths_present(
+                &observation_with_missing(&disconnected_manifest),
+                &required,
+                CargoMetadataInputKind::PackageManifest,
+            )
+            .is_ok(),
+            "a disconnected package does not become required filesystem authority"
+        );
+        assert!(
+            require_required_paths_present(
+                &observation_with_missing(&filtered_manifest),
+                &required,
+                CargoMetadataInputKind::PackageManifest,
+            )
+            .is_ok(),
+            "a platform-filtered package row does not become required filesystem authority"
+        );
+        let active_refusal = require_required_paths_present(
+            &observation_with_missing(&build_manifest),
+            &required,
+            CargoMetadataInputKind::PackageManifest,
+        )
+        .expect_err("a package in the filtered resolve graph needs an observed manifest");
+        assert!(active_refusal.contains("input-kind=package-manifest cause=not-found"));
+        assert!(
+            active_refusal.contains(&build_manifest.display().to_string()),
+            "the bounded refusal names the exact missing input for diagnosis"
+        );
+        let checksum = normal_manifest
+            .parent()
+            .expect("normal package root")
+            .join(".cargo-checksum.json");
+        let checksum_refusal = require_required_paths_present(
+            &observation_with_missing(&checksum),
+            &document.inputs.required_registry_checksums,
+            CargoMetadataInputKind::RegistryChecksum,
+        )
+        .expect_err("a required registry checksum needs an observed file");
+        assert!(checksum_refusal.contains("input-kind=registry-checksum cause=not-found"));
+        assert!(checksum_refusal.contains(&checksum.display().to_string()));
+
+        let mut changed_unselected_row: serde_json::Value =
+            serde_json::from_slice(&metadata).expect("metadata JSON");
+        changed_unselected_row["packages"][6]["description"] =
+            serde_json::Value::String("changed but still witnessed Cargo output".to_owned());
+        assert_ne!(
+            cargo_metadata_output_witness(&metadata, "fixture-host"),
+            cargo_metadata_output_witness(
+                &serde_json::to_vec(&changed_unselected_row).expect("changed metadata JSON"),
+                "fixture-host"
+            ),
+            "unselected rows remain covered by the complete Cargo output witness"
+        );
+    }
+
+    #[test]
     fn private_lock_directory_refuses_a_temporary_root_inside_source() {
         fn source_tree_hash(root: &Path) -> [u8; 32] {
             fn visit(root: &Path, directory: &Path, hasher: &mut blake3::Hasher) {
@@ -3239,16 +3709,18 @@ mod tests {
         let requested = requested_cargo_manifest(&app)
             .expect("request manifest read")
             .expect("app package request");
+        let app_id = "app 0.1.0 (path+file:///workspace/app)";
+        let dependency_id = "dep 0.1.0 (path+file:///path-dependency)";
         let dependency_manifest = dependency
             .join("Cargo.toml")
             .canonicalize()
             .expect("dependency path");
         let metadata = serde_json::to_vec(&serde_json::json!({
             "workspace_root": workspace,
-            "workspace_members": ["app 0.1.0 (path+file:///workspace/app)"],
+            "workspace_members": [app_id],
             "packages": [
                 {
-                    "id": "app 0.1.0 (path+file:///workspace/app)",
+                    "id": app_id,
                     "name": "app",
                     "version": "0.1.0",
                     "manifest_path": app_manifest,
@@ -3256,14 +3728,18 @@ mod tests {
                     "targets": []
                 },
                 {
-                    "id": "dep 0.1.0 (path+file:///path-dependency)",
+                    "id": dependency_id,
                     "name": "dep",
                     "version": "0.1.0",
                     "manifest_path": dependency_manifest,
                     "dependencies": [],
                     "targets": []
                 }
-            ]
+            ],
+            "resolve": {"nodes": [
+                {"id": app_id, "deps": [{"pkg": dependency_id}]},
+                {"id": dependency_id, "deps": []}
+            ]}
         }))
         .expect("metadata fixture");
         let mut runs = 0;
@@ -3369,8 +3845,22 @@ mod tests {
             before.digest, after.digest,
             "the absent/present/absent ABA preserves the old byte witness"
         );
-        assert!(require_required_manifests_present(&before, &required).is_err());
-        assert!(require_required_manifests_present(&after, &required).is_err());
+        assert!(
+            require_required_paths_present(
+                &before,
+                &required,
+                CargoMetadataInputKind::PackageManifest,
+            )
+            .is_err()
+        );
+        assert!(
+            require_required_paths_present(
+                &after,
+                &required,
+                CargoMetadataInputKind::PackageManifest,
+            )
+            .is_err()
+        );
 
         // The production two-pass gate refuses before starting another Cargo
         // pass when its required manifest is already missing.
@@ -3393,12 +3883,16 @@ mod tests {
                 observation_witness_with_context(workspace, paths, [1; 32], [2; 32])
             },
         );
+        let refusal = result
+            .err()
+            .expect("required absent manifest must refuse authority");
         assert!(
-            result
-                .err()
-                .expect("required absent manifest must refuse authority")
-                .contains("metadata-listed package manifest was absent"),
-            "the refusal must identify the required-input condition without exposing a path"
+            refusal.contains("input-kind=package-manifest cause=not-found"),
+            "the refusal must type the missing required input"
+        );
+        assert!(
+            refusal.contains(&dependency_manifest.display().to_string()),
+            "the refusal must name the exact missing manifest"
         );
         assert_eq!(
             cargo_runs, 1,

@@ -30,6 +30,7 @@ use backend_semantic::vocabulary::Language;
 use backend_semantic::vocabulary::LanguageProfile;
 use backend_version::{Coverage, ScopeRoot, WorkspaceRoot};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt::Write as _;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1312,12 +1313,12 @@ pub(super) fn deferred_compile_was_cancelled(
 /// Admits exactly one profile candidate on the owner loop and then drops its
 /// staged output, releasing the package compiler's bounded output credits.
 /// The serving selector remains untouched until every profile has succeeded.
-pub(super) fn finish_deferred_profile<E: std::fmt::Display>(
+pub(super) fn finish_deferred_profile(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     job: &mut DeferredIndex,
     profile: DeferredProfileTicket,
-    compiled: Result<StagedSemanticPackage, E>,
+    compiled: Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
 ) -> Result<(), BuiltinModelError> {
     if job.completed_profiles >= job.expected_profiles {
         return Err(BuiltinModelError(
@@ -2426,7 +2427,7 @@ fn compile_semantic_publications(
 /// for (an artifact or a typed scope gap), and a gap makes the publication
 /// partial. The words are the owner's refusal when it is not.
 fn admit_local_compile(
-    compiled: Result<StagedSemanticPackage, impl std::fmt::Display>,
+    compiled: Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
     expected_artifacts: u32,
 ) -> Result<(StagedSemanticPackage, SemanticPublicationCoverage), BuiltinModelError> {
     let staged = match compiled {
@@ -2448,9 +2449,7 @@ fn admit_local_compile(
             ));
         }
         Err(error) => {
-            return Err(BuiltinModelError(format!(
-                "local semantic compilation failed; prior selected semantic generation was preserved: {error}"
-            )));
+            return Err(BuiltinModelError(local_compile_error_chain(&error)));
         }
     };
     let publication_coverage = if staged.coverage_gaps().is_empty() {
@@ -2486,6 +2485,380 @@ fn admit_local_compile(
         )
     };
     Ok((staged, publication_coverage))
+}
+
+const MAX_LOCAL_COMPILE_ERROR_BYTES: usize = backend_library::MAX_PRODUCT_TEXT_BYTES;
+const MAX_LOCAL_COMPILE_ERROR_CAUSES: usize = 12;
+const MAX_LOCAL_COMPILE_CAUSE_MESSAGE_BYTES: usize = 1_024;
+
+/// Renders the bounded typed source chain at the product refusal boundary.
+///
+/// The outer wording is a stable product diagnostic. Each distinct typed cause follows it, with
+/// a fixed byte and depth budget so unusually verbose errors cannot grow the reply without bound.
+fn local_compile_error_chain(error: &dyn std::error::Error) -> String {
+    const PREFIX: &str = "local semantic compilation failed; prior selected semantic generation was preserved: ";
+    const CAUSE_PREFIX: &str = "\ncaused by: ";
+
+    let first = bounded_error_display(error, MAX_LOCAL_COMPILE_CAUSE_MESSAGE_BYTES);
+    let mut previous = first.clone();
+    let mut source = error.source();
+    let mut seen: [Option<&dyn std::error::Error>; MAX_LOCAL_COMPILE_ERROR_CAUSES + 1] =
+        [None; MAX_LOCAL_COMPILE_ERROR_CAUSES + 1];
+    seen[0] = Some(error);
+    let mut seen_count = 1;
+    let mut causes = Vec::new();
+    let mut cycle_detected = false;
+    for _ in 0..MAX_LOCAL_COMPILE_ERROR_CAUSES {
+        let Some(cause) = source else {
+            break;
+        };
+        if seen[..seen_count]
+            .iter()
+            .flatten()
+            .any(|visited| std::ptr::eq(*visited, cause))
+        {
+            cycle_detected = true;
+            break;
+        }
+        seen[seen_count] = Some(cause);
+        seen_count += 1;
+
+        let message = bounded_error_display(cause, MAX_LOCAL_COMPILE_CAUSE_MESSAGE_BYTES);
+        if !previous.ends_with(&message) {
+            causes.push(message.clone());
+        }
+        previous = message;
+        source = cause.source();
+    }
+    let depth_truncated = if !cycle_detected {
+        if let Some(next) = source {
+            if seen[..seen_count]
+                .iter()
+                .flatten()
+                .any(|visited| std::ptr::eq(*visited, next))
+            {
+                cycle_detected = true;
+                false
+            } else {
+                true
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    let status = if cycle_detected {
+        Some("\nerror cause chain cycle detected".to_owned())
+    } else if depth_truncated {
+        Some(format!(
+            "\nadditional causes omitted after depth limit {MAX_LOCAL_COMPILE_ERROR_CAUSES}"
+        ))
+    } else {
+        None
+    };
+
+    let base_bytes = PREFIX.len() + first.len();
+    let cause_bytes = causes
+        .iter()
+        .map(|cause| CAUSE_PREFIX.len() + cause.len())
+        .sum::<usize>();
+    let status_bytes = status.as_ref().map_or(0, String::len);
+    let mut output = BoundedDiagnosticText::new(MAX_LOCAL_COMPILE_ERROR_BYTES);
+    let _ = write!(&mut output, "{PREFIX}{first}");
+
+    if base_bytes + cause_bytes + status_bytes <= MAX_LOCAL_COMPILE_ERROR_BYTES {
+        for cause in &causes {
+            let _ = write!(&mut output, "{CAUSE_PREFIX}{cause}");
+        }
+    } else if let Some(deepest) = causes.last() {
+        let middle = &causes[..causes.len() - 1];
+        let deepest_bytes = CAUSE_PREFIX.len() + deepest.len();
+        let reserved_tail = deepest_bytes + status_bytes;
+        let omission_marker_bytes = format!("\nintermediate causes omitted: {}", middle.len()).len();
+        let mut used_bytes = base_bytes;
+        let mut included = 0;
+        for cause in middle {
+            let cause_bytes = CAUSE_PREFIX.len() + cause.len();
+            if used_bytes + cause_bytes + omission_marker_bytes + reserved_tail
+                > MAX_LOCAL_COMPILE_ERROR_BYTES
+            {
+                break;
+            }
+            let _ = write!(&mut output, "{CAUSE_PREFIX}{cause}");
+            used_bytes += cause_bytes;
+            included += 1;
+        }
+        let omitted = middle.len() - included;
+        if omitted > 0 {
+            let _ = write!(&mut output, "\nintermediate causes omitted: {omitted}");
+        }
+        let _ = write!(&mut output, "{CAUSE_PREFIX}{deepest}");
+    }
+    if let Some(status) = status {
+        let _ = write!(&mut output, "{status}");
+    }
+    output.finish()
+}
+
+fn bounded_error_display(error: &dyn std::fmt::Display, maximum_bytes: usize) -> String {
+    let mut output = BoundedDiagnosticText::new(maximum_bytes);
+    let _ = write!(&mut output, "{error}");
+    output.finish()
+}
+
+struct BoundedDiagnosticText {
+    text: String,
+    maximum_bytes: usize,
+    truncated: bool,
+}
+
+impl BoundedDiagnosticText {
+    fn new(maximum_bytes: usize) -> Self {
+        Self {
+            text: String::new(),
+            maximum_bytes,
+            truncated: false,
+        }
+    }
+
+    fn finish(self) -> String {
+        self.text
+    }
+
+    fn push_sanitized(&mut self, value: &str) {
+        for character in value.chars() {
+            self.text
+                .push(if character == '\0' { ' ' } else { character });
+        }
+    }
+}
+
+impl std::fmt::Write for BoundedDiagnosticText {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        if self.truncated {
+            return Err(std::fmt::Error);
+        }
+        const TRUNCATION_MARKER: &str = "…";
+        let remaining = self.maximum_bytes.saturating_sub(self.text.len());
+        if value.len() <= remaining {
+            self.push_sanitized(value);
+            return Ok(());
+        }
+        let content_budget = remaining.saturating_sub(TRUNCATION_MARKER.len());
+
+        let mut boundary = value.len().min(content_budget);
+        while !value.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        self.push_sanitized(&value[..boundary]);
+        if remaining >= TRUNCATION_MARKER.len() {
+            self.text.push_str(TRUNCATION_MARKER);
+        }
+        self.truncated = true;
+        Err(std::fmt::Error)
+    }
+}
+
+#[cfg(test)]
+mod local_compile_error_chain_tests {
+    use super::{
+        MAX_LOCAL_COMPILE_CAUSE_MESSAGE_BYTES, MAX_LOCAL_COMPILE_ERROR_BYTES,
+        MAX_LOCAL_COMPILE_ERROR_CAUSES, admit_local_compile,
+        local_compile_error_chain,
+    };
+    use backend_engine::application::{
+        PackageSemanticError, PackageSemanticRuntimeError, StagedSemanticPackage,
+    };
+    use backend_engine::publication::{
+        GenerationBuildError, PublishCompiledError, PublishSemanticError,
+    };
+    use std::error::Error;
+    use std::fmt;
+    use std::sync::OnceLock;
+
+    #[derive(Debug)]
+    struct DiagnosticCause {
+        message: String,
+        source: Option<Box<dyn Error + 'static>>,
+    }
+
+    impl fmt::Display for DiagnosticCause {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str(&self.message)
+        }
+    }
+
+    impl Error for DiagnosticCause {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            self.source.as_deref()
+        }
+    }
+
+    fn numeric_generation_failure() -> PackageSemanticRuntimeError {
+        PackageSemanticRuntimeError::Package(PackageSemanticError::StagedOutput(
+            PublishSemanticError::Publication(PublishCompiledError::Generation(
+                GenerationBuildError::ReopenedSemanticBytesLength {
+                    expected: 4_096,
+                    observed: 2_048,
+                },
+            )),
+        ))
+    }
+
+    #[test]
+    fn refusal_includes_numeric_generation_cause_through_typed_source_chain() {
+        let refusal = match admit_local_compile(
+            Err::<StagedSemanticPackage, _>(numeric_generation_failure()),
+            1,
+        ) {
+            Err(refusal) => refusal,
+            Ok(_) => panic!("the package compile failure must remain a refusal"),
+        };
+        let detail = refusal.to_string();
+
+        assert!(detail.starts_with(
+            "local semantic compilation failed; prior selected semantic generation was preserved: package semantic output could not be prepared for transport: semantic publication failed after all paired artifacts were prepared"
+        ));
+        assert!(detail.contains(
+            "caused by: compiler package could not construct a verified complete generation"
+        ));
+        assert!(detail.contains(
+            "caused by: stored semantic-image bytes have 2048 bytes, require 4096"
+        ));
+        assert!(detail.len() <= MAX_LOCAL_COMPILE_ERROR_BYTES);
+    }
+
+    #[test]
+    fn verbose_middle_causes_do_not_hide_the_deepest_numeric_generation_cause() {
+        let mut source: Box<dyn Error> = Box::new(numeric_generation_failure());
+        for ordinal in 0..4 {
+            source = Box::new(DiagnosticCause {
+                message: format!("intermediate cause {ordinal}: {}", "m".repeat(1_500)),
+                source: Some(source),
+            });
+        }
+        let error = DiagnosticCause {
+            message: "package semantic output could not be prepared for transport".to_owned(),
+            source: Some(source),
+        };
+
+        let detail = local_compile_error_chain(&error);
+
+        assert!(detail.contains("intermediate causes omitted:"));
+        assert!(detail.contains(
+            "stored semantic-image bytes have 2048 bytes, require 4096"
+        ));
+        assert!(detail.len() <= MAX_LOCAL_COMPILE_ERROR_BYTES);
+        assert!(backend_library::ProductText::new(detail).is_ok());
+    }
+
+    #[test]
+    fn exact_product_text_boundary_keeps_the_complete_terminal_cause() {
+        let terminal = "terminal numeric cause: expected 4096 bytes, observed 2048";
+        let make_error = |terminal_message: String| {
+            let mut source: Box<dyn Error> = Box::new(DiagnosticCause {
+                message: terminal_message,
+                source: None,
+            });
+            for ordinal in (0..2).rev() {
+                source = Box::new(DiagnosticCause {
+                    message: format!("middle{ordinal}: {}", "m".repeat(991)),
+                    source: Some(source),
+                });
+            }
+            DiagnosticCause {
+                message: format!("root: {}", "r".repeat(994)),
+                source: Some(source),
+            }
+        };
+        let initial = make_error(terminal.to_owned());
+        let initial_detail = local_compile_error_chain(&initial);
+        let padding_bytes = MAX_LOCAL_COMPILE_ERROR_BYTES - initial_detail.len();
+        assert!(terminal.len() + padding_bytes <= MAX_LOCAL_COMPILE_CAUSE_MESSAGE_BYTES);
+
+        let error = make_error(format!("{}{terminal}", "x".repeat(padding_bytes)));
+        let detail = local_compile_error_chain(&error);
+
+        assert_eq!(detail.len(), MAX_LOCAL_COMPILE_ERROR_BYTES);
+        assert!(detail.ends_with(terminal));
+        assert!(!detail.contains('…'));
+        assert!(backend_library::ProductText::new(detail).is_ok());
+    }
+
+    #[test]
+    fn unicode_and_nul_are_sanitized_before_protocol_text_admission() {
+        let error = DiagnosticCause {
+            message: format!("semantic output: café\0{}", "🌲".repeat(600)),
+            source: None,
+        };
+
+        let detail = local_compile_error_chain(&error);
+
+        assert!(detail.contains("café "));
+        assert!(detail.contains('…'));
+        assert!(!detail.contains('\0'));
+        assert!(detail.len() <= MAX_LOCAL_COMPILE_ERROR_BYTES);
+        assert!(backend_library::ProductText::new(detail).is_ok());
+    }
+
+    #[test]
+    fn source_depth_limit_reports_omitted_causes_and_keeps_last_admitted_cause() {
+        let mut source: Box<dyn Error> = Box::new(DiagnosticCause {
+            message: "cause beyond depth limit".to_owned(),
+            source: None,
+        });
+        for ordinal in (0..=MAX_LOCAL_COMPILE_ERROR_CAUSES).rev() {
+            source = Box::new(DiagnosticCause {
+                message: format!("cause {ordinal}"),
+                source: Some(source),
+            });
+        }
+        let error = DiagnosticCause {
+            message: "stable package failure".to_owned(),
+            source: Some(source),
+        };
+
+        let detail = local_compile_error_chain(&error);
+
+        assert!(detail.contains(&format!(
+            "cause {}",
+            MAX_LOCAL_COMPILE_ERROR_CAUSES - 1
+        )));
+        assert!(detail.contains(&format!(
+            "additional causes omitted after depth limit {MAX_LOCAL_COMPILE_ERROR_CAUSES}"
+        )));
+        assert!(detail.len() <= MAX_LOCAL_COMPILE_ERROR_BYTES);
+    }
+
+    #[derive(Debug)]
+    struct CyclicSource;
+
+    static CYCLIC_SOURCE: OnceLock<CyclicSource> = OnceLock::new();
+
+    impl fmt::Display for CyclicSource {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("cyclic source")
+        }
+    }
+
+    impl Error for CyclicSource {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            CYCLIC_SOURCE
+                .get()
+                .map(|source| source as &(dyn Error + 'static))
+        }
+    }
+
+    #[test]
+    fn cyclic_source_chain_is_reported_without_exceeding_its_depth_budget() {
+        let error = CYCLIC_SOURCE.get_or_init(|| CyclicSource);
+
+        let detail = local_compile_error_chain(error);
+
+        assert!(detail.contains("error cause chain cycle detected"));
+        assert!(detail.len() <= MAX_LOCAL_COMPILE_ERROR_BYTES);
+    }
 }
 
 /// Selects one local compile's generation, while the source it was compiled
