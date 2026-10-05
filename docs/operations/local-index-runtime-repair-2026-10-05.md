@@ -134,6 +134,58 @@ owned process group was stopped. **No desktop tests ran in this attempt**;
 the remaining focused suites were not started. Exact receipts remain at
 `/private/tmp/nudox-index-repaired-runtime-tests-cd1e4a-20261005/`.
 
+The retry at the same clean `cd1e4a189e` source executed all **53 indexing-focused
+tests successfully**. The entire desktop library suite then reported **1,148
+passed, 170 failed, and 10 ignored** in 409.66 seconds. This broader result
+contradicts any desktop-readiness claim based on the focused suite. It includes
+real plain-Rust and registry-package publication refusals, ownership/lifetime,
+snapshot, graph actions, focus, sizing and rendering failures.
+
+The parent tool handle disappeared during the interrupted turn before writing
+its full-suite result receipt. Root verified that both recorded processes are
+no longer live and retained the completed Cargo/libtest log rather than
+inventing a parent exit status. The recovered evidence explicitly records that
+the parent exit is unobserved:
+`/private/tmp/nudox-index-repaired-runtime-tests-cd1e4a-retry-20261005/desktop-full-recovered-evidence.json`
+(SHA-256 `e09f696bbe1039e9821a04480cf825ab1d45031de3cc014a24556a1bb2bca51a`).
+The clean source and Cargo.lock still match the started receipt. The focused
+index log SHA-256 is
+`73e91824e037cf5291bfe79100f28428937f870a4d4177b8e5b9e6c2597c8754`.
+
+Root's next integration removes strong global quit captures through GPUI's
+existing entity-owned weak observers, preserves final-root-drain ordering,
+and mounts the production component Root in GUI fixtures. It also restores
+exact declaration Page/Code eligibility while graph projection waits, retains
+selected-node priority and owner/read-lease guards, and corrects assertions to
+inspect actual painted companion text. These source repairs are **not runtime
+validated yet**. The remaining frozen lane has independently executed the 12
+durable-writer and seven owner tests successfully; paged membership, retired
+layout, selected-frontier and other suites are still in progress.
+
+The full run exposed that the top-level staged semantic transport diagnostic
+hid its typed publication cause. A source repair now includes that cause while
+retaining the error source chain. No underlying transport defect has been
+identified from the old generic message alone. Retesting the exact failing
+plain-Rust fixture is required; structural-only output does not establish
+successful semantic compilation.
+
+A further source/metadata-only compiler audit found that Java ingest currently
+selects Java25 while the closed test snapshot points to a matched JDK21.0.11
+java/javac pair. Static executable/path-kind validation did not establish
+release compatibility. No Java25+ output is realized on this host. The nested
+Commons Codec source POM does not override the current ingest profile. The
+immutable erratum is
+`/private/tmp/nudox-real-corpus-admission-20261005-evidence-v4-java-audit/java-compiler-readiness-erratum-v4.json`
+(SHA-256 `0342624260cd953d995b65d202d51b21accffc76c3945c296d53dbbfcbcf9377`).
+A compatible matched toolchain and actual owner compilation remain required;
+no Java acceptance pass is claimed.
+
+Closing also needs further work: GPUI's outer shutdown-future budget is 200ms,
+although the desktop's inner writer timer is five seconds. Close snapshot
+writes are bounded in bytes but perform synchronous durable I/O without an
+elapsed-time deadline. Neither limitation is verified away by the lifetime
+repair or its new source-only tests.
+
 The Cargo authority fixtures now use a complete producer capture with observed
 resolved features, its recorded target and lockfile. A previous presentation
 helper that fabricated empty feature lists has been removed. Native-path
