@@ -145,6 +145,7 @@ def main [
     # The flake closes over ~1,100 pinned corpus archives; the default 1,024
     # soft descriptor limit is exhausted before any check fails.
     ulimit --file-descriptor-count --soft 65536
+    provide-fhs-tools
 
     let flake = if $skip_flake_check {
         true
@@ -182,6 +183,7 @@ def main [
     })
     if not $tests { print-captured-failures }
 
+    reclaim-build-output
     if not ($flake and $tests) {
         error make {msg: "linux lane failed"}
     }
