@@ -2358,6 +2358,25 @@ def preflight_output_disjoint_from_corpus(output: Path, corpus_manifest: Path) -
             raise Blocked("fresh evidence output and real project roots must be disjoint")
 
 
+def preflight_output_disjoint_from_source(output: Path, source_checkout: Path) -> None:
+    """Avoid creating evidence inside or above the source checkout."""
+    if source_checkout.is_symlink():
+        raise Blocked("source checkout must not be selected through a symlink")
+    try:
+        source = source_checkout.resolve(strict=True)
+    except OSError as error:
+        raise Blocked("source checkout is unavailable") from error
+    if not source.is_dir():
+        raise Blocked("source checkout is not a directory")
+    output_root = output.resolve(strict=False)
+    if (
+        output_root == source
+        or output_root.is_relative_to(source)
+        or source.is_relative_to(output_root)
+    ):
+        raise Blocked("fresh evidence output and source checkout must be disjoint")
+
+
 def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
     if os.name != "posix":
         raise Blocked("this runner currently supports Unix local owners and Unix native paths")
@@ -3022,6 +3041,7 @@ def main() -> int:
         print("output parent must be an existing non-symlink directory", file=sys.stderr)
         return 2
     try:
+        preflight_output_disjoint_from_source(output, args.source_checkout)
         preflight_output_disjoint_from_corpus(output, args.corpus_manifest)
     except AcceptanceError as error:
         print(f"{error.status}: {error}", file=sys.stderr)

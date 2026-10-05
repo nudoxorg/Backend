@@ -168,6 +168,19 @@ class SourceContractTests(unittest.TestCase):
             runner.preflight_output_disjoint_from_corpus(outside, manifest_path)
             self.assertFalse(outside.exists())
 
+    def test_output_inside_source_checkout_is_refused_before_directory_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "checkout"
+            source.mkdir()
+            inside = source / "acceptance-output"
+            with self.assertRaises(runner.Blocked):
+                runner.preflight_output_disjoint_from_source(inside, source)
+            self.assertFalse(inside.exists())
+
+            outside = Path(directory) / "acceptance-output"
+            runner.preflight_output_disjoint_from_source(outside, source)
+            self.assertFalse(outside.exists())
+
 
 class BoundedCaptureTests(unittest.TestCase):
     def test_owner_stream_capture_retains_bounded_head_tail_and_full_hash(self) -> None:
