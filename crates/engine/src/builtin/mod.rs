@@ -6,6 +6,7 @@
 //! engine while each capability boundary has a focused implementation module.
 
 mod authority;
+mod file_facts_relation;
 mod manifest;
 mod output;
 mod profile;
@@ -15,6 +16,14 @@ mod semantic_relation;
 pub use authority::WorkspaceViewProducerAdmission;
 pub use authority::coverage_from_admitted_authority;
 pub(crate) use authority::{authorized_coverage, complete_coverage};
+pub use file_facts_relation::{
+    ProductSourceFactsDeclarationRef, ProductSourceFactsDirectory, ProductSourceFactsDirectoryRef,
+    ProductSourceFactsPage, ProductSourceFactsPageRef, ProductSourceFactsPageView,
+    ProductSourceFileFactsAdmission, ProductSourceFileFactsInline, ProductSourceFileFactsManifest,
+    ProductSourceFileFactsPaged, ProductSourceFileFactsRecord, ProductSourceFileFactsRelation,
+    ProductSourceFileFactsStatus, ProductSourceFileFactsUpdate, admit_product_source_file_facts,
+    build_product_source_file_facts, product_source_facts_page_key,
+};
 pub use manifest::{
     ProductClosureManifestClaim, admit_product_closure_manifest, execution_input_basis,
     execution_input_basis_from_source, execution_input_manifest,
