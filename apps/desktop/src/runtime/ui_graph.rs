@@ -207,6 +207,7 @@ pub struct UiRootEntity {
     index_preflights: BTreeMap<crate::core::LocalProjectId, IndexPreflight>,
     quitting: bool,
     close_committed: bool,
+    close_revision: Option<WriteRevision>,
     close_owner: Option<(crate::core::VersionedRoot, crate::model::ServiceMode)>,
     bootstrap: Option<(crate::host::bootstrap::Binding, Arc<AppSnapshot>)>,
     folder_picker_task: Option<Task<()>>,
@@ -248,6 +249,7 @@ impl UiRootEntity {
             index_preflights: BTreeMap::new(),
             quitting: false,
             close_committed: false,
+            close_revision: None,
             close_owner: None,
             bootstrap: None,
             folder_picker_task: None,
@@ -557,7 +559,8 @@ impl UiRootEntity {
         self.drain_engine(cx);
         self.ensure_persistence_writer(cx)?;
         let state = overlay_claims(PersistentState::project(&self.snapshot()), self.pending_claims(&self.snapshot()));
-        let saved = self.persistence_writer.as_ref().expect("writer admitted").checkpoint(state)?;
+        let (revision, saved) = self.persistence_writer.as_ref().expect("writer admitted").checkpoint(state)?;
+        self.close_revision = Some(revision);
         self.quitting = true;
         self.index_poll = None;
         let pages = self.store.as_ref().and_then(|store| store.update(cx, |store, cx| {
@@ -570,6 +573,9 @@ impl UiRootEntity {
 
     pub(crate) fn cancel_close(&mut self, cx: &mut Context<Self>) {
         if self.close_committed { return; }
+        if let Some(revision) = self.close_revision.take() {
+            if let Some(writer) = &self.persistence_writer { writer.cancel_checkpoint(revision); }
+        }
         self.quitting = false;
         if let Some(store) = &self.store { store.update(cx, |store, cx| store.set_close_paused(false, cx)); }
         if let Some((key, mode)) = self.close_owner.take() { self.admit_owner(key, mode, cx); }
@@ -652,6 +658,7 @@ impl UiRootEntity {
     /// A selected current resource must remain admitted when this intent is
     /// reduced. A competing visit invalidates the existing UI generation.
     pub(crate) fn queue_read(&mut self, intent: Intent, dependency: (crate::model::pages::PageKey, crate::model::pages::Stamp), cx: &mut Context<Self>) {
+        if self.quitting { return; }
         let Some(store) = &self.store else { return; };
         let store = store.read(cx);
         let snapshot = self.snapshot();

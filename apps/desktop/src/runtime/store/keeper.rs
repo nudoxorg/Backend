@@ -242,6 +242,40 @@ mod tests {
     use crate::model::pages::{Known, OrbitModel, PageValue};
 
     #[test]
+    fn a_delayed_old_at_rest_packet_cannot_overwrite_a_new_close_checkpoint() {
+        let directory = crate::host::scratch_base().join(format!("nx-close-fence-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos()));
+        crate::host::private_dir(&directory).expect("fixture");
+        let file = SnapshotFile::in_data(&directory);
+        let mut keeper = SnapshotKeeper::default();
+        keeper.file = Some(file.clone());
+        let view = backend_library::view_state_root(&[("fence".into(), "close".into())]);
+        let first = VersionedRoot::synthetic(view.clone(), 1);
+        let last = VersionedRoot::synthetic(view, 2);
+        let model = Arc::new(OrbitModel { indexed: Known::Known(Arc::from([])), projects: Known::Known(Arc::from([])),
+            explore: Known::Known(Arc::from([])), tree: Known::Known(Arc::from([])) });
+        let packet = |root, keeper: &SnapshotKeeper| {
+            let mut pages = PageStore::default();
+            assert!(pages.seed(SeedEntry::Orbit(model.clone()), root));
+            keeper.to_save(&pages, &AppSnapshot::empty(root), true).expect("served packet")
+        };
+        let older = packet(first, &keeper);
+        let newer = packet(last, &keeper);
+        let (release, wait) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            wait.recv_timeout(Duration::from_secs(5)).expect("release delayed worker");
+            older.write("delayed at rest")
+        });
+        assert!(newer.write("close checkpoint").expect("new final packet") > 0);
+        let final_bytes = std::fs::read(file.path()).expect("final snapshot");
+        release.send(()).expect("release old worker");
+        assert_eq!(worker.join().expect("old worker").expect("obsolete packet skipped"), 0);
+        assert_eq!(std::fs::read(file.path()).expect("still final"), final_bytes);
+        assert!(file.read(&[PageKey::Orbit]).expect("read final snapshot").root.serves(last));
+        std::fs::remove_dir_all(directory).expect("fixture removed");
+    }
+
+    #[test]
     fn quit_without_worker_prepared_destination_preserves_the_previous_private_file() {
         let root = VersionedRoot::synthetic(backend_library::view_state_root(&[("keeper".into(), "quit-preparation".into())]), 1);
         let dir = std::env::temp_dir().join(format!("nx-keeper-quit-{}-{}", std::process::id(),

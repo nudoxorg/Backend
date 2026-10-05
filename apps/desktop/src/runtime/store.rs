@@ -551,7 +551,11 @@ impl DataStore {
         if !paused { self.drain(cx); }
     }
 
-    pub(crate) fn commit_close(&mut self) { self.close_committed = true; }
+    pub(crate) fn commit_close(&mut self) {
+        self.close_committed = true;
+        self.close_paused = true;
+        if let Some(pool) = &self.pool { pool.stop(); }
+    }
 
     pub(crate) fn close_checkpoint(&self) -> Option<PendingSave> {
         if self.close_committed { return None; }
@@ -722,6 +726,7 @@ impl DataStore {
     /// that is current or in flight costs nothing, so views may call this
     /// from render. A queued prefetch for the key is promoted.
     pub fn ensure(&mut self, key: PageKey, cx: &mut Context<Self>) -> Stamp {
+        if self.close_paused { return self.pages.stamp(&key); }
         self.keep_focused_resident();
         match self.owner.phase() {
             OwnerPhase::Serving => {}
@@ -1003,6 +1008,7 @@ impl DataStore {
         affinity: Option<usize>,
         cx: &mut Context<Self>,
     ) {
+        if self.close_paused { return; }
         let Some(pool) = &self.pool else {
             // No read lane: say so once instead of leaving the page working.
             let landing = self.pages.land(

@@ -1007,8 +1007,11 @@ impl ReadPool {
     // cancellation or return itself; arbitrary blocking readers have no
     // universal termination guarantee. This is the existing synchronous
     // lifetime boundary, not a detached thread or an unbounded GUI reaper.
+    /// Revoke admission and interrupt readers without joining on the UI thread.
+    pub(crate) fn stop(&self) { self.shared.close(); self.shared.wake.close(); }
+
     fn close_and_join(&mut self) {
-        self.shared.close();
+        self.stop();
         for handle in self.workers.drain(..) {
             let _ = handle.join();
         }

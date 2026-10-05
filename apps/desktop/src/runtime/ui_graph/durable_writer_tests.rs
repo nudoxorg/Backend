@@ -651,3 +651,27 @@ fn exercise_queued_unsent(cx: &mut TestAppContext, replace_owner: bool) -> Regre
     rig.finish(cx);
     Ok(())
 }
+
+#[gpui::test]
+fn graceful_checkpoint_retains_the_exact_pending_claim_and_commit_never_sends(cx: &mut TestAppContext) {
+    let rig = Rig::new(cx);
+    let operation = rig.root.read_with(cx, |root, _| {
+        let pending = root.index_preflights.values().next().expect("held first-send preflight");
+        let Intent::IndexProject { operation, .. } = &pending.intent else { panic!("index preflight"); };
+        operation.clone()
+    });
+    let (saved, _) = rig.root.update(cx, |root, cx| root.begin_close(cx)).expect("close checkpoint");
+    rig.gate.publish(OwnerState::Starting);
+    rig.release();
+    let acknowledged = crate::runtime::wait::until_some("exact close checkpoint", || {
+        cx.run_until_parked();
+        saved.try_recv().ok()
+    }).expect("checkpoint synchronized");
+    assert!(acknowledged.state.shelf.iter().any(|row| row.operation.as_ref() == Some(&operation)));
+    assert_eq!(rig.sent.load(Ordering::SeqCst), 0, "first-send remains frozen after its save acknowledgement");
+    rig.root.update(cx, |root, cx| root.commit_close(cx));
+    cx.run_until_parked();
+    assert_eq!(rig.sent.load(Ordering::SeqCst), 0, "commit revokes transport admission");
+    assert_eq!(rig.persistence.load().expect("durable checkpoint").shelf[0].operation.as_ref(), Some(&operation));
+    rig.finished.set(true);
+}

@@ -45,6 +45,7 @@ pub(crate) type WriteResult = Result<WriteAck, WriteFailure>;
 pub(crate) type WriteReceiver = async_channel::Receiver<WriteResult>;
 
 struct Job {
+    checkpoint: bool,
     revision: WriteRevision,
     state: Arc<PersistedDesktopState>,
     barrier: Option<async_channel::Sender<WriteResult>>,
@@ -176,6 +177,7 @@ impl PersistenceWriter {
         let state = Arc::new(state);
         inner.desired = Some((revision, state.clone()));
         let job = Job {
+            checkpoint: false,
             revision,
             state,
             barrier: None,
@@ -219,6 +221,7 @@ impl PersistenceWriter {
         let (sent, received) = async_channel::bounded(1);
         inner.desired = Some((revision, state.clone()));
         inner.jobs.push_back(Job {
+            checkpoint: false,
             revision,
             state,
             barrier: Some(sent),
@@ -230,7 +233,7 @@ impl PersistenceWriter {
 
     /// A close checkpoint uses the reserved ordinary slot, acknowledges this
     /// exact state, and leaves the lane open if the person cancels closing.
-    pub(crate) fn checkpoint(&self, state: PersistedDesktopState) -> Result<WriteReceiver, WriteFailure> {
+    pub(crate) fn checkpoint(&self, state: PersistedDesktopState) -> Result<(WriteRevision, WriteReceiver), WriteFailure> {
         let mut inner = self.shared.inner.lock().unwrap_or_else(PoisonError::into_inner);
         if inner.closing { return Err(WriteFailure::new("The local state writer is already closing.")); }
         if inner.jobs.back().is_some_and(|job| job.barrier.is_none()) { inner.jobs.pop_back(); }
@@ -242,10 +245,20 @@ impl PersistenceWriter {
         let state = Arc::new(state);
         let (sent, received) = async_channel::bounded(1);
         inner.desired = Some((revision, state.clone()));
-        inner.jobs.push_back(Job { revision, state, barrier: Some(sent) });
+        inner.jobs.push_back(Job { checkpoint: true, revision, state, barrier: Some(sent) });
         drop(inner);
         self.shared.changed.notify_one();
-        Ok(received)
+        Ok((revision, received))
+    }
+
+    /// Cancelling close reclaims its reserved ordinary slot synchronously.
+    /// Immutable first-send mutation barriers are never changed by this API.
+    pub(crate) fn cancel_checkpoint(&self, revision: WriteRevision) {
+        let mut inner = self.shared.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(job) = inner.jobs.iter_mut().find(|job| job.checkpoint && job.revision == revision) {
+            job.checkpoint = false;
+            job.barrier = None;
+        }
     }
 
     /// Quit drains the bounded lane, including the latest ordinary state. A
@@ -409,13 +422,14 @@ mod tests {
     fn cancelling_close_checkpoint_keeps_writer_open_and_new_edits_follow_the_exact_ack() {
         let trace = Arc::new(Mutex::new(Vec::new()));
         let (writer, entered, release) = blocked(trace.clone());
-        let checkpoint = writer.checkpoint(state(10)).expect("checkpoint admitted");
+        let (first_revision, checkpoint) = writer.checkpoint(state(10)).expect("checkpoint admitted");
         entered.recv_timeout(std::time::Duration::from_secs(1)).expect("checkpoint writing");
         assert!(checkpoint.try_recv().is_err(), "admission is not synchronization");
         // Cancelling the UI wait never cancels an admitted durable write.
         drop(checkpoint);
+        writer.cancel_checkpoint(first_revision);
         writer.ordinary(state(20)).expect("new edit after cancelling close");
-        let current = writer.checkpoint(state(30)).expect("new close checkpoint");
+        let (_, current) = writer.checkpoint(state(30)).expect("new close checkpoint");
         release.send(()).expect("release first write");
         assert_eq!(receive(&current).expect("new exact checkpoint").state.window.expect("window").width, 30);
         receive(&writer.finish()).expect("irreversible finish only after checkpoint");
