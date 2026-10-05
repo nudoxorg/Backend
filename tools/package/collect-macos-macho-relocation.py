@@ -359,6 +359,9 @@ def collect_plan(
     loads_by_edge: dict[tuple[str, str], dict[str, Any]] = {}
     loaded: dict[str, set[str]] = {root: set() for root in process_root_rels}
     active: dict[str, set[str]] = {root: set() for root in process_root_rels}
+    visited_contexts: dict[str, set[tuple[str, tuple[str, ...]]]] = {
+        root: set() for root in process_root_rels
+    }
     load_cache: dict[Path, tuple[list[str], list[str], str | None]] = {}
 
     def image_path(ref: str) -> Path:
@@ -387,6 +390,10 @@ def collect_plan(
             if expanded is None:
                 fail(f"unsupported LC_RPATH origin in {image}: {value}")
         return os.path.normpath(str(expanded))
+
+    def owner_rpaths(owner_rel: str) -> tuple[str, ...]:
+        owner = process_root_sources[owner_rel]
+        return tuple(expand_rpath(item, owner, owner) for item in load_commands(owner)[1])
 
     def classify(candidate: Path) -> dict[str, Any] | None:
         rendered = os.path.normpath(str(candidate))
@@ -452,16 +459,21 @@ def collect_plan(
             fail(f"unresolved Mach-O dependency in {image}: {install_name}")
         return result
 
-    def visit(ref: str, owner_rel: str) -> None:
-        if ref in loaded[owner_rel] or ref in active[owner_rel]:
+    def visit(ref: str, owner_rel: str, inherited_rpaths: tuple[str, ...]) -> None:
+        if ref in active[owner_rel]:
             return
         path = image_path(ref)
         owner = process_root_sources[owner_rel]
         dependencies, declared_rpaths, _ = load_commands(path)
         own_rpaths = tuple(expand_rpath(item, path, owner) for item in declared_rpaths)
-        effective_rpaths = own_rpaths + tuple(
-            expand_rpath(item, owner, owner) for item in load_commands(owner)[1]
-        )
+        # dyld searches the current image's RPATHs, then the complete parent
+        # loader stack. Preserve distinct stacks for this process so a shared
+        # image that resolves differently through two parents is refused below.
+        effective_rpaths = own_rpaths + inherited_rpaths
+        context = (ref, effective_rpaths)
+        if context in visited_contexts[owner_rel]:
+            return
+        visited_contexts[owner_rel].add(context)
         loaded[owner_rel].add(ref)
         active[owner_rel].add(ref)
         try:
@@ -491,15 +503,32 @@ def collect_plan(
                 if previous is not None and previous != row:
                     fail(f"same image/load resolves to different targets in process contexts: {ref}: {install_name}")
                 loads_by_edge[key] = row
-                visit(target["ref"], owner_rel)
+                visit(target["ref"], owner_rel, effective_rpaths)
         finally:
             active[owner_rel].remove(ref)
 
+    refs_by_source_path = {
+        path.resolve(strict=True): ref for path, ref in path_to_ref.items()
+    }
+    for owner_rel, owner_path in sorted(process_root_sources.items()):
+        root_ref = refs_by_source_path.get(owner_path)
+        if root_ref is None:
+            fail(f"process root is not an inventoried Mach-O image: {owner_rel}")
+        visit(root_ref, owner_rel, ())
+
+    # As in the final bundle auditor, inspect origin images that may be loaded
+    # dynamically after following each process root's declared load graph.
+    # Process roots start with no inherited stack; other images inherit that
+    # process's RPATHs. Distinct reachable stacks remain distinct above.
     for ref in origin_image_refs:
         record = images[ref]
         contexts = bundle.process_contexts_for_relative(record["bundle_path"], process_root_rels)
+        source_path = image_path(ref).resolve(strict=True)
         for owner_rel in contexts:
-            visit(ref, owner_rel)
+            if ref in loaded[owner_rel]:
+                continue
+            inherited = () if source_path == process_root_sources[owner_rel] else owner_rpaths(owner_rel)
+            visit(ref, owner_rel, inherited)
 
     # The bundle auditor gives staged Frameworks images every process context.
     # Apply the same rule to discovered package images, repeating until closure
@@ -520,7 +549,9 @@ def collect_plan(
             break
         for ref, owner_rel in pending:
             visited_package_contexts.add((ref, owner_rel))
-            visit(ref, owner_rel)
+            if ref in loaded[owner_rel]:
+                continue
+            visit(ref, owner_rel, owner_rpaths(owner_rel))
 
     # Only retain package images reached through an admitted process context.
     used_package_refs = {
@@ -572,7 +603,7 @@ def collect_plan(
                 if bundle.is_system_path(expanded):
                     continue
                 candidate = Path(expanded)
-                matched_root = any(_relative_source_path(candidate, other.path) is not None for other in input_roots.values())
+                matched_root = any(_relative_source_path(candidate, other) is not None for other in input_roots.values())
                 if not matched_root:
                     fail(f"LC_RPATH resolves outside all pinned roots: {path}: {raw}")
                 remove_values.add(raw)

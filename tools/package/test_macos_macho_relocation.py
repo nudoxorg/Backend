@@ -8,7 +8,9 @@ codesign, app-launch, or runtime behavior.
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
+import sys
 import tarfile
 import tempfile
 import threading
@@ -16,6 +18,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -26,11 +29,13 @@ def load_module(filename: str, name: str) -> Any:
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load {filename}")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
 relocation = load_module("macho_relocation.py", "macho_relocation")
+collector = load_module("collect-macos-macho-relocation.py", "collect_macos_macho_relocation")
 
 
 class DotnetRuntimeReceiptTests(unittest.TestCase):
@@ -178,6 +183,185 @@ class ExclusiveOutputTests(unittest.TestCase):
                 results = list(executor.map(write, payloads))
             self.assertEqual(sum(results), 1)
             self.assertIn(destination.read_bytes(), payloads)
+
+
+class CollectorRpathTests(unittest.TestCase):
+    def _collect(self, root: Path, files: dict[str, dict[str, Any]], owners: tuple[str, ...]) -> dict[str, Any]:
+        image_rows: dict[str, dict[str, Any]] = {}
+        path_to_ref: dict[Path, str] = {}
+        dependencies: dict[Path, list[str]] = {}
+        rpaths: dict[Path, list[str]] = {}
+        for relative, evidence in files.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"synthetic Mach-O input: {relative}\n".encode())
+            canonical = path.resolve(strict=True)
+            ref = f"origin:application:{relative}"
+            bundle_path = f"Contents/MacOS/{relative}"
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            image_rows[ref] = {
+                "ref": ref,
+                "kind": "origin",
+                "source_root": "application",
+                "source_relative_path": relative,
+                "bundle_path": bundle_path,
+                "sha256": digest,
+                "architectures": ["arm64"],
+                "minimum_macos": "14.0",
+                "signature": "unsigned",
+                "dylib_id": None,
+                "rpaths": list(evidence.get("rpaths", [])),
+                "remove_rpaths": [],
+                "origin_id": "application",
+            }
+            path_to_ref[canonical] = ref
+            dependencies[canonical] = list(evidence.get("dependencies", []))
+            rpaths[canonical] = list(evidence.get("rpaths", []))
+
+        input_root = collector.InputRoot(
+            "application", root, "origin", "application", "Contents/MacOS"
+        )
+        owner_paths = {
+            f"Contents/MacOS/{owner}": root / owner for owner in owners
+        }
+        process_roots = {
+            owner: f"Contents/MacOS/{owner}" for owner in owners
+        }
+        origins = {
+            "application": {
+                "receipt_kind": "application",
+                "receipt_sha256": "1" * 64,
+                "root_tree_sha256": "2" * 64,
+                "bundle_prefix": "Contents/MacOS",
+                "process_roots": process_roots,
+                "image_hashes": {},
+            }
+        }
+
+        def fake_run(command: list[str], **_kwargs: Any) -> str:
+            if command[:2] != ["otool", "-L"]:
+                raise AssertionError(f"unexpected synthetic inspector command: {command!r}")
+            path = Path(command[2]).resolve(strict=True)
+            rows = "".join(
+                f"\t{name} (compatibility version 1.0.0, current version 1.0.0)\n"
+                for name in dependencies[path]
+            )
+            return f"{path}:\n{rows}"
+
+        with (
+            patch.object(collector, "macho_images", return_value=(image_rows, path_to_ref)),
+            patch.object(collector.bundle, "run", side_effect=fake_run),
+            patch.object(
+                collector.bundle,
+                "inspect_load_metadata",
+                side_effect=lambda path: (rpaths[Path(path).resolve(strict=True)], None),
+            ),
+        ):
+            return collector.collect_plan(
+                {
+                    "source": {"git_revision": "3" * 40, "git_tree": "4" * 40},
+                    "target": {"triple": "aarch64-apple-darwin", "architecture": "arm64"},
+                },
+                origins,
+                {"application": input_root},
+                owner_paths,
+                {},
+                "arm64",
+            )
+
+    def test_absolute_rpath_is_matched_against_typed_input_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "app"
+            runpath = root / "vendor"
+            runpath.mkdir(parents=True)
+            plan = self._collect(
+                root,
+                {"backend-desktop": {"rpaths": [str(runpath)]}},
+                ("backend-desktop",),
+            )
+            self.assertEqual(plan["images"][0]["remove_rpaths"], [str(runpath)])
+
+    def test_parent_loader_rpath_is_inherited_by_transitive_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "app"
+            shared_dir = root / "parent-rpath"
+            plan = self._collect(
+                root,
+                {
+                    "backend-desktop": {"dependencies": [str(root / "libA.dylib")]},
+                    "libA.dylib": {
+                        "dependencies": [str(root / "libB.dylib")],
+                        "rpaths": [str(shared_dir)],
+                    },
+                    "libB.dylib": {"dependencies": ["@rpath/libShared.dylib"]},
+                    "parent-rpath/libShared.dylib": {},
+                },
+                ("backend-desktop",),
+            )
+            edges = {
+                (row["image_ref"], row["install_name"]): row.get("target_ref")
+                for row in plan["loads"]
+            }
+            self.assertEqual(
+                edges[("origin:application:libB.dylib", "@rpath/libShared.dylib")],
+                "origin:application:parent-rpath/libShared.dylib",
+            )
+
+    def test_current_image_rpath_precedes_inherited_parent_rpath(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "app"
+            plan = self._collect(
+                root,
+                {
+                    "backend-desktop": {"dependencies": [str(root / "libA.dylib")]},
+                    "libA.dylib": {
+                        "dependencies": [str(root / "libB.dylib")],
+                        "rpaths": [str(root / "parent-rpath")],
+                    },
+                    "libB.dylib": {
+                        "dependencies": ["@rpath/libShared.dylib"],
+                        "rpaths": [str(root / "own-rpath")],
+                    },
+                    "own-rpath/libShared.dylib": {},
+                    "parent-rpath/libShared.dylib": {},
+                },
+                ("backend-desktop",),
+            )
+            edges = {
+                (row["image_ref"], row["install_name"]): row.get("target_ref")
+                for row in plan["loads"]
+            }
+            self.assertEqual(
+                edges[("origin:application:libB.dylib", "@rpath/libShared.dylib")],
+                "origin:application:own-rpath/libShared.dylib",
+            )
+
+    def test_shared_image_with_conflicting_process_runpaths_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "app"
+            with self.assertRaisesRegex(
+                collector.RelocationInputError,
+                "same image/load resolves to different targets in process contexts",
+            ):
+                self._collect(
+                    root,
+                    {
+                        "backend-a": {
+                            "dependencies": [str(root / "libSharedLoader.dylib")],
+                            "rpaths": [str(root / "runpath-a")],
+                        },
+                        "backend-b": {
+                            "dependencies": [str(root / "libSharedLoader.dylib")],
+                            "rpaths": [str(root / "runpath-b")],
+                        },
+                        "libSharedLoader.dylib": {
+                            "dependencies": ["@rpath/libTarget.dylib"]
+                        },
+                        "runpath-a/libTarget.dylib": {},
+                        "runpath-b/libTarget.dylib": {},
+                    },
+                    ("backend-a", "backend-b"),
+                )
 
 
 if __name__ == "__main__":
