@@ -716,6 +716,34 @@ fn graph_painted_modes_revoke_on_owner_renewal_and_modal_cover(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn mounted_graph_recovers_from_owner_renewal_without_navigation_or_forced_redraw(cx: &mut TestAppContext) {
+    let (mut rig, gate) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+    let before = rig.shell.read_with(rig.cx, |shell, cx| {
+        shell.graph_entity(cx).expect("current mounted graph").entity_id()
+    });
+    let key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    gate.publish(crate::runtime::owner::OwnerState::Starting);
+    rig.cx.run_until_parked();
+    assert_eq!(rig.route(), Route::World);
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment()).is_none(),
+        "withdrawal must revoke serving eligibility before recovery");
+
+    gate.publish(crate::runtime::owner::OwnerState::Ready {
+        key,
+        mode: crate::model::ServiceMode::Attached,
+    });
+    // Drain only actual owner/subscription/notification work. A settle,
+    // repaint, draw or synthetic input here would hide the missing wake.
+    rig.cx.run_until_parked();
+    assert_eq!(rig.route(), Route::World);
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment()).is_some());
+    let mounted = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx));
+    assert!(mounted.is_some(), "the same visible route must remount after admission without an external wake");
+    assert_ne!(mounted.expect("remounted graph").entity_id(), before,
+        "the old serving scene must not survive an owner replacement");
+}
+
+#[gpui::test]
 fn stale_graph_row_pointer_and_ax_cannot_take_current_focus_before_redraw(cx: &mut TestAppContext) {
     let (mut rig, gate) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);
     tab_to_graph_control(&mut rig, "Declarations");

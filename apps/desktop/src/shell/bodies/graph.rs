@@ -230,6 +230,11 @@ impl Map {
                         map.reset_indexed_world();
                     }
                     map.publish_focus(cx);
+                    // The map is retained behind the Reader's cached body.
+                    // Invalidating its root is not enough to repaint it: this
+                    // notification lets the mounted map request and accept
+                    // the newly admitted projection without route re-entry.
+                    cx.notify();
                 }
                 if matches!(event, StoreEvent::Resource(_)) {
                     map.resolve_open(window, cx);
