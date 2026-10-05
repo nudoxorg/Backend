@@ -290,6 +290,10 @@ impl LocalEngineClient {
         let EngineRequest::IndexProject { request: request_id, project, operation, basis, owner, .. } = request else {
             unreachable!("index adapter called with a non-index request")
         };
+        let owner = owner.as_ref().filter(|owner| owner.is_gated()).ok_or_else(|| EngineFault::IndexNotSent {
+            project: project.clone(), error: crate::core::ErrorValue::new(FaultCode::Protocol,
+                "This index request has no certified local owner lifetime. Nothing was sent."),
+        })?;
         if !operation.belongs_to(project) {
             return Err(EngineFault::IndexNotSent { project: project.clone(), error: crate::core::ErrorValue::new(
                 FaultCode::Protocol, "The saved index operation does not belong to this project.") });
@@ -302,7 +306,7 @@ impl LocalEngineClient {
             let _wake = cancel_wake(&cancel, session.interrupt_handle())
                 .map_err(|error| EngineFault::IndexNotSent { project: project.clone(), error: crate::core::ErrorValue::new(
                     FaultCode::Transport, format!("The first-send connection could not be cancelled safely: {error:?}. Nothing was sent.")) })?;
-            if let Some(owner) = owner {
+            {
                 let certified = owner.ready_for_send(*basis, &cancel).map_err(|message| EngineFault::IndexNotSent {
                     project: project.clone(), error: crate::core::ErrorValue::new(FaultCode::Transport, message),
                 })?;
@@ -656,6 +660,24 @@ fn owner_fault(fault: OwnerFault) -> EngineFault {
 mod tests {
     use super::*;
     use crate::navigation::RequestId;
+
+    #[test]
+    fn a_real_adapter_refuses_missing_and_fixture_lifetimes_before_connection() -> Result<(), Box<dyn std::error::Error>> {
+        let project = LocalProjectId::new("/fixture/no-local-owner-lifetime")?;
+        let mut client = LocalEngineClient::new("/fixture/no-local-owner.sock", project.clone());
+        for owner in [None, super::super::actor::IndexMutationLease::capture(None, None)] {
+            let request = EngineRequest::IndexProject {
+                owner, project: project.clone(), request: RequestId::new(0x92),
+                operation: crate::model::index_operation::tests::claim(&project, 0x92),
+                basis: VersionedRoot::unserved(), cancel: CancellationToken::new(),
+            };
+            assert!(matches!(client.execute(&request), Err(EngineFault::IndexNotSent { error, .. })
+                if error.code() == FaultCode::Protocol));
+            assert!(client.active_cancel.is_none());
+            assert!(client.session.is_none());
+        }
+        Ok(())
+    }
 
     #[test]
     fn owner_replacement_preserves_a_confirmed_index_and_blocks_an_ambiguous_one() {

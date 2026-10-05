@@ -332,10 +332,9 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             effects.push(Effect::Persist);
         }
         Intent::CancelIndex(project) => {
-            // The owner has not yet supplied a terminal receipt. Keep the
-            // row in Cancelling until its ProjectIngest cancellation reply
-            // is admitted; painting Cancelled here would fabricate a
-            // producer outcome.
+            // A local row without a request or claim is proven unsent. An
+            // existing operation remains Cancelling until the owner supplies
+            // terminal evidence or the adapter proves it never sent Start.
             let request = next
                 .workspace()
                 .projects

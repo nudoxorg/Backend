@@ -7,7 +7,7 @@ use crate::model::{ProjectPhase, ServiceMode};
 use crate::runtime::owner::{OwnerGate, OwnerState};
 use crate::runtime::{EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest};
 use gpui::TestAppContext;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError, mpsc};
 
 struct HeldMutation {
@@ -15,9 +15,20 @@ struct HeldMutation {
     sent: Arc<AtomicUsize>,
     release: Arc<(Mutex<bool>, Condvar)>,
     observed: Arc<Mutex<Vec<(crate::navigation::RequestId, crate::model::IndexOperationClaim, VersionedRoot)>>>,
+    hold_root: Arc<AtomicBool>,
+    root_entered: mpsc::Sender<()>,
 }
 impl EngineClient for HeldMutation {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        if matches!(request, EngineRequest::Root { .. }) && self.hold_root.load(Ordering::SeqCst) {
+            let _ = self.root_entered.send(());
+            let (lock, changed) = &*self.release;
+            let mut released = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            while !*released {
+                released = changed.wait(released).unwrap_or_else(PoisonError::into_inner);
+            }
+            return Err(EngineFault::Cancelled);
+        }
         if let EngineRequest::IndexProject {
             project, operation, request, basis, ..
         } = request
@@ -61,6 +72,8 @@ struct Rig {
     sent: Arc<AtomicUsize>,
     writes: Arc<Mutex<Vec<crate::model::PersistedDesktopState>>>,
     observed: Arc<Mutex<Vec<(crate::navigation::RequestId, crate::model::IndexOperationClaim, VersionedRoot)>>>,
+    hold_root: Arc<AtomicBool>,
+    root_entered: mpsc::Receiver<()>,
 }
 impl Drop for Rig {
     fn drop(&mut self) {
@@ -96,7 +109,8 @@ impl Rig {
         )
         .snapshot;
         let persistence = PersistentState::at(directory.join("desktop.json"));
-        let gate = OwnerGate::ready(key, ServiceMode::Embedded);
+        let gate = OwnerGate::starting();
+        gate.publish(OwnerState::Ready { key, mode: ServiceMode::Embedded });
         let store = cx.update(|cx| {
             DataStore::install_with_owner(
                 cx,
@@ -109,12 +123,16 @@ impl Rig {
         let sent = Arc::new(AtomicUsize::new(0));
         let release_mutation = Arc::new((Mutex::new(false), Condvar::new()));
         let observed = Arc::new(Mutex::new(Vec::new()));
+        let hold_root = Arc::new(AtomicBool::new(false));
+        let (root_started, root_entered) = mpsc::channel();
         let actor = EngineActor::start(
             HeldMutation {
                 store: persistence.clone(),
                 sent: sent.clone(),
                 release: release_mutation.clone(),
                 observed: observed.clone(),
+                hold_root: hold_root.clone(),
+                root_entered: root_started,
             },
             4,
         )
@@ -150,6 +168,10 @@ impl Rig {
                 root
             })
         });
+        cx.update(|cx| crate::runtime::owner::watch(gate.clone(), &root, &store, cx));
+        cx.run_until_parked();
+        assert_eq!(root.read_with(cx, |root, _| root.snapshot().settings().confirmed_service_mode),
+            Some(ServiceMode::Embedded), "the real watcher admits initial Ready before the held save");
         root.update(cx, |root, cx| {
             root.schedule_pending_indexes(cx);
             root.flush_pending(cx);
@@ -170,7 +192,21 @@ impl Rig {
             sent,
             writes,
             observed,
+            hold_root,
+            root_entered,
         }
+    }
+    fn hold_actor(&self, cx: &mut TestAppContext) -> RegressionResult {
+        self.hold_root.store(true, Ordering::SeqCst);
+        self.root.update(cx, |root, cx| root.refresh_root(cx));
+        self.root_entered.recv_timeout(std::time::Duration::from_secs(1))?;
+        Ok(())
+    }
+    fn release_actor(&self) {
+        self.hold_root.store(false, Ordering::SeqCst);
+        let (lock, changed) = &*self.release_mutation;
+        *lock.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        changed.notify_all();
     }
     fn release(&self) {
         self.release_save.send(()).expect("release save");
@@ -423,7 +459,6 @@ fn delayed_save_survives_a_checked_same_owner_publication_with_exact_lineage(cx:
 fn exercise_publication(cx: &mut TestAppContext) -> RegressionResult {
     let rig = Rig::new(cx);
     let intent = lineage(&rig, cx)?;
-    cx.update(|cx| crate::runtime::owner::watch(rig.gate.clone(), &rig.root, &rig.store, cx));
     let next = advance(&rig)?;
     cx.run_until_parked();
     assert_eq!(rig.sent.load(Ordering::SeqCst), 0, "publication cannot bypass synchronization");
@@ -453,7 +488,6 @@ fn exercise_recovery(cx: &mut TestAppContext, replace: bool) -> RegressionResult
     let old = rig.gate.ready_epoch().ok_or("old read lease")?;
     let view = crate::runtime::owner::publication_tests::view();
     assert_eq!(rig.gate.publish_view(old, view.clone(), before.key().revision()), crate::runtime::owner::PublicationAdmission::Admitted);
-    cx.update(|cx| crate::runtime::owner::watch(rig.gate.clone(), &rig.root, &rig.store, cx));
     let renewed = if replace {
         rig.gate.replace_observation(old).ok_or("replace rejected read lease")?.0
     } else { rig.gate.suspend_observation(old).ok_or("suspend freshness")? };
@@ -551,6 +585,66 @@ fn exercise_epoch_replacement(cx: &mut TestAppContext) -> RegressionResult {
     assert_ne!(observed[0].0, request);
     assert_ne!(observed[0].1.key, operation.key);
     assert_eq!(observed[0].2, replacement);
+    drop(observed);
+    rig.finish(cx);
+    Ok(())
+}
+
+#[gpui::test]
+fn queued_first_send_cancellation_is_terminal_and_retry_persists_a_new_claim(cx: &mut TestAppContext) {
+    let result = exercise_queued_unsent(cx, false);
+    assert!(result.is_ok(), "queued cancellation regression: {result:?}");
+}
+
+#[gpui::test]
+fn queued_first_send_owner_replacement_is_unsent_and_retryable(cx: &mut TestAppContext) {
+    let result = exercise_queued_unsent(cx, true);
+    assert!(result.is_ok(), "queued owner replacement regression: {result:?}");
+}
+
+fn exercise_queued_unsent(cx: &mut TestAppContext, replace_owner: bool) -> RegressionResult {
+    let rig = Rig::new(cx);
+    let original = lineage(&rig, cx)?;
+    rig.hold_actor(cx)?;
+    rig.release();
+    rig.settle(cx);
+    let queued = rig.root.read_with(cx, |root, _| root.snapshot());
+    let row = &queued.workspace().projects[0];
+    assert!(row.request.is_some(), "the synchronized first send is queued behind the held root read");
+    assert_eq!(rig.sent.load(Ordering::SeqCst), 0);
+    let key = queued.key();
+    if replace_owner {
+        rig.gate.publish(OwnerState::Starting);
+        rig.gate.publish(OwnerState::Ready { key, mode: ServiceMode::Embedded });
+        rig.store.update(cx, |store, cx| store.owner_ready(cx));
+    } else {
+        rig.root.update(cx, |root, cx| root.dispatch(Intent::CancelIndex(rig.project.clone()), cx));
+        assert_eq!(rig.root.read_with(cx, |root, _| root.snapshot().workspace().projects[0].phase), ProjectPhase::Cancelling);
+    }
+    rig.release_actor();
+    let stopped = if replace_owner { ProjectPhase::Failed } else { ProjectPhase::Cancelled };
+    crate::runtime::wait::until("queued first send settles without uncertainty", || {
+        cx.run_until_parked();
+        rig.root.update(cx, |root, cx| root.drain_engine(cx));
+        rig.root.read_with(cx, |root, _| root.snapshot().workspace().projects[0].phase == stopped)
+    });
+    assert_eq!(rig.sent.load(Ordering::SeqCst), 0, "the actor never entered the first-send adapter");
+    crate::runtime::wait::until("known-unsent terminal state is synchronized", || {
+        rig.persistence.load().is_ok_and(|state| state.shelf[0].operation.is_none()
+            && rig.persistence.cold_workspace(&state).projects[0].phase == stopped)
+    });
+    let disk = rig.persistence.load()?;
+    assert!(disk.shelf[0].operation.is_none(), "known-unsent cancellation cannot become an unknown owner operation");
+    assert_eq!(rig.persistence.cold_workspace(&disk).projects[0].phase, stopped);
+    rig.root.update(cx, |root, cx| root.dispatch(Intent::RetryIndex(rig.project.clone()), cx));
+    rig.settle(cx);
+    crate::runtime::wait::until("safe explicit Retry enters the adapter once", || rig.sent.load(Ordering::SeqCst) == 1);
+    let Intent::IndexProject { request, operation, .. } = original else { return Err("original index lineage".into()); };
+    let observed = rig.observed.lock().map_err(|_| "request lineage poisoned")?;
+    assert_eq!(observed.len(), 1);
+    assert_ne!(observed[0].0, request);
+    assert_ne!(observed[0].1.key, operation.key);
+    assert_eq!(rig.persistence.load()?.shelf[0].operation.as_ref(), Some(&observed[0].1));
     drop(observed);
     rig.finish(cx);
     Ok(())

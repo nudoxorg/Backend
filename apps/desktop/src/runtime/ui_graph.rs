@@ -340,6 +340,7 @@ impl UiRootEntity {
         if pending.is_empty() {
             return;
         }
+        let mut refresh_unsent = false;
         for queued in pending {
             match queued {
                 QueuedIntent::Plain(intent) => self.dispatch(intent, cx),
@@ -355,14 +356,16 @@ impl UiRootEntity {
                             if self.snapshot().key().same_authority(*basis) && self.snapshot().workspace().projects.iter().any(|row|
                                 row.id == *project && row.request.is_none() && row.operation.as_ref() == Some(operation))) => self.dispatch_runtime(intent, cx),
                 QueuedIntent::IndexStatus { .. } => {},
-                // An unsent local admission remains on the shelf. A replacement
-                // owner will schedule it against its own attachment and root.
-                QueuedIntent::Index { .. } => {}
+                // The stale callback never reached the durable boundary. A
+                // current owner may admit this local row after the old callback
+                // is removed, even if its earlier ready event already settled.
+                QueuedIntent::Index { .. } => refresh_unsent = true,
                 QueuedIntent::Read { intent, lease, sequence } if sequence == self.graph_view_generation
                     && self.store.as_ref().is_some_and(|store| lease.admits(store.read(cx))) => self.dispatch(intent, cx),
                 QueuedIntent::Read { .. } => {}
             }
         }
+        if refresh_unsent { self.schedule_pending_indexes(cx); }
     }
 
     /// Close the durable queued/submitted boundary before crossing the actor.
@@ -442,7 +445,7 @@ impl UiRootEntity {
         if !matches!(pending.save, IndexPreflightSave::Saved) { return; }
         let Intent::IndexProject { basis, operation, request, .. } = &pending.intent else { return; };
         let live = index_preflight_basis(&self.snapshot(), &project, operation, *basis);
-        let admitted = live.and_then(|current| match pending.attachment.admission(*basis) {
+        let admitted = live.and_then(|current| match pending.attachment.admission(current) {
             super::owner::MutationAdmission::Ready(certified) if certified.same_authority(current) => Ok(Some(current)),
             super::owner::MutationAdmission::Ready(_) | super::owner::MutationAdmission::Observing => Ok(None),
             super::owner::MutationAdmission::Replaced => Err(IndexPreflightRefusal::OwnerAttachmentChanged),

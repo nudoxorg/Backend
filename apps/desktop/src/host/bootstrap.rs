@@ -438,7 +438,7 @@ mod tests {
         let mut runtime = crate::runtime::DesktopRuntime::new(submitted.clone(), actor);
         assert!(
             runtime
-                .reject_unsent_index(&project, key, "late save refusal".into())
+                .reject_unsent_index(&project, key, None, "late save refusal".into())
                 .is_empty()
         );
         assert_eq!(*runtime.snapshot(), submitted);
@@ -450,13 +450,13 @@ mod tests {
         );
         assert!(
             runtime
-                .reject_unsent_index(&project, stale, "obsolete refusal".into())
+                .reject_unsent_index(&project, stale, None, "obsolete refusal".into())
                 .is_empty()
         );
         assert_eq!(*runtime.snapshot(), unsent);
         assert!(
             !runtime
-                .reject_unsent_index(&project, key, "current save refusal".into())
+                .reject_unsent_index(&project, key, None, "current save refusal".into())
                 .is_empty()
         );
         assert_eq!(

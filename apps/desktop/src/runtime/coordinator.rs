@@ -145,7 +145,11 @@ impl DesktopRuntime {
 
     /// Applies a typed intent and submits only the effects it emits.
     pub fn dispatch(&mut self, intent: Intent) -> Vec<RuntimeEvent> {
-        self.dispatch_with_owner(intent, None)
+        #[cfg(any(test, feature = "visual-harness"))]
+        let owner = super::actor::IndexMutationLease::capture(None, None);
+        #[cfg(not(any(test, feature = "visual-harness")))]
+        let owner = None;
+        self.dispatch_with_owner(intent, owner)
     }
 
     /// Only the root's checked durable acknowledgment may use this boundary.

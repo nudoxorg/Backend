@@ -401,6 +401,14 @@ impl PartialEq for IndexMutationLease {
 impl Eq for IndexMutationLease {}
 
 impl IndexMutationLease {
+    pub(crate) fn is_gated(&self) -> bool {
+        match &self.0 {
+            IndexMutationOwner::Gated { .. } => true,
+            #[cfg(any(test, feature = "visual-harness"))]
+            IndexMutationOwner::UngatedFixture => false,
+        }
+    }
+
     pub(crate) fn capture(gate: Option<&super::owner::OwnerGate>, attachment: Option<super::owner::Epoch>) -> Option<Self> {
         match gate {
             Some(gate) => {
@@ -1093,6 +1101,10 @@ fn run_actor(
         let admission = match &request {
             EngineRequest::IndexProject { owner: Some(owner), project, .. } => owner.ready_for_send(basis, request.cancellation()).map(|_| ())
                 .map_err(|message| EngineFault::IndexNotSent { project: project.clone(), error: ErrorValue::new(crate::core::FaultCode::Transport, message) }),
+            EngineRequest::IndexProject { owner: None, project, .. } => Err(EngineFault::IndexNotSent {
+                project: project.clone(), error: ErrorValue::new(crate::core::FaultCode::Protocol,
+                    "This index request has no certified owner lifetime. Nothing was sent."),
+            }),
             _ => Ok(()),
         };
         let result = if let Err(error) = admission {
@@ -1189,6 +1201,9 @@ fn cancelled_fault(request: &EngineRequest) -> EngineFault {
     }
     EngineFault::Cancelled
 }
+
+#[cfg(test)]
+mod index_mutation_tests;
 
 #[cfg(test)]
 mod tests {

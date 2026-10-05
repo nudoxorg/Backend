@@ -132,6 +132,7 @@ fn queued_index_cannot_cross_a_same_root_owner_replacement(cx: &mut TestAppConte
         schedule.root.update(cx, |root, cx| {
             root.schedule_index(schedule.project.clone(), cx)
         });
+        let stale = schedule.root.read(cx).pending[0].intent().clone();
         schedule.gate.publish(OwnerState::Starting);
         schedule.gate.publish(OwnerState::Ready {
             key: authority(),
@@ -141,7 +142,15 @@ fn queued_index_cannot_cross_a_same_root_owner_replacement(cx: &mut TestAppConte
         schedule.root.update(cx, |root, cx| root.flush_pending(cx));
         schedule.assert_unsent(cx);
         schedule.root.update(cx, |root, cx| {
-            root.schedule_pending_indexes(cx);
+            assert_eq!(root.pending.len(), 1, "stale callback removal schedules the current owner without another event");
+            let (Intent::IndexProject { request: old, operation: old_claim, .. },
+                Intent::IndexProject { request: new, operation: new_claim, .. }) = (&stale, root.pending[0].intent()) else {
+                assert!(matches!((&stale, root.pending[0].intent()),
+                    (Intent::IndexProject { .. }, Intent::IndexProject { .. })), "only the unsent index lane is queued");
+                return;
+            };
+            assert_ne!(old, new);
+            assert_ne!(old_claim.key, new_claim.key);
             root.flush_pending(cx);
             assert!(
                 root.index_preflights.contains_key(&schedule.project),
