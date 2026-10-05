@@ -14,8 +14,8 @@ use super::index::{
     DeferredIndex, DeferredProfileTicket, IndexScanFailure, IndexScanResult, IndexScanWork,
     PreparedIndex, PreparedProductSelection, capture_index_scan, deferred_compile_was_cancelled,
     finish_deferred_index, finish_deferred_profile, finish_index_scan, index_project_intent_at,
-    index_project_intent_with_cluster_and_intent, remove_project_intent,
-    run_deferred_compile, run_index_scan, semantic_version_record, semantic_versions,
+    index_project_intent_with_cluster_and_intent, remove_project_intent, run_deferred_compile,
+    run_index_scan, semantic_version_record, semantic_versions,
 };
 use super::index_operation::{
     Acceptance as IndexOperationAcceptance, IndexOperationJournal, JournalEntry,
@@ -2518,6 +2518,7 @@ impl CommandAdapter {
             }
             Command::Search(query) => self.search(daemon, &query, certificate),
             Command::Graph(query) => self.graph(daemon, query, certificate, false),
+            Command::GraphPage { symbol, page } => self.graph_page(daemon, symbol, page, certificate),
             Command::Related(query) => self.graph(daemon, query, certificate, true),
             Command::GraphQuery(request) => execute_certified_graph_query(
                 daemon,
@@ -2878,24 +2879,51 @@ impl CommandAdapter {
             Command::Graph(query)
         };
         let query = Self::claimed_graph_source(daemon, query, certificate.as_ref());
-        let reply = match execute_semantic_graph(
-            daemon,
-            &self.compiler,
-            &mut self.generations,
-            &mut self.image_rows,
-            query,
-            include_incoming,
-        )? {
-            Some(snapshot) => CommandReply::Graph(snapshot),
-            None => match execute_structural_call_graph(daemon, query, include_incoming)? {
-                Some(snapshot) => CommandReply::Graph(snapshot),
-                None => daemon
-                    .engine()
-                    .daemon()
-                    .library()
-                    .execute(command.clone())
-                    .unwrap_or_else(|error| CommandReply::Failed(error.into())),
-            },
+        let reply = self.graph_snapshot(daemon, query, include_incoming)?.map_or_else(
+            || daemon.engine().daemon().library().execute(command.clone())
+                .unwrap_or_else(|error| CommandReply::Failed(error.into())),
+            CommandReply::Graph,
+        );
+        Self::certify(daemon, &command, reply, certificate)
+    }
+
+    fn graph_snapshot(
+        &mut self,
+        daemon: &ProductDaemon,
+        query: backend_engine::GraphNeighborhoodQuery,
+        include_incoming: bool,
+    ) -> Result<Option<backend_engine::ViewSnapshot>, BuiltinModelError> {
+        match execute_semantic_graph(daemon, &self.compiler, &mut self.generations,
+            &mut self.image_rows, query, include_incoming)? {
+            Some(snapshot) => Ok(Some(snapshot)),
+            None => execute_structural_call_graph(daemon, query, include_incoming),
+        }
+    }
+
+    fn graph_page(
+        &mut self,
+        daemon: &ProductDaemon,
+        symbol: backend_engine::SymbolAddress,
+        page: backend_engine::PageRequest,
+        certificate: Option<WireCertificate>,
+    ) -> Result<AdmittedReply, BuiltinModelError> {
+        let command = Command::GraphPage { symbol, page };
+        let library = daemon.engine().daemon().library();
+        let selected = Self::claimed_graph_symbol(daemon, symbol, page.basis(), certificate.as_ref());
+        let reply = if let Some(resolved) = selected.resolve(library.view()) {
+            let query = backend_engine::GraphNeighborhoodQuery::new(resolved, library.revision_root());
+            // A stale page must be refused before executing against a newer graph.
+            if !page.basis().matches(library.revision_root()) {
+                library.graph_page_for_address(resolved, symbol, page)
+            } else if let Some(snapshot) = self.graph_snapshot(daemon, query, false)? {
+                let ids = snapshot.root.rows().iter().map(|row| row.id).collect::<Vec<_>>();
+                library.graph_page_from_ids(resolved, symbol, page, &ids)
+            } else {
+                library.graph_page_for_address(resolved, symbol, page)
+            }.map(CommandReply::ProjectionPage)
+             .unwrap_or_else(|error| CommandReply::Error(error.to_string()))
+        } else {
+            library.execute(command.clone()).unwrap_or_else(|error| CommandReply::Error(error.to_string()))
         };
         Self::certify(daemon, &command, reply, certificate)
     }
@@ -2916,13 +2944,26 @@ impl CommandAdapter {
         query: backend_engine::GraphNeighborhoodQuery,
         certificate: Option<&WireCertificate>,
     ) -> backend_engine::GraphNeighborhoodQuery {
+        let symbol = Self::claimed_graph_symbol(daemon, query.symbol(), query.basis(), certificate);
+        symbol
+            .resolve(daemon.engine().daemon().library().view())
+            .map_or(query, |symbol| query.with_resolved_symbol(symbol))
+    }
+
+    /// Shares the exact admitted coordinate lookup between complete and paged graphs.
+    fn claimed_graph_symbol(
+        daemon: &ProductDaemon,
+        address: backend_engine::SymbolAddress,
+        basis: backend_library::ViewRevision,
+        certificate: Option<&WireCertificate>,
+    ) -> backend_engine::SymbolAddress {
         let library = daemon.engine().daemon().library();
         let view = library.view();
-        let requested = query.resolve_symbol(view);
+        let requested = address.resolve(view);
         if requested.is_some_and(|symbol| view.row(backend_engine::RowId::Symbol(symbol)).is_some())
-            || !query.basis().matches(library.revision_root())
+            || !basis.matches(library.revision_root())
         {
-            return query;
+            return address;
         }
         let Some(label) = certificate.and_then(|certificate| {
             certificate.claims.iter().find_map(|claim| match claim {
@@ -2939,14 +2980,14 @@ impl CommandAdapter {
                 _ => None,
             })
         }) else {
-            return query;
+            return address;
         };
         symbol_row_by_label(view, label)
             .and_then(|row| match row.id {
                 backend_engine::RowId::Symbol(symbol) => Some(symbol),
                 _ => None,
             })
-            .map_or(query, |symbol| query.with_resolved_symbol(symbol))
+            .map_or(address, backend_engine::SymbolAddress::selected)
     }
 
     fn surface(
@@ -3609,9 +3650,8 @@ mod tests {
     };
     use crate::builtin::{
         BuiltinIntent, BuiltinModel, BuiltinProfile, BuiltinSemanticRelation,
-        BuiltinWorkspaceRelation, ECHO_AUTHORITY_SECRET,
-        SemanticDeployment, builtin_dispatcher, forge_gateway::ForgeGateway, genesis,
-        profile_descriptor, publish_builtin_view,
+        BuiltinWorkspaceRelation, ECHO_AUTHORITY_SECRET, SemanticDeployment, builtin_dispatcher,
+        forge_gateway::ForgeGateway, genesis, profile_descriptor, publish_builtin_view,
     };
     use crate::process::{ForgeAuthentication, ForgeConfig};
     use backend_engine::application::{
@@ -3784,12 +3824,17 @@ mod tests {
             fs::create_dir_all(&workspace).expect("workspace directory");
             // Commands admit a local directory under its physical identity.
             // Seed the same identity even when the OS temp path is a symlink.
-            let workspace = workspace.canonicalize().expect("physical workspace directory");
+            let workspace = workspace
+                .canonicalize()
+                .expect("physical workspace directory");
             let project = workspace.join("project");
             fs::create_dir_all(&project).expect("project directory");
             let label = project.to_str().expect("UTF-8 fixture path").to_owned();
             let package = backend_engine::package_key(&label);
-            assert_eq!(project.canonicalize().expect("physical seed project"), project);
+            assert_eq!(
+                project.canonicalize().expect("physical seed project"),
+                project
+            );
 
             let profile = profile_descriptor(BuiltinProfile::Product).expect("product profile");
             let dispatcher =
@@ -4217,14 +4262,11 @@ mod tests {
             ));
         }
         assert_eq!(adapter.waiting.len(), MAX_WAITING_COMMANDS);
-        let refused = match adapter.execute_or_defer(
-            daemon,
-            &remove_body(700, package, &label),
-            20_000,
-        ) {
-            Err(error) => error,
-            Ok(_) => panic!("the full mutation queue must refuse the next command"),
-        };
+        let refused =
+            match adapter.execute_or_defer(daemon, &remove_body(700, package, &label), 20_000) {
+                Err(error) => error,
+                Ok(_) => panic!("the full mutation queue must refuse the next command"),
+            };
         assert!(refused.0.contains("mutation queue is full"));
         assert_eq!(adapter.waiting.len(), MAX_WAITING_COMMANDS);
         assert_eq!(owner_cursor(daemon), before, "refusal precedes admission");

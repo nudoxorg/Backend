@@ -83,6 +83,12 @@ impl NamespaceFence {
         Ok(())
     }
 
+    /// Identifies only this held fence's direct control file after verifying its inode.
+    pub(crate) fn is_control_entry(&self, path: &Path) -> io::Result<bool> {
+        self.verify()?;
+        Ok(path == self.namespace_path.join(self.kind.file_name()))
+    }
+
     pub(crate) fn verify_for(&self, namespace: &PrivateNamespace) -> io::Result<()> {
         if self.namespace_path != namespace.path {
             return Err(io::Error::new(
