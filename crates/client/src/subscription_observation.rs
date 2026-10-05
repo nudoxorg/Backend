@@ -1775,7 +1775,6 @@ mod tests {
         assert_eq!(state.cursor(), previous);
         assert_eq!(state.root().root(), initial.root());
         drop(control);
-        drop(tick);
         drop(transport);
         owner.join().expect("authenticated owner");
         std::fs::remove_file(path).expect("remove test socket");

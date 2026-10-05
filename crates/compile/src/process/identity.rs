@@ -1032,7 +1032,7 @@ mod tests {
         }
         assert_eq!(lease.path(), canonical);
 
-        fs::remove_file(&alias)?;
+        remove_file(&alias)?;
         symlink(replacement, &alias)?;
         let status = Command::new(lease.path()).status()?;
         assert!(

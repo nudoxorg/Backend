@@ -868,7 +868,7 @@ mod namespace_fence_tests {
         let capacity = namespace
             .entries(1, &fence)
             .expect_err("namespace contains more than one direct child");
-        assert_eq!(capacity.kind(), std::io::ErrorKind::FileTooLarge);
+        assert_eq!(capacity.kind(), io::ErrorKind::FileTooLarge);
         drop(fence);
 
         let reopened = store

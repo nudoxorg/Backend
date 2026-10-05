@@ -3576,6 +3576,8 @@ fn sync_directory(path: &Path) -> Result<(), io::Error> {
 
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::mem;
+
     pub(crate) const BINDING_FILE: &str = super::BINDING_FILE;
     pub(crate) const DURABLE_ROOTS_DIRECTORY: &str = super::DURABLE_ROOTS_DIRECTORY;
     pub(crate) const INTEGRITY_FILE: &str = super::INTEGRITY_FILE;
@@ -3618,11 +3620,11 @@ pub(crate) mod test_support {
             .documents
             .live
             .capacity()
-            .saturating_mul(std::mem::size_of::<super::OrdinalDocument>());
+            .saturating_mul(mem::size_of::<super::OrdinalDocument>());
         let identity_bytes = source
             .identity_ordinals
             .capacity()
-            .saturating_mul(std::mem::size_of::<super::IdentityOrdinal>());
+            .saturating_mul(mem::size_of::<super::IdentityOrdinal>());
         (
             source.documents.slot_count,
             source.documents.live.len(),
