@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "bundle-nixpkgs": {
+      "locked": {
+        "lastModified": 1790641188,
+        "narHash": "sha256-22z2qGwxEiTOSTbv1Jise9LM0nep+JryLARLr7kftls=",
+        "owner": "philocalyst",
+        "repo": "nixpkgs",
+        "rev": "ea2e2b146a72a1a03318c215bdf7bb40f90044bf",
+        "type": "github"
+      },
+      "original": {
+        "owner": "philocalyst",
+        "repo": "nixpkgs",
+        "rev": "ea2e2b146a72a1a03318c215bdf7bb40f90044bf",
+        "type": "github"
+      }
+    },
     "fenix": {
       "inputs": {
         "nixpkgs": [
@@ -62,6 +78,7 @@
     },
     "root": {
       "inputs": {
+        "bundle-nixpkgs": "bundle-nixpkgs",
         "fenix": "fenix",
         "nixpkgs": "nixpkgs",
         "nuenv": "nuenv",
