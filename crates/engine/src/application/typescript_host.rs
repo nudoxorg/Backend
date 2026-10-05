@@ -209,9 +209,15 @@ fn find_project_typescript(
     for ancestor in root.ancestors().take(MAX_PROJECT_ANCESTORS) {
         let node_modules = ancestor.join("node_modules");
         let package = node_modules.join("typescript");
-        let manifest = package.join("package.json");
-        if manifest.exists() {
-            return inspect_project_package(&node_modules, &package, &manifest);
+        match fs::symlink_metadata(&package) {
+            Ok(_) => return inspect_project_package(&node_modules, &package),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(TypeScriptProjectHostError::PackagePath {
+                    path: package.into_boxed_path(),
+                    source,
+                });
+            }
         }
         let marker = ancestor.join(".pnp.cjs");
         if marker.is_file() && pnp.is_none() {
@@ -227,7 +233,6 @@ fn find_project_typescript(
 fn inspect_project_package(
     node_modules: &Path,
     package: &Path,
-    _manifest: &Path,
 ) -> Result<ProjectTypeScriptSearch, TypeScriptProjectHostError> {
     let node_modules = fs::canonicalize(node_modules).map_err(|source| {
         TypeScriptProjectHostError::PackagePath {
@@ -720,6 +725,22 @@ mod tests {
         assert!(matches!(
             find_project_typescript(&fixture.0),
             Ok(ProjectTypeScriptSearch::Pnp(_))
+        ));
+    }
+
+    #[test]
+    fn project_discovery_reports_a_broken_typescript_symlink() {
+        let fixture = Fixture::new();
+        let modules = fixture.0.join("node_modules");
+        fs::create_dir_all(&modules).expect("create node_modules");
+        symlink(
+            fixture.0.join("missing-typescript"),
+            modules.join("typescript"),
+        )
+        .expect("create broken package symlink");
+        assert!(matches!(
+            find_project_typescript(&fixture.0),
+            Err(TypeScriptProjectHostError::PackagePath { .. })
         ));
     }
 
