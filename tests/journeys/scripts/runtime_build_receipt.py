@@ -254,14 +254,26 @@ def verify_architecture_parser_fixtures() -> None:
 
 def stable_file(path: Path, label: str, *, executable: bool = False) -> dict[str, Any]:
     """Admit a stable single-link file, including receipts, source, runners, and artifacts."""
-    return _stable_file(path, label, executable=executable, allow_nix_tool_hardlink=False)
+    return _stable_file(path, label, executable=executable, nix_executable_name=None)
 
 
 def stable_tool_file(path: Path, label: str, *, executable: bool = True) -> dict[str, Any]:
     """Admit a tool, allowing only canonical immutable Nix hardlinks for Cargo/rustc."""
     if label.lower() not in {"cargo", "rustc"} or not executable:
         raise ReceiptError("the Nix hardlink exception is limited to executable Cargo and rustc")
-    return _stable_file(path, label, executable=True, allow_nix_tool_hardlink=True)
+    return _stable_file(path, label, executable=True, nix_executable_name=label.lower())
+
+
+def stable_interpreter_file(path: Path) -> dict[str, Any]:
+    """Hash an admitted shell; immutable Nix hardlinks retain the full ancestry proof."""
+    if path.name not in SUPPORTED_INTERPRETER_NAMES:
+        raise ReceiptError("runner interpreter must be an admitted shell")
+    return _stable_file(
+        path,
+        "pinned runner interpreter",
+        executable=True,
+        nix_executable_name=path.name,
+    )
 
 
 def _stable_file(
@@ -269,7 +281,7 @@ def _stable_file(
     label: str,
     *,
     executable: bool,
-    allow_nix_tool_hardlink: bool,
+    nix_executable_name: str | None,
 ) -> dict[str, Any]:
     if not path.is_absolute() or path.is_symlink():
         raise ReceiptError(f"{label} must use an absolute non-symlink final path")
@@ -284,10 +296,10 @@ def _stable_file(
     if before.st_nlink < 1:
         raise ReceiptError(f"{label} must have a valid link count")
     if before.st_nlink != 1:
-        if not allow_nix_tool_hardlink:
+        if nix_executable_name is None:
             raise ReceiptError(f"{label} must be a single-link regular file")
         nix_parent_identity = _immutable_nix_tool_parent_identity(
-            path, resolved, before, label
+            path, resolved, before, nix_executable_name
         )
         if nix_parent_identity is None:
             raise ReceiptError(
@@ -318,9 +330,9 @@ def _stable_file(
         info.st_nlink,
     )
     nix_parent_identity_after = None
-    if allow_nix_tool_hardlink and after.st_nlink > 1:
+    if nix_executable_name is not None and after.st_nlink > 1:
         nix_parent_identity_after = _immutable_nix_tool_parent_identity(
-            path, resolved_after, after, label
+            path, resolved_after, after, nix_executable_name
         )
     if (
         identity(before) != identity(opened)
@@ -354,12 +366,11 @@ def _immutable_nix_tool_parent_identity(
     selected: Path,
     resolved: Path,
     file_info: os.stat_result,
-    label: str,
+    tool_name: str,
 ) -> tuple[tuple[int, ...], ...] | None:
     """Prove the immutable ancestry required before admitting a Nix tool hardlink."""
-    tool_name = label.lower()
     if (
-        tool_name not in {"cargo", "rustc"}
+        tool_name not in {"cargo", "rustc"} | SUPPORTED_INTERPRETER_NAMES
         or selected != resolved
         or resolved.name != tool_name
         or len(resolved.parts) != 6
@@ -662,9 +673,7 @@ def verify_runtime_build_receipt(receipt_path: Path, source_input: Path) -> dict
             "sha256",
         }:
             raise ReceiptError("Root receipt omits its explicit runner interpreter identity")
-        interpreter_identity = stable_file(
-            Path(interpreter_path), "pinned runner interpreter", executable=True
-        )
+        interpreter_identity = stable_interpreter_file(Path(interpreter_path))
         if (
             interpreter_identity["path"] != recorded_interpreter["path"]
             or interpreter_identity["sha256"] != recorded_interpreter["sha256"]

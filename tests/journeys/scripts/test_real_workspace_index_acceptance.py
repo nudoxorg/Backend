@@ -505,6 +505,42 @@ class HarnessContractTests(unittest.TestCase):
 
 
 class RuntimeToolFileAdmissionTests(unittest.TestCase):
+    def test_installed_immutable_nix_shell_hardlink_is_admitted(self) -> None:
+        candidates = Path("/nix/store").glob("*-bash-*/bin/bash")
+        shell = next(
+            (path for path in candidates if not path.is_symlink() and path.stat().st_nlink > 1),
+            None,
+        )
+        if shell is None:
+            self.skipTest("no installed immutable hardlinked Nix shell is available")
+        identity = receipt.stable_interpreter_file(shell)
+        self.assertEqual(identity["path"], str(shell))
+        self.assertEqual(identity["sha256"], hashlib.sha256(shell.read_bytes()).hexdigest())
+        self.assertGreater(identity["bytes"], 0)
+        with self.assertRaises(receipt.ReceiptError):
+            receipt.stable_file(shell, "pinned runner interpreter", executable=True)
+        with self.assertRaises(receipt.ReceiptError):
+            receipt.stable_tool_file(shell, "bash")
+
+    def test_shell_admission_preserves_hardlink_path_and_name_rejections(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "shell-source"
+            source.write_bytes(b"not an immutable shell")
+            source.chmod(0o555)
+            owned = root / "bash"
+            os.link(source, owned)
+            fake_bin = root / "nix" / "store" / ("0" * 32 + "-bash-5.3") / "bin"
+            fake_bin.mkdir(parents=True)
+            fake = fake_bin / "bash"
+            os.link(source, fake)
+            alias = root / "sh"
+            alias.symlink_to(owned)
+            for path in (owned, fake, alias, root / "python3"):
+                with self.subTest(path=str(path)):
+                    with self.assertRaises(receipt.ReceiptError):
+                        receipt.stable_interpreter_file(path)
+
     def test_installed_immutable_nix_cargo_and_rustc_hardlinks_are_admitted(self) -> None:
         store = Path("/nix/store")
         if not store.is_dir():
