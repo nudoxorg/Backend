@@ -20,7 +20,7 @@ use crate::runtime::{
 use crate::runtime::owner::{OwnerGate, OwnerState};
 use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
 use crate::model::pages::{PageKey, PageValue, ReadFailure};
-use gpui::{TestAppContext, VisualTestContext, point, px, size};
+use gpui::{AppContext, TestAppContext, VisualTestContext, point, px, size};
 use crate::navigation::{Intent, PackageLane, PackageRoute, Route, reduce};
 use backend_runtime::WorkspacePaths;
 use std::path::{Path, PathBuf};

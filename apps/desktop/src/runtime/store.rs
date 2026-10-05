@@ -510,7 +510,7 @@ impl DataStore {
                 store.keeper.keep(&mut store.pages, root, keep);
             }
             // Ordinary window release saves pages without retaining the store.
-            cx.on_release(|store, _| store.save_on_close()).detach();
+            cx.on_release(|store: &mut Self, _| store.save_on_close()).detach();
             store.start(cx);
             // The first route is focused like every later one.
             store.focus(route, cx);
