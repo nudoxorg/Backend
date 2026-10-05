@@ -562,7 +562,7 @@ fn append_commit_index_with<E: HistoryMutationFailure>(
     .map_err(|error| E::retryable_io(display_io(error)))?;
     append_history_index_entry_with::<E>(&index_path, identity, HISTORY_INDEX_DOMAIN)?;
     #[cfg(test)]
-    super::trip_history_test_fault(super::HistoryTestFault::AfterHistoryIndex)?;
+    trip_history_test_fault(HistoryTestFault::AfterHistoryIndex)?;
     backend_platform::durable::write_private_atomic(&indexed_path, &[])
         .map_err(|error| E::retryable_io(display_io(error)))?;
     remove_file_with::<E>(&history_index_intent_path(target_root))

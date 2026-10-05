@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::{
     Arc, OnceLock,
@@ -273,7 +274,7 @@ impl DurableSemanticSegmentStore for MemoryRangeStore {
         _selection: SelectedSemanticPlane,
         _segment: SemanticSegmentId,
         payload: &[u8],
-        admit: &mut dyn FnMut(&[u8]) -> Result<(), crate::ReplicationError>,
+        admit: &mut dyn FnMut(&[u8]) -> Result<(), ReplicationError>,
     ) -> Result<Box<[u8]>, Self::Error> {
         admit(payload).map_err(|_| "payload admission failed")?;
         Ok(payload.into())
@@ -738,8 +739,7 @@ fn frequency_sketch_ages_deterministically_and_accounts_its_fixed_storage() {
     assert_eq!(first.estimate(key), second.estimate(key));
     assert_eq!(
         first.retained_bytes(),
-        std::mem::size_of::<[u8; super::FREQUENCY_SKETCH_COUNTERS]>()
-            + 2 * std::mem::size_of::<u64>(),
+        size_of::<[u8; super::FREQUENCY_SKETCH_COUNTERS]>() + 2 * size_of::<u64>(),
     );
 }
 
@@ -936,7 +936,7 @@ fn scan_resistant_admission_keeps_exact_hot_evidence_after_one_pass_scan() {
     assert_eq!(
         before_eviction.route_observation_bytes,
         before_eviction.route_observation_entries
-            * std::mem::size_of::<(super::SegmentLookupKey, super::RouteObservation)>() as u64,
+            * size_of::<(super::SegmentLookupKey, super::RouteObservation)>() as u64,
     );
     assert_eq!(store.reads, SCAN_SEGMENTS + 4);
     assert_eq!(
@@ -1097,7 +1097,7 @@ fn repeated_full_scans_stay_within_probation_budget_and_preserve_protected_hot_s
     assert_eq!(
         measured.route_observation_bytes,
         measured.route_observation_entries
-            * std::mem::size_of::<(super::SegmentLookupKey, super::RouteObservation)>() as u64,
+            * size_of::<(super::SegmentLookupKey, super::RouteObservation)>() as u64,
     );
     let total_requests = SCAN_SEGMENTS * 3 + 8;
     assert_eq!(
@@ -1278,8 +1278,7 @@ fn delta_hop_and_changed_byte_caps_select_pristine_cas() {
     let hop_one = IrResidencyDeltaHop::new(&base, &middle, base_selection, base.root());
     let hop_two = IrResidencyDeltaHop::new(&middle, &target, middle_selection, middle.root());
     let chain = [hop_one, hop_two];
-    let mut store = MemoryRangeStore::default();
-    let mut cache = AdaptiveIrResidency::new(IrResidencyLimits {
+    let cache = AdaptiveIrResidency::new(IrResidencyLimits {
         delta_hops: 1,
         ..limits()
     });
@@ -1308,7 +1307,7 @@ fn delta_hop_and_changed_byte_caps_select_pristine_cas() {
         middle_selection,
         middle.root(),
     )];
-    let mut compact = AdaptiveIrResidency::new(IrResidencyLimits {
+    let compact = AdaptiveIrResidency::new(IrResidencyLimits {
         delta_changed_bytes: 1,
         ..limits()
     });
@@ -1342,7 +1341,7 @@ fn delta_route_rejects_unadmitted_claims_and_wrong_base_roots() {
         .plane(target_selection.kind())
         .expect("plane")
         .segments()[0];
-    let mut cache = AdaptiveIrResidency::new(limits());
+    let cache = AdaptiveIrResidency::new(limits());
     let unadmitted = [IrResidencyDeltaHop::new(
         &base,
         &target,
@@ -1405,7 +1404,7 @@ fn delta_route_rejects_a_base_binding_for_another_plane() {
         base_selection,
         base.root(),
     )];
-    let mut cache = AdaptiveIrResidency::new(limits());
+    let cache = AdaptiveIrResidency::new(limits());
     assert_eq!(
         cache
             .plan(

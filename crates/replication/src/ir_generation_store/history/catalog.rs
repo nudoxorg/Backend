@@ -488,7 +488,7 @@ impl LocalSemanticGenerationFiles {
         };
         #[cfg(test)]
         if created {
-            super::trip_history_test_fault(super::HistoryTestFault::AfterHistoryCommit)?;
+            trip_history_test_fault(HistoryTestFault::AfterHistoryCommit)?;
         }
         let admitted = load_history_commit(&commits_root, proposal.identity)?;
         if admitted != proposal.record {
@@ -875,7 +875,7 @@ impl LocalSemanticGenerationFiles {
         )
         .map_err(|error| E::retryable_io(display_io(error)))?;
         #[cfg(test)]
-        super::trip_history_test_fault(super::HistoryTestFault::AfterRefsCatalog)?;
+        trip_history_test_fault(HistoryTestFault::AfterRefsCatalog)?;
         Ok(HistoryRefUpdateReceipt {
             previous: actual,
             current: next,
@@ -991,7 +991,7 @@ impl LocalSemanticGenerationFiles {
         if let Some(payload_root) = payload_root {
             write_history_payload_root(&target_root, admission.commit.identity(), payload_root)?;
             #[cfg(test)]
-            super::trip_history_test_fault(super::HistoryTestFault::AfterPayloadRoot)?;
+            trip_history_test_fault(HistoryTestFault::AfterPayloadRoot)?;
         }
         self.compare_and_swap_selected_history_ref(
             target,

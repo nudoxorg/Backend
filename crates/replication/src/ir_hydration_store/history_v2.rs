@@ -2709,7 +2709,7 @@ mod tests {
     fn cold_v2_rejects_extra_closure_members_and_wrong_jumbo_schema() {
         let directory = TestDirectory::create();
         let store = FileStore::open(&directory.0, 1024 * 1024).expect("open test FileStore");
-        let empty = empty_closure(&store);
+        let _empty = empty_closure(&store);
         let (extra_claim, _) = one_object_closure(&store, test_payload_schema(), b"extra");
         let empty_manifest = empty_manifest();
         let empty_locator = crate::ir_generation_store::TypedV2HistoryLocator {

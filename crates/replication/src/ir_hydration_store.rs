@@ -49,8 +49,7 @@ mod history_v2;
 mod history_v3;
 #[cfg(test)]
 pub(crate) use history_v2::{
-    PositiveV2HistoryFixture, positive_v2_history_fixture_for_test,
-    positive_v2_history_fixture_for_test_with_variants,
+    positive_v2_history_fixture_for_test, positive_v2_history_fixture_for_test_with_variants,
 };
 pub use history_v2::{
     TypedV2HistoryResidencyCache, TypedV2HistoryResidencyMetrics, TypedV2HistoryResidencyReplay,

@@ -1333,7 +1333,6 @@ mod tests {
         SemanticTypedPlaneVerificationTierV2, TreeItemInput, UntrustedSemanticContentRootV2,
         UntrustedSemanticGenerationRootV2, VariantFingerprint, Visibility,
         encode_full_semantic_image, full_semantic_image_len,
-        verify_typed_plane_content_v2_with_tier,
     };
     use backend_semantic::vocabulary::Stage;
     use backend_store::{ArtifactClosureClaim, FileStore, StreamingClosureBudget, TypedObject};
@@ -3089,7 +3088,7 @@ mod tests {
         let admitted_root = payload_root.expect("one segment produces a payload closure");
         assert_eq!(
             file_store
-                .admit_closure_claim(backend_store::ArtifactClosureClaim::from_id(
+                .admit_closure_claim(ArtifactClosureClaim::from_id(
                     admitted_root.closure,
                 ))
                 .expect("admit composed closure claim"),
@@ -3097,7 +3096,7 @@ mod tests {
         );
         assert!(
             file_store
-                .admit_closure_claim(backend_store::ArtifactClosureClaim::from_bytes([0xa5; 32]))
+                .admit_closure_claim(ArtifactClosureClaim::from_bytes([0xa5; 32]))
                 .is_err()
         );
         let _committed = generations
@@ -3141,7 +3140,7 @@ mod tests {
         let forged_root = history::encode_test_history_payload_root(
             history_commit,
             HistoryPayloadRoot {
-                closure: backend_store::ArtifactClosureClaim::from_bytes([0xa5; 32]),
+                closure: ArtifactClosureClaim::from_bytes([0xa5; 32]),
             },
         )
         .expect("encode forged closure claim");
@@ -3567,7 +3566,7 @@ mod tests {
             max_chunk: 16 * 1024,
             ..TransportLimits::default()
         };
-        let mut range_store = FileSemanticRangeStore::open(file_store.clone(), limits)
+        let range_store = FileSemanticRangeStore::open(file_store.clone(), limits)
             .expect("open semantic history adapter");
         let generations = LocalSemanticGenerationFiles::open(&cas_root.join("semantic-hydration"))
             .expect("open generation records");
@@ -3668,7 +3667,7 @@ mod tests {
             .expect("start retention while the third-old commit is reachable");
         while !history_gc.complete() {
             assert!(
-                history_gc.processed_records() <= super::history::MAX_HISTORY_GC_BATCH_RECORDS,
+                history_gc.processed_records() <= history::MAX_HISTORY_GC_BATCH_RECORDS,
                 "history retention stays within its per-call work budget"
             );
             history_gc = range_store
@@ -3745,7 +3744,7 @@ mod tests {
             pressure.contains("deferred"),
             "unexpected GC result: {pressure}"
         );
-        assert!(reader.gc_pin_held_for() >= std::time::Duration::ZERO);
+        assert!(reader.gc_pin_held_for() >= Duration::ZERO);
         let mut actual = vec![0; expected_bytes.len()];
         assert_eq!(
             reader
@@ -4210,7 +4209,7 @@ mod tests {
         // state.lock must be detected by the metadata revalidation before
         // the ref CAS. Restore the immutable file afterward for later replay.
         let locator_path =
-            locator_root.join(format!("{}.locator", super::hex(cold_tip.as_bytes())));
+            locator_root.join(format!("{}.locator", hex(cold_tip.as_bytes())));
         let locator_backup = locator_path.with_extension("locator.test-backup");
         let cold_worker_store = FileSemanticRangeStore::open(
             FileStore::open(&cas_root, 16 * 1024 * 1024)
@@ -4812,7 +4811,7 @@ mod tests {
             .target_root(&generation.target)
             .join("history")
             .join("typed-v2-locators")
-            .join(format!("{}.locator", super::hex(commit_id.as_bytes())));
+            .join(format!("{}.locator", hex(commit_id.as_bytes())));
         let original_locator = fs::read(&locator_path).expect("read typed V2 locator bytes");
         let mut replaced_locator = original_locator.clone();
         *replaced_locator
@@ -4870,7 +4869,7 @@ mod tests {
             .expect("positive payload closure is nonempty");
         let object_path = cas_root.join("objects").join(format!(
             "{}.object",
-            super::hex(first_object.id().as_bytes())
+            hex(first_object.id().as_bytes())
         ));
         let original_object = fs::read(&object_path).expect("read object before corruption");
         let original_permissions = fs::metadata(&object_path)
@@ -5187,7 +5186,7 @@ mod tests {
             .advance_history_gc(&first_generation.target)
             .expect("start metadata retention with the old tag present");
         while !history_gc.complete() {
-            assert!(history_gc.processed_records() <= super::history::MAX_HISTORY_GC_BATCH_RECORDS);
+            assert!(history_gc.processed_records() <= history::MAX_HISTORY_GC_BATCH_RECORDS);
             history_gc = range_store
                 .advance_history_gc(&first_generation.target)
                 .expect("continue metadata retention for the old tag");
@@ -5834,14 +5833,14 @@ mod tests {
             .expect("recover compact-index rename");
         while !progress.complete() {
             assert!(
-                progress.processed_records() <= super::history::MAX_HISTORY_GC_BATCH_RECORDS,
+                progress.processed_records() <= history::MAX_HISTORY_GC_BATCH_RECORDS,
                 "one retention cycle stays within its durable work budget"
             );
             progress = reopened
                 .advance_history_gc(&base.target)
                 .expect("continue bounded history retention");
         }
-        assert!(progress.processed_records() <= super::history::MAX_HISTORY_GC_BATCH_RECORDS);
+        assert!(progress.processed_records() <= history::MAX_HISTORY_GC_BATCH_RECORDS);
         assert!(!scratch_path.exists());
         let commits_after_restart = history_file_inventory(&commits_root);
         assert_eq!(
@@ -6083,7 +6082,7 @@ mod tests {
             .expect("open semantic range store for V2 delete fixtures");
         let generations = LocalSemanticGenerationFiles::open(&cas_root.join("semantic-hydration"))
             .expect("open local generation store for V2 delete fixtures");
-        let selected = commit(
+        let _selected = commit(
             &generations,
             &generation,
             [generation.stamp, generation.stamp],
@@ -6162,7 +6161,6 @@ mod tests {
         }
         let closure = builder.seal().expect("seal V2 fixture closure");
         let closure_claim = ArtifactClosureClaim::from_id(closure.closure());
-        drop(closure);
         let target_root = generations.target_root(&generation.target);
         let history_root = target_root.join("history");
         drop(generations);
@@ -6490,7 +6488,7 @@ mod tests {
             .advance_history_gc(&base.target)
             .expect("recover deletion intent after reopen");
         while !progress.complete() {
-            assert!(progress.processed_records() <= super::history::MAX_HISTORY_GC_BATCH_RECORDS);
+            assert!(progress.processed_records() <= history::MAX_HISTORY_GC_BATCH_RECORDS);
             progress = reopened
                 .advance_history_gc(&base.target)
                 .expect("continue recovered retention sweep");

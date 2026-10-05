@@ -2918,7 +2918,7 @@ mod tests {
         segment_receipts: &'receipts mut SemanticObjectAdmissionBuffer,
         jumbo_receipts: &mut SemanticObjectAdmissionBuffer,
     ) -> (
-        backend_semantic::ir::CanonicalPlaneEncodingMetrics,
+        CanonicalPlaneEncodingMetrics,
         SemanticProducerStoreMetrics,
         SemanticProducerStoreMetrics,
         Vec<Vec<u8>>,
@@ -3105,7 +3105,7 @@ mod tests {
                     let mut key = [0; 32];
                     key[24..].copy_from_slice(&ordinal.to_be_bytes());
                     let segment =
-                        backend_semantic::ir::SemanticPlaneSegment::from_payload_with_witness(
+                        SemanticPlaneSegment::from_payload_with_witness(
                             SemanticPlaneKind::Ir(SemanticIrPlane::Core),
                             key,
                             key,
@@ -3143,7 +3143,7 @@ mod tests {
 
     struct V3InputAuthority;
 
-    impl backend_version::Schema for V3InputAuthority {
+    impl Schema for V3InputAuthority {
         const DOMAIN: u8 = 0x53;
         const TYPE: u16 = 0xfffd;
         type Value = [u8; 32];
@@ -4134,7 +4134,7 @@ mod tests {
         .expect("claim-only content may be encoded and independently verified");
 
         let expected_claim =
-            backend_semantic::ir::SemanticInputClaimV2::from_witness(&witness);
+            SemanticInputClaimV2::from_witness(&witness);
         assert_eq!(produced.input_witness(), witness);
         assert_eq!(produced.manifest().input_claim(), expected_claim);
         assert_eq!(produced.verified_content().input_claim(), expected_claim);
@@ -4180,7 +4180,7 @@ mod tests {
         assert!(base.input_witness().coverage().is_authorized_complete());
         assert_eq!(
             base.manifest().input_claim(),
-            backend_semantic::ir::SemanticInputClaimV2::from_witness(&base.input_witness()),
+            SemanticInputClaimV2::from_witness(&base.input_witness()),
             "c007 retains only the deterministic claim bound to the live owner witness"
         );
         assert!(

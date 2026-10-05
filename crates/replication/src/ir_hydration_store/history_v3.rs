@@ -1983,7 +1983,7 @@ mod tests {
         let mut image_bytes = vec![0; image_length];
         encode_full_semantic_image(&ir, &mut image_bytes).expect("encode native image");
         let semantic_generation = GenerationId::from_canonical_bytes(&image_bytes);
-        let kind = backend_semantic::ir::SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
         let segments = encode_canonical_plane_family(
             &ir,
             &CoreDeclarationRows,
@@ -2318,7 +2318,7 @@ mod tests {
             .encode()
             .expect("encode selected manifest for wrong-generation fixture");
         let wrong_generation_catalog = SemanticPlaneCatalog::new(vec![
-            backend_semantic::ir::SemanticPlaneCatalogEntry::new(
+            SemanticPlaneCatalogEntry::new(
                 wrong_generation,
                 u32::try_from(wrong_generation_manifest.len()).expect("manifest length fits"),
             )
