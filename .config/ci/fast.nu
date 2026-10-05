@@ -41,6 +41,7 @@ def main []: nothing -> nothing {
             run-external "nu" "--no-config-file" ($env.FILE_PWD | path join "cross-check.nu") "--compile-only"
         }
     }
+    reclaim-build-output
     if not ($checks and $compiles) {
         error make {msg: "fast lane failed"}
     }
