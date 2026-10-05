@@ -1498,6 +1498,11 @@ impl Session {
         let terminal = match &reply.reply {
             CommandReply::ProjectionPage(page) => page.terminal,
             CommandReply::GraphQueryPage(page) => page.terminal,
+            CommandReply::Names(snapshot) | CommandReply::Search(snapshot) => {
+                snapshot.next.map_or(PageTerminal::Complete, |cursor| {
+                    PageTerminal::More(PageContinuation::from_cursor(cursor))
+                })
+            }
             _ => return,
         };
         let PageTerminal::More(continuation) = terminal else {
