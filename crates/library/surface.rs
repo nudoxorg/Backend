@@ -3997,7 +3997,7 @@ mod tests {
         let alias = record("pkg:cargo/workspace-helper@1.0.0", "rust", 0x60);
         assert_eq!(
             SurfaceReply::SemanticVersions(vec![rust.clone(), csharp, alias].into_boxed_slice())
-                .admit(),
+                .admit(CommandId::SemanticVersions),
             Ok(()),
             "the response contains two profiles and a distinct supported package coordinate"
         );
@@ -4012,7 +4012,7 @@ mod tests {
         };
         assert_eq!(
             SurfaceReply::SemanticVersions(vec![rust.clone(), retained_history].into_boxed_slice())
-                .admit(),
+                .admit(CommandId::SemanticVersions),
             Ok(()),
             "a retained unselected generation may share its exact target with the selection"
         );
@@ -4020,7 +4020,7 @@ mod tests {
         let duplicate_target = record("pkg:cargo/workspace@1.0.0", "rust", 0x70);
         assert_eq!(
             SurfaceReply::SemanticVersions(vec![rust.clone(), duplicate_target].into_boxed_slice())
-                .admit(),
+                .admit(CommandId::SemanticVersions),
             Err(ProductAdmissionError::SemanticVersionShape),
             "one coordinate/profile target cannot select two generations"
         );
@@ -4030,7 +4030,7 @@ mod tests {
         missing_frontier.selected_source_frontier = None;
         assert_eq!(
             SurfaceReply::SemanticVersions(vec![rust.clone(), missing_frontier].into_boxed_slice())
-                .admit(),
+                .admit(CommandId::SemanticVersions),
             Err(ProductAdmissionError::SemanticVersionShape),
             "all selected profiles in one query must share evidence presence and identity"
         );
@@ -4040,7 +4040,7 @@ mod tests {
         let mut conflicting = record("pkg:nuget/workspace@1.0.0", "csharp", 0x90);
         conflicting.selected_source_frontier = Some(other_frontier);
         assert_eq!(
-            SurfaceReply::SemanticVersions(vec![rust, conflicting].into_boxed_slice()).admit(),
+            SurfaceReply::SemanticVersions(vec![rust, conflicting].into_boxed_slice()).admit(CommandId::SemanticVersions),
             Err(ProductAdmissionError::SemanticVersionShape),
             "selected profiles cannot claim different owner snapshots"
         );
