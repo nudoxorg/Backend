@@ -281,11 +281,15 @@ struct Refuses(Arc<AtomicUsize>);
 impl EngineClient for Refuses {
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
         match request {
-            EngineRequest::IndexProject { project, .. } => {
+            EngineRequest::IndexProject { request, basis, project, operation, .. } => {
                 self.0.fetch_add(1, Ordering::SeqCst);
-                Err(EngineFault::IndexFailed {
-                    project: project.clone(),
-                    error: crate::core::ErrorValue::new(crate::core::FaultCode::Protocol, REFUSED),
+                Ok(EngineDto::IndexOperation {
+                    request: *request, basis: *basis, project: project.clone(), operation: operation.clone(),
+                    observation: crate::model::index_operation::tests::observation(operation,
+                        backend_library::IndexOperationState::Failed {
+                            reason: backend_library::IndexOperationFailureReason::Refused,
+                            detail: REFUSED.to_owned(),
+                        }),
                 })
             }
             other => RootOnly.execute(other),
@@ -586,6 +590,18 @@ fn native_settings_press_from_before_a_cover_cannot_select_after_its_return(cx: 
         "a new native press in the returned Settings visit still selects");
 }
 
+/// These gated owners have no publication producer. Their root replies must
+/// retain the certified basis instead of inventing an unobserved sequence.
+fn static_owner_reply(request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+    match request {
+        EngineRequest::Root { request, basis, .. } => Ok(EngineDto::Root {
+            request: *request, basis: *basis, key: *basis, revision: basis.revision(),
+            delta: None, project: None, catalog: None,
+        }),
+        other => RootOnly.execute(other),
+    }
+}
+
 /// A fixture owner keeps the saved operation unknown until the explicit read.
 /// It never reports success from a catalog, a timeout or a second start.
 struct Reconciles { starts: Arc<AtomicUsize>, checks: Arc<AtomicUsize> }
@@ -602,7 +618,7 @@ impl EngineClient for Reconciles {
                 Ok(EngineDto::IndexOperation { request: *request, basis: *basis, project: project.clone(),
                     operation: operation.clone(), observation: crate::model::index_operation::tests::published(operation) })
             }
-            other => RootOnly.execute(other),
+            other => static_owner_reply(other),
         }
     }
 }
@@ -677,7 +693,7 @@ impl EngineClient for ArchivedOperations {
                 Ok(EngineDto::IndexOperation { request: *request, basis: *basis, project: project.clone(), operation: operation.clone(),
                     observation: crate::model::index_operation::tests::outside(operation) })
             }
-            other => RootOnly.execute(other),
+            other => static_owner_reply(other),
         }
     }
 }
