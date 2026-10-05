@@ -288,7 +288,8 @@ impl EngineClient for Refuses {
                     observation: crate::model::index_operation::tests::observation(operation,
                         backend_library::IndexOperationState::Failed {
                             reason: backend_library::IndexOperationFailureReason::Refused,
-                            detail: REFUSED.to_owned(),
+                            detail: backend_library::ProductText::new(REFUSED)
+                                .expect("bounded failure receipt detail"),
                         }),
                 })
             }
