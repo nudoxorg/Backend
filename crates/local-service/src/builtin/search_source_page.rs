@@ -185,11 +185,17 @@ pub(super) fn measure_package_source_lookup() -> (u128, u128) {
             .expect("lookup project")
             .expect("project row");
         let fields = project.project_fields().expect("project fields");
-        let mut files = Vec::with_capacity(fields.files.len());
+        let file_keys = fields
+            .iter_file_keys(target_key, |page_key| {
+                tree.lookup(page_key).map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .expect("resolve complete package frontier");
+        let mut files = Vec::with_capacity(file_keys.len());
         let records = tree
-            .lookup_many_sorted(fields.files)
+            .lookup_many_sorted(&file_keys)
             .expect("lookup package files");
-        for (key, record) in fields.files.iter().copied().zip(records) {
+        for (key, record) in file_keys.into_iter().zip(records) {
             files.push((key, record.expect("file row")));
         }
         files.sort_by_key(|(key, _)| *key);
@@ -228,7 +234,13 @@ pub(super) fn measure_package_source_lookup() -> (u128, u128) {
             .expect("lookup project")
             .expect("project row");
         let fields = project.project_fields().expect("project fields");
-        tree.lookup_many_sorted(fields.files)
+        let file_keys = fields
+            .iter_file_keys(target_key, |page_key| {
+                tree.lookup(page_key).map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .expect("resolve complete package frontier");
+        tree.lookup_many_sorted(&file_keys)
             .expect("lookup package files")
             .into_iter()
             .collect::<Option<Vec<_>>>()
@@ -371,9 +383,15 @@ fn labelled_source_entries(
             entries.push((key, record));
         }
         file_keys.sort_unstable();
-        let project =
-            ProductSourceRecord::project(label, [3; 32], file_keys).map_err(BuiltinModelError)?;
-        entries.push((project_key, project));
+        let project_update = ProductSourceRecord::project_with_membership_pages(
+            label,
+            [3; 32],
+            file_keys,
+            None,
+        )
+        .map_err(BuiltinModelError)?;
+        entries.push((project_key, project_update.project_record().clone()));
+        entries.extend(project_update.membership_pages().iter().cloned());
     }
     Ok(entries)
 }
@@ -585,6 +603,97 @@ mod tests {
         let wider_sources = super::super::read_indexed_sources(&wider).expect("page 8x10");
         assert_eq!(wider_sources.projects.len(), 8);
         assert_eq!(wider_sources.files.len(), 80);
+    }
+
+    #[test]
+    fn reopened_source_pages_resolve_2043_and_10000_file_projects_exactly() {
+        let declarations = shared_declarations(1).expect("declarations");
+        for count in [2_043, 10_000] {
+            let snapshot = snapshot_holding(1, count, &declarations).expect("stored snapshot");
+            let all = super::super::read_indexed_sources(&snapshot).expect("full source page");
+            assert_eq!(all.projects.len(), 1);
+            assert_eq!(all.files.len(), count);
+            let project = all.projects.values().next().expect("one project");
+            assert_eq!(project.files.len(), count);
+            assert!(all.files.iter().all(|(key, record)| {
+                record.file_fields().is_some_and(|fields| {
+                    fields.project == project.package.to_bytes()
+                        && backend_engine::product_source_file_key(fields.project, fields.path)
+                            == *key
+                })
+            }));
+            let scoped = super::super::read_package_sources(&snapshot, project.package)
+                .expect("scoped source page");
+            assert_eq!(scoped.files.len(), count);
+            assert_eq!(scoped.projects[&project.package.to_bytes()].files.len(), count);
+        }
+    }
+
+    #[test]
+    fn full_source_page_rejects_missing_and_unreferenced_membership_pages() {
+        let declarations = shared_declarations(1).expect("declarations");
+        let update = backend_engine::ProductSourceRecord::project_with_membership_pages(
+            "pkg-0",
+            [3; 32],
+            (0..2_043)
+                .map(|index| backend_engine::product_source_file_key(
+                    backend_engine::package_key("pkg-0").to_bytes(),
+                    &format!("src/f{index}.rs"),
+                ))
+                .collect::<Vec<_>>(),
+            None,
+        )
+        .expect("paged project update");
+        let project_key = update.project_key();
+        let missing_page_key = update.membership_pages()[0].0;
+        let mut entries = update
+            .membership_pages()
+            .iter()
+            .filter(|(key, _)| *key != missing_page_key)
+            .cloned()
+            .collect::<Vec<_>>();
+        entries.push((project_key, update.project_record().clone()));
+        let relation = backend_engine::RelationState::<backend_engine::ProductSourceRelation>::from_entries(
+            entries,
+            super::super::admitted_coverage().expect("coverage"),
+        )
+        .expect("relation with missing page");
+        let snapshot = super::store_relation(relation, "missing-membership-page".to_owned())
+            .expect("snapshot");
+        let Err(error) = super::super::read_indexed_sources(&snapshot) else {
+            panic!("missing membership page must reject the source page");
+        };
+        assert!(error.to_string().contains("missing"));
+
+        let one_file = backend_engine::product_source_file_key(project_key, "src/only.rs");
+        let inline = backend_engine::ProductSourceRecord::project(
+            "pkg-0",
+            [4; 32],
+            vec![one_file],
+        )
+        .expect("inline project");
+        let file = backend_engine::ProductSourceRecord::file(
+            project_key,
+            "src/only.rs",
+            backend_compile::SourceLanguage::Rust,
+            [1; 32],
+            [2; 32],
+            Arc::clone(&declarations),
+        )
+        .expect("source file");
+        let mut orphaned = vec![(project_key, inline), (one_file, file)];
+        orphaned.push(update.membership_pages()[0].clone());
+        let relation = backend_engine::RelationState::<backend_engine::ProductSourceRelation>::from_entries(
+            orphaned,
+            super::super::admitted_coverage().expect("coverage"),
+        )
+        .expect("relation with orphan page");
+        let snapshot = super::store_relation(relation, "orphan-membership-page".to_owned())
+            .expect("snapshot");
+        let Err(error) = super::super::read_indexed_sources(&snapshot) else {
+            panic!("unreferenced membership page must reject the source page");
+        };
+        assert!(error.to_string().contains("unreferenced membership page"));
     }
 
     #[test]

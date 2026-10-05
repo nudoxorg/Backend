@@ -39,8 +39,10 @@ pub(super) type BuiltinSemanticRelation = ProductSemanticPublicationRelation;
 
 fn prepare_source_update(
     relation: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    project_key: [u8; 32],
     changes: &[BuiltinSourceChange],
 ) -> Result<LazyPreparedUpdate<BuiltinWorkspaceRelation>, BuiltinModelError> {
+    validate_source_membership_transition(relation, project_key, changes)?;
     let changes = changes
         .iter()
         .map(|change| TreeChange {
@@ -51,6 +53,321 @@ fn prepare_source_update(
     relation
         .prepare_update(&changes)
         .map_err(|error| BuiltinModelError(format!("prepare product source delta: {error}")))
+}
+
+/// Checks one project and its complete file/page frontier against the base
+/// relation overlaid with the proposed source changes. This runs both for a
+/// live intent and for restart admission before a new relation root can be
+/// published.
+fn validate_source_membership_transition(
+    relation: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    project_key: [u8; 32],
+    changes: &[BuiltinSourceChange],
+) -> Result<(), BuiltinModelError> {
+    if changes.is_empty() {
+        return Ok(());
+    }
+    for change in changes {
+        if let Some(record) = &change.after {
+            if let Some(fields) = record.project_fields() {
+                if change.key != project_key
+                    || backend_engine::package_key(fields.label).to_bytes() != project_key
+                {
+                    return Err(BuiltinModelError(
+                        "project source row key does not match its package coordinate".to_owned(),
+                    ));
+                }
+            } else if let Some(fields) = record.file_fields() {
+                if fields.project != project_key
+                    || backend_engine::product_source_file_key(project_key, fields.path)
+                        != change.key
+                {
+                    return Err(BuiltinModelError(
+                        "source file key, path, and owning project disagree".to_owned(),
+                    ));
+                }
+            } else if let Some(fields) = record.membership_page_fields() {
+                let page_key_matches = backend_engine::product_source_membership_page_key(
+                    fields.project,
+                    fields.files,
+                )
+                .is_ok_and(|expected| expected == change.key);
+                if fields.project != project_key || !page_key_matches {
+                    return Err(BuiltinModelError(
+                        "membership page key does not commit its project and contents".to_owned(),
+                    ));
+                }
+            }
+        }
+    }
+
+    let old_project = relation
+        .lookup(&project_key)
+        .map_err(|error| BuiltinModelError(format!("read prior project row: {error}")))?;
+    if old_project
+        .as_ref()
+        .is_some_and(|record| record.project_fields().is_none())
+    {
+        return Err(BuiltinModelError(
+            "project relation key contains a non-project source row".to_owned(),
+        ));
+    }
+    if old_project
+        .as_ref()
+        .and_then(ProductSourceRecord::project_fields)
+        .is_some_and(|fields| backend_engine::package_key(fields.label).to_bytes() != project_key)
+    {
+        return Err(BuiltinModelError(
+            "prior project row does not match its package coordinate".to_owned(),
+        ));
+    }
+    let new_project = lookup_after_changes(relation, changes, &project_key)?;
+    if new_project
+        .as_ref()
+        .is_some_and(|record| record.project_fields().is_none())
+    {
+        return Err(BuiltinModelError(
+            "project update resolves to a non-project source row".to_owned(),
+        ));
+    }
+    if new_project
+        .as_ref()
+        .and_then(ProductSourceRecord::project_fields)
+        .is_some_and(|fields| backend_engine::package_key(fields.label).to_bytes() != project_key)
+    {
+        return Err(BuiltinModelError(
+            "updated project row does not match its package coordinate".to_owned(),
+        ));
+    }
+
+    let old_files = match old_project.as_ref() {
+        Some(record) => resolve_project_file_keys(project_key, record, |key| {
+            relation
+                .lookup(key)
+                .map_err(|error| BuiltinModelError(format!("read prior membership page: {error}")))
+        })?,
+        None => Vec::new(),
+    };
+    let old_file_records = relation
+        .lookup_many_sorted(&old_files)
+        .map_err(|error| BuiltinModelError(format!("read prior project files: {error}")))?;
+    for (key, record) in old_files.iter().copied().zip(old_file_records) {
+        let record = record.ok_or_else(|| {
+            BuiltinModelError("project frontier refers to a missing source file".to_owned())
+        })?;
+        validate_project_file(project_key, key, &record)?;
+    }
+    let new_files = match new_project.as_ref() {
+        Some(record) => resolve_project_file_keys(project_key, record, |key| {
+            lookup_after_changes(relation, changes, key)
+        })?,
+        None => Vec::new(),
+    };
+    let old_file_set = old_files.iter().copied().collect::<std::collections::BTreeSet<_>>();
+    let new_file_set = new_files.iter().copied().collect::<std::collections::BTreeSet<_>>();
+
+    for file_key in old_file_set.difference(&new_file_set) {
+        if !changes
+            .binary_search_by_key(file_key, |change| change.key)
+            .ok()
+            .is_some_and(|index| changes[index].after.is_none())
+        {
+            return Err(BuiltinModelError(
+                "project transition leaves a formerly selected file row behind".to_owned(),
+            ));
+        }
+    }
+    for change in changes {
+        match &change.after {
+            Some(record) if record.file_fields().is_some() => {
+                if !new_file_set.contains(&change.key) {
+                    return Err(BuiltinModelError(
+                        "source update adds a file outside the selected project frontier".to_owned(),
+                    ));
+                }
+            }
+            None => {}
+            Some(_) => {}
+        }
+    }
+
+    let old_pages = old_project
+        .as_ref()
+        .and_then(ProductSourceRecord::project_fields)
+        .map_or(&[][..], |fields| fields.files.page_keys());
+    let new_pages = new_project
+        .as_ref()
+        .and_then(ProductSourceRecord::project_fields)
+        .map_or(&[][..], |fields| fields.files.page_keys());
+    let old_page_set = old_pages.iter().copied().collect::<std::collections::BTreeSet<_>>();
+    let new_page_set = new_pages.iter().copied().collect::<std::collections::BTreeSet<_>>();
+    let new_file_keys = new_files
+        .iter()
+        .copied()
+        .filter(|key| !old_file_set.contains(key))
+        .collect::<Vec<_>>();
+    let new_base_rows = relation
+        .lookup_many_sorted(&new_file_keys)
+        .map_err(|error| BuiltinModelError(format!("check new project file keys: {error}")))?;
+    for (key, before) in new_file_keys.iter().copied().zip(new_base_rows) {
+        let after = changes
+            .binary_search_by_key(&key, |change| change.key)
+            .ok()
+            .and_then(|index| changes[index].after.as_ref());
+        match (after, before) {
+            (Some(record), None) if record.file_fields().is_some() => {
+                validate_project_file(project_key, key, record)?;
+            }
+            (Some(record), Some(_)) if record.file_fields().is_some() => {
+                return Err(BuiltinModelError(
+                    "new source file key collides with an unselected source row".to_owned(),
+                ));
+            }
+            (Some(_), _) => {
+                return Err(BuiltinModelError(
+                    "project frontier file key resolves to a non-file update".to_owned(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(BuiltinModelError(
+                    "project transition adopts a source row outside its prior frontier".to_owned(),
+                ));
+            }
+            (None, None) => {
+                return Err(BuiltinModelError(
+                    "project frontier refers to a missing source file".to_owned(),
+                ));
+            }
+        }
+    }
+    for key in new_files.iter().filter(|key| old_file_set.contains(*key)) {
+        if changes
+            .binary_search_by_key(key, |change| change.key)
+            .ok()
+            .is_some_and(|index| {
+                changes[index]
+                    .after
+                    .as_ref()
+                    .is_none_or(|record| record.file_fields().is_none())
+            })
+        {
+            return Err(BuiltinModelError(
+                "retained project file key resolves to a non-file update".to_owned(),
+            ));
+        }
+    }
+    for change in changes {
+        if change
+            .after
+            .as_ref()
+            .and_then(ProductSourceRecord::membership_page_fields)
+            .is_some()
+            && !old_page_set.contains(&change.key)
+            && lookup_before(relation, change.key)?.is_some()
+        {
+            return Err(BuiltinModelError(
+                "new membership page key collides with an unselected source row".to_owned(),
+            ));
+        }
+    }
+    for change in changes.iter().filter(|change| change.after.is_none()) {
+        let was_selected_project = change.key == project_key && old_project.is_some();
+        if !was_selected_project
+            && !old_file_set.contains(&change.key)
+            && !old_page_set.contains(&change.key)
+        {
+            return Err(BuiltinModelError(
+                "source update deletes a row outside its prior project frontier".to_owned(),
+            ));
+        }
+    }
+    for page_key in old_page_set.difference(&new_page_set) {
+        if !changes
+            .binary_search_by_key(page_key, |change| change.key)
+            .ok()
+            .is_some_and(|index| changes[index].after.is_none())
+        {
+            return Err(BuiltinModelError(
+                "project transition leaves a superseded membership page behind".to_owned(),
+            ));
+        }
+    }
+    for change in changes {
+        let after_page = change
+            .after
+            .as_ref()
+            .and_then(ProductSourceRecord::membership_page_fields);
+        if after_page.is_some() && !new_page_set.contains(&change.key) {
+            return Err(BuiltinModelError(
+                "source update adds an unreferenced membership page".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn lookup_before(
+    relation: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    key: [u8; 32],
+) -> Result<Option<BuiltinPackageRecord>, BuiltinModelError> {
+    relation
+        .lookup(&key)
+        .map_err(|error| BuiltinModelError(format!("read prior source row: {error}")))
+}
+
+fn lookup_after_changes(
+    relation: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    changes: &[BuiltinSourceChange],
+    key: &[u8; 32],
+) -> Result<Option<BuiltinPackageRecord>, BuiltinModelError> {
+    if let Ok(index) = changes.binary_search_by_key(key, |change| change.key) {
+        return Ok(changes[index].after.clone());
+    }
+    relation
+        .lookup(key)
+        .map_err(|error| BuiltinModelError(format!("read source row in proposed root: {error}")))
+}
+
+/// Resolves all ordered file keys after authenticating every referenced page.
+/// File-row reads are left to the caller so a lazy relation can batch them.
+pub(super) fn resolve_project_file_keys(
+    project_key: [u8; 32],
+    record: &BuiltinPackageRecord,
+    mut lookup_page: impl FnMut(&[u8; 32]) -> Result<Option<BuiltinPackageRecord>, BuiltinModelError>,
+) -> Result<Vec<[u8; 32]>, BuiltinModelError> {
+    let fields = record.project_fields().ok_or_else(|| {
+        BuiltinModelError("project frontier resolves to a non-project row".to_owned())
+    })?;
+    if backend_engine::package_key(fields.label).to_bytes() != project_key {
+        return Err(BuiltinModelError(
+            "project frontier label does not match its relation key".to_owned(),
+        ));
+    }
+    let keys = fields
+        .iter_file_keys(project_key, |key| {
+            lookup_page(key).map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(BuiltinModelError)?;
+    Ok(keys)
+}
+
+pub(super) fn validate_project_file(
+    project_key: [u8; 32],
+    file_key: [u8; 32],
+    record: &BuiltinPackageRecord,
+) -> Result<(), BuiltinModelError> {
+    let fields = record.file_fields().ok_or_else(|| {
+        BuiltinModelError("project frontier refers to a non-file source row".to_owned())
+    })?;
+    if fields.project != project_key
+        || backend_engine::product_source_file_key(project_key, fields.path) != file_key
+    {
+        return Err(BuiltinModelError(
+            "project frontier file key, path, and owner disagree".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn prepare_semantic_update(
@@ -162,7 +479,7 @@ impl BuiltinIntent {
         package: backend_engine::PackageKey,
         label: impl Into<String>,
     ) -> Result<Self, BuiltinModelError> {
-        Self::remove_project(package, label, &[], Vec::new())
+        Self::remove_project(package, label, &[], &[], Vec::new())
     }
 
     /// Creates an intent that removes a project and every file selected by
@@ -171,14 +488,26 @@ impl BuiltinIntent {
         package: backend_engine::PackageKey,
         label: impl Into<String>,
         files: &[[u8; 32]],
+        membership_pages: &[[u8; 32]],
         semantic_changes: Vec<BuiltinSemanticChange>,
     ) -> Result<Self, BuiltinModelError> {
         let label = label.into();
-        let mut changes = Vec::with_capacity(files.len().saturating_add(1));
+        let mut changes = Vec::with_capacity(
+            files
+                .len()
+                .saturating_add(membership_pages.len())
+                .saturating_add(1),
+        );
         changes.push(BuiltinSourceChange {
             key: package.to_bytes(),
             after: None,
         });
+        changes.extend(
+            membership_pages
+                .iter()
+                .copied()
+                .map(|key| BuiltinSourceChange { key, after: None }),
+        );
         changes.extend(
             files
                 .iter()
@@ -199,14 +528,26 @@ impl BuiltinIntent {
         package: backend_engine::PackageKey,
         label: impl Into<String>,
         files: &[[u8; 32]],
+        membership_pages: &[[u8; 32]],
         semantic_changes: Vec<BuiltinSemanticChange>,
     ) -> Result<Self, BuiltinModelError> {
         let label = label.into();
-        let mut changes = Vec::with_capacity(files.len().saturating_add(1));
+        let mut changes = Vec::with_capacity(
+            files
+                .len()
+                .saturating_add(membership_pages.len())
+                .saturating_add(1),
+        );
         changes.push(BuiltinSourceChange {
             key: package.to_bytes(),
             after: None,
         });
+        changes.extend(
+            membership_pages
+                .iter()
+                .copied()
+                .map(|key| BuiltinSourceChange { key, after: None }),
+        );
         changes.extend(
             files
                 .iter()
@@ -320,7 +661,11 @@ impl BuiltinIntent {
             ));
         }
         changes.sort_by_key(|change| change.key);
-        if changes.len() > BuiltinPackageRecord::MAX_PROJECT_FILES.saturating_add(1)
+        let maximum_source_changes = BuiltinPackageRecord::MAX_PROJECT_FILES
+            .saturating_mul(2)
+            .saturating_add(BuiltinPackageRecord::MAX_PROJECT_MEMBERSHIP_PAGES.saturating_mul(2))
+            .saturating_add(1);
+        if changes.len() > maximum_source_changes
             || changes
                 .windows(2)
                 .any(|window| window[0].key >= window[1].key)
@@ -767,7 +1112,11 @@ impl<'a> IntentDecoder<'a> {
 
     fn source_changes(&mut self) -> Result<Vec<BuiltinSourceChange>, BuiltinModelError> {
         let count = self.read_u32()? as usize;
-        if count > BuiltinPackageRecord::MAX_PROJECT_FILES.saturating_add(1) {
+        let maximum_source_changes = BuiltinPackageRecord::MAX_PROJECT_FILES
+            .saturating_mul(2)
+            .saturating_add(BuiltinPackageRecord::MAX_PROJECT_MEMBERSHIP_PAGES.saturating_mul(2))
+            .saturating_add(1);
+        if count > maximum_source_changes {
             return Err(BuiltinModelError(
                 "malformed product source change count".to_owned(),
             ));
@@ -977,7 +1326,7 @@ impl WorkspaceModel for BuiltinModel {
             .relation::<BuiltinSemanticRelation>()
             .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
         intent.admit_semantic_selection_against(&semantic)?;
-        let update = prepare_source_update(&relation, intent.changes())?;
+        let update = prepare_source_update(&relation, intent.package.to_bytes(), intent.changes())?;
         let semantic_update = prepare_semantic_update(&semantic, intent.semantic_changes())?;
         let source_changed = update.delta().changes().next().is_some();
         let semantic_changed = semantic_update.delta().changes().next().is_some();
@@ -1211,7 +1560,11 @@ fn admit_persisted_relations(
             BuiltinModelError(format!("open persisted base semantic relation: {error}"))
         })?;
     persisted_intent.admit_semantic_selection_against(&base_semantic)?;
-    let update = prepare_source_update(&base_tree, persisted_intent.changes())?;
+    let update = prepare_source_update(
+        &base_tree,
+        persisted_intent.package.to_bytes(),
+        persisted_intent.changes(),
+    )?;
     let semantic_update =
         prepare_semantic_update(&base_semantic, persisted_intent.semantic_changes())?;
     let source_changed = update.delta().changes().next().is_some();

@@ -685,7 +685,9 @@ fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, 
         ));
     }
     let mut projects = BTreeMap::new();
-    let mut files = Vec::new();
+    let mut project_records = BTreeMap::new();
+    let mut files = BTreeMap::new();
+    let mut membership_pages = std::collections::BTreeSet::new();
     let mut cargo_aliases = BTreeMap::new();
     let mut after = None;
     loop {
@@ -693,35 +695,37 @@ fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, 
             .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
             .map_err(|error| BuiltinModelError(format!("read indexed source page: {error}")))?;
         for (key, record) in page.entries() {
-            match record {
-                ProductSourceRecord::Project {
-                    label,
-                    files,
-                    cargo_aliases: aliases,
-                    ..
-                } => {
-                    let package = backend_engine::PackageKey::from_value(label.as_str());
-                    if package.to_bytes() != *key
-                        || projects
-                            .insert(
-                                *key,
-                                IndexedProject {
-                                    package,
-                                    label: label.clone(),
-                                    files: Arc::clone(files),
-                                },
-                            )
-                            .is_some()
-                    {
-                        return Err(BuiltinModelError(
-                            "project record does not match its canonical coordinate".to_owned(),
-                        ));
-                    }
-                    if let Some(aliases) = aliases {
-                        cargo_aliases.insert(*key, aliases.clone());
-                    }
+            if let Some(fields) = record.project_fields() {
+                let label = fields.label;
+                let package = backend_engine::PackageKey::from_value(label);
+                if package.to_bytes() != *key
+                    || projects
+                        .insert(
+                            *key,
+                            IndexedProject {
+                                package,
+                                label: label.to_owned(),
+                                files: Arc::from([]),
+                            },
+                        )
+                        .is_some()
+                {
+                    return Err(BuiltinModelError(
+                        "project record does not match its canonical coordinate".to_owned(),
+                    ));
                 }
-                ProductSourceRecord::File { .. } => files.push((*key, record.clone())),
+                project_records.insert(*key, record.clone());
+                if let Some(aliases) = fields.cargo_aliases {
+                    cargo_aliases.insert(*key, aliases.clone());
+                }
+            } else if record.file_fields().is_some() {
+                if files.insert(*key, record.clone()).is_some() {
+                    return Err(BuiltinModelError("duplicate source file row key".to_owned()));
+                }
+            } else if record.membership_page_fields().is_some() {
+                if !membership_pages.insert(*key) {
+                    return Err(BuiltinModelError("duplicate membership page row key".to_owned()));
+                }
             }
         }
         let Some(next) = page.next().copied() else {
@@ -729,9 +733,54 @@ fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, 
         };
         after = Some(next);
     }
+    let mut selected_pages = std::collections::BTreeSet::new();
+    let mut resolved_files = Vec::with_capacity(files.len());
+    for (project_key, project_record) in &project_records {
+        let fields = project_record.project_fields().ok_or_else(|| {
+            BuiltinModelError("project frontier row changed type during admission".to_owned())
+        })?;
+        let file_keys = fields
+            .iter_file_keys(*project_key, |page_key| {
+                relation
+                    .lookup(page_key)
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(BuiltinModelError)?;
+        let project = projects.get_mut(project_key).ok_or_else(|| {
+            BuiltinModelError("project frontier is missing from the admitted index".to_owned())
+        })?;
+        let ordered_file_keys: Arc<[[u8; 32]]> = Arc::from(file_keys.into_boxed_slice());
+        project.files = Arc::clone(&ordered_file_keys);
+        for page_key in fields.files.page_keys() {
+            if !selected_pages.insert(*page_key) {
+                return Err(BuiltinModelError(
+                    "membership page is referenced by multiple project frontiers".to_owned(),
+                ));
+            }
+        }
+        for file_key in ordered_file_keys.iter().copied() {
+            let file = files.remove(&file_key).ok_or_else(|| {
+                BuiltinModelError("project frontier refers to a missing source file".to_owned())
+            })?;
+            profile::validate_project_file(*project_key, file_key, &file)?;
+            resolved_files.push((file_key, file));
+        }
+    }
+    if !files.is_empty() {
+        return Err(BuiltinModelError(
+            "source relation contains a file outside every project frontier".to_owned(),
+        ));
+    }
+    if selected_pages != membership_pages {
+        return Err(BuiltinModelError(
+            "source relation contains an unreferenced membership page".to_owned(),
+        ));
+    }
+    resolved_files.sort_unstable_by_key(|(key, _)| *key);
     Ok(IndexedSources {
         projects,
-        files,
+        files: resolved_files,
         cargo_aliases,
     })
 }

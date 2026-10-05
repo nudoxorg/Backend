@@ -40,11 +40,13 @@ pub use profile::{
 };
 pub use relation::{
     BuiltinInputSchema, Container, DeclarationKind, DeclarationRetention, ProductFileRef,
-    ProductInput, ProductProjectRef, ProductSourceDeltaFacts, ProductSourceRecord,
+    ProductInput, ProductProjectFileMembership, ProductProjectRef, ProductSourceDeltaFacts,
+    ProductProjectMembership, ProductSourceMembershipPageRef, ProductSourceProjectUpdate,
+    ProductSourceRecord,
     ProductSourceRelation, ProductSourceRetentionFacts, ProductSourceSnapshot,
     ProductSourceTransition, RetainedDeclarations, SourceDeclaration, SourceLanguage,
     SourceLocation, SourceUnavailableReason, legacy_product_source_file_key,
-    product_source_file_key,
+    product_source_file_key, product_source_membership_page_key,
 };
 pub use semantic_relation::{
     ActivatedSemanticPublication, PartialSemanticCoverage, ProductSemanticPublicationKey,

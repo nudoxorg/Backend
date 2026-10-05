@@ -284,12 +284,15 @@ pub(super) fn capture_index_scan(
         .lookup(&project_key)
         .map_err(|error| BuiltinModelError(format!("read indexed project: {error}")))?;
     let old_files = match before.as_ref() {
-        Some(record) => record
-            .project_fields()
-            .map(|fields| fields.files.to_vec())
-            .ok_or_else(|| {
-                BuiltinModelError("project key contains a source file record".to_owned())
-            })?,
+        Some(record) => super::super::profile::resolve_project_file_keys(
+            project_key,
+            record,
+            |page_key| {
+                relation
+                    .lookup(page_key)
+                    .map_err(|error| BuiltinModelError(format!("read indexed membership page: {error}")))
+            },
+        )?,
         None => Vec::new(),
     };
     if old_files.len() > ProductSourceRecord::MAX_PROJECT_FILES {
@@ -297,20 +300,16 @@ pub(super) fn capture_index_scan(
             "project source frontier exceeds its bounded file limit".to_owned(),
         ));
     }
+    let admitted_files = relation
+        .lookup_many_sorted(&old_files)
+        .map_err(|error| BuiltinModelError(format!("read reusable source files: {error}")))?;
     let mut reusable = BTreeMap::new();
-    for key in &old_files {
-        let record = relation
-            .lookup(key)
-            .map_err(|error| BuiltinModelError(format!("read reusable source file: {error}")))?
-            .ok_or_else(|| {
-                BuiltinModelError("project frontier refers to a missing source file".to_owned())
-            })?;
-        if record.file_fields().is_none() {
-            return Err(BuiltinModelError(
-                "project frontier refers to a non-file record".to_owned(),
-            ));
-        }
-        reusable.insert(*key, record);
+    for (key, record) in old_files.iter().copied().zip(admitted_files) {
+        let record = record.ok_or_else(|| {
+            BuiltinModelError("project frontier refers to a missing source file".to_owned())
+        })?;
+        super::super::profile::validate_project_file(project_key, key, &record)?;
+        reusable.insert(key, record);
     }
     Ok(IndexScanWork {
         package,
@@ -506,14 +505,47 @@ pub(super) fn finish_index_scan(
         );
     }
     let file_keys = scan.files.iter().map(|(key, _)| *key).collect::<Vec<_>>();
-    let project = ProductSourceRecord::project(&label, scan.source_version, file_keys.clone())
-        .map_err(BuiltinModelError)?;
+    let project_update = ProductSourceRecord::project_with_membership_pages(
+        &label,
+        scan.source_version,
+        file_keys.clone(),
+        None,
+    )
+    .map_err(BuiltinModelError)?;
+    let project = project_update.project_record().clone();
     let mut changes = Vec::new();
     if before.as_ref() != Some(&project) {
         changes.push(BuiltinSourceChange {
             key: project_key,
             after: Some(project.clone()),
         });
+    }
+    let new_page_keys = project_update
+        .membership_pages()
+        .iter()
+        .map(|(key, _)| *key)
+        .collect::<BTreeSet<_>>();
+    for (key, page) in project_update.membership_pages() {
+        let current = relation
+            .lookup(key)
+            .map_err(|error| BuiltinModelError(format!("read project membership page: {error}")))?;
+        if current.as_ref() != Some(page) {
+            changes.push(BuiltinSourceChange {
+                key: *key,
+                after: Some(page.clone()),
+            });
+        }
+    }
+    if let Some(previous) = before.as_ref().and_then(ProductSourceRecord::project_fields) {
+        changes.extend(
+            previous
+                .files
+                .page_keys()
+                .iter()
+                .copied()
+                .filter(|key| !new_page_keys.contains(key))
+                .map(|key| BuiltinSourceChange { key, after: None }),
+        );
     }
     for (key, record) in &scan.files {
         let current = relation
@@ -526,7 +558,7 @@ pub(super) fn finish_index_scan(
             });
         }
     }
-    let selected = file_keys.into_iter().collect::<BTreeSet<_>>();
+    let selected = file_keys.iter().copied().collect::<BTreeSet<_>>();
     changes.extend(
         old_files
             .into_iter()
@@ -610,7 +642,19 @@ pub(super) fn finish_index_scan(
             )?
         }
     };
-    replace_project_cargo_aliases(&mut changes, project_key, project, cargo_alias_observations)?;
+    replace_project_cargo_aliases(
+        &mut changes,
+        project_key,
+        project,
+        file_keys,
+        before.as_ref(),
+        |key| {
+            relation
+                .lookup(key)
+                .map_err(|error| BuiltinModelError(format!("read project membership page: {error}")))
+        },
+        cargo_alias_observations,
+    )?;
     let intent = if changes.is_empty() && semantic_changes.is_empty() {
         None
     } else {
@@ -632,6 +676,9 @@ fn replace_project_cargo_aliases(
     changes: &mut Vec<BuiltinSourceChange>,
     project_key: [u8; 32],
     project: ProductSourceRecord,
+    file_keys: Vec<[u8; 32]>,
+    before: Option<&ProductSourceRecord>,
+    mut lookup: impl FnMut(&[u8; 32]) -> Result<Option<ProductSourceRecord>, BuiltinModelError>,
     observations: Vec<CargoPackageAliasEvidenceV1>,
 ) -> Result<(), BuiltinModelError> {
     if observations.is_empty() {
@@ -646,17 +693,55 @@ fn replace_project_cargo_aliases(
     let evidence = CargoPackageAliasEvidenceV1::merge(observations).map_err(|_| {
         BuiltinModelError("Cargo package alias observations are invalid".to_owned())
     })?;
-    let project = project
-        .with_cargo_aliases(evidence)
-        .map_err(BuiltinModelError)?;
-    if let Some(change) = changes.iter_mut().find(|change| change.key == project_key) {
-        change.after = Some(project);
-    } else {
+    let fields = project.project_fields().ok_or_else(|| {
+        BuiltinModelError("Cargo alias update does not contain a project row".to_owned())
+    })?;
+    let update = ProductSourceRecord::project_with_membership_pages(
+        fields.label,
+        fields.source_version,
+        file_keys,
+        Some(evidence),
+    )
+    .map_err(BuiltinModelError)?;
+    let project = update.project_record();
+    let previous_page_keys = before
+        .and_then(ProductSourceRecord::project_fields)
+        .map_or(&[][..], |fields| fields.files.page_keys());
+    let previous_pages = previous_page_keys.iter().copied().collect::<BTreeSet<_>>();
+    changes.retain(|change| {
+        change.key != project_key
+            && !previous_pages.contains(&change.key)
+            && !change
+                .after
+                .as_ref()
+                .is_some_and(|record| record.membership_page_fields().is_some())
+    });
+    if before != Some(project) {
         changes.push(BuiltinSourceChange {
             key: project_key,
-            after: Some(project),
+            after: Some((*project).clone()),
         });
     }
+    let new_page_keys = update
+        .membership_pages()
+        .iter()
+        .map(|(key, _)| *key)
+        .collect::<BTreeSet<_>>();
+    for (key, page) in update.membership_pages() {
+        let current = lookup(key)?;
+        if current.as_ref() != Some(page) {
+            changes.push(BuiltinSourceChange {
+                key: *key,
+                after: Some(page.clone()),
+            });
+        }
+    }
+    changes.extend(
+        previous_pages
+            .difference(&new_page_keys)
+            .copied()
+            .map(|key| BuiltinSourceChange { key, after: None }),
+    );
     Ok(())
 }
 
@@ -3787,10 +3872,28 @@ pub(super) fn remove_project_intent(
     else {
         return Ok(None);
     };
-    let files = record
+    let project_fields = record
         .project_fields()
-        .map(|fields| fields.files)
         .ok_or_else(|| BuiltinModelError("project key contains a source file record".to_owned()))?;
+    let files = super::super::profile::resolve_project_file_keys(
+        package.to_bytes(),
+        &record,
+        |page_key| {
+            relation
+                .lookup(page_key)
+                .map_err(|error| BuiltinModelError(format!("read indexed membership page: {error}")))
+        },
+    )?;
+    let file_rows = relation
+        .lookup_many_sorted(&files)
+        .map_err(|error| BuiltinModelError(format!("read indexed source files: {error}")))?;
+    for (key, file) in files.iter().copied().zip(file_rows) {
+        let file = file.ok_or_else(|| {
+            BuiltinModelError("project frontier refers to a missing source file".to_owned())
+        })?;
+        super::super::profile::validate_project_file(package.to_bytes(), key, &file)?;
+    }
+    let membership_pages = project_fields.files.page_keys().to_vec();
     let semantic = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
@@ -3824,7 +3927,14 @@ pub(super) fn remove_project_intent(
         };
         after = Some(next);
     }
-    BuiltinIntent::remove_project(package, label, files, semantic_changes).map(Some)
+    BuiltinIntent::remove_project(
+        package,
+        label,
+        &files,
+        &membership_pages,
+        semantic_changes,
+    )
+    .map(Some)
 }
 
 pub(super) fn semantic_version_record(

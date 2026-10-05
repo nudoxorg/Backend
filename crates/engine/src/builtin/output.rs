@@ -129,6 +129,7 @@ impl ProductProjectionBuilder {
                     )
                     .ok_or("declaration count overflow")?;
             }
+            ProductSourceRecord::MembershipPage { .. } => {}
         }
         let mut value_bytes = Vec::new();
         ProductSourceRelation::encode_value(value, &mut value_bytes);

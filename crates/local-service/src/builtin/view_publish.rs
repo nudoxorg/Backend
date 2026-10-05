@@ -140,10 +140,24 @@ pub(super) fn publication_plan(
 fn edit_is_package_local(edit: &BuiltinIntent) -> bool {
     let package = edit.package.to_bytes();
     edit.changes().iter().all(|change| match &change.after {
-        Some(record) => match record.file_fields() {
-            Some(file) => file.project == package,
-            None => change.key == package,
-        },
+        Some(record) => {
+            if let Some(file) = record.file_fields() {
+                file.project == package
+                    && backend_engine::product_source_file_key(package, file.path) == change.key
+            } else if let Some(page) = record.membership_page_fields() {
+                page.project == package
+                    && backend_engine::product_source_membership_page_key(
+                        page.project,
+                        page.files,
+                    )
+                    .is_ok_and(|expected| expected == change.key)
+            } else {
+                change.key == package
+                    && record
+                        .project_fields()
+                        .is_some_and(|project| PackageKey::from_value(project.label) == edit.package)
+            }
+        }
         None => true,
     }) && edit
         .semantic_changes()
@@ -173,19 +187,25 @@ pub(super) fn read_project_sources(
     let fields = record.project_fields().ok_or_else(|| {
         BuiltinModelError("package key does not hold a project frontier".to_owned())
     })?;
-    let mut files = Vec::with_capacity(fields.files.len());
+    if PackageKey::from_value(fields.label) != package {
+        return Err(BuiltinModelError(
+            "project record does not match its canonical package coordinate".to_owned(),
+        ));
+    }
+    let file_keys = super::profile::resolve_project_file_keys(key, &record, |page_key| {
+        relation
+            .lookup(page_key)
+            .map_err(|error| BuiltinModelError(format!("read package membership page: {error}")))
+    })?;
+    let mut files = Vec::with_capacity(file_keys.len());
     let file_records = relation
-        .lookup_many_sorted(fields.files)
+        .lookup_many_sorted(&file_keys)
         .map_err(|error| BuiltinModelError(format!("read package source files: {error}")))?;
-    for (file_key, file) in fields.files.iter().copied().zip(file_records) {
+    for (file_key, file) in file_keys.iter().copied().zip(file_records) {
         let file = file.ok_or_else(|| {
             BuiltinModelError("project frontier refers to a missing source file".to_owned())
         })?;
-        if file.file_fields().is_none() {
-            return Err(BuiltinModelError(
-                "project frontier refers to a non-file record".to_owned(),
-            ));
-        }
+        super::profile::validate_project_file(key, file_key, &file)?;
         files.push((file_key, file));
     }
     let mut projects = BTreeMap::new();
@@ -194,7 +214,7 @@ pub(super) fn read_project_sources(
         IndexedProject {
             package,
             label: fields.label.to_owned(),
-            files: Arc::<[[u8; 32]]>::from(fields.files),
+            files: Arc::<[[u8; 32]]>::from(file_keys),
         },
     );
     let cargo_aliases = fields
@@ -1059,11 +1079,13 @@ fn structural_fixtures(
         }
         file_keys.sort_unstable();
         file_records.sort_unstable_by_key(|(key, _)| *key);
-        let frontier =
-            backend_engine::ProductSourceRecord::project(label.clone(), [4; 32], file_keys)
-                .expect("project frontier");
-        let fields = frontier.project_fields().expect("project fields");
-        let files = Arc::<[[u8; 32]]>::from(fields.files);
+        let frontier = backend_engine::ProductSourceRecord::project(
+            label.clone(),
+            [4; 32],
+            file_keys.clone(),
+        )
+        .expect("project frontier");
+        let files = Arc::<[[u8; 32]]>::from(file_keys);
         if first.is_none() {
             first = Some((
                 IndexedProject {
