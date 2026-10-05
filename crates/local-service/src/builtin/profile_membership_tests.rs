@@ -516,6 +516,33 @@ fn large_paged_membership_commits_edits_reopens_and_refuses_foreign_or_incomplet
         original_root
     );
     assert_complete_frontier(&daemon, foreign_package, &foreign_expected);
+
+    // Failed transitions do not leave a recovery record that could select a
+    // partial project frontier or undo the successful stale-row deletions.
+    drop(daemon);
+    let daemon = open_daemon(temp.0.path());
+    assert_eq!(
+        daemon.engine().daemon().owner().head().root(),
+        original_root
+    );
+    assert_complete_frontier(&daemon, package, &edited_expected);
+    assert_complete_frontier(&daemon, foreign_package, &foreign_expected);
+    let final_relation = daemon
+        .engine()
+        .daemon()
+        .owner()
+        .snapshot()
+        .relation::<BuiltinWorkspaceRelation>()
+        .expect("source relation after refused transitions replays");
+    for key in removed_page_keys.iter().chain(&removed_file_keys) {
+        assert!(
+            final_relation
+                .lookup(key)
+                .expect("read stale source row after final reopen")
+                .is_none(),
+            "successful page and file deletions survive later refused commits"
+        );
+    }
 }
 
 fn raw_psrd_project(file_count: u32, page_keys: &[[u8; 32]]) -> Vec<u8> {
