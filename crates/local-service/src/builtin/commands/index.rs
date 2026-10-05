@@ -2663,7 +2663,8 @@ impl std::fmt::Write for BoundedDiagnosticText {
 #[cfg(test)]
 mod local_compile_error_chain_tests {
     use super::{
-        MAX_LOCAL_COMPILE_ERROR_BYTES, MAX_LOCAL_COMPILE_ERROR_CAUSES, admit_local_compile,
+        MAX_LOCAL_COMPILE_CAUSE_MESSAGE_BYTES, MAX_LOCAL_COMPILE_ERROR_BYTES,
+        MAX_LOCAL_COMPILE_ERROR_CAUSES, admit_local_compile,
         local_compile_error_chain,
     };
     use backend_engine::application::{
