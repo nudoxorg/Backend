@@ -86,6 +86,8 @@ impl std::fmt::Debug for DesktopRuntime {
 impl DesktopRuntime {
     /// Creates a runtime around one admitted snapshot and actor.
     #[must_use]
+    pub(crate) fn stop(&self) { self.actor.stop(); }
+
     pub fn new(snapshot: AppSnapshot, actor: EngineActor) -> Self {
         Self {
             snapshot: Arc::new(snapshot),

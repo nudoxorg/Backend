@@ -9,14 +9,18 @@ use crate::model::pages::{PageKey, PageStore, SeedEntry};
 use crate::runtime::snapshot::{DisplayCapture, Keep, SnapRoot, SnapshotFile, kept_keys};
 use crate::runtime::snapshot::RetainedDisplay;
 use gpui::{AppContext as _, Context, Task};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// How long the pages rest before the launch snapshot is saved (I2).
 const SAVE_IDLE: Duration = Duration::from_millis(1_500);
 
 /// The route's pages, the root they are current at, and where they go.
-pub(super) struct PendingSave {
+pub(crate) struct PendingSave {
+    sequence: u64,
+    committed: Arc<Mutex<u64>>,
+    owner: Option<super::OwnerAttachment>,
     file: SnapshotFile,
     root: VersionedRoot,
     pages: Vec<SeedEntry>,
@@ -26,12 +30,18 @@ pub(super) struct PendingSave {
 
 impl PendingSave {
     /// Writes them, and says how long it took.
-    fn write(&self, when: &str) -> std::io::Result<usize> {
+    pub(crate) fn write(&self, when: &str) -> std::io::Result<usize> {
         let saving = std::time::Instant::now();
         let display = self.capture.as_ref().and_then(DisplayCapture::prepare).map(Arc::new)
             .or_else(|| self.prepared.clone());
         let displays = display.into_iter().collect::<Vec<_>>();
+        // Prepare outside the lock; publish in admission order. A cancelled
+        // older at-rest task can finish its I/O, but cannot overwrite a newer
+        // successful close checkpoint once it eventually reaches this fence.
+        let mut committed = self.committed.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.sequence <= *committed || self.owner.as_ref().is_some_and(|owner| !owner.is_current()) { return Ok(0); }
         let written = self.file.write_displays(self.root, &self.pages, &displays)?;
+        *committed = self.sequence;
         crate::runtime::trace::span(
             "snapshot.write",
             saving,
@@ -45,6 +55,8 @@ impl PendingSave {
 /// pending save.
 #[derive(Default)]
 pub(super) struct SnapshotKeeper {
+    next_write: AtomicU64,
+    committed: Arc<Mutex<u64>>,
     /// The root the launch snapshot's pages were read at, until the first
     /// served root schedules their fresh revalidation.
     seed_root: Option<SnapRoot>,
@@ -145,8 +157,16 @@ impl SnapshotKeeper {
             && display.observation().cursor.as_slice() == root.revision().encode_control().as_ref()
             && display.observation().producer_epoch == root.producer_epoch()).cloned();
         (!kept.is_empty() || capture.is_some() || prepared.is_some()).then_some(PendingSave {
+            sequence: self.next_write.fetch_add(1, Ordering::Relaxed) + 1,
+            committed: self.committed.clone(), owner: None,
             file, root, pages: kept, capture, prepared,
         })
+    }
+
+    pub(super) fn checkpoint(&self, pages: &PageStore, snapshot: &AppSnapshot, owner: Option<super::OwnerAttachment>) -> Option<PendingSave> {
+        let mut save = self.to_save(pages, snapshot, owner.is_some())?;
+        save.owner = owner;
+        Some(save)
     }
 
     /// Saves the launch snapshot now, on this thread (quit).
@@ -184,7 +204,7 @@ impl SnapshotKeeper {
         self.saving = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SAVE_IDLE).await;
             let Ok(Some(save)) = this.update(cx, |store, _| {
-                store.keeper.to_save(&store.pages, &store.snapshot, store.owner_serving())
+                store.keeper.checkpoint(&store.pages, &store.snapshot, store.current_owner_attachment())
             }) else {
                 return;
             };

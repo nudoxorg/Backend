@@ -206,6 +206,8 @@ pub struct UiRootEntity {
     persistence_outcome: Option<WriteRevision>,
     index_preflights: BTreeMap<crate::core::LocalProjectId, IndexPreflight>,
     quitting: bool,
+    close_committed: bool,
+    close_owner: Option<(crate::core::VersionedRoot, crate::model::ServiceMode)>,
     bootstrap: Option<(crate::host::bootstrap::Binding, Arc<AppSnapshot>)>,
     folder_picker_task: Option<Task<()>>,
     /// One bounded cadence task for accepted/active durable operation reads.
@@ -245,6 +247,8 @@ impl UiRootEntity {
             persistence_outcome: None,
             index_preflights: BTreeMap::new(),
             quitting: false,
+            close_committed: false,
+            close_owner: None,
             bootstrap: None,
             folder_picker_task: None,
             index_poll: None,
@@ -319,6 +323,7 @@ impl UiRootEntity {
 
     /// Drains every engine result the actor has delivered.
     fn drain_engine(&mut self, cx: &mut Context<Self>) {
+        if self.quitting { return; }
         let events = self.runtime.poll();
         if !events.is_empty() {
             self.apply_events(events, cx);
@@ -406,7 +411,7 @@ impl UiRootEntity {
     }
 
     fn complete_index_preflight(&mut self, project: crate::core::LocalProjectId, revision: WriteRevision, result: Result<WriteAck, WriteFailure>, cx: &mut Context<Self>) {
-        if self.quitting || !self.index_preflights.get(&project).is_some_and(|pending| pending.revision == revision
+        if !self.index_preflights.get(&project).is_some_and(|pending| pending.revision == revision
             && matches!(pending.save, IndexPreflightSave::Writing))
             || !self.persistence_writer.as_ref().is_some_and(|writer| writer.accepts(revision)) { return; }
         let Some(pending) = self.index_preflights.get(&project) else { return; };
@@ -538,7 +543,56 @@ impl UiRootEntity {
         self.publish_snapshot(cx);
     }
 
+    #[cfg(test)]
+    pub(crate) fn replace_close_writer(&mut self, writer: PersistenceWriter) {
+        self.persistence = Some(PersistentState::at(writer.path()));
+        self.persistence_wake = None;
+        self.persistence_outcome = None;
+        self.persistence_writer = Some(writer);
+    }
+
+    /// Freeze admission at one exact UI turn; the checkpoint remains cancellable.
+    pub(crate) fn begin_close(&mut self, cx: &mut Context<Self>) -> Result<(WriteReceiver, Option<super::store::PendingSave>), WriteFailure> {
+        self.flush_pending(cx);
+        self.drain_engine(cx);
+        self.ensure_persistence_writer(cx)?;
+        let state = overlay_claims(PersistentState::project(&self.snapshot()), self.pending_claims(&self.snapshot()));
+        let saved = self.persistence_writer.as_ref().expect("writer admitted").checkpoint(state)?;
+        self.quitting = true;
+        self.index_poll = None;
+        let pages = self.store.as_ref().and_then(|store| store.update(cx, |store, cx| {
+            store.drain(cx);
+            store.set_close_paused(true, cx);
+            store.close_checkpoint()
+        }));
+        Ok((saved, pages))
+    }
+
+    pub(crate) fn cancel_close(&mut self, cx: &mut Context<Self>) {
+        if self.close_committed { return; }
+        self.quitting = false;
+        if let Some(store) = &self.store { store.update(cx, |store, cx| store.set_close_paused(false, cx)); }
+        if let Some((key, mode)) = self.close_owner.take() { self.admit_owner(key, mode, cx); }
+        self.drain_engine(cx);
+        let saved = self.index_preflights.iter().filter(|(_, pending)| matches!(pending.save, IndexPreflightSave::Saved))
+            .map(|(project, _)| project.clone()).collect::<Vec<_>>();
+        for project in saved { self.resume_saved_index(project, cx); }
+        self.schedule_operation_observation(cx);
+    }
+
+    pub(crate) fn commit_close(&mut self, cx: &mut Context<Self>) {
+        self.quitting = true;
+        self.close_committed = true;
+        self.pending.clear();
+        self.index_poll = None;
+        self.folder_picker_task = None;
+        self.runtime.stop();
+        if let Some(store) = &self.store { store.update(cx, |store, _| store.commit_close()); }
+        if let Some(writer) = &self.persistence_writer { let _ = writer.finish(); }
+    }
+
     fn finish_persistence(&mut self, cx: &mut Context<Self>) -> Option<WriteReceiver> {
+        if self.close_committed { return None; }
         self.quitting = true;
         self.pending.clear();
         self.index_poll = None;
@@ -585,6 +639,7 @@ impl UiRootEntity {
     /// Queues a typed intent; it is reduced at the end of the current effect
     /// cycle, so a burst of intents from one input is one reduction pass.
     pub fn queue(&mut self, intent: Intent, cx: &mut Context<Self>) {
+        if self.quitting { return; }
         if let Intent::ResolveCargoBrowse { expected, context } = &intent {
             let Some(dependency) = self.cargo_resolution_dependency(expected, context, cx) else { return; };
             self.queue_read(intent, dependency, cx);
@@ -620,6 +675,7 @@ impl UiRootEntity {
 
     /// Applies a typed intent immediately from a harness or startup phase.
     pub fn dispatch(&mut self, intent: Intent, cx: &mut Context<Self>) {
+        if self.quitting { return; }
         if matches!(&intent, Intent::IndexProject { .. }) {
             if let Some(attachment) = self.store.as_ref().and_then(|store| store.read(cx).current_index_owner()) {
                 self.dispatch_index(intent, attachment, cx);
@@ -758,6 +814,7 @@ impl UiRootEntity {
         mode: crate::model::ServiceMode,
         cx: &mut Context<Self>,
     ) {
+        if self.quitting { self.close_owner = Some((key, mode)); return; }
         if let Some((binding, origin)) = self.bootstrap.take() {
             if let Some(bound) = binding.get() {
                 self.runtime.admit_bootstrap(bound, &origin);
@@ -796,6 +853,7 @@ impl UiRootEntity {
         attachment_changed: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.quitting { self.close_owner = Some((key, mode)); return; }
         if !attachment_changed
             && self.snapshot().key().same_authority(key)
             && self.snapshot().settings().service_mode == mode
@@ -844,6 +902,7 @@ impl UiRootEntity {
     }
 
     fn dispatch_runtime(&mut self, intent: Intent, cx: &mut Context<Self>) {
+        if self.quitting { return; }
         let events = self.runtime.dispatch(intent);
         self.apply_events(events, cx);
     }

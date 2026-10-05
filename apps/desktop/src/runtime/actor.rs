@@ -1012,7 +1012,8 @@ impl EngineActor {
         self.close_and_join();
     }
 
-    fn close_and_join(&mut self) {
+    /// Revoke all worker admission without joining on the UI thread.
+    pub(crate) fn stop(&self) {
         for state in [&self.active, &self.local_active] {
             let cancel = {
                 let mut active = state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1025,6 +1026,10 @@ impl EngineActor {
         self.local.close();
         self.events.close();
         self.wake.close();
+    }
+
+    fn close_and_join(&mut self) {
+        self.stop();
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
