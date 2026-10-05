@@ -182,10 +182,10 @@ fn index_preflight_basis(
     let current = snapshot.key();
     if current.same_authority(basis) { return Ok(current); }
     let (old, next) = (basis.revision(), current.revision());
-    // A basis captured before the owner's first publication (the launch
-    // placeholder) carries no index content, so the owner's own initial
-    // stream supersedes it instead of conflicting with it.
-    if old.sequence() == 0 { return Ok(current); }
+    // Only the exact launch placeholder may cross into the owner's initial
+    // stream. Sequence zero also exists in served streams and is not proof
+    // that this request was captured before the owner answered.
+    if basis.is_unserved() { return Ok(current); }
     if current.producer_epoch() != basis.producer_epoch() || old.recipe() != next.recipe()
         || old.branch() != next.branch() || old.log() != next.log() || old.schema() != next.schema() {
         return Err(IndexPreflightRefusal::ProducerStreamChanged);
@@ -1056,6 +1056,8 @@ mod cargo_queue_tests;
 mod local_index_queue_tests;
 #[cfg(test)]
 mod durable_writer_tests;
+#[cfg(test)]
+mod index_preflight_basis_tests;
 
 fn folder_picker_outcome(paths: Vec<PathBuf>) -> FolderPickerOutcome {
     let mut selected = Vec::new();
