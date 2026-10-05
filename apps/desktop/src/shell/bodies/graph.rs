@@ -100,6 +100,7 @@ pub(crate) struct Map {
 
 struct GraphMountFocus {
     lease: crate::shell::keyboard::NativeReturnLease,
+    retired: bool,
     // Retain the displaced receiver until handoff. Dropping the old Graph
     // must not manufacture a native blur that revokes its own valid lease.
     _origin: Option<gpui::FocusHandle>,
@@ -338,7 +339,10 @@ impl Map {
         self.canvas_transform = gpui::LayerTransform::IDENTITY;
         // A replacement may inherit only the focus actually owned by its
         // mounted predecessor (or an unconsumed arrival), never visibility.
-        self.focus_on_mount = self.mounted_focus.take().or(self.focus_on_mount.take());
+        if let Some(mut departing) = self.mounted_focus.take() {
+            departing.retired = true;
+            self.focus_on_mount = Some(departing);
+        }
         self._graph_events = None;
         self.load_error = None;
         self.toured = 0;
@@ -735,7 +739,22 @@ impl Map {
         let lease = crate::shell::keyboard::NativeReturnLease::new(
             window.window_handle().window_id(), shell.read(cx).focus_return_generation(), window.focus_epoch(),
         )?;
-        Some(GraphMountFocus { lease, _origin: window.focused(cx) })
+        Some(GraphMountFocus { lease, retired: false, _origin: window.focused(cx) })
+    }
+
+    fn park_retired_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(mut pending) = self.focus_on_mount.take() else { return; };
+        if pending.retired
+            && let Some(origin) = pending._origin.as_ref()
+            && let Some(shell) = self.links.shell.upgrade()
+            && pending.lease.current(window.window_handle().window_id(), shell.read(cx).focus_return_generation(), window.focus_epoch())
+            && let Some(lease) = shell.update(cx, |shell, cx| shell.park_retired_reader_focus(origin, window, cx))
+        {
+            pending.lease = lease;
+            pending._origin = window.focused(cx);
+            pending.retired = false;
+        }
+        self.focus_on_mount = Some(pending);
     }
 
     /// Uses the same indexed open path as Enter/double-click; the graph's
@@ -1472,6 +1491,10 @@ impl Render for Map {
         // before the scene mount. No second frame or render-time notify is
         // needed to turn an announced Memo result into native graph content.
         self.request_world(cx);
+        // Retire the old scene onto the mounted Shell receiver while its
+        // asynchronous replacement reads. A later user choice already
+        // invalidated the receipt, so this cannot manufacture a fresh claim.
+        self.park_retired_focus(window, cx);
         if let Some((scene, identities, coverage)) = self.ready_scene.take() {
             self.identities = Some(identities);
             self.coverage = Some(coverage);

@@ -556,6 +556,16 @@ impl Shell {
         window.is_window_active() && self.zone == Zone::Reader && !self.ask_open && self.focus.is_focused(window)
     }
 
+    pub(crate) fn park_retired_reader_focus(&mut self, origin: &FocusHandle, window: &mut Window, cx: &mut Context<Self>) -> Option<super::keyboard::NativeReturnLease> {
+        if !window.is_window_active() || window.focused(cx).as_ref() != Some(origin)
+            || self.ask_open || self.shelf_over_open || !self.background_input_allowed()
+            || self.links.snapshot(cx).page_overlay().is_some() || super::titlebar::menu_open(window, cx)
+            || !window.is_focus_handle_mounted(&self.focus) { return None; }
+        self.set_zone(Zone::Reader, cx);
+        self.focus.focus(window, cx);
+        super::keyboard::NativeReturnLease::new(window.window_handle().window_id(), self.transient_generation, window.focus_epoch())
+    }
+
     /// How many descents the reader played and which way the last went.
     #[must_use]
     pub fn descent(&self, cx: &App) -> (u64, Option<Way>) {
