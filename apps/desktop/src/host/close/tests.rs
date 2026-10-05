@@ -436,8 +436,10 @@ fn long_close_failure_at_200_percent_stays_inside_viewport_and_traps_native_tab(
     for (width, height) in [(320.0, 568.0), (360.0, 320.0), (640.0, 568.0)] {
         rig.cx.simulate_resize(gpui::size(px(width), px(height)));
         rig.draw();
-        rig.cx
-            .update(|window, cx| close.read(cx).focus.focus(window, cx));
+        rig.cx.update(|window, cx| {
+            let focus = close.read(cx).focus.clone();
+            focus.focus(window, cx);
+        });
         let mut focused = Vec::new();
         for _ in 0..4 {
             rig.cx.simulate_keystrokes("tab");
@@ -470,8 +472,10 @@ fn long_close_failure_at_200_percent_stays_inside_viewport_and_traps_native_tab(
             "Tab cycles the three mounted native decisions"
         );
     }
-    rig.cx
-        .update(|window, cx| close.read(cx).focus.focus(window, cx));
+    rig.cx.update(|window, cx| {
+        let focus = close.read(cx).focus.clone();
+        focus.focus(window, cx);
+    });
     rig.cx.simulate_keystrokes("tab");
     rig.native_press("space");
     rig.cx.run_until_parked();

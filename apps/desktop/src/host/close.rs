@@ -8,7 +8,8 @@ use facet::{ActiveFacet as _, Measure, Space};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, Styled as _, Task, WeakEntity, Window, div, px,
+    ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Task, WeakEntity,
+    Window, div, px,
 };
 use gpui_component::FocusTrapElement as _;
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
