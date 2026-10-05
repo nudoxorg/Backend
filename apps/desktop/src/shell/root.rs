@@ -912,7 +912,11 @@ impl Shell {
                 let input = self.ask.read(cx).input().clone();
                 Some((Overlay::CommandPalette, input.read(cx).focus_handle(cx)))
             }
-            (Some(overlay @ Overlay::Settings(_)), _, true) => {
+            (Some(overlay @ Overlay::Settings(_)), _, true)
+                if !super::titlebar::menu_open(window, cx) => {
+                // A menu retained above Settings remains the top keyboard
+                // owner. Stealing its focus makes its Escape binding
+                // unreachable while the Shell also steps aside for Menu.
                 Some((overlay, self.focus.clone()))
             }
             _ => None,
