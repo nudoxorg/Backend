@@ -624,8 +624,9 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         &self,
         keys: &[R::Key],
     ) -> Result<Vec<Option<R::Value>>, LazyTreeError<L::Error>> {
+        Self::validate_sorted_keys(keys).map_err(LazyTreeError::Node)?;
         let mut values = Vec::with_capacity(keys.len());
-        match self.visit_many_sorted(keys, |_, value| {
+        match self.visit_many_in_node(&self.root, keys, &mut |_, value| {
             values.push(value.cloned());
             ControlFlow::<std::convert::Infallible>::Continue(())
         })? {
@@ -651,10 +652,15 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         keys: &[R::Key],
         mut visitor: impl FnMut(&R::Key, Option<&R::Value>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>, LazyTreeError<L::Error>> {
-        if keys.windows(2).any(|pair| pair[0] >= pair[1]) {
-            return Err(LazyTreeError::Node(NodeError::UnsortedOrDuplicate));
-        }
+        Self::validate_sorted_keys(keys).map_err(LazyTreeError::Node)?;
         self.visit_many_in_node(&self.root, keys, &mut visitor)
+    }
+
+    fn validate_sorted_keys(keys: &[R::Key]) -> Result<(), NodeError> {
+        if keys.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(NodeError::UnsortedOrDuplicate);
+        }
+        Ok(())
     }
 
     fn visit_many_in_node<B>(
