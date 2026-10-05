@@ -25,9 +25,9 @@ use backend_library::interface::{
 };
 use backend_library::{CargoPackageAliasEvidenceV1, CompileExecutionIntent};
 use backend_semantic::ir::SemanticInputWitness;
-use backend_semantic::vocabulary::LanguageProfile;
 #[cfg(test)]
 use backend_semantic::vocabulary::Language;
+use backend_semantic::vocabulary::LanguageProfile;
 use backend_version::{Coverage, ScopeRoot, WorkspaceRoot};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroU32;
@@ -284,15 +284,13 @@ pub(super) fn capture_index_scan(
         .lookup(&project_key)
         .map_err(|error| BuiltinModelError(format!("read indexed project: {error}")))?;
     let old_files = match before.as_ref() {
-        Some(record) => super::super::profile::resolve_project_file_keys(
-            project_key,
-            record,
-            |page_key| {
-                relation
-                    .lookup(page_key)
-                    .map_err(|error| BuiltinModelError(format!("read indexed membership page: {error}")))
-            },
-        )?,
+        Some(record) => {
+            super::super::profile::resolve_project_file_keys(project_key, record, |page_key| {
+                relation.lookup(page_key).map_err(|error| {
+                    BuiltinModelError(format!("read indexed membership page: {error}"))
+                })
+            })?
+        }
         None => Vec::new(),
     };
     if old_files.len() > ProductSourceRecord::MAX_PROJECT_FILES {
@@ -536,7 +534,10 @@ pub(super) fn finish_index_scan(
             });
         }
     }
-    if let Some(previous) = before.as_ref().and_then(ProductSourceRecord::project_fields) {
+    if let Some(previous) = before
+        .as_ref()
+        .and_then(ProductSourceRecord::project_fields)
+    {
         changes.extend(
             previous
                 .files
@@ -649,9 +650,9 @@ pub(super) fn finish_index_scan(
         file_keys,
         before.as_ref(),
         |key| {
-            relation
-                .lookup(key)
-                .map_err(|error| BuiltinModelError(format!("read project membership page: {error}")))
+            relation.lookup(key).map_err(|error| {
+                BuiltinModelError(format!("read project membership page: {error}"))
+            })
         },
         cargo_alias_observations,
     )?;
@@ -3879,9 +3880,9 @@ pub(super) fn remove_project_intent(
         package.to_bytes(),
         &record,
         |page_key| {
-            relation
-                .lookup(page_key)
-                .map_err(|error| BuiltinModelError(format!("read indexed membership page: {error}")))
+            relation.lookup(page_key).map_err(|error| {
+                BuiltinModelError(format!("read indexed membership page: {error}"))
+            })
         },
     )?;
     let file_rows = relation
@@ -3927,14 +3928,8 @@ pub(super) fn remove_project_intent(
         };
         after = Some(next);
     }
-    BuiltinIntent::remove_project(
-        package,
-        label,
-        &files,
-        &membership_pages,
-        semantic_changes,
-    )
-    .map(Some)
+    BuiltinIntent::remove_project(package, label, &files, &membership_pages, semantic_changes)
+        .map(Some)
 }
 
 pub(super) fn semantic_version_record(

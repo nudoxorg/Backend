@@ -146,16 +146,13 @@ fn edit_is_package_local(edit: &BuiltinIntent) -> bool {
                     && backend_engine::product_source_file_key(package, file.path) == change.key
             } else if let Some(page) = record.membership_page_fields() {
                 page.project == package
-                    && backend_engine::product_source_membership_page_key(
-                        page.project,
-                        page.files,
-                    )
-                    .is_ok_and(|expected| expected == change.key)
+                    && backend_engine::product_source_membership_page_key(page.project, page.files)
+                        .is_ok_and(|expected| expected == change.key)
             } else {
                 change.key == package
-                    && record
-                        .project_fields()
-                        .is_some_and(|project| PackageKey::from_value(project.label) == edit.package)
+                    && record.project_fields().is_some_and(|project| {
+                        PackageKey::from_value(project.label) == edit.package
+                    })
             }
         }
         None => true,
@@ -1079,12 +1076,9 @@ fn structural_fixtures(
         }
         file_keys.sort_unstable();
         file_records.sort_unstable_by_key(|(key, _)| *key);
-        let frontier = backend_engine::ProductSourceRecord::project(
-            label.clone(),
-            [4; 32],
-            file_keys.clone(),
-        )
-        .expect("project frontier");
+        let frontier =
+            backend_engine::ProductSourceRecord::project(label.clone(), [4; 32], file_keys.clone())
+                .expect("project frontier");
         let files = Arc::<[[u8; 32]]>::from(file_keys);
         if first.is_none() {
             first = Some((

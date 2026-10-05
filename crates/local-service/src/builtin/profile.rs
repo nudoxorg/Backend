@@ -163,8 +163,14 @@ fn validate_source_membership_transition(
         })?,
         None => Vec::new(),
     };
-    let old_file_set = old_files.iter().copied().collect::<std::collections::BTreeSet<_>>();
-    let new_file_set = new_files.iter().copied().collect::<std::collections::BTreeSet<_>>();
+    let old_file_set = old_files
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let new_file_set = new_files
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
 
     for file_key in old_file_set.difference(&new_file_set) {
         if !changes
@@ -182,7 +188,8 @@ fn validate_source_membership_transition(
             Some(record) if record.file_fields().is_some() => {
                 if !new_file_set.contains(&change.key) {
                     return Err(BuiltinModelError(
-                        "source update adds a file outside the selected project frontier".to_owned(),
+                        "source update adds a file outside the selected project frontier"
+                            .to_owned(),
                     ));
                 }
             }
@@ -199,8 +206,14 @@ fn validate_source_membership_transition(
         .as_ref()
         .and_then(ProductSourceRecord::project_fields)
         .map_or(&[][..], |fields| fields.files.page_keys());
-    let old_page_set = old_pages.iter().copied().collect::<std::collections::BTreeSet<_>>();
-    let new_page_set = new_pages.iter().copied().collect::<std::collections::BTreeSet<_>>();
+    let old_page_set = old_pages
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let new_page_set = new_pages
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
     let new_file_keys = new_files
         .iter()
         .copied()

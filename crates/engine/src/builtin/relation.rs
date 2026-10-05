@@ -19,8 +19,8 @@ use backend_library::{
 use backend_replication::ImmutableObjectSchema;
 use backend_semantic::vocabulary::LanguageProfile;
 use backend_version::{
-    anchored_cut_points, CanonicalRelation, ContentId, CoverageWitness, CutPolicy,
-    DEFAULT_CUT_POLICY, Relation, RelationState, SourceFactDomain, StateRoot, WorkspaceRoot,
+    CanonicalRelation, ContentId, CoverageWitness, CutPolicy, DEFAULT_CUT_POLICY, Relation,
+    RelationState, SourceFactDomain, StateRoot, WorkspaceRoot, anchored_cut_points,
 };
 use std::fmt;
 use std::num::NonZeroU32;
@@ -523,7 +523,9 @@ where
                     if let Some((_, page)) = &self.page {
                         let Some(fields) = page.membership_page_fields() else {
                             self.failed = true;
-                            return Some(Err("membership reference resolves to a non-page row".into()));
+                            return Some(Err(
+                                "membership reference resolves to a non-page row".into()
+                            ));
                         };
                         if let Some(key) = fields.files.get(self.page_file_index).copied() {
                             self.page_file_index += 1;
@@ -548,33 +550,44 @@ where
                         };
                         let Some(fields) = record.membership_page_fields() else {
                             self.failed = true;
-                            return Some(Err("membership reference resolves to a non-page row".into()));
+                            return Some(Err(
+                                "membership reference resolves to a non-page row".into()
+                            ));
                         };
                         if fields.project != self.project {
                             self.failed = true;
-                            return Some(Err("project membership page belongs to another project".into()));
+                            return Some(Err(
+                                "project membership page belongs to another project".into()
+                            ));
                         }
-                        let page_key_matches = product_source_membership_page_key(
-                            self.project,
-                            fields.files,
-                        )
-                        .is_ok_and(|expected| expected == page_key);
+                        let page_key_matches =
+                            product_source_membership_page_key(self.project, fields.files)
+                                .is_ok_and(|expected| expected == page_key);
                         if !page_key_matches {
                             self.failed = true;
-                            return Some(Err("project membership page identity does not match its contents".into()));
+                            return Some(Err(
+                                "project membership page identity does not match its contents"
+                                    .into(),
+                            ));
                         }
                         if self.page_index < page_keys.len()
                             && fields.files.len() < MIN_PROJECT_MEMBERSHIP_PAGE_FILES
                         {
                             self.failed = true;
-                            return Some(Err("non-final project membership page is below its minimum size".into()));
+                            return Some(Err(
+                                "non-final project membership page is below its minimum size"
+                                    .into(),
+                            ));
                         }
                         self.page = Some((page_key, record));
                         continue;
                     } else {
                         if self.seen != file_count {
                             self.failed = true;
-                            return Some(Err("project membership page count does not match its file count".into()));
+                            return Some(Err(
+                                "project membership page count does not match its file count"
+                                    .into(),
+                            ));
                         }
                         self.finished = true;
                         return None;
@@ -583,17 +596,23 @@ where
             };
             if self.previous.is_some_and(|previous| previous >= key) {
                 self.failed = true;
-                return Some(Err("project membership pages are unordered or duplicate a file key".into()));
+                return Some(Err(
+                    "project membership pages are unordered or duplicate a file key".into(),
+                ));
             }
             self.previous = Some(key);
             self.seen = match self.seen.checked_add(1) {
                 Some(seen) if seen <= expected_count => seen,
                 _ => {
                     self.failed = true;
-                    return Some(Err("project membership exceeds its declared file count".into()));
+                    return Some(Err(
+                        "project membership exceeds its declared file count".into()
+                    ));
                 }
             };
-            if self.seen == expected_count && matches!(self.membership, ProductProjectFileMembership::Inline(_)) {
+            if self.seen == expected_count
+                && matches!(self.membership, ProductProjectFileMembership::Inline(_))
+            {
                 self.finished = true;
             }
             return Some(Ok(key));
@@ -733,11 +752,11 @@ impl ProductSourceRecord {
                 Self::MAX_PROJECT_FILES
             ));
         }
-    let record = Self::Project {
-        label,
-        source_version,
-        files: ProductProjectMembership::Inline(Arc::from(files.into_boxed_slice())),
-        cargo_aliases,
+        let record = Self::Project {
+            label,
+            source_version,
+            files: ProductProjectMembership::Inline(Arc::from(files.into_boxed_slice())),
+            cargo_aliases,
         };
         let mut record = record;
         let mut encoded = record.encoded_value_bytes();
@@ -801,7 +820,9 @@ impl ProductSourceRecord {
             let project = Self::Project {
                 label: label.clone(),
                 source_version,
-                files: ProductProjectMembership::Inline(Arc::from(files.clone().into_boxed_slice())),
+                files: ProductProjectMembership::Inline(Arc::from(
+                    files.clone().into_boxed_slice(),
+                )),
                 cargo_aliases: cargo_aliases.clone(),
             };
             if project.encoded_value_bytes() <= Self::ROW_VALUE_CAPACITY {
@@ -814,12 +835,8 @@ impl ProductSourceRecord {
             if files.is_empty() {
                 // Empty frontiers have nothing to page; preserve the legacy
                 // typed unavailable marker if optional aliases alone overflow.
-                let project = Self::project_with_aliases(
-                    label,
-                    source_version,
-                    files,
-                    cargo_aliases,
-                )?;
+                let project =
+                    Self::project_with_aliases(label, source_version, files, cargo_aliases)?;
                 return Ok(ProductSourceProjectUpdate {
                     project_key,
                     project,
@@ -828,12 +845,9 @@ impl ProductSourceRecord {
             }
         }
 
-        let cuts = anchored_cut_points::<ProductSourceRelation>(
-            &files,
-            PROJECT_MEMBERSHIP_CUT_POLICY,
-            0,
-        )
-        .map_err(|error| format!("project membership page cuts are invalid: {error}"))?;
+        let cuts =
+            anchored_cut_points::<ProductSourceRelation>(&files, PROJECT_MEMBERSHIP_CUT_POLICY, 0)
+                .map_err(|error| format!("project membership page cuts are invalid: {error}"))?;
         let mut page_keys = Vec::with_capacity(cuts.len());
         let mut pages = Vec::with_capacity(cuts.len());
         let mut start = 0usize;
@@ -1257,7 +1271,10 @@ impl ProductSourceRecord {
                     *evidence = evidence.unavailable_for_project_row_capacity();
                 }
                 if record.encoded_value_bytes() > Self::ROW_VALUE_CAPACITY {
-                    return Err("project membership references exceed the canonical row capacity".to_owned());
+                    return Err(
+                        "project membership references exceed the canonical row capacity"
+                            .to_owned(),
+                    );
                 }
                 Ok(record)
             }
@@ -1870,7 +1887,7 @@ fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
                 for _ in 0..page_count {
                     page_keys.push(reader.array()?);
                 }
-    let aliases = match reader.byte()? {
+                let aliases = match reader.byte()? {
                     0 => None,
                     1 => Some(decode_cargo_package_alias_evidence(&mut reader)?),
                     _ => return Err(()),
@@ -2453,9 +2470,9 @@ fn source_entries(expanded: bool) -> Vec<([u8; 32], ProductSourceRecord)> {
 mod tests {
     use super::{
         DeclarationKind, DeclarationRetention, MAX_PROJECT_MEMBERSHIP_PAGE_FILES,
-        MIN_PROJECT_MEMBERSHIP_PAGE_FILES, ProductProjectFileMembership,
-        ProductProjectMembership, ProductSourceRecord, ProductSourceRelation, Relation,
-        RetainedDeclarations, SourceDeclaration, SourceExcerpt, SourceExcerptExtent, SourceLocation,
+        MIN_PROJECT_MEMBERSHIP_PAGE_FILES, ProductProjectFileMembership, ProductProjectMembership,
+        ProductSourceRecord, ProductSourceRelation, Relation, RetainedDeclarations,
+        SourceDeclaration, SourceExcerpt, SourceExcerptExtent, SourceLocation,
         SourceUnavailableReason,
     };
     use backend_version::{CanonicalRelation, ContentId, SourceFactDomain};
@@ -2534,12 +2551,21 @@ mod tests {
                 .collect::<Result<Vec<_>, _>>()
                 .expect("complete membership");
             assert_eq!(resolved, files, "file count {count}");
-            assert!(update.project_record().encoded_value_bytes() <= ProductSourceRecord::ROW_VALUE_CAPACITY);
+            assert!(
+                update.project_record().encoded_value_bytes()
+                    <= ProductSourceRecord::ROW_VALUE_CAPACITY
+            );
             if count <= ProductSourceRecord::MAX_FRONTIER_FILES {
-                assert!(matches!(project.files, ProductProjectFileMembership::Inline(_)));
+                assert!(matches!(
+                    project.files,
+                    ProductProjectFileMembership::Inline(_)
+                ));
                 assert!(update.membership_pages().is_empty());
             } else {
-                let ProductProjectFileMembership::Paged { file_count, page_keys } = project.files
+                let ProductProjectFileMembership::Paged {
+                    file_count,
+                    page_keys,
+                } = project.files
                 else {
                     panic!("oversized inline row must use pages");
                 };
@@ -2579,9 +2605,15 @@ mod tests {
         )
         .expect("paged row leaves room for exact aliases");
         let fields = update.project_record().project_fields().expect("project");
-        assert!(matches!(fields.files, ProductProjectFileMembership::Paged { .. }));
+        assert!(matches!(
+            fields.files,
+            ProductProjectFileMembership::Paged { .. }
+        ));
         assert_eq!(fields.cargo_aliases, Some(&aliases));
-        assert!(update.project_record().encoded_value_bytes() <= ProductSourceRecord::ROW_VALUE_CAPACITY);
+        assert!(
+            update.project_record().encoded_value_bytes()
+                <= ProductSourceRecord::ROW_VALUE_CAPACITY
+        );
     }
 
     #[test]
@@ -2596,7 +2628,11 @@ mod tests {
         .expect("maximum logical frontier");
         let project_key = backend_library::package_key("fixture").to_bytes();
         let fields = update.project_record().project_fields().expect("project");
-        let ProductProjectFileMembership::Paged { file_count, page_keys } = fields.files else {
+        let ProductProjectFileMembership::Paged {
+            file_count,
+            page_keys,
+        } = fields.files
+        else {
             panic!("maximum frontier must use pages");
         };
         assert_eq!(file_count, ProductSourceRecord::MAX_PROJECT_FILES);
@@ -2617,13 +2653,9 @@ mod tests {
     #[test]
     fn membership_page_identity_and_ownership_fail_closed() {
         let files = ordered_membership_keys(2_043);
-        let update = ProductSourceRecord::project_with_membership_pages(
-            "fixture",
-            [9; 32],
-            files,
-            None,
-        )
-        .expect("paged project");
+        let update =
+            ProductSourceRecord::project_with_membership_pages("fixture", [9; 32], files, None)
+                .expect("paged project");
         let project_key = update.project_key();
         let fields = update.project_record().project_fields().expect("project");
         let pages = page_rows(&update);
@@ -2771,13 +2803,9 @@ mod tests {
         );
 
         files.remove(1);
-        let after_delete = ProductSourceRecord::project_with_membership_pages(
-            "fixture",
-            [12; 32],
-            files,
-            None,
-        )
-        .expect("pages after deletion");
+        let after_delete =
+            ProductSourceRecord::project_with_membership_pages("fixture", [12; 32], files, None)
+                .expect("pages after deletion");
         let deleted_pages = after_delete
             .membership_pages()
             .iter()
@@ -3033,12 +3061,7 @@ mod tests {
                 version
             );
         }
-        for (tag, version) in [
-            (b'A', 10_u8),
-            (b'B', 11_u8),
-            (b'C', 12_u8),
-            (b'D', 13_u8),
-        ] {
+        for (tag, version) in [(b'A', 10_u8), (b'B', 11_u8), (b'C', 12_u8), (b'D', 13_u8)] {
             assert_eq!(
                 super::format_version(&[b'P', b'S', b'R', tag]),
                 Some(version),
@@ -3057,8 +3080,8 @@ mod tests {
 
     #[test]
     fn source_record_decoder_rejects_punctuation_alias_tag_and_keeps_psr8() {
-        let legacy = ProductSourceRecord::project("fixture", [7; 32], Vec::new())
-            .expect("legacy project");
+        let legacy =
+            ProductSourceRecord::project("fixture", [7; 32], Vec::new()).expect("legacy project");
         let mut legacy_bytes = Vec::new();
         ProductSourceRelation::encode_value(&legacy, &mut legacy_bytes);
         assert_eq!(legacy_bytes.get(..4), Some(b"PSR8".as_slice()));

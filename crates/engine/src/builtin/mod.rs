@@ -40,10 +40,9 @@ pub use profile::{
 };
 pub use relation::{
     BuiltinInputSchema, Container, DeclarationKind, DeclarationRetention, ProductFileRef,
-    ProductInput, ProductProjectFileMembership, ProductProjectRef, ProductSourceDeltaFacts,
-    ProductProjectMembership, ProductSourceMembershipPageRef, ProductSourceProjectUpdate,
-    ProductSourceRecord,
-    ProductSourceRelation, ProductSourceRetentionFacts, ProductSourceSnapshot,
+    ProductInput, ProductProjectFileMembership, ProductProjectMembership, ProductProjectRef,
+    ProductSourceDeltaFacts, ProductSourceMembershipPageRef, ProductSourceProjectUpdate,
+    ProductSourceRecord, ProductSourceRelation, ProductSourceRetentionFacts, ProductSourceSnapshot,
     ProductSourceTransition, RetainedDeclarations, SourceDeclaration, SourceLanguage,
     SourceLocation, SourceUnavailableReason, legacy_product_source_file_key,
     product_source_file_key, product_source_membership_page_key,

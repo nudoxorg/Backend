@@ -383,13 +383,9 @@ fn labelled_source_entries(
             entries.push((key, record));
         }
         file_keys.sort_unstable();
-        let project_update = ProductSourceRecord::project_with_membership_pages(
-            label,
-            [3; 32],
-            file_keys,
-            None,
-        )
-        .map_err(BuiltinModelError)?;
+        let project_update =
+            ProductSourceRecord::project_with_membership_pages(label, [3; 32], file_keys, None)
+                .map_err(BuiltinModelError)?;
         entries.push((project_key, project_update.project_record().clone()));
         entries.extend(project_update.membership_pages().iter().cloned());
     }
@@ -625,7 +621,10 @@ mod tests {
             let scoped = super::super::read_package_sources(&snapshot, project.package)
                 .expect("scoped source page");
             assert_eq!(scoped.files.len(), count);
-            assert_eq!(scoped.projects[&project.package.to_bytes()].files.len(), count);
+            assert_eq!(
+                scoped.projects[&project.package.to_bytes()].files.len(),
+                count
+            );
         }
     }
 
@@ -636,10 +635,12 @@ mod tests {
             "pkg-0",
             [3; 32],
             (0..2_043)
-                .map(|index| backend_engine::product_source_file_key(
-                    backend_engine::package_key("pkg-0").to_bytes(),
-                    &format!("src/f{index}.rs"),
-                ))
+                .map(|index| {
+                    backend_engine::product_source_file_key(
+                        backend_engine::package_key("pkg-0").to_bytes(),
+                        &format!("src/f{index}.rs"),
+                    )
+                })
                 .collect::<Vec<_>>(),
             None,
         )
@@ -653,11 +654,12 @@ mod tests {
             .cloned()
             .collect::<Vec<_>>();
         entries.push((project_key, update.project_record().clone()));
-        let relation = backend_engine::RelationState::<backend_engine::ProductSourceRelation>::from_entries(
-            entries,
-            super::super::admitted_coverage().expect("coverage"),
-        )
-        .expect("relation with missing page");
+        let relation =
+            backend_engine::RelationState::<backend_engine::ProductSourceRelation>::from_entries(
+                entries,
+                super::super::admitted_coverage().expect("coverage"),
+            )
+            .expect("relation with missing page");
         let snapshot = super::store_relation(relation, "missing-membership-page".to_owned())
             .expect("snapshot");
         let Err(error) = super::super::read_indexed_sources(&snapshot) else {
@@ -666,12 +668,8 @@ mod tests {
         assert!(error.to_string().contains("missing"));
 
         let one_file = backend_engine::product_source_file_key(project_key, "src/only.rs");
-        let inline = backend_engine::ProductSourceRecord::project(
-            "pkg-0",
-            [4; 32],
-            vec![one_file],
-        )
-        .expect("inline project");
+        let inline = backend_engine::ProductSourceRecord::project("pkg-0", [4; 32], vec![one_file])
+            .expect("inline project");
         let file = backend_engine::ProductSourceRecord::file(
             project_key,
             "src/only.rs",
@@ -683,13 +681,14 @@ mod tests {
         .expect("source file");
         let mut orphaned = vec![(project_key, inline), (one_file, file)];
         orphaned.push(update.membership_pages()[0].clone());
-        let relation = backend_engine::RelationState::<backend_engine::ProductSourceRelation>::from_entries(
-            orphaned,
-            super::super::admitted_coverage().expect("coverage"),
-        )
-        .expect("relation with orphan page");
-        let snapshot = super::store_relation(relation, "orphan-membership-page".to_owned())
-            .expect("snapshot");
+        let relation =
+            backend_engine::RelationState::<backend_engine::ProductSourceRelation>::from_entries(
+                orphaned,
+                super::super::admitted_coverage().expect("coverage"),
+            )
+            .expect("relation with orphan page");
+        let snapshot =
+            super::store_relation(relation, "orphan-membership-page".to_owned()).expect("snapshot");
         let Err(error) = super::super::read_indexed_sources(&snapshot) else {
             panic!("unreferenced membership page must reject the source page");
         };

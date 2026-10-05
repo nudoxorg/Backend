@@ -720,11 +720,15 @@ fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, 
                 }
             } else if record.file_fields().is_some() {
                 if files.insert(*key, record.clone()).is_some() {
-                    return Err(BuiltinModelError("duplicate source file row key".to_owned()));
+                    return Err(BuiltinModelError(
+                        "duplicate source file row key".to_owned(),
+                    ));
                 }
             } else if record.membership_page_fields().is_some() {
                 if !membership_pages.insert(*key) {
-                    return Err(BuiltinModelError("duplicate membership page row key".to_owned()));
+                    return Err(BuiltinModelError(
+                        "duplicate membership page row key".to_owned(),
+                    ));
                 }
             }
         }
@@ -741,9 +745,7 @@ fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, 
         })?;
         let file_keys = fields
             .iter_file_keys(*project_key, |page_key| {
-                relation
-                    .lookup(page_key)
-                    .map_err(|error| error.to_string())
+                relation.lookup(page_key).map_err(|error| error.to_string())
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(BuiltinModelError)?;
@@ -2405,13 +2407,8 @@ mod owner_fairness_tests {
         });
         let (mut owner, cursor, client) = owner(&directory, Arc::clone(&remote_progress));
         owner = owner.with_subscription_lease_limits(
-            SubscriptionLeaseLimits::new(
-                4,
-                Duration::from_secs(5),
-                1,
-                Duration::from_secs(5),
-            )
-            .expect("small finite lease bounds"),
+            SubscriptionLeaseLimits::new(4, Duration::from_secs(5), 1, Duration::from_secs(5))
+                .expect("small finite lease bounds"),
         );
 
         let opened = OwnerService::engine(
@@ -2523,7 +2520,9 @@ mod owner_fairness_tests {
                     },
                 }),
             ),
-            Err(crate::ProtocolError::InvalidControl("unknown subscription lease"))
+            Err(crate::ProtocolError::InvalidControl(
+                "unknown subscription lease"
+            ))
         ));
 
         let renewed = OwnerService::engine(
@@ -2565,7 +2564,9 @@ mod owner_fairness_tests {
                     operation: backend_engine::LocalSubscriptionOperation::Cancel { lease },
                 }),
             ),
-            Err(crate::ProtocolError::InvalidControl("unknown subscription lease"))
+            Err(crate::ProtocolError::InvalidControl(
+                "unknown subscription lease"
+            ))
         ));
         OwnerService::close(&mut owner);
     }
