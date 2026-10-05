@@ -364,5 +364,18 @@ class CollectorRpathTests(unittest.TestCase):
                 )
 
 
+class BundleToolPrerequisiteTests(unittest.TestCase):
+    def test_relocator_requires_install_name_tool(self) -> None:
+        with patch.object(collector.bundle.platform, "system", return_value="Darwin"), patch.object(
+            collector.bundle.shutil,
+            "which",
+            side_effect=lambda name: None if name == "install_name_tool" else f"/usr/bin/{name}",
+        ):
+            with self.assertRaisesRegex(
+                collector.bundle.PackageError, "install_name_tool"
+            ):
+                collector.bundle.macos_tools()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -917,7 +917,18 @@ def copy_runtime(
 def macos_tools() -> None:
     if platform.system() != "Darwin":
         fail("bundle assembly and Mach-O closure verification require macOS")
-    missing = [name for name in ("codesign", "ditto", "dyld_info", "file", "lipo", "otool", "plutil", "vtool") if shutil.which(name) is None]
+    required = (
+        "codesign",
+        "ditto",
+        "dyld_info",
+        "file",
+        "install_name_tool",
+        "lipo",
+        "otool",
+        "plutil",
+        "vtool",
+    )
+    missing = [name for name in required if shutil.which(name) is None]
     if missing:
         fail(f"missing required macOS verification tools: {', '.join(missing)}")
 
