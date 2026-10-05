@@ -23,6 +23,7 @@ from runtime_build_receipt import (
     sha256_bytes,
     source_snapshot,
     stable_file,
+    stable_interpreter_file,
     stable_tool_file,
     tool_version,
     execution_layout,
@@ -182,7 +183,7 @@ def capture(args: argparse.Namespace) -> int:
         fail("command must be a locked Cargo build of all three runtime executables")
     _, interpreter_path = layout
     interpreter_before = (
-        stable_file(Path(interpreter_path), "pinned runner interpreter", executable=True)
+        stable_interpreter_file(Path(interpreter_path))
         if interpreter_path is not None
         else None
     )
@@ -218,7 +219,7 @@ def capture(args: argparse.Namespace) -> int:
     cargo_after = stable_tool_file(args.cargo, "Cargo", executable=True)
     rustc_after = stable_tool_file(args.rustc, "rustc", executable=True)
     interpreter_after = (
-        stable_file(Path(interpreter_path), "pinned runner interpreter", executable=True)
+        stable_interpreter_file(Path(interpreter_path))
         if interpreter_path is not None
         else None
     )
