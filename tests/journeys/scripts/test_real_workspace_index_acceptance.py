@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import json
 import os
 import subprocess
 import sys
@@ -66,6 +67,7 @@ class SourceContractTests(unittest.TestCase):
         self.assertGreater(capacity["project_frontier_file_conservative_maximum"], 0)
         absolute = capacity["project_frontier_absolute_inline_maximum"]
         self.assertEqual(absolute, capacity["project_row_value_maximum_bytes"] // 32)
+        self.assertEqual(capacity["large_project_candidate_census_minimum"], absolute + 1)
         self.assertGreater(absolute, capacity["project_frontier_file_conservative_maximum"])
         self.assertGreater(capacity["compiler_workspace_build_charge_maximum_bytes"], 0)
         self.assertGreater(capacity["compiler_workspace_total_file_maximum_bytes"], 0)
@@ -73,16 +75,20 @@ class SourceContractTests(unittest.TestCase):
 
 class SelectedProjectFrontierTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.capacity = runner.source_capacity_contract(REPOSITORY)
+        self.absolute_inline_maximum = self.capacity[
+            "project_frontier_absolute_inline_maximum"
+        ]
+        self.large_candidate_minimum = self.capacity[
+            "large_project_candidate_census_minimum"
+        ]
         self.case = runner.ProjectCase(
             project_id="large-fixture",
             path=Path("/real/project").resolve(),
             large=True,
-            min_candidates=2900,
+            min_candidates=self.large_candidate_minimum,
             symbols=(),
         )
-        self.absolute_inline_maximum = runner.source_capacity_contract(REPOSITORY)[
-            "project_frontier_absolute_inline_maximum"
-        ]
         self.maximum_files = 100_000
 
     def frontier(self, count: int, root_byte: int = 1) -> dict[str, object]:
@@ -124,7 +130,7 @@ class SelectedProjectFrontierTests(unittest.TestCase):
                 self.maximum_files,
                 "missing membership",
             )
-        malformed = self.frontier(2900)
+        malformed = self.frontier(self.large_candidate_minimum)
         malformed["source_relation_root"] = [0] * 31
         with self.assertRaises(runner.AcceptanceError):
             runner.assert_selected_source_frontier(
@@ -148,21 +154,25 @@ class SelectedProjectFrontierTests(unittest.TestCase):
 
     def test_cold_replay_identity_includes_exact_root_and_count(self) -> None:
         before = runner.assert_selected_source_frontier(
-            {"selected_source_frontier": self.frontier(2900)},
+            {"selected_source_frontier": self.frontier(self.large_candidate_minimum)},
             self.case,
             self.absolute_inline_maximum,
             self.maximum_files,
             "before restart",
         )
         after_same = runner.assert_selected_source_frontier(
-            {"selected_source_frontier": self.frontier(2900)},
+            {"selected_source_frontier": self.frontier(self.large_candidate_minimum)},
             self.case,
             self.absolute_inline_maximum,
             self.maximum_files,
             "after restart",
         )
         after_changed = runner.assert_selected_source_frontier(
-            {"selected_source_frontier": self.frontier(2901, root_byte=3)},
+            {
+                "selected_source_frontier": self.frontier(
+                    self.large_candidate_minimum + 1, root_byte=3
+                )
+            },
             self.case,
             self.absolute_inline_maximum,
             self.maximum_files,
@@ -170,6 +180,80 @@ class SelectedProjectFrontierTests(unittest.TestCase):
         )
         self.assertEqual(before, after_same)
         self.assertNotEqual(before, after_changed)
+
+
+class CorpusManifestCandidateFloorTests(unittest.TestCase):
+    def test_large_candidate_floor_is_source_derived_and_manifest_can_raise_it(self) -> None:
+        extension_languages, _ = runner.parse_language_contract(REPOSITORY)
+        source_capacity = runner.source_capacity_contract(REPOSITORY)
+        derived_floor = source_capacity["large_project_candidate_census_minimum"]
+        profiles = runner.PROFILE_LANGUAGE_VARIANT
+
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_root = Path(directory)
+            project = temporary_root / "actual-shaped-project"
+            project.mkdir()
+            evidence = temporary_root / "evidence"
+            evidence.mkdir()
+            symbols: list[dict[str, str]] = []
+            for profile in profiles:
+                language, _ = profiles[profile]
+                extension = next(
+                    ext
+                    for ext in runner.PROFILE_EXTENSIONS[profile]
+                    if extension_languages.get(ext) == language
+                )
+                relative = f"src/fixture-{profile}{extension}"
+                source_file = project / relative
+                source_file.parent.mkdir(parents=True, exist_ok=True)
+                source_file.write_text("fixture source\n", encoding="utf-8")
+                symbols.append(
+                    {"profile": profile, "path": relative, "name": "FixtureSymbol"}
+                )
+
+            manifest_path = temporary_root / "corpus.json"
+            manifest = {
+                "schema": runner.MANIFEST_SCHEMA,
+                "projects": [
+                    {
+                        "id": "large-fixture",
+                        "path": str(project),
+                        "large": True,
+                        "minimum_source_candidates": 0,
+                        "symbols": symbols,
+                    }
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            cases, _ = runner.validate_corpus_manifest(
+                manifest_path,
+                evidence,
+                extension_languages,
+                derived_floor,
+            )
+            self.assertEqual(cases[0].min_candidates, derived_floor)
+            self.assertEqual(
+                derived_floor,
+                source_capacity["project_frontier_absolute_inline_maximum"] + 1,
+            )
+
+            with self.assertRaises(runner.Blocked):
+                runner.validate_corpus_manifest(
+                    manifest_path,
+                    evidence,
+                    extension_languages,
+                    0,
+                )
+
+            manifest["projects"][0]["minimum_source_candidates"] = derived_floor + 189
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            raised_cases, _ = runner.validate_corpus_manifest(
+                manifest_path,
+                evidence,
+                extension_languages,
+                derived_floor,
+            )
+            self.assertEqual(raised_cases[0].min_candidates, derived_floor + 189)
 
 
 class HarnessContractTests(unittest.TestCase):

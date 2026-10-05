@@ -18,7 +18,7 @@ The corpus manifest is duplicate-free JSON with schema `nudox.real-workspace-ind
       "id": "operator-chosen-label",
       "path": "/absolute/path/to/an/actual/project",
       "large": true,
-      "minimum_source_candidates": 2900,
+      "minimum_source_candidates": 2046,
       "symbols": [
         {
           "profile": "rust",
@@ -31,7 +31,7 @@ The corpus manifest is duplicate-free JSON with schema `nudox.real-workspace-ind
 }
 ```
 
-This is a format illustration, not an acceptance corpus. Supply real project roots and source files. `symbols` must point to existing non-symlink source files with identifiers already present in those files. Across the corpus, include all supported compiler profiles: `rust`, `csharp`, `java`, `javascript`, `typescript`, `tsx`, `python`, `go`, `c`, and `cpp`. At least one project must be marked `large`; its actual recognized candidate count must meet both 2,900 and the manifest's minimum. Choose symbol names that have an unambiguous, exact product result for their package. The runner does not synthesize project data or downgrade unavailable language toolchains to skips.
+This is a format illustration, not an acceptance corpus. Supply real project roots and source files. `symbols` must point to existing non-symlink source files with identifiers already present in those files. Across the corpus, include all supported compiler profiles: `rust`, `csharp`, `java`, `javascript`, `typescript`, `tsx`, `python`, `go`, `c`, and `cpp`. At least one project must be marked `large`; its recognized candidate count must meet the runner's source-derived minimum (currently 2,046) and the manifest's minimum. The runner raises a lower manifest value to the derived floor and preserves any stricter value. Choose symbol names that have an unambiguous, exact product result for their package. The runner does not synthesize project data or downgrade unavailable language toolchains to skips.
 
 ## Build receipt
 
@@ -70,7 +70,7 @@ The single absolute deadline defaults to 90 minutes and may be set up to six hou
 
 ## Source limits and interpretation
 
-The runner reads the active source capacity constants instead of copying them into policy. The current source allows 100,000 project file records, a 65,464-byte project-row value, and a conservative estimate of 1,915 files in one canonical project frontier for a maximum-length label. Separately, dividing that row capacity by the 32-byte membership key gives an absolute old-inline upper bound of 2,045 files before accounting for label and field overhead; a large-project pass therefore requires at least 2,046 accepted Project members. The independent corpus inventory is bounded to 32 projects, 2,000 symbol expectations, 150,000 recognized source candidates and 4 GiB total candidate bytes per run, with 32 MiB per source file. The compiler workspace separately permits a 64 MiB build charge and 64 GiB total file bytes. Client stdout/stderr are bounded to 2 MiB/1 MiB per call, retained client evidence to 64 MiB, and owner log evidence to 4 KiB each from the beginning and tail of each stream plus full byte count and digest. The runner never interprets the source census as a published file count.
+The runner reads the active source capacity constants instead of copying them into policy. The current source allows 100,000 project file records, a 65,464-byte project-row value, and a conservative estimate of 1,915 files in one canonical project frontier for a maximum-length label. Separately, dividing that row capacity by the 32-byte membership key gives an absolute old-inline upper bound of 2,045 files before accounting for label and field overhead. Both the large-project candidate-census floor and the independent accepted Project-member gate currently use 2,046, but they are distinct evidence: candidates only establish a plausible input size, while the typed query frontier proves admitted membership. The candidate floor is read dynamically as one more than the source-derived absolute inline bound; the manifest may request a higher minimum. The independent corpus inventory is bounded to 32 projects, 2,000 symbol expectations, 150,000 recognized source candidates and 4 GiB total candidate bytes per run, with 32 MiB per source file. The compiler workspace separately permits a 64 MiB build charge and 64 GiB total file bytes. Client stdout/stderr are bounded to 2 MiB/1 MiB per call, retained client evidence to 64 MiB, and owner log evidence to 4 KiB each from the beginning and tail of each stream plus full byte count and digest. The runner never interprets the source census as a published file count.
 
 The repository census available during harness preparation did not provide a truthful positive acceptance input: the smaller checkout had 759 recognized candidates, below the large-project minimum; the larger monorepo had 33,196, above both the 1,915-file conservative estimate and 2,045-file absolute inline upper bound. Those counts are source candidates only; they do not prove accepted Project members. No corpus manifest was fabricated and no backend acceptance was run. Select or prepare a real project set, and resolve any capacity refusal in the owning product path before interpreting a successful run as large-workspace coverage.
 

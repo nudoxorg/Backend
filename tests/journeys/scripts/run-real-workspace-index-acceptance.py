@@ -60,7 +60,6 @@ MAX_CLIENT_CAPTURE_TAIL_BYTES = 1024
 MAX_CAPTURE_PREFIX_BYTES = 4096
 MAX_CAPTURE_TAIL_BYTES = 4096
 MAX_SEARCH_RESULTS = 200
-MIN_LARGE_PROJECT_CANDIDATES = 2_900
 DEFAULT_DEADLINE_SECONDS = 5_400
 MAX_DEADLINE_SECONDS = 21_600
 POLL_SECONDS = 1.0
@@ -1055,6 +1054,10 @@ def source_capacity_contract(source: Path) -> dict[str, int]:
         # absolute theoretical upper bound (row capacity / key width) on the
         # old inline format, so a large-project pass must exceed it.
         "project_frontier_absolute_inline_maximum": absolute_inline_files,
+        # Candidate counts only establish a plausible corpus size. This
+        # source-derived floor tracks the separately checked accepted-member
+        # bound without treating candidates as indexed files.
+        "large_project_candidate_census_minimum": absolute_inline_files + 1,
         "compiler_workspace_build_charge_maximum_bytes": workspace_charge_mib
         * 1024
         * 1024,
@@ -1346,7 +1349,13 @@ def validate_corpus_manifest(
     path: Path,
     output: Path,
     extension_languages: dict[str, str],
+    large_candidate_census_minimum: int,
 ) -> tuple[list[ProjectCase], bytes]:
+    if (
+        type(large_candidate_census_minimum) is not int
+        or large_candidate_census_minimum <= 0
+    ):
+        raise Blocked("source-derived large-project candidate minimum is invalid")
     raw = read_bounded_regular(path, MAX_CORPUS_MANIFEST_BYTES, "real corpus manifest")
     manifest = json_no_duplicate_keys(raw, "real corpus manifest")
     if not isinstance(manifest, dict) or manifest.get("schema") != MANIFEST_SCHEMA:
@@ -1390,7 +1399,7 @@ def validate_corpus_manifest(
             raise Blocked(f"project {project_id} has invalid candidate-count policy")
         if large:
             large_count += 1
-            minimum = max(minimum, MIN_LARGE_PROJECT_CANDIDATES)
+            minimum = max(minimum, large_candidate_census_minimum)
         if (
             not isinstance(symbols_value, list)
             or not symbols_value
@@ -1470,7 +1479,7 @@ def validate_corpus_manifest(
     if not large_count:
         raise Blocked(
             f"real corpus manifest must identify a large project with at least "
-            f"{MIN_LARGE_PROJECT_CANDIDATES} recognized source candidates"
+            f"{large_candidate_census_minimum} recognized source candidates"
         )
     return cases, raw
 
@@ -2483,7 +2492,7 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
             "maximum_recognized_source_candidates_per_project": MAX_SOURCE_CANDIDATES,
             "maximum_one_source_file_bytes": MAX_SOURCE_FILE_BYTES,
             "maximum_total_source_candidate_bytes": MAX_SOURCE_BYTES_TOTAL,
-            "large_project_minimum_recognized_source_candidates": MIN_LARGE_PROJECT_CANDIDATES,
+            "large_project_minimum_recognized_source_candidates": None,
             "maximum_search_results_per_query": MAX_SEARCH_RESULTS,
             "maximum_client_stdout_bytes": MAX_CLIENT_STDOUT_BYTES,
             "maximum_client_stderr_bytes": MAX_CLIENT_STDERR_BYTES,
@@ -2538,9 +2547,18 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
     )
     deadline.check("runtime executable provenance")
     compiler_key, policy_key, policy = capture_runtime_policy(source["path"])
+    source_capacity = source_capacity_contract(source["path"])
+    result["source_capacity"] = source_capacity
+    result["limits"]["large_project_minimum_recognized_source_candidates"] = source_capacity[
+        "large_project_candidate_census_minimum"
+    ]
+    write_json_atomic(output / "run.json", result)
     extension_languages, role_names = parse_language_contract(source["path"])
     cases, corpus_bytes = validate_corpus_manifest(
-        args.corpus_manifest, output, extension_languages
+        args.corpus_manifest,
+        output,
+        extension_languages,
+        source_capacity["large_project_candidate_census_minimum"],
     )
     deadline.check("real corpus admission")
     compiler_snapshot, selected_tools, snapshot_sha = parse_closed_snapshot(
@@ -2561,7 +2579,6 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
     before_census = {
         case.project_id: project_census(case.path, deadline) for case in cases
     }
-    source_capacity = source_capacity_contract(source["path"])
     profile_codes = parse_semantic_profile_codes(source["path"])
     result["executables"] = {
         name: {
