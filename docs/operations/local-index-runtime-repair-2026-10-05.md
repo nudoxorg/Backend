@@ -9,8 +9,10 @@ real startup-to-publication workflow. These are release blockers.
 
 ## Changes reviewed and integrated
 
-The source checkpoint is `9b6af13481d8b855f4eccd09a6e11fba52056640`, tree
-`42b28e63d0a9a6a3300cbe95d62c526ca76423b9`, before this evidence document.
+The original pushed source checkpoint is `9b6af13481d8b855f4eccd09a6e11fba52056640`,
+tree `42b28e63d0a9a6a3300cbe95d62c526ca76423b9`. The subsequent integration
+contains the changes below; execution evidence is pinned separately rather
+than transferred automatically to newer source revisions.
 
 * First dispatch retains the exact persisted operation claim through ordinary
   publications from the same owner. A mutation lease distinguishes an owner
@@ -32,9 +34,25 @@ The source checkpoint is `9b6af13481d8b855f4eccd09a6e11fba52056640`, tree
   compilation planning remain linear; this is not a constant-work claim.
 * Deferred compiler completion validates its own project's captured frontier
   against the current relation. It does not reject an unrelated package's
-  publication merely because the whole workspace root advanced.
+  publication merely because the whole workspace root advanced. A bounded
+  digest includes the complete encoded prior file rows, including changes in
+  an unavailable-source reason that preserve the Project source version.
 * Ingest moves the valid UTF-8 source buffer into its String, preserving exact
-  bytes, identity and byte accounting without a second full source allocation.
+  bytes, identity and byte accounting without a second full source allocation;
+  the existing owned compiler-source constructor now consumes that String.
+* Retired-layout recovery recognizes the exact authenticated old Project/file
+  frontier through a read-only private probe. Current, mixed, foreign and
+  damaged layouts remain refused. Only a positively identified older layout
+  receives the typed diagnosis needed by the existing quarantine workflow.
+  This does not widen the current validator or publish an old-layout repair.
+* Semantic replies admit a selected generation per exact package coordinate
+  and language profile, matching the compiler's existing selection model.
+  Duplicate selections for the same target remain refused. Local selected
+  records carry the complete checked Project membership count and source
+  identities from the same immutable owner snapshot that answered the query.
+  The borrowed tree visitor validates file ownership without cloning source
+  payloads into a second result vector. This validation still performs work
+  proportional to the membership; no query-latency benchmark is claimed.
 * CLI help exposes the existing `index /absolute/folder` alias. Durable
   acceptance must use keyed IndexOperationStart/Status; legacy Add success
   alone does not prove the desktop operation lifecycle.
@@ -61,9 +79,33 @@ not execute them or launch an updated GUI.
 
 An earlier targeted test build at `8af41c67dc` was stopped when other compiler
 jobs pushed the fleet above the four-build limit. Its parent observed exit
-143; **no regression tests executed**. The warmed cache is retained. A new
-one-job test build at `9b6af13481` is pending at this checkpoint; neither that
-build nor its tests are credited as a pass here.
+143; **no regression tests executed**. The warmed cache is retained. Actual
+execution at `9b6af13481` subsequently ran 53 tests: **44 passed, 9 failed**.
+The failures exposed a real retired-layout startup gap as well as incorrect
+test scheduling, asynchronous-save expectations and outdated fixture facts.
+Those failures are retained in
+`/private/tmp/nudox-index-targeted-tests-retry-9b6af1-20261005/index-result.json`.
+An intermediate `e20a3e4b78` test build failed to compile a new fixture's
+unchecked String where ProductText was required; **no tests ran** there.
+
+The corrected integration at `db8bc805ef23f5d929643ad7558ca00a85f1c238`, tree
+`6ee5dc96a01ac66338eca3715ba8d1cce7bb3da1`, passed the full workspace/all-targets
+check above on 2026-10-05 03:19:06–03:21:23 UTC. The log SHA-256 is
+`a202d5ad9e4cdce805a293c33d269c26176666ac475b4d4ec3fe48ca0937bbfc`.
+Actual test results from that exact source, with one compiler job, are:
+
+| Suite | Passed | Failed | Interpretation |
+| --- | ---: | ---: | --- |
+| Desktop `index_` | 52 | 1 | The remaining failure is an authority-bearing Cargo fixture built from a trimmed capture without resolved feature observations. |
+| Desktop `durable_writer_tests` | 12 | 0 | Real writer acknowledgement, cancellation, freshness recovery and exact-claim schedules. |
+| Desktop `runtime::owner::tests` | 7 | 0 | Owner observation and lifecycle admission. |
+
+The receipts and full logs are retained at
+`/private/tmp/nudox-index-repaired-runtime-tests-db8bc8-20261005/`.
+The remaining owner/replay/membership suites are still running at this
+checkpoint; they are not credited before their test summaries exist. Newer
+selected-frontier and multi-profile reply changes are not covered by the
+`db8bc805ef` execution evidence.
 
 The startup oracle uses real BootClient, persistence and an embedded service
 after a forced launch-snapshot timeout. Its closed compiler set deliberately
@@ -72,6 +114,17 @@ not successful language compilation evidence. Its cold restoration reloads
 desktop state while the service remains alive; service-journal restart is a
 separate gate. Controlled writer/actor tests cover the save-time publication
 race independently. None replace native user-flow testing.
+
+The real C# helper was restored and published offline from immutable helper
+source and SHA-512-verified NuGet archives, without changing the user's Nix
+configuration. The Unicode image exactly matches its golden. Two independent
+fidelity invocations produce the same 6,856-byte image; the retained 6,684-byte
+golden is stale against intentional property-write and method-call changes.
+The structural review additionally found a false MethodGroup reference for
+an attribute name. Until that source defect is fixed and the corrected image
+is reviewed, the fidelity gate remains failed; a successful helper build is
+not whole-project C# acceptance. Evidence is retained at
+`/private/tmp/nudox-roslyn-realization-20261005-run1/receipt.json`.
 
 ## Remaining acceptance gates
 
