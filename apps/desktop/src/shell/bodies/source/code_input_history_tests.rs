@@ -199,3 +199,34 @@ fn latent_editor_change_under_a_settings_page_cannot_rewrite_code_visit(cx: &mut
     assert_eq!(rig.route(), code);
     assert_eq!(draft(&mut rig), "17");
 }
+
+#[gpui::test]
+fn settings_returns_to_the_native_line_editor_even_without_a_logical_selection(
+    cx: &mut TestAppContext,
+) {
+    let code = view_route("RelationLabel", View::Code);
+    let pool = ReadPool::start(2, |_| LongSource).expect("source read pool");
+    let mut rig = rig_with_reads(cx, Some(code.clone()), 900.0, 700.0, pool);
+    let original = visit(&mut rig);
+    let input = focus_line_input(&mut rig);
+    rig.keys("1 7");
+    assert_eq!(draft(&mut rig), "17");
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    targets.clear_focus();
+    assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(),
+        Some("source-jump-field"), "native focus, rather than Recall, owns this return");
+    rig.keys("secondary-,");
+    rig.keys("escape");
+    assert_eq!(rig.route(), code);
+    assert_eq!(visit(&mut rig), original);
+    assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(),
+        Some("source-jump-field"), "Settings must return to the mounted native editor");
+    assert!(rig.cx.update(|window, cx| window.has_focused_input(cx)),
+        "the actual text engine receives subsequent typing");
+    rig.keys("8");
+    assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "178");
+    assert_eq!(draft(&mut rig), "178");
+    rig.keys("enter");
+    assert!(rig.said().iter().any(|line| line.contains("Lines 178")),
+        "Return submits the restored editor without clicking it again");
+}

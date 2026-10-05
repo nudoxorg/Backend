@@ -34,3 +34,25 @@ fn settings_return_uses_a_registered_reader_target_when_the_old_one_is_gone(cx: 
     assert!(after.is_some_and(|id| id.as_ref() != "gone-reader-target"),
         "an unregistered old target must fall back to a real reader target");
 }
+
+#[gpui::test]
+fn closing_a_focused_settings_radio_keeps_global_shortcuts_reachable(cx: &mut TestAppContext) {
+    let route = page_route("RelationLabel");
+    let mut rig = rig(cx, Some(route.clone()), 900.0, 700.0);
+    rig.keys("secondary-,");
+    let control = super::tests::native_bounds(&mut rig, "RadioButton", "Full", true)
+        .expect("the actual Settings motion control is mounted");
+    rig.cx.simulate_click(control.center(), gpui::Modifiers::none());
+    rig.settle();
+    assert!(rig.cx.update(|window, cx| window.focused(cx).is_some()),
+        "the native radio owns the keyboard before dismissal");
+    rig.keys("escape");
+    assert_eq!(rig.route(), route);
+    assert!(rig.cx.update(|window, cx| window.focused(cx)
+        .is_some_and(|focus| window.is_focus_handle_mounted(&focus))),
+        "a dismissed Settings control must not retain native dispatch ownership");
+    rig.keys("secondary-,");
+    assert!(rig.graph.store.read_with(rig.cx, |store, _|
+        matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))),
+        "the global shortcut must reopen Settings without a pointer refocus");
+}
