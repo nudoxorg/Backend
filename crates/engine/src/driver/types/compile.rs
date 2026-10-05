@@ -820,7 +820,7 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
     }
     checkpoint(prepared.permit, prepared.recipe)?;
     // An empty fact set is a typed rejection for every lane whose source
-    // ought to carry declarations. Three authorities legally admit
+    // ought to carry declarations. The following authorities legally admit
     // declaration-free sources and prove the empty product themselves:
     // a Go package whose only file is a `doc.go` package clause, a C/C++
     // translation unit whose every declaration sits behind an unmet
@@ -844,6 +844,10 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
                 // (`export default { … }` in a tool config) or side-effect
                 // statements declares nothing; the checker still succeeded.
                 | EnteredAuthority::TypeScript { .. }
+                // Ruff parsed the selected bytes and the admitted checker
+                // report survived collection. An empty initializer or a
+                // module containing only imports has no declaration rows.
+                | EnteredAuthority::Python { .. }
         )
     {
         require_facts(prepared.source, prepared.recipe, facts)?;
