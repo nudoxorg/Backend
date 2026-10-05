@@ -833,7 +833,7 @@ fn index_tentpole_reconciles_live_facts_and_reopens_from_a_cold_process() {
         add_rust["answer"], "product",
         "Rust fixture add failed: {add_rust}"
     );
-    let before_dynamic = wait_for_cli_title(
+    wait_for_cli_title(
         &socket,
         &workspace,
         &rust_project,

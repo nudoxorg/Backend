@@ -465,7 +465,7 @@ fn assert_rejected(output: Output, label: &str, expected: &str) {
 fn forge_add_survives_sigkill_and_offline_cli_mcp_reference() {
     let root = unique_root("restart");
     let web_root = create_bare_git_fixture(&root);
-    let mut fixture = HttpFixture::start(web_root);
+    let fixture = HttpFixture::start(web_root);
     let coordinate = format!("{}@branch:main", fixture.base_url());
     let malformed = format!("{}@branch:malformed", fixture.base_url());
     let oversized = format!("{}@branch:oversized", fixture.base_url());

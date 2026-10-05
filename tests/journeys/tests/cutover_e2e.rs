@@ -1841,7 +1841,7 @@ mod unix_journeys {
         );
         let mut desktop_transport = backend_client::LocalSubscriptionTransport::connect(&endpoint)
             .unwrap_or_else(|error| panic!("connect desktop history transport: {error}"));
-        let (desktop_root, desktop_cursor) =
+        let (desktop_root, _desktop_cursor) =
             desktop_transport.bootstrap_root().unwrap_or_else(|error| {
                 panic!("hydrate selected semantic root after restart: {error}")
             });

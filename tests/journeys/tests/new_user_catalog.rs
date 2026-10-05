@@ -243,15 +243,6 @@ fn shelf_project_names(value: &Value) -> Vec<String> {
         .collect()
 }
 
-fn product_titles(value: &Value) -> Vec<String> {
-    value["records"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|record| record["title"].as_str().map(str::to_owned))
-        .collect()
-}
-
 fn product_versions(value: &Value) -> Vec<String> {
     value["records"]
         .as_array()
