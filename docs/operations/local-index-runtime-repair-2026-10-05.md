@@ -114,6 +114,24 @@ remaining membership/frontier/DTO selectors. The warm compilation cache is
 retained. Newer selected-frontier, multi-profile reply and transport-version
 changes are not covered by the `db8bc805ef` execution evidence.
 
+Two subsequent full checks failed in the new semantic-reply tests, before any
+test execution. At `63b8107d0d`, five calls omitted the required command identity;
+at `71c6acc646`, one fixture moved a frontier still borrowed by its record
+constructor. Both diagnostics are fixed in `cd1e4a189e`, whose execution gate is
+separate and remains pending until a receipt exists. The failed logs are kept at
+`/private/tmp/nudox-index-repaired-runtime-tests-63b810-20261005/` and
+`/private/tmp/nudox-index-repaired-runtime-tests-71c6ac-20261005/`. Neither attempt
+ran tests. The next lane selects the entire desktop library suite, rather than
+only the `index_` tests, and fails on an empty focused selection.
+
+The Cargo authority fixtures now use a complete producer capture with observed
+resolved features, its recorded target and lockfile. A previous presentation
+helper that fabricated empty feature lists has been removed. Native-path
+localization changes filesystem spelling without inventing feature or dependency
+facts. The desktop declares its test-support dependency explicitly. These
+fixture changes still require actual test execution; existing unrelated POSIX
+project-binding fixtures are not Windows portability evidence.
+
 The startup oracle uses real BootClient, persistence and an embedded service
 after a forced launch-snapshot timeout. Its closed compiler set deliberately
 produces a real failed operation to exercise exact receipts and retry. It is
@@ -124,14 +142,24 @@ race independently. None replace native user-flow testing.
 
 The real C# helper was restored and published offline from immutable helper
 source and SHA-512-verified NuGet archives, without changing the user's Nix
-configuration. The Unicode image exactly matches its golden. Two independent
-fidelity invocations produce the same 6,856-byte image; the retained 6,684-byte
-golden is stale against intentional property-write and method-call changes.
-The structural review additionally found a false MethodGroup reference for
-an attribute name. Until that source defect is fixed and the corrected image
-is reviewed, the fidelity gate remains failed; a successful helper build is
-not whole-project C# acceptance. Evidence is retained at
-`/private/tmp/nudox-roslyn-realization-20261005-run1/receipt.json`.
+configuration. Run1 exposed a false MethodGroup reference for an attribute
+name, alongside intentional property-write and method-call changes missing
+from the old golden. The source fix excludes the attribute's name syntax while
+preserving references in attribute arguments and actual method-value expressions.
+Root decoded and compared the authority images: the source fix removes exactly
+that false reference, preserving the other sections, four property writes and
+six invocation records. The reviewed fidelity golden was then updated.
+
+Run3 at `71c6acc64619db5c87ba24b4c4259b6b91a99507`, tree
+`acf86d7f889a27a96c2b8ca77c7f5f41d2fd3dc8`, passed all six actual commands
+(restore, publish and cold source-mode invocations), with unchanged inputs.
+Both fidelity runs match the corrected 6,812-byte golden, SHA-256
+`476777384f934d84d369a77bd1d153a58327d18c9762103bb4e13ec882c0aa76`.
+The 671-byte Unicode image also exactly matches its golden. The receipt is
+`/private/tmp/nudox-roslyn-realization-20261005-run3/receipt.json`.
+This proves the helper's source-mode fidelity gate. It does not prove project
+NuGet dependency restoration, successful C# GUI indexing or investor-bundle
+relocation. The new focused Rust assertions remain unexecuted.
 
 ## Remaining acceptance gates
 
