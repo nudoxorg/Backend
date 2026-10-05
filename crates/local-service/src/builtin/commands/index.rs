@@ -562,7 +562,8 @@ pub(super) fn finish_index_scan(
     let selected = file_keys.iter().copied().collect::<BTreeSet<_>>();
     changes.extend(
         old_files
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|key| !selected.contains(key))
             .map(|key| BuiltinSourceChange { key, after: None }),
     );
@@ -615,6 +616,20 @@ pub(super) fn finish_index_scan(
             let sources = ingest::admit_compiler_sources(source_root, fresh, reused)
                 .map_err(BuiltinModelError)?;
             if defer && owner_cluster.is_none() {
+                let prior_file_frontier = CapturedProjectFileFrontier::capture(
+                    project_key,
+                    old_files.len(),
+                    old_files.iter().map(|key| {
+                        reusable
+                            .get(key)
+                            .map(|record| (*key, record))
+                            .ok_or_else(|| {
+                                BuiltinModelError(
+                                    "captured project frontier lost a source file row".to_owned(),
+                                )
+                            })
+                    }),
+                )?;
                 return prepare_deferred_compile(
                     package,
                     &label,
@@ -622,6 +637,7 @@ pub(super) fn finish_index_scan(
                     project.clone(),
                     before.clone(),
                     file_keys,
+                    prior_file_frontier,
                     changes,
                     &semantic_context,
                     sources,
@@ -854,6 +870,7 @@ pub(super) struct DeferredIndex {
     project_record: ProductSourceRecord,
     prior_project: Option<ProductSourceRecord>,
     file_keys: Vec<[u8; 32]>,
+    prior_file_frontier: CapturedProjectFileFrontier,
     source_root: PathBuf,
     source_changes: Vec<BuiltinSourceChange>,
     revision_fence: ingest::CompilerRevisionFence,
@@ -863,6 +880,196 @@ pub(super) struct DeferredIndex {
     semantic_changes: Vec<BuiltinSemanticChange>,
     selected: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
     cargo_alias_observations: BTreeMap<LanguageProfile, CargoPackageAliasEvidenceV1>,
+}
+
+/// Compact witness for the exact source-file rows selected by one prior
+/// project frontier. Deferred indexing retains this digest rather than
+/// cloning every file record across profile compilation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CapturedProjectFileFrontier([u8; 32]);
+
+impl CapturedProjectFileFrontier {
+    fn capture<'row>(
+        project_key: [u8; 32],
+        file_count: usize,
+        rows: impl IntoIterator<Item = Result<([u8; 32], &'row ProductSourceRecord), BuiltinModelError>>,
+    ) -> Result<Self, BuiltinModelError> {
+        let encoded_count = u64::try_from(file_count)
+            .map_err(|_| BuiltinModelError("project source file count exceeds u64".to_owned()))?;
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"backend.local.deferred-project-file-frontier.v1\0");
+        hash.update(&project_key);
+        hash.update(&encoded_count.to_be_bytes());
+
+        let mut observed = 0usize;
+        for row in rows {
+            let (key, record) = row?;
+            super::super::profile::validate_project_file(project_key, key, record)?;
+            let mut encoded = Vec::new();
+            <BuiltinWorkspaceRelation as backend_engine::Relation>::encode_value(
+                record,
+                &mut encoded,
+            );
+            let encoded_len = u64::try_from(encoded.len()).map_err(|_| {
+                BuiltinModelError("project source file row length exceeds u64".to_owned())
+            })?;
+            hash.update(&key);
+            hash.update(&encoded_len.to_be_bytes());
+            hash.update(&encoded);
+            observed = observed.checked_add(1).ok_or_else(|| {
+                BuiltinModelError("project source file count overflows usize".to_owned())
+            })?;
+        }
+        if observed != file_count {
+            return Err(BuiltinModelError(
+                "project source file rows do not match their captured count".to_owned(),
+            ));
+        }
+        Ok(Self(*hash.finalize().as_bytes()))
+    }
+
+    fn require_unchanged(self, current: Self) -> Result<(), BuiltinModelError> {
+        if self == current {
+            Ok(())
+        } else {
+            Err(BuiltinModelError(
+                "project source files changed while deferred profiles were compiling; retry indexing"
+                    .to_owned(),
+            ))
+        }
+    }
+}
+
+#[cfg(test)]
+mod captured_project_file_frontier_tests {
+    use super::{BuiltinModelError, CapturedProjectFileFrontier, ProductSourceRecord};
+    use backend_engine::{
+        SourceLanguage, SourceUnavailableReason, package_key, product_source_file_key,
+    };
+    use std::collections::BTreeMap;
+
+    fn unavailable_file(
+        project: [u8; 32],
+        reason: SourceUnavailableReason,
+    ) -> Result<ProductSourceRecord, BuiltinModelError> {
+        ProductSourceRecord::file_unavailable(
+            project,
+            "src/lib.rs",
+            SourceLanguage::Rust,
+            [7; 32],
+            reason,
+        )
+    }
+
+    fn capture_one(
+        project: [u8; 32],
+        key: [u8; 32],
+        record: &ProductSourceRecord,
+    ) -> Result<CapturedProjectFileFrontier, BuiltinModelError> {
+        CapturedProjectFileFrontier::capture(
+            project,
+            1,
+            std::iter::once(Ok::<_, BuiltinModelError>((key, record))),
+        )
+    }
+
+    fn capture_project_frontier(
+        project_key: [u8; 32],
+        project: &ProductSourceRecord,
+        relation_rows: &BTreeMap<[u8; 32], ProductSourceRecord>,
+    ) -> Result<CapturedProjectFileFrontier, BuiltinModelError> {
+        let file_keys = super::super::super::profile::resolve_project_file_keys(
+            project_key,
+            project,
+            |page_key| Ok(relation_rows.get(page_key).cloned()),
+        )?;
+        let rows = file_keys.iter().map(|key| {
+            relation_rows
+                .get(key)
+                .map(|record| (*key, record))
+                .ok_or_else(|| {
+                    BuiltinModelError("project frontier refers to a missing source file".to_owned())
+                })
+        });
+        CapturedProjectFileFrontier::capture(project_key, file_keys.len(), rows)
+    }
+
+    #[test]
+    fn a_changed_unavailable_reason_invalidates_the_deferred_file_frontier()
+    -> Result<(), BuiltinModelError> {
+        let project = package_key("pkg:deferred-frontier").to_bytes();
+        let key = product_source_file_key(project, "src/lib.rs");
+        let captured = unavailable_file(project, SourceUnavailableReason::NotText)?;
+        let current = unavailable_file(project, SourceUnavailableReason::Unreadable)?;
+
+        let before = capture_one(project, key, &captured)?;
+        let after = capture_one(project, key, &current)?;
+        let prior_project =
+            ProductSourceRecord::project("pkg:deferred-frontier", [6; 32], vec![key])
+                .map_err(BuiltinModelError)?;
+        let current_project =
+            ProductSourceRecord::project("pkg:deferred-frontier", [6; 32], vec![key])
+                .map_err(BuiltinModelError)?;
+        assert_eq!(prior_project, current_project);
+        assert_ne!(before, after);
+        let error = match before.require_unchanged(after) {
+            Err(error) => error,
+            Ok(()) => {
+                return Err(BuiltinModelError(
+                    "deferred work accepted a newer unavailable file status".to_owned(),
+                ));
+            }
+        };
+        assert!(error.to_string().contains("project source files changed"));
+        Ok(())
+    }
+
+    #[test]
+    fn unchanged_prior_file_rows_remain_admissible() -> Result<(), BuiltinModelError> {
+        let project = package_key("pkg:deferred-frontier").to_bytes();
+        let key = product_source_file_key(project, "src/lib.rs");
+        let row = unavailable_file(project, SourceUnavailableReason::NotText)?;
+
+        let captured = capture_one(project, key, &row)?;
+        let current = capture_one(project, key, &row)?;
+        captured.require_unchanged(current)?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_unrelated_project_publication_does_not_change_the_captured_frontier()
+    -> Result<(), BuiltinModelError> {
+        let project = package_key("pkg:deferred-frontier").to_bytes();
+        let key = product_source_file_key(project, "src/lib.rs");
+        let row = unavailable_file(project, SourceUnavailableReason::NotText)?;
+        let project_record =
+            ProductSourceRecord::project("pkg:deferred-frontier", [6; 32], vec![key])
+                .map_err(BuiltinModelError)?;
+        let mut relation_rows = BTreeMap::from([(project, project_record.clone()), (key, row)]);
+        let captured = capture_project_frontier(project, &project_record, &relation_rows)?;
+
+        let unrelated_label = "pkg:unrelated-frontier";
+        let unrelated_project = package_key(unrelated_label).to_bytes();
+        let unrelated_file_key = product_source_file_key(unrelated_project, "src/other.rs");
+        let unrelated_file = ProductSourceRecord::file(
+            unrelated_project,
+            "src/other.rs",
+            SourceLanguage::Rust,
+            [8; 32],
+            [9; 32],
+            Vec::<backend_engine::SourceDeclaration>::new(),
+        )
+        .map_err(BuiltinModelError)?;
+        let unrelated_project_record =
+            ProductSourceRecord::project(unrelated_label, [10; 32], vec![unrelated_file_key])
+                .map_err(BuiltinModelError)?;
+        relation_rows.insert(unrelated_project, unrelated_project_record);
+        relation_rows.insert(unrelated_file_key, unrelated_file);
+        let actual = capture_project_frontier(project, &project_record, &relation_rows)?;
+
+        captured.require_unchanged(actual)?;
+        Ok(())
+    }
 }
 
 struct DeferredProfile {
@@ -951,6 +1158,7 @@ fn prepare_deferred_compile(
     project_record: ProductSourceRecord,
     prior_project: Option<ProductSourceRecord>,
     file_keys: Vec<[u8; 32]>,
+    prior_file_frontier: CapturedProjectFileFrontier,
     source_changes: Vec<BuiltinSourceChange>,
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
@@ -1060,6 +1268,7 @@ fn prepare_deferred_compile(
         project_record,
         prior_project,
         file_keys,
+        prior_file_frontier,
         source_root: context.source_root.to_path_buf(),
         source_changes,
         revision_fence,
@@ -1230,14 +1439,23 @@ pub(super) fn finish_deferred_index(
     let prior_file_rows = relation
         .lookup_many_sorted(&prior_file_keys)
         .map_err(|error| BuiltinModelError(format!("read deferred project files: {error}")))?;
-    for (key, record) in prior_file_keys.iter().copied().zip(prior_file_rows) {
-        let record = record.ok_or_else(|| {
-            BuiltinModelError(
-                "deferred project frontier refers to a missing source file".to_owned(),
-            )
-        })?;
-        super::super::profile::validate_project_file(job.project_key, key, &record)?;
-    }
+    let current_file_frontier = CapturedProjectFileFrontier::capture(
+        job.project_key,
+        prior_file_keys.len(),
+        prior_file_keys
+            .iter()
+            .copied()
+            .zip(prior_file_rows.iter())
+            .map(|(key, record)| {
+                record.as_ref().map(|record| (key, record)).ok_or_else(|| {
+                    BuiltinModelError(
+                        "deferred project frontier refers to a missing source file".to_owned(),
+                    )
+                })
+            }),
+    )?;
+    job.prior_file_frontier
+        .require_unchanged(current_file_frontier)?;
     replace_project_cargo_aliases(
         &mut job.source_changes,
         job.project_key,
