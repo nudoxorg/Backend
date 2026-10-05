@@ -173,9 +173,22 @@ fn retained_symbol_page(page: &SymbolPage, notice: &str, ctx: &mut Ctx<'_>) -> V
     }
     lines
         .into_iter()
-        .map(|line| {
+        .enumerate()
+        .map(|(index, line)| {
             let words = ctx.say(line);
-            Leaf::new(super::super::kit::quiet(words, &ctx.measure, ctx.palette))
+            Leaf::new(
+                super::super::kit::quiet(words.clone(), &ctx.measure, ctx.palette)
+                    .keyed(SharedString::from(format!(
+                        "retained-symbol:{}:{index}",
+                        page.identity.coordinate.as_str()
+                    )))
+                    .role(if index == 0 {
+                        gpui::Role::Status
+                    } else {
+                        gpui::Role::Label
+                    })
+                    .aria_label(words),
+            )
         })
         .collect()
 }
