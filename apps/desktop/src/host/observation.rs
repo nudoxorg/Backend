@@ -242,6 +242,7 @@ fn serve_with_timing(
                 let acquired = matches!(&reply, ObservedReply::Acquired(_));
                 if let ObservedReply::Acquired(state) = reply {
                     lease = Some(state);
+                    last_renew = Instant::now();
                 }
                 // The client returns only after complete proof and final Ack.
                 // A reset budget belongs to that finished operation, not the
@@ -315,12 +316,19 @@ fn serve_with_timing(
                 if matches!(
                     &error,
                     PublicationExchangeError::ProducerRejected {
-                        operation: PublicationOperation::Resume,
+                        operation: PublicationOperation::Resume | PublicationOperation::Renew,
                         ..
                     }
                 ) && lease.is_some()
                     && !reacquiring
                 {
+                    // A rejected read-side lease is never reused. Reauthenticate
+                    // once and Open from the retained certified root/cursor,
+                    // inside the existing aggregate recovery deadline.
+                    crate::runtime::trace::mark(
+                        "observation.reacquiring",
+                        "producer-rejected-lease",
+                    );
                     lease = None;
                     connection = None;
                     let Some((next_attachment, next_cancel)) = gate.replace_observation(attachment)
