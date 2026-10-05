@@ -387,15 +387,6 @@ fn open_the_window(cx: &mut App, parts: AppParts, starting_platform: Instant) {
     let installing_graph = Instant::now();
     let graph = UiEntityGraph::install_with_bootstrap(cx, runtime, persistence, reads, Some(gate), keep, binding);
     super::menus::install_local_actions(&graph, cx);
-    // Quitting saves the route's pages for the next launch.
-    let saved = graph.store.clone();
-    cx.on_app_quit(move |cx| {
-        if let Err(error) = saved.read(cx).save_now() {
-            eprintln!("backend-desktop: save the launch snapshot: {error}");
-        }
-        async {}
-    })
-    .detach();
     crate::runtime::trace::span("boot.ui_graph", installing_graph, "UiEntityGraph::install_with_owner");
     // Temporary: `NUDOX_DEBUG_PAGE="search:Engine;orbit;health"` opens a plain-text
     // window onto the data plane (see runtime::debug_page).

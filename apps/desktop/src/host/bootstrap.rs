@@ -303,7 +303,7 @@ mod tests {
     fn a_late_binding_preserves_local_shelf_settings_and_modal_through_cold_restart() {
         let (root, paths) = fixture("local");
         let origin = AppSnapshot::empty(VersionedRoot::unserved());
-        let local = LocalProjectId::from_path(&root.join("project")).expect("folder");
+        let local = LocalProjectId::from_path(&root.join("project").canonicalize().expect("canonical project")).expect("folder");
         let current = crate::navigation::reduce(
             &origin,
             Intent::AddProject {

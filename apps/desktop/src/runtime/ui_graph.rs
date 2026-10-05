@@ -1170,36 +1170,40 @@ impl UiEntityGraph {
             // platform was starting: local edits always win the cold merge.
             root.bootstrap = binding.map(|binding| (binding, origin));
             root.attach(Some(attached), cx);
+            // Entity-owned quit observers hold a weak handle: closing a window
+            // releases its actor and store even while the application stays open.
+            cx.on_app_quit(|root, cx| {
+                let saved = root.finish_persistence(cx);
+                let deadline = cx.background_executor().timer(std::time::Duration::from_secs(5));
+                await_final_save(saved, deadline)
+            }).detach();
             root
         });
         if let Some(gate) = gate {
             super::owner::watch(gate, &root, &store, cx);
         }
-        let quitting = root.clone();
-        cx.on_app_quit(move |cx| {
-            let saved = quitting.update(cx, |root, cx| root.finish_persistence(cx));
-            let deadline = cx.background_executor().timer(std::time::Duration::from_secs(5));
-            async move {
-                use std::future::Future as _;
-                let Some(saved) = saved else { return; };
-                let mut saved = std::pin::pin!(saved.recv());
-                let mut deadline = std::pin::pin!(deadline);
-                let result = std::future::poll_fn(|cx| {
-                    if let std::task::Poll::Ready(result) = saved.as_mut().poll(cx) {
-                        return std::task::Poll::Ready(match result {
-                            Ok(Ok(_)) => None,
-                            Ok(Err(error)) => Some(error),
-                            Err(_) => Some(WriteFailure { message: "The local writer closed before confirming the latest changes. Previously saved state remains available.".into() }),
-                        });
-                    }
-                    if deadline.as_mut().poll(cx).is_ready() { return std::task::Poll::Ready(Some(WriteFailure { message: "Saving the latest changes did not finish before close. Previously saved operation claims remain available for recovery.".into() })); }
-                    std::task::Poll::Pending
-                }).await;
-                if let Some(error) = result { eprintln!("backend-desktop: {}", error.message); }
-            }
-        }).detach();
         Self { root, store }
     }
+}
+
+/// Keep the final writer acknowledgement alive without retaining its UI entity.
+async fn await_final_save(saved: Option<WriteReceiver>, deadline: impl std::future::Future<Output = ()>) {
+    use std::future::Future as _;
+    let Some(saved) = saved else { return; };
+    let mut saved = std::pin::pin!(saved.recv());
+    let mut deadline = std::pin::pin!(deadline);
+    let result = std::future::poll_fn(|cx| {
+        if let std::task::Poll::Ready(result) = saved.as_mut().poll(cx) {
+            return std::task::Poll::Ready(match result {
+                Ok(Ok(_)) => None,
+                Ok(Err(error)) => Some(error),
+                Err(_) => Some(WriteFailure { message: "The local writer closed before confirming the latest changes. Previously saved state remains available.".into() }),
+            });
+        }
+        if deadline.as_mut().poll(cx).is_ready() { return std::task::Poll::Ready(Some(WriteFailure { message: "Saving the latest changes did not finish before close. Previously saved operation claims remain available for recovery.".into() })); }
+        std::task::Poll::Pending
+    }).await;
+    if let Some(error) = result { eprintln!("backend-desktop: {}", error.message); }
 }
 
 #[cfg(test)]

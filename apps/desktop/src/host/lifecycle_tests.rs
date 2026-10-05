@@ -235,6 +235,51 @@ fn a_finished_index_is_written_down_the_moment_it_finishes(cx: &mut TestAppConte
     std::fs::remove_dir_all(&root).expect("finished lifecycle fixture removed");
 }
 
+/// Quitting acknowledges the latest settings before the host returns.
+#[gpui::test]
+fn quitting_acknowledges_the_last_local_edit_without_retaining_the_graph(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let directory = scratch("quit-save");
+    std::fs::create_dir_all(&directory).expect("fixture");
+    let persistence = PersistentState::at(directory.join("desktop-state.json"));
+    let runtime = DesktopRuntime::new(AppSnapshot::empty(VersionedRoot::unserved()), EngineActor::start(Indexes, 8).expect("actor"));
+    let graph = cx.update(|cx| UiEntityGraph::install(cx, runtime, Some(persistence.clone())));
+    graph.root.update(cx, |root, cx| root.dispatch(Intent::SetDensity(DensityPreference::Dense), cx));
+    let expected = graph.root.read_with(cx, |root, _| PersistentState::project(&root.snapshot()));
+    cx.quit();
+    let saved = persistence.load().expect("quit acknowledged the state file");
+    assert_eq!(saved.density, expected.density, "the final local edit survives quit");
+    let (root, store) = (graph.root.downgrade(), graph.store.downgrade());
+    drop(graph);
+    cx.update(|_| {});
+    assert!(root.upgrade().is_none(), "quit callbacks do not own the root");
+    assert!(store.upgrade().is_none(), "quit callbacks do not own the store");
+    std::fs::remove_dir_all(directory).expect("fixture removed");
+}
+
+/// An ordinary close drains the ordered writer, while the app remains open.
+#[gpui::test]
+fn releasing_a_graph_preserves_its_last_local_edit_without_quitting(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let directory = scratch("close-save");
+    std::fs::create_dir_all(&directory).expect("fixture");
+    let persistence = PersistentState::at(directory.join("desktop-state.json"));
+    let runtime = DesktopRuntime::new(AppSnapshot::empty(VersionedRoot::unserved()), EngineActor::start(Indexes, 8).expect("actor"));
+    let graph = cx.update(|cx| UiEntityGraph::install(cx, runtime, Some(persistence.clone())));
+    graph.root.update(cx, |root, cx| root.dispatch(Intent::SetDensity(DensityPreference::Dense), cx));
+    let expected = graph.root.read_with(cx, |root, _| PersistentState::project(&root.snapshot()));
+    let (root, store) = (graph.root.downgrade(), graph.store.downgrade());
+    drop(graph);
+    wait::until("the released writer saves its final local edit", || {
+        cx.update(|_| {});
+        cx.run_until_parked();
+        persistence.load().is_ok_and(|saved| saved.density == expected.density)
+    });
+    assert!(root.upgrade().is_none(), "ordinary close releases the root");
+    assert!(store.upgrade().is_none(), "ordinary close releases the store");
+    std::fs::remove_dir_all(directory).expect("fixture removed");
+}
+
 // ── an owner that could not start ─────────────────────────────────────────
 
 /// The engine actor of a window whose owner has not answered: waits on the
@@ -242,8 +287,11 @@ fn a_finished_index_is_written_down_the_moment_it_finishes(cx: &mut TestAppConte
 struct WaitsForOwner(OwnerGate);
 
 impl EngineClient for WaitsForOwner {
-    fn execute(&mut self, _: &EngineRequest) -> Result<EngineDto, EngineFault> {
-        self.0.wait().map_err(|fault| EngineFault::Failed(crate::core::ErrorValue::new(crate::core::FaultCode::Transport, fault.to_string())))?;
+    fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        self.0.wait_cancelled(request.cancellation()).map_err(|fault| {
+            if request.cancelled() { EngineFault::Cancelled }
+            else { EngineFault::Failed(crate::core::ErrorValue::new(crate::core::FaultCode::Transport, fault.to_string())) }
+        })?;
         Err(EngineFault::Cancelled)
     }
 }
@@ -253,7 +301,10 @@ struct PagesAfterOwner(OwnerGate);
 
 impl PageReader for PagesAfterOwner {
     fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
-        self.0.wait().map_err(|fault| ReadFailure::Fault(crate::core::ErrorValue::new(crate::core::FaultCode::Transport, fault.to_string())))?;
+        self.0.wait_cancelled(context.cancel).map_err(|fault| {
+            if context.cancel.is_cancelled() { ReadFailure::Cancelled }
+            else { ReadFailure::Fault(crate::core::ErrorValue::new(crate::core::FaultCode::Transport, fault.to_string())) }
+        })?;
         crate::shell::tests::Fixture.read(request, context)
     }
 }
@@ -293,11 +344,16 @@ fn window_before_its_owner(cx: &mut TestAppContext, gate: &OwnerGate) -> (UiEnti
                 window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(point(px(0.0), px(0.0)), size(px(1440.0), px(900.0))))),
                 ..gpui::WindowOptions::default()
             },
-            |window, cx| crate::shell::open_shell(&window_graph, window, cx),
+            |window, cx| {
+                let shell = crate::shell::open_shell(&window_graph, window, cx);
+                cx.new(|cx| gpui_component::Root::new(shell, window, cx).bordered(false))
+            },
         )
         .expect("window")
     });
-    let shell = window.root(cx).expect("shell");
+    let shell = window.root(cx).expect("component root").read_with(cx, |root, _| {
+        root.view().clone().downcast::<crate::shell::Shell>().expect("shell")
+    });
     VisualTestContext::from_window(window.into(), cx);
     (graph, shell)
 }

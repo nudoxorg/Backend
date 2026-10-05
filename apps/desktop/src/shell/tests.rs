@@ -472,7 +472,7 @@ pub(crate) fn view_route(name: &str, view: View) -> Route {
 
 pub(crate) struct Rig {
     /// Keeps the window's handle alive for the test's length.
-    pub _window: WindowHandle<Shell>,
+    pub _window: WindowHandle<gpui_component::Root>,
     pub shell: Entity<Shell>,
     pub graph: UiEntityGraph,
     pub cx: &'static mut VisualTestContext,
@@ -599,11 +599,16 @@ fn rig_with_engine_gate_at_root_keep(
                 ))),
                 ..gpui::WindowOptions::default()
             },
-            |window, cx| cx.new(|cx| Shell::new(&window_graph, window, cx)),
+            |window, cx| {
+                let shell = cx.new(|cx| Shell::new(&window_graph, window, cx));
+                cx.new(|cx| gpui_component::Root::new(shell, window, cx).bordered(false))
+            },
         )
         .expect("window")
     });
-    let shell = window.root(cx).expect("shell");
+    let shell = window.root(cx).expect("component root").read_with(cx, |root, _| {
+        root.view().clone().downcast::<Shell>().expect("shell")
+    });
     let visual = VisualTestContext::from_window(window.into(), cx).into_mut();
     visual.update(|window, _| window.activate_window());
     let mut rig = Rig {
