@@ -533,7 +533,15 @@ pub struct Session {
     endpoint: std::path::PathBuf,
     transport: Box<dyn CommandTransport + Send>,
     next_request_id: u64,
-    continuations: BTreeMap<backend_library::Cursor, WireCertificate>,
+    admitted_owner: Option<backend_library::Cursor>,
+    continuations: BTreeMap<backend_library::Cursor, RetainedContinuation>,
+}
+
+/// A producer-admitted page and the distinct full owner revision that issued it.
+#[cfg(any(unix, windows))]
+struct RetainedContinuation {
+    certificate: WireCertificate,
+    owner: backend_library::Cursor,
 }
 
 /// The producer certificate state needed to resume one bounded page after a
@@ -547,7 +555,7 @@ pub struct Session {
 #[cfg(any(unix, windows))]
 #[derive(Default)]
 pub struct SessionContinuationState {
-    continuations: BTreeMap<backend_library::Cursor, WireCertificate>,
+    continuations: BTreeMap<backend_library::Cursor, RetainedContinuation>,
 }
 
 /// One admitted health revision retained long enough to build a dependent
@@ -606,6 +614,7 @@ impl Session {
             )?),
             endpoint,
             next_request_id: 1,
+            admitted_owner: None,
             continuations: BTreeMap::new(),
         })
     }
@@ -619,6 +628,7 @@ impl Session {
             endpoint: endpoint.into(),
             transport: Box::new(transport),
             next_request_id: 1,
+            admitted_owner: None,
             continuations: BTreeMap::new(),
         }
     }
@@ -683,8 +693,12 @@ impl Session {
             .copied()
             .find(|cursor| cursor.encode_query().as_ref() == bytes.as_slice())
             .ok_or_else(|| ClientError::Protocol("unknown continuation token".to_owned()))?;
+        // A page cursor commits to its projected rows, not the complete owner
+        // view. Its certificate remains the authority for that projection;
+        // freshness is checked against the separately admitted issuing owner.
+        let issuing_owner = self.continuations[&cursor].owner;
         let owner = self.revision()?.cursor();
-        if cursor.query_offset() == 0 || !cursor.matches_owner(owner) {
+        if cursor.query_offset() == 0 || !issuing_owner.matches_owner(owner) {
             return Err(ClientError::StaleCursor);
         }
         Ok(PageContinuation::from_cursor(cursor))
@@ -745,6 +759,7 @@ impl Session {
             schema: WireSchema::ViewRelation,
             id: encode_id(receipt.root().as_bytes()),
         });
+        self.admitted_owner = Some(receipt.cursor());
         Ok(Revision {
             root: receipt.root(),
             source: receipt.source(),
@@ -1468,6 +1483,7 @@ impl Session {
         };
         if let Some(previous) = self.continuations.get(&continuation.cursor()) {
             for claim in previous
+                .certificate
                 .claims
                 .iter()
                 .filter(|claim| claim_describes_cursor(claim, continuation.cursor()))
@@ -1490,9 +1506,14 @@ impl Session {
         let Some(certificate) = reply.certificate().cloned() else {
             return;
         };
+        let Some(owner) = self.admitted_owner else {
+            return;
+        };
         self.continuations.clear();
-        self.continuations
-            .insert(continuation.cursor(), certificate);
+        self.continuations.insert(
+            continuation.cursor(),
+            RetainedContinuation { certificate, owner },
+        );
     }
 }
 
