@@ -674,6 +674,13 @@ fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, 
     let relation = snapshot
         .relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("open indexed source relation: {error}")))?;
+    read_indexed_relation(&relation, profile::SourceFileKeyLayout::Current)
+}
+
+fn read_indexed_relation(
+    relation: &backend_engine::WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    layout: profile::SourceFileKeyLayout,
+) -> Result<IndexedSources, BuiltinModelError> {
     let root = relation
         .root_node()
         .map_err(|error| BuiltinModelError(format!("open indexed source root: {error}")))?;
@@ -696,6 +703,14 @@ fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, 
             .map_err(|error| BuiltinModelError(format!("read indexed source page: {error}")))?;
         for (key, record) in page.entries() {
             if let Some(fields) = record.project_fields() {
+                if layout == profile::SourceFileKeyLayout::Retired
+                    && (!fields.files.page_keys().is_empty() || fields.cargo_aliases.is_some())
+                {
+                    return Err(BuiltinModelError(
+                        "paged membership and Cargo aliases postdate the retired source keys"
+                            .to_owned(),
+                    ));
+                }
                 let label = fields.label;
                 let package = backend_engine::PackageKey::from_value(label);
                 if package.to_bytes() != *key
@@ -765,7 +780,7 @@ fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, 
             let file = files.remove(&file_key).ok_or_else(|| {
                 BuiltinModelError("project frontier refers to a missing source file".to_owned())
             })?;
-            profile::validate_project_file(*project_key, file_key, &file)?;
+            profile::validate_project_file_with_layout(*project_key, file_key, &file, layout)?;
             resolved_files.push((file_key, file));
         }
     }
@@ -1480,7 +1495,7 @@ pub(crate) fn compose_owner(
         DaemonConfig::default(),
         relation_registry,
     )
-    .map_err(|error| ProcessError::Profile(error.to_string()))?;
+    .map_err(|error| embedded_host::owner_open_refusal(&config.workspace, error))?;
     let compiler_root = config.workspace.join("compiler");
     backend_platform::durable::ensure_private_directory(&compiler_root)
         .map_err(|error| ProcessError::Profile(format!("open private compiler state: {error}")))?;

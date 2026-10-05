@@ -15,6 +15,66 @@ use backend_engine::{legacy_product_source_file_key, product_source_file_key};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+/// A refused store is historical only after a private, non-serving owner
+/// re-admits its complete selected transition under the exact retired layout.
+/// Generic model errors, current keys, and damaged retired frontiers never
+/// manufacture this evidence.
+struct RetiredLayoutEvidence {
+    files: std::num::NonZeroUsize,
+}
+
+fn probe_retired_layout(workspace: &std::path::Path) -> Result<RetiredLayoutEvidence, String> {
+    use super::profile::{BuiltinSemanticRelation, BuiltinWorkspaceRelation, RetiredSourceProbe};
+    use backend_engine::{RelationAdmissionRegistry, WorkspaceOwner};
+
+    let registry = RelationAdmissionRegistry::new()
+        .with_relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| format!("register source relation: {error:?}"))?
+        .with_relation::<BuiltinSemanticRelation>()
+        .map_err(|error| format!("register semantic relation: {error:?}"))?;
+    let owner = WorkspaceOwner::open_with_registry(
+        workspace,
+        RetiredSourceProbe::new(workspace),
+        super::genesis().map_err(|error| error.to_string())?,
+        registry,
+    )
+    .map_err(|error| error.to_string())?;
+    if owner.head().sequence() == 0 {
+        return Err("no selected historical store head".to_owned());
+    }
+    let relation = owner
+        .snapshot()
+        .relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| error.to_string())?;
+    let sources =
+        super::read_indexed_relation(&relation, super::profile::SourceFileKeyLayout::Retired)
+            .map_err(|error| error.to_string())?;
+    let files = std::num::NonZeroUsize::new(sources.files.len())
+        .ok_or_else(|| "no retired source files".to_owned())?;
+    Ok(RetiredLayoutEvidence { files })
+}
+
+/// The ordinary model always refuses retired keys. This second admission is
+/// only an upgrade discriminator, under the actual workspace lease and the
+/// engine's authenticated HEAD/closure/pack recovery. No listener or compiler
+/// receives the historical owner, and it cannot plan a mutation.
+pub(super) fn owner_open_refusal(
+    workspace: &std::path::Path,
+    error: crate::LocaldError,
+) -> ProcessError {
+    if matches!(
+        &error,
+        crate::LocaldError::Workspace(backend_engine::WorkspaceError::Model(_))
+    ) && let Ok(evidence) = probe_retired_layout(workspace)
+    {
+        return ProcessError::StateFromAnotherBuild(format!(
+            "{} indexed source files are keyed by the source-file key layout an earlier build wrote ({error})",
+            evidence.files
+        ));
+    }
+    ProcessError::Profile(error.to_string())
+}
+
 /// The environment [`backend_engine::application::LocalCompilerHost::production_at`]
 /// reads, with the paths an embedding host supplied placed ahead of the
 /// process's own. The compiler root is the workspace's, as there.
@@ -122,26 +182,22 @@ pub fn write_state_from_another_build(
     workspace: &std::path::Path,
     authority_secret: &std::path::Path,
 ) -> Result<(), String> {
+    use super::BuiltinIntent;
     use super::profile::{BuiltinSemanticRelation, BuiltinSourceChange, BuiltinWorkspaceRelation};
-    use super::{BuiltinIntent, BuiltinProfile, builtin_dispatcher, profile_descriptor};
-    use backend_engine::{DaemonConfig, ProductSourceRecord, RelationAdmissionRegistry};
+    use backend_engine::{ProductSourceRecord, RelationAdmissionRegistry, WorkspaceOwner};
     use backend_engine::{SourceLanguage, package_key};
 
-    let secret = backend_engine::read_authority_secret(authority_secret)
+    let _credential = backend_engine::read_authority_secret(authority_secret)
         .map_err(|error| error.to_string())?;
-    let profile = profile_descriptor(BuiltinProfile::Product)?;
-    let dispatcher = builtin_dispatcher(Some(secret), std::sync::Arc::clone(&profile), 1)?;
     let registry = RelationAdmissionRegistry::new()
         .with_relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| format!("register source relation: {error:?}"))?
         .with_relation::<BuiltinSemanticRelation>()
         .map_err(|error| format!("register semantic relation: {error:?}"))?;
-    let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
+    let mut owner = WorkspaceOwner::open_with_registry(
         workspace,
-        BuiltinModel,
+        RetiredFixtureWriter,
         super::genesis().map_err(|error| error.to_string())?,
-        dispatcher,
-        DaemonConfig::default(),
         registry,
     )
     .map_err(|error| error.to_string())?;
@@ -176,9 +232,51 @@ pub fn write_state_from_another_build(
         Vec::new(),
     )
     .map_err(|error| error.to_string())?;
-    super::commands::commit_builtin_intent(&mut daemon, 1, &intent)
-        .map_err(|error| error.to_string())
+    let prepared = owner
+        .prepare(owner.head().expectation(), intent)
+        .map_err(|error| error.to_string())?;
+    let durable = owner.durable(prepared).map_err(|error| error.to_string())?;
+    owner.publish(durable).map_err(|error| error.to_string())?;
+    Ok(())
 }
+
+/// The previous build's planner is reachable only by fixture construction.
+/// It shares the checked transition/closure wire path with the current model;
+/// its complete membership proof uses the retired key formula.
+#[cfg(any(test, feature = "test-support"))]
+struct RetiredFixtureWriter;
+
+#[cfg(any(test, feature = "test-support"))]
+impl backend_engine::WorkspaceModel for RetiredFixtureWriter {
+    type Intent = super::BuiltinIntent;
+    type Error = BuiltinModelError;
+
+    fn request_id(&self, intent: &Self::Intent) -> [u8; 32] {
+        backend_engine::WorkspaceModel::request_id(&BuiltinModel, intent)
+    }
+
+    fn prepare(
+        &self,
+        base: &backend_engine::WorkspaceSnapshot,
+        intent: &Self::Intent,
+        transaction: backend_engine::TransactionId,
+    ) -> Result<backend_engine::PreparedTransition, Self::Error> {
+        super::profile::prepare_retired_fixture(base, intent, transaction)
+    }
+
+    fn admit_persisted(
+        &self,
+        _persisted: &backend_engine::PersistedTransition,
+    ) -> Result<backend_engine::PreparedTransition, Self::Error> {
+        Err(BuiltinModelError(
+            "retired fixture writer requires an empty workspace".to_owned(),
+        ))
+    }
+}
+
+#[cfg(test)]
+#[path = "embedded_host_retired_tests.rs"]
+mod retired_tests;
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
