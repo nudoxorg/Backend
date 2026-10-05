@@ -321,3 +321,61 @@ membership or semantic publication has been measured. Static receipt:
 The mutation lease also cannot prove a process identity change that is never
 observed and reuses an identical endpoint and authority. Do not describe the
 current attachment check as a process-nonce protocol.
+
+
+## 18:05 UTC current-source and remote execution checkpoint
+
+Canonical remains `50089e3c138089e1c7bd80b4015627bea1cb119d`. A fresh fetch
+also discovers coworker CI branches; none is silently treated as canonical.
+The pinned current-source desktop suite actually executed: **1,189 passed,
+133 failed, 10 ignored** (the main result, excluding nested test processes).
+The embedded-owner Rust compilation/reopen repro passes once; browse passes
+10 tests; Cargo metadata passes 22. These are focused runtime/test results,
+not all-language GUI or release acceptance. Receipts and logs are in
+`/private/tmp/nudox-live-index-remaining-tests-50089e-20261005`.
+
+The separate integrated candidate `96e96fa9d38ca115fb47aa73e10d3a75b8230f36`
+failed its actual workspace/all-target check with three missing native close
+element trait methods and two test borrow errors. It was not pushed or
+built as a GUI. The reviewed correction is `4a8047aaa2`; a new check is
+required. Its native/inert wrapper change fixes a source-proven double
+layout translation; native geometry and current executable acceptance
+remain pending. Current asynchronous status observer changes are still
+under review, including removal of shared mutable project context in favor
+of request-captured context and a private owner-attachment envelope.
+
+The GymBroApp report is headless evidence against canonical 50089: stock
+Angular indexing requires explicit toolchain environment overrides and
+two dependency-computed type lowering changes; even its successful 6,826
+row publication has failing Tantivy search and paged graph. These are
+open product defects, not transport success. Separate Luna workers own
+scoped toolchain admission and computed-type provenance/lowering. Sol
+compares the plain and paged graph routes and actual search on current
+matched binaries. No failed type is silently counted as proven IR.
+
+Actual remote processes are checked over SSH: the ILO worker builds the
+exact canonical CLI/MCP/locald trio privately (owned group 1647860); the
+Mac worker builds a separate frozen `28f2bf0a3f` trio privately (owned
+group 77018), and built its matching Go producer in 17.14 seconds. The
+Go binary digest is `ee5d30b9532888acb4e02a86d1d4b00bd557210d826444e6e5adaa9a85307bdd`.
+These builds do not yet prove remote project indexing or cold restart.
+Existing deployed services and coworker CI remain untouched. Mac SSH
+was temporarily unavailable because the existing GUI Tailscale client
+was stopped; reconnecting its existing configuration restored access.
+
+The user raised the fleet ceiling: eight conservative compiler groups,
+with host caps of three local, five ILO and five Mac, at least eight GiB
+of memory headroom and backoff under pressure. The v4 census retains
+raw process evidence; no unowned work is stopped. Local integrated GUI
+build/check jobs use four Cargo jobs when admitted. Heavy automated
+tests and Clippy are assigned to Luna; Sol uses and repairs actual
+product flows. Hourly reviewed atomic integration/push is scheduled.
+
+`tests/journeys/corpora/webdev-and-service-catalog.json` contains 40 real
+repositories (24 web/TypeScript, eight Python, eight Go), each with an
+actually queried HEAD pin, and 25 npm discovery cases. It specifies
+default setup, asynchronous publication, exact/text search, plain/paged
+graph, references, delta edits, cancellation, offline use, cold restart
+and real MCP token budgets. **All 40 runtime statuses are NOT_RUN** at
+this checkpoint. Framework templates and dependencies are counted only
+when supported by real producer authority; pinning is not indexing.
