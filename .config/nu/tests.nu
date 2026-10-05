@@ -28,7 +28,7 @@ assert equal $failed_emulated_listing.failure "list-failed" "a failed listing mu
 
 let empty_emulated_listing = validate-nextest-list {
     exit_code: 0
-    stdout: " \n\t\n"
+    stdout: " \n\t\n", 
     stderr: ""
 }
 assert equal $empty_emulated_listing.tests [] "empty and whitespace-only output contains no tests"
