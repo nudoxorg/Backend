@@ -510,6 +510,83 @@ impl TszProject {
         (!token.is_empty()).then_some(token)
     }
 
+    /// Returns the exact source token for a named property in one retained
+    /// declaration. This is used only when TSZ's structural property has no
+    /// declaration symbol (for example an inline object or type literal).
+    /// The property spelling must still match a parsed identifier that is
+    /// the `name` child of a property/signature node inside the exact owner
+    /// span; comments, string contents, and unrelated declaration names do
+    /// not qualify.
+    #[must_use]
+    pub fn property_name_source_in_declaration(
+        &self,
+        file: &str,
+        declaration: (u32, u32),
+        expected: &str,
+    ) -> Option<&str> {
+        if expected.is_empty() || declaration.0 >= declaration.1 {
+            return None;
+        }
+        let bind = self.bind_result(file)?;
+        let arena = &bind.arena;
+        let source = arena.get_source_file_at(bind.source_file)?.text.as_ref();
+        let mut candidates = Vec::new();
+        for (raw_index, syntax_node) in arena.nodes.iter().enumerate() {
+            let node = TszNodeIndex(u32::try_from(raw_index).ok()?);
+            let Some(identifier) = arena.get_identifier(syntax_node) else {
+                continue;
+            };
+            if identifier.escaped_text != expected {
+                continue;
+            }
+            let Some(parent) = arena.get_extended(node).map(|extended| extended.parent) else {
+                continue;
+            };
+            let Some(parent_node) = arena.get(parent) else {
+                continue;
+            };
+            let is_property_name = arena
+                .get_signature(parent_node)
+                .is_some_and(|signature| signature.name == node)
+                || arena
+                    .get_property_decl(parent_node)
+                    .is_some_and(|property| property.name == node)
+                || arena
+                    .get_property_assignment(parent_node)
+                    .is_some_and(|property| property.name == node)
+                || arena
+                    .get_shorthand_property(parent_node)
+                    .is_some_and(|property| property.name == node)
+                || arena
+                    .get_method_decl(parent_node)
+                    .is_some_and(|method| method.name == node)
+                || arena
+                    .get_accessor(parent_node)
+                    .is_some_and(|accessor| accessor.name == node);
+            if !is_property_name {
+                continue;
+            }
+            let Some((start, end)) = arena.pos_end_at(node) else {
+                continue;
+            };
+            if start < declaration.0 || end > declaration.1 {
+                continue;
+            }
+            let (Ok(start_index), Ok(end_index)) = (usize::try_from(start), usize::try_from(end))
+            else {
+                continue;
+            };
+            let Some(token) = source.get(start_index..end_index) else {
+                continue;
+            };
+            if !token.is_empty() {
+                candidates.push((start, end, token));
+            }
+        }
+        candidates.sort_unstable_by_key(|(start, end, _)| (*start, *end));
+        candidates.first().map(|(_, _, token)| *token)
+    }
+
     /// Resolves a checker property name through the exact TSZ symbol's
     /// declaration-name node and returns its raw source spelling. The lookup
     /// searches only declaration nodes bound to this symbol, constrained by
@@ -1121,6 +1198,42 @@ mod tests {
             project.source_content_digest("src/labels.ts"),
             Some(source_digest("src/labels.ts", source)),
             "the admitted path and exact retained source have a stable identity"
+        );
+    }
+
+    #[test]
+    fn anonymous_property_name_source_requires_a_parsed_member_in_owner_span() {
+        let source = "export type Recursive = { next: Recursive; café: string };";
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update(vec![input("src/recursive.ts", source)], options(), &[])
+            .expect("TSZ should build the project");
+        let project = authority.project().expect("project result exists");
+        let declaration = (0, u32::try_from(source.len()).expect("source length fits"));
+
+        assert_eq!(
+            project.property_name_source_in_declaration("src/recursive.ts", declaration, "next"),
+            Some("next"),
+            "a type-literal property is borrowed from its exact parsed identifier node"
+        );
+        assert_eq!(
+            project.property_name_source_in_declaration("src/recursive.ts", declaration, "café"),
+            Some("café"),
+            "UTF-8 property spans preserve their exact source bytes"
+        );
+        assert_eq!(
+            project.property_name_source_in_declaration(
+                "src/recursive.ts",
+                declaration,
+                "Recursive"
+            ),
+            None,
+            "the declaration's own name is not evidence for a structural property"
+        );
+        assert_eq!(
+            project.property_name_source_in_declaration("missing.ts", declaration, "next"),
+            None,
+            "an unadmitted file cannot lend property spelling"
         );
     }
 

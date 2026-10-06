@@ -526,6 +526,9 @@ struct FactRegistry<'a, 'source> {
     source: &'source str,
     /// Exact retained project-source capability for native TSZ declarations.
     tsz_project: Option<&'source TszProject>,
+    /// Exact virtual path of the source file being projected, required when
+    /// a native anonymous property has no TSZ declaration symbol.
+    source_path: Option<&'source str>,
     decl_starts: &'a [u32],
     decl_ends: &'a [u32],
     name_starts: &'a [u32],
@@ -2785,6 +2788,13 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         next_depth: u8,
     ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
         if let Some(template) = kind.as_ts_template_literal_type() {
+            let width = template.quasis.len().saturating_add(template.types.len());
+            if width > MAX_TYPE_CHILDREN {
+                return Err(fault(FactFault::TypeProjectionWidth {
+                    actual: width,
+                    maximum: MAX_TYPE_CHILDREN,
+                }));
+            }
             let mut cells = TypeCells::leaf(SemanticTypeTag::TemplateLiteral);
             // OXC preserves one quasi before, between, and after every
             // substitution. Keep that ordered alternating sequence in the
@@ -2851,6 +2861,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         next_depth: u8,
     ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
         if let Some(tuple) = kind.as_ts_tuple_type() {
+            if tuple.element_types.len() > MAX_TYPE_CHILDREN {
+                return Err(fault(FactFault::TypeProjectionWidth {
+                    actual: tuple.element_types.len(),
+                    maximum: MAX_TYPE_CHILDREN,
+                }));
+            }
             let mut cells = TypeCells::leaf(SemanticTypeTag::Tuple);
             for element in tuple.element_types.iter() {
                 let element_span = element.span();
@@ -2912,6 +2928,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         next_depth: u8,
     ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
         if let Some(literal) = kind.as_ts_type_literal() {
+            if literal.members.len() > MAX_TYPE_CHILDREN {
+                return Err(fault(FactFault::TypeProjectionWidth {
+                    actual: literal.members.len(),
+                    maximum: MAX_TYPE_CHILDREN,
+                }));
+            }
             let mut cells = TypeCells::leaf(SemanticTypeTag::AnonymousRecord);
             cells.record.payload0 = u32::from(AnonRecordForm::Interface);
             for member in literal.members.iter() {
@@ -2938,6 +2960,18 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         next_depth: u8,
     ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
         if let Some(function_type) = kind.as_ts_function_type() {
+            let width = function_type
+                .params
+                .items
+                .len()
+                .saturating_add(usize::from(function_type.params.rest.is_some()))
+                .saturating_add(1);
+            if width > MAX_TYPE_CHILDREN {
+                return Err(fault(FactFault::TypeProjectionWidth {
+                    actual: width,
+                    maximum: MAX_TYPE_CHILDREN,
+                }));
+            }
             let mut cells = TypeCells::leaf(SemanticTypeTag::FunctionPointer);
             for parameter in function_type.params.items.iter() {
                 let target = match parameter.type_annotation.as_ref() {
@@ -5199,6 +5233,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let registry = FactRegistry {
             source: self.source,
             tsz_project: None,
+            source_path: None,
             decl_starts: &self.decl_starts,
             decl_ends: &self.decl_ends,
             name_starts: &self.name_starts,
@@ -5624,6 +5659,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let registry = FactRegistry {
             source: self.source,
             tsz_project: Some(project),
+            source_path: Some(&bound_file.file_name),
             decl_starts: &self.decl_starts,
             decl_ends: &self.decl_ends,
             name_starts: &self.name_starts,
@@ -5706,6 +5742,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let registry = FactRegistry {
             source: self.source,
             tsz_project: None,
+            source_path: None,
             decl_starts: &self.decl_starts,
             decl_ends: &self.decl_ends,
             name_starts: &self.name_starts,
@@ -9580,18 +9617,34 @@ fn intern_native_tsz_object<'source>(
     }
 
     // Resolve every public named property through its TSZ declaration symbol
-    // before lowering children. This prevents a dependency or library name
-    // from being borrowed from an unrelated homonym in the owner file.
+    // when one exists. Anonymous structural members have no symbol in TSZ's
+    // PropertyInfo, so those names require a parsed property-name node within
+    // this exact owner declaration and source file. In either case the row
+    // borrows source bytes rather than formatting an atom into invented text.
     let mut members = Vec::with_capacity(shape.properties.len());
     for property in &shape.properties {
         if property.is_symbol_named || property.write_type != property.type_id {
             return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
         }
         let name = database.resolve_atom_ref(property.name);
-        let spelling = property
-            .parent_id
-            .and_then(|symbol| registry.tsz_project?.symbol_name_source(symbol, &name))
-            .map(str::as_bytes);
+        let spelling = match property.parent_id {
+            Some(symbol) => registry
+                .tsz_project
+                .and_then(|project| project.symbol_name_source(symbol, &name)),
+            None => usize::try_from(owner).ok().and_then(|owner_index| {
+                let start = *registry.decl_starts.get(owner_index)?;
+                let end = *registry.decl_ends.get(owner_index)?;
+                if start == UNSET || end == UNSET {
+                    return None;
+                }
+                registry.tsz_project?.property_name_source_in_declaration(
+                    registry.source_path?,
+                    (start, end),
+                    &name,
+                )
+            }),
+        }
+        .map(str::as_bytes);
         let Some(spelling) = spelling else {
             return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
         };
