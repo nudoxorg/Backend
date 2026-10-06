@@ -8835,6 +8835,40 @@ fn intern_native_tsz_type<'source>(
     // `resolve_lazy_type` leaves unresolved handles lazy; a result of `any`
     // therefore comes from the checker-owned body and must keep its native
     // dynamically-typed meaning instead of being confused with a failed lookup.
+    #[cfg(test)]
+    if depth == 0 {
+        let owner_index = usize::try_from(owner).ok();
+        let name = owner_index
+            .and_then(|index| {
+                registry
+                    .name_starts
+                    .get(index)
+                    .zip(registry.name_ends.get(index))
+            })
+            .and_then(|(start, end)| {
+                registry
+                    .source
+                    .get(usize::try_from(*start).ok()?..usize::try_from(*end).ok()?)
+            });
+        if matches!(
+            name,
+            Some("Labels" | "MarkerQuery" | "Keys" | "Value" | "wide" | "Recursive" | "deep")
+        ) {
+            let input_data = database.lookup(type_id);
+            let resolved_data = database.lookup(resolved_type_id);
+            let details = match resolved_data {
+                Some(TypeData::Mapped(id)) => format!(" mapped={:#?}", database.mapped_type(id)),
+                Some(TypeData::Tuple(id)) => format!(" tuple={:#?}", database.tuple_list(id)),
+                Some(TypeData::Object(id) | TypeData::ObjectWithIndex(id)) => {
+                    format!(" object={:#?}", database.object_shape(id))
+                }
+                _ => String::new(),
+            };
+            eprintln!(
+                "TSZ_NATIVE_TYPE_TRACE name={name:?} input={type_id:?} input_data={input_data:#?} resolved={resolved_type_id:?} resolved_data={resolved_data:#?}{details}"
+            );
+        }
+    }
     if !active.insert(resolved_type_id) {
         return Err(computed_fault(
             registry,
@@ -8897,11 +8931,9 @@ fn intern_native_tsz_type_inner<'source>(
             record.payload0 = AnnotationKind::Readonly as u32;
             intern_native_tsz_row(registry, facts, record, owner, &[(child, None, 0)])
         }
-        TypeData::NoInfer(inner) => {
-            intern_native_tsz_type(
-                registry, facts, checker, database, inner, owner, next_depth, active,
-            )
-        }
+        TypeData::NoInfer(inner) => intern_native_tsz_type(
+            registry, facts, checker, database, inner, owner, next_depth, active,
+        ),
         TypeData::Union(list) | TypeData::Intersection(list) => {
             let tag = if matches!(data, TypeData::Union(_)) {
                 SemanticTypeTag::Union
@@ -9084,13 +9116,7 @@ fn intern_native_tsz_type_inner<'source>(
                         .map_err(|cause| computed_fault(registry, owner, cause))?,
                     (TemplateSpan::Type(part_type), None) => {
                         let child = intern_native_tsz_type(
-                            registry,
-                            facts,
-                            checker,
-                            database,
-                            *part_type,
-                            owner,
-                            next_depth,
+                            registry, facts, checker, database, *part_type, owner, next_depth,
                             active,
                         )?;
                         facts
@@ -10097,8 +10123,8 @@ mod lane_tests {
     };
     use backend_semantic::ir::{
         ComputedType, EntityKind, FragmentError, FragmentView, OccurrenceFault, OccurrenceTarget,
-        ReferenceKind, SemanticReader, TypeExpr, TypeId, TypeQuery,
-        TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeScriptSourceCoordinate,
+        ReferenceKind, SemanticReader, TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeExpr, TypeId,
+        TypeQuery, TypeScriptSourceCoordinate,
     };
     use backend_semantic::vocabulary::{
         CompileRecipeFact, LanguageProfile, NativeTool, Stage, TypeScriptSource,
@@ -10211,6 +10237,15 @@ mod lane_tests {
                 crate::driver::types::DeclarationScope::fixture(),
             )
             .map_err(LaneError::from)
+    }
+
+    fn native_observation(
+        ir: &backend_semantic::ir::Ir,
+        name: &[u8],
+    ) -> Option<(TypeId, TypeExpr)> {
+        let item = ir.items().find(|item| item.name() == name)?;
+        let observed = ir.typescript_extension(item.id())?.observed?;
+        Some((observed, ir.ty(observed)?))
     }
 
     /// Runs a real in-process TSZ project over the exact fixture bytes and
@@ -10664,6 +10699,10 @@ mod lane_tests {
         let observed = extension
             .observed
             .ok_or(LaneError::Missing("native TSZ mapped observation"))?;
+        eprintln!(
+            "MAPPED_IR_TRACE row={observed:?} type={:?}",
+            ir.ty(observed)
+        );
         if !matches!(
             ir.ty(observed),
             Some(backend_semantic::ir::TypeExpr::Computed(
@@ -10701,6 +10740,12 @@ mod lane_tests {
             .items()
             .find(|item| item.name() == b"marker")
             .ok_or(LaneError::Missing("typeof target entity"))?;
+        eprintln!(
+            "TYPE_OPERATOR_IR_TRACE MarkerQuery={:?} Keys={:?} Value={:?}",
+            native_observation(&ir, b"MarkerQuery"),
+            native_observation(&ir, b"Keys"),
+            native_observation(&ir, b"Value"),
+        );
         let TypeExpr::Computed(ComputedType::TypeOf(TypeQuery::Entity(target))) = ir
             .ty(observed(b"MarkerQuery")?)
             .ok_or(LaneError::Missing("typeof computed row"))?
@@ -10735,38 +10780,54 @@ mod lane_tests {
             .join(", ");
         let source = format!("export declare const wide: [{elements}];");
         let error = match owned_tsz_ir(&source) {
-            Ok(_) => panic!("wide tuple must refuse atomically"),
+            Ok(ir) => panic!(
+                "wide tuple must refuse atomically; observed {:?}",
+                native_observation(&ir, b"wide")
+            ),
             Err(error) => error,
         };
-        assert!(matches!(
-            error,
-            LaneError::Collection(TypeScriptCollectError::Rejected(super::FactRejection {
-                cause: super::FactFault::TypeProjectionWidth {
-                    actual,
-                    maximum: super::MAX_TYPE_CHILDREN,
-                },
-                ..
-            })) if actual == super::MAX_TYPE_CHILDREN + 1
-        ));
+        assert!(
+            matches!(
+                error,
+                LaneError::Collection(TypeScriptCollectError::Rejected(
+                    super::FactRejection {
+                        cause: super::FactFault::TypeProjectionWidth {
+                            actual,
+                            maximum: super::MAX_TYPE_CHILDREN,
+                        },
+                        ..
+                    }
+                )) if actual == super::MAX_TYPE_CHILDREN + 1
+            ),
+            "wide tuple refusal must retain exact native width; got {error:?}"
+        );
     }
 
     #[test]
     fn native_tsz_recursive_structural_type_fails_with_exact_typed_cause() {
         let source = "export type Recursive = { next: Recursive };";
         let error = match owned_tsz_ir(source) {
-            Ok(_) => panic!("recursive row must refuse atomically"),
+            Ok(ir) => panic!(
+                "recursive row must refuse atomically; observed {:?}",
+                native_observation(&ir, b"Recursive")
+            ),
             Err(error) => error,
         };
-        assert!(matches!(
-            error,
-            LaneError::Collection(TypeScriptCollectError::Rejected(super::FactRejection {
-                cause: super::FactFault::TypeProjectionRecursiveReference { distance: 0 },
-                ..
-            })) | LaneError::Collection(TypeScriptCollectError::Rejected(super::FactRejection {
-                cause: super::FactFault::TypeProjectionCycle { .. },
-                ..
-            }))
-        ));
+        assert!(
+            matches!(
+                error,
+                LaneError::Collection(TypeScriptCollectError::Rejected(super::FactRejection {
+                    cause: super::FactFault::TypeProjectionRecursiveReference { distance: 0 },
+                    ..
+                })) | LaneError::Collection(TypeScriptCollectError::Rejected(
+                    super::FactRejection {
+                        cause: super::FactFault::TypeProjectionCycle { .. },
+                        ..
+                    }
+                ))
+            ),
+            "recursive type refusal must retain exact cycle cause; got {error:?}"
+        );
     }
 
     #[test]
@@ -10777,19 +10838,27 @@ mod lane_tests {
         }
         let source = format!("export declare const deep: {ty};");
         let error = match owned_tsz_ir(&source) {
-            Ok(_) => panic!("deep row must refuse atomically"),
+            Ok(ir) => panic!(
+                "deep row must refuse atomically; observed {:?}",
+                native_observation(&ir, b"deep")
+            ),
             Err(error) => error,
         };
-        assert!(matches!(
-            error,
-            LaneError::Collection(TypeScriptCollectError::Rejected(super::FactRejection {
-                cause: super::FactFault::TypeProjectionDepthLimit {
-                    depth,
-                    maximum: super::MAX_TYPE_DEPTH,
-                },
-                ..
-            })) if depth == super::MAX_TYPE_DEPTH + 1
-        ));
+        assert!(
+            matches!(
+                error,
+                LaneError::Collection(TypeScriptCollectError::Rejected(
+                    super::FactRejection {
+                        cause: super::FactFault::TypeProjectionDepthLimit {
+                            depth,
+                            maximum: super::MAX_TYPE_DEPTH,
+                        },
+                        ..
+                    }
+                )) if depth == super::MAX_TYPE_DEPTH + 1
+            ),
+            "deep type refusal must retain exact depth; got {error:?}"
+        );
     }
 
     /// One validated report over the exact fixture source carrying the given
