@@ -553,7 +553,7 @@ fn surface_errors_keep_valid_compiler_json_and_coordinates_as_unproven_protocol(
         failure
     );
     for message in [
-        encoded,
+        String::from_utf8(encoded).expect("compiler JSON is UTF-8"),
         "/abs/trap::src/hidden.ts:12::Secret: library record not found".to_owned(),
     ] {
         for (tool, arguments, operand) in compiler_error_routes() {
