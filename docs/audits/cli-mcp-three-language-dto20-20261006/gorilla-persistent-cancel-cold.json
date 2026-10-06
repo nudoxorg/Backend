@@ -1,0 +1,505 @@
+{
+  "schema": "nudox.persistent-mcp-cancel-cold-observation.v1",
+  "scope": "configured private clone; terminal lifecycle proof only; native package remains refused",
+  "raw_result_sha256": "789310502466a8fe679ce7995b81400859de8d8ee5331713f6b50301fc4587eb",
+  "raw_result_bytes": 25426,
+  "source": {
+    "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+    "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156"
+  },
+  "executables": {
+    "backend-locald": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+      "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+      "bytes": 105569312
+    },
+    "backend-cli": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+      "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+      "bytes": 43160648
+    },
+    "backend-mcp": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+      "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+      "bytes": 31886392
+    }
+  },
+  "original_strict_result_sha256": "ab43b59cfa993774313e71271c53778cc81d9a4acc4131c8afe04c8a4d79c25e",
+  "states": {
+    "live-retry-cancel::original-failed-status": {
+      "detail": {
+        "execution_intent": "interactive",
+        "operation_key": "dd7a3c1bb65e5bb6ccf5588030855b53ff0f5c19f7bc1b0f1e8995a279ff4baa",
+        "package": {
+          "kind": "local",
+          "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+        },
+        "request_digest": "b0414a87021919e3675cd6213e485e26a9dd893d29e852bd0324ccaeed22c727",
+        "source_capture": {
+          "commit_identity": "4650cdb2e7e4fb17897b32386af06ceb334c90c09f8fb8c344b0c889a92b61a6",
+          "operation_key": "dd7a3c1bb65e5bb6ccf5588030855b53ff0f5c19f7bc1b0f1e8995a279ff4baa",
+          "profiles": [
+            {
+              "input_digest": "f4799245b63d5168be2e32196db1dcb9f0f2dcc05afc4efccbb7fd1440bb15a4",
+              "observation_sequence": 1,
+              "profile": [
+                3,
+                3
+              ],
+              "source_count": 16,
+              "source_version": "53ec81c37a589b12da77c8577e41644f3dee125f57979cbe96d855cc917faa37",
+              "state": {
+                "detail": {
+                  "reason": "rejected"
+                },
+                "state": "unavailable"
+              }
+            }
+          ],
+          "workspace_root": "821498af86909bebdff8f1f0cdd6bbafd9b6b9ad416d9ed42b353794b5e2af54",
+          "workspace_sequence": 1
+        },
+        "state": {
+          "detail": {
+            "compiler_failure": {
+              "cause": {
+                "family": "authority",
+                "fault": {
+                  "class": "authority",
+                  "diagnostic": {
+                    "observed_bytes": 146,
+                    "retained_bytes": 146,
+                    "truncated": false
+                  },
+                  "phase": "open"
+                }
+              },
+              "detail": "open authority fault: authority runtime",
+              "detail_truncated": false,
+              "kind_tag": "authority_runtime",
+              "phase": "authority",
+              "recipe_identity": "content:1182645b40b2aaaee0b7246125416aa377e5073bcba5eb2c884483ffb3fd3b16",
+              "relative_path": "bench_test.go",
+              "source_byte_len": 1399,
+              "source_identity": "content:0e65e1d3f840e580982554922e2c842877f78db5199680aa6b7651804aac6f85"
+            },
+            "detail": "local compiler rejected bench_test.go with authority_runtime: open authority fault: authority runtime",
+            "reason": "refused"
+          },
+          "state": "failed"
+        }
+      },
+      "state": "known"
+    },
+    "live-retry-cancel::retry-start": {
+      "detail": {
+        "execution_intent": "interactive",
+        "operation_key": "9d7dc5e686db90e218f8aff266f0f585c1dbd154f016970d2cea922e5ab1e3f2",
+        "package": {
+          "kind": "local",
+          "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+        },
+        "request_digest": "b0414a87021919e3675cd6213e485e26a9dd893d29e852bd0324ccaeed22c727",
+        "state": {
+          "detail": {
+            "stage": "scanning",
+            "ticket": {
+              "id": 1,
+              "owner_epoch": [
+                217,
+                67,
+                222,
+                180,
+                28,
+                168,
+                98,
+                221,
+                166,
+                69,
+                26,
+                71,
+                253,
+                78,
+                230,
+                115
+              ],
+              "package": {
+                "kind": "local",
+                "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+              }
+            }
+          },
+          "state": "active"
+        }
+      },
+      "state": "known"
+    },
+    "live-retry-cancel::cancel-owner-issued-ticket": {
+      "status": {
+        "state": "requested"
+      },
+      "ticket": {
+        "id": 1,
+        "owner_epoch": [
+          217,
+          67,
+          222,
+          180,
+          28,
+          168,
+          98,
+          221,
+          166,
+          69,
+          26,
+          71,
+          253,
+          78,
+          230,
+          115
+        ],
+        "package": {
+          "kind": "local",
+          "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+        }
+      }
+    },
+    "live-retry-cancel::progress-after-cancel-0": {
+      "detail": {
+        "outcome": {
+          "state": "cancelled"
+        },
+        "ticket": {
+          "id": 1,
+          "owner_epoch": [
+            217,
+            67,
+            222,
+            180,
+            28,
+            168,
+            98,
+            221,
+            166,
+            69,
+            26,
+            71,
+            253,
+            78,
+            230,
+            115
+          ],
+          "package": {
+            "kind": "local",
+            "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+          }
+        }
+      },
+      "state": "terminal"
+    },
+    "live-retry-cancel::retry-durable-status": {
+      "detail": {
+        "execution_intent": "interactive",
+        "operation_key": "9d7dc5e686db90e218f8aff266f0f585c1dbd154f016970d2cea922e5ab1e3f2",
+        "package": {
+          "kind": "local",
+          "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+        },
+        "request_digest": "b0414a87021919e3675cd6213e485e26a9dd893d29e852bd0324ccaeed22c727",
+        "state": {
+          "detail": {
+            "detail": "index operation was cancelled before commit",
+            "reason": "cancelled"
+          },
+          "state": "failed"
+        }
+      },
+      "state": "known"
+    },
+    "live-retry-cancel::original-failed-status-after-cancel": {
+      "detail": {
+        "execution_intent": "interactive",
+        "operation_key": "dd7a3c1bb65e5bb6ccf5588030855b53ff0f5c19f7bc1b0f1e8995a279ff4baa",
+        "package": {
+          "kind": "local",
+          "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+        },
+        "request_digest": "b0414a87021919e3675cd6213e485e26a9dd893d29e852bd0324ccaeed22c727",
+        "source_capture": {
+          "commit_identity": "4650cdb2e7e4fb17897b32386af06ceb334c90c09f8fb8c344b0c889a92b61a6",
+          "operation_key": "dd7a3c1bb65e5bb6ccf5588030855b53ff0f5c19f7bc1b0f1e8995a279ff4baa",
+          "profiles": [
+            {
+              "input_digest": "f4799245b63d5168be2e32196db1dcb9f0f2dcc05afc4efccbb7fd1440bb15a4",
+              "observation_sequence": 1,
+              "profile": [
+                3,
+                3
+              ],
+              "source_count": 16,
+              "source_version": "53ec81c37a589b12da77c8577e41644f3dee125f57979cbe96d855cc917faa37",
+              "state": {
+                "detail": {
+                  "reason": "rejected"
+                },
+                "state": "unavailable"
+              }
+            }
+          ],
+          "workspace_root": "821498af86909bebdff8f1f0cdd6bbafd9b6b9ad416d9ed42b353794b5e2af54",
+          "workspace_sequence": 1
+        },
+        "state": {
+          "detail": {
+            "compiler_failure": {
+              "cause": {
+                "family": "authority",
+                "fault": {
+                  "class": "authority",
+                  "diagnostic": {
+                    "observed_bytes": 146,
+                    "retained_bytes": 146,
+                    "truncated": false
+                  },
+                  "phase": "open"
+                }
+              },
+              "detail": "open authority fault: authority runtime",
+              "detail_truncated": false,
+              "kind_tag": "authority_runtime",
+              "phase": "authority",
+              "recipe_identity": "content:1182645b40b2aaaee0b7246125416aa377e5073bcba5eb2c884483ffb3fd3b16",
+              "relative_path": "bench_test.go",
+              "source_byte_len": 1399,
+              "source_identity": "content:0e65e1d3f840e580982554922e2c842877f78db5199680aa6b7651804aac6f85"
+            },
+            "detail": "local compiler rejected bench_test.go with authority_runtime: open authority fault: authority runtime",
+            "reason": "refused"
+          },
+          "state": "failed"
+        }
+      },
+      "state": "known"
+    },
+    "live-retry-cancel::health": {},
+    "cold-terminal-replay::original-failed-status": {
+      "detail": {
+        "execution_intent": "interactive",
+        "operation_key": "dd7a3c1bb65e5bb6ccf5588030855b53ff0f5c19f7bc1b0f1e8995a279ff4baa",
+        "package": {
+          "kind": "local",
+          "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+        },
+        "request_digest": "b0414a87021919e3675cd6213e485e26a9dd893d29e852bd0324ccaeed22c727",
+        "source_capture": {
+          "commit_identity": "4650cdb2e7e4fb17897b32386af06ceb334c90c09f8fb8c344b0c889a92b61a6",
+          "operation_key": "dd7a3c1bb65e5bb6ccf5588030855b53ff0f5c19f7bc1b0f1e8995a279ff4baa",
+          "profiles": [
+            {
+              "input_digest": "f4799245b63d5168be2e32196db1dcb9f0f2dcc05afc4efccbb7fd1440bb15a4",
+              "observation_sequence": 1,
+              "profile": [
+                3,
+                3
+              ],
+              "source_count": 16,
+              "source_version": "53ec81c37a589b12da77c8577e41644f3dee125f57979cbe96d855cc917faa37",
+              "state": {
+                "detail": {
+                  "reason": "rejected"
+                },
+                "state": "unavailable"
+              }
+            }
+          ],
+          "workspace_root": "821498af86909bebdff8f1f0cdd6bbafd9b6b9ad416d9ed42b353794b5e2af54",
+          "workspace_sequence": 1
+        },
+        "state": {
+          "detail": {
+            "compiler_failure": {
+              "cause": {
+                "family": "authority",
+                "fault": {
+                  "class": "authority",
+                  "diagnostic": {
+                    "observed_bytes": 146,
+                    "retained_bytes": 146,
+                    "truncated": false
+                  },
+                  "phase": "open"
+                }
+              },
+              "detail": "open authority fault: authority runtime",
+              "detail_truncated": false,
+              "kind_tag": "authority_runtime",
+              "phase": "authority",
+              "recipe_identity": "content:1182645b40b2aaaee0b7246125416aa377e5073bcba5eb2c884483ffb3fd3b16",
+              "relative_path": "bench_test.go",
+              "source_byte_len": 1399,
+              "source_identity": "content:0e65e1d3f840e580982554922e2c842877f78db5199680aa6b7651804aac6f85"
+            },
+            "detail": "local compiler rejected bench_test.go with authority_runtime: open authority fault: authority runtime",
+            "reason": "refused"
+          },
+          "state": "failed"
+        }
+      },
+      "state": "known"
+    },
+    "cold-terminal-replay::retry-durable-status": {
+      "detail": {
+        "execution_intent": "interactive",
+        "operation_key": "9d7dc5e686db90e218f8aff266f0f585c1dbd154f016970d2cea922e5ab1e3f2",
+        "package": {
+          "kind": "local",
+          "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+        },
+        "request_digest": "b0414a87021919e3675cd6213e485e26a9dd893d29e852bd0324ccaeed22c727",
+        "state": {
+          "detail": {
+            "detail": "index operation was cancelled before commit",
+            "reason": "cancelled"
+          },
+          "state": "failed"
+        }
+      },
+      "state": "known"
+    },
+    "cold-terminal-replay::exact-key-replay": {
+      "detail": {
+        "execution_intent": "interactive",
+        "operation_key": "9d7dc5e686db90e218f8aff266f0f585c1dbd154f016970d2cea922e5ab1e3f2",
+        "package": {
+          "kind": "local",
+          "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+        },
+        "request_digest": "b0414a87021919e3675cd6213e485e26a9dd893d29e852bd0324ccaeed22c727",
+        "state": {
+          "detail": {
+            "detail": "index operation was cancelled before commit",
+            "reason": "cancelled"
+          },
+          "state": "failed"
+        }
+      },
+      "state": "known"
+    },
+    "cold-terminal-replay::old-owner-ticket-after-cold": {
+      "status": {
+        "state": "unknown"
+      },
+      "ticket": {
+        "id": 1,
+        "owner_epoch": [
+          217,
+          67,
+          222,
+          180,
+          28,
+          168,
+          98,
+          221,
+          166,
+          69,
+          26,
+          71,
+          253,
+          78,
+          230,
+          115
+        ],
+        "package": {
+          "kind": "local",
+          "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+        }
+      }
+    },
+    "cold-terminal-replay::original-failed-status-after-cancel": {
+      "detail": {
+        "execution_intent": "interactive",
+        "operation_key": "dd7a3c1bb65e5bb6ccf5588030855b53ff0f5c19f7bc1b0f1e8995a279ff4baa",
+        "package": {
+          "kind": "local",
+          "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+        },
+        "request_digest": "b0414a87021919e3675cd6213e485e26a9dd893d29e852bd0324ccaeed22c727",
+        "source_capture": {
+          "commit_identity": "4650cdb2e7e4fb17897b32386af06ceb334c90c09f8fb8c344b0c889a92b61a6",
+          "operation_key": "dd7a3c1bb65e5bb6ccf5588030855b53ff0f5c19f7bc1b0f1e8995a279ff4baa",
+          "profiles": [
+            {
+              "input_digest": "f4799245b63d5168be2e32196db1dcb9f0f2dcc05afc4efccbb7fd1440bb15a4",
+              "observation_sequence": 1,
+              "profile": [
+                3,
+                3
+              ],
+              "source_count": 16,
+              "source_version": "53ec81c37a589b12da77c8577e41644f3dee125f57979cbe96d855cc917faa37",
+              "state": {
+                "detail": {
+                  "reason": "rejected"
+                },
+                "state": "unavailable"
+              }
+            }
+          ],
+          "workspace_root": "821498af86909bebdff8f1f0cdd6bbafd9b6b9ad416d9ed42b353794b5e2af54",
+          "workspace_sequence": 1
+        },
+        "state": {
+          "detail": {
+            "compiler_failure": {
+              "cause": {
+                "family": "authority",
+                "fault": {
+                  "class": "authority",
+                  "diagnostic": {
+                    "observed_bytes": 146,
+                    "retained_bytes": 146,
+                    "truncated": false
+                  },
+                  "phase": "open"
+                }
+              },
+              "detail": "open authority fault: authority runtime",
+              "detail_truncated": false,
+              "kind_tag": "authority_runtime",
+              "phase": "authority",
+              "recipe_identity": "content:1182645b40b2aaaee0b7246125416aa377e5073bcba5eb2c884483ffb3fd3b16",
+              "relative_path": "bench_test.go",
+              "source_byte_len": 1399,
+              "source_identity": "content:0e65e1d3f840e580982554922e2c842877f78db5199680aa6b7651804aac6f85"
+            },
+            "detail": "local compiler rejected bench_test.go with authority_runtime: open authority fault: authority runtime",
+            "reason": "refused"
+          },
+          "state": "failed"
+        }
+      },
+      "state": "known"
+    },
+    "cold-terminal-replay::health": {}
+  },
+  "wire_files": [
+    {
+      "path": "/root/nudox-corpus-20261006/artifacts/canonical-go-gorilla-dto20/cancel-retry-dto20-20261006T115510Z/live-retry-cancel/installed-journey-wire.jsonl",
+      "bytes": 37363,
+      "sha256": "3f56f42c179e289917a48122320db6a9a91490c0bb6b6bbabd5e3b31ba9d1bbc"
+    },
+    {
+      "path": "/root/nudox-corpus-20261006/artifacts/canonical-go-gorilla-dto20/cancel-retry-dto20-20261006T115510Z/cold-terminal-replay/installed-journey-wire.jsonl",
+      "bytes": 35343,
+      "sha256": "19ae3de7cda012347876de08ee3a931163e487bcc1a402e1178ae8d8627efe8b"
+    }
+  ],
+  "checks": {
+    "owner_issued_ticket_cancel_requested": true,
+    "terminal_cancelled_has_no_compiler_failure": true,
+    "exact_terminal_state_survives_cold_and_key_replay": true,
+    "old_owner_ticket_unknown_after_cold": true,
+    "original_typed_compiler_refusal_preserved_exactly_four_reads": true
+  },
+  "whole_package_passes": 0
+}
