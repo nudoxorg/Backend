@@ -2,9 +2,9 @@
   "schema": "nudox.diagnostic-preview-channel.v1",
   "production_ready": false,
   "bootstrap": {
-    "url": "https://github.com/nudoxorg/Backend/releases/download/nudox-preview-installer/install-bootstrap-b12f5df0d02dfb3c.py",
-    "sha256": "b12f5df0d02dfb3cbacb150536f352122c6af2265257756be01f62c3ec8a936a",
-    "bytes": 5607
+    "url": "https://github.com/nudoxorg/Backend/releases/download/nudox-preview-installer/install-bootstrap-c7abc61872fbf970.py",
+    "sha256": "c7abc61872fbf9701fb21eccffe0bded7a6bcb513e7c849532a443fb74f5edaa",
+    "bytes": 5780
   },
   "platforms": {
     "linux-x64": {
@@ -36,8 +36,8 @@
       ],
       "installer": {
         "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261006-0584c3b6c0-macos-arm64/install-macos-arm64.py",
-        "sha256": "62da4ed4a6bbe28ea8e93e681f00024c47a909ef0071e2de280d7ec0828ee55f",
-        "bytes": 15468
+        "sha256": "72e88553137ed564b9a0fb75a909712ec0da7f7b43df7dfafc7754b717a07d51",
+        "bytes": 15521
       },
       "archive": {
         "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261006-0584c3b6c0-macos-arm64/nudox-macos-arm64-0584c3b6c0.tar.gz",

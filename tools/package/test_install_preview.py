@@ -50,3 +50,17 @@ class Tests(unittest.TestCase):
    self.assertEqual(boot.main(['--prefix','/tmp/preview-test-prefix']),0)
    self.assertEqual(download.call_count,1); self.assertIn('--prefix',execute.call_args.args[0])
 if __name__=='__main__': unittest.main()
+
+class PipeTests(unittest.TestCase):
+ def test_actual_stdin_bootstrap_dispatches_verified_child(self):
+  import subprocess,sys
+  channel=json.loads((ROOT/'preview-channel.json').read_text())
+  child=b"import sys; print('VERIFIED CHILD', sys.argv[1:])\n"
+  channel['bootstrap']['sha256']=hashlib.sha256(child).hexdigest(); channel['bootstrap']['bytes']=len(child)
+  for key,entry in channel['platforms'].items(): entry['tag']='checkpoint-20270101-'+entry['source'][:10]+'-'+key
+  source=(ROOT/'install_preview.py').read_text()
+  override="\ndef fetch(url,limit):\n    return "+repr(json.dumps(channel).encode())+" if url==CHANNEL else "+repr(child)+"\n"
+  source=source.replace("if __name__=='__main__':",override+"\nif __name__=='__main__':")
+  result=subprocess.run([sys.executable,'-','--prefix','/tmp/nudox-pipe-control'],input=source,text=True,capture_output=True,timeout=10)
+  self.assertEqual(result.returncode,0,result.stderr)
+  self.assertIn('VERIFIED CHILD',result.stdout); self.assertIn('/tmp/nudox-pipe-control',result.stdout)

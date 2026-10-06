@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Install immutable macOS arm64 diagnostic CLI preview; no stable-release claim."""
+from __future__ import annotations
 # Helpers reused unchanged from pinned install-linux-x64.py
 # SHA 61837bb39ca18cd0a39e0f63c05f80bc35a34a798aa686f50af7cb85a46c6a90.
 import argparse, hashlib, json, os, re, shutil, subprocess, sys, tarfile, tempfile, time
@@ -249,7 +250,7 @@ def main(argv=None):
     args=parser.parse_args(argv)
     if sys.platform!='darwin' or os.uname().machine.lower() not in {'arm64','aarch64'}: raise InstallError('Mac preview supports arm64 only')
     if not re.fullmatch('[a-f0-9]{64}',args.archive_sha256) or not re.fullmatch('[a-f0-9]{40}',args.source): raise InstallError('invalid digest/source')
-    if args.tag!='checkpoint-20261006-'+args.source[:10]+'-macos-arm64': raise InstallError('tag/source mismatch')
+    if not re.fullmatch(r'checkpoint-[0-9]{8}-'+args.source[:10]+'-macos-arm64',args.tag): raise InstallError('tag/source mismatch')
     size=int(args.archive_size)
     if not 0<size<=MAX_ARCHIVE_BYTES: raise InstallError('invalid archive size')
     parsed=urllib.parse.urlsplit(args.archive_url)

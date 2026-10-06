@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Install/update the diagnostic NuDox CLI preview for Linux x64 or Mac arm64."""
-import argparse, hashlib, json, platform, subprocess, sys, tempfile
+import argparse, hashlib, json, platform, re, subprocess, sys, tempfile
 from pathlib import Path
 import urllib.request, urllib.parse, urllib.error
 CHANNEL='https://github.com/nudoxorg/Backend/releases/download/nudox-preview-installer/preview-channel.json'
@@ -48,7 +48,7 @@ def validate_channel(channel):
         artifact(entry.get('installer'),MAX_SCRIPT); artifact(entry.get('archive'),2*1024**3)
         source=entry.get('source')
         if not isinstance(source,str) or len(source)!=40 or any(c not in '0123456789abcdef' for c in source): raise InstallError('invalid source revision')
-        if entry.get('tag')!='checkpoint-20261006-'+source[:10]+'-'+key: raise InstallError('tag/source/platform mismatch')
+        if not isinstance(entry.get('tag'),str) or not re.fullmatch(r'checkpoint-[0-9]{8}-'+source[:10]+'-'+re.escape(key),entry['tag']): raise InstallError('tag/source/platform mismatch')
         if not isinstance(entry['known_failures'],list) or any(not isinstance(x,str) for x in entry['known_failures']): raise InstallError('invalid failure descriptions')
     return channel
 def main(argv=None):
@@ -58,7 +58,9 @@ def main(argv=None):
     args=parser.parse_args(argv); selected=platform_key()
     channel=validate_channel(json.loads(fetch(args.channel_url,65536)))
     with tempfile.TemporaryDirectory(prefix='nudox-preview-') as temp:
-        if hashlib.sha256(Path(__file__).read_bytes()).hexdigest()!=channel['bootstrap']['sha256']:
+        script=Path(globals().get('__file__',''))
+        current_sha=hashlib.sha256(script.read_bytes()).hexdigest() if script.is_file() else None
+        if current_sha!=channel['bootstrap']['sha256']:
             path=Path(temp)/'install.py'; path.write_bytes(verified(channel['bootstrap'],MAX_SCRIPT))
             command=[sys.executable,str(path),'--channel-url',args.channel_url]
             if args.prefix: command+=['--prefix',str(args.prefix)]
