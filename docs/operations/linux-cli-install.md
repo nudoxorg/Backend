@@ -30,6 +30,14 @@ python3 tools/package/linux_release_package.py \
 
 The packager prints the immutable release tag and SHA-256. On Ubuntu, record that exact archive SHA and source revision in `native-qa-linux-x64.json` only after `cli_version`, `mcp_help`, `locald_sibling_discovery`, `clean_environment_without_nix_paths`, and `ubuntu_glibc_floor` all pass. The QA record must identify Ubuntu and glibc versions and is bound to the same archive and source. Keep actual QA logs with the candidate.
 
+Before publishing, the generated checkpoint bootstrap can install those exact local candidate bytes into an isolated QA home. It rejects this option unless its embedded release-manifest SHA matches `release-manifest.json`, then rechecks archive size and SHA before extraction:
+
+```sh
+env HOME="$QA_HOME" python3 /absolute/path/to/candidate/install-linux-x64.py \
+  --candidate-directory /absolute/path/to/candidate \
+  --prefix "$QA_HOME/.local"
+```
+
 ```sh
 python3 tools/package/release_contract.py validate \
   --candidate /absolute/path/to/candidate \
