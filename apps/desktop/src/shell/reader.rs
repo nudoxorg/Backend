@@ -2814,7 +2814,14 @@ impl Render for Reader {
         let Some(requested) = self.places.last().cloned() else { return div(); };
         let readiness = RouteDependencies::new(&requested.route, requested.overlay).display_phase(self.links.store.read(cx));
         let waiting = readiness == DestinationState::Pending;
-        let current = requested.clone();
+        // A read has not painted its destination yet. Keep the last actual
+        // departure as the one presentation until the real terminal answer;
+        // its existing motion may finish, but no new empty plate grows.
+        let retained_departure = waiting.then(|| self.arrival.as_ref()).flatten()
+            .and_then(|arrival| self.places.iter().find(|place| place.key == arrival.leaving))
+            .cloned();
+        let retaining_departure = retained_departure.is_some();
+        let current = retained_departure.unwrap_or_else(|| requested.clone());
         if waiting {
             if let Some(target) = self.targets.focused() {
                 self.pending_page_focus = Some(SettingsReturn { place: requested.key, root: snapshot.key(), target: Some(target) });
@@ -2850,15 +2857,11 @@ impl Render for Reader {
         }
         // The place change in flight, this frame (window space).
         let reader = self.frame.get();
-        // The route owns the plate as soon as it has a measured viewport.
-        // Read readiness controls its body and native actions, not whether
-        // the previous painted page survives or which spring Back reverses.
-        // Check the frame first so an unmeasured arrival is not consumed.
-        // Peel needs the actual declaration line. Keep that arrival and any
-        // existing plate until the read answers; unlike Open it cannot grow
-        // an honest loading body from a declaration that is not served yet.
-        let can_begin = self.arrival.as_ref().is_some_and(|arrival|
-            arrival.verb != Verb::Peel || !waiting);
+        // Arrival is a prepared route-owned change. Its spring starts only
+        // once a real destination can paint; readiness has no wall-clock
+        // timeout and does not request motion frames while it is pending.
+        // Check the frame before consuming it, including after a resize.
+        let can_begin = !waiting;
         if can_begin && let Some(reader) = reader
             && let Some(arrival) = self.arrival.take()
         {
@@ -2939,7 +2942,7 @@ impl Render for Reader {
             // A Fold carries the gem itself; the map's own handoff would
             // draw a second one.
             let source = self.graph_source.take().filter(|_| !transit.as_ref().is_some_and(|t| t.verb == Verb::Fold));
-            map.update(cx, |map, cx| map.show(snapshot.route(), source.as_ref(), window, cx));
+            map.update(cx, |map, cx| map.show(&current.route, source.as_ref(), window, cx));
             self.said = vec!["Graph fixture · pages resolve through your local index".into()];
             self.hero.clear();
             let tint = self.tint_now(cx);
@@ -2957,6 +2960,9 @@ impl Render for Reader {
                 scroll_mount: None,
                 child: div().size_full().child(map.clone()).into_any_element(),
             };
+            let framed = if retaining_departure {
+                gpui::inert("pending-map", "Previous graph while the destination opens", framed).into_any_element()
+            } else { framed.into_any_element() };
             #[cfg(test)]
             let framed = transit_tests::owned_ink(None, framed);
             let mut root = div().relative().size_full()
@@ -3000,6 +3006,7 @@ impl Render for Reader {
                     .map(|(presentation, owner)| (map.entity_id(), presentation, owner));
                 self.painted = self.painted_graph.as_ref().map(|_| current.key);
                 self.painted_root = self.painted_graph.as_ref().map(|_| snapshot.key());
+                if retaining_departure { root = root.child(opening_status(palette)); }
                 root
             };
         }
@@ -3020,7 +3027,7 @@ impl Render for Reader {
         // Gather for this exact typed destination even while an owner is
         // starting, failed, or replacing its root. Bodies decide whether a
         // retained value has a valid embedded identity for read-only paint.
-        let body = self.body(&current, true, &snapshot, &layout, &facet, current_edge,
+        let body = self.body(&current, !retaining_departure, &snapshot, &layout, &facet, current_edge,
             None, window, cx);
         self.painted = Some(current.key);
         self.painted_root = Some(snapshot.key());
@@ -3167,7 +3174,10 @@ impl Render for Reader {
             scroll_mount: Some((Rc::clone(&self.scroll_mounted), current.key)),
             child: scroller.into_any_element(),
         });
-        let scroller = facet::motion::flow::local_paint("reader-flow-paint", scroller).into_any_element();
+        let scroller = facet::motion::flow::local_paint("reader-flow-paint", scroller);
+        let scroller = if retaining_departure {
+            gpui::inert("pending-reader", "Previous page while the destination opens", scroller).into_any_element()
+        } else { scroller.into_any_element() };
         #[cfg(test)]
         let scroller = transit_tests::owned_ink(Some(current.key), scroller).into_any_element();
         let mut root = div().relative().size_full();
@@ -3258,11 +3268,19 @@ impl Render for Reader {
         if self.ask_geometry.is_some_and(|ask| ask.preview_left.is_none()) {
             return div().size_full();
         }
+        if retaining_departure { root = root.child(opening_status(palette)); }
         root.child(facet::probe::scroll_probe("reader-scroll", self.scroll.clone()))
             .child(glow)
             .text_color(palette.ink1.hsla())
             .font_family(facet::fonts::family(ty::BODY))
     }
+}
+
+fn opening_status(palette: &facet::Palette) -> gpui::Stateful<gpui::Div> {
+    div().id("reader-opening-status").role(gpui::Role::Status).aria_label("Opening page")
+        .absolute().right(px(16.0)).top(px(12.0)).px(px(12.0)).py(px(6.0))
+        .max_w(px(240.0)).bg(palette.g1.hsla()).text_color(palette.ink2.hsla())
+        .child("Opening page…")
 }
 
 impl Reader {
@@ -3728,7 +3746,8 @@ mod transit_tests {
             Intent::Navigate(crate::shell::tests::page_route("TransitHeldDestination")), cx));
         let first = shoot(&mut rig, 0, 0);
         received.recv_timeout(Duration::from_secs(1)).expect("actual destination read entered");
-        assert_eq!(first.p, Some(0.0), "Pending has the same route-owned plate as Ready");
+        assert_eq!(first.p, None, "a genuine pending read has not started an empty plate");
+        assert!(first.plate.is_none(), "the readable departure owns the whole Reader");
         assert!(reading(&first).any(|text| text.alpha > 0.0 && text.text.as_ref() == "RelationLabel"),
             "the departure still paints while the read is held: {first:#?}");
         assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 2);
@@ -3736,19 +3755,30 @@ mod transit_tests {
             store.symbol(&crate::shell::tests::symbol("TransitHeldDestination")).loaded_value().is_none()
         }), "no synthetic loaded value stands in for the held read");
         let opened = shoot(&mut rig, 112, 112);
-        let before = opened.p.expect("the held route still owns its opening driver");
+        assert!(opened.p.is_none() && opened.plate.is_none(),
+            "waiting is not an expanding blank animation: {opened:#?}");
+        assert!(reading(&opened).any(|text| text.text.as_ref() == "It names one relation group."),
+            "the actual departure prose remains readable across the unknown read delay");
+        let native = rig.cx.update(|window, _| window.debug_a11y_tree_json().expect("pending native tree"));
+        let tree: serde_json::Value = serde_json::from_str(&native).expect("pending native JSON");
+        let status = tree["nodes"].as_object().expect("native nodes").values()
+            .find(|node| node["aria"]["role"] == "Status" && node["aria"]["label"] == "Opening page")
+            .expect("the pending status is a real named native Status");
+        let width = status["bounds"]["width"].as_f64().expect("native status width");
+        assert!(width > 0.0 && width <= 240.5, "the 200% native status stays bounded: {status}");
+        assert_eq!(rig.cx.update(|window, cx| window.simulate_next_frame(cx)), 0,
+            "awaiting the real read creates no motion wake");
         rig.cx.simulate_keystrokes("secondary-[");
         let turned = shoot(&mut rig, 128, 16);
-        assert!((turned.p.expect("the same reversing driver") - before).abs() < 0.12,
-            "Back preserves the painted spring before any destination answer: {opened:#?} then {turned:#?}");
+        assert!(turned.p.is_none() && turned.plate.is_none(),
+            "Back cancels the unpainted prepared visit without a phantom reversing page: {turned:#?}");
         rig.cx.simulate_resize(size(px(1000.0), px(700.0)));
-        let resized = shoot(&mut rig, 144, 16);
+        let resized = shoot(&mut rig, 128, 0);
         let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
         let frame = reader.read_with(rig.cx, |reader, _| reader.frame.get().expect("current measured Reader frame"));
         let viewport = rig.cx.debug_bounds("reader-scroll").expect("the actual current scroll viewport");
         assert_eq!(frame, viewport, "the measured embedding and Reveal's scroll viewport agree on the first resized frame");
-        assert!(inside(resized.plate.expect("reversing resized plate"), frame),
-            "the reversing plate uses this resize's measured viewport: {resized:#?} in {frame:?}");
+        assert!(resized.plate.is_none(), "the cancelled visit cannot return a plate after resize");
         for text in reading(&resized) {
             assert!(inside(text.bounds, frame),
                 "200% resize clips actual Reader ink to its native viewport: {text:#?} vs {frame:?}");

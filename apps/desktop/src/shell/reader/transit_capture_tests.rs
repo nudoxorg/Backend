@@ -92,6 +92,52 @@ fn native_pending_reversal_and_resize_film() {
     drop(release);
     session.advance_to(2000);
     capture_native_transit(&mut session, &shell, &out, &revision, "back-settled");
+
+    // Cancellation acceptance cannot stand in for an actual moving reversal.
+    // Re-open through the real now-released worker, then interrupt its plate
+    // and resize its live parent on the first same-clock frame at 200%.
+    session.resize(1440, 900).expect("ready-film full viewport");
+    capture_native_transit(&mut session, &shell, &out, &revision, "ready-rest-200");
+    session.update(|_, cx| graph.root.update(cx, |root, cx| root.queue(
+        Intent::Navigate(crate::shell::tests::page_route("TransitHeldDestination")), cx)))
+        .expect("real ready-destination visit");
+    let ready_store = graph.store.clone();
+    let ready_root = graph.root.clone();
+    session.set_quiet(Some(Quiet {
+        check: Box::new(move |cx| ready_store.read(cx).symbol(
+            &crate::shell::tests::symbol("TransitHeldDestination")).is_loaded()
+            && !ready_root.read(cx).has_pending_work()),
+        deadline: Duration::from_secs(20),
+    }));
+    session.quiesce().expect("the real destination answers before its opening frame");
+    session.set_quiet(None);
+    capture_native_transit(&mut session, &shell, &out, &revision, "ready-open-000");
+    let p0 = session.update(|_, cx| shell.read(cx).reader_entity().read(cx).transit
+        .as_ref().map(|transit| transit.carry.value(facet::motion::now(cx))))
+        .expect("native ready driver").expect("actual Ready starts a plate");
+    assert!(p0 < 0.1, "the real opening begins on its first frame, p={p0}");
+    session.advance_to(2112);
+    capture_native_transit(&mut session, &shell, &out, &revision, "ready-open-112");
+    let before = session.update(|_, cx| shell.read(cx).reader_entity().read(cx).transit
+        .as_ref().expect("actual opening still moves").carry.value(facet::motion::now(cx)))
+        .expect("painted native opening value");
+    session.apply(&backend_gui_harness::Act::Key { chord: "secondary-[".to_owned() },
+        &mut |_, _, _| {}).expect("native Back interrupts a real opening");
+    session.advance_to(2128);
+    capture_native_transit(&mut session, &shell, &out, &revision, "ready-reverse-128");
+    let after = session.update(|_, cx| shell.read(cx).reader_entity().read(cx).transit
+        .as_ref().expect("actual reversal owns the same carry").carry.value(facet::motion::now(cx)))
+        .expect("native reversing value");
+    assert!((after - before).abs() < 0.12, "native reversal preserves its painted carry: {before} -> {after}");
+    session.resize(1000, 700).expect("actual first-frame resize during Ready reversal");
+    capture_native_transit(&mut session, &shell, &out, &revision, "ready-resize-first-128");
+    session.advance_to(2144);
+    capture_native_transit(&mut session, &shell, &out, &revision, "ready-resize-144");
+    session.advance_to(3000);
+    capture_native_transit(&mut session, &shell, &out, &revision, "ready-back-settled");
+    session.update(|window, cx| assert_eq!(window.simulate_next_frame(cx), 0,
+        "the fully settled native film leaves no motion frame requested"))
+        .expect("native settled wake proof");
 }
 
 fn capture_native_transit(session: &mut backend_gui_harness::Session,
@@ -108,6 +154,12 @@ fn capture_native_transit(session: &mut backend_gui_harness::Session,
     let (frame, native, ink, all_ink, ledger) = session.update(|window, cx| {
         let frame = shell.read(cx).reader_entity().read(cx).frame.get().expect("actual Reader frame");
         let native = window.debug_a11y_tree_json().expect("native frame tree");
+        if matches!(name, "pending-000" | "pending-112") {
+            let reader = shell.read(cx).reader_entity();
+            assert!(reader.read(cx).transit.is_none(), "pending is prepared without an empty plate");
+            assert!(reader.read(cx).arrival.is_some(), "the route still owns its prepared real arrival");
+            assert!(native.contains("Opening page"), "the pending status is actual native accessibility");
+        }
         let ink: Vec<_> = cx.global::<InkTrace>().0.iter().map(|(owner, text)| serde_json::json!({
             "page": owner, "text": text.text.as_ref(), "alpha": text.alpha,
             "bounds": [f32::from(text.bounds.left()), f32::from(text.bounds.top()),
@@ -118,14 +170,6 @@ fn capture_native_transit(session: &mut backend_gui_harness::Session,
             "bounds": [f32::from(text.bounds.left()), f32::from(text.bounds.top()),
                 f32::from(text.bounds.right()), f32::from(text.bounds.bottom())],
         })).collect();
-        if matches!(name, "reverse-128" | "resize-first-128" | "resize-144") {
-            for unique in ["The readable label of RelationLabel.", "It names one relation group."] {
-                let runs: Vec<_> = window.painted_texts().iter()
-                    .filter(|run| run.text.as_ref() == unique).collect();
-                assert_eq!(runs.len(), 1,
-                    "{name}: the original prose has one native run, including deferred paint: {runs:#?}");
-            }
-        }
         (frame, native, ink, all_ink, format!("{:#?}", facet::probe::take(cx)))
     }).expect("native capture evidence");
     let x = f32::from(frame.left()).max(0.0).floor() as u32;
@@ -144,4 +188,14 @@ fn capture_native_transit(session: &mut backend_gui_harness::Session,
     });
     std::fs::write(out.join(format!("{name}.json")), serde_json::to_vec_pretty(&evidence).expect("film JSON"))
         .expect("source-linked native film evidence");
+    if matches!(name, "reverse-128" | "resize-first-128" | "resize-144"
+        | "ready-reverse-128" | "ready-resize-first-128" | "ready-resize-144") {
+        for unique in ["The readable label of RelationLabel.", "It names one relation group.",
+            "one of 2", "Exactly one of these at a time"] {
+            let runs: Vec<_> = evidence["all_native_ink"].as_array().expect("actual native ledger")
+                .iter().filter(|run| run["text"].as_str() == Some(unique)).collect();
+            assert_eq!(runs.len(), 1,
+                "{name}: the original prose/caption has one actual native run, including deferred paint: {runs:#?}");
+        }
+    }
 }
