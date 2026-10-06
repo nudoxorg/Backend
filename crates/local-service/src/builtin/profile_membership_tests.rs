@@ -694,7 +694,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     let unavailable_rows = unavailable_paths.map(|unavailable_path| {
         (
             backend_engine::product_source_file_key(project_key, unavailable_path),
-            ProductSourceRecord::file_unavailable(
+            backend_engine::ProductSourceRecord::file_unavailable(
                 project_key,
                 unavailable_path,
                 SourceLanguage::Clang,
