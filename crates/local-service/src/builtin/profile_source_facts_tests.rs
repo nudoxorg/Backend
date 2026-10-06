@@ -239,6 +239,10 @@ fn staged_large_parser_facts_use_small_queue_exact_shared_cas_and_cold_replay() 
         &[(left, Some(left_facts)), (right, Some(right_facts))],
     );
     assert!(inline.queue_bytes() > 4 * 1024 * 1024);
+    eprintln!(
+        "actual parser facts inline queue bytes={}",
+        inline.queue_bytes()
+    );
     let before = daemon.engine().daemon().owner().snapshot();
     let request = BuiltinModel.request_id(&inline);
     assert!(
@@ -265,7 +269,17 @@ fn staged_large_parser_facts_use_small_queue_exact_shared_cas_and_cold_replay() 
         .expect("real parser facts staged into immutable CAS")
     };
     let first = stage(inline.clone());
+    #[cfg(unix)]
+    let allocation = backend_store::PhysicalAllocationBudget::new(u64::MAX, 4096);
+    #[cfg(unix)]
+    let first_allocation = allocation.admit(before.durable_store().unwrap()).unwrap();
     let second = stage(inline.clone());
+    #[cfg(unix)]
+    assert_eq!(
+        allocation.admit(before.durable_store().unwrap()).unwrap(),
+        first_allocation,
+        "the exact shared stage allocates no second immutable payload or index"
+    );
     assert!(first.queue_bytes() < 4 * 1024 * 1024);
     assert_eq!(BuiltinModel.request_id(&first), request);
     assert_eq!(BuiltinModel.request_id(&second), request);
@@ -285,6 +299,12 @@ fn staged_large_parser_facts_use_small_queue_exact_shared_cas_and_cold_replay() 
         inline.encode()
     );
     assert_eq!(first.encode().len(), 180);
+    eprintln!(
+        "staged queue bytes={} pointer bytes={} exact members={}",
+        first.queue_bytes(),
+        first.encode().len(),
+        first_evidence.membership.object_count()
+    );
     super::super::commands::commit_builtin_intent(&mut daemon, 2, &first)
         .expect("small staged request passes the real owner queue and publication");
     let selected = daemon.engine().daemon().owner().snapshot();
