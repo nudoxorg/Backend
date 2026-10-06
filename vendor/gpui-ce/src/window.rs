@@ -10928,7 +10928,7 @@ mod deferred_clip_tests {
                 "nested motion remains below later plate"
             );
             assert!(
-                f32::from(quads[0].content_mask.bounds.size.width) / window.scale_factor() <= 120.0
+                quads[0].content_mask.bounds.size.width.as_f32() / window.scale_factor() <= 120.0
             );
             let runs: Vec<_> = window
                 .painted_texts()
@@ -11009,7 +11009,7 @@ mod deferred_clip_tests {
             let painted_clip = quad
                 .content_mask
                 .bounds
-                .map(|p| px(f32::from(p) / window.scale_factor()));
+                .map(|p| px(p.as_f32() / window.scale_factor()));
             assert_eq!(
                 painted_clip, expected,
                 "nested native primitives retain the original inherited clip"
@@ -11048,7 +11048,7 @@ mod deferred_clip_tests {
             let painted_clip = quad
                 .content_mask
                 .bounds
-                .map(|p| px(f32::from(p) / window.scale_factor()));
+                .map(|p| px(p.as_f32() / window.scale_factor()));
             assert!(
                 painted_clip.size.width > px(120.0),
                 "the native test detects missing clip inheritance"
