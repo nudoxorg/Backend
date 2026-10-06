@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 
-const SOURCE_FRONTIER_VERSION: u8 = 2;
+const SOURCE_FRONTIER_VERSION: u8 = 3;
 const SOURCE_FRONTIER_POLICY_IDENTITY: &str =
     "backend.local-source-frontier.v1;selection=source-selection-policy.v1;git-clean-paths.v1";
 const MAX_SOURCE_FRONTIERS: usize = 8 * 1024;
@@ -54,6 +54,8 @@ pub(super) struct SourceFrontierFile {
     git_blob: String,
     pub(super) revision: FileSystemRevision,
     pub(super) encoded_record_bytes: usize,
+    /// Complete page charge from the same admitted source/analysis identity.
+    pub(super) encoded_fact_bytes: usize,
 }
 
 /// Compact cache of exact CAS row fingerprints; no source record bodies live
@@ -796,6 +798,7 @@ fn stable_source_delta(
                 git_blob: cached.git_blob.clone(),
                 revision,
                 encoded_record_bytes,
+                encoded_fact_bytes: cached.encoded_fact_bytes,
             },
         );
     }
@@ -851,6 +854,12 @@ fn source_frontier_from_snapshot(
             continue;
         };
         let (record_digest, encoded_record_bytes) = source_record_digest(record)?;
+        let encoded_fact_bytes = snapshot
+            .encoded_fact_bytes
+            .binary_search_by_key(key, |(key, _)| *key)
+            .ok()
+            .and_then(|index| snapshot.encoded_fact_bytes.get(index))
+            .map(|(_, bytes)| *bytes)?;
         let entry_bytes = size_of::<SourceFrontierFile>()
             .saturating_add(fields.path.len())
             .saturating_add(indexed.blob.len());
@@ -867,6 +876,7 @@ fn source_frontier_from_snapshot(
             git_blob: indexed.blob.clone(),
             revision,
             encoded_record_bytes,
+            encoded_fact_bytes,
         });
     }
     files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));

@@ -71,6 +71,8 @@ pub(super) struct IndexSnapshot {
     pub(super) files: Vec<([u8; 32], ProductSourceRecord)>,
     /// Complete file-facts updates produced before compact source-row retention.
     pub(super) source_facts: Vec<ProductSourceFileFactsUpdate>,
+    /// Full persisted fact-page charges, including unchanged frontier files.
+    pub(super) encoded_fact_bytes: Vec<([u8; 32], usize)>,
     pub(super) compiler_sources: Vec<CompilerSourceHandle>,
     pub(super) reused_compiler_files: Vec<ReusedCompilerFile>,
     pub(super) compiler_configuration: CompilerConfigurationSnapshot,
@@ -243,6 +245,7 @@ struct ScannedFile {
     /// Bytes actually returned by a source read in this scan.
     source_bytes_read: usize,
     encoded_record_bytes: usize,
+    encoded_fact_bytes: usize,
     /// `None` when the claiming frontend has no semantic profile for this
     /// extension: the file is still a project row, it simply carries nothing
     /// a compiler could be asked to analyse.
@@ -1357,9 +1360,7 @@ fn scan_source_paths(
                                     source_policy,
                                     admitted,
                                     file.encoded_record_bytes,
-                                    file.source_facts
-                                        .as_ref()
-                                        .map_or(0, ProductSourceFileFactsUpdate::encoded_bytes),
+                                    file.encoded_fact_bytes,
                                     false,
                                 )
                             },
@@ -1447,7 +1448,7 @@ fn scan_source_path(
             })?;
             let source_bytes = usize::try_from(cached.revision.length)
                 .map_err(|_| "source byte length exceeds this target".to_owned())?;
-            return reused_scanned_file(
+            let mut file = reused_scanned_file(
                 cached.relative_path.clone(),
                 cached.key,
                 record.clone(),
@@ -1457,8 +1458,9 @@ fn scan_source_path(
                 profile,
                 source_fact_identity,
                 Some(cached.encoded_record_bytes),
-            )
-            .map(Some);
+            )?;
+            file.encoded_fact_bytes = cached.encoded_fact_bytes;
+            return Ok(Some(file));
         }
     }
     scan_file(
@@ -1833,6 +1835,7 @@ fn scan_project_with_configuration_policy_attempt(
     source.update(b"backend.project-snapshot.v2\0");
     let mut files = Vec::with_capacity(scanned.len());
     let mut source_facts = Vec::with_capacity(scanned.len());
+    let mut encoded_fact_bytes = Vec::with_capacity(scanned.len());
     let mut compiler_sources = Vec::with_capacity(scanned.len());
     let mut reused_compiler_files = Vec::with_capacity(scanned.len());
     for scanned in scanned {
@@ -1843,6 +1846,7 @@ fn scan_project_with_configuration_policy_attempt(
             reused_compiler,
             source_facts: facts,
             source_bytes_read: _,
+            encoded_fact_bytes: fact_bytes,
             ..
         } = scanned;
         let file = record
@@ -1851,12 +1855,14 @@ fn scan_project_with_configuration_policy_attempt(
         source.update(&key);
         source.update(&file.content_version);
         source.update(&file.analysis_version);
+        encoded_fact_bytes.push((key, fact_bytes));
         files.push((key, record));
         source_facts.extend(facts);
         compiler_sources.extend(compiler_source);
         reused_compiler_files.extend(reused_compiler);
     }
     files.sort_by_key(|(key, _)| *key);
+    encoded_fact_bytes.sort_unstable_by_key(|(key, _)| *key);
     let relevant_languages = compiler_sources
         .iter()
         .map(|source| source.profile.language())
@@ -1882,6 +1888,7 @@ fn scan_project_with_configuration_policy_attempt(
         source_version: *source.finalize().as_bytes(),
         files,
         source_facts,
+        encoded_fact_bytes,
         compiler_sources,
         reused_compiler_files,
         compiler_configuration,
@@ -2415,6 +2422,7 @@ fn unavailable_file(
         source_bytes: 0,
         source_bytes_read,
         encoded_record_bytes: encoded.len(),
+        encoded_fact_bytes: 0,
         source_facts: None,
     })
 }
@@ -2541,6 +2549,7 @@ fn scan_one(
             None,
         )
         .map_err(SourceFault::Fatal)?;
+        scanned.encoded_fact_bytes = source_facts.encoded_bytes();
         scanned.source_facts = Some(source_facts);
         return Ok(scanned);
     }
@@ -2656,6 +2665,9 @@ fn finish_scanned_file(
         source_bytes,
         source_bytes_read,
         encoded_record_bytes,
+        encoded_fact_bytes: source_facts
+            .as_ref()
+            .map_or(0, ProductSourceFileFactsUpdate::encoded_bytes),
         source_facts,
     })
 }
@@ -3854,6 +3866,91 @@ mod tests {
         let retried = scan_with_source_policy(&root, [29; 32], &BTreeMap::new(), default)?;
         assert_eq!(retried.source_version, admitted.source_version);
         assert_eq!(retried.files, admitted.files);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn warm_frontier_charges_unchanged_fact_pages_after_another_file_grows() -> Result<(), String> {
+        let repository = GitScratch(scratch_dir("warm-fact-page-budget")?);
+        let root = &repository.0;
+        git_test_command(root, &["init", "-q"])?;
+        git_test_command(
+            root,
+            &["config", "user.email", "source-budget@example.invalid"],
+        )?;
+        git_test_command(root, &["config", "user.name", "Source Budget Test"])?;
+        let declarations = |count: usize| {
+            (0..count)
+                .map(|index| {
+                    format!(
+                        "export function declaration_{index:04}(): number {{ return {index}; }}\n"
+                    )
+                })
+                .collect::<String>()
+        };
+        fs::write(root.join("a_many.ts"), declarations(1_000))
+            .map_err(|error| error.to_string())?;
+        fs::write(root.join("b_changed.ts"), declarations(1)).map_err(|error| error.to_string())?;
+        git_test_command(root, &["add", "-A"])?;
+        git_test_command(root, &["commit", "-m", "fact page budget fixture"])?;
+        let project = git_project_key(root);
+        let default = SourceAdmissionPolicy::new(SourceAdmissionLimits::default())
+            .map_err(|error| error.to_string())?;
+        let cold = scan_with_source_policy(root, project, &BTreeMap::new(), default)?;
+        let encoded_rows = |snapshot: &IndexSnapshot| {
+            snapshot
+                .files
+                .iter()
+                .map(|(_, row)| {
+                    let mut bytes = Vec::new();
+                    ProductSourceRelation::encode_value(row, &mut bytes);
+                    bytes.len()
+                })
+                .sum::<usize>()
+                + snapshot
+                    .encoded_fact_bytes
+                    .iter()
+                    .map(|(_, bytes)| bytes)
+                    .sum::<usize>()
+        };
+        let mut limits = default.limits();
+        limits.max_project_record_bytes = encoded_rows(&cold) + 512;
+        let tight = SourceAdmissionPolicy::new(limits).map_err(|error| error.to_string())?;
+        let seeded = scan_with_source_policy(root, project, &reusable_rows(&cold), tight)?;
+        let reusable = reusable_rows(&seeded);
+        for _ in 0..2 {
+            let warm = scan_with_source_policy(root, project, &reusable, tight)?;
+            assert_eq!(
+                warm.source_bytes_read, 0,
+                "the unchanged frontier must still avoid source reads"
+            );
+            assert!(
+                warm.source_facts.is_empty(),
+                "the page charge must not force reconstruction"
+            );
+            assert_eq!(
+                warm.encoded_fact_bytes, seeded.encoded_fact_bytes,
+                "a warm frontier must carry full page charges into the next frontier"
+            );
+        }
+        fs::write(root.join("b_changed.ts"), declarations(500))
+            .map_err(|error| error.to_string())?;
+        let grown = scan_with_source_policy(root, project, &reusable, default)?;
+        assert!(encoded_rows(&grown) > tight.limits().max_project_record_bytes);
+        // The changed file alone fits; only accounting the unchanged file's
+        // complete pages makes the aggregate refusal correct.
+        let changed_charge = grown
+            .encoded_fact_bytes
+            .iter()
+            .find(|(key, _)| *key == product_source_file_key(project, "b_changed.ts"))
+            .ok_or("changed file charge")?
+            .1;
+        assert!(changed_charge < tight.limits().max_project_record_bytes);
+        let error = scan_with_source_policy(root, project, &reusable, tight)
+            .err()
+            .ok_or("warm reuse erased the unchanged file's page charge")?;
+        assert!(error.contains("project record bytes"), "{error}");
         Ok(())
     }
 
