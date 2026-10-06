@@ -179,6 +179,22 @@ impl ProductRecord {
     }
 }
 
+/// Exact semantic operand/result facet, separate from readable display rows.
+/// Values are copied from the typed reply, never reconstructed from row labels.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
+pub enum ProductSemanticData {
+    /// Exact compiler-version records usable as the shape read source operand.
+    Versions(Box<[SemanticVersionRecord]>),
+    /// Existing shape wire egress after certificate-bearing direct admission.
+    Shapes(backend_library::SemanticShapeExport),
+}
+
 /// One rendered product answer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProductView {
@@ -191,7 +207,7 @@ pub struct ProductView {
     index_operation: Option<backend_library::IndexOperationObservation>,
     selected_source_frontier: Option<SelectedProjectSourceFrontier>,
     package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
-    semantic_shapes: Option<backend_library::SemanticShapeExport>,
+    semantic_data: Option<ProductSemanticData>,
 }
 
 /// Exact owner-issued indexing state retained alongside its readable projection.
@@ -387,8 +403,8 @@ impl ProductView {
 
     /// Complete bounded compiler shape egress, never a reconstructed source projection.
     #[must_use]
-    pub fn semantic_shapes(&self) -> Option<&backend_library::SemanticShapeExport> {
-        self.semantic_shapes.as_ref()
+    pub fn semantic_data(&self) -> Option<&ProductSemanticData> {
+        self.semantic_data.as_ref()
     }
 
     /// Returns the exact selected Project membership captured with this semantic query.
@@ -487,7 +503,7 @@ impl ProductView {
             index_operation: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
-            semantic_shapes: None,
+            semantic_data: None,
         }
     }
 
@@ -504,7 +520,7 @@ impl ProductView {
             index_operation: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
-            semantic_shapes: None,
+            semantic_data: None,
         }
     }
 
@@ -519,7 +535,7 @@ impl ProductView {
             index_operation: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
-            semantic_shapes: None,
+            semantic_data: None,
         }
     }
 
@@ -534,7 +550,7 @@ impl ProductView {
             index_operation: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
-            semantic_shapes: None,
+            semantic_data: None,
         }
     }
 
@@ -549,7 +565,7 @@ impl ProductView {
             index_operation: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
-            semantic_shapes: None,
+            semantic_data: None,
         }
     }
 }
@@ -608,24 +624,30 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::Dependencies(facts) => dependency_view("dependencies", facts),
         SurfaceReply::PackageGraphPage(page) => package_graph_page_view(page),
         SurfaceReply::Owner(metadata) => owner_view(metadata),
-        SurfaceReply::SemanticVersions(records) => ProductView::rows(
-            "semantic-versions",
-            records.iter().map(semantic_row).collect(),
-        )
-        .with_selected_source_frontier(
-            records
-                .iter()
-                .find_map(|record| record.selected_source_frontier.clone()),
-        ),
+        SurfaceReply::SemanticVersions(records) => {
+            let mut view = ProductView::rows(
+                "semantic-versions",
+                records.iter().map(semantic_row).collect(),
+            )
+            .with_selected_source_frontier(
+                records
+                    .iter()
+                    .find_map(|record| record.selected_source_frontier.clone()),
+            );
+            view.semantic_data = Some(ProductSemanticData::Versions(records.clone()));
+            view
+        }
         SurfaceReply::SemanticVersionSelected(record) => {
-            ProductView::rows("select-semantic-version", vec![semantic_row(record)])
+            let mut view = ProductView::rows("select-semantic-version", vec![semantic_row(record)]);
+            view.semantic_data = Some(ProductSemanticData::Versions(Box::new([record.clone()])));
+            view
         }
         SurfaceReply::SemanticShapes(export) => {
             let mut view = ProductView::stated(
                 "semantic-shapes",
                 "Compiler-owned shapes with exact selected-source provenance.",
             );
-            view.semantic_shapes = Some(export.clone());
+            view.semantic_data = Some(ProductSemanticData::Shapes(export.clone()));
             view
         }
         SurfaceReply::PackageSourceMembershipPage(page) => {

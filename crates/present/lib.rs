@@ -119,7 +119,7 @@ pub use page::{
 };
 pub use product::{
     CursorProjection, CursorTarget, IndexJobProjection, IndexSearchPageInfo, ProductRecord,
-    ProductView, product_view,
+    ProductSemanticData, ProductView, product_view,
 };
 pub use record::{Record, RecordList, RecordState, Score};
 pub use render::{Colour, Style, Theme, Width, display_width, markdown, text};

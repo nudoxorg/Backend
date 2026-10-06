@@ -947,7 +947,10 @@ fn semantic_shapes_cli_and_mcp_grammar_preserve_exact_selected_operands_and_egre
         export.clone(),
     ));
     let dto = crate::dto::ProductDto::new(&view);
-    assert_eq!(dto.semantic_shapes, Some(export));
+    assert_eq!(
+        dto.semantic_data,
+        Some(crate::ProductSemanticData::Shapes(export))
+    );
     assert_eq!(dto.heading, "semantic-shapes");
     assert!(
         dto.records.is_empty(),

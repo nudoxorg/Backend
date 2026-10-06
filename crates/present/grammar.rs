@@ -489,7 +489,7 @@ const CURSOR: ArgumentSpec = ArgumentSpec::optional(
 );
 
 /// The calling convention of every registry row, in registry order.
-pub const GRAMMARS: [CommandGrammar; 52] = [
+pub const GRAMMARS: [CommandGrammar; 53] = [
     CommandGrammar {
         name: "advisory",
         tool: "backend.advisory",

@@ -462,7 +462,7 @@ fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
         );
         assert_ne!(result["isError"], true, "{result}");
         assert_eq!(
-            result["structuredContent"]["semantic_shapes"],
+            result["structuredContent"]["semantic_data"]["value"],
             serde_json::to_value(&export).expect("view")
         );
         assert_eq!(server.product.surface_commands.len(), 1);

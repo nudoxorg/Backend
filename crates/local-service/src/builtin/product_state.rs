@@ -423,7 +423,8 @@ impl ProductState {
                 ),
                 false,
             ),
-            SurfaceCommand::SemanticVersions { .. }
+            SurfaceCommand::SemanticShapes { .. }
+            | SurfaceCommand::SemanticVersions { .. }
             | SurfaceCommand::SelectSemanticVersion { .. } => {
                 return Err(
                     "semantic version history requires compiler publication authority".to_owned(),

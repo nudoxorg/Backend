@@ -781,7 +781,7 @@ pub struct ProductDto {
         Option<backend_library::PackageSourceMembershipPageResultV1>,
     /// Exact existing shape wire tree exported after direct certificate admission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub semantic_shapes: Option<backend_library::SemanticShapeExport>,
+    pub semantic_data: Option<crate::product::ProductSemanticData>,
 }
 
 /// Shared page envelope projected for CLI, MCP, and desktop product replies.
@@ -868,7 +868,7 @@ impl ProductDto {
             index_operation: view.index_operation().cloned(),
             selected_source_frontier: view.selected_source_frontier().cloned(),
             package_source_membership_page: view.package_source_membership_page().cloned(),
-            semantic_shapes: view.semantic_shapes().cloned(),
+            semantic_data: view.semantic_data().cloned(),
         }
     }
 }
