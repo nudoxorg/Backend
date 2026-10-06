@@ -1042,6 +1042,24 @@ pub fn merge_bind_results_ref_with_project_semantic_options(
     merge_bind_results_from_source(&mut source, project_semantic_options)
 }
 
+/// Merge borrowed bind results under one explicit semantic policy while
+/// sharing the caller's cancellation, deadline, and work allowance.
+///
+/// If the checkpoint stops, all partially merged state is dropped and no
+/// `MergedProgram` is returned.
+pub fn merge_bind_results_ref_with_project_semantic_options_and_execution_checkpoint(
+    results: &[&BindResult],
+    project_semantic_options: ProjectSemanticOptions,
+    checkpoint: &dyn tsz_common::ExecutionCheckpoint,
+) -> Result<MergedProgram, tsz_common::ProjectExecutionStop> {
+    let mut source = BorrowedBindResults { results };
+    merge_bind_results_from_source_with_execution_checkpoint(
+        &mut source,
+        project_semantic_options,
+        checkpoint,
+    )
+}
+
 trait BindResultsSource {
     fn len(&self) -> usize;
     fn get(&self, index: usize) -> &BindResult;
@@ -1082,5 +1100,29 @@ impl BindResultsSource for BorrowedBindResults<'_> {
 
     fn get(&self, index: usize) -> &BindResult {
         self.results[index]
+    }
+}
+
+#[cfg(test)]
+mod execution_checkpoint_tests {
+    use super::merge_bind_results_ref_with_project_semantic_options_and_execution_checkpoint;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+    use tsz_common::{ProjectExecutionBudget, ProjectExecutionStop, ProjectSemanticOptions};
+
+    #[test]
+    fn stopped_merge_never_returns_a_partial_program() {
+        let cancelled = AtomicBool::new(true);
+        let budget = ProjectExecutionBudget::new(
+            Instant::now() + Duration::from_secs(5),
+            &cancelled,
+            10_000,
+        );
+        let result = merge_bind_results_ref_with_project_semantic_options_and_execution_checkpoint(
+            &[],
+            ProjectSemanticOptions::structural(),
+            &budget,
+        );
+        assert!(matches!(result, Err(ProjectExecutionStop::Cancelled)));
     }
 }

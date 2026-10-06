@@ -3,8 +3,11 @@
 ///
 /// The top-level `merge_bind_results_from_source` function is thin orchestration;
 /// all merge reconciliation policy lives in this type.
-struct BindResultReducer {
+struct BindResultReducer<'checkpoint> {
     project_semantic_options: ProjectSemanticOptions,
+    execution_checkpoint: Option<&'checkpoint dyn tsz_common::ExecutionCheckpoint>,
+    pending_work_units: u64,
+    stopped: Option<tsz_common::ProjectExecutionStop>,
     // Lib processing
     lib_binders: Vec<Arc<BinderState>>,
     lib_binder_arena_map: FxHashMap<usize, Arc<NodeArena>>,
@@ -38,23 +41,45 @@ struct BindResultReducer {
     pre_merge_bind_total_bytes: usize,
 }
 
-impl BindResultReducer {
+macro_rules! tick_or_return {
+    () => {
+        if !Self::tick_fields(
+            &mut self.pending_work_units,
+            &mut self.stopped,
+            self.execution_checkpoint,
+        ) {
+            return;
+        }
+    };
+}
+
+impl<'checkpoint> BindResultReducer<'checkpoint> {
     fn new(
         results: &impl BindResultsSource,
         project_semantic_options: ProjectSemanticOptions,
-    ) -> Self {
+        execution_checkpoint: Option<&'checkpoint dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<Self, tsz_common::ProjectExecutionStop> {
+        let mut pending_work_units = 0;
+        if let Some(checkpoint) = execution_checkpoint {
+            checkpoint.checkpoint(0)?;
+        }
         // Capture aggregate pre-merge memory footprint before we start consuming data.
-        let pre_merge_bind_total_bytes: usize = (0..results.len())
-            .map(|index| results.get(index).estimated_size_bytes())
-            .sum();
+        let mut pre_merge_bind_total_bytes = 0usize;
+        for index in 0..results.len() {
+            Self::charge_checkpoint(execution_checkpoint, &mut pending_work_units, 1, false)?;
+            pre_merge_bind_total_bytes = pre_merge_bind_total_bytes
+                .saturating_add(results.get(index).estimated_size_bytes());
+        }
 
         // Collect lib_binders from all results (deduplicated by address), paired with their arenas.
         // Use `lib_binder_arena_map`'s Vacant entry as the dedup gate — no separate set needed.
         let mut lib_binders: Vec<Arc<BinderState>> = Vec::new();
         let mut lib_binder_arena_map: FxHashMap<usize, Arc<NodeArena>> = FxHashMap::default();
         for index in 0..results.len() {
+            Self::charge_checkpoint(execution_checkpoint, &mut pending_work_units, 1, false)?;
             let result = results.get(index);
             for (lib_binder, lib_arena) in result.lib_binders.iter().zip(result.lib_arenas.iter()) {
+                Self::charge_checkpoint(execution_checkpoint, &mut pending_work_units, 1, false)?;
                 let binder_addr = Arc::as_ptr(lib_binder) as usize;
                 if let std::collections::hash_map::Entry::Vacant(e) =
                     lib_binder_arena_map.entry(binder_addr)
@@ -66,10 +91,16 @@ impl BindResultReducer {
         }
 
         // Calculate total symbols needed (including lib symbols)
-        let lib_symbol_count: usize = lib_binders.iter().map(|b| b.symbols.len()).sum();
-        let user_symbol_count: usize = (0..results.len())
-            .map(|index| results.get(index).symbols.len())
-            .sum();
+        let mut lib_symbol_count = 0usize;
+        for binder in &lib_binders {
+            Self::charge_checkpoint(execution_checkpoint, &mut pending_work_units, 1, false)?;
+            lib_symbol_count = lib_symbol_count.saturating_add(binder.symbols.len());
+        }
+        let mut user_symbol_count = 0usize;
+        for index in 0..results.len() {
+            Self::charge_checkpoint(execution_checkpoint, &mut pending_work_units, 1, false)?;
+            user_symbol_count = user_symbol_count.saturating_add(results.get(index).symbols.len());
+        }
         let total_symbols = lib_symbol_count + user_symbol_count;
 
         // Create global symbol arena with pre-allocated capacity
@@ -119,8 +150,12 @@ impl BindResultReducer {
         let lib_symbol_remap: FxHashMap<(usize, SymbolId), SymbolId> = FxHashMap::default();
         let lib_name_to_global: FxHashMap<AstAtom, SymbolId> = FxHashMap::default();
 
-        Self {
+        Self::charge_checkpoint(execution_checkpoint, &mut pending_work_units, 0, true)?;
+        Ok(Self {
             project_semantic_options,
+            execution_checkpoint,
+            pending_work_units,
+            stopped: None,
             lib_binders,
             lib_binder_arena_map,
             lib_symbol_remap,
@@ -143,7 +178,61 @@ impl BindResultReducer {
             reexports,
             wildcard_reexports,
             pre_merge_bind_total_bytes,
+        })
+    }
+
+    fn charge_checkpoint(
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+        pending_work_units: &mut u64,
+        work_units: u64,
+        force: bool,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
+        let Some(checkpoint) = checkpoint else {
+            return Ok(());
+        };
+        *pending_work_units = pending_work_units.saturating_add(work_units);
+        if force || *pending_work_units >= 64 {
+            let charged = std::mem::take(pending_work_units);
+            checkpoint.checkpoint(charged)?;
         }
+        Ok(())
+    }
+
+    fn tick_fields(
+        pending_work_units: &mut u64,
+        stopped: &mut Option<tsz_common::ProjectExecutionStop>,
+        execution_checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> bool {
+        if stopped.is_some() {
+            return false;
+        }
+        let Some(checkpoint) = execution_checkpoint else {
+            return true;
+        };
+        *pending_work_units = pending_work_units.saturating_add(1);
+        if *pending_work_units >= 64 {
+            let charged = std::mem::take(pending_work_units);
+            if let Err(stop) = checkpoint.checkpoint(charged) {
+                *stopped = Some(stop);
+                return false;
+            }
+        }
+        true
+    }
+
+    fn flush_checkpoint(&mut self) -> bool {
+        if self.stopped.is_some() {
+            return false;
+        }
+        let Some(checkpoint) = self.execution_checkpoint else {
+            return true;
+        };
+        let charged = std::mem::take(&mut self.pending_work_units);
+        if let Err(stop) = checkpoint.checkpoint(charged) {
+            self.stopped = Some(stop);
+            return false;
+        }
+        true
     }
 
     // ==========================================================================
@@ -162,6 +251,7 @@ impl BindResultReducer {
         // Iterate by index to avoid holding a borrow on `self.lib_binders` while the
         // loop body mutates other fields of `self` through the stable NLL split-borrow.
         for lib_binder_idx in 0..self.lib_binders.len() {
+            tick_or_return!();
             let lib_binder = Arc::clone(&self.lib_binders[lib_binder_idx]);
             let lib_binder_ptr = Arc::as_ptr(&lib_binder) as usize;
 
@@ -189,6 +279,7 @@ impl BindResultReducer {
 
             // Process all symbols in this lib binder
             for i in 0..lib_binder.symbols.len() {
+                tick_or_return!();
                 let local_id = SymbolId(i as u32);
                 if let Some(lib_sym) = lib_binder.symbols.get(local_id) {
                     // Determine if this is a top-level symbol by checking file_locals.
@@ -327,6 +418,7 @@ impl BindResultReducer {
         // hashing overhead of a set; setting to None twice is idempotent so dedup is unnecessary.
         let lib_global_ids: Vec<SymbolId> = self.lib_symbol_remap.values().copied().collect();
         for global_id in lib_global_ids {
+            tick_or_return!();
             if let Some(sym) = self.global_symbols.get_mut(global_id) {
                 sym.exports = None;
                 sym.members = None;
@@ -358,6 +450,7 @@ impl BindResultReducer {
                 sym.members.as_ref()
             };
             for (name, &local_id) in local_table.iter() {
+                tick_or_return!();
                 if let Some(&new_id) = self.lib_symbol_remap.get(&(lib_binder_ptr, local_id)) {
                     let prev = existing.and_then(|t| t.get(name));
                     if let Some(prev_id) = prev {
@@ -372,6 +465,7 @@ impl BindResultReducer {
         }
 
         for (dst_id, src_id) in merge_targets {
+            tick_or_return!();
             // Extract data from src before taking a mutable borrow for dst.
             let src_data = self
                 .global_symbols
@@ -431,10 +525,12 @@ impl BindResultReducer {
     // (This mirrors Phase 2 in state.rs merge_lib_contexts_into_binder.)
     fn remap_lib_references(&mut self) {
         for lib_binder_idx in 0..self.lib_binders.len() {
+            tick_or_return!();
             let lib_binder = Arc::clone(&self.lib_binders[lib_binder_idx]);
             let lib_binder_ptr = Arc::as_ptr(&lib_binder) as usize;
 
             for i in 0..lib_binder.symbols.len() {
+                tick_or_return!();
                 let local_id = SymbolId(i as u32);
                 let Some(&global_id) = self.lib_symbol_remap.get(&(lib_binder_ptr, local_id))
                 else {
@@ -470,9 +566,11 @@ impl BindResultReducer {
         // Also remap lib file_locals entries that reference symbols by name
         // (for exported lib symbols like Array, Object, console)
         for lib_binder_idx in 0..self.lib_binders.len() {
+            tick_or_return!();
             let lib_binder = Arc::clone(&self.lib_binders[lib_binder_idx]);
             let lib_binder_ptr = Arc::as_ptr(&lib_binder) as usize;
             for (name, &local_id) in lib_binder.file_locals.iter() {
+                tick_or_return!();
                 // When a lib file is an external module (has `export {}`), its
                 // file_locals contain module-scoped declarations that must NOT
                 // pollute the global scope. Only include symbols that originate
@@ -515,9 +613,11 @@ impl BindResultReducer {
     // self-contained and deterministic.
     fn propagate_lib_semantic_defs(&mut self) {
         for lib_binder_idx in 0..self.lib_binders.len() {
+            tick_or_return!();
             let lib_binder = Arc::clone(&self.lib_binders[lib_binder_idx]);
             let lib_binder_ptr = Arc::as_ptr(&lib_binder) as usize;
             for (&old_sym_id, entry) in lib_binder.semantic_defs.iter() {
+                tick_or_return!();
                 if let Some(&global_id) = self.lib_symbol_remap.get(&(lib_binder_ptr, old_sym_id)) {
                     // Keep first occurrence (declaration merging keeps first identity).
                     self.semantic_defs.entry(global_id).or_insert_with(|| {
@@ -548,6 +648,7 @@ impl BindResultReducer {
     // ==========================================================================
     fn merge_user_files(&mut self, results: &mut impl BindResultsSource) {
         for file_idx in 0..results.len() {
+            tick_or_return!();
             {
                 let result = results.get(file_idx);
                 self.declared_modules
@@ -557,8 +658,10 @@ impl BindResultReducer {
 
                 // Merge reexports from this file
                 for (file_name, file_reexports) in result.reexports.iter() {
+                    tick_or_return!();
                     let entry = self.reexports.entry(file_name.clone()).or_default();
                     for (export_name, mapping) in file_reexports {
+                        tick_or_return!();
                         entry.insert(export_name.clone(), mapping.clone());
                     }
                 }
@@ -567,6 +670,7 @@ impl BindResultReducer {
                 // Each entry is (source_module, is_type_only). Value re-export
                 // (is_type_only=false) takes priority over type-only re-export.
                 for (file_name, source_entries) in result.wildcard_reexports.iter() {
+                    tick_or_return!();
                     let entry = self
                         .wildcard_reexports
                         .entry(file_name.clone())
@@ -574,6 +678,7 @@ impl BindResultReducer {
 
                     if entry.len() + source_entries.len() <= 16 {
                         for (source_module, source_is_type_only) in source_entries {
+                            tick_or_return!();
                             if let Some(pos) = entry.iter().position(|(m, _)| m == source_module) {
                                 // Already have this source — if this path is non-type-only,
                                 // override the existing flag (value re-export takes priority).
@@ -588,6 +693,7 @@ impl BindResultReducer {
                         let mut seen: FxHashMap<String, usize> =
                             entry.iter().map(|(m, _)| m.clone()).zip(0..).collect();
                         for (source_module, source_is_type_only) in source_entries {
+                            tick_or_return!();
                             if let Some(&pos) = seen.get(source_module) {
                                 if !*source_is_type_only {
                                     entry[pos].1 = false;
@@ -612,6 +718,7 @@ impl BindResultReducer {
                 // `(global_id, this-file lib SymbolId)` pairs.
                 let mut deferred_lib_export_merges: Vec<(SymbolId, SymbolId)> = Vec::new();
                 for i in 0..result.symbols.len() {
+                    tick_or_return!();
                     let old_id = SymbolId(i as u32);
                     if let Some(sym) = result.symbols.get(old_id) {
                         // For lib-originated symbols, reuse the Phase 1 global IDs rather than
@@ -650,10 +757,8 @@ impl BindResultReducer {
                                 // namespace-merge gate must judge what the lib actually
                                 // declared (a pure namespace vs a `var`/`interface`),
                                 // not the post-merge union.
-                                let lib_original_flags = self
-                                    .global_symbols
-                                    .get(global_id)
-                                    .map_or(0, |g| g.flags);
+                                let lib_original_flags =
+                                    self.global_symbols.get(global_id).map_or(0, |g| g.flags);
                                 // The user binder may have merged additional flags and declarations
                                 // into this lib symbol (e.g., user `interface Event<T>` augments
                                 // lib's non-generic `Event`, or user `type Proxy<T>` adds TYPE_ALIAS
@@ -689,13 +794,12 @@ impl BindResultReducer {
                                 // `var Object` / `interface Object` is a genuine
                                 // duplicate-identifier conflict (`TS2300`); its members
                                 // must not be silently merged in.
-                                let conflicting =
-                                    crate::binder::symbol_flags::VARIABLE
-                                        | crate::binder::symbol_flags::FUNCTION
-                                        | crate::binder::symbol_flags::CLASS
-                                        | crate::binder::symbol_flags::INTERFACE
-                                        | crate::binder::symbol_flags::TYPE_ALIAS
-                                        | crate::binder::symbol_flags::ENUM;
+                                let conflicting = crate::binder::symbol_flags::VARIABLE
+                                    | crate::binder::symbol_flags::FUNCTION
+                                    | crate::binder::symbol_flags::CLASS
+                                    | crate::binder::symbol_flags::INTERFACE
+                                    | crate::binder::symbol_flags::TYPE_ALIAS
+                                    | crate::binder::symbol_flags::ENUM;
                                 let user_is_pure_namespace =
                                     sym.flags & crate::binder::symbol_flags::MODULE != 0
                                         && sym.flags & conflicting == 0;
@@ -1533,13 +1637,12 @@ impl BindResultReducer {
         // This moves identity creation from the checker's per-file pre-population phase
         // (order-dependent, per-context) to merge time (single pass, deterministic).
         let type_interner = TypeInterner::new();
-        let definition_store = std::sync::Arc::new(
-            pre_populate_definition_store_with_project_semantic_options(
+        let definition_store =
+            std::sync::Arc::new(pre_populate_definition_store_with_project_semantic_options(
                 &self.semantic_defs,
                 &type_interner,
                 self.project_semantic_options,
-            ),
-        );
+            ));
 
         // Build the secondary `sym_to_decl_indices` index over the program-wide
         // `declaration_arenas`. Checker paths that previously iterated every entry
@@ -1607,12 +1710,8 @@ fn merge_module_exports_prefer_value_over_type_only(
 ) {
     for (name, &incoming_id) in src.iter() {
         if let Some(existing_id) = dst.get(name) {
-            if export_symbol_prefers_incoming_value(
-                global_symbols,
-                name,
-                existing_id,
-                incoming_id,
-            ) {
+            if export_symbol_prefers_incoming_value(global_symbols, name, existing_id, incoming_id)
+            {
                 dst.set(name.clone(), incoming_id);
             }
         } else {
@@ -1668,17 +1767,83 @@ fn merge_bind_results_from_source(
     results: &mut impl BindResultsSource,
     project_semantic_options: ProjectSemanticOptions,
 ) -> MergedProgram {
+    merge_bind_results_from_source_with_optional_execution_checkpoint(
+        results,
+        project_semantic_options,
+        None,
+    )
+    .expect("an unmetered merge cannot stop")
+}
+
+fn merge_bind_results_from_source_with_execution_checkpoint(
+    results: &mut impl BindResultsSource,
+    project_semantic_options: ProjectSemanticOptions,
+    checkpoint: &dyn tsz_common::ExecutionCheckpoint,
+) -> Result<MergedProgram, tsz_common::ProjectExecutionStop> {
+    merge_bind_results_from_source_with_optional_execution_checkpoint(
+        results,
+        project_semantic_options,
+        Some(checkpoint),
+    )
+}
+
+fn merge_bind_results_from_source_with_optional_execution_checkpoint(
+    results: &mut impl BindResultsSource,
+    project_semantic_options: ProjectSemanticOptions,
+    checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+) -> Result<MergedProgram, tsz_common::ProjectExecutionStop> {
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.checkpoint(0)?;
+    }
     let refs = results.refs();
     let skeletons = extract_skeletons_for_merge(&refs);
     drop(refs);
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.checkpoint(results.len() as u64)?;
+    }
     let skeleton_index = reduce_skeletons(&skeletons);
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.checkpoint(skeletons.len() as u64)?;
+    }
     let dep_graph = DepGraph::build_simple(&skeletons);
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.checkpoint(skeletons.len() as u64)?;
+    }
 
-    let mut reducer = BindResultReducer::new(results, project_semantic_options);
+    let mut reducer = BindResultReducer::new(results, project_semantic_options, checkpoint)?;
     reducer.merge_lib_binders();
+    if !reducer.flush_checkpoint() {
+        return Err(reducer
+            .stopped
+            .unwrap_or(tsz_common::ProjectExecutionStop::WorkBudgetExhausted));
+    }
     reducer.clear_unremapped_exports();
+    if !reducer.flush_checkpoint() {
+        return Err(reducer
+            .stopped
+            .unwrap_or(tsz_common::ProjectExecutionStop::WorkBudgetExhausted));
+    }
     reducer.remap_lib_references();
+    if !reducer.flush_checkpoint() {
+        return Err(reducer
+            .stopped
+            .unwrap_or(tsz_common::ProjectExecutionStop::WorkBudgetExhausted));
+    }
     reducer.propagate_lib_semantic_defs();
+    if !reducer.flush_checkpoint() {
+        return Err(reducer
+            .stopped
+            .unwrap_or(tsz_common::ProjectExecutionStop::WorkBudgetExhausted));
+    }
     reducer.merge_user_files(results);
-    reducer.finish(skeleton_index, dep_graph)
+    if !reducer.flush_checkpoint() {
+        return Err(reducer
+            .stopped
+            .unwrap_or(tsz_common::ProjectExecutionStop::WorkBudgetExhausted));
+    }
+    let program = reducer.finish(skeleton_index, dep_graph);
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.checkpoint(0)?;
+    }
+    Ok(program)
 }
