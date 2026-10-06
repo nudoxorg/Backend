@@ -18,10 +18,10 @@ use backend_frontend_typescript::legacy::Checker as TypeScriptChecker;
 use backend_library::interface::PackageEcosystem;
 use backend_semantic::vocabulary::NativeTool;
 
-use super::paths::{TypeScriptHostSelection, canonicalize_existing};
+use super::paths::{TypeScriptHostSelection, canonicalize_existing, create_directory};
 use super::{
-    AUTHORITY_IMAGE_BYTES, LocalCompilerHost, LocalCompilerHostError, LocalHostEnvironment,
-    LocalHostPathRole, LocalHostVariable, PACKAGE_SOURCE_BYTES, nonzero,
+    AUTHORITY_IMAGE_BYTES, LocalCompilerHost, LocalCompilerHostError, LocalHostDirectory,
+    LocalHostEnvironment, LocalHostPathRole, LocalHostVariable, PACKAGE_SOURCE_BYTES, nonzero,
 };
 use crate::application::toolchain_probe::{
     ToolchainProbeError, ToolchainProbeLimits, ToolchainProbePrimary, probe_command,
@@ -152,13 +152,15 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalHostPathRole::GoOracle,
             ArrayVec::new(),
         )?;
-        let go = match (executables.go.as_deref(), go_module_cache) {
-            (Some(go), Some(module_cache)) => {
+        let go = match executables.go.as_deref() {
+            Some(go) => {
+                let module_cache =
+                    selected_go_module_cache(go_module_cache, native_work_directory)?;
                 let goroot = self.go_root(go, probe_limits)?;
                 let child_environment = GoOracleChildEnvironment::new(
                     go.to_path_buf(),
                     goroot,
-                    module_cache.to_path_buf(),
+                    module_cache,
                     native_work_directory.join("go-oracle-cache"),
                 )?;
                 let configuration = match go_oracle {
@@ -171,7 +173,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                         .with_child_environment(child_environment)?,
                 )
             }
-            _ => None,
+            None => None,
         };
         let java = match (executables.java.as_ref(), jdk_root) {
             (Some(_), Some(root)) => Some(LocalRuntimeJavaAuthority {
@@ -295,6 +297,20 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         }
         self.validate_directory(LocalHostPathRole::GoRoot, LocalHostVariable::NudoxGo, path)
     }
+}
+
+/// An installed package cache is optional: the vendored oracle itself needs no downloads.
+/// Project dependencies remain subject to the normal captured input admission policy.
+fn selected_go_module_cache(
+    selected: Option<&Path>,
+    native_work_directory: &Path,
+) -> Result<PathBuf, LocalCompilerHostError> {
+    if let Some(selected) = selected {
+        return Ok(selected.to_path_buf());
+    }
+    let private = native_work_directory.join("go-module-cache");
+    create_directory(LocalHostDirectory::GoModuleCache, &private)?;
+    Ok(private)
 }
 
 fn python_checker_probe_failure(
@@ -471,10 +487,34 @@ impl NativeExecutables {
 
 #[cfg(test)]
 mod invocation_selection_tests {
-    use super::NativeExecutables;
+    use super::{NativeExecutables, selected_go_module_cache};
     use crate::application::{LocalRuntimeToolchainState, ToolchainProbeError};
     use backend_semantic::vocabulary::NativeTool;
     use std::path::PathBuf;
+
+    #[test]
+    fn go_without_installed_modules_uses_an_isolated_owner_cache() {
+        let owner = std::env::temp_dir().join(format!(
+            "nudox-go-private-cache-{}-{}",
+            std::process::id(),
+            super::super::NEXT_NATIVE_WORK.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        std::fs::create_dir(&owner).expect("create unique owner");
+        let private = selected_go_module_cache(None, &owner).expect("admit cold cache");
+        assert_eq!(private, owner.join("go-module-cache"));
+        assert!(private.is_dir());
+        assert_eq!(std::fs::read_dir(&private).unwrap().count(), 0);
+
+        let installed = owner.join("installed-modules");
+        std::fs::create_dir(&installed).expect("create selected cache");
+        let other_owner = owner.join("must-not-be-created");
+        assert_eq!(
+            selected_go_module_cache(Some(&installed), &other_owner).unwrap(),
+            installed,
+        );
+        assert!(!other_owner.exists());
+        std::fs::remove_dir_all(owner).expect("remove private test owner");
+    }
 
     fn only_typescript(typescript: Option<PathBuf>) -> NativeExecutables {
         NativeExecutables {

@@ -31,6 +31,8 @@ pub enum LocalHostDirectory {
     NativeWorkParent,
     /// One process-unique empty native work owner.
     NativeWork,
+    /// Isolated module cache for a Go owner without an installed package cache.
+    GoModuleCache,
 }
 
 #[derive(Clone, Debug)]
