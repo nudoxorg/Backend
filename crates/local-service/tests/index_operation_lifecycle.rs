@@ -242,6 +242,14 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
         .into_iter()
         .find(|record| record.selected && record.complete && record.profile.name() == Some("rust"))
         .ok_or_else(|| io::Error::other("fixture has no selected complete Rust semantic image"))?;
+    assert!(
+        matches!(
+            &selected_source.freshness,
+            backend_library::SemanticVersionFreshness::Current { .. }
+        ),
+        "the just-published Rust image must be current before public shape reads: {:?}",
+        selected_source.freshness
+    );
     let shape_budget = SemanticShapeBudget::new(4096, 256 * 1024)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let changed_freshness = match selected_source.freshness {
@@ -288,14 +296,19 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
         )
         .into());
     }
-    let carrier_shapes =
-        session.semantic_shapes(selected_source.clone(), &[parameter_carrier], shape_budget)?;
+    let carrier_shapes = with_phase_context(
+        "query the published parameter carrier shape",
+        session.semantic_shapes(selected_source.clone(), &[parameter_carrier], shape_budget),
+    )?;
     assert_eq!(carrier_shapes.entries.len(), 1);
     let parameter_identity = carrier_shapes.entries[0]
         .identity
         .ok_or_else(|| io::Error::other("take carrier has no stable image identity"))?;
 
-    let shapes = session.semantic_shapes(selected_source, &[cadence, signal], shape_budget)?;
+    let shapes = with_phase_context(
+        "query the published callable and aggregate shapes",
+        session.semantic_shapes(selected_source, &[cadence, signal], shape_budget),
+    )?;
     assert_eq!(shapes.entries.len(), 2);
     let cadence_shape = &shapes.entries[0];
     let signal_shape = &shapes.entries[1];
