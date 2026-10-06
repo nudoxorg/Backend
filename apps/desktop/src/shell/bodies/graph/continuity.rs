@@ -142,7 +142,7 @@ mod tests {
         let (old, _) = fixture(&["A", "B"], &["exact-A", "exact-B"]);
         let camera = Camera::new(31.25, -9.75, 300.5);
         for (names, expected) in [(&["A", "B"][..], Start::Restore { camera, focus: None }),
-            (&["A", "C"][..], Start::World)] {
+            (&["A", "C", "D"][..], Start::World)] {
             let (fresh, identities) = fixture(names, &["exact-A", "exact-C"]);
             let packet = RetainedPresentation { visit: visit(), geometry: Geometry::capture(&old, camera, None), selected: None, had_selection: false };
             let restored = packet.restore(&visit(), &fresh, &identities).expect("same visit");

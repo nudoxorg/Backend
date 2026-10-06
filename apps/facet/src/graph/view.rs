@@ -785,7 +785,7 @@ impl GraphView {
             return;
         }
         if let (Some(scene), Some(view), Some(rig)) = (&self.scene, &self.view, &mut self.rig) {
-            if self.trail.is_empty() {
+            if self.trail.is_empty() && !self.retained_placement {
                 let b = scene.layout.packages[self.world.node(i).pkg as usize].bounds;
                 rig.set(view.frame(b, 1.25));
             }
@@ -1586,7 +1586,7 @@ impl GraphView {
             }
         }
         if let Some(i) = self.pending_enter.take() {
-            if self.trail.is_empty() {
+            if self.trail.is_empty() && !self.retained_placement {
                 let package = scene.layout.packages[self.world.node(i).pkg as usize].bounds;
                 self.rig.as_mut()?.set(view.frame(package, 1.25));
             }

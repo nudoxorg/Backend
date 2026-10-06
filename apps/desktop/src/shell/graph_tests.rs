@@ -945,6 +945,28 @@ fn later_world_navigation_cancels_selection_restoration_while_projection_is_in_f
 }
 
 #[gpui::test]
+fn later_declaration_route_beats_retained_selection_during_projection_read(cx: &mut TestAppContext) {
+    use crate::runtime::indexed_world::{self, TestProjectionGate};
+    let mut rig = continuity_rig(cx, view_route("RelationLabel", View::Graph));
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.settle();
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let (world, identities) = continuity_world(&["RelationDirection", "RelationLabel", "KindGlyph"]);
+    let gate = Arc::new(TestProjectionGate::default());
+    rig.cx.update(|_, cx| indexed_world::install_test_projection(root, "held replacement for later route", world, identities, Some(gate.clone()), cx));
+    publish_continuity(&mut rig);
+    assert!(gate.entered());
+    let later = view_route("KindGlyph", View::Graph);
+    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(later.clone()), cx));
+    rig.cx.run_until_parked();
+    gate.release();
+    rig.cx.run_until_parked();
+    assert_eq!(rig.route(), later);
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("fresh graph for later route").read(cx).focused()), Some(2),
+        "route C is consumed against fresh identities instead of restoring B from the earlier visit");
+}
+
+#[gpui::test]
 fn stale_graph_row_pointer_and_ax_cannot_take_current_focus_before_redraw(cx: &mut TestAppContext) {
     let (mut rig, gate) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);
     tab_to_graph_control(&mut rig, "Declarations");

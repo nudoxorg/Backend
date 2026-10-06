@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn changed_basis_needs_both_old_and_new_exact_anchors() {
         let old = scene(&["A", "B"]);
-        let fresh = scene(&["A", "C"]);
+        let fresh = scene(&["A", "C", "D"]);
         let camera = Camera::new(5.0, -3.0, 200.0);
         assert_eq!(Geometry::capture(&old, camera, None).restore(&fresh, Some(1)), None);
         assert_eq!(Geometry::capture(&old, camera, Some(1)).restore(&fresh, None), None);

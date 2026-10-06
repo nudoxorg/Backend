@@ -59,8 +59,10 @@ fn restored_selection_keeps_exact_camera_through_first_measured_frame_without_ne
         });
         settle(cx);
         assert_eq!(graph.read_with(cx, |graph, _| graph.camera()), Some(camera));
-        graph.update(cx, |graph, cx| graph.set_focus(Some(0), false, cx));
-        draw(cx);
+        graph.update(cx, |graph, cx| graph.enter(0, cx));
+        assert_eq!(graph.read_with(cx, |graph, _| graph.camera()), Some(camera),
+            "a restored map begins the next semantic flight from its retained placement, without an artificial package reset");
+        settle(cx);
         graph.read_with(cx, |graph, _| {
             assert_eq!(graph.focused(), Some(0));
             assert_ne!(graph.camera(), Some(camera), "later semantic navigation owns framing");
