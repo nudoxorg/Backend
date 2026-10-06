@@ -465,6 +465,7 @@ impl Render for CloseView {
 
         let mut panel = div()
             .id("close-panel")
+            .debug_selector(|| "close-panel".into())
             .w(width)
             .max_h(height)
             .min_w_0()
