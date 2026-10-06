@@ -203,11 +203,7 @@ fn append_compiler_query_facts(
                             .to_owned(),
                     ));
                 }
-                let name = std::str::from_utf8(entity.name)
-                    .map_err(|_| {
-                        BuiltinModelError("semantic query declaration name is not UTF-8".to_owned())
-                    })?
-                    .to_owned();
+                let name = super::semantic_display_name(entity.name)?.to_owned();
                 let content = semantic_row_content(profile, image, &entity, package, image_digest)?;
                 let parent = entity
                     .entity

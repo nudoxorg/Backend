@@ -98,9 +98,6 @@ impl ProjectCallableIndex {
                 let entity = entity.map_err(|error| {
                     BuiltinModelError(format!("read semantic graph callable: {error}"))
                 })?;
-                let name = std::str::from_utf8(entity.name).map_err(|_| {
-                    BuiltinModelError("semantic graph callable name is not UTF-8".to_owned())
-                })?;
                 let identity = entity.entity.version.identity();
                 if let (Some(source_identity), Some(source_span)) =
                     (source_identity, entity.entity.source)
@@ -121,6 +118,14 @@ impl ProjectCallableIndex {
                             .push(identity);
                     }
                 }
+                // Anonymous callables participate in exact source-span joins,
+                // but their structural anchors are never identifier spellings.
+                let Some(name) = entity.name.named_bytes() else {
+                    continue;
+                };
+                let name = std::str::from_utf8(name).map_err(|_| {
+                    BuiltinModelError("semantic graph callable name is not UTF-8".to_owned())
+                })?;
                 if semantic_callable(entity.entity.kind) {
                     by_path_name
                         .entry((path.clone(), name.to_owned()))

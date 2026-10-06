@@ -24,6 +24,20 @@ mod query;
 mod semantic;
 mod structural;
 
+/// Human-readable spelling; anonymous anchors remain identity evidence.
+pub(super) fn semantic_display_name(
+    name: backend_semantic::ir::ItemNameView<'_>,
+) -> Result<&str, super::BuiltinModelError> {
+    match name {
+        backend_semantic::ir::ItemNameView::Named(bytes) => {
+            std::str::from_utf8(bytes).map_err(|_| {
+                super::BuiltinModelError("semantic declaration name is not UTF-8".to_owned())
+            })
+        }
+        backend_semantic::ir::ItemNameView::AnonymousCallable { .. } => Ok("<anonymous callable>"),
+    }
+}
+
 pub(crate) use call_join::{
     ProjectCallableIndex, foreign_namespace_call_retarget, foreign_package_call_retarget,
     join_project_field, join_project_mention, join_project_value, project_paths_for_package,
