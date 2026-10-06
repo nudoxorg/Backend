@@ -4,7 +4,7 @@
 //! Generating codes and placing them over the targets' recorded bounds is
 //! the shell's job; drawing one label is the key cap's (hint voice).
 
-use super::focus::{Target, Zone};
+use super::focus::{Target, TargetMountClaim, Zone};
 use gpui::{Bounds, Pixels};
 
 /// Home row first, then the rest of the easy reach.
@@ -19,7 +19,7 @@ pub(crate) struct Hinted {
     pub target: Target,
     /// The target list that supplied this exact mounted action.
     pub zone: Zone,
-    pub frame: u64,
+    pub mount: TargetMountClaim,
     /// Where it is, window coordinates.
     pub bounds: Bounds<Pixels>,
 }
@@ -62,12 +62,12 @@ pub(crate) fn codes(count: usize) -> Vec<String> {
 
 impl HintMode {
     /// Labels `targets` (already filtered to the visible ones).
-    pub(crate) fn new(targets: Vec<(Zone, u64, Target, Bounds<Pixels>)>) -> Self {
+    pub(crate) fn new(targets: Vec<(Zone, TargetMountClaim, Target, Bounds<Pixels>)>) -> Self {
         let codes = codes(targets.len().min(ALPHABET.len() * ALPHABET.len()));
         let hinted = targets
             .into_iter()
             .zip(codes)
-            .map(|((zone, frame, target, bounds), code)| Hinted { code, zone, frame, target, bounds })
+            .map(|((zone, mount, target, bounds), code)| Hinted { code, zone, mount, target, bounds })
             .collect();
         Self {
             hinted,
@@ -119,10 +119,10 @@ mod tests {
     use gpui::{point, px, size};
     use std::rc::Rc;
 
-    fn target(id: &str) -> (Zone, u64, Target, Bounds<Pixels>) {
+    fn target(id: &str) -> (Zone, TargetMountClaim, Target, Bounds<Pixels>) {
         (
             Zone::Reader,
-            1,
+            TargetMountClaim::unadmitted(id.to_owned().into()),
             Target {
                 id: id.to_owned().into(),
                 label: id.to_owned().into(),

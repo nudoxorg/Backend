@@ -2118,7 +2118,7 @@ impl Render for Shelf {
                         action: super::focus::TargetAction::new(
                             guard.clone(),
                             act(&weak, item.does.clone(), snapshot.session().reading.current.id, guard.clone()),
-                        ),
+                        ).with_payload(item.does.clone()),
                         peek: item.warm.clone(),
                         source: item.source.clone(),
                     });

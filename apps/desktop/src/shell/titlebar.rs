@@ -58,6 +58,14 @@ struct JumpVisit {
     root: VersionedRoot,
 }
 
+impl PartialEq for JumpVisit {
+    fn eq(&self, other: &Self) -> bool {
+        self.route == other.route && self.subject == other.subject
+            && self.graph_selection == other.graph_selection && self.attachment == other.attachment
+            && self.overlay == other.overlay && self.root.same_authority(other.root)
+    }
+}
+
 impl JumpVisit {
     fn at(snapshot: &AppSnapshot, store: &DataStore) -> Self {
         Self {
@@ -82,7 +90,7 @@ impl JumpVisit {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum JumpAction {
     Ask,
     Back { visit: JumpVisit },
@@ -172,7 +180,8 @@ fn jump_target_action(action: JumpAction, links: &Links, targets: &Targets, cx: 
             Rc::new(move |app| visit.current(&links, app))
         }
     };
-    TargetAction::new(admit, jump_act(action, links, targets))
+    let payload = action.clone();
+    TargetAction::new(admit, jump_act(action, links, targets)).with_payload(payload)
 }
 
 fn segment_action(visit: &JumpVisit, index: usize, segment: &Segment, store: &DataStore, current: bool) -> Option<JumpAction> {

@@ -1063,7 +1063,8 @@ impl Shelf {
             if spine_owns_input && item.does != Do::Nothing {
                 let guard = self.action_guard_for(Some(super::super::root::ShelfNativeSurface::Spine), cx);
                 let action = super::super::focus::TargetAction::new(guard.clone(),
-                    super::act(&cx.weak_entity(), item.does.clone(), self.reading_visit, guard));
+                    super::act(&cx.weak_entity(), item.does.clone(), self.reading_visit, guard))
+                    .with_payload(item.does.clone());
                 self.targets.push(super::super::focus::Target {
                     id: spine_key.clone(), label: item.name.clone(), action: action.clone(),
                     peek: item.warm.clone(), source: item.source.clone(),

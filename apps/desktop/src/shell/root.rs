@@ -135,6 +135,14 @@ struct HintScope {
     local_input: gpui::NativeActivationScope,
 }
 
+/// One selected target's native input turn. Later physical input or focus
+/// intent retires a deferred activation even if its target remains mounted.
+#[derive(Clone, Copy)]
+struct TargetInputClaim {
+    generation: u64,
+    focus_epoch: u64,
+}
+
 struct HintSession {
     mode: HintMode,
     scope: HintScope,
@@ -594,6 +602,12 @@ impl Shell {
         self.hints.as_ref()?.mode.visible()
             .find(|(hint, _)| hint.target.id == id)
             .map(|(hint, _)| hint.code.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hinted_target_for(&self, id: &str) -> Option<Hinted> {
+        self.hints.as_ref()?.mode.visible().find(|(hint, _)| hint.target.id == id)
+            .map(|(hint, _)| hint.clone())
     }
 
     /// What the shell's own chrome is doing, in words: the keyboard's zone
@@ -1495,22 +1509,23 @@ impl Shell {
             return;
         };
         let zone = self.zone;
-        let frame = self.hinted_targets(zone, cx).hint_frame();
+        let Some(mount) = self.hinted_targets(zone, cx).mount_claim(&target.id) else { return; };
+        let Some(input) = self.target_input_claim(window) else { return; };
         let scope = self.target_scope(cx);
         let shell = cx.weak_entity();
         window.defer(cx, move |window, app| {
             let Some(shell) = shell.upgrade() else { return; };
-            if !shell.read(app).target_claim_current(zone, frame, &target.id, &scope, true, app)
+            if !shell.read(app).target_claim_current(zone, &mount, &scope, &input, true, window, app)
                 || !target.action.admits(app) { return; }
             let Some(anchor) = ({
                 let shell = shell.read(app);
-                shell.target_claim_current(zone, frame, &target.id, &scope, true, app)
+                shell.target_claim_current(zone, &mount, &scope, &input, true, window, app)
                     .then(|| shell.hinted_targets(zone, app).focused_bounds()).flatten()
             }) else { return; };
             let store = shell.read(app).links.store.clone();
             store.update(app, |store, cx| store.ensure(key.clone(), cx));
             let armed = shell.update(app, |shell, cx| {
-                if !shell.target_claim_current(zone, frame, &target.id, &scope, true, cx) { return false; }
+                if !shell.target_claim_current(zone, &mount, &scope, &input, true, window, cx) { return false; }
                 shell.peeking = Some(key.clone());
                 cx.notify();
                 true
@@ -1553,18 +1568,19 @@ impl Shell {
             return;
         };
         let zone = self.zone;
-        let frame = self.hinted_targets(zone, cx).hint_frame();
+        let Some(mount) = self.hinted_targets(zone, cx).mount_claim(&target.id) else { return; };
+        let Some(input) = self.target_input_claim(window) else { return; };
         let scope = self.target_scope(cx);
         let fallback_input = self.page_input_scope(cx);
         let shell = cx.weak_entity();
         let links = self.links.clone();
-        window.defer(cx, move |_, app| {
+        window.defer(cx, move |window, app| {
             let Some(shell) = shell.upgrade() else { return; };
             if !shell.read(app).mode_input_allowed(app)
-                || !shell.read(app).target_claim_current(zone, frame, &target.id, &scope, true, app)
+                || !shell.read(app).target_claim_current(zone, &mount, &scope, &input, true, window, app)
                 || !target.action.admits(app) { return; }
             if !shell.read(app).mode_input_allowed(app)
-                || !shell.read(app).target_claim_current(zone, frame, &target.id, &scope, true, app) { return; }
+                || !shell.read(app).target_claim_current(zone, &mount, &scope, &input, true, window, app) { return; }
             // S on an unrelated focused control may still mean this page's
             // own declaration. That fallback is a producer action, so it
             // cannot borrow the control's potentially local admission.
@@ -1687,8 +1703,10 @@ impl Shell {
         let scope = self.target_scope(cx);
         let mut placed = Vec::new();
         let mut add = |zone: Zone, targets: &super::focus::Targets| {
-            let frame = targets.hint_frame();
-            placed.extend(targets.placed().into_iter().map(|(target, bounds)| (zone, frame, target, bounds)));
+            placed.extend(targets.placed().into_iter().filter_map(|(target, bounds)| {
+                let mount = targets.mount_claim(&target.id)?;
+                Some((zone, mount, target, bounds))
+            }));
         };
         add(Zone::Titlebar, &self.titlebar.read(cx).targets);
         if self.frame.is_some_and(|frame| frame.shelf == ShelfMode::Shelf) {
@@ -1747,26 +1765,33 @@ impl Shell {
         }
     }
 
-    fn target_claim_current(&self, zone: Zone, frame: u64, id: &str, scope: &HintScope, must_be_focused: bool, cx: &App) -> bool {
-        if !self.target_structure_current(scope, cx) { return false; }
+    fn target_input_claim(&self, window: &Window) -> Option<TargetInputClaim> {
+        Some(TargetInputClaim { generation: self.transient_generation?, focus_epoch: window.focus_epoch() })
+    }
+
+    fn target_claim_current(&self, zone: Zone, claim: &super::focus::TargetMountClaim, scope: &HintScope, input: &TargetInputClaim, must_be_focused: bool, window: &Window, cx: &App) -> bool {
+        if self.transient_generation != Some(input.generation)
+            || window.focus_epoch() != input.focus_epoch
+            || !self.target_structure_current(scope, cx) { return false; }
         let targets = self.hinted_targets(zone, cx);
-        targets.admits_hint(id, frame)
-            && (!must_be_focused || (self.zone == zone && targets.focused().as_deref() == Some(id)))
+        targets.admits_mount(claim, window)
+            && (!must_be_focused || (self.zone == zone && targets.focused().as_deref() == Some(claim.id())))
     }
 
     fn activate_hint(&mut self, choice: Hinted, scope: &HintScope, window: &mut Window, cx: &mut Context<Self>) {
         let shell = cx.weak_entity();
         let scope = scope.clone();
+        let Some(input) = self.target_input_claim(window) else { return; };
         window.defer(cx, move |window, app| {
             let Some(shell) = shell.upgrade() else { return; };
             if !shell.read(app).hint_scope_current(&scope, app)
-                || !shell.read(app).target_claim_current(choice.zone, choice.frame, &choice.target.id, &scope, false, app)
+                || !shell.read(app).target_claim_current(choice.zone, &choice.mount, &scope, &input, false, window, app)
                 || !choice.target.action.admits(app) { return; }
             // Admission may itself update Reader state. Recheck the exact
-            // structural visit and mounted target frame before native focus.
+            // structural visit and continuously mounted control before native focus.
             let focused = shell.update(app, |shell, cx| {
                 if !shell.hint_scope_current(&scope, cx)
-                    || !shell.target_claim_current(choice.zone, choice.frame, &choice.target.id, &scope, false, cx) { return false; }
+                    || !shell.target_claim_current(choice.zone, &choice.mount, &scope, &input, false, window, cx) { return false; }
                 let targets = shell.hinted_targets(choice.zone, cx);
                 shell.set_zone(choice.zone, cx);
                 targets.focus(choice.target.id.clone());
@@ -3946,4 +3971,114 @@ mod responsive_shelf_scene_tests {
         }
     }
 
+}
+
+#[cfg(test)]
+mod native_hint_receipt_tests {
+    use super::*;
+    use crate::model::pages::{Known, PageValue, SourceOrigin, SourceText};
+    use gpui::AppContext as _;
+
+    fn source_hint(cx: &mut gpui::TestAppContext) -> (super::super::tests::Rig, Hinted, HintScope) {
+        let mut rig = super::super::tests::rig(cx,
+            Some(super::super::tests::view_route("RelationLabel", View::Code)), 1440.0, 900.0);
+        rig.keys("f");
+        let (choice, scope) = rig.shell.read_with(rig.cx, |shell, _| {
+            let choice = shell.hinted_target_for("source-copy-excerpt").expect("original mounted source hint");
+            let scope = shell.hints.as_ref().expect("actual hint session").scope.clone();
+            (choice, scope)
+        });
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        assert!(rig.cx.update(|window, _| targets.admits_mount(&choice.mount, window)));
+        assert!(rig.cx.update(|_, cx| choice.target.action.admits(cx)), "positive original resource receipt");
+        (rig, choice, scope)
+    }
+
+    #[gpui::test]
+    fn same_key_same_label_model_replacement_cannot_rebind_an_original_hint_action(cx: &mut gpui::TestAppContext) {
+        let (mut rig, choice, scope) = source_hint(cx);
+        let symbol = route_symbol(&rig.route()).expect("source route declaration");
+        rig.graph.store.update(rig.cx, |store, _| {
+            let mut source = store.source(&symbol).loaded_value().cloned().expect("current immutable source fixture");
+            source.text = Known::Known(SourceText::new(Arc::from(
+                "// replaced\npub enum RelationLabel {\n    Replacement,\n}\n// changed\n"),
+                137, SourceOrigin::LocalFile, true).expect("valid replacement source"));
+            crate::runtime::store::cargo_context_tests::force_land(store, &PageKey::Source(symbol), PageValue::Source(source));
+        });
+        let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+        reader.update(rig.cx, |_, cx| cx.notify());
+        rig.repaint();
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        assert!(targets.mount_claim("source-copy-excerpt").is_some(), "same current copy control actually repainted");
+        assert!(!rig.cx.update(|_, cx| choice.target.action.admits(cx)),
+            "the original immutable source receipt refuses replacement even when visible key/label agree");
+        rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("replacement-hint-sentinel".into()));
+        let focused = rig.cx.update(|window, cx| window.focused(cx));
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, app| shell.update(app, |shell, cx| shell.activate_hint(choice, &scope, window, cx)));
+        rig.settle();
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
+        assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("replacement-hint-sentinel"));
+    }
+
+    #[gpui::test]
+    fn a_later_native_focus_intent_wins_over_a_deferred_hint_on_the_same_painted_visit(cx: &mut gpui::TestAppContext) {
+        let (mut rig, choice, scope) = source_hint(cx);
+        rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("later-input-hint-sentinel".into()));
+        let shell = rig.shell.clone();
+        let original = choice.clone();
+        rig.cx.update(|window, app| {
+            let later = shell.clone();
+            window.defer(app, move |window, app| {
+                later.update(app, |shell, cx| shell.take_zone(Zone::Titlebar, window, cx));
+                let targets = later.read(app).reader.read(app).targets.clone();
+                assert!(targets.admits_mount(&original.mount, window), "the same physical source control is still mounted");
+                assert!(original.target.action.admits(app), "its original source authority is still current");
+            });
+            shell.update(app, |shell, cx| shell.activate_hint(choice, &scope, window, cx));
+        });
+        rig.settle();
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Titlebar);
+        assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("later-input-hint-sentinel"));
+    }
+
+    #[gpui::test]
+    fn same_route_after_navigation_has_a_new_visit_and_cannot_reuse_an_original_hint(cx: &mut gpui::TestAppContext) {
+        let (mut rig, choice, scope) = source_hint(cx);
+        let route = rig.route();
+        rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
+        rig.go(Intent::Navigate(route.clone()));
+        assert_ne!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id), scope.visit);
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        assert!(targets.mount_claim("source-copy-excerpt").is_some());
+        assert!(!rig.cx.update(|window, _| targets.admits_mount(&choice.mount, window)));
+        rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("new-visit-hint-sentinel".into()));
+        let focused = rig.cx.update(|window, cx| window.focused(cx));
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, app| shell.update(app, |shell, cx| shell.activate_hint(choice, &scope, window, cx)));
+        rig.settle();
+        assert_eq!(rig.route(), route);
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
+        assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("new-visit-hint-sentinel"));
+    }
+
+    #[gpui::test]
+    fn returning_from_a_cover_cannot_reuse_a_departed_hint(cx: &mut gpui::TestAppContext) {
+        let (mut rig, choice, scope) = source_hint(cx);
+        let route = rig.route();
+        rig.go(Intent::OpenSettings(SettingsPage::Appearance));
+        rig.go(Intent::DismissOverlay);
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        assert!(targets.mount_claim("source-copy-excerpt").is_some(), "the destination's fresh source control painted");
+        assert!(!rig.cx.update(|window, _| targets.admits_mount(&choice.mount, window)),
+            "same route/key after a painted Settings cover is a new mount");
+        rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("remount-hint-sentinel".into()));
+        let focused = rig.cx.update(|window, cx| window.focused(cx));
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, app| shell.update(app, |shell, cx| shell.activate_hint(choice, &scope, window, cx)));
+        rig.settle();
+        assert_eq!(rig.route(), route);
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
+        assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("remount-hint-sentinel"));
+    }
 }
