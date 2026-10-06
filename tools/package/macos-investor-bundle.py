@@ -1328,6 +1328,30 @@ def inspect_macho_tree(
     return records
 
 
+def write_application_launcher(macos: Path) -> None:
+    """Make bundled Node available without selecting a project's TS compiler.
+
+    The host admits TypeScript from the selected package. Inherited explicit
+    compiler paths remain available, but a bundle default must not replace
+    that project-local selection with the bundled legacy checker.
+    """
+    launcher = macos / "Nudox"
+    launcher.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        'contents=$(CDPATH= cd "$(dirname "$0")/.." && pwd)\n'
+        'export NUDOX_DOTNET="${NUDOX_DOTNET-$contents/Resources/dotnet/dotnet}"\n'
+        'export NUDOX_ROSLYN_HELPER="${NUDOX_ROSLYN_HELPER-$contents/Resources/Helpers/csharp/oracle.dll}"\n'
+        'export NUDOX_GO_ORACLE="${NUDOX_GO_ORACLE-$contents/Resources/Helpers/go/oracle}"\n'
+        'export NUDOX_GO_ORACLE_BIN="${NUDOX_GO_ORACLE_BIN-$contents/Resources/Helpers/go/oracle}"\n'
+        'export NUDOX_PYREFLY="${NUDOX_PYREFLY-$contents/Resources/Helpers/python/pyrefly}"\n'
+        'export NUDOX_TYPESCRIPT_NODE="${NUDOX_TYPESCRIPT_NODE-$contents/Resources/Helpers/typescript/node/bin/node}"\n'
+        'exec "$contents/MacOS/backend-desktop" "$@"\n',
+        encoding="utf-8",
+    )
+    launcher.chmod(0o755)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", required=True, type=Path, help="clean checkout at the pinned application revision")
@@ -1449,24 +1473,7 @@ def main() -> int:
             shutil.copy2(source_binary, destination)
             destination.chmod(0o755)
 
-        launcher = macos / "Nudox"
-        launcher.write_text(
-            "#!/bin/sh\n"
-            "set -eu\n"
-            'contents=$(CDPATH= cd "$(dirname "$0")/.." && pwd)\n'
-            'export NUDOX_DOTNET="${NUDOX_DOTNET-$contents/Resources/dotnet/dotnet}"\n'
-            'export NUDOX_ROSLYN_HELPER="${NUDOX_ROSLYN_HELPER-$contents/Resources/Helpers/csharp/oracle.dll}"\n'
-            'export NUDOX_GO_ORACLE="${NUDOX_GO_ORACLE-$contents/Resources/Helpers/go/oracle}"\n'
-            'export NUDOX_GO_ORACLE_BIN="${NUDOX_GO_ORACLE_BIN-$contents/Resources/Helpers/go/oracle}"\n'
-            'export NUDOX_PYREFLY="${NUDOX_PYREFLY-$contents/Resources/Helpers/python/pyrefly}"\n'
-            'export NUDOX_TYPESCRIPT_NODE="${NUDOX_TYPESCRIPT_NODE-$contents/Resources/Helpers/typescript/node/bin/node}"\n'
-            'export NUDOX_TYPESCRIPT_MODULE_ROOT="${NUDOX_TYPESCRIPT_MODULE_ROOT-$contents/Resources/Helpers/typescript/node_modules}"\n'
-            'export NUDOX_TYPESCRIPT_REPORT_PROGRAM="${NUDOX_TYPESCRIPT_REPORT_PROGRAM-$contents/Resources/Helpers/typescript/report-program}"\n'
-            'export NUDOX_TSC="${NUDOX_TSC-$contents/Resources/Helpers/typescript/tsc}"\n'
-            'exec "$contents/MacOS/backend-desktop" "$@"\n',
-            encoding="utf-8",
-        )
-        launcher.chmod(0o755)
+        write_application_launcher(macos)
 
         helper_resources = resources / "Helpers"
         shutil.copytree(helpers_dir, helper_resources, symlinks=False)
