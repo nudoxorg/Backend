@@ -13,7 +13,7 @@ import tarfile
 import zipfile
 from email.parser import BytesParser
 from pathlib import PurePosixPath
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 
 class OriginError(ValueError):
@@ -103,7 +103,11 @@ def archive_members(archive, prefix, maximum_files, maximum_file_bytes, maximum_
 def verify_registry_metadata(package, metadata, metadata_url, archive, archive_url, special):
     ecosystem, name, version = (package[key] for key in ("ecosystem", "id", "version"))
     if ecosystem == "pypi":
-        official_url(metadata_url, "pypi.org", f"/pypi/{name}/json")
+        official_url(metadata_url, "pypi.org")
+        metadata_path = urlsplit(metadata_url).path.split("/")
+        project_segment = unquote(metadata_path[2]) if len(metadata_path) == 4 else ""
+        if metadata_path[:2] != ["", "pypi"] or metadata_path[-1] != "json" or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", project_segment) or normalized_pypi(project_segment) != name:
+            raise OriginError("PyPI metadata URL belongs to another project")
         official_url(archive_url, "files.pythonhosted.org")
         if normalized_pypi(metadata.get("info", {}).get("name")) != name:
             raise OriginError("PyPI metadata belongs to another project")

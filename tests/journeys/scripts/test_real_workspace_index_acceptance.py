@@ -1061,6 +1061,24 @@ class AcquiredSourceInventoryTests(unittest.TestCase):
 
 
 class RegistryArtifactOriginTests(unittest.TestCase):
+    def test_pypi_official_project_url_accepts_normalized_names_only(self) -> None:
+        from registry_artifact_origin import OriginError, verify_registry_metadata
+        archive = b"retained archive"
+        package = {"ecosystem": "pypi", "id": "fb-messenger", "version": "0.3.0"}
+        archive_url = "https://files.pythonhosted.org/packages/fb_messenger-0.3.0.tar.gz"
+        metadata = {"info": {"name": "fb_messenger"}, "releases": {"0.3.0": [{
+            "packagetype": "sdist", "url": archive_url, "size": len(archive),
+            "digests": {"sha256": hashlib.sha256(archive).hexdigest()}}]}}
+        special = {"PKG-INFO": b"Name: fb_messenger\nVersion: 0.3.0\n"}
+        for segment in ("fb_messenger", "FB.Messenger", "fb%5Fmessenger"):
+            with self.subTest(segment=segment):
+                verify_registry_metadata(package, metadata, "https://pypi.org/pypi/" + segment + "/json", archive, archive_url, special)
+        for url in ("http://pypi.org/pypi/fb_messenger/json", "https://pypi.org.evil/pypi/fb_messenger/json",
+                    "https://pypi.org/pypi/counterfeit/json", "https://pypi.org/pypi/fb%2Fmessenger/json",
+                    "https://pypi.org/pypi/fb_messenger/json/", "https://pypi.org/pypi/fb_messenger/json?query=1"):
+            with self.subTest(url=url), self.assertRaises(OriginError):
+                verify_registry_metadata(package, metadata, url, archive, archive_url, special)
+
     def fixture(self, root: Path, ecosystem="pypi") -> tuple:
         source = root / "source"
         source.mkdir()
