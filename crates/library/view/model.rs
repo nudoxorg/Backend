@@ -376,6 +376,9 @@ pub enum Fragment {
 pub struct Document {
     /// Stable declaration identity.
     pub symbol: SymbolKey,
+    /// Exact copied-address selection of an admitted native row. The locator
+    /// is separate from `symbol`: a readable address never becomes its row ID.
+    pub selection: Option<DocumentSelection>,
     /// Exact source root used to answer the document query.
     pub basis: ViewStateRoot,
     /// Complete source basis when the producer can attest the object, branch,
@@ -406,6 +409,7 @@ impl Document {
     ) -> Self {
         Self {
             symbol,
+            selection: None,
             basis,
             source: None,
             fragments: fragments.into(),
@@ -414,6 +418,42 @@ impl Document {
             excerpt: SourceExcerpt::NotCaptured,
             facts: DeclarationFacts::UNOBSERVED,
         }
+    }
+
+    /// Attaches an exact row selection without changing the native identity.
+    ///
+    /// # Errors
+    /// Returns an error when the selection belongs to another row or basis.
+    pub fn with_selection(mut self, selection: DocumentSelection) -> Result<Self, &'static str> {
+        if !selection.matches_document(&self) {
+            return Err("document selection does not match its native row and source basis");
+        }
+        self.selection = Some(selection);
+        Ok(self)
+    }
+
+    /// Checks the requested locator against this document's actual selected
+    /// row. All process clients use the same exact locator/identity rule.
+    #[must_use]
+    pub fn admits_query(&self, query: &crate::DocumentQuery) -> bool {
+        if self.basis() != query.basis()
+            || query
+                .source_basis()
+                .is_some_and(|source| self.source_basis() != Some(source))
+            || self
+                .selection
+                .as_ref()
+                .is_some_and(|selection| !selection.matches_document(self))
+        {
+            return false;
+        }
+        query.symbol().matches(self.symbol)
+            || (!query.symbol().is_selected()
+                && self.selection.as_ref().is_some_and(|selection| {
+                    query
+                        .symbol()
+                        .matches(crate::symbol_key(selection.coordinate()))
+                }))
     }
 
     /// Attaches the declaration facts copied from the projected row.
@@ -472,6 +512,91 @@ impl Document {
             }
         }
         out
+    }
+}
+
+/// A bounded exact address mapped to a selected native row in one source
+/// basis. Construction borrows a typed row; wire admission additionally
+/// requires the same-basis authenticated producer and its tuple commitment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DocumentSelection {
+    symbol: SymbolKey,
+    source: Basis,
+    coordinate: String,
+}
+
+impl DocumentSelection {
+    /// Retains the exact label and native key of an already admitted row.
+    #[must_use]
+    pub fn from_row(row: &Row, source: Basis) -> Option<Self> {
+        let RowId::Symbol(symbol) = row.id else {
+            return None;
+        };
+        if row.label.is_empty() || row.label.len() > crate::MAX_COMMAND_TEXT {
+            return None;
+        }
+        Self::from_admitted_parts(symbol, source, row.label.clone()).ok()
+    }
+
+    pub(crate) fn from_admitted_parts(
+        symbol: SymbolKey,
+        source: Basis,
+        coordinate: String,
+    ) -> Result<Self, &'static str> {
+        if coordinate.is_empty() || coordinate.len() > crate::MAX_COMMAND_TEXT {
+            return Err("document selection coordinate exceeds its bound");
+        }
+        Ok(Self {
+            symbol,
+            source,
+            coordinate,
+        })
+    }
+
+    /// The exact copied address of the selected row.
+    #[must_use]
+    pub fn coordinate(&self) -> &str {
+        &self.coordinate
+    }
+
+    /// The actual admitted row identity, never the address's text hash.
+    #[must_use]
+    pub const fn symbol(&self) -> SymbolKey {
+        self.symbol
+    }
+
+    /// The complete source basis in which the row was selected.
+    #[must_use]
+    pub const fn source(&self) -> Basis {
+        self.source
+    }
+
+    /// Canonical bounded tuple committed by the authenticated owner.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        const PREFIX: &[u8] = b"library-document-selection-v1\0";
+        let mut bytes = Vec::with_capacity(PREFIX.len() + 5 * 32 + 2 + self.coordinate.len());
+        bytes.extend_from_slice(PREFIX);
+        bytes.extend_from_slice(self.symbol.as_bytes());
+        bytes.extend_from_slice(self.source.root.as_bytes());
+        bytes.extend_from_slice(self.source.object.as_bytes());
+        bytes.extend_from_slice(self.source.branch.as_bytes());
+        bytes.extend_from_slice(self.source.log.as_bytes());
+        bytes.extend_from_slice(&self.source.schema.to_be_bytes());
+        bytes.extend_from_slice(self.coordinate.as_bytes());
+        bytes
+    }
+
+    /// Content commitment of this locator, actual row, and complete basis.
+    #[must_use]
+    pub fn version(&self) -> crate::DocumentVersion {
+        crate::DocumentVersion::from_value(&self.canonical_bytes())
+    }
+
+    fn matches_document(&self, document: &Document) -> bool {
+        self.symbol == document.symbol
+            && self.source.root == document.basis()
+            && document.source_basis() == Some(self.source)
     }
 }
 

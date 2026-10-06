@@ -281,7 +281,7 @@ pub use surface::{
 };
 pub use view::{
     Basis, CommittedViewDelta, CompleteViewProjection, Coverage, CoverageCapability, Document,
-    Fragment, Freshness, GraphRelation, Lane, MAX_COVERAGE_EVIDENCE,
+    DocumentSelection, Fragment, Freshness, GraphRelation, Lane, MAX_COVERAGE_EVIDENCE,
     MAX_ROW_IDENTITY_PREIMAGE_BYTES, MAX_SNAPSHOT_PAGE_ROWS, MAX_VIEW_PATCH_ROWS, NameRecord,
     Outline, OutlineExtent, OutlineNode, PreparedViewDelta, Reason, Row, RowChange, RowId,
     RowIdentityPreimage, RowIdentityPreimageError, RowState, SourceAvailability, ViewDelta,

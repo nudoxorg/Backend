@@ -16,10 +16,10 @@ mod transition;
 pub(crate) use descriptor::DescriptorParts;
 pub use descriptor::{ViewRootDescriptor, ViewRootDescriptorClaim};
 pub use model::{
-    Basis, Coverage, CoverageCapability, Document, Fragment, Freshness, GraphRelation, Lane,
-    MAX_COVERAGE_EVIDENCE, MAX_ROW_IDENTITY_PREIMAGE_BYTES, NameRecord, Outline, OutlineExtent,
-    OutlineNode, Reason, Row, RowId, RowIdentityPreimage, RowIdentityPreimageError, RowState,
-    SourceAvailability,
+    Basis, Coverage, CoverageCapability, Document, DocumentSelection, Fragment, Freshness,
+    GraphRelation, Lane, MAX_COVERAGE_EVIDENCE, MAX_ROW_IDENTITY_PREIMAGE_BYTES, NameRecord,
+    Outline, OutlineExtent, OutlineNode, Reason, Row, RowId, RowIdentityPreimage,
+    RowIdentityPreimageError, RowState, SourceAvailability,
 };
 pub use page::{ViewPageCursor, ViewPageError, ViewSnapshotPage};
 pub use proof::{CompleteViewProjection, ViewProjection, ViewProjectionError};

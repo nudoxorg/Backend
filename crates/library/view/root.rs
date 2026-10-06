@@ -44,7 +44,7 @@ pub struct ViewRoot {
     /// First and last label in each package, built without cloning row documents.
     pub(super) package_labels: Arc<OnceLock<PackageLabelIndex>>,
     /// First row identity for each exact label, built without cloning row bodies.
-    pub(super) label_ids: Arc<OnceLock<BTreeMap<String, RowId>>>,
+    pub(super) label_ids: Arc<OnceLock<BTreeMap<String, LabelRows>>>,
     /// Coverage for each requested lane.
     pub(crate) coverage: Box<[Coverage]>,
     /// Producer-admitted witness for complete source coverage.
@@ -68,6 +68,19 @@ struct PackageLabelMaps {
 #[derive(Clone, Debug, Default)]
 pub(super) struct PackageLabelIndex {
     by_package: BTreeMap<PackageKey, PackageLabelMaps>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct LabelRows {
+    first: RowId,
+    symbol: LabelSymbol,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum LabelSymbol {
+    None,
+    Unique(RowId),
+    Ambiguous,
 }
 
 impl PartialEq for ViewRoot {
@@ -284,15 +297,34 @@ impl ViewRoot {
     /// into the compatibility cache. A repeated label keeps the earliest row.
     #[must_use]
     pub fn row_by_label(&self, label: &str) -> Option<&Row> {
-        let id = *self.label_ids().get(label)?;
+        let id = self.label_ids().get(label)?.first;
         self.row_ref(id)
     }
 
-    fn label_ids(&self) -> &BTreeMap<String, RowId> {
+    /// Borrows a symbol only when its complete exact label selects one row.
+    /// The shared label index records ambiguity without cloning row bodies.
+    #[must_use]
+    pub fn unique_symbol_by_label(&self, label: &str) -> Option<&Row> {
+        let LabelSymbol::Unique(id) = self.label_ids().get(label)?.symbol else {
+            return None;
+        };
+        self.row_ref(id)
+    }
+
+    fn label_ids(&self) -> &BTreeMap<String, LabelRows> {
         self.label_ids.get_or_init(|| {
             let mut index = BTreeMap::new();
             for row in self.row_refs() {
-                index.entry(row.label.clone()).or_insert(row.id);
+                let entry = index.entry(row.label.clone()).or_insert_with(|| LabelRows {
+                    first: row.id,
+                    symbol: LabelSymbol::None,
+                });
+                if matches!(row.id, RowId::Symbol(_)) {
+                    entry.symbol = match entry.symbol {
+                        LabelSymbol::None => LabelSymbol::Unique(row.id),
+                        _ => LabelSymbol::Ambiguous,
+                    };
+                }
             }
             index
         })

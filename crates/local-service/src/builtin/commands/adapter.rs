@@ -3312,6 +3312,19 @@ impl CommandAdapter {
         certificate: Option<&WireCertificate>,
         recover_excerpt: bool,
     ) -> Option<backend_library::Document> {
+        let library = daemon.engine().daemon().library();
+        let root = library.revision_root();
+        let source_basis = backend_library::Basis {
+            root,
+            ..library.view().basis()
+        };
+        if !query.basis().matches(root)
+            || query
+                .source_basis()
+                .is_some_and(|source| source != source_basis)
+        {
+            return None;
+        }
         let label = certificate.and_then(|certificate| {
             certificate.claims.iter().find_map(|claim| match claim {
                 WireClaim::Key {
@@ -3326,20 +3339,18 @@ impl CommandAdapter {
                 }
                 _ => None,
             })
-        })?;
-        let library = daemon.engine().daemon().library();
-        let root = library.revision_root();
-        if !query.basis().matches(root) {
-            return None;
-        }
-        let row = symbol_row_by_label(library.view(), label)?;
-        let backend_engine::RowId::Symbol(_) = row.id else {
-            return None;
+        });
+        let row = if query.symbol().is_selected() {
+            let symbol = query.resolve_symbol(library.view())?;
+            library
+                .view()
+                .row_ref(backend_engine::RowId::Symbol(symbol))?
+        } else {
+            symbol_row_by_label(library.view(), label?)?
         };
-        let symbol = backend_library::symbol_key(label);
-        let source_basis = backend_library::Basis {
-            root,
-            ..library.view().basis()
+        let label = row.label.as_str();
+        let backend_engine::RowId::Symbol(symbol) = row.id else {
+            return None;
         };
         let excerpt =
             if recover_excerpt && row.excerpt == backend_library::SourceExcerpt::NotHydrated {
@@ -3353,6 +3364,14 @@ impl CommandAdapter {
             .with_location(row.source.clone())
             .with_excerpt(excerpt)
             .with_facts(row.facts.clone());
+        if !query.symbol().is_selected() {
+            document = document
+                .with_selection(backend_library::DocumentSelection::from_row(
+                    row,
+                    source_basis,
+                )?)
+                .ok()?;
+        }
         document.signature.clone_from(&row.signature);
         Some(document)
     }
@@ -4391,13 +4410,7 @@ fn symbol_row_by_label<'a>(
     view: &'a backend_engine::ViewRoot,
     label: &str,
 ) -> Option<&'a backend_engine::Row> {
-    match view.row_by_label(label) {
-        Some(row) if matches!(row.id, backend_engine::RowId::Symbol(_)) => Some(row),
-        Some(_) => view
-            .row_refs()
-            .find(|row| row.label == label && matches!(row.id, backend_engine::RowId::Symbol(_))),
-        None => None,
-    }
+    view.unique_symbol_by_label(label)
 }
 
 /// Resolves the source root named by the package's admitted project record.

@@ -496,6 +496,9 @@ fn facts_bound(facts: &crate::DeclarationFacts) -> usize {
 
 fn add_document_bound(bound: &mut usize, document: &Document) {
     let mut bytes = 512usize
+        .saturating_add(document.selection.as_ref().map_or(0, |selection| {
+            512usize.saturating_add(selection.coordinate().len())
+        }))
         .saturating_add(document.signature.as_deref().map_or(0, str::len))
         .saturating_add(document.excerpt.text().map_or(0, str::len))
         .saturating_add(facts_bound(&document.facts));
@@ -649,12 +652,7 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
             Command::Document(query) | Command::Source(query),
             CommandReply::Document(document) | CommandReply::Page(document),
         ) => {
-            if !query.symbol().matches(document.symbol)
-                || document.basis() != query.basis()
-                || query
-                    .source_basis()
-                    .is_some_and(|source| document.source_basis() != Some(source))
-            {
+            if !document.admits_query(query) {
                 return Err(ReplyAdmissionError::Protocol(
                     "document reply identity does not match the query".to_owned(),
                 ));

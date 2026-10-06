@@ -188,27 +188,52 @@ fn document_certificate(
     owner_root: &ViewRoot,
     base: Option<WireCertificate>,
 ) -> Result<WireCertificate, BuiltinModelError> {
-    // A semantic declaration is addressed publicly by its copied coordinate,
-    // while its row identity is compiler-owned. The command adapter may
-    // therefore return a document whose requested symbol is absent as a row
-    // ID even though the owner found the exact labelled row. Preserve the
-    // ordinary row proof when present and rely on the admitted key claim for
-    // the semantic alias.
-    let mut rows = Vec::new();
-    if owner_root.row(RowId::Symbol(document.symbol)).is_some() {
-        rows.push(required_row(
-            owner_root,
-            RowId::Symbol(document.symbol),
-            "document symbol",
-        )?);
+    // A copied coordinate selects a native row; it never replaces that row's
+    // key. Both the actual row and the bounded exact selection tuple must be
+    // authenticated under this owner basis.
+    let row = owner_root
+        .row_ref(RowId::Symbol(document.symbol))
+        .ok_or_else(|| {
+            BuiltinModelError("document symbol is absent from the admitted owner view".to_owned())
+        })?;
+    if let Some(selection) = &document.selection {
+        if owner_root
+            .unique_symbol_by_label(selection.coordinate())
+            .map(|row| row.id)
+            != Some(row.id)
+            || selection.symbol() != document.symbol
+            || selection.source()
+                != (backend_engine::Basis {
+                    root: owner_root.root(),
+                    ..owner_root.basis()
+                })
+        {
+            return Err(BuiltinModelError(
+                "document selection does not name one exact admitted row and basis".to_owned(),
+            ));
+        }
     }
+    let mut rows = vec![row];
     for fragment in &document.fragments {
         let backend_engine::Fragment::Link { target, .. } = fragment else {
             continue;
         };
-        append_row_once_if_present(owner_root, RowId::Symbol(*target), &mut rows);
+        if let Some(target) = owner_root.row_ref(RowId::Symbol(*target))
+            && !rows.iter().any(|row| row.id == target.id)
+        {
+            rows.push(target);
+        }
     }
-    view_commitment_certificate(owner_root, b"library-view-v1", None, &rows, base)
+    let mut certificate =
+        view_certificate_with_rows(owner_root, b"library-view-v1", None, rows, true, true, base)?;
+    if let Some(selection) = &document.selection {
+        certificate = certificate.with_claim_once(WireClaim::Version {
+            schema: backend_engine::WireSchema::Document,
+            id: backend_engine::encode_id(selection.version().as_bytes()),
+            value: selection.canonical_bytes().into_boxed_slice(),
+        });
+    }
+    Ok(certificate)
 }
 
 fn outline_certificate(
@@ -1110,6 +1135,179 @@ fn add_symbol_claim(
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_selection_retains_native_row_across_certified_wire_and_exact_locator_admission() {
+        use backend_library::{
+            CommandDto, Document, DocumentQuery, DocumentSelection, Library, ReplyDto,
+        };
+        let (template, _) = super::super::initial_view().expect("template");
+        let label = "/project::semantic::compiler-origin::Thing";
+        let native = backend_engine::symbol_key("compiler-native-row");
+        let other = backend_engine::symbol_key("compiler-other-row");
+        let owner = checked_root(vec![
+            backend_engine::Row::new(RowId::Symbol(native), template.basis(), label),
+            backend_engine::Row::new(
+                RowId::Symbol(other),
+                template.basis(),
+                "/project::semantic::other-origin::Other",
+            ),
+        ]);
+        assert_ne!(native, backend_engine::symbol_key(label));
+        let row = owner
+            .unique_symbol_by_label(label)
+            .expect("unique borrowed row");
+        let basis = backend_engine::Basis {
+            root: owner.root(),
+            ..owner.basis()
+        };
+        let selection = DocumentSelection::from_row(row, basis).expect("closed selection");
+        let document = Document::new(native, owner.root(), Vec::<backend_engine::Fragment>::new())
+            .with_source_basis(basis)
+            .with_selection(selection.clone())
+            .expect("native document");
+        let certificate = document_certificate(&document, &owner, None)
+            .expect("actual adapter certificate")
+            .with_claim_once(WireClaim::KeyCommitment {
+                schema: backend_engine::WireSchema::Symbol,
+                id: backend_engine::encode_id(other.as_bytes()),
+            });
+        let dto = ReplyDto::new(99, CommandReply::Document(document));
+        let dto = dto.with_certificate(certificate);
+        let bytes = serde_json::to_vec(&dto).expect("encode real certificate");
+        let capability = owner.capability().cloned();
+        let decoded = ReplyDto::decode_with_certificate(&bytes, capability.clone())
+            .expect("independent certificate decoder");
+        let CommandReply::Document(decoded_document) = &decoded.reply else {
+            panic!("document");
+        };
+        assert_eq!(decoded_document.symbol, native);
+        assert_eq!(decoded_document.selection.as_ref(), Some(&selection));
+        for command in [
+            Command::Document(DocumentQuery::new(
+                backend_engine::symbol_key(label),
+                owner.root(),
+            )),
+            Command::Source(DocumentQuery::new(
+                backend_engine::symbol_key(label),
+                owner.root(),
+            )),
+            Command::Document(DocumentQuery::selected(native, owner.root())),
+            Command::Source(DocumentQuery::selected(native, owner.root())),
+        ] {
+            backend_library::admit_reply(&CommandDto::new(99, command), &decoded)
+                .expect("same actual selected row");
+        }
+        for query in [
+            DocumentQuery::selected(other, owner.root()),
+            DocumentQuery::new(
+                backend_engine::symbol_key("/forged::semantic::compiler-origin::Thing"),
+                owner.root(),
+            ),
+            DocumentQuery::new(backend_engine::symbol_key(label), template.root()),
+        ] {
+            assert!(
+                backend_library::admit_reply(
+                    &CommandDto::new(99, Command::Document(query)),
+                    &decoded
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            ReplyDto::decode_with_certificate(&bytes, None).is_err(),
+            "a tuple preimage cannot mint producer authority"
+        );
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("wire JSON");
+        for path in ["coordinate", "symbol", "version", "source"] {
+            let mut forged = json.clone();
+            forged["reply"]["data"]["selection"][path] = match path {
+                "coordinate" => serde_json::json!("/forged::semantic::compiler-origin::Thing"),
+                "symbol" => serde_json::json!(backend_engine::encode_id(other.as_bytes())),
+                "version" => serde_json::json!(backend_engine::encode_id(&[55; 32])),
+                _ => {
+                    let mut source = forged["reply"]["data"]["selection"]["source"].clone();
+                    source["schema"] = serde_json::json!(basis.schema + 1);
+                    source
+                }
+            };
+            assert!(
+                ReplyDto::decode_with_certificate(
+                    &serde_json::to_vec(&forged).expect("forged wire"),
+                    capability.clone()
+                )
+                .is_err(),
+                "{path}"
+            );
+        }
+        let mut wrong_key = json.clone();
+        wrong_key["reply"]["data"]["symbol"] =
+            serde_json::json!(backend_engine::encode_id(other.as_bytes()));
+        assert!(
+            ReplyDto::decode_with_certificate(
+                &serde_json::to_vec(&wrong_key).expect("wrong actual key"),
+                capability.clone()
+            )
+            .is_err()
+        );
+        let mut no_commitment = json.clone();
+        no_commitment["certificate"]["claims"]
+            .as_array_mut()
+            .expect("claims")
+            .retain(|claim| claim["data"]["schema"] != "document");
+        assert!(
+            ReplyDto::decode_with_certificate(
+                &serde_json::to_vec(&no_commitment).expect("missing tuple commitment"),
+                capability
+            )
+            .is_err()
+        );
+        let library =
+            Library::from_view(owner.clone(), backend_engine::Cursor::for_view_root(&owner))
+                .expect("library");
+        for command in [
+            Command::Document(DocumentQuery::selected(native, owner.root())),
+            Command::Source(DocumentQuery::selected(native, owner.root())),
+        ] {
+            let CommandReply::Document(document) =
+                library.execute(command).expect("copied selector follow-up")
+            else {
+                panic!("native document");
+            };
+            assert_eq!(document.symbol, native);
+        }
+        assert!(!owner.compatibility_rows_are_materialized());
+        let ambiguous = checked_root(vec![
+            row.clone(),
+            backend_engine::Row::new(RowId::Symbol(other), template.basis(), label),
+        ]);
+        assert!(ambiguous.unique_symbol_by_label(label).is_none());
+        let ambiguous_basis = backend_engine::Basis {
+            root: ambiguous.root(),
+            ..ambiguous.basis()
+        };
+        let invalid = Document::new(
+            native,
+            ambiguous.root(),
+            Vec::<backend_engine::Fragment>::new(),
+        )
+        .with_source_basis(ambiguous_basis)
+        .with_selection(DocumentSelection::from_row(row, ambiguous_basis).expect("row"))
+        .expect("tuple");
+        assert!(
+            document_certificate(&invalid, &ambiguous, None).is_err(),
+            "duplicate exact labels are not silently selected"
+        );
+        let absent = Document::new(
+            backend_engine::symbol_key(label),
+            owner.root(),
+            Vec::<backend_engine::Fragment>::new(),
+        );
+        assert!(
+            document_certificate(&absent, &owner, None).is_err(),
+            "coordinate hash is not a native membership witness"
+        );
+    }
 
     #[test]
     fn query_page_certificate_round_trips_the_actual_producer_contract() {
