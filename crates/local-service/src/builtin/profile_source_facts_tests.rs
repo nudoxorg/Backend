@@ -480,6 +480,7 @@ fn staged_large_parser_facts_use_small_queue_exact_shared_cas_and_cold_replay() 
     drop(second);
     drop(daemon);
     let mut cold = open_daemon(workspace.0.path());
+    eprintln!("first selected staged closure reopened cold");
     assert_eq!(cold.engine().daemon().owner().head().root(), selected_root);
     assert_complete(&cold, package, "left.ts", count);
     assert_complete(&cold, package, "right.ts", count);
@@ -502,6 +503,7 @@ fn staged_large_parser_facts_use_small_queue_exact_shared_cas_and_cold_replay() 
     drop(followup_snapshot);
     drop(cold);
     let next_cold = open_daemon(workspace.0.path());
+    eprintln!("replacement staged closure reopened cold");
     assert_eq!(
         next_cold.engine().daemon().owner().head().root(),
         followup_root
