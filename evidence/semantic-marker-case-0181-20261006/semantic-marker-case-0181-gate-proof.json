@@ -1,0 +1,41 @@
+{
+  "source_commit": "01816666fb411f3bc86fcc011b121c620c7adf7d",
+  "source_tree": "d607e06529038953a8eb6f8d93e891d300dbd78e",
+  "gate": "backend-library --lib",
+  "tests": {
+    "passed": 302,
+    "failed": 0,
+    "ignored": 1
+  },
+  "artifacts": {
+    "semantic-marker-case-0181-library.stdout": {
+      "bytes": 28130,
+      "sha256": "5cb5ee1f7e1786a6a0f6516eefca930d8328cffbf18888ddf45059bcc7a11a05"
+    },
+    "semantic-marker-case-0181-library.stderr": {
+      "bytes": 136484,
+      "sha256": "06d3ee2ebb72a3d5648566e407ccb6e4b1abfdf29f3a31780b45ae9d231d725b"
+    },
+    "semantic-marker-case-0181-library.launch.json": {
+      "bytes": 591,
+      "sha256": "a8985fb3743adfd9407684bca57e074b5e101946033220e8a71d1180bd1f4013"
+    },
+    "semantic-marker-case-0181-library.complete.json": {
+      "bytes": 651,
+      "sha256": "a8d366b2c45f3bbf1aec92939918fedfde7006fde69252a3b7540be893c9b733"
+    },
+    "semantic-marker-case-0181-library-fresh-admission.json": {
+      "bytes": 24630,
+      "sha256": "24364f075100b10ee63c410ca9ccebc97f2b6f3766c4e03857c1f577cca9f75a"
+    },
+    "run-semantic-marker-case-0181-library.sh": {
+      "bytes": 846,
+      "sha256": "a58beec6aab71d73bf27cd8439d02ee46e788321985ad41b8b1199b82d31c9eb"
+    },
+    "locked-semantic-marker-case-0181-library.py": {
+      "bytes": 1386,
+      "sha256": "c9dd6e8c8e16a0e4bf34c4366e2f17012145464d122dba61fdcb0c27423b1743"
+    }
+  },
+  "actual_trio_for_this_source": false
+}
