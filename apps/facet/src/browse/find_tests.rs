@@ -18,7 +18,7 @@ impl Render for MountedFind {
         let id: ElementId = "mounted-find".into();
         let measure = Measure::new(px(360.0), &cx.facet());
         div().id("mounted-find-scroll").w(px(360.0)).h(px(220.0)).overflow_y_scroll().track_scroll(&self.scroll)
-            .child(Find { admission: None, local_activation: None, active: self.active, id, model: Arc::clone(&self.model), actions: self.actions.clone(), measure, test_state: Some(self.state.clone()) })
+            .child(Find { admission: None, local_activation: None, active: self.active, id, model: Arc::clone(&self.model), actions: self.actions.clone(), measure, retained: None, test_state: Some(self.state.clone()) })
     }
 }
 

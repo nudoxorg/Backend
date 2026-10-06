@@ -18,6 +18,7 @@ use gpui::{AnyElement, App, AppContext as _, Context, ElementId, Entity, Focusab
     RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, px};
 use gpui_component::input::{Input, InputEvent, InputState};
 use std::rc::Rc;
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -381,13 +382,39 @@ fn action_notice(reason: &str, window: &mut Window, cx: &mut App) {
 /// Compose a native Find folio.
 #[must_use]
 pub fn find(id: impl Into<ElementId>, model: Arc<Model>, actions: Actions, measure: &Measure) -> Find {
-    Find { id: id.into(), model, actions, admission: None, active: true, local_activation: None, measure: *measure, #[cfg(test)] test_state: None }
+    Find { id: id.into(), model, actions, admission: None, active: true, local_activation: None, measure: *measure, retained: None, #[cfg(test)] test_state: None }
 }
 
 #[derive(IntoElement)]
-pub struct Find { admission: Option<ReadAdmission>, active: bool, local_activation: Option<gpui::NativeActivationScope>, id: ElementId, model: Arc<Model>, actions: Actions, measure: Measure, #[cfg(test)] test_state: Option<Entity<State>> }
+pub struct Find { admission: Option<ReadAdmission>, active: bool, local_activation: Option<gpui::NativeActivationScope>, id: ElementId, model: Arc<Model>, actions: Actions, measure: Measure, retained: Option<FindState>, #[cfg(test)] test_state: Option<Entity<State>> }
+
+/// The host retains one editing engine for an exact reading visit. A local
+/// Settings page may unmount Find without replacing its input or unsent draft.
+#[derive(Clone, Default)]
+pub struct FindState(Rc<RefCell<Option<Entity<State>>>>);
+
+impl FindState {
+    /// Only a mounted component's actual input can become a return origin.
+    pub fn focus_handle(&self, cx: &App) -> Option<gpui::FocusHandle> {
+        self.0.borrow().as_ref().map(|state| state.read(cx).input.read(cx).focus_handle(cx))
+    }
+
+    /// Covering the visit retires its editing debounce immediately, even if
+    /// no departing frame paints before the cover replaces it.
+    pub fn suspend(&self, cx: &mut App) {
+        if let Some(state) = self.0.borrow().as_ref() {
+            state.update(cx, |state, _| {
+                state.active = false;
+                state.pending = None;
+                state.generation = state.generation.wrapping_add(1);
+            });
+        }
+    }
+}
 
 impl Find {
+    #[must_use]
+    pub fn retained(mut self, state: FindState) -> Self { self.retained = Some(state); self }
     /// Existing structural input receipt for the independent local query field.
     pub fn local_activation(mut self, scope: gpui::NativeActivationScope) -> Self {
         self.local_activation = Some(scope);
@@ -408,10 +435,14 @@ impl RenderOnce for Find {
         let p = cx.palette();
         let query = self.model.query.clone();
         let actions = self.actions.clone();
+        let retained = self.retained.map(|retained| {
+            let mut slot = retained.0.borrow_mut();
+            slot.get_or_insert_with(|| cx.new(|cx| State::new(query.clone(), actions.clone(), window, cx))).clone()
+        });
         #[cfg(test)]
-        let state = self.test_state.unwrap_or_else(|| window.use_keyed_state(child(&self.id, "state"), cx, |window, cx| State::new(query, actions, window, cx)));
+        let state = self.test_state.or(retained).unwrap_or_else(|| window.use_keyed_state(child(&self.id, "state"), cx, |window, cx| State::new(query, actions, window, cx)));
         #[cfg(not(test))]
-        let state = window.use_keyed_state(child(&self.id, "state"), cx, |window, cx| State::new(query, actions, window, cx));
+        let state = retained.unwrap_or_else(|| window.use_keyed_state(child(&self.id, "state"), cx, |window, cx| State::new(query, actions, window, cx)));
         let read_admission = self.admission.unwrap_or_else(|| if self.model.loading {
             ReadAdmission::Retained("Waiting for the current query; result actions are unavailable.".into())
         } else { ReadAdmission::Current });
