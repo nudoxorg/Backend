@@ -1,0 +1,11 @@
+# Public semantic shape route
+
+CLI `semantic-shapes REQUEST_JSON` and MCP `backend.semantic_shapes` (argument `request`) share the same bounded SurfaceCommand grammar. The request copies an exact SemanticVersionRecord from the named semantic-versions reply's `semantic_data={kind:"versions",value:[...]}` facet, selects one to32 unique full32-byte symbol keys, and supplies max_nodes/max_bytes. Display abbreviations and canonical-key wrapper objects are rejected. Selected bytes remain owner-resolved opaque selectors; no SymbolKey is minted from them.
+
+Session routes the request through the existing certificate-bearing direct shape command. The egress constructor requires its admitted reply certificate, request basis, selected source, exact symbol sequence, image provenance, and existing shape bounds. A deserialized export is only a bounded wire view and has no conversion into an admitted compiler product. The generic owner SurfaceCommand path refuses this command rather than bypassing direct certificate admission.
+
+Summary and Full expose the same closed `semantic_data={kind:"shapes",value:...}` facet. It retains schema1, exact selection, request budgets, and existing batch wire fields. They do not invent type/member facts from declaration kinds or parse human rows. An oversized packet is a typed refusal; required machine fields are not silently removed.
+
+Frozen source and exact log digests are in receipt.json. Public operand admission and actual certificate/wire origin controls each pass one library runtime test. The presenter named-version/shape operand test passes. Both real MCP JSON-RPC dispatcher tests pass, including Summary/Full and oversized refusal. Full MCP98 and presenter92 tests pass, and library/client/presenter/MCP/local-service --tests metadata passes. Three stale baseline test assumptions were corrected separately: canonical query recipe witness, explicit byte span rendering, and the producer's current selected-native-tool setup requirement. Failed runs remain in the durable evidence directory.
+
+The JSON-RPC tests use the existing injected surface seam; they are transport/presentation tests, not a real compiler corpus pass. No matched owner image contains this new route yet. Real public shape roundtrip remains required after Root joins/builds the next exact tuple, and whole-package acceptance remains zero.
