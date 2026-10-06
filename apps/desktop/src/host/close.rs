@@ -534,7 +534,6 @@ impl Render for CloseView {
                         .id("graceful-close")
                         .role(gpui::Role::Dialog)
                         .aria_label("Save before closing")
-                        .focus_trap("graceful-close", &focus)
                         .on_key_down(move |event, _, cx| {
                             if event.keystroke.key == "escape" {
                                 let _ = escape.update(cx, |close, cx| {
@@ -550,7 +549,11 @@ impl Render for CloseView {
                         .items_center()
                         .justify_center()
                         .bg(palette.g1.hsla())
-                        .child(panel),
+                        // FocusTrapContainer delegates layout/input to its
+                        // base but does not forward that base's AX metadata.
+                        // Keep the named native dialog outside the wrapper;
+                        // its decision panel still owns the real focus trap.
+                        .child(panel.focus_trap("graceful-close-trap", &focus)),
                 )
             })
     }
