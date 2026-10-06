@@ -3,7 +3,11 @@ use crate::model::{DensityPreference, PersistentState};
 use crate::navigation::Intent;
 use crate::runtime::persistence_writer::{PersistenceWriter, WriteFailure};
 use crate::shell::tests::{Rig, rig};
-use gpui::TestAppContext;
+use gpui::{
+    InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _, Styled as _,
+    TestAppContext,
+};
+use gpui_component::FocusTrapElement as _;
 use std::sync::mpsc;
 
 fn closing(rig: &mut Rig) -> Entity<GracefulClose> {
@@ -26,6 +30,117 @@ fn closing(rig: &mut Rig) -> Entity<GracefulClose> {
                 .close
                 .clone()
         })
+}
+
+struct NamedTrapFixture {
+    trap: gpui::FocusHandle,
+    first: gpui::FocusHandle,
+    second: gpui::FocusHandle,
+    outside: gpui::FocusHandle,
+    mounted: bool,
+}
+
+impl Render for NamedTrapFixture {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let control = |id: &'static str, label: &'static str, focus: &gpui::FocusHandle| {
+            div().id(id).role(gpui::Role::Button).aria_label(label)
+                .track_focus(focus).tab_index(0).h(px(40.0)).child(label)
+        };
+        let mut view = div().size_full().flex().flex_col()
+            .child(control("outside-trap", "Outside", &self.outside));
+        if self.mounted {
+            view = view.child(
+                div().id("named-dialog-base").role(gpui::Role::Dialog)
+                    .aria_label("Composable dialog")
+                    .aria_description("The dialog keeps its native semantics when trapped")
+                    .flex().flex_col().w(px(300.0))
+                    .a11y_synthetic_children(|builder| {
+                        let mut note = gpui::accesskit::Node::new(gpui::Role::Label);
+                        note.set_label("Synthetic dialog note");
+                        let id = builder.synthetic_node_id("dialog-note");
+                        assert!(builder.push_child(id, note));
+                    })
+                    .child(control("first-in-trap", "First decision", &self.first))
+                    .child(control("second-in-trap", "Second decision", &self.second))
+                    .focus_trap("named-dialog-trap", &self.trap),
+            );
+        }
+        view
+    }
+}
+
+#[gpui::test]
+fn a_composed_focus_trap_preserves_native_semantics_children_and_keyboard_cycles(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let (root, cx) = cx.add_window_view(|window, cx| {
+        let fixture = cx.new(|cx| NamedTrapFixture {
+            trap: cx.focus_handle(), first: cx.focus_handle(), second: cx.focus_handle(),
+            outside: cx.focus_handle(), mounted: true,
+        });
+        gpui_component::Root::new(fixture, window, cx).bordered(false)
+    });
+    let fixture = root.read_with(cx, |root, _| {
+        root.view().clone().downcast::<NamedTrapFixture>().expect("native trap fixture")
+    });
+    cx.update(|window, cx| {
+        window.activate_window();
+        window.set_a11y_forced(true);
+        cx.set_global(gpui::TextTrace);
+    });
+    // Repeat after an actual unmount: a cached or previously registered trap
+    // cannot supply the missing semantic node for the newly mounted wrapper.
+    for mount in 0..2 {
+        if mount > 0 {
+            fixture.update(cx, |fixture, cx| { fixture.mounted = false; cx.notify(); });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            fixture.update(cx, |fixture, cx| { fixture.mounted = true; cx.notify(); });
+        }
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| {
+            let json = window.debug_a11y_tree_json().expect("native composed trap tree");
+            let tree: serde_json::Value = serde_json::from_str(&json).expect("native trap JSON");
+            let nodes = tree["nodes"].as_object().expect("native trap nodes");
+            let named = |label: &str| nodes.iter().filter(|(_, node)| {
+                node["aria"]["label"].as_str() == Some(label)
+            }).collect::<Vec<_>>();
+            let dialogs = named("Composable dialog");
+            assert_eq!(dialogs.len(), 1, "the wrapper forwards one base semantic node: {tree:#?}");
+            let (_, dialog) = dialogs[0];
+            assert_eq!(dialog["aria"]["role"].as_str(), Some("Dialog"));
+            assert_eq!(dialog["aria"]["description"].as_str(),
+                Some("The dialog keeps its native semantics when trapped"));
+            let children = dialog["children"].as_array().expect("native dialog descendants");
+            for (label, role) in [("First decision", "Button"), ("Second decision", "Button"),
+                ("Synthetic dialog note", "Label")] {
+                let matches = named(label);
+                assert_eq!(matches.len(), 1, "the trap preserves each child exactly once: {label}: {tree:#?}");
+                let (id, node) = matches[0];
+                assert_eq!(node["aria"]["role"].as_str(), Some(role));
+                assert!(children.iter().any(|child| child.as_str() == Some(id.as_str())),
+                    "{label} remains a child of the named dialog");
+            }
+            for label in ["First decision", "Second decision"] {
+                assert!(window.painted_texts().iter().any(|text| text.alpha > 0.0
+                    && text.text.as_ref() == label), "native decision words are actually painted");
+            }
+            let first = fixture.read(cx).first.clone();
+            first.focus(window, cx);
+        });
+        for (key, second) in [("tab", true), ("tab", false), ("shift-tab", true),
+            ("shift-tab", false)] {
+            cx.simulate_keystrokes(key);
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let fixture = fixture.read(cx);
+                assert!(fixture.trap.contains_focused(window, cx), "native Tab remains trapped");
+                let expected = if second { &fixture.second } else { &fixture.first };
+                assert!(expected.is_focused(window), "native {key} reaches the expected decision");
+                assert!(!fixture.outside.is_focused(window));
+            });
+        }
+    }
 }
 
 struct HeldSave {
