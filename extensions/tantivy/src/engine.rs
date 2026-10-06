@@ -3528,30 +3528,55 @@ fn prune_durable_roots_entries(
             });
             continue;
         }
-        // Prove this exact content name belongs to our projection before a
-        // potentially creating lease open can mutate its directory.
-        let binding = read_binding_stamp(&entry.path())?;
-        if hex_fingerprint(binding) != name {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "inactive durable root name does not match its binding",
-            )
-            .into());
-        }
+        // An inactive projection never supplies authority for the selected
+        // root. Open an existing reader lock without creating foreign files;
+        // malformed binding bytes are retained and charged, never deleted.
+        let lease = match backend_platform::durability::open_regular_file_readwrite_nofollow(
+            &entry.path().join(DURABLE_ROOT_LEASE),
+        ) {
+            Ok(lease) => lease,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                match read_binding_stamp(&entry.path()) {
+                    Ok(binding) if hex_fingerprint(binding) == name => {}
+                    Ok(_) => {
+                        pinned_bytes = pinned_bytes
+                            .checked_add(bytes)
+                            .ok_or_else(|| io::Error::other("durable cache size overflow"))?;
+                        continue;
+                    }
+                    Err(error) if is_definitively_corrupt_root(&error) => {
+                        pinned_bytes = pinned_bytes
+                            .checked_add(bytes)
+                            .ok_or_else(|| io::Error::other("durable cache size overflow"))?;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
+                directory.verify_path(&entry.path())?;
+                open_root_lease(&entry.path())?
+            }
+            Err(error) => return Err(error.into()),
+        };
         directory.verify_path(&entry.path())?;
-        let lease = open_root_lease(&entry.path())?;
         match lease.try_lock() {
             Ok(()) => {
-                // Re-admit the held directory and binding under the exclusive
-                // lease before classifying or removing the owned projection.
                 directory.verify_path(&entry.path())?;
-                if read_binding_stamp(&entry.path())? != binding {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "inactive durable root binding changed after lease acquisition",
-                    )
-                    .into());
-                }
+                let binding = match read_binding_stamp(&entry.path()) {
+                    Ok(binding) if hex_fingerprint(binding) == name => binding,
+                    Ok(_) => {
+                        pinned_bytes = pinned_bytes
+                            .checked_add(bytes)
+                            .ok_or_else(|| io::Error::other("durable cache size overflow"))?;
+                        continue;
+                    }
+                    Err(error) if is_definitively_corrupt_root(&error) => {
+                        pinned_bytes = pinned_bytes
+                            .checked_add(bytes)
+                            .ok_or_else(|| io::Error::other("durable cache size overflow"))?;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
                 match classify_inactive_projection(&entry.path(), binding) {
                     Err(error) if is_definitively_corrupt_root(&error) => {
                         directory.verify_path(&entry.path())?;
