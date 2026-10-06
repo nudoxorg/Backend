@@ -4060,6 +4060,7 @@ mod tests {
     };
     use backend_library::CompileExecutionIntent;
     use backend_semantic::vocabulary::NativeTool;
+    use std::collections::BTreeMap;
     use std::fs;
     use std::num::NonZeroUsize;
 

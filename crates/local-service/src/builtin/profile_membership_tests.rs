@@ -682,7 +682,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
 
     let recipe_identity =
         ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"fixture TSX recipe");
-    let attempt = backend_library::CompilerAttempt {
+    let attempt = backend_library::interface::CompilerAttempt {
         source: SourceAuthority {
             identity: source_identity,
             byte_len: u32::try_from(source.len()).expect("bounded TSX source length"),

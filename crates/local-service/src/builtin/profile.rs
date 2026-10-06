@@ -3283,7 +3283,7 @@ mod persisted_intent_tests {
         use backend_semantic::ir::{BuildError, EntityId};
         use backend_version::{CompileRecipeDomain, SourceFactDomain};
 
-        let attempt = backend_library::CompilerAttempt {
+        let attempt = backend_library::interface::CompilerAttempt {
             source: SourceAuthority {
                 identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"source bytes"),
                 byte_len: 12,

@@ -3573,7 +3573,7 @@ impl SemanticAuthority {
                     })?;
                 for (key, record) in page.entries() {
                     if key.is_selected() {
-                        capture_rows.insert(key.clone(), *record);
+                        capture_rows.insert(key.clone(), record.clone());
                     }
                 }
                 let Some(next) = page.next().cloned() else {
