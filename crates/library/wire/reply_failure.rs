@@ -103,18 +103,13 @@ mod tests {
             },
             recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"recipe"),
         };
-        let fragment_failure = CompilerFragmentFailure::validate(
-            FragmentError::TruncatedHeader {
-                required: 32,
-                actual: 7,
-            },
-        );
-        let package_failure = PackageCompilerFailure::from_fragment_failure(
-            "src/lib.ts",
-            attempt,
-            &fragment_failure,
-        )
-        .map_err(|error| error.to_string())?;
+        let fragment_failure = CompilerFragmentFailure::validate(FragmentError::TruncatedHeader {
+            required: 32,
+            actual: 7,
+        });
+        let package_failure =
+            PackageCompilerFailure::from_fragment_failure("src/lib.ts", attempt, &fragment_failure)
+                .map_err(|error| error.to_string())?;
         let failures = [
             CommandFailure::NotFound,
             CommandFailure::WrongBasis {
@@ -135,10 +130,17 @@ mod tests {
         for failure in failures {
             let decoded = command_failure_from_wire(command_failure_to_wire(&failure))?;
             assert_eq!(decoded, failure);
+            if let CommandFailure::CompilerRefused { failure, .. } = decoded {
+                let value = serde_json::to_value(failure).map_err(|error| error.to_string())?;
+                assert_eq!(value["phase"], "validate");
+                assert_eq!(value["cause"]["fault"]["facts"]["required"], 32);
+                assert_eq!(value["cause"]["fault"]["facts"]["actual"], 7);
+            }
         }
         assert!(display.contains("src/lib.ts"));
         assert!(display.contains("validate_truncated_header"));
-        assert!(display.contains("\"required\":32"));
+        assert!(!display.contains("\"required\":32"));
+        assert!(!display.contains("content:"));
         assert!(!display.contains("native stdout"));
         Ok(())
     }
