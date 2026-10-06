@@ -11012,8 +11012,7 @@ mod lane_tests {
         };
 
         use crate::application::{
-            PackageSource, ToolchainProbeLimits, TypeScriptProjectHost,
-            typescript_program::build_native_inputs,
+            PackageSource, ToolchainProbeLimits, TypeScriptProjectHost, build_native_inputs,
         };
         use backend_frontend_typescript::TszProjectExecutionBudget;
         use std::num::NonZeroUsize;

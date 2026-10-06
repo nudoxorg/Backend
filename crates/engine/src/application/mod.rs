@@ -19,6 +19,8 @@ mod typescript_host;
 mod typescript_program;
 mod unit_authority_v2;
 
+pub(crate) use self::typescript_program::build_native_inputs;
+
 pub use self::cluster_coordinator::{
     AdmittedRemoteCompilerCandidate, AdmittedSemanticInputWitnessV2, CheckedRemoteCompilerArtifact,
     CheckedRemoteCompilerOutput, CheckedRemoteCompilerPlane, CheckedRemoteCompilerPlaneArtifact,
