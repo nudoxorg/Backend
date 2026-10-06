@@ -111,6 +111,18 @@ pub enum CheckerError {
         /// Explicit unsupported dependency/source path.
         path: PathBuf,
     },
+    /// A configured internal import candidate exists outside the selected frontier.
+    #[error(
+        "native Python import {module} in {source_path:?} requires uncaptured candidate {candidate:?}"
+    )]
+    IncompleteSourceFrontier {
+        /// Exact source member carrying the import.
+        source_path: PathBuf,
+        /// Absolute native module spelling after relative import expansion.
+        module: Box<str>,
+        /// Original package-local candidate omitted from the snapshot.
+        candidate: PathBuf,
+    },
     /// Native type projection exceeded its explicit finite contract.
     #[error("native Python type projection {path:?} at {site:?}: {cause}")]
     NativeTypeProjection {

@@ -73,9 +73,31 @@ pub struct DefinitionTarget {
 pub struct PythonProjectReport {
     modules: BTreeMap<Box<str>, CheckerReport>,
     witness: std::sync::Arc<PythonProjectWitness>,
+    diagnostics: Box<[PythonProjectDiagnostic]>,
+}
+
+/// An exact selected-source native diagnostic, retained independently of type facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PythonProjectDiagnostic {
+    /// Original package-relative module.
+    pub relative_path: Box<str>,
+    /// Native UTF-8 byte range inside the captured source.
+    pub span: Span,
+    /// Native diagnostic family, including `missing-import` and `untyped-import`.
+    pub kind: Box<str>,
+    /// Native severity label.
+    pub severity: Box<str>,
+    /// Exact native diagnostic description.
+    pub message: Box<str>,
 }
 
 impl PythonProjectReport {
+    /// Retains native selected-source diagnostics, including unavailable imports.
+    #[must_use]
+    pub fn diagnostics(&self) -> &[PythonProjectDiagnostic] {
+        &self.diagnostics
+    }
+
     /// Borrows the report bound to one exact source member.
     #[must_use]
     pub fn module(&self, relative_path: &str) -> Option<&CheckerReport> {
@@ -95,6 +117,7 @@ impl PythonProjectReport {
 pub struct PythonProjectWitness {
     files: Vec<FileWitness>,
     fingerprint: PythonProjectFingerprint,
+    candidates: Vec<CandidateWitness>,
 }
 
 /// Exact host-local transaction identity for source/configuration/producer facts.
@@ -167,6 +190,49 @@ impl FileWitness {
     }
 }
 
+/// Candidate membership is captured independently of any solver filesystem read.
+#[derive(Debug)]
+pub(super) struct CandidateWitness {
+    path: PathBuf,
+    kind: Option<bool>,
+}
+
+impl CandidateWitness {
+    pub(super) fn capture(path: PathBuf) -> Result<Self, CheckerError> {
+        let kind = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => Some(false),
+            Ok(metadata) if metadata.is_dir() => Some(true),
+            Ok(_) => return Err(CheckerError::UncapturedDependency { path }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(source) => return Err(workspace_error(source)),
+        };
+        Ok(Self { path, kind })
+    }
+
+    pub(super) fn is_present(&self) -> bool {
+        self.kind.is_some()
+    }
+
+    fn validate_current(&self) -> Result<(), CheckerError> {
+        if Self::capture(self.path.clone())?.kind != self.kind {
+            return Err(project_error(
+                &self.path.to_string_lossy(),
+                "configured internal import candidate membership changed",
+            ));
+        }
+        Ok(())
+    }
+
+    fn fingerprint(&self, identity: &mut blake3::Hasher) {
+        hash_field(identity, self.path.as_os_str().as_encoded_bytes());
+        identity.update(&[match self.kind {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        }]);
+    }
+}
+
 #[derive(Debug)]
 struct DirectoryWitness {
     path: PathBuf,
@@ -234,6 +300,9 @@ impl PythonProjectWitness {
     /// # Errors
     /// Refuses any changed selected source, configuration probe, or executable.
     pub fn validate_current(&self) -> Result<(), CheckerError> {
+        for candidate in &self.candidates {
+            candidate.validate_current()?;
+        }
         for file in &self.files {
             file.validate_current()?;
         }
@@ -297,6 +366,7 @@ impl Pyrefly {
         let mut witness = PythonProjectWitness {
             files: vec![FileWitness::capture(self.program.clone())?],
             fingerprint: PythonProjectFingerprint([0; 32]),
+            candidates: Vec::new(),
         };
         witness.files.push(FileWitness::capture(
             std::env::current_exe().map_err(workspace_error)?,
@@ -451,7 +521,7 @@ impl Pyrefly {
         let mut identity = blake3::Hasher::new();
         identity.update(b"compiler.python.captured-project.v1\0");
         identity.update(&self.local_configuration_fingerprint());
-        identity.update(&native_configuration);
+        identity.update(&native.configuration_fingerprint);
         hash_field(&mut identity, package_name.as_bytes());
         hash_field(&mut identity, super::profile_tag(profile).as_bytes());
         let mut selected = sources.iter().collect::<Vec<_>>();
@@ -477,6 +547,11 @@ impl Pyrefly {
                 }
             }
         }
+        witness.candidates = native.candidates;
+        for candidate in &witness.candidates {
+            identity.update(b"internal-candidate-membership\0");
+            candidate.fingerprint(&mut identity);
+        }
         witness.fingerprint = PythonProjectFingerprint(*identity.finalize().as_bytes());
         witness.validate_current()?;
         for directory in private_tree {
@@ -489,7 +564,8 @@ impl Pyrefly {
         }
         checkpoint(control)?;
         Ok(PythonProjectReport {
-            modules,
+            modules: native.modules,
+            diagnostics: native.diagnostics.into_boxed_slice(),
             witness: std::sync::Arc::new(witness),
         })
     }

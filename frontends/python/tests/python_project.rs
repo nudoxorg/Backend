@@ -256,6 +256,21 @@ fn native_project_cannot_bind_uncaptured_files_or_external_configured_roots() {
     }];
     let checker = Pyrefly::from_executable(executable.into()).expect("absolute checker");
     let cancelled = AtomicBool::new(false);
+    let refused = checker.analyze_project(
+        &root,
+        "pkg",
+        &sources,
+        PythonVersion::Python314,
+        PythonProjectControl {
+            cancelled: &cancelled,
+            deadline: Instant::now() + Duration::from_secs(30),
+        },
+    );
+    assert!(
+        matches!(refused, Err(CheckerError::IncompleteSourceFrontier { candidate, .. }) if candidate == root.join("omitted.py")),
+        "existing internal source omission is a typed incomplete frontier"
+    );
+    std::fs::remove_file(root.join("omitted.py")).expect("absent internal candidate");
     let report = checker
         .analyze_project(
             &root,
@@ -267,23 +282,26 @@ fn native_project_cannot_bind_uncaptured_files_or_external_configured_roots() {
                 deadline: Instant::now() + Duration::from_secs(30),
             },
         )
-        .expect("closed native project");
-    let module = report.module("core.py").expect("selected core module");
+        .expect("genuinely absent import is unavailable");
+    let module = report.module("core.py").expect("core module");
     assert!(
         module
-            .inferences
+            .imports
             .iter()
-            .any(|inference| inference.kind == InferenceSite::Return
-                && inference.observed == InferredType::Any),
-        "uncaptured original import cannot confer an inferred type"
+            .any(|import| import.module == "omitted" && !import.resolved)
     );
     assert!(
-        !module
-            .symbols
+        report
+            .diagnostics()
             .iter()
-            .any(|symbol| matches!(symbol.outcome, SymbolOutcome::Definition { .. })),
-        "uncaptured import cannot confer a definition binding"
+            .any(|diagnostic| diagnostic.kind.as_ref() == "missing-import")
     );
+    std::fs::write(root.join("omitted.py"), "value = 42\n").expect("new candidate");
+    assert!(
+        report.witness().validate_current().is_err(),
+        "new candidate invalidates admitted negative import probe"
+    );
+    std::fs::remove_file(root.join("omitted.py")).expect("restore candidate absence");
     let external = root
         .parent()
         .expect("fixture parent")

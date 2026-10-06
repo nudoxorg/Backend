@@ -22,16 +22,25 @@ use pyrefly_types::types::{BoundMethodType, Forallable, Type};
 use pyrefly_util::arc_id::ArcId;
 use pyrefly_util::thread_pool::ThreadCount;
 use ruff_native_text_size::{Ranged, TextSize};
+use ruff_python_ast::visitor::{Visitor, walk_stmt};
+use ruff_text_size::Ranged as SyntaxRanged;
 
 use super::project::{
-    DefinitionTarget, PythonProjectControl, PythonProjectSource, PythonTypeProjectionFault,
-    checkpoint, project_error,
+    CandidateWitness, DefinitionTarget, PythonProjectControl, PythonProjectDiagnostic,
+    PythonProjectSource, PythonTypeProjectionFault, checkpoint, project_error,
 };
 use super::{
-    CheckerError, CheckerReport, Inference, InferenceSite, InferredType, SymbolOutcome,
-    SymbolResolution,
+    CheckerError, CheckerReport, ImportResolution, Inference, InferenceSite, InferredType,
+    SymbolOutcome, SymbolResolution,
 };
 use crate::legacy::{AnnotationPosition, DeclarationKind, ModuleFacts, Span};
+
+pub(super) struct NativeProjectResult {
+    pub(super) modules: BTreeMap<Box<str>, CheckerReport>,
+    pub(super) configuration_fingerprint: [u8; 32],
+    pub(super) candidates: Vec<CandidateWitness>,
+    pub(super) diagnostics: Vec<PythonProjectDiagnostic>,
+}
 
 pub(super) fn analyze(
     mirror: &Path,
@@ -41,7 +50,7 @@ pub(super) fn analyze(
     syntax: &BTreeMap<&str, ModuleFacts>,
     profile: backend_semantic::vocabulary::PythonVersion,
     control: PythonProjectControl<'_>,
-) -> Result<(BTreeMap<Box<str>, CheckerReport>, [u8; 32]), CheckerError> {
+) -> Result<NativeProjectResult, CheckerError> {
     checkpoint(control)?;
     let minor = super::profile_tag(profile)
         .split('.')
@@ -64,6 +73,75 @@ pub(super) fn analyze(
             config.handle_from_module_path(path)
         })
         .collect::<Vec<_>>();
+    let mut imports = BTreeMap::new();
+    let mut candidates = BTreeMap::new();
+    for (source, handle) in sources.iter().zip(&handles) {
+        checkpoint(control)?;
+        let parsed =
+            crate::legacy::parse_module(source.source, profile).map_err(|source_error| {
+                CheckerError::ProjectSyntax {
+                    path: source.relative_path.into(),
+                    source: Box::new(source_error),
+                }
+            })?;
+        let mut collector = ImportCollector {
+            module: handle.module(),
+            is_init: source.relative_path.ends_with("/__init__.py")
+                || source.relative_path.ends_with("/__init__.pyi")
+                || source.relative_path == "__init__.py"
+                || source.relative_path == "__init__.pyi",
+            imports: Vec::new(),
+        };
+        if let ruff_python_ast::Mod::Module(module) = parsed.syntax() {
+            collector.visit_body(&module.body);
+        }
+        let config = finder.python_file(handle.module_kind(), handle.path());
+        for import in &collector.imports {
+            for root in config.search_path().chain(config.site_package_path()) {
+                let relative_root = root
+                    .strip_prefix(mirror)
+                    .map_err(|_| CheckerError::UncapturedDependency { path: root.clone() })?;
+                let original_search_root = original_root.join(relative_root);
+                for module in &import.candidates {
+                    let mut prefix = original_search_root.clone();
+                    for component in module.as_str().split('.').filter(|part| !part.is_empty()) {
+                        prefix.push(component);
+                        let mut paths = vec![
+                            prefix.clone(),
+                            prefix.join("__init__.pyi"),
+                            prefix.join("__init__.py"),
+                            prefix.with_extension("pyi"),
+                            prefix.with_extension("py"),
+                        ];
+                        paths.extend(
+                            pyrefly_python::COMPILED_FILE_SUFFIXES
+                                .iter()
+                                .map(|suffix| prefix.with_extension(suffix)),
+                        );
+                        for path in paths {
+                            checkpoint(control)?;
+                            if candidates.contains_key(&path) {
+                                continue;
+                            }
+                            let probe = CandidateWitness::capture(path.clone())?;
+                            let relative = path
+                                .strip_prefix(original_root)
+                                .expect("configured package-local root");
+                            if probe.is_present() && !mirror.join(relative).exists() {
+                                return Err(CheckerError::IncompleteSourceFrontier {
+                                    source_path: source.relative_path.into(),
+                                    module: module.as_str().into(),
+                                    candidate: path,
+                                });
+                            }
+                            candidates.insert(path, probe);
+                        }
+                    }
+                }
+            }
+        }
+        imports.insert(source.relative_path, collector.imports);
+    }
     let state = State::new(finder, ThreadCount::NumThreads(std::num::NonZeroUsize::MIN));
     let mut transaction = state.new_committable_transaction(Require::Everything, None);
     let cancellation = transaction.as_mut().get_cancellation_handle();
@@ -374,13 +452,138 @@ pub(super) fn analyze(
             source.relative_path.into(),
             CheckerReport {
                 inferences: inferences.into_boxed_slice(),
-                imports: Box::new([]),
+                imports: imports[source.relative_path]
+                    .iter()
+                    .map(|import| ImportResolution {
+                        binding: import.binding.clone(),
+                        module: import.module.as_str().to_owned(),
+                        module_span: import.span,
+                        resolved: read
+                            .import_handle(handle, import.module, None)
+                            .finding()
+                            .is_some(),
+                    })
+                    .collect(),
                 symbols: symbols.into_boxed_slice(),
             },
         );
     }
     checkpoint(control)?;
-    Ok((modules, configuration_fingerprint))
+    let mut diagnostics = Vec::new();
+    for error in read.get_errors(&handles).collect_display_errors() {
+        checkpoint(control)?;
+        let Ok(path) = error.path().as_path().strip_prefix(mirror) else {
+            continue;
+        };
+        let Some(path) = path.to_str().filter(|path| selected.contains_key(*path)) else {
+            continue;
+        };
+        diagnostics.push(PythonProjectDiagnostic {
+            relative_path: path.into(),
+            span: Span {
+                start: error.range().start().to_u32(),
+                end: error.range().end().to_u32(),
+            },
+            kind: error.error_kind().to_name().into(),
+            severity: error.severity().label().trim().into(),
+            message: error.msg().into_boxed_str(),
+        });
+    }
+    Ok(NativeProjectResult {
+        modules,
+        configuration_fingerprint,
+        candidates: candidates.into_values().collect(),
+        diagnostics,
+    })
+}
+
+struct ImportProbe {
+    binding: String,
+    module: ModuleName,
+    span: Span,
+    candidates: Vec<ModuleName>,
+}
+
+struct ImportCollector {
+    module: ModuleName,
+    is_init: bool,
+    imports: Vec<ImportProbe>,
+}
+
+impl<'syntax> Visitor<'syntax> for ImportCollector {
+    fn visit_stmt(&mut self, statement: &'syntax ruff_python_ast::Stmt) {
+        match statement {
+            ruff_python_ast::Stmt::Import(import) => {
+                for alias in &import.names {
+                    let module = ModuleName::from_parts(alias.name.as_str().split('.'));
+                    self.imports.push(ImportProbe {
+                        binding: alias.asname.as_ref().map_or_else(
+                            || {
+                                alias
+                                    .name
+                                    .as_str()
+                                    .split('.')
+                                    .next()
+                                    .unwrap_or_default()
+                                    .to_owned()
+                            },
+                            |name| name.as_str().to_owned(),
+                        ),
+                        module,
+                        span: Span {
+                            start: alias.name.range().start().to_u32(),
+                            end: alias.name.range().end().to_u32(),
+                        },
+                        candidates: vec![module],
+                    });
+                }
+            }
+            ruff_python_ast::Stmt::ImportFrom(import) => {
+                let mut base = if import.level == 0 {
+                    Vec::new()
+                } else {
+                    let mut parts = self.module.as_str().split('.').collect::<Vec<_>>();
+                    let remove = import.level.saturating_sub(u32::from(self.is_init)) as usize;
+                    if remove > parts.len() {
+                        return;
+                    }
+                    parts.truncate(parts.len() - remove);
+                    parts
+                };
+                if let Some(suffix) = &import.module {
+                    base.extend(suffix.as_str().split('.'));
+                }
+                let module = ModuleName::from_parts(&base);
+                for alias in &import.names {
+                    let mut candidates = vec![module];
+                    if alias.name.as_str() != "*" {
+                        let mut child = base.clone();
+                        child.push(alias.name.as_str());
+                        candidates.push(ModuleName::from_parts(child));
+                    }
+                    let module_range = import
+                        .module
+                        .as_ref()
+                        .map_or(alias.name.range(), |name| name.range());
+                    self.imports.push(ImportProbe {
+                        binding: alias
+                            .asname
+                            .as_ref()
+                            .unwrap_or(&alias.name)
+                            .as_str()
+                            .to_owned(),
+                        module,
+                        span: Span {
+                            start: module_range.start().to_u32(),
+                            end: module_range.end().to_u32(),
+                        },
+                        candidates,
+                    });
+                }
+            }
+            _ => walk_stmt(self, statement),
+        }
+    }
 }
 
 /// No ancestor discovery, interpreter/site-package probing, or external loader
