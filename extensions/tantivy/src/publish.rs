@@ -302,7 +302,10 @@ impl PrivateNamespace {
         wait: Duration,
     ) -> io::Result<NamespaceFence> {
         let file = self.open_fence_file(
-            || self.directory.open_private_file_read_write(kind.file_name(), true),
+            || {
+                self.directory
+                    .open_private_file_read_write(kind.file_name(), true)
+            },
             thread::sleep,
         )?;
         let identity = FileIdentity::of_file(&file)?;
@@ -2094,51 +2097,75 @@ mod tests {
         let namespace = namespace(&root);
         let mut attempts = 0;
         let mut pauses = Vec::new();
-        let file = namespace.open_fence_file(
-            || {
-                attempts += 1;
-                if attempts == 1 {
-                    // Schedule the first lookup before the peer creates the
-                    // control entry. This is a real failed pathname lookup,
-                    // with no admitted inode to retry or accidentally retain.
-                    return namespace.directory.open_private_file_read_write(
-                        NamespaceFenceKind::DurableCache.file_name(), false,
-                    );
-                }
-                namespace.directory.open_private_file_read_write(
-                    NamespaceFenceKind::DurableCache.file_name(), true,
-                )
-            },
-            |delay| {
-                pauses.push(delay);
-                let peer = namespace.directory.open_private_file_read_write(
-                    NamespaceFenceKind::DurableCache.file_name(), true,
-                ).expect("peer creates the first named gate between lookups");
-                drop(peer);
-            },
-        ).expect("first gate lookup settles");
+        let file = namespace
+            .open_fence_file(
+                || {
+                    attempts += 1;
+                    if attempts == 1 {
+                        // Schedule the first lookup before the peer creates the
+                        // control entry. This is a real failed pathname lookup,
+                        // with no admitted inode to retry or accidentally retain.
+                        return namespace.directory.open_private_file_read_write(
+                            NamespaceFenceKind::DurableCache.file_name(),
+                            false,
+                        );
+                    }
+                    namespace.directory.open_private_file_read_write(
+                        NamespaceFenceKind::DurableCache.file_name(),
+                        true,
+                    )
+                },
+                |delay| {
+                    pauses.push(delay);
+                    let peer = namespace
+                        .directory
+                        .open_private_file_read_write(
+                            NamespaceFenceKind::DurableCache.file_name(),
+                            true,
+                        )
+                        .expect("peer creates the first named gate between lookups");
+                    drop(peer);
+                },
+            )
+            .expect("first gate lookup settles");
         assert_eq!(attempts, 2);
         assert_eq!(pauses, vec![DENIAL_BACKOFF[0]]);
-        assert_eq!(FileIdentity::of_file(&file).expect("held identity"),
-            FileIdentity::of_path_nofollow(&namespace.path.join(
-                NamespaceFenceKind::DurableCache.file_name())).expect("named identity"));
+        assert_eq!(
+            FileIdentity::of_file(&file).expect("held identity"),
+            FileIdentity::of_path_nofollow(
+                &namespace
+                    .path
+                    .join(NamespaceFenceKind::DurableCache.file_name())
+            )
+            .expect("named identity")
+        );
         drop(file);
 
         for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::InvalidData] {
             let mut attempts = 0;
-            let error = namespace.open_fence_file(
-                || { attempts += 1; Err(io::Error::from(kind)) },
-                |_| panic!("ownership and real I/O failures are terminal"),
-            ).expect_err("terminal admission failure");
+            let error = namespace
+                .open_fence_file(
+                    || {
+                        attempts += 1;
+                        Err(io::Error::from(kind))
+                    },
+                    |_| panic!("ownership and real I/O failures are terminal"),
+                )
+                .expect_err("terminal admission failure");
             assert_eq!(error.kind(), kind);
             assert_eq!(attempts, 1);
         }
         let mut attempts = 0;
         let mut pauses = Vec::new();
-        let error = namespace.open_fence_file(
-            || { attempts += 1; Err(io::Error::from(io::ErrorKind::NotFound)) },
-            |delay| pauses.push(delay),
-        ).expect_err("absence is bounded");
+        let error = namespace
+            .open_fence_file(
+                || {
+                    attempts += 1;
+                    Err(io::Error::from(io::ErrorKind::NotFound))
+                },
+                |delay| pauses.push(delay),
+            )
+            .expect_err("absence is bounded");
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert_eq!(attempts, DENIAL_BACKOFF.len() + 1);
         assert_eq!(pauses, DENIAL_BACKOFF);
