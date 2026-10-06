@@ -67,8 +67,14 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
         let mut pre_merge_bind_total_bytes = 0usize;
         for index in 0..results.len() {
             Self::charge_checkpoint(execution_checkpoint, &mut pending_work_units, 1, false)?;
-            pre_merge_bind_total_bytes = pre_merge_bind_total_bytes
-                .saturating_add(results.get(index).estimated_size_bytes());
+            let result = results.get(index);
+            let estimated_size = match execution_checkpoint {
+                Some(checkpoint) => {
+                    result.estimated_size_bytes_with_execution_checkpoint(checkpoint)?
+                }
+                None => result.estimated_size_bytes(),
+            };
+            pre_merge_bind_total_bytes = pre_merge_bind_total_bytes.saturating_add(estimated_size);
         }
 
         // Collect lib_binders from all results (deduplicated by address), paired with their arenas.
@@ -125,9 +131,12 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
         // saves ~13 rehashes during the merge phase.
         let cross_file_node_symbols: CrossFileNodeSymbols =
             FxHashMap::with_capacity_and_hasher(results.len(), Default::default());
-        let estimated_global_count: usize = (0..results.len())
-            .map(|index| results.get(index).file_locals.len())
-            .sum();
+        let mut estimated_global_count = 0usize;
+        for index in 0..results.len() {
+            Self::charge_checkpoint(execution_checkpoint, &mut pending_work_units, 1, false)?;
+            estimated_global_count =
+                estimated_global_count.saturating_add(results.get(index).file_locals.len());
+        }
         let globals = SymbolTable::with_capacity(estimated_global_count);
         let files = Vec::with_capacity(results.len());
         let file_locals_list = Vec::with_capacity(results.len());

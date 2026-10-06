@@ -496,6 +496,33 @@ impl BindResult {
     /// and eviction decisions in the LSP.
     #[must_use]
     pub fn estimated_size_bytes(&self) -> usize {
+        self.estimated_size_bytes_with_optional_checkpoint(None)
+            .expect("an unmetered size estimate cannot stop")
+    }
+
+    /// Estimates this bind result while polling one shared program checkpoint
+    /// through every potentially long collection walk.
+    pub fn estimated_size_bytes_with_execution_checkpoint(
+        &self,
+        checkpoint: &dyn tsz_common::ExecutionCheckpoint,
+    ) -> Result<usize, tsz_common::ProjectExecutionStop> {
+        self.estimated_size_bytes_with_optional_checkpoint(Some(checkpoint))
+    }
+
+    fn estimated_size_bytes_with_optional_checkpoint(
+        &self,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<usize, tsz_common::ProjectExecutionStop> {
+        let mut meter = checkpoint
+            .map(tsz_common::ExecutionWorkMeter::new)
+            .transpose()?;
+        macro_rules! tick {
+            () => {
+                if let Some(meter) = meter.as_mut() {
+                    meter.tick(1)?;
+                }
+            };
+        }
         let mut size = std::mem::size_of::<Self>();
 
         // file_name
@@ -507,6 +534,7 @@ impl BindResult {
         // symbols (SymbolArena: Vec<Symbol> + name_index)
         size += self.symbols.len() * std::mem::size_of::<crate::binder::Symbol>();
         for sym in self.symbols.iter() {
+            tick!();
             size += sym.escaped_name.capacity();
             size += sym.declarations.capacity() * std::mem::size_of::<NodeIndex>();
             if let Some(ref exports) = sym.exports {
@@ -530,11 +558,13 @@ impl BindResult {
 
         // declared_modules
         for s in self.declared_modules.iter() {
+            tick!();
             size += s.capacity() + std::mem::size_of::<u64>();
         }
 
         // module_exports
         for (k, v) in self.module_exports.iter() {
+            tick!();
             size += k.capacity() + std::mem::size_of::<u64>();
             size += std::mem::size_of::<SymbolTable>();
             size += v.len() * (32 + std::mem::size_of::<SymbolId>());
@@ -559,6 +589,7 @@ impl BindResult {
         // scopes
         size += self.scopes.capacity() * std::mem::size_of::<Scope>();
         for scope in self.scopes.iter() {
+            tick!();
             size += scope.table.len() * (32 + std::mem::size_of::<SymbolId>());
         }
 
@@ -569,38 +600,46 @@ impl BindResult {
         // parse_diagnostics
         size += self.parse_diagnostics.capacity() * std::mem::size_of::<ParseDiagnostic>();
         for diag in &self.parse_diagnostics {
+            tick!();
             size += diag.message.capacity();
         }
 
         // shorthand_ambient_modules
         for s in self.shorthand_ambient_modules.iter() {
+            tick!();
             size += s.capacity() + std::mem::size_of::<u64>();
         }
 
         // global_augmentations
         for (k, v) in self.global_augmentations.iter() {
+            tick!();
             size += k.capacity() + std::mem::size_of::<u64>();
             size += v.capacity() * std::mem::size_of::<crate::binder::GlobalAugmentation>();
         }
 
         // module_augmentations
         for (k, v) in self.module_augmentations.iter() {
+            tick!();
             size += k.capacity() + std::mem::size_of::<u64>();
             size += v.capacity() * std::mem::size_of::<crate::binder::ModuleAugmentation>();
             for aug in v {
+                tick!();
                 size += aug.name.capacity();
             }
         }
 
         // augmentation_target_modules
         for v in self.augmentation_target_modules.values() {
+            tick!();
             size += std::mem::size_of::<SymbolId>() + v.capacity() + 8;
         }
 
         // reexports (FxHashMap<String, FxHashMap<String, (String, Option<String>)>>)
         for (k, inner) in self.reexports.iter() {
+            tick!();
             size += k.capacity() + std::mem::size_of::<u64>();
             for (ik, (s1, s2)) in inner {
+                tick!();
                 size += ik.capacity() + s1.capacity() + 8;
                 if let Some(s) = s2 {
                     size += s.capacity();
@@ -610,8 +649,10 @@ impl BindResult {
 
         // wildcard_reexports
         for (k, v) in self.wildcard_reexports.iter() {
+            tick!();
             size += k.capacity() + std::mem::size_of::<u64>();
             for (s, _) in v {
+                tick!();
                 size += s.capacity() + std::mem::size_of::<bool>();
             }
         }
@@ -632,6 +673,7 @@ impl BindResult {
         // flow_nodes
         size += self.flow_nodes.len() * std::mem::size_of::<crate::binder::FlowNode>();
         for flow_node in self.flow_nodes.iter() {
+            tick!();
             size += flow_node.antecedent.capacity() * std::mem::size_of::<FlowNodeId>();
         }
 
@@ -645,8 +687,10 @@ impl BindResult {
 
         // expando_properties
         for (k, v) in self.expando_properties.iter() {
+            tick!();
             size += k.capacity() + std::mem::size_of::<u64>();
             for s in v {
+                tick!();
                 size += s.capacity() + std::mem::size_of::<u64>();
             }
         }
@@ -656,14 +700,17 @@ impl BindResult {
 
         // semantic_defs
         for def in self.semantic_defs.values() {
+            tick!();
             size += std::mem::size_of::<SymbolId>()
                 + std::mem::size_of::<crate::binder::SemanticDefEntry>()
                 + 8;
             size += def.name.capacity();
             for h in &def.extends_names {
+                tick!();
                 size += h.capacity();
             }
             for h in &def.implements_names {
+                tick!();
                 size += h.capacity();
             }
         }
@@ -671,10 +718,14 @@ impl BindResult {
         // file_import_sources
         size += self.file_import_sources.capacity() * std::mem::size_of::<String>();
         for s in &self.file_import_sources {
+            tick!();
             size += s.capacity();
         }
 
-        size
+        if let Some(meter) = meter {
+            meter.finish()?;
+        }
+        Ok(size)
     }
 }
 
@@ -1565,8 +1616,11 @@ fn bind_file_with_optional_execution_checkpoint(
             (arena, diagnostics, source_file)
         }
         None => {
-            let mut parser =
-                ParserState::new_with_language_version(file_name.clone(), source_text, language_version);
+            let mut parser = ParserState::new_with_language_version(
+                file_name.clone(),
+                source_text,
+                language_version,
+            );
             let source_file = parser.parse_source_file();
             let (arena, diagnostics) = parser.into_parts();
             (arena, diagnostics, source_file)
@@ -1918,20 +1972,20 @@ fn remap_compacted_bind_state(binder: &mut BinderState, id_remap: &FxHashMap<Sym
 
 #[cfg(test)]
 mod project_execution_checkpoint_tests {
-    use super::parse_and_bind_parallel_with_libs_and_options_and_execution_checkpoint;
+    use super::{
+        parse_and_bind_parallel,
+        parse_and_bind_parallel_with_libs_and_options_and_execution_checkpoint,
+    };
     use std::sync::atomic::AtomicBool;
     use std::time::{Duration, Instant};
-    use tsz_common::{ProjectExecutionBudget, ProjectExecutionStop, ScriptTarget};
     use tsz_common::options::module_detection::ModuleDetectionKind;
+    use tsz_common::{ProjectExecutionBudget, ProjectExecutionStop, ScriptTarget};
 
     #[test]
     fn project_parse_returns_typed_stop_instead_of_partial_bind_results() {
         let cancelled = AtomicBool::new(false);
-        let checkpoint = ProjectExecutionBudget::new(
-            Instant::now() + Duration::from_secs(1),
-            &cancelled,
-            0,
-        );
+        let checkpoint =
+            ProjectExecutionBudget::new(Instant::now() + Duration::from_secs(1), &cancelled, 0);
         let result = parse_and_bind_parallel_with_libs_and_options_and_execution_checkpoint(
             vec![(
                 "src/main.ts".to_owned(),
@@ -1947,5 +2001,24 @@ mod project_execution_checkpoint_tests {
             result,
             Err(ProjectExecutionStop::WorkBudgetExhausted)
         ));
+    }
+
+    #[test]
+    fn one_large_bind_result_size_walk_observes_the_work_budget() {
+        let source = (0..256)
+            .map(|index| format!("export const item_{index} = {index};\n"))
+            .collect::<String>();
+        let result = parse_and_bind_parallel(vec![("src/large.ts".to_owned(), source)])
+            .pop()
+            .expect("one bound file");
+        assert!(result.symbols.len() >= 256);
+
+        let cancelled = AtomicBool::new(false);
+        let checkpoint =
+            ProjectExecutionBudget::new(Instant::now() + Duration::from_secs(2), &cancelled, 1);
+        assert_eq!(
+            result.estimated_size_bytes_with_execution_checkpoint(&checkpoint),
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        );
     }
 }

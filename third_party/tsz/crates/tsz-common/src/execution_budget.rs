@@ -5,7 +5,7 @@
 //! the first stop reason. A stopped computation must discard every partial
 //! parse, bind, check, or query result.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::Instant;
 
 /// Borrowed cooperative work checkpoint shared by parser, binder, checker,
@@ -13,6 +13,47 @@ use std::time::Instant;
 pub trait ExecutionCheckpoint: Send + Sync {
     /// Charge work and report the program's latched terminal reason, if any.
     fn checkpoint(&self, work_units: u64) -> Result<(), ProjectExecutionStop>;
+}
+
+/// Amortizes cooperative checks inside synchronous compiler walks.
+///
+/// Call [`Self::tick`] for each bounded unit of work and [`Self::finish`] at
+/// the end of the stage. The meter checks cancellation/deadline/work allowance
+/// at most every 64 units, then charges the remaining units on finish. A stage
+/// that returns an error must discard any partial output it built.
+pub struct ExecutionWorkMeter<'checkpoint> {
+    checkpoint: &'checkpoint dyn ExecutionCheckpoint,
+    pending_work_units: u64,
+}
+
+impl<'checkpoint> ExecutionWorkMeter<'checkpoint> {
+    /// Starts a metered stage and immediately observes an already-latched stop.
+    pub fn new(
+        checkpoint: &'checkpoint dyn ExecutionCheckpoint,
+    ) -> Result<Self, ProjectExecutionStop> {
+        checkpoint.checkpoint(0)?;
+        Ok(Self {
+            checkpoint,
+            pending_work_units: 0,
+        })
+    }
+
+    /// Records completed work and polls once each 64 units.
+    pub fn tick(&mut self, work_units: u64) -> Result<(), ProjectExecutionStop> {
+        self.pending_work_units = self.pending_work_units.saturating_add(work_units);
+        if self.pending_work_units >= 64 {
+            let charged = std::mem::take(&mut self.pending_work_units);
+            self.checkpoint.checkpoint(charged)?;
+        }
+        Ok(())
+    }
+
+    /// Flushes any remaining work and observes a stop before stage output is
+    /// returned to its caller.
+    pub fn finish(mut self) -> Result<(), ProjectExecutionStop> {
+        let charged = std::mem::take(&mut self.pending_work_units);
+        self.checkpoint.checkpoint(charged)
+    }
 }
 
 /// A program computation stopped before it produced complete semantic output.
@@ -126,18 +167,15 @@ impl ExecutionCheckpoint for ProjectExecutionBudget<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProjectExecutionBudget, ProjectExecutionStop};
+    use super::{ExecutionWorkMeter, ProjectExecutionBudget, ProjectExecutionStop};
     use std::sync::atomic::AtomicBool;
     use std::time::{Duration, Instant};
 
     #[test]
     fn work_is_shared_and_exhaustion_is_latched() {
         let cancelled = AtomicBool::new(false);
-        let budget = ProjectExecutionBudget::new(
-            Instant::now() + Duration::from_secs(2),
-            &cancelled,
-            3,
-        );
+        let budget =
+            ProjectExecutionBudget::new(Instant::now() + Duration::from_secs(2), &cancelled, 3);
         assert_eq!(budget.checkpoint(2), Ok(()));
         assert_eq!(budget.remaining_work_units(), 1);
         assert_eq!(
@@ -148,17 +186,17 @@ mod tests {
             budget.stop_reason(),
             Some(ProjectExecutionStop::WorkBudgetExhausted)
         );
-        assert_eq!(budget.checkpoint(0), Err(ProjectExecutionStop::WorkBudgetExhausted));
+        assert_eq!(
+            budget.checkpoint(0),
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        );
     }
 
     #[test]
     fn cancellation_and_deadline_are_typed() {
         let cancelled = AtomicBool::new(true);
-        let canceled_budget = ProjectExecutionBudget::new(
-            Instant::now() + Duration::from_secs(2),
-            &cancelled,
-            10,
-        );
+        let canceled_budget =
+            ProjectExecutionBudget::new(Instant::now() + Duration::from_secs(2), &cancelled, 10);
         assert_eq!(
             canceled_budget.checkpoint(0),
             Err(ProjectExecutionStop::Cancelled)
@@ -173,6 +211,29 @@ mod tests {
         assert_eq!(
             deadline_budget.checkpoint(0),
             Err(ProjectExecutionStop::Deadline)
+        );
+    }
+
+    #[test]
+    fn work_meter_polls_during_a_long_stage_and_flushes_the_tail() {
+        let cancelled = AtomicBool::new(false);
+        let budget =
+            ProjectExecutionBudget::new(Instant::now() + Duration::from_secs(2), &cancelled, 70);
+        let mut meter = ExecutionWorkMeter::new(&budget).expect("start meter");
+        for _ in 0..64 {
+            meter.tick(1).expect("first batch is admitted");
+        }
+        assert_eq!(budget.remaining_work_units(), 6);
+        for _ in 0..7 {
+            meter.tick(1).expect("tail is pending until finish");
+        }
+        assert_eq!(
+            meter.finish(),
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        );
+        assert_eq!(
+            budget.stop_reason(),
+            Some(ProjectExecutionStop::WorkBudgetExhausted)
         );
     }
 }
