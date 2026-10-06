@@ -237,28 +237,28 @@ pub(super) fn execute_semantic_shapes(
                 "semantic shape source is not a complete publication".to_owned(),
             ));
         };
-        let binding = claim.binding();
-        let manifest = claim.manifest();
-        let exact = request.source().generation.to_bytes() == *binding.identity.as_ref()
-            && request.source().generation_root == *binding.generation.pinned_root.as_ref()
-            && request.source().dependency_set == *binding.generation.dep_set.as_ref()
-            && request.source().manifest == *manifest.identity.as_ref()
-            && request.source().artifacts == manifest.fragment_count
-            && request.source().semantic_bytes == manifest.byte_length
-            && request.source().package == *key.package()
-            && request.source().coordinate.as_str() == key.coordinate().as_str()
-            && request.source().profile.profile().ok() == Some(key.profile());
-        if !exact {
-            return Err(BuiltinModelError(
-                "semantic shape source differs from the selected publication".to_owned(),
-            ));
-        }
         selected = Some((key.clone(), *claim));
         Ok(())
     })?;
     let Some((key, claim)) = selected else {
         return Ok(CommandReply::Failed(CommandFailure::NotFound));
     };
+    let binding = claim.binding();
+    let manifest = claim.manifest();
+    let exact = request.source().generation.to_bytes() == *binding.identity.as_ref()
+        && request.source().generation_root == *binding.generation.pinned_root.as_ref()
+        && request.source().dependency_set == *binding.generation.dep_set.as_ref()
+        && request.source().manifest == *manifest.identity.as_ref()
+        && request.source().artifacts == manifest.fragment_count
+        && request.source().semantic_bytes == manifest.byte_length
+        && request.source().package == *key.package()
+        && request.source().coordinate.as_str() == key.coordinate().as_str()
+        && request.source().profile.profile().ok() == Some(key.profile());
+    if !exact {
+        return Ok(CommandReply::Failed(CommandFailure::InvalidQuery(
+            "semantic shape source differs from the selected publication".to_owned(),
+        )));
+    }
     let freshness_key = super::super::semantic_authority::SelectedSemanticPublicationKey::new(&key)
         .map_err(|error| BuiltinModelError(error.to_owned()))?;
     // Freshness is a current source-input observation, not part of the
