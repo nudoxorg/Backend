@@ -1044,7 +1044,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     )
     .expect("well-shaped hybrid basis with current root/sequence and old closure");
     let hybrid_error =
-        super::profile::validate_capture_basis_closure_id(hybrid_basis, selected_base.closure())
+        super::validate_capture_basis_closure_id(hybrid_basis, selected_base.closure())
             .expect_err("a valid alternate old closure is not the selected base descriptor");
     assert!(
         hybrid_error
