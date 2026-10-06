@@ -329,15 +329,41 @@ fn staged_large_parser_facts_use_small_queue_exact_shared_cas_and_cold_replay() 
         "pointer fence cannot be swapped independently of the fixed manifest"
     );
     let selected_root = selected.root();
+    let previous_stage_manifest = first_evidence.manifest;
     drop(selected);
     drop(before);
     drop(first);
     drop(second);
     drop(daemon);
-    let cold = open_daemon(workspace.0.path());
+    let mut cold = open_daemon(workspace.0.path());
     assert_eq!(cold.engine().daemon().owner().head().root(), selected_root);
     assert_complete(&cold, package, "left.ts", count);
     assert_complete(&cold, package, "right.ts", count);
+    let followup_label = "pkg:npm/staged-small-followup@1.0.0";
+    let followup = BuiltinIntent::add(PackageKey::from_value(followup_label), followup_label)
+        .expect("small followup intent");
+    assert!(followup.encode().len() < 1024 * 1024);
+    super::super::commands::commit_builtin_intent(&mut cold, 3, &followup)
+        .expect("small followup replaces the previous staged evidence scope");
+    let followup_snapshot = cold.engine().daemon().owner().snapshot();
+    assert_eq!(followup_snapshot.sequence(), 2);
+    assert!(
+        !followup_snapshot
+            .closure()
+            .contains(previous_stage_manifest)
+            .unwrap(),
+        "old staged auxiliary evidence does not accumulate in the new selection"
+    );
+    let followup_root = followup_snapshot.root();
+    drop(followup_snapshot);
+    drop(cold);
+    let next_cold = open_daemon(workspace.0.path());
+    assert_eq!(
+        next_cold.engine().daemon().owner().head().root(),
+        followup_root
+    );
+    assert_complete(&next_cold, package, "left.ts", count);
+    assert_complete(&next_cold, package, "right.ts", count);
 }
 
 #[test]

@@ -276,7 +276,7 @@ pub(super) fn stage(
         return Ok(intent);
     }
     let (bytes, source_end) = intent.staging_parts();
-    if bytes.len() <= QUEUE_STAGE_THRESHOLD {
+    if bytes.len() <= QUEUE_STAGE_THRESHOLD && snapshot.closure().stored_membership().is_none() {
         return Ok(intent);
     }
     let (maximum_bytes, maximum_pages) =
