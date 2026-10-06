@@ -6,8 +6,7 @@ use super::{FileSemanticRangeStore, history_v2};
 use crate::ir_generation_store::{HistoryTypedV3RootClaim, TypedV3HistoryLocator};
 use crate::{
     DurableSemanticObjectAdmission, ProducedSemanticTypedPlaneContentV3,
-    ProducedSemanticTypedPlaneV3,
-    ir_producer_store::ProducedSelectedNativeTypedPlaneHistoryV3,
+    ProducedSemanticTypedPlaneV3, ir_producer_store::ProducedSelectedNativeTypedPlaneHistoryV3,
 };
 use backend_semantic::ir::{
     GenerationId, JumboRopeLimits, MappedSemanticImage, SemanticImageIdentity, SemanticImageView,
@@ -22,6 +21,7 @@ use backend_store::{
 use backend_version::SchemaIdentity;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 const MAX_TYPED_V3_ADMISSION_OBJECTS: usize = 200_000;
 
@@ -223,7 +223,7 @@ pub trait SelectedNativeImagePublicationFence {
 pub struct SelectedNativeHistoryBinding {
     target: crate::SemanticTargetKey,
     selection: crate::SelectedSemanticPlane,
-    catalog: SemanticPlaneCatalog,
+    catalog: Arc<SemanticPlaneCatalog>,
     manifest: SemanticPlaneManifest,
     image_identity: SemanticImageIdentity,
     input_claim: SemanticInputClaimV2,
@@ -235,6 +235,15 @@ impl SelectedNativeHistoryBinding {
     pub fn bind<S: SelectedNativeImageSource>(
         source: &mut S,
         catalog: SemanticPlaneCatalog,
+        image_key: SemanticPlaneImageKey,
+        manifest: SemanticPlaneManifest,
+    ) -> Result<Self, String> {
+        Self::bind_shared(source, Arc::new(catalog), image_key, manifest)
+    }
+
+    fn bind_shared<S: SelectedNativeImageSource>(
+        source: &mut S,
+        catalog: Arc<SemanticPlaneCatalog>,
         image_key: SemanticPlaneImageKey,
         manifest: SemanticPlaneManifest,
     ) -> Result<Self, String> {
@@ -379,9 +388,176 @@ impl SelectedNativeHistoryBinding {
 
     /// Returns the exact catalog authenticated by the selected stamp.
     #[must_use]
-    pub const fn catalog(&self) -> &SemanticPlaneCatalog {
-        &self.catalog
+    pub fn catalog(&self) -> &SemanticPlaneCatalog {
+        self.catalog.as_ref()
     }
+}
+
+/// One immutable image admitted as a member of a complete selected package.
+#[derive(Clone)]
+pub struct SelectedNativeHistoryPackageImage {
+    binding: SelectedNativeHistoryBinding,
+}
+
+impl SelectedNativeHistoryPackageImage {
+    /// Returns the independently selected image proof for this ordered member.
+    #[must_use]
+    pub const fn binding(&self) -> &SelectedNativeHistoryBinding {
+        &self.binding
+    }
+}
+
+/// Exact, ordered set of every native image in one committed semantic package.
+///
+/// The package identity binds the target, full owner-selection stamp, canonical
+/// catalog, and every image identity/manifest/build/input claim. It is not a
+/// flattened image: each member retains its own native image and V3 payload
+/// closure, while the catalog order is used only to prove set completeness.
+#[derive(Clone)]
+pub struct SelectedNativeHistoryPackageBinding {
+    target: crate::SemanticTargetKey,
+    selected_stamp: crate::SelectedGenerationStamp,
+    catalog: Arc<SemanticPlaneCatalog>,
+    images: Box<[SelectedNativeHistoryPackageImage]>,
+    package_identity: [u8; 32],
+}
+
+impl SelectedNativeHistoryPackageBinding {
+    /// Binds all supplied catalog members, in canonical catalog order, to one
+    /// committed owner selection. Missing, extra, or reordered
+    /// image identities are rejected.
+    pub fn bind<S: SelectedNativeImageSource>(
+        source: &mut S,
+        catalog: SemanticPlaneCatalog,
+        members: Vec<(SemanticPlaneImageKey, SemanticPlaneManifest)>,
+    ) -> Result<Self, String> {
+        const MAX_PACKAGE_IMAGES: usize = 200_000;
+        if catalog.entries().is_empty()
+            || catalog.entries().len() > MAX_PACKAGE_IMAGES
+            || members.len() != catalog.entries().len()
+        {
+            return Err(
+                "selected package history requires the exact nonempty catalog image set".to_owned(),
+            );
+        }
+        let catalog = Arc::new(catalog);
+        let mut images: Vec<SelectedNativeHistoryPackageImage> = Vec::new();
+        images
+            .try_reserve_exact(members.len())
+            .map_err(|_| "selected package image binding allocation failed".to_owned())?;
+        for (ordinal, ((image_key, manifest), entry)) in
+            members.into_iter().zip(catalog.entries()).enumerate()
+        {
+            if image_key != entry.image()
+                || usize::try_from(image_key.artifact_ordinal()).ok() != Some(ordinal)
+            {
+                return Err(
+                    "selected package images are missing or out of catalog order".to_owned(),
+                );
+            }
+            let binding = SelectedNativeHistoryBinding::bind_shared(
+                source,
+                Arc::clone(&catalog),
+                image_key,
+                manifest,
+            )?;
+            if binding.catalog().root() != catalog.root() {
+                return Err("selected package member is bound to another catalog".to_owned());
+            }
+            if let Some(first) = images.first() {
+                if first.binding.target() != binding.target()
+                    || first.binding.selected_stamp() != binding.selected_stamp()
+                {
+                    return Err(
+                        "selected package members mix targets or owner-selection stamps".to_owned(),
+                    );
+                }
+            }
+            images.push(SelectedNativeHistoryPackageImage { binding });
+        }
+        let first = images
+            .first()
+            .ok_or_else(|| "selected package history cannot be empty".to_owned())?;
+        let package_identity = selected_native_history_package_identity(
+            first.binding.target(),
+            first.binding.selected_stamp(),
+            &catalog,
+            &images,
+        );
+        Ok(Self {
+            target: first.binding.target().clone(),
+            selected_stamp: first.binding.selected_stamp(),
+            catalog,
+            images: images.into_boxed_slice(),
+            package_identity,
+        })
+    }
+
+    /// Returns the exact target namespace selected by the owner.
+    #[must_use]
+    pub const fn target(&self) -> &crate::SemanticTargetKey {
+        &self.target
+    }
+
+    /// Returns the exact owner-selection stamp shared by all package members.
+    #[must_use]
+    pub const fn selected_stamp(&self) -> crate::SelectedGenerationStamp {
+        self.selected_stamp
+    }
+
+    /// Returns the full canonical catalog authenticated by the owner stamp.
+    #[must_use]
+    pub fn catalog(&self) -> &SemanticPlaneCatalog {
+        self.catalog.as_ref()
+    }
+
+    /// Returns every catalog image in canonical ordinal order.
+    #[must_use]
+    pub fn images(&self) -> &[SelectedNativeHistoryPackageImage] {
+        &self.images
+    }
+
+    /// Returns the deterministic package-set identity bound into each V3
+    /// member's admission provenance.
+    #[must_use]
+    pub const fn package_identity(&self) -> &[u8; 32] {
+        &self.package_identity
+    }
+}
+
+fn selected_native_history_package_identity(
+    target: &crate::SemanticTargetKey,
+    stamp: crate::SelectedGenerationStamp,
+    catalog: &SemanticPlaneCatalog,
+    images: &[SelectedNativeHistoryPackageImage],
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.replication.selected-native-history-package.v1\0");
+    hash_package_field(&mut hasher, target.package().as_bytes());
+    hash_package_field(&mut hasher, target.coordinate().as_bytes());
+    hasher.update(&<[u8; 2]>::from(target.profile()));
+    hasher.update(stamp.namespace());
+    hasher.update(&<[u8; 2]>::from(stamp.profile()));
+    hasher.update(stamp.source_coordinate());
+    hasher.update(&stamp.selection_revision().to_le_bytes());
+    hasher.update(stamp.selected_root());
+    hasher.update(stamp.closure_id());
+    hasher.update(catalog.root().as_bytes());
+    hasher.update(&(images.len() as u64).to_le_bytes());
+    for image in images {
+        let binding = image.binding();
+        let key = binding.image_key();
+        hasher.update(&key.artifact_ordinal().to_le_bytes());
+        hasher.update(key.semantic_generation().as_bytes());
+        hasher.update(key.manifest_root().as_bytes());
+        hasher.update(binding.image_identity().as_ref());
+    }
+    *hasher.finalize().as_bytes()
+}
+
+fn hash_package_field(hasher: &mut blake3::Hasher, field: &[u8]) {
+    hasher.update(&(field.len() as u64).to_le_bytes());
+    hasher.update(field);
 }
 
 /// Exact committed selection metadata paired with a structurally reopened
@@ -453,7 +629,7 @@ impl<'bytes> SelectedNativeHistoryImage<'bytes> {
 
     /// Returns the exact catalog authenticated by the selected stamp.
     #[must_use]
-    pub const fn catalog(&self) -> &SemanticPlaneCatalog {
+    pub fn catalog(&self) -> &SemanticPlaneCatalog {
         self.binding.catalog()
     }
 
@@ -681,7 +857,9 @@ impl FileSemanticRangeStore {
             || admission.content().generation_root()
                 != produced.verified_content().generation_root()
         {
-            return Err("typed V3 cold closure differs from claim-only producer receipt".to_owned());
+            return Err(
+                "typed V3 cold closure differs from claim-only producer receipt".to_owned(),
+            );
         }
         Ok(admission)
     }
@@ -865,6 +1043,118 @@ impl FileSemanticRangeStore {
         } else {
             Ok(None)
         }
+    }
+
+    /// Returns the already admitted canonical prefix of a package's ordered
+    /// first-parent history. Every returned commit has the same complete
+    /// package identity and selection stamp; incomplete or reordered groups
+    /// fail closed. The caller must cold-replay these commits before treating
+    /// the prefix as reusable.
+    pub fn selected_typed_v3_history_package_prefix(
+        &self,
+        package: &SelectedNativeHistoryPackageBinding,
+        branch: &crate::HistoryRefName,
+    ) -> Result<Box<[crate::HistoryCommitId]>, String> {
+        let _state_lock = self.acquire_state_lock()?;
+        let target = package.target();
+        let Some(reference) =
+            self.generations
+                .history_ref(target, crate::HistoryRefKind::Branch, branch)?
+        else {
+            return Ok(Box::new([]));
+        };
+        let mut current = reference.commit();
+        let mut newest_first = Vec::new();
+        newest_first
+            .try_reserve_exact(package.images().len())
+            .map_err(|_| "selected package history prefix allocation failed".to_owned())?;
+        let mut found_package_member = false;
+        let mut reached_first_member = false;
+        let mut newer_member_index = None;
+        for _ in 0..package.images().len() {
+            let commit = self.generations.history_commit(target, current)?;
+            if commit.provenance() != package.package_identity() {
+                break;
+            }
+            found_package_member = true;
+            if commit.selected_stamp() != package.selected_stamp()
+                || commit.generation_root().typed_v3_claim().is_none()
+                || commit.parents().len() > 1
+            {
+                return Err(
+                    "selected package history contains a mixed or unsupported commit".to_owned(),
+                );
+            }
+            let snapshot = self
+                .generations
+                .typed_v3_publication_snapshot(target, current)?;
+            let manifest = snapshot.locator().validate()?;
+            if manifest.content_root_claim().as_bytes()
+                != snapshot.claim().content_root_claim().as_bytes()
+                || manifest.generation_root_claim().as_bytes()
+                    != snapshot.claim().generation_root_claim().as_bytes()
+            {
+                return Err("selected package history V3 roots differ from its commit".to_owned());
+            }
+            let generation = self
+                .generations
+                .typed_v3_history_generation(target, current)?;
+            let member_index = package.images().iter().position(|member| {
+                let selected = member.binding();
+                generation.image() == selected.image_key()
+                    && generation.image_identity() == selected.image_identity()
+                    && generation.manifest().root() == selected.manifest().root()
+            });
+            let Some(member_index) = member_index else {
+                return Err(
+                    "selected package history contains an extra or substituted image".to_owned(),
+                );
+            };
+            if generation.target() != target
+                || generation.selected_stamp() != package.selected_stamp()
+                || generation.catalog().root() != package.catalog().root()
+                || commit.manifest_root() != generation.manifest().root()
+                || manifest.build() != generation.manifest().build()
+                || manifest.input_claim()
+                    != SemanticInputClaimV2::from_witness(&generation.manifest().input())
+            {
+                return Err(
+                    "selected package history member differs from its authenticated catalog"
+                        .to_owned(),
+                );
+            }
+            if newer_member_index
+                .is_some_and(|newer_index| member_index.checked_add(1) != Some(newer_index))
+            {
+                return Err("selected package history members are not in catalog order".to_owned());
+            }
+            newer_member_index = Some(member_index);
+            newest_first.push(current);
+            if member_index == 0 {
+                reached_first_member = true;
+                if let Some(parent) = commit.parents().first() {
+                    let parent_commit = self.generations.history_commit(target, *parent)?;
+                    if parent_commit.provenance() == package.package_identity() {
+                        return Err(
+                            "selected package history contains a duplicate or extra member"
+                                .to_owned(),
+                        );
+                    }
+                }
+                break;
+            }
+            let Some(parent) = commit.parents().first().copied() else {
+                return Err(
+                    "selected package history prefix is missing an earlier member".to_owned(),
+                );
+            };
+            current = parent;
+        }
+        if found_package_member && !reached_first_member {
+            return Err("selected package history is not a complete ordered prefix".to_owned());
+        }
+        newest_first.reverse();
+        Ok(newest_first.into_boxed_slice())
     }
 
     /// Produces, verifies, and durably admits typed V3 history from the exact
@@ -1796,10 +2086,14 @@ mod tests {
         stamp: crate::SelectedGenerationStamp,
         image: SemanticPlaneImageKey,
         identity: SemanticImageIdentity,
+        manifest: SemanticPlaneManifest,
+        additional_images: Vec<(SemanticPlaneImageKey, SemanticImageIdentity)>,
         target: crate::SemanticTargetKey,
         move_on_fence: bool,
         fail_stamp_read: bool,
         failure_class: SelectedNativeImageSourceFailure,
+        current_stamp_reads: usize,
+        stamp_override_after_reads: Option<(usize, crate::SelectedGenerationStamp)>,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1859,7 +2153,13 @@ mod tests {
             if self.fail_stamp_read {
                 return Err(self.failure_class.into());
             }
-            Ok(self.stamp)
+            let observed = self
+                .stamp_override_after_reads
+                .filter(|(after, _)| self.current_stamp_reads >= *after)
+                .map(|(_, stamp)| stamp)
+                .unwrap_or(self.stamp);
+            self.current_stamp_reads = self.current_stamp_reads.saturating_add(1);
+            Ok(observed)
         }
 
         fn selected_image_is_current(
@@ -1867,7 +2167,12 @@ mod tests {
             expected_stamp: crate::SelectedGenerationStamp,
             image: SemanticPlaneImageKey,
         ) -> Result<bool, Self::Error> {
-            Ok(expected_stamp == self.stamp && image == self.image)
+            Ok(expected_stamp == self.stamp
+                && (image == self.image
+                    || self
+                        .additional_images
+                        .iter()
+                        .any(|(candidate, _)| *candidate == image)))
         }
     }
 
@@ -1898,7 +2203,11 @@ mod tests {
             if image == self.image {
                 Ok(self.identity)
             } else {
-                Err(TestSelectionError::Refused)
+                self.additional_images
+                    .iter()
+                    .find(|(candidate, _)| *candidate == image)
+                    .map(|(_, identity)| *identity)
+                    .ok_or(TestSelectionError::Refused)
             }
         }
 
@@ -1906,18 +2215,26 @@ mod tests {
             &'fence mut self,
             selected: &SelectedNativeHistoryImage<'_>,
         ) -> Result<Self::PublicationFence<'fence>, Self::Error> {
+            let image = selected.image_key();
+            let identity = if image == self.image {
+                Some(self.identity)
+            } else {
+                self.additional_images
+                    .iter()
+                    .find(|(candidate, _)| *candidate == image)
+                    .map(|(_, identity)| *identity)
+            };
             if self.move_on_fence
                 || self.target != *selected.target()
                 || self.stamp != selected.selected_stamp()
-                || self.image != selected.image_key()
-                || self.identity != selected.image_identity()
+                || identity != Some(selected.image_identity())
             {
                 return Err(TestSelectionError::Stale);
             }
             Ok(TestPublicationFence {
                 stamp: self.stamp,
-                image: self.image,
-                identity: self.identity,
+                image,
+                identity: selected.image_identity(),
                 target: self.target.clone(),
             })
         }
@@ -2027,10 +2344,14 @@ mod tests {
             stamp,
             image,
             identity: image_identity,
+            manifest: manifest.clone(),
+            additional_images: Vec::new(),
             target: target.clone(),
             move_on_fence: false,
             fail_stamp_read: false,
             failure_class: SelectedNativeImageSourceFailure::Refused,
+            current_stamp_reads: 0,
+            stamp_override_after_reads: None,
         };
         let store = FileStore::open(directory.0.join("selected-cas"), 64 * 1024 * 1024)
             .expect("open selected V3 FileStore");
@@ -2065,10 +2386,11 @@ mod tests {
             selected_plane.is_some(),
             "selected native manifest retains its requested core plane"
         );
-        for (segment, descriptor) in segments
-            .iter()
-            .zip(selected_plane.into_iter().flat_map(|plane| plane.segments()))
-        {
+        for (segment, descriptor) in segments.iter().zip(
+            selected_plane
+                .into_iter()
+                .flat_map(|plane| plane.segments()),
+        ) {
             let payload = segment.bytes();
             let request = backend_semantic::ir::SemanticRangeRequest {
                 manifest_root: manifest.root(),
@@ -2118,10 +2440,14 @@ mod tests {
             stamp: source.stamp,
             image: source.image,
             identity: source.identity,
+            manifest: source.manifest.clone(),
+            additional_images: source.additional_images.clone(),
             target: source.target.clone(),
             move_on_fence: source.move_on_fence,
             fail_stamp_read: source.fail_stamp_read,
             failure_class: source.failure_class,
+            current_stamp_reads: 0,
+            stamp_override_after_reads: source.stamp_override_after_reads,
         }
     }
 
@@ -2131,6 +2457,527 @@ mod tests {
         SemanticTypedPlaneBoundaryPoliciesV3::new(
             policy, policy, policy, policy, policy, policy, policy,
         )
+    }
+
+    #[test]
+    fn package_binding_keeps_identical_image_content_as_distinct_ordered_members() {
+        let directory = TestDirectory::create();
+        let (_store, source, _target) = selected_native_fixture(&directory);
+        let second_key = SemanticPlaneImageKey::from_manifest(1, &source.manifest);
+        let manifest_length = u32::try_from(
+            source
+                .manifest
+                .encode()
+                .expect("encode test package manifest")
+                .len(),
+        )
+        .expect("manifest length fits");
+        let catalog = SemanticPlaneCatalog::new(vec![
+            SemanticPlaneCatalogEntry::new(source.image, manifest_length)
+                .expect("first catalog entry"),
+            SemanticPlaneCatalogEntry::new(second_key, manifest_length)
+                .expect("second catalog entry"),
+        ])
+        .expect("ordered two-image package catalog");
+        let mut source = source_copy(&source);
+        source.stamp = crate::SelectedGenerationStamp::checked(
+            *source.stamp.namespace(),
+            source.stamp.profile(),
+            *source.stamp.source_coordinate(),
+            source.stamp.selection_revision(),
+            *source.stamp.selected_root(),
+            *source.stamp.closure_id(),
+            catalog.root(),
+        )
+        .expect("new catalog-bound package stamp");
+        source.additional_images = vec![(second_key, source.identity)];
+
+        let members = vec![
+            (source.image, source.manifest.clone()),
+            (second_key, source.manifest.clone()),
+        ];
+        let package =
+            SelectedNativeHistoryPackageBinding::bind(&mut source, catalog.clone(), members)
+                .expect("same bytes can be distinct source/catalog members");
+        assert_eq!(package.images().len(), 2);
+        assert_eq!(
+            package.images()[0].binding().image_identity(),
+            package.images()[1].binding().image_identity()
+        );
+        assert_ne!(
+            package.images()[0].binding().image_key(),
+            package.images()[1].binding().image_key()
+        );
+
+        let mut source = source_copy(&source);
+        assert!(
+            SelectedNativeHistoryPackageBinding::bind(&mut source, catalog.clone(), Vec::new())
+                .is_err(),
+            "a missing member cannot become a complete package"
+        );
+        let mut source = source_copy(&source);
+        let extra_key = SemanticPlaneImageKey::from_manifest(2, &source.manifest);
+        let extra_member = vec![
+            (source.image, source.manifest.clone()),
+            (second_key, source.manifest.clone()),
+            (extra_key, source.manifest.clone()),
+        ];
+        assert!(
+            SelectedNativeHistoryPackageBinding::bind(&mut source, catalog.clone(), extra_member,)
+                .is_err(),
+            "an extra image cannot enter the committed package set"
+        );
+
+        let mut source = source_copy(&source);
+        let reordered = vec![
+            (second_key, source.manifest.clone()),
+            (source.image, source.manifest.clone()),
+        ];
+        assert!(
+            SelectedNativeHistoryPackageBinding::bind(&mut source, catalog.clone(), reordered,)
+                .is_err(),
+            "reordered members cannot satisfy the catalog"
+        );
+        let mut mixed = source_copy(&source);
+        let mut other_stamp = mixed.stamp;
+        let mut other_root = *other_stamp.selected_root();
+        other_root[0] ^= 0x40;
+        other_stamp = crate::SelectedGenerationStamp::checked(
+            *other_stamp.namespace(),
+            other_stamp.profile(),
+            *other_stamp.source_coordinate(),
+            other_stamp.selection_revision() + 1,
+            other_root,
+            *other_stamp.closure_id(),
+            other_stamp.catalog_root(),
+        )
+        .expect("mixed test stamp remains structurally valid");
+        mixed.stamp_override_after_reads = Some((2, other_stamp));
+        let mixed_members = vec![
+            (mixed.image, mixed.manifest.clone()),
+            (second_key, mixed.manifest.clone()),
+        ];
+        assert!(
+            SelectedNativeHistoryPackageBinding::bind(&mut mixed, catalog.clone(), mixed_members)
+                .is_err(),
+            "catalog members from different owner-selection stamps cannot form one package"
+        );
+
+        let mut source = source_copy(&source);
+        let substituted_key = SemanticPlaneImageKey::from_manifest(2, &source.manifest);
+        source
+            .additional_images
+            .push((substituted_key, source.identity));
+        let substituted = vec![
+            (source.image, source.manifest.clone()),
+            (substituted_key, source.manifest.clone()),
+        ];
+        assert!(
+            SelectedNativeHistoryPackageBinding::bind(&mut source, catalog, substituted,).is_err(),
+            "an image outside the committed catalog cannot be substituted"
+        );
+    }
+
+    #[test]
+    fn package_history_prefix_resumes_after_interruption_and_cold_reopen() {
+        fn commit_core_member(
+            store: &mut FileSemanticRangeStore,
+            target: &crate::SemanticTargetKey,
+            catalog: &SemanticPlaneCatalog,
+            image: SemanticPlaneImageKey,
+            manifest: &SemanticPlaneManifest,
+            selection: SelectedSemanticPlane,
+            source: &mut TestSelectedSource,
+            payloads: &[Box<[u8]>],
+            advance_local_head: bool,
+        ) {
+            let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+            let plane = manifest.plane(kind).expect("selected core plane");
+            assert_eq!(plane.segments().len(), payloads.len());
+            for (descriptor, payload) in plane.segments().iter().zip(payloads) {
+                let request = backend_semantic::ir::SemanticRangeRequest {
+                    manifest_root: manifest.root(),
+                    plane: kind,
+                    segment_id: descriptor.id_claim(),
+                    first_key: *descriptor.first_key(),
+                    last_key: *descriptor.last_key(),
+                    byte_length: descriptor.byte_length(),
+                };
+                let length = u64::try_from(payload.len()).expect("test segment length fits");
+                store
+                    .stage_durable_range(
+                        selection,
+                        request,
+                        crate::ByteRange::new(0, length).expect("test segment range"),
+                        payload,
+                    )
+                    .expect("stage same verified segment for package member");
+                let admitted = descriptor
+                    .admit(kind, payload)
+                    .expect("segment bytes satisfy the exact manifest claim");
+                let mut verify = |bytes: &[u8]| {
+                    descriptor
+                        .admit(kind, bytes)
+                        .map(|_| ())
+                        .map_err(|_| crate::ReplicationError::IdentityMismatch)
+                };
+                store
+                    .commit_and_read(selection, admitted, payload, &mut verify)
+                    .expect("persist exact package segment");
+            }
+            if advance_local_head {
+                store
+                    .commit_local_generation(target, catalog, image, manifest, selection, source)
+                    .expect("commit selected cache head for the first package member");
+            }
+        }
+
+        let directory = TestDirectory::create();
+        let (mut store, mut source, target) = selected_native_fixture(&directory);
+        let manifest = source.manifest.clone();
+        let first_key = source.image;
+        let second_key = SemanticPlaneImageKey::from_manifest(1, &manifest);
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let previous_selection =
+            SelectedSemanticPlane::select(&mut source_copy(&source), &manifest, first_key, kind)
+                .expect("bind prior fixture selection for reading segment payloads");
+        let plane = manifest.plane(kind).expect("fixture core plane");
+        let mut segment_payloads = Vec::new();
+        for descriptor in plane.segments() {
+            let request = backend_semantic::ir::SemanticRangeRequest {
+                manifest_root: manifest.root(),
+                plane: kind,
+                segment_id: descriptor.id_claim(),
+                first_key: *descriptor.first_key(),
+                last_key: *descriptor.last_key(),
+                byte_length: descriptor.byte_length(),
+            };
+            segment_payloads.push(
+                store
+                    .read_complete_segment(previous_selection, request)
+                    .expect("read prior fully admitted fixture segment")
+                    .expect("fixture segment is resident"),
+            );
+        }
+        let first_mapping = store
+            .find_semantic_image(&target, first_key)
+            .expect("open prior selected native image")
+            .expect("fixture image is resident");
+        let image_bytes = first_mapping.view().as_ref().to_vec();
+        let image_identity = first_mapping.identity();
+        drop(first_mapping);
+        let manifest_length = u32::try_from(
+            manifest
+                .encode()
+                .expect("encode package member manifest")
+                .len(),
+        )
+        .expect("manifest length fits");
+        let catalog = SemanticPlaneCatalog::new(vec![
+            SemanticPlaneCatalogEntry::new(first_key, manifest_length)
+                .expect("first package catalog member"),
+            SemanticPlaneCatalogEntry::new(second_key, manifest_length)
+                .expect("second package catalog member"),
+        ])
+        .expect("two-member package catalog");
+        let old_stamp = source.stamp;
+        source.stamp = crate::SelectedGenerationStamp::checked(
+            *old_stamp.namespace(),
+            old_stamp.profile(),
+            *old_stamp.source_coordinate(),
+            old_stamp
+                .selection_revision()
+                .checked_add(1)
+                .expect("test package selection revision fits"),
+            *old_stamp.selected_root(),
+            *old_stamp.closure_id(),
+            catalog.root(),
+        )
+        .expect("new selection stamp authenticates the complete package catalog");
+        source.identity = image_identity;
+        source.additional_images = vec![(second_key, image_identity)];
+        let first_selection =
+            SelectedSemanticPlane::select(&mut source, &manifest, first_key, kind)
+                .expect("select first catalog member");
+        commit_core_member(
+            &mut store,
+            &target,
+            &catalog,
+            first_key,
+            &manifest,
+            first_selection,
+            &mut source,
+            &segment_payloads,
+            true,
+        );
+        let image_length = u64::try_from(image_bytes.len()).expect("image length fits");
+        let transfer = store
+            .stage_semantic_image_page(
+                &target,
+                second_key,
+                image_identity,
+                image_length,
+                crate::ByteRange::new(0, image_length).expect("second image byte range"),
+                &image_bytes,
+            )
+            .expect("stage distinct catalog member with identical image bytes");
+        store
+            .finish_semantic_image_transfer(&target, transfer)
+            .expect("admit distinct second catalog image");
+        let second_selection =
+            SelectedSemanticPlane::select(&mut source, &manifest, second_key, kind)
+                .expect("select second catalog member");
+        commit_core_member(
+            &mut store,
+            &target,
+            &catalog,
+            second_key,
+            &manifest,
+            second_selection,
+            &mut source,
+            &segment_payloads,
+            false,
+        );
+
+        let package = SelectedNativeHistoryPackageBinding::bind(
+            &mut source,
+            catalog,
+            vec![
+                (first_key, manifest.clone()),
+                (second_key, manifest.clone()),
+            ],
+        )
+        .expect("bind exact ordered multi-image package");
+        assert_eq!(package.images().len(), 2);
+        assert_eq!(
+            package.images()[0].binding().image_identity(),
+            package.images()[1].binding().image_identity(),
+            "identical image content remains valid for distinct catalog ordinals"
+        );
+
+        let branch =
+            crate::HistoryRefName::new("package-history-staging").expect("package staging branch");
+        let public_branch =
+            crate::HistoryRefName::new("package-history-public").expect("package public branch");
+        let first_mapping = store
+            .find_semantic_image(&target, first_key)
+            .expect("open first package member")
+            .expect("first package image is resident");
+        let selected_first = package.images()[0]
+            .binding()
+            .bind_mapped_image(&first_mapping)
+            .expect("bind first package member image");
+        let first_publication = store
+            .publish_selected_typed_v3_history_branch(
+                &selected_first,
+                branch.clone(),
+                *package.package_identity(),
+                v3_test_policies(),
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+                &mut source,
+            )
+            .expect("publish the first member into private staging");
+        let first_commit = first_publication
+            .current()
+            .expect("first package prefix has one immutable history commit");
+        drop(selected_first);
+        drop(first_mapping);
+        let interrupted_prefix = store
+            .selected_typed_v3_history_package_prefix(&package, &branch)
+            .expect("read valid interrupted package prefix");
+        assert!(
+            store
+                .history_ref(&target, crate::HistoryRefKind::Branch, &public_branch,)
+                .expect("read package public branch during interruption")
+                .is_none(),
+            "an incomplete private package group is not publicly visible"
+        );
+        assert_eq!(interrupted_prefix.as_ref(), &[first_commit]);
+        assert!(
+            interrupted_prefix.len() < package.images().len(),
+            "one staged member is not a complete package"
+        );
+        drop(store);
+
+        let limits = crate::TransportLimits {
+            max_chunk: 16 * 1024,
+            max_frame: 16 * 1024 + 192,
+            ..crate::TransportLimits::default()
+        };
+        let cold_store = FileSemanticRangeStore::open(
+            FileStore::open(directory.0.join("selected-cas"), 64 * 1024 * 1024)
+                .expect("cold reopen package FileStore"),
+            limits,
+        )
+        .expect("cold reopen package history store");
+        assert_eq!(
+            cold_store
+                .selected_typed_v3_history_package_prefix(&package, &branch)
+                .expect("cold reopen retains the exact incomplete package prefix")
+                .as_ref(),
+            &[first_commit]
+        );
+        let first_ancestry = cold_store
+            .history_ref_ancestry_proof(
+                &target,
+                crate::HistoryRefKind::Branch,
+                &branch,
+                first_commit,
+            )
+            .expect("cold first-member ancestry proof");
+        let first_replay = cold_store
+            .replay_typed_v3_history(
+                &target,
+                crate::HistoryRefKind::Branch,
+                &branch,
+                first_commit,
+                &first_ancestry,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+            )
+            .expect("cold replay the staged prefix before resume");
+        assert_eq!(first_replay.commit().identity(), first_commit);
+        assert_eq!(
+            first_replay.commit().provenance(),
+            package.package_identity()
+        );
+        drop(first_replay);
+
+        let second_mapping = cold_store
+            .find_semantic_image(&target, second_key)
+            .expect("open second package member after restart")
+            .expect("second package image persists across restart");
+        let selected_second = package.images()[1]
+            .binding()
+            .bind_mapped_image(&second_mapping)
+            .expect("bind second package member image");
+        let second_publication = cold_store
+            .publish_selected_typed_v3_history_branch(
+                &selected_second,
+                branch.clone(),
+                *package.package_identity(),
+                v3_test_policies(),
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+                &mut source,
+            )
+            .expect("resume staging with the missing second package member");
+        let second_commit = second_publication
+            .current()
+            .expect("completed package returns final history commit");
+        assert_eq!(second_publication.previous(), Some(first_commit));
+        drop(selected_second);
+        drop(second_mapping);
+        let complete_prefix = cold_store
+            .selected_typed_v3_history_package_prefix(&package, &branch)
+            .expect("read exact complete ordered package history");
+        assert_eq!(complete_prefix.as_ref(), &[first_commit, second_commit]);
+        assert_eq!(complete_prefix.len(), package.images().len());
+        assert!(
+            cold_store
+                .history_ref(&target, crate::HistoryRefKind::Branch, &public_branch,)
+                .expect("read package public branch before group CAS")
+                .is_none(),
+            "staging all members still does not publish a partial public ref"
+        );
+        let public_update = cold_store
+            .publish_typed_v3_history_ref_cold(
+                &target,
+                crate::HistoryRefKind::Branch,
+                public_branch.clone(),
+                None,
+                second_commit,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+            )
+            .expect("atomically expose the fully verified package history");
+        assert_eq!(public_update.current(), Some(second_commit));
+        assert_eq!(
+            cold_store
+                .selected_typed_v3_history_package_prefix(&package, &public_branch)
+                .expect("public branch exposes the complete package after one CAS")
+                .as_ref(),
+            &[first_commit, second_commit]
+        );
+        for (ordinal, commit) in complete_prefix.iter().enumerate() {
+            let ancestry = cold_store
+                .history_ref_ancestry_proof(
+                    &target,
+                    crate::HistoryRefKind::Branch,
+                    &branch,
+                    *commit,
+                )
+                .expect("complete package member ancestry proof");
+            let replay = cold_store
+                .replay_typed_v3_history(
+                    &target,
+                    crate::HistoryRefKind::Branch,
+                    &branch,
+                    *commit,
+                    &ancestry,
+                    SemanticTypedPlaneVerificationTierV2::Standard,
+                    JumboRopeLimits::default(),
+                )
+                .expect("cold replay exact package member");
+            assert_eq!(replay.commit().identity(), *commit);
+            assert_eq!(replay.commit().provenance(), package.package_identity());
+            assert_eq!(
+                replay.commit().parents().first().copied(),
+                ordinal.checked_sub(1).map(|prior| complete_prefix[prior])
+            );
+        }
+        drop(cold_store);
+
+        let reopened = FileSemanticRangeStore::open(
+            FileStore::open(directory.0.join("selected-cas"), 64 * 1024 * 1024)
+                .expect("second cold reopen package FileStore"),
+            limits,
+        )
+        .expect("second cold reopen package history");
+        assert_eq!(
+            reopened
+                .selected_typed_v3_history_package_prefix(&package, &branch)
+                .expect("complete package identity survives process restart")
+                .as_ref(),
+            &[first_commit, second_commit]
+        );
+        assert_eq!(
+            reopened
+                .selected_typed_v3_history_package_prefix(&package, &public_branch)
+                .expect("atomic public package root survives process restart")
+                .as_ref(),
+            &[first_commit, second_commit]
+        );
+        let duplicate_branch = crate::HistoryRefName::new("package-history-duplicate-member")
+            .expect("duplicate member test branch");
+        let duplicate_mapping = reopened
+            .find_semantic_image(&target, first_key)
+            .expect("open repeated package member")
+            .expect("first package image is resident after restart");
+        let duplicate_image = package.images()[0]
+            .binding()
+            .bind_mapped_image(&duplicate_mapping)
+            .expect("bind repeated package member");
+        for _ in 0..2 {
+            reopened
+                .publish_selected_typed_v3_history_branch(
+                    &duplicate_image,
+                    duplicate_branch.clone(),
+                    *package.package_identity(),
+                    v3_test_policies(),
+                    SemanticTypedPlaneVerificationTierV2::Standard,
+                    JumboRopeLimits::default(),
+                    &mut source,
+                )
+                .expect("write deliberately repeated ordinal for negative prefix test");
+        }
+        assert!(
+            reopened
+                .selected_typed_v3_history_package_prefix(&package, &duplicate_branch)
+                .is_err(),
+            "repeated or reordered history members cannot masquerade as a package prefix"
+        );
     }
 
     #[test]

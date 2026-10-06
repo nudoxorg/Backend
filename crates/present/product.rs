@@ -2633,7 +2633,7 @@ mod tests {
     fn published_history_proof(
         commit: [u8; 32],
     ) -> backend_library::SemanticHistoryPublicationProof {
-        backend_library::SemanticHistoryPublicationProof {
+        let mut proof = backend_library::SemanticHistoryPublicationProof {
             selection: backend_library::SemanticHistorySelectionStamp {
                 namespace: [0x12; 16],
                 profile: SemanticLanguageProfile::from_name("rust").expect("Rust profile"),
@@ -2643,17 +2643,26 @@ mod tests {
                 closure_id: [0x15; 32],
                 catalog_root: [0x16; 32],
             },
-            image: backend_library::SemanticHistoryImageIdentity {
-                artifact_ordinal: 0,
-                semantic_generation: [0x17; 32],
-                manifest_root: [0x18; 32],
-                image_identity: [0x19; 32],
-            },
+            target_package: "test-package".to_owned(),
+            target_coordinate: "test-coordinate".to_owned(),
+            package_identity: [0; 32],
+            images: vec![backend_library::SemanticHistoryImagePublicationProof {
+                image: backend_library::SemanticHistoryImageIdentity {
+                    artifact_ordinal: 0,
+                    semantic_generation: [0x17; 32],
+                    manifest_root: [0x18; 32],
+                    image_identity: [0x19; 32],
+                },
+                history_commit: commit,
+                parent_commits: Box::new([]),
+            }]
+            .into_boxed_slice(),
             reference_tip: commit,
             reachable_commit: commit,
-            parent_commits: Box::new([]),
             input_replay_status: backend_library::SemanticHistoryInputReplayStatus::Unproven,
-        }
+        };
+        proof.package_identity = proof.recompute_package_identity();
+        proof
     }
 
     #[test]

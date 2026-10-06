@@ -259,12 +259,12 @@ pub use surface::{
     RegistryPackageRecord, RegistryPackageSearchGroup, RegistryReleaseMatchScope,
     RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit, RegistrySearchRelease,
     ReleaseRecord, SelectedProjectSourceFrontier, SemanticConfidence, SemanticDeclarationIdentity,
-    SemanticGenerationId, SemanticHistoryImageIdentity, SemanticHistoryInputReplayStatus,
-    SemanticHistoryPublicationProof, SemanticHistoryPublicationStatus,
-    SemanticHistorySelectionStamp, SemanticLanguageProfile, SemanticLinkDelta,
-    SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget, SemanticSourceSpan,
-    SemanticVersionFreshness, SemanticVersionRecord, SubscriptionRecord, SurfaceCommand,
-    SurfaceReply, TreeNodeId, TreeNodeRecord, TreeOpener, TreeSubject,
+    SemanticGenerationId, SemanticHistoryImageIdentity, SemanticHistoryImagePublicationProof,
+    SemanticHistoryInputReplayStatus, SemanticHistoryPublicationProof,
+    SemanticHistoryPublicationStatus, SemanticHistorySelectionStamp, SemanticLanguageProfile,
+    SemanticLinkDelta, SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget,
+    SemanticSourceSpan, SemanticVersionFreshness, SemanticVersionRecord, SubscriptionRecord,
+    SurfaceCommand, SurfaceReply, TreeNodeId, TreeNodeRecord, TreeOpener, TreeSubject,
     index_operation_request_digest,
 };
 pub use view::{

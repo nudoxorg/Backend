@@ -609,6 +609,15 @@ impl AdmittedHistoryCommit {
         self.record.stamp
     }
 
+    /// Returns the opaque domain-separated admission provenance supplied when
+    /// this immutable commit was created. Consumers must compare it with a
+    /// separately reconstructed typed package identity; the bytes alone do
+    /// not recreate selection or compiler authority.
+    #[must_use]
+    pub const fn provenance(&self) -> &[u8; 32] {
+        &self.record.provenance
+    }
+
     /// Returns whether this commit is a bounded replay checkpoint.
     #[must_use]
     pub const fn is_checkpoint(&self) -> bool {
@@ -1260,8 +1269,7 @@ impl TypedV2HistoryReplay {
     /// confirmation attestations. Do not use it to alias or rewrite identity.
     pub fn lineage_candidates(
         &self,
-    ) -> Result<Option<UnprovenTypedLineageEdgeSetV1<'_>>, LineageEdgeSetErrorV1>
-    {
+    ) -> Result<Option<UnprovenTypedLineageEdgeSetV1<'_>>, LineageEdgeSetErrorV1> {
         let Some(bytes) = &self.lineage_edge_set else {
             return Ok(None);
         };
