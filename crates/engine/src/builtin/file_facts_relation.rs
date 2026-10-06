@@ -14,9 +14,12 @@ use super::relation::{
     SourceDeclaration, SourceExcerpt, SourceExcerptExtent, SourceLanguage, SourceLocation,
     product_source_file_key,
 };
+use crate::workspace::{WorkspaceRelationError, WorkspaceRelationHandle, WorkspaceSnapshot};
 use backend_compile::{DeclarationFacts, Deprecation, Fact, MAX_FACT_TEXT_BYTES, Obligation};
+use backend_store::TypedObject;
 use backend_version::{
-    CanonicalRelation, ContentId, Relation, RelationDecodeError, SourceFactDomain,
+    CanonicalRelation, ContentId, ObjectKey, Relation, RelationDecodeError, Schema, SchemaIdentity,
+    SourceFactDomain, StateRoot,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
@@ -30,11 +33,53 @@ const MIN_CONTENT_CUT: usize = 16;
 const MAX_DECLARATIONS_PER_PAGE: usize = 256;
 const MAX_PAGES_PER_DIRECTORY: usize = 256;
 const FACTS_PAGE_HEADROOM: usize = 1024;
+const ROOT_KEY: [u8; 32] = [0x46; 32];
 
 /// Versioned relation containing one complete declaration-facts manifest and
 /// its bounded immutable pages for each indexed source file.
 #[derive(Debug)]
 pub struct ProductSourceFileFactsRelation;
+
+/// Closure pointer schema for the auxiliary complete source-facts relation.
+pub struct ProductSourceFileFactsRootSchema;
+
+impl Schema for ProductSourceFileFactsRootSchema {
+    const DOMAIN: u8 = 0x97;
+    const TYPE: u16 = 7;
+    const VERSION: u8 = 1;
+    type Value = [u8; 32];
+
+    fn encode(value: &Self::Value, output: &mut Vec<u8>) {
+        output.extend_from_slice(value);
+    }
+}
+
+/// Creates the canonical closure object that points at one checked source-facts root.
+#[must_use]
+pub fn product_source_file_facts_root_object(
+    root: StateRoot<ProductSourceFileFactsRelation>,
+) -> TypedObject {
+    let key = ObjectKey::<ProductSourceFileFactsRootSchema>::from_value(&ROOT_KEY);
+    TypedObject::from_value(&key, root.as_bytes())
+}
+
+/// Opens source facts selected by this exact immutable workspace closure.
+///
+/// A missing pointer is the legacy state and carries no complete source facts.
+pub fn product_source_file_facts_relation(
+    snapshot: &WorkspaceSnapshot,
+) -> Result<Option<WorkspaceRelationHandle<ProductSourceFileFactsRelation>>, WorkspaceRelationError>
+{
+    let key = ObjectKey::<ProductSourceFileFactsRootSchema>::from_value(&ROOT_KEY);
+    snapshot.auxiliary_relation::<ProductSourceFileFactsRelation>(
+        SchemaIdentity::new(
+            ProductSourceFileFactsRootSchema::DOMAIN,
+            ProductSourceFileFactsRootSchema::TYPE,
+            ProductSourceFileFactsRootSchema::VERSION,
+        ),
+        *key.as_bytes(),
+    )
+}
 
 /// Exact source identity and complete facts layout for one source file.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1384,7 +1429,8 @@ fn decode_record(bytes: &[u8]) -> Result<ProductSourceFileFactsRecord, ()> {
                 ContentId::<SourceFactDomain>::try_from(reader.array()?).map_err(|_| ())?;
             let status = match reader.byte()? {
                 0 => {
-                    let count = reader.count(ProductSourceRecord::MAX_FILE_DECLARATIONS)?;
+                    let count =
+                        reader.count_items(ProductSourceRecord::MAX_FILE_DECLARATIONS, 25)?;
                     let mut declarations = Vec::with_capacity(count);
                     for _ in 0..count {
                         declarations.push(decode_declaration(&mut reader)?);
@@ -1393,7 +1439,8 @@ fn decode_record(bytes: &[u8]) -> Result<ProductSourceFileFactsRecord, ()> {
                 }
                 1 => {
                     let declaration_count = reader.u32()?;
-                    let count = reader.count(ProductSourceRecord::MAX_FILE_DECLARATIONS)?;
+                    let count =
+                        reader.count_items(ProductSourceRecord::MAX_FILE_DECLARATIONS, 106)?;
                     let mut directories = Vec::with_capacity(count);
                     for _ in 0..count {
                         directories.push(decode_directory_ref(&mut reader)?);
@@ -1419,7 +1466,7 @@ fn decode_record(bytes: &[u8]) -> Result<ProductSourceFileFactsRecord, ()> {
         }
         DIRECTORY_TAG => {
             let file_key = reader.array()?;
-            let count = reader.count(MAX_PAGES_PER_DIRECTORY)?;
+            let count = reader.count_items(MAX_PAGES_PER_DIRECTORY, 102)?;
             let mut pages = Vec::with_capacity(count);
             for _ in 0..count {
                 pages.push(decode_page_ref(&mut reader)?);
@@ -1436,7 +1483,7 @@ fn decode_record(bytes: &[u8]) -> Result<ProductSourceFileFactsRecord, ()> {
             let language = SourceLanguage::from_wire_tag(reader.byte()?).ok_or(())?;
             let first_boundary = reader.array()?;
             let last_boundary = reader.array()?;
-            let count = reader.count(MAX_DECLARATIONS_PER_PAGE)?;
+            let count = reader.count_items(MAX_DECLARATIONS_PER_PAGE, 26)?;
             let mut declarations = Vec::with_capacity(count);
             let mut container_line_deltas = Vec::with_capacity(count);
             for _ in 0..count {
@@ -1634,6 +1681,20 @@ impl<'a> FactsReader<'a> {
         (count <= maximum).then_some(count).ok_or(())
     }
 
+    /// Reads a bounded vector length only when the remaining canonical row
+    /// could physically encode every minimum-sized item. This prevents a tiny
+    /// malformed row from asking `Vec::with_capacity` for the full admission
+    /// ceiling before the first item is decoded.
+    fn count_items(&mut self, maximum: usize, minimum_item_bytes: usize) -> Result<usize, ()> {
+        let count = self.count(maximum)?;
+        if minimum_item_bytes == 0
+            || count > self.bytes.len().saturating_sub(self.at) / minimum_item_bytes
+        {
+            return Err(());
+        }
+        Ok(count)
+    }
+
     fn text(&mut self, maximum: usize) -> Result<String, ()> {
         let length = self.count(maximum)?;
         String::from_utf8(self.take(length)?.to_vec()).map_err(|_| ())
@@ -1657,6 +1718,30 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::path::Path;
+
+    #[test]
+    fn malformed_tiny_count_is_rejected_before_vector_allocation() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.push(MANIFEST_TAG);
+        bytes.extend_from_slice(&[1; 32]);
+        push_text_infallible(&mut bytes, "x");
+        bytes.extend_from_slice(&[2; 32]);
+        bytes.extend_from_slice(&[3; 32]);
+        bytes.extend_from_slice(
+            ContentId::<SourceFactDomain>::from_canonical_bytes(b"source").as_ref(),
+        );
+        bytes.push(0);
+        bytes.extend_from_slice(
+            &u32::try_from(ProductSourceRecord::MAX_FILE_DECLARATIONS)
+                .expect("bounded count")
+                .to_be_bytes(),
+        );
+        assert!(ProductSourceFileFactsRelation::decode_value(&bytes).is_err());
+
+        let mut reader = FactsReader::new(&[0, 0, 0, 1]);
+        assert!(reader.count_items(16_384, 25).is_err());
+    }
 
     fn declaration(path: &str, name: &str, line: u32) -> SourceDeclaration {
         declaration_with_container(path, name, line, 1)

@@ -22,8 +22,10 @@ pub use file_facts_relation::{
     ProductSourceFactsPage, ProductSourceFactsPageRef, ProductSourceFactsPageView,
     ProductSourceFileFactsAdmission, ProductSourceFileFactsInline, ProductSourceFileFactsManifest,
     ProductSourceFileFactsPaged, ProductSourceFileFactsRecord, ProductSourceFileFactsRelation,
-    ProductSourceFileFactsStatus, ProductSourceFileFactsUpdate, admit_product_source_file_facts,
-    build_product_source_file_facts, product_source_facts_page_key,
+    ProductSourceFileFactsRootSchema, ProductSourceFileFactsStatus, ProductSourceFileFactsUpdate,
+    admit_product_source_file_facts, build_product_source_file_facts,
+    product_source_facts_page_key, product_source_file_facts_relation,
+    product_source_file_facts_root_object,
 };
 pub use manifest::{
     ProductClosureManifestClaim, admit_product_closure_manifest, execution_input_basis,
@@ -67,7 +69,8 @@ pub use semantic_relation::{
     ProductSemanticPublicationSnapshot, SemanticActivationError, SemanticPublicationClaim,
     SemanticPublicationCoverage, SemanticPublicationInput, SemanticPublicationRetentionFacts,
     SemanticPublicationSelection, SemanticPublicationSelectionError,
-    SemanticPublicationTargetError, SemanticUnavailableReason,
+    SemanticPublicationTargetError, SemanticPublicationVersion, SemanticSourceCapture,
+    SemanticUnavailableReason,
 };
 
 /// Builds a checked Product-shaped source fixture for compatibility adapters.
