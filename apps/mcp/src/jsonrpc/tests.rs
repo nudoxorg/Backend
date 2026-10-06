@@ -451,23 +451,37 @@ fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
     ))
     .expect("egress fixture");
     for detail in ["summary", "full"] {
+        let selected: backend_library::SemanticShapeReadRequest =
+            serde_json::from_value(operands.clone()).expect("request");
         let mut server = ready(Fake {
-            surface_reply: Some(SurfaceReply::SemanticShapes(export.clone())),
+            surface_reply: Some(SurfaceReply::SemanticVersions(Box::new([selected
+                .source()
+                .clone()]))),
             ..Fake::default()
         });
+        let versions = call(
+            &mut server,
+            "backend.semantic_versions",
+            &json!({"package":"pkg:cargo/shape-fixture@0.1.0","detail":detail}),
+        );
+        let source = versions["structuredContent"]["semantic_data"]["value"][0].clone();
+        assert_eq!(source, operands["source"]);
+        let mut shape_operands = operands.clone();
+        shape_operands["source"] = source;
+        server.product.surface_reply = Some(SurfaceReply::SemanticShapes(export.clone()));
         let result = call(
             &mut server,
             "backend.semantic_shapes",
-            &json!({"request":operands,"detail":detail}),
+            &json!({"request":shape_operands,"detail":detail}),
         );
         assert_ne!(result["isError"], true, "{result}");
         assert_eq!(
             result["structuredContent"]["semantic_data"]["value"],
             serde_json::to_value(&export).expect("view")
         );
-        assert_eq!(server.product.surface_commands.len(), 1);
+        assert_eq!(server.product.surface_commands.len(), 2);
         assert!(
-            matches!(&server.product.surface_commands[0], SurfaceCommand::SemanticShapes { request }
+            matches!(&server.product.surface_commands[1], SurfaceCommand::SemanticShapes { request }
             if request.symbols() == &[[6;32]])
         );
     }

@@ -931,14 +931,32 @@ fn semantic_shapes_cli_and_mcp_grammar_preserve_exact_selected_operands_and_egre
     .expect("MCP operands");
     let cli = lower(&cli, PROJECT).expect("CLI lowering");
     let mcp = lower(&mcp, PROJECT).expect("MCP lowering");
-    assert_eq!(cli, mcp);
-    let Request::Surface(command) = cli else {
+    let (Request::Surface(command), Request::Surface(other)) = (cli, mcp) else {
+        panic!("shared surface requests")
+    };
+    assert_eq!(command, other);
+    let Request::Surface(command) = Request::Surface(command) else {
         panic!("shared SurfaceCommand required")
     };
     let backend_library::SurfaceCommand::SemanticShapes { request } = *command else {
         panic!("shape command")
     };
     assert_eq!(request.symbols(), &[[6; 32]]);
+    let versions = product_view(&backend_library::SurfaceReply::SemanticVersions(Box::new(
+        [request.source().clone()],
+    )));
+    let versions_dto = crate::dto::ProductDto::new(&versions);
+    let crate::ProductSemanticData::Versions(selections) =
+        versions_dto.semantic_data.expect("typed source operands")
+    else {
+        panic!("version facet")
+    };
+    assert_eq!(selections.as_ref(), &[request.source().clone()]);
+    let mut from_named = value.clone();
+    from_named["source"] = serde_json::to_value(&selections[0]).expect("source operand");
+    let roundtrip: backend_library::SemanticShapeReadRequest =
+        serde_json::from_value(from_named).expect("named versions to shapes");
+    assert_eq!(roundtrip, request);
     let export: backend_library::SemanticShapeExport = serde_json::from_str(include_str!(
         "../library/fixtures/semantic-shape-egress-view.json"
     ))
