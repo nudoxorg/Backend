@@ -2,8 +2,8 @@
   "schema": 1,
   "source": {
     "package": {
-      "kind": "purl",
-      "value": "pkg:cargo/shape-fixture@0.1.0"
+      "kind": "local",
+      "value": "/abs/shape-fixture"
     },
     "coordinate": "pkg:cargo/shape-fixture@0.1.0",
     "profile": [

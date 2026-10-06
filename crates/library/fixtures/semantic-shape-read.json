@@ -1,8 +1,8 @@
 {
   "source": {
     "package": {
-      "kind": "purl",
-      "value": "pkg:cargo/shape-fixture@0.1.0"
+      "kind": "local",
+      "value": "/abs/shape-fixture"
     },
     "coordinate": "pkg:cargo/shape-fixture@0.1.0",
     "profile": [
@@ -188,6 +188,81 @@
     },
     "history_status": {
       "state": "not_selected"
+    },
+    "selected_source_frontier": {
+      "package": {
+        "kind": "local",
+        "value": "/abs/shape-fixture"
+      },
+      "source_relation_root": [
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8
+      ],
+      "source_version": [
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9
+      ],
+      "file_count": 1
     }
   },
   "symbols": [

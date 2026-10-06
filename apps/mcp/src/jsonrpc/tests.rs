@@ -462,7 +462,7 @@ fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
         let versions = call(
             &mut server,
             "backend.semantic_versions",
-            &json!({"package":"pkg:cargo/shape-fixture@0.1.0","detail":detail}),
+            &json!({"package":"/abs/shape-fixture","detail":detail}),
         );
         let source = versions["structuredContent"]["semantic_data"]["value"][0].clone();
         assert_eq!(source, operands["source"]);
