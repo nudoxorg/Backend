@@ -34,6 +34,14 @@ pub use backend_library::{
     MAX_DISCOVERY_REVISION_BYTES, RegistryFactReadError, RegistryFactVersionId,
 };
 
+/// Maximum decoded PEP 691 project-index document size.
+///
+/// PyPI's unpaged global project set is already larger than the per-package
+/// metadata budget. Keep its bounded input allowance independent of individual
+/// package documents and discovery transactions; the parsed project count is
+/// still bounded by [`MAX_DISCOVERY_PROJECTS`].
+pub const MAX_PYPI_PROJECT_INDEX_BYTES: usize = 128 * 1024 * 1024;
+
 /// Derives the neutral discovery source identity from an admitted endpoint.
 #[must_use]
 pub const fn discovery_source_identity(endpoint: &RegistryEndpoint) -> DiscoverySourceIdentity {
@@ -593,7 +601,9 @@ pub fn parse_pypi_project_list(
     bytes: &[u8],
     max_projects: usize,
 ) -> Result<PypiProjectList, DiscoveryError> {
-    if bytes.len() > 32 * 1024 * 1024 || max_projects == 0 || max_projects > MAX_DISCOVERY_PROJECTS
+    if bytes.len() > MAX_PYPI_PROJECT_INDEX_BYTES
+        || max_projects == 0
+        || max_projects > MAX_DISCOVERY_PROJECTS
     {
         return Err(DiscoveryError::Bounds);
     }
@@ -2540,6 +2550,32 @@ mod tests {
             r#"{{"results":[{{"seq":1,"id":"pkg","doc":{{"name":"pkg","_rev":"{oversized_revision}","versions":{{"1.0.0":{{}}}}}}}}],"last_seq":1}}"#
         );
         assert_eq!(parse(&oversized), Err(DiscoveryError::Bounds));
+    }
+
+    #[test]
+    fn pep691_global_project_index_has_an_independent_document_budget() {
+        // The public, unpaged /simple/ document exceeds the 32 MiB allowance
+        // for individual package metadata. Valid JSON padding crosses that
+        // former boundary without requiring a huge generated project set.
+        let mut bytes = br#"{"meta":{"_last-serial":41888799},"projects":[{"name":"Requests"},{"name":"my_pkg"}]}"#
+            .to_vec();
+        bytes.resize(32 * 1024 * 1024 + 1, b' ');
+        let projects = parse_pypi_project_list(&bytes, 2).expect("global project-index budget");
+        assert_eq!(projects.serial, Some(41888799));
+        assert_eq!(projects.projects.len(), 2);
+        assert_eq!(projects.projects[0].canonical_name, "my-pkg");
+        assert_eq!(projects.projects[1].canonical_name, "requests");
+        assert!(!projects.is_truncated);
+
+        let capped = parse_pypi_project_list(&bytes, 1).expect("bounded project projection");
+        assert_eq!(capped.projects.len(), 1);
+        assert!(capped.is_truncated);
+
+        bytes.resize(MAX_PYPI_PROJECT_INDEX_BYTES + 1, b' ');
+        assert_eq!(
+            parse_pypi_project_list(&bytes, 2),
+            Err(DiscoveryError::Bounds)
+        );
     }
 
     #[test]
