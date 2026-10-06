@@ -70,6 +70,7 @@ use crate::application::executor::{
 use crate::application::toolchain_probe::{
     ToolchainProbeError, ToolchainProbeLimits, probe_version,
 };
+use crate::application::typescript_host::TypeScriptProjectHost;
 use crate::application::{
     ActivatedSemanticPackage, CSharpPackageAuthorityConfiguration,
     JavaPackageAuthorityConfiguration, LocalCompiler, LocalCompilerConfig, LocalCompilerControl,
@@ -413,6 +414,40 @@ pub(crate) struct LocalCompilerPlaneExecutionSeed {
 }
 
 impl LocalCompilerPlaneExecutionSeed {
+    pub(crate) fn for_typescript_project(
+        target: ContentId<CompilationTargetDomain>,
+        profile: LanguageProfile,
+        stage: Stage,
+        toolchain_identity: ContentId<ToolchainDomain>,
+        local_authority_fingerprint: [u8; 32],
+    ) -> Option<Self> {
+        if profile.language() != Language::TypeScript {
+            return None;
+        }
+        let environment_identity = compiler_environment_identity(profile);
+        let target_platform_identity = runtime_target_platform_identity()?;
+        let toolchain = NativeTool::TypeScriptCompiler;
+        let capability_identity = semantic_recipe(
+            profile,
+            toolchain,
+            toolchain_identity,
+            local_authority_fingerprint,
+            environment_identity,
+            target_platform_identity,
+        );
+        Some(Self {
+            target,
+            profile,
+            stage,
+            toolchain,
+            toolchain_identity: *toolchain_identity.as_ref(),
+            local_authority_fingerprint,
+            environment_identity,
+            target_platform_identity,
+            capability_identity,
+        })
+    }
+
     pub(crate) const fn target(self) -> ContentId<CompilationTargetDomain> {
         self.target
     }
@@ -1392,6 +1427,7 @@ impl CompilerInputWitnessStore {
 pub struct LocalRuntimeToolchain {
     facts: LocalRuntimeToolchainFacts,
     executable: Option<Box<Path>>,
+    probe_failure: Option<Box<ToolchainProbeError>>,
 }
 
 impl LocalRuntimeToolchain {
@@ -1430,6 +1466,7 @@ impl LocalRuntimeToolchain {
                 state: LocalRuntimeToolchainState::Ready,
             },
             executable: Some(executable.into_boxed_path()),
+            probe_failure: None,
         })
     }
 
@@ -1443,6 +1480,7 @@ impl LocalRuntimeToolchain {
                 state: LocalRuntimeToolchainState::Unavailable,
             },
             executable: None,
+            probe_failure: None,
         }
     }
 
@@ -1455,6 +1493,7 @@ impl LocalRuntimeToolchain {
                 state: LocalRuntimeToolchainState::Probing,
             },
             executable: Some(executable.into_boxed_path()),
+            probe_failure: None,
         }
     }
 
@@ -1462,7 +1501,7 @@ impl LocalRuntimeToolchain {
         self.executable.as_deref()
     }
 
-    pub(crate) const fn probe_failed(tool: NativeTool) -> Self {
+    pub(crate) fn probe_failed(tool: NativeTool, failure: ToolchainProbeError) -> Self {
         Self {
             facts: LocalRuntimeToolchainFacts {
                 tool,
@@ -1470,7 +1509,14 @@ impl LocalRuntimeToolchain {
                 state: LocalRuntimeToolchainState::ProbeFailed,
             },
             executable: None,
+            probe_failure: Some(Box::new(failure)),
         }
+    }
+
+    /// Returns the exact bounded process terminal retained by a failed admission probe.
+    #[must_use]
+    pub fn probe_failure(&self) -> Option<&ToolchainProbeError> {
+        self.probe_failure.as_deref()
     }
 
     fn probe_request(&self) -> Option<(NativeTool, PathBuf)> {
@@ -1657,6 +1703,7 @@ pub struct LocalCompilerRuntimeConfiguration {
     toolchains: Box<[LocalRuntimeToolchain]>,
     package_roots: Box<[LocalRuntimePackageRoot]>,
     package_authority: LocalRuntimePackageAuthority,
+    typescript_project_host: Option<TypeScriptProjectHost>,
     embedding_runtime: Option<Arc<EmbeddingExecutable>>,
     embedding_cache_session: Option<EmbeddingCacheSession>,
     embedding_requirement: EmbeddingRequirement,
@@ -1688,6 +1735,7 @@ impl LocalCompilerRuntimeConfiguration {
             toolchains,
             package_roots,
             package_authority,
+            typescript_project_host: None,
             embedding_runtime: None,
             embedding_cache_session: None,
             embedding_requirement: EmbeddingRequirement::Optional,
@@ -1696,6 +1744,14 @@ impl LocalCompilerRuntimeConfiguration {
             publication_limits,
             scratch,
         })
+    }
+
+    pub(crate) fn with_typescript_project_host(
+        mut self,
+        typescript_project_host: TypeScriptProjectHost,
+    ) -> Self {
+        self.typescript_project_host = Some(typescript_project_host);
+        self
     }
 
     /// Uses an already activated bounded embedding runtime for each package source.
@@ -2731,10 +2787,10 @@ fn start_toolchain_probes(
             let result = LocalRuntimeToolchain::probe(tool, executable, limits);
             let _ = probe_observations.send(ToolchainProbeObservation { tool, result });
         });
-        if spawn.is_err() {
+        if let Err(source) = spawn {
             let _ = observations.send(ToolchainProbeObservation {
                 tool,
-                result: Ok(LocalRuntimeToolchain::probe_failed(tool)),
+                result: Err(ToolchainProbeError::ProbeWorkerSpawn { tool, source }),
             });
         }
     }
@@ -2762,9 +2818,9 @@ fn run_worker(
         ) {
             WorkerDisposition::Stop => break,
             WorkerDisposition::Reconfigure(observation) => {
-                let replacement = observation
-                    .result
-                    .unwrap_or_else(|_| LocalRuntimeToolchain::probe_failed(observation.tool));
+                let replacement = observation.result.unwrap_or_else(|failure| {
+                    LocalRuntimeToolchain::probe_failed(observation.tool, failure)
+                });
                 let Some(slot) = configuration
                     .toolchains
                     .iter_mut()
@@ -2923,6 +2979,10 @@ fn run_worker_generation(
     let authority = PackageAuthorityConfiguration {
         clang: configuration.package_authority.clang.as_ref(),
         typescript: configuration.package_authority.typescript.as_ref(),
+        tsz_source_frontier_experiment: configuration
+            .package_authority
+            .tsz_source_frontier_experiment,
+        typescript_project_host: configuration.typescript_project_host.as_ref(),
         python: configuration.package_authority.python.as_ref(),
         rust,
         go: configuration.package_authority.go.as_ref(),

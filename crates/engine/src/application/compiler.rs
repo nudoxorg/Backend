@@ -11,8 +11,8 @@ use crate::compiler_read_observation_v2::{
 };
 use crate::driver::{
     AuthorityFailure, CompileControl, CompileOutput, CompileRequest, CompileScratch,
-    CompiledFragment, DeclarationScope, PackageDeclarationScopeFault, ToolchainSelection,
-    compile_semantic as compile_fused_semantic, rust_authority_diagnostic,
+    CompiledFragment, DeclarationScope, PackageDeclarationScopeFault, ResolvedToolchain,
+    ToolchainSelection, compile_semantic as compile_fused_semantic, rust_authority_diagnostic,
 };
 use crate::publication::{
     OpenSemanticPublicationScratch, PreparedSemanticOutput, PublishControl, PublishedCompilation,
@@ -30,6 +30,11 @@ use backend_frontend_rust::legacy::{
     RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
     RustWorkspaceSessionLease,
 };
+use backend_frontend_typescript::{
+    TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszProject, TszProjectAuthority,
+    TszProjectOptions, TszSourceError,
+};
+use backend_frontend_typescript::legacy::TypeScriptInvocationModeV1;
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerReadiness,
     CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, FragmentCause,
@@ -45,11 +50,11 @@ use backend_semantic::ir::{
     SemanticTypedPlaneVerificationTierV2,
 };
 use backend_semantic::registry::{AdapterRoute, FullRegistry};
-use backend_semantic::vocabulary::AuthorityDiagnosticClass;
+use backend_semantic::vocabulary::{AuthorityDiagnosticClass, NativeTool};
+use backend_store::FileStore;
 use backend_store::journal::{
     DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError,
 };
-use backend_store::FileStore;
 use backend_version::Coverage;
 use backend_version::ScopeRoot;
 use backend_version::{
@@ -1619,6 +1624,9 @@ pub enum PackageSemanticError {
         /// Exact closed compiler terminal.
         terminal: Box<CompilerTerminal>,
     },
+    /// An installed TypeScript source or toolchain witness changed before publication.
+    #[error("admitted TypeScript project changed before publication")]
+    TypeScriptProjectWitness(#[source] crate::application::TypeScriptProjectHostError),
     /// Required embedding inference could not produce a complete bounded output plane.
     #[error("required package embedding failed for {path}: {cause}")]
     Embedding {
@@ -1732,6 +1740,8 @@ pub(crate) struct StagedPackageCompilation {
     execution_identity: Option<LocalCompilerExecutionIdentity>,
     plane_execution_identity: Option<LocalCompilerPlaneExecutionIdentity>,
     cargo_workspace_facts: Option<std::sync::Arc<RustCargoWorkspaceFactsV1>>,
+    typescript_witness:
+        Option<std::sync::Arc<crate::application::typescript_host::TypeScriptProjectWitness>>,
     embeddings: Option<StagedEmbeddingOutput>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
 }
@@ -1947,6 +1957,77 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         timeout: *timeout,
                     }),
                 })?;
+        let use_report_program = self.package_authority.typescript.is_some_and(|checker| {
+            checker.portable_invocation_mode() == TypeScriptInvocationModeV1::ReportProgram
+        });
+        let typescript_project = if target.profile.language()
+            == backend_semantic::vocabulary::Language::TypeScript
+            && !use_report_program
+        {
+            if let Some(host) = self.package_authority.typescript_project_host {
+                match host.admit(package.package_root) {
+                    Ok(project) => project,
+                    Err(cause) => {
+                        let toolchain = self.toolchain(first_application_request).unwrap_or(
+                            ToolchainSelection::ExplicitlyUnavailable {
+                                tool: NativeTool::TypeScriptCompiler,
+                            },
+                        );
+                        let terminal = package_authority_terminal(
+                            package.package_target.target(),
+                            first_application_request,
+                            first_authority,
+                            toolchain,
+                            PackageAuthorityError::TypeScriptProjectHost(cause),
+                        );
+                        return Err(PackageSemanticError::Compile {
+                            path: first_source.relative_path.into(),
+                            terminal: Box::new(terminal),
+                        });
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let typescript_toolchain = match typescript_project.as_ref() {
+            Some(project) => match ResolvedToolchain::from_version(
+                NativeTool::TypeScriptCompiler,
+                &project.compiler,
+                &project.compiler_version,
+            ) {
+                Ok(toolchain) => Some(toolchain),
+                Err(source) => {
+                    let toolchain = self.toolchain(first_application_request).unwrap_or(
+                        ToolchainSelection::ExplicitlyUnavailable {
+                            tool: NativeTool::TypeScriptCompiler,
+                        },
+                    );
+                    let terminal = package_authority_terminal(
+                        package.package_target.target(),
+                        first_application_request,
+                        first_authority,
+                        toolchain,
+                        PackageAuthorityError::TypeScriptProjectHost(
+                            crate::application::TypeScriptProjectHostError::ToolchainResolution {
+                                source,
+                            },
+                        ),
+                    );
+                    return Err(PackageSemanticError::Compile {
+                        path: first_source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    });
+                }
+            },
+            None => None,
+        };
+        let mut package_authority_configuration = self.package_authority;
+        if let Some(project) = typescript_project.as_ref() {
+            package_authority_configuration.typescript = Some(&project.checker);
+        }
         let source_count = package.compilation_sources().count();
         if target.profile.language() == backend_semantic::vocabulary::Language::Rust
             && let Some(configuration) = self.package_authority.rust
@@ -2277,7 +2358,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     terminal: Box::new(terminal),
                 })?;
             let toolchain = self
-                .toolchain(application_request)
+                .toolchain_for_package(application_request, typescript_toolchain)
                 .map_err(|cause| toolchain_terminal(source_authority, application_request, cause))
                 .map_err(|terminal| PackageSemanticError::Compile {
                     path: source.relative_path.into(),
@@ -2301,7 +2382,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                             profile: target.profile,
                             toolchain,
                             control,
-                            configuration: self.package_authority,
+                            configuration: package_authority_configuration,
                         },
                         package.go_authority_witness,
                     )
@@ -2519,6 +2600,37 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 Coverage::Partial,
             );
         }
+        if let Some(project) = typescript_project.as_ref()
+            && let Err(cause) = project.validate_current()
+        {
+            let toolchain = self.toolchain(first_application_request).unwrap_or(
+                ToolchainSelection::ExplicitlyUnavailable {
+                    tool: NativeTool::TypeScriptCompiler,
+                },
+            );
+            let terminal = package_authority_terminal(
+                package.package_target.target(),
+                first_application_request,
+                first_authority,
+                toolchain,
+                PackageAuthorityError::TypeScriptProjectHost(cause),
+            );
+            return Err(PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(terminal),
+            });
+        }
+        let project_plane_seed = typescript_toolchain.and_then(|toolchain| {
+            typescript_project.as_ref().and_then(|project| {
+                LocalCompilerPlaneExecutionSeed::for_typescript_project(
+                    package.package_target.target(),
+                    target.profile,
+                    target.stage,
+                    toolchain.identity,
+                    project.fingerprint,
+                )
+            })
+        });
         let staged = StagedPackageCompilation {
             compilation_attempt_id,
             artifacts,
@@ -2531,13 +2643,18 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             stage: target.stage,
             input,
             execution_identity,
-            plane_execution_identity: plane_execution_seed.map(|seed| seed.bind_input(input)),
+            plane_execution_identity: plane_execution_seed
+                .or(project_plane_seed)
+                .map(|seed| seed.bind_input(input)),
             cargo_workspace_facts: rust_workspace_lease.as_ref().and_then(|lease| {
                 lease
                     .workspace()
                     .cargo_workspace_facts()
                     .map(std::sync::Arc::clone)
             }),
+            typescript_witness: typescript_project
+                .as_ref()
+                .map(|project| std::sync::Arc::clone(&project.witness)),
             embeddings: embedding_identity.map(|identity| StagedEmbeddingOutput {
                 identity,
                 artifacts: if embedding_unavailable.is_some() {
@@ -2664,6 +2781,19 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             .map_err(ToolchainRouteError::UnsupportedStage)?;
         select_toolchain(self.config.toolchains, route)
     }
+
+    fn toolchain_for_package<'toolchain>(
+        &'toolchain self,
+        request: ApplicationCompilerRequest<'_>,
+        typescript_project: Option<ResolvedToolchain<'toolchain>>,
+    ) -> Result<ToolchainSelection<'toolchain>, ToolchainRouteError> {
+        if request.profile.language() == backend_semantic::vocabulary::Language::TypeScript
+            && let Some(toolchain) = typescript_project
+        {
+            return Ok(ToolchainSelection::ResolvedNative(toolchain));
+        }
+        self.toolchain(request)
+    }
 }
 
 impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
@@ -2766,6 +2896,11 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         cancelled: &AtomicBool,
         progress: &mut impl FnMut(PackageCompilePhase),
     ) -> Result<PublishedSemanticPackage, PackageSemanticError> {
+        if let Some(witness) = staged.typescript_witness.as_ref() {
+            witness
+                .validate_current()
+                .map_err(PackageSemanticError::TypeScriptProjectWitness)?;
+        }
         let count = staged.artifacts.len();
         if count == 0 {
             return Err(PackageSemanticError::Capacity { lane: "manifest" });
@@ -2890,6 +3025,11 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         staged: StagedPackageCompilation,
         cancelled: &AtomicBool,
     ) -> Result<StagedSemanticPackage, PackageSemanticError> {
+        if let Some(witness) = staged.typescript_witness.as_ref() {
+            witness
+                .validate_current()
+                .map_err(PackageSemanticError::TypeScriptProjectWitness)?;
+        }
         let package_identity = staged.package_identity;
         let target_identity = staged.target_identity;
         let profile = staged.profile;
@@ -3775,10 +3915,7 @@ fn bounded_error_display(
     } else {
         output.text
     };
-    BoundedErrorMessage {
-        text,
-        truncated,
-    }
+    BoundedErrorMessage { text, truncated }
 }
 
 struct BoundedErrorMessageWriter {
@@ -3909,6 +4046,8 @@ const fn package_authority_projection(
         }
         PackageAuthorityError::CSharp(_) => (Phase::TypeCheck, Class::Authority),
         PackageAuthorityError::TypeScript(_) => (Phase::TypeCheck, Class::Authority),
+        PackageAuthorityError::TypeScriptTsz(_) => (Phase::Resolve, Class::Authority),
+        PackageAuthorityError::TypeScriptProjectHost(_) => (Phase::TypeCheck, Class::Authority),
         PackageAuthorityError::JavaHarness(_)
         | PackageAuthorityError::GoAuthorityWitness(_)
         | PackageAuthorityError::ImageTooLarge { .. }
@@ -3933,12 +4072,8 @@ const fn source_terminal(cause: SourceError) -> CompilerTerminal {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ToolchainRouteError {
     UnsupportedStage(backend_semantic::vocabulary::FrontendError),
-    Missing {
-        selected: backend_semantic::vocabulary::NativeTool,
-    },
-    ToolingUnavailable {
-        tool: backend_semantic::vocabulary::NativeTool,
-    },
+    Missing { selected: NativeTool },
+    ToolingUnavailable { tool: NativeTool },
 }
 
 const fn toolchain_terminal(
@@ -4037,16 +4172,19 @@ mod tests {
 
         let diagnostic = bounded_error_chain(&error);
 
-        assert!(diagnostic.text.starts_with(
-            "package semantic output could not be prepared for transport"
-        ));
-        assert!(diagnostic.text.contains("stored semantic-image bytes contain 2048"));
+        assert!(
+            diagnostic
+                .text
+                .starts_with("package semantic output could not be prepared for transport")
+        );
+        assert!(
+            diagnostic
+                .text
+                .contains("stored semantic-image bytes contain 2048")
+        );
         assert!(diagnostic.text.contains("… intermediate causes omitted …"));
         assert!(diagnostic.truncated);
-        assert!(
-            diagnostic.text.len()
-                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
-        );
+        assert!(diagnostic.text.len() <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES);
     }
 
     #[test]
@@ -4063,10 +4201,7 @@ mod tests {
         assert!(diagnostic.text.is_char_boundary(diagnostic.text.len()));
         assert!(diagnostic.text.ends_with('…'));
         assert!(diagnostic.truncated);
-        assert!(
-            diagnostic.text.len()
-                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
-        );
+        assert!(diagnostic.text.len() <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES);
     }
 
     #[test]
@@ -4123,10 +4258,7 @@ mod tests {
 
         assert!(diagnostic.text.contains("error source cycle detected"));
         assert!(diagnostic.truncated);
-        assert!(
-            diagnostic.text.len()
-                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
-        );
+        assert!(diagnostic.text.len() <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES);
     }
 
     #[test]
@@ -4149,15 +4281,14 @@ mod tests {
         let diagnostic = bounded_error_chain(&error);
 
         assert!(diagnostic.text.contains("cause 7"));
-        assert!(diagnostic
-            .text
-            .contains("additional causes omitted after depth limit"));
+        assert!(
+            diagnostic
+                .text
+                .contains("additional causes omitted after depth limit")
+        );
         assert!(!diagnostic.text.contains("cause beyond depth limit"));
         assert!(diagnostic.truncated);
-        assert!(
-            diagnostic.text.len()
-                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
-        );
+        assert!(diagnostic.text.len() <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES);
     }
 
     #[test]
@@ -4175,7 +4306,11 @@ mod tests {
         let source = std::error::Error::source(&error).expect("typed publication source");
         assert!(source.is::<crate::publication::PublishSemanticError>());
         let diagnostic = bounded_error_chain(&error);
-        assert!(diagnostic.text.contains("semantic image bytes contain 256 bytes"));
+        assert!(
+            diagnostic
+                .text
+                .contains("semantic image bytes contain 256 bytes")
+        );
         assert!(!diagnostic.truncated);
     }
 

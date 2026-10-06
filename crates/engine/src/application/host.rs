@@ -181,6 +181,14 @@ impl LocalHostVariable {
 pub trait LocalHostEnvironment {
     /// Returns one exact OS-native value when the named variable is present.
     fn value(&self, variable: LocalHostVariable) -> Option<OsString>;
+
+    /// Returns the process search path for selecting a project-scoped Node host runtime.
+    ///
+    /// Host admission immediately resolves the selected `node` to one canonical executable and
+    /// captures its version and bytes. The search path itself is never passed to compiler children.
+    fn search_path(&self) -> Option<OsString> {
+        None
+    }
 }
 
 /// Production environment reader.
@@ -190,6 +198,10 @@ pub struct ProcessHostEnvironment;
 impl LocalHostEnvironment for ProcessHostEnvironment {
     fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
         std::env::var_os(variable.environment_name())
+    }
+
+    fn search_path(&self) -> Option<OsString> {
+        std::env::var_os("PATH")
     }
 }
 
@@ -207,12 +219,17 @@ impl LocalHostEnvironment for WorkspaceCompilerEnvironment {
             ProcessHostEnvironment.value(variable)
         }
     }
+
+    fn search_path(&self) -> Option<OsString> {
+        ProcessHostEnvironment.search_path()
+    }
 }
 
 /// Whether host admission may inspect its finite documented platform locations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LocalHostDiscovery {
-    /// Only explicitly supplied typed environment paths participate.
+    /// Only explicitly supplied typed environment paths participate, except that project-scoped
+    /// TypeScript admission may use the finite Node host-runtime table.
     ExplicitOnly,
     /// Explicit paths take precedence, followed by the finite platform table.
     PlatformDefaults,
@@ -422,7 +439,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             .iter()
             .find(|root| root.ecosystem == backend_library::interface::PackageEcosystem::Golang)
             .map(|root| root.path.to_path_buf());
-        let package_authority = self.package_authority(
+        let (package_authority, typescript_project_host) = self.package_authority(
             home.as_deref(),
             &executables,
             jdk_root,
@@ -442,6 +459,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             )?,
             LocalCompilerScratch::with_fragment_capacity(nonzero(FRAGMENT_SCRATCH_BYTES))?,
         )?
+        .with_typescript_project_host(typescript_project_host)
         .with_embedding_requirement(embedding_requirement);
         let configuration = match embedding_runtime.as_ref() {
             Some(runtime) => {
@@ -530,7 +548,9 @@ impl LocalCompilerHost<ProcessHostEnvironment> {
 
 impl LocalCompilerHost<WorkspaceCompilerEnvironment> {
     /// Production compiler ownership with an explicit workspace-owned durable
-    /// root and explicitly configured native authorities.
+    /// root and explicitly configured native authorities. Project-scoped TypeScript is the narrow
+    /// exception: it may use a Node host runtime from the finite platform table so its
+    /// package-owned compiler can be admitted without ambient PATH search.
     ///
     /// A long-running service must bind its listener independently of ambient
     /// developer toolchains. Missing authority variables therefore enter the
