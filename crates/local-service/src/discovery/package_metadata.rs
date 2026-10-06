@@ -569,13 +569,15 @@ mod tests {
     }
 
     fn gateway(endpoint: RegistryEndpoint) -> DiscoveryGateway {
+        static NEXT_JOURNAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "backend-point-metadata-{}-{}.journal",
+            "backend-point-metadata-{}-{}-{}.journal",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
-                .as_nanos()
+                .as_nanos(),
+            NEXT_JOURNAL.fetch_add(1, Ordering::Relaxed)
         ));
         let (_sender, receiver) = mpsc::sync_channel(1);
         DiscoveryGateway {
