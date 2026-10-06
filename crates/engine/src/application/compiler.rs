@@ -2221,17 +2221,23 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // including direct callers whose source-only fallback claim omits config.
         let plane_execution_seed = if let Some(project) = python_project.as_ref() {
             let fingerprint = project.witness().fingerprint();
-            let mut root = blake3::Hasher::new();
-            root.update(b"compiler.python.project-input.v1\0");
-            root.update(input.input_root());
-            root.update(input.read_manifest_root().as_bytes());
-            root.update(&fingerprint.as_bytes());
-            let root = *root.finalize().as_bytes();
-            input = SemanticInputWitness::claimed_state(
-                root,
-                ScopeRoot::from_bytes(root),
-                Coverage::Partial,
-            );
+            // An admitted caller claim identifies its exact publication attempt.
+            // Preserve that opaque provenance; the execution seed below still
+            // binds captured configuration and producer facts for every caller.
+            // Only the compiler's source-only fallback needs an expanded root.
+            if package.input_claim.is_none() {
+                let mut root = blake3::Hasher::new();
+                root.update(b"compiler.python.project-input.v1\0");
+                root.update(input.input_root());
+                root.update(input.read_manifest_root().as_bytes());
+                root.update(&fingerprint.as_bytes());
+                let root = *root.finalize().as_bytes();
+                input = SemanticInputWitness::claimed_state(
+                    root,
+                    ScopeRoot::from_bytes(root),
+                    Coverage::Partial,
+                );
+            }
             plane_execution_seed.map(|seed| seed.with_python_project(fingerprint))
         } else {
             plane_execution_seed

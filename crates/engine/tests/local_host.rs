@@ -358,7 +358,7 @@ fn compiled_python_authority_lowers_missing_external_imports_with_empty_path() {
         .into_boxed_slice();
     let staged = client
         .compile_package_sources_staged(
-            OwnedPackageSourceSet::new(request, package_root, sources)
+            OwnedPackageSourceSet::new(request.clone(), package_root.clone(), sources.clone())
                 .expect("complete selected frontier"),
         )
         .unwrap_or_else(|error| {
@@ -368,6 +368,28 @@ fn compiled_python_authority_lowers_missing_external_imports_with_empty_path() {
         staged.output_object_count() > 0,
         "real canonical staged output"
     );
+    // A publication owner binds its candidate to an exact opaque scan claim.
+    // Native Python project admission must not silently replace those roots.
+    let claim = backend_semantic::ir::SemanticInputWitness::claimed_state(
+        [0x71; 32],
+        backend_version::ScopeRoot::from_bytes([0x83; 32]),
+        backend_version::Coverage::Partial,
+    );
+    let claimed = client
+        .compile_package_sources_staged(
+            OwnedPackageSourceSet::new(request, package_root, sources)
+                .expect("same exact selected frontier")
+                .with_input_claim(claim),
+        )
+        .expect("native authority preserves the caller's exact attempt claim");
+    assert_eq!(claimed.input_witness(), claim);
+    assert!(claimed.plane_execution_identity().is_some());
+    assert_ne!(
+        claimed.plane_execution_identity(),
+        staged.plane_execution_identity(),
+        "execution identity must remain bound to the exact input provenance"
+    );
+    drop(claimed);
     drop(staged);
     drop(client);
     fs::remove_dir_all(root).expect("the stopped owner releases its exact fixture root");
