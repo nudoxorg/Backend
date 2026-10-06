@@ -341,6 +341,10 @@ struct IndexJob {
     /// Last stage emitted, used to avoid duplicate stage events.
     progress_stage: Option<backend_library::IndexJobStage>,
     request_id: u64,
+    /// Physical package scope used by every committed source capture. The
+    /// caller's spelling remains separate for reply correlation.
+    captured_package: backend_engine::PackageKey,
+    captured_label: String,
     requested_package: backend_engine::PackageKey,
     execution_intent: CompileExecutionIntent,
     /// Retains a verified registry tree through the full job lifetime.
@@ -2267,11 +2271,10 @@ impl CommandAdapter {
                     } else {
                         backend_engine::builtin::SemanticUnavailableReason::Rejected
                     };
-                    let label = indexing.owner_ticket.package().as_str();
                     if let Err(error) = commit_pending_capture_failure(
                         daemon,
-                        indexing.requested_package,
-                        label,
+                        indexing.captured_package,
+                        &indexing.captured_label,
                         indexing.request_id,
                         &indexing.captures,
                         reason,
@@ -2500,6 +2503,8 @@ impl CommandAdapter {
             progress_sequence: 0,
             progress_stage: None,
             request_id,
+            captured_package: package,
+            captured_label: label.clone(),
             requested_package,
             execution_intent,
             _staged_project: None,
@@ -4915,6 +4920,8 @@ mod tests {
             progress_sequence: 0,
             progress_stage: None,
             request_id: 0,
+            captured_package: backend_engine::package_key("pkg:cargo/fixture@1.0.0"),
+            captured_label: "pkg:cargo/fixture@1.0.0".to_owned(),
             requested_package: backend_engine::package_key("pkg:cargo/fixture@1.0.0"),
             execution_intent: CompileExecutionIntent::Interactive,
             _staged_project: None,
@@ -5469,6 +5476,65 @@ mod tests {
         assert!(adapter.poll_deferred(daemon).is_empty());
         assert_eq!(owner_cursor(daemon), after);
         assert!(project_is_admitted(daemon, package));
+    }
+
+    #[test]
+    fn aliased_local_add_refusal_closes_its_canonical_source_capture() {
+        let mut fixture = AdapterFixture::new();
+        let (canonical_package, canonical_label) = fixture.add_target();
+        fs::write(
+            std::path::Path::new(&canonical_label).join("module.py"),
+            "class Session:\n    pass\n",
+        )
+        .expect("real Python source");
+        let requested_label = format!("{canonical_label}/.");
+        let requested_package = backend_engine::package_key(&requested_label);
+        assert_ne!(requested_package, canonical_package);
+        let profile = backend_semantic::vocabulary::LanguageProfile::Python(
+            backend_semantic::vocabulary::PythonVersion::Python314,
+        );
+        let key = backend_engine::builtin::ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::parse(canonical_label.clone())
+                .expect("physical package reference"),
+            crate::builtin::compiler_scope::semantic_coordinate(canonical_package, profile, None)
+                .expect("physical semantic coordinate"),
+            profile,
+        )
+        .expect("physical capture key");
+        let (adapter, daemon) = fixture.parts();
+        // The fixture deliberately has no Python toolchain. Each refusal must
+        // close the actual Pending row, allowing another attempt at this alias.
+        for request in [701, 702] {
+            assert!(matches!(
+                adapter.execute_or_defer(
+                    daemon,
+                    &add_body(request, requested_package, &requested_label),
+                    request + 1000,
+                ),
+                Ok(Executed::Deferred)
+            ));
+            let indexing = adapter.indexing.as_ref().expect("accepted alias scan");
+            assert_eq!(indexing.requested_package, requested_package);
+            assert_eq!(indexing.captured_package, canonical_package);
+            assert_eq!(indexing.captured_label, canonical_label);
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while adapter.indexing.is_some() {
+                adapter.poll_deferred(daemon);
+                assert!(std::time::Instant::now() < deadline, "alias scan timed out");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let snapshot = daemon.engine().daemon().owner().snapshot();
+            let capture = backend_engine::builtin::semantic_capture_relation(&snapshot)
+                .expect("capture relation")
+                .expect("committed source capture")
+                .lookup(&key)
+                .expect("read physical capture")
+                .expect("retained physical capture");
+            assert!(matches!(
+                capture.outcome(),
+                backend_engine::builtin::ProductSemanticCaptureOutcome::Unavailable { .. }
+            ));
+        }
     }
 
     #[test]
