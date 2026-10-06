@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,7 +23,21 @@ class CorpusLedgerTests(unittest.TestCase):
             "schema": ledger.RESULT_SCHEMA, "status": status,
             "scope": {"kind": "language-corpus", "language": "python"},
             "source": {"build_manifest_sha256": self.candidate},
-            "projects": [{"id": "requests", "source_tree_unchanged": True}],
+            "projects": [{"id": "requests", "source_tree_unchanged": True,
+                          "root_identity_sha256": "f" * 64,
+                          "package_provenance": {
+                              "verification": "verified-source-inventory-v1",
+                              "package": {"ecosystem": "pypi", "id": "requests", "version": version},
+                              "source_tree_sha256": "b" * 64,
+                              "acquired_inventory_sha256": "e" * 64,
+                              "corpus_manifest_sha256": "a" * 64,
+                              "target_subdir": ".", "target_root_identity_sha256": "f" * 64,
+                          }}],
+            "runtime_setup": {"mode": setup, "compiler_snapshot_injected": setup == "configured",
+                              "compiler_override_keys": (["BACKEND_LOCALD_COMPILER_ENVIRONMENT"]
+                                                         if setup == "configured" else []),
+                              "owner_environment_sha256": "e" * 64},
+            "environment_witnesses": {"owner_allowlisted_environment_sha256": "e" * 64},
             "operations": [{"project_id": "requests", "terminal_state": "published",
                             "cold_status_same_receipt": True, "same_key_replay_same_receipt": True,
                             "publication_receipt_sha256": "c" * 64}],
@@ -87,6 +102,58 @@ class CorpusLedgerTests(unittest.TestCase):
         self.write(first, conflicting)
         with self.assertRaises(ledger.InvalidEvidence):
             ledger.summarize([self.journal], self.candidate)
+
+    def test_declared_source_or_wrong_package_tree_and_target_refuse_credit(self):
+        for changes in [
+            {"verification": "declared-by-corpus-manifest"},
+            {"source_tree_sha256": "e" * 64},
+            {"package": {"ecosystem": "pypi", "id": "urllib3", "version": "1"}},
+            {"package": {"ecosystem": "pypi", "id": "requests", "version": "2"}},
+            {"target_root_identity_sha256": "d" * 64},
+            {"target_subdir": "src/../other"},
+            {"target_subdir": "src//other"},
+        ]:
+            with self.subTest(changes=changes):
+                attempt = self.attempt()
+                path = Path(attempt["result_path"])
+                run = json.loads(path.read_bytes())
+                run["projects"][0]["package_provenance"].update(changes)
+                raw = json.dumps(run).encode()
+                path.write_bytes(raw)
+                attempt["result_sha256"] = hashlib.sha256(raw).hexdigest()
+                self.write(attempt)
+                self.assertEqual(self.counts()["invalid_evidence"], 1)
+
+    def test_stock_label_cannot_hide_compiler_injection_or_another_environment(self):
+        for changes in [{"mode": "configured"}, {"compiler_snapshot_injected": True},
+                        {"compiler_override_keys": ["NUDOX_GO"]},
+                        {"owner_environment_sha256": "a" * 64}]:
+            with self.subTest(changes=changes):
+                attempt = self.attempt()
+                path = Path(attempt["result_path"])
+                run = json.loads(path.read_bytes())
+                run["runtime_setup"].update(changes)
+                raw = json.dumps(run).encode()
+                path.write_bytes(raw)
+                attempt["result_sha256"] = hashlib.sha256(raw).hexdigest()
+                self.write(attempt)
+                self.assertEqual(self.counts()["invalid_evidence"], 1)
+
+    def test_special_or_multilink_result_cannot_block_reader_or_count(self):
+        for kind in ["fifo", "symlink", "hardlink"]:
+            with self.subTest(kind=kind):
+                attempt = self.attempt()
+                original = Path(attempt["result_path"])
+                selected = self.root / f"selected-{kind}"
+                if kind == "fifo":
+                    os.mkfifo(selected)
+                elif kind == "symlink":
+                    selected.symlink_to(original)
+                else:
+                    os.link(original, selected)
+                attempt["result_path"] = str(selected)
+                self.write(attempt)
+                self.assertEqual(self.counts()["invalid_evidence"], 1)
 
     def test_partial_tail_and_pending_attempt_cannot_manufacture_a_pass(self):
         pending = dict(self.attempt(), result_path=None, result_sha256=None)

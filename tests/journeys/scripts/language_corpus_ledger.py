@@ -12,10 +12,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import stat
 from collections import Counter
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 ATTEMPT_SCHEMA = "nudox.language-corpus-attempt.v1"
@@ -54,6 +56,73 @@ def decode(raw: bytes) -> Any:
         return json.loads(raw, object_pairs_hook=object_without_duplicates)
     except (ValueError, UnicodeError) as error:
         raise InvalidEvidence("malformed evidence JSON") from error
+
+
+def read_result(path: Path) -> bytes:
+    """Read one stable regular receipt without blocking on a special file."""
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise InvalidEvidence("result must be a single-link regular file")
+        if before.st_size > MAX_RESULT_BYTES:
+            raise InvalidEvidence("result exceeded its byte bound")
+        raw = stream.read(MAX_RESULT_BYTES + 1)
+        after = os.fstat(stream.fileno())
+        selected = os.stat(path, follow_symlinks=False)
+    identity = lambda value: (value.st_dev, value.st_ino, value.st_size,
+                              value.st_mtime_ns, value.st_ctime_ns, value.st_nlink)
+    if (identity(before) != identity(after) or identity(after) != identity(selected)
+            or not stat.S_ISREG(selected.st_mode) or len(raw) != after.st_size):
+        raise InvalidEvidence("result changed while being read")
+    return raw
+
+
+def verify_package_binding(attempt: Attempt, project: dict[str, Any]) -> None:
+    provenance = project.get("package_provenance")
+    if (not isinstance(provenance, dict)
+            or provenance.get("verification") != "verified-source-inventory-v1"):
+        raise InvalidEvidence("pass has no independently verified package source inventory")
+    expected = {"ecosystem": PREFIX[attempt.language][:-1],
+                "id": attempt.package[len(PREFIX[attempt.language]):], "version": attempt.version}
+    if provenance.get("package") != expected:
+        raise InvalidEvidence("pass belongs to another package or pinned version")
+    if digest(provenance.get("source_tree_sha256")) != attempt.source_sha256:
+        raise InvalidEvidence("pass belongs to another acquired source tree")
+    digest(provenance.get("acquired_inventory_sha256"))
+    digest(provenance.get("corpus_manifest_sha256"))
+    if (digest(provenance.get("target_root_identity_sha256"))
+            != digest(project.get("root_identity_sha256"))):
+        raise InvalidEvidence("pass names another runtime target root")
+    target = provenance.get("target_subdir")
+    if not isinstance(target, str) or not target or len(target.encode()) > 4096:
+        raise InvalidEvidence("pass omits its canonical package target subdirectory")
+    if target != ".":
+        parts = PurePosixPath(target)
+        if (parts.is_absolute() or str(parts) != target or "\\" in target
+                or any(part in {".", ".."} for part in parts.parts)):
+            raise InvalidEvidence("pass names a noncanonical package target subdirectory")
+
+
+def verify_setup_binding(attempt: Attempt, run: dict[str, Any]) -> None:
+    setup = run.get("runtime_setup")
+    witnesses = run.get("environment_witnesses")
+    if not isinstance(setup, dict) or not isinstance(witnesses, dict):
+        raise InvalidEvidence("pass has no observed runtime setup evidence")
+    if setup.get("mode") != attempt.setup:
+        raise InvalidEvidence("attempt setup label differs from the executed setup")
+    if (digest(setup.get("owner_environment_sha256"))
+            != digest(witnesses.get("owner_allowlisted_environment_sha256"))):
+        raise InvalidEvidence("setup belongs to another owner environment")
+    overrides = setup.get("compiler_override_keys")
+    injected = setup.get("compiler_snapshot_injected")
+    if (type(injected) is not bool or not isinstance(overrides, list)
+            or any(not isinstance(key, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", key)
+                   for key in overrides) or overrides != sorted(set(overrides))):
+        raise InvalidEvidence("setup omits its exact compiler override policy")
+    if attempt.setup == "stock" and (injected or overrides):
+        raise InvalidEvidence("configured compiler setup cannot count as a stock pass")
 
 
 @dataclass(frozen=True)
@@ -107,10 +176,7 @@ def runtime_status(attempt: Attempt) -> tuple[str, str]:
     if attempt.result_path is None:
         return "pending", "runtime acceptance has not completed"
     path = Path(attempt.result_path)
-    if path.is_symlink():
-        raise InvalidEvidence("result must not be a symlink")
-    with path.open("rb") as stream:
-        raw = stream.read(MAX_RESULT_BYTES + 1)
+    raw = read_result(path)
     if len(raw) > MAX_RESULT_BYTES or hashlib.sha256(raw).hexdigest() != attempt.result_sha256:
         raise InvalidEvidence("result exceeded its bound or changed after publication")
     run = decode(raw)
@@ -135,6 +201,8 @@ def runtime_status(attempt: Attempt) -> tuple[str, str]:
     project_id = projects[0].get("id")
     if not project_id or projects[0].get("source_tree_unchanged") is not True:
         raise InvalidEvidence("package source changed during acceptance")
+    verify_package_binding(attempt, projects[0])
+    verify_setup_binding(attempt, run)
     if (not isinstance(operations, list) or len(operations) != 1
             or operations[0].get("project_id") != project_id
             or operations[0].get("terminal_state") != "published"
