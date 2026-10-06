@@ -678,6 +678,69 @@ class RuntimeToolFileAdmissionTests(unittest.TestCase):
                 receipt.stable_file(linked, "Cargo.lock")
 
 
+class OperationObservationBoundaryTests(unittest.TestCase):
+    """The actual 80543 TypeScript pilot used these two different envelopes."""
+
+    key = "6bf72b553ff267091039bfc8afe35983a53278970e48f079ff8ae2fbbe16af64"
+    package = Path("/root/nudox-corpus-20261006/corpora/npm-seed100-20261006/packages/eaa3f7c03744ef1b64433c49")
+
+    def observation(self) -> dict:
+        return {
+            "state": "known",
+            "detail": {
+                "operation_key": self.key,
+                "request_digest": "9a9deef6819f8dcb28c1d79d483067d58cb0acb4750d00c127344e581b2381c5",
+                "package": {"kind": "local", "value": str(self.package)},
+                "execution_intent": "interactive",
+                "state": {
+                    "state": "active",
+                    "detail": {
+                        "stage": "scanning",
+                        "ticket": {
+                            "id": 1,
+                            "owner_epoch": [36, 103, 93, 243, 49, 77, 198, 160, 118, 172, 126, 210, 108, 187, 207, 240],
+                            "package": {"kind": "local", "value": str(self.package)},
+                        },
+                    },
+                },
+            },
+        }
+
+    def surface(self, observation: dict) -> dict:
+        return {"answer": "surface", "detail": "summary", "surface": {
+            "result": "index-operation-status", "data": observation,
+        }}
+
+    def test_actual_cli_and_mcp_wrappers_admit_the_same_typed_active_observation(self) -> None:
+        observation = self.observation()
+        cli = {"answer": "product", "heading": "index-operation", "index_operation": observation}
+        self.assertEqual(runner.operation_state(cli, self.key, self.package), ("active", None, None))
+        self.assertEqual(runner.operation_state(self.surface(observation), self.key, self.package),
+                         runner.operation_state(cli, self.key, self.package))
+
+    def test_raw_surface_still_checks_the_exact_caller_key_package_and_request_digest(self) -> None:
+        for field, value in [
+            ("operation_key", "1" * 64),
+            ("package", {"kind": "local", "value": "/another/package"}),
+            ("request_digest", "not-a-digest"),
+        ]:
+            with self.subTest(field=field):
+                observation = self.observation()
+                observation["detail"][field] = value
+                with self.assertRaises(runner.AcceptanceError):
+                    runner.operation_state(self.surface(observation), self.key, self.package)
+
+    def test_another_surface_result_and_valid_json_in_human_text_are_not_operations(self) -> None:
+        wrong_result = self.surface(self.observation())
+        wrong_result["surface"]["result"] = "references"
+        text_only = {"answer": "fault", "detail": json.dumps(self.observation())}
+        untagged = {"answer": "surface", "surface": {"data": self.observation()}}
+        for value in [wrong_result, text_only, untagged]:
+            with self.subTest(value=value):
+                with self.assertRaises(runner.AcceptanceError):
+                    runner.operation_state(value, self.key, self.package)
+
+
 class BoundedCaptureTests(unittest.TestCase):
     def test_owner_stream_capture_retains_bounded_head_tail_and_full_hash(self) -> None:
         payload = bytes(range(256)) * 80

@@ -1892,12 +1892,24 @@ def mcp_call(
 def operation_state(
     product: dict[str, Any], key: str, package_path: Path
 ) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None]:
-    if product.get("answer") != "product" or product.get("heading") != "index-operation":
-        raise AcceptanceError("durable operation call did not return the typed product projection")
-    observation = product.get("index_operation")
+    if product.get("answer") == "product" and product.get("heading") == "index-operation":
+        observation = product.get("index_operation")
+    elif product.get("answer") == "surface":
+        surface = product.get("surface")
+        if (
+            not isinstance(surface, dict)
+            or set(surface) != {"result", "data"}
+            or surface.get("result") not in {
+                "index-operation-started", "index-operation-status"
+            }
+        ):
+            raise AcceptanceError("durable operation call returned another typed surface result")
+        observation = surface["data"]
+    else:
+        raise AcceptanceError("durable operation call did not return a typed operation observation")
     if not isinstance(observation, dict):
         raise Blocked(
-            "this binary's product DTO omits the typed durable index-operation observation"
+            "this response omits the typed durable index-operation observation"
         )
     observation_state = observation.get("state")
     observation_detail = observation.get("detail")
