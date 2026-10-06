@@ -43,12 +43,19 @@ where
 pub struct WorkspaceClosure {
     root: WorkspaceRoot,
     manifest: ClosureManifest,
+    membership: WorkspaceMembership,
     binding: WorkspaceBinding,
     root_only: bool,
     /// Relation nodes in the current path-copy frontier that still need
     /// physical publication. Only the selected root is retained in the
     /// closure manifest; child nodes move directly into the relation CAS.
     selected_roots: Vec<super::TypedObject>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum WorkspaceMembership {
+    InMemory,
+    Stored(super::DurableClosureManifest),
 }
 
 /// Exact workspace-root and closure binding persisted with a publication.
@@ -202,11 +209,8 @@ impl WorkspaceClosure {
         ensure_refs(&refs, &manifest, registry)?;
         publication_nodes.sort_by_key(super::TypedObject::id);
         publication_nodes.dedup_by_key(|object| object.id());
-        Ok(Self::new_root_only_with_selected(
-            target.root(),
-            manifest,
-            publication_nodes,
-        ))
+        let next = Self::new_root_only_with_selected(target.root(), manifest, publication_nodes);
+        base.preserve_stored_membership(next)
     }
 
     /// Binds a complete closure to an already checked workspace root.
@@ -216,6 +220,7 @@ impl WorkspaceClosure {
         Self {
             root,
             manifest,
+            membership: WorkspaceMembership::InMemory,
             binding,
             root_only: false,
             selected_roots: Vec::new(),
@@ -231,6 +236,7 @@ impl WorkspaceClosure {
         Self {
             root,
             manifest,
+            membership: WorkspaceMembership::InMemory,
             binding,
             root_only: true,
             selected_roots,
@@ -348,7 +354,7 @@ impl WorkspaceClosure {
             return Err(StoreError::Corrupt);
         }
         rebound.selected_roots.clone_from(&self.selected_roots);
-        Ok(rebound)
+        self.preserve_stored_membership(rebound)
     }
 
     /// Admits a closure against a checked workspace transition and optional
@@ -488,7 +494,17 @@ impl WorkspaceClosure {
             return Err(StoreError::Corrupt);
         }
         rebound.selected_roots.clone_from(&self.selected_roots);
-        Ok(rebound)
+        self.preserve_stored_membership(rebound)
+    }
+
+    fn preserve_stored_membership(&self, next: Self) -> Result<Self, StoreError> {
+        match &self.membership {
+            WorkspaceMembership::InMemory => Ok(next),
+            WorkspaceMembership::Stored(membership) => {
+                let rebound = membership.rebind_controls(&self.manifest, &next)?;
+                next.with_stored_membership(rebound)
+            }
+        }
     }
 
     /// Returns the checked workspace root.
@@ -497,10 +513,102 @@ impl WorkspaceClosure {
         self.root
     }
 
-    /// Returns the complete object closure.
+    /// Returns the already hydrated typed control frontier.
+    ///
+    /// For stored membership this is deliberately not the complete closure.
+    /// Complete membership is available only through the explicit ID APIs.
     #[must_use]
-    pub const fn manifest(&self) -> &ClosureManifest {
+    pub const fn control_manifest(&self) -> &ClosureManifest {
         &self.manifest
+    }
+
+    /// Returns the complete manifest only when membership is in memory.
+    #[must_use]
+    pub fn in_memory_manifest(&self) -> Option<&ClosureManifest> {
+        match self.membership {
+            WorkspaceMembership::InMemory => Some(&self.manifest),
+            WorkspaceMembership::Stored(_) => None,
+        }
+    }
+
+    /// Returns the exact identity of all members, including staged pages.
+    #[must_use]
+    pub const fn membership_id(&self) -> ClosureId {
+        self.binding.closure()
+    }
+
+    /// Proves membership without hydrating the complete closure.
+    pub fn contains(&self, id: super::ObjectId) -> Result<bool, StoreError> {
+        match &self.membership {
+            WorkspaceMembership::InMemory => Ok(self.manifest.contains_object_id(id)),
+            WorkspaceMembership::Stored(membership) => membership.contains(id),
+        }
+    }
+
+    /// Visits exact member IDs without materializing all object payloads.
+    pub fn visit_ids(
+        &self,
+        mut visit: impl FnMut(super::ObjectId) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        match &self.membership {
+            WorkspaceMembership::InMemory => {
+                for object in self.manifest.objects() {
+                    visit(object.id())?;
+                }
+                Ok(())
+            }
+            WorkspaceMembership::Stored(membership) => membership.visit_ids(visit),
+        }
+    }
+
+    /// Returns explicit durable membership when this closure is stored.
+    #[must_use]
+    pub fn stored_membership(&self) -> Option<&super::DurableClosureManifest> {
+        match &self.membership {
+            WorkspaceMembership::InMemory => None,
+            WorkspaceMembership::Stored(membership) => Some(membership),
+        }
+    }
+
+    /// Binds a checked small control frontier to admitted durable membership.
+    /// The index, not this frontier, becomes the authoritative closure ID.
+    pub fn with_stored_membership(
+        mut self,
+        membership: super::DurableClosureManifest,
+    ) -> Result<Self, StoreError> {
+        if !self.root_only || self.manifest.objects().len() > 128 {
+            return Err(StoreError::Bounds);
+        }
+        for object in self.manifest.objects() {
+            if !membership.contains(object.id())? {
+                return Err(StoreError::Corrupt);
+            }
+        }
+        self.binding = WorkspaceBinding::from_parts(self.root.to_bytes(), membership.id());
+        self.membership = WorkspaceMembership::Stored(membership);
+        Ok(self)
+    }
+
+    /// Retains checked changed relation nodes for physical CAS publication,
+    /// without inserting every node into logical control membership.
+    pub fn with_checked_relation_frontier(
+        mut self,
+        nodes: impl IntoIterator<Item = super::TypedObject>,
+        registry: &RelationAdmissionRegistry,
+    ) -> Result<Self, StoreError> {
+        if !self.root_only {
+            return Err(StoreError::Corrupt);
+        }
+        for object in nodes {
+            if !registry.contains_schema(object.schema()) {
+                return Err(StoreError::Corrupt);
+            }
+            verify_extension_objects(std::slice::from_ref(&object), registry)?;
+            self.selected_roots.push(object);
+        }
+        self.selected_roots.sort_by_key(super::TypedObject::id);
+        self.selected_roots.dedup_by_key(|object| object.id());
+        Ok(self)
     }
 
     /// Returns the exact persisted root/closure binding.

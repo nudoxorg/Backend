@@ -73,22 +73,22 @@ fn materialize_transition_closure_from_payloads(
     // update is one sorted path-copy delta.
     let mut changes = Vec::with_capacity(payloads.len().saturating_mul(2));
     let retained = payloads.iter().map(TypedObject::id).collect::<Vec<_>>();
-    for previous in closure.manifest().objects() {
+    for previous in closure.control_manifest().objects() {
         if is_transition_payload(previous.schema()) && !retained.contains(&previous.id()) {
             changes.push(ManifestChange::delete(previous).map_err(WorkspaceError::store)?);
         }
     }
     for payload in payloads {
-        if !closure.manifest().contains_object_id(payload.id()) {
+        if !closure.control_manifest().contains_object_id(payload.id()) {
             changes.push(ManifestChange::insert(payload).map_err(WorkspaceError::store)?);
         }
     }
     changes.sort_by_key(ManifestChange::key);
     let objects = if changes.is_empty() {
-        closure.manifest().clone()
+        closure.control_manifest().clone()
     } else {
         closure
-            .manifest()
+            .control_manifest()
             .prepare_delta(&changes)
             .map_err(WorkspaceError::store)?
             .commit()

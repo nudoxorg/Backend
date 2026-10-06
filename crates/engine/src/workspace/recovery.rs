@@ -217,7 +217,7 @@ pub(crate) fn recover_store_head<M: WorkspaceModel>(
             "store/typed transition target mismatch",
         ));
     }
-    if transition.closure().manifest().id().as_bytes() != descriptor.closure().as_bytes() {
+    if transition.closure().membership_id().as_bytes() != descriptor.closure().as_bytes() {
         return Err(WorkspaceError::Corrupt(
             "store/typed transition closure mismatch",
         ));

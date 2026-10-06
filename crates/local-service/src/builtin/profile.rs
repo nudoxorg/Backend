@@ -2327,9 +2327,6 @@ pub(super) fn prepare_transition_with_source_update(
         &registry,
     )
     .map_err(|error| BuiltinModelError(format!("construct prepared transition: {error}")))?;
-    let transition = transition
-        .retain_objects(capture_update.node_objects, &registry)
-        .map_err(|error| BuiltinModelError(format!("retain semantic capture nodes: {error}")))?;
     let transition = if let Some(pointer) = capture_update.pointer {
         transition
             .replace_object_family([pointer], &registry)
@@ -2337,9 +2334,6 @@ pub(super) fn prepare_transition_with_source_update(
     } else {
         transition
     };
-    let transition = transition
-        .retain_objects(source_facts_update.node_objects, &registry)
-        .map_err(|error| BuiltinModelError(format!("retain source facts nodes: {error}")))?;
     let transition = if let Some(pointer) = source_facts_update.pointer {
         transition
             .replace_object_family([pointer], &registry)

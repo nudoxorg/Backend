@@ -51,6 +51,9 @@ pub struct WorkspaceFileDurable {
     pub(super) descriptor: PublicationDescriptor,
     pub(super) target: WorkspaceRoot,
     pub(super) prepared_sequence: u64,
+    // Retain stored membership's affine receipt and local reader pin through
+    // the final selection boundary, including any pre-HEAD callback.
+    pub(super) closure: WorkspaceClosure,
 }
 
 /// A workspace publication whose typed root is selected durably.
@@ -161,7 +164,7 @@ impl FilePrepared {
                 store.write_closure(&closure)?;
             }
             if let Some(workspace) = workspace.as_ref()
-                && (workspace.manifest().id() != descriptor.closure
+                && (workspace.membership_id() != descriptor.closure
                     || workspace.binding().closure() != descriptor.closure)
             {
                 return Err(StoreError::Corrupt);
@@ -318,7 +321,7 @@ impl WorkspaceFilePrepared {
             if closure.is_root_only() {
                 store.write_workspace_root_closure(&closure)?;
             } else {
-                store.write_closure(closure.manifest())?;
+                store.write_closure(closure.control_manifest())?;
             }
             store.append_record(PREPARED_TAG, &descriptor, 0)?
         };
@@ -327,6 +330,7 @@ impl WorkspaceFilePrepared {
             descriptor,
             target: closure.root(),
             prepared_sequence,
+            closure,
         })
     }
 }
@@ -402,6 +406,7 @@ impl WorkspaceFileDurable {
         if let Err(error) = before_head_write() {
             return Ok(Err(error));
         }
+        self.store.validate_workspace_membership(&self.closure)?;
         if let Err(error) = self.store.write_head(&head) {
             return Err(self.store.published_sync_error(&head, error));
         }

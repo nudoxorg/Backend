@@ -277,6 +277,28 @@ impl FileStore {
         changes: &[ClosureMembershipChange],
         budget: ClosureCompositionBudget,
     ) -> Result<PinnedStoredClosureReceipt, StoreError> {
+        self.compose_closure_index_inner(base, changes, budget, false)
+    }
+
+    /// Composes root-only workspace membership. Relation child nodes remain
+    /// authenticated in the durable relation CAS and need not be index members.
+    /// The complete-closure composer retains its stricter child-membership gate.
+    pub fn compose_workspace_closure_index(
+        &self,
+        base: Option<ArtifactClosureClaim>,
+        changes: &[ClosureMembershipChange],
+        budget: ClosureCompositionBudget,
+    ) -> Result<PinnedStoredClosureReceipt, StoreError> {
+        self.compose_closure_index_inner(base, changes, budget, true)
+    }
+
+    fn compose_closure_index_inner(
+        &self,
+        base: Option<ArtifactClosureClaim>,
+        changes: &[ClosureMembershipChange],
+        budget: ClosureCompositionBudget,
+        root_only: bool,
+    ) -> Result<PinnedStoredClosureReceipt, StoreError> {
         let budget = budget.validate(changes.len())?;
         let gc_pin = self.acquire_gc_pin()?;
 
@@ -402,7 +424,7 @@ impl FileStore {
         if update.target().node().row_count() != expected_count {
             return Err(StoreError::Corrupt);
         }
-        let facts = verify_target_members(self, base_index.as_ref(), &ordered, budget)?;
+        let facts = verify_target_members(self, base_index.as_ref(), &ordered, budget, root_only)?;
         if facts.object_count != expected_count {
             return Err(StoreError::Corrupt);
         }
@@ -493,6 +515,7 @@ fn verify_target_members(
     base: Option<&DurableManifest>,
     changes: &[ClosureMembershipChange],
     budget: ClosureCompositionBudget,
+    root_only: bool,
 ) -> Result<VerificationFacts, StoreError> {
     let mut facts = VerificationFacts::default();
     // A persisted base closure was admitted when it was written, and the caller
@@ -505,7 +528,7 @@ fn verify_target_members(
         facts.object_count = base.map_or(0, DurableManifest::object_count);
         for change in changes {
             if let ClosureMembershipChange::Add(id) = change {
-                verify_target_member(store, base, changes, *id, budget, &mut facts)?;
+                verify_target_member(store, base, changes, *id, budget, root_only, &mut facts)?;
             }
         }
         return Ok(facts);
@@ -532,7 +555,15 @@ fn verify_target_members(
                     },
                     Err(_) => {}
                 }
-                verify_target_member(store, Some(base), changes, *id, budget, &mut facts)?;
+                verify_target_member(
+                    store,
+                    Some(base),
+                    changes,
+                    *id,
+                    budget,
+                    root_only,
+                    &mut facts,
+                )?;
             }
             match page.next() {
                 Some(next) => after = Some(next),
@@ -545,7 +576,7 @@ fn verify_target_members(
     }
     for change in changes {
         if let ClosureMembershipChange::Add(id) = change {
-            verify_target_member(store, base, changes, *id, budget, &mut facts)?;
+            verify_target_member(store, base, changes, *id, budget, root_only, &mut facts)?;
         }
     }
     Ok(facts)
@@ -557,6 +588,7 @@ fn verify_target_member(
     changes: &[ClosureMembershipChange],
     id: ObjectId,
     budget: ClosureCompositionBudget,
+    root_only: bool,
     facts: &mut VerificationFacts,
 ) -> Result<(), StoreError> {
     let remaining_bytes = budget
@@ -592,7 +624,13 @@ fn verify_target_member(
     for child_version in references.children {
         let child = store.read_relation_ref(schema, &child_version)?;
         if !target_contains(base, changes, child)? {
-            return Err(StoreError::Corrupt);
+            if !root_only {
+                return Err(StoreError::Corrupt);
+            }
+            let (checked_child, _) = store.verify_closure_member_limited(child, None)?;
+            if checked_child.schema() != schema || checked_child.version() != &child_version {
+                return Err(StoreError::Corrupt);
+            }
         }
     }
     for target in references.values {

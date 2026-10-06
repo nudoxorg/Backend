@@ -1,0 +1,157 @@
+//! Pinned, authenticated membership without hydrated object payloads.
+
+use super::{ClosureId, ObjectId, StoreError, TypedObject};
+use crate::{
+    ArtifactClosureClaim, ClosureCompositionBudget, ClosureMembershipChange, DurableManifest,
+    FileStore, GcPinGuard, PinnedStoredClosureReceipt,
+};
+use std::sync::Arc;
+
+const MEMBER_PAGE_SIZE: usize = 128;
+
+/// An exact durable closure index and the pins protecting its member objects.
+///
+/// Cloning this handle shares authenticated index evidence and its lifetime
+/// pin. It never enumerates or hydrates the closure's object payloads.
+#[derive(Clone, Debug)]
+pub struct DurableClosureManifest {
+    store: FileStore,
+    index: DurableManifest,
+    pin: Arc<MembershipPin>,
+    budget: ClosureCompositionBudget,
+}
+
+#[derive(Debug)]
+struct MembershipPin {
+    receipt: PinnedStoredClosureReceipt,
+    // A receipt can come from a different FileStore handle. Protect this
+    // reader's store as well until the exact membership is selected.
+    _reader_pin: GcPinGuard,
+}
+
+impl PartialEq for DurableClosureManifest {
+    fn eq(&self, other: &Self) -> bool {
+        self.id() == other.id() && self.object_count() == other.object_count()
+    }
+}
+
+impl Eq for DurableClosureManifest {}
+
+impl DurableClosureManifest {
+    /// Opens the exact index admitted by an affine storage receipt.
+    ///
+    /// The receipt is consumed and retained, rather than replaced by a raw
+    /// closure ID or an unpinned cloned metadata description.
+    pub fn from_pinned(
+        store: &FileStore,
+        receipt: PinnedStoredClosureReceipt,
+        budget: ClosureCompositionBudget,
+    ) -> Result<Self, StoreError> {
+        let reader_pin = store.pin_garbage_collection()?;
+        let admitted = receipt.receipt();
+        let index = store.open_closure(admitted.closure())?;
+        if index.id() != admitted.closure() || index.object_count() != admitted.object_count() {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(Self {
+            store: store.clone(),
+            index,
+            pin: Arc::new(MembershipPin {
+                receipt,
+                _reader_pin: reader_pin,
+            }),
+            budget,
+        })
+    }
+
+    pub(super) fn rebind_controls(
+        &self,
+        previous: &super::ClosureManifest,
+        next: &super::WorkspaceClosure,
+    ) -> Result<Self, StoreError> {
+        let controls = next.control_manifest();
+        if controls.objects().len() > 128 || previous.objects().len() > 128 {
+            return Err(StoreError::Bounds);
+        }
+        self.store.stage_workspace_frontier(next)?;
+        let mut changes = Vec::new();
+        for object in previous.objects() {
+            if !controls.contains_object_id(object.id()) {
+                changes.push(ClosureMembershipChange::remove(object.id()));
+            }
+        }
+        for object in controls.objects() {
+            if !self.contains(object.id())? {
+                changes.push(ClosureMembershipChange::add(object.id()));
+            }
+        }
+        let receipt = self.store.compose_workspace_closure_index(
+            Some(ArtifactClosureClaim::from_bytes(*self.id().as_bytes())),
+            &changes,
+            self.budget,
+        )?;
+        Self::from_pinned(&self.store, receipt, self.budget)
+    }
+
+    /// Returns the complete membership identity, without opening objects.
+    #[must_use]
+    pub fn id(&self) -> ClosureId {
+        self.index.id()
+    }
+
+    /// Returns the authenticated complete member count.
+    #[must_use]
+    pub fn object_count(&self) -> u64 {
+        self.index.object_count()
+    }
+
+    /// Proves exact membership without reading an object's payload.
+    pub fn contains(&self, id: ObjectId) -> Result<bool, StoreError> {
+        self.index.contains_object_id(id)
+    }
+
+    /// Reads one member only after its exact index membership is proved.
+    pub fn get(&self, id: ObjectId) -> Result<Option<TypedObject>, StoreError> {
+        self.index.get(id)
+    }
+
+    /// Visits authenticated member IDs in canonical order with bounded pages.
+    /// No object vector or payload hydration is performed.
+    pub fn visit_ids(
+        &self,
+        mut visit: impl FnMut(ObjectId) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        let mut after = None;
+        let mut count = 0_u64;
+        loop {
+            let page = self.index.page_ids(after, MEMBER_PAGE_SIZE)?;
+            for &id in page.object_ids() {
+                if after.is_some_and(|previous| id <= previous) {
+                    return Err(StoreError::Corrupt);
+                }
+                visit(id)?;
+                after = Some(id);
+                count = count.checked_add(1).ok_or(StoreError::Bounds)?;
+                if count > self.object_count() {
+                    return Err(StoreError::Corrupt);
+                }
+            }
+            if page.next().is_none() {
+                break;
+            }
+            if page.next() != after {
+                return Err(StoreError::Corrupt);
+            }
+        }
+        if count != self.object_count() {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(())
+    }
+
+    /// Returns the immutable receipt while this handle keeps its pin alive.
+    #[must_use]
+    pub fn receipt(&self) -> crate::StoredClosureReceipt {
+        self.pin.receipt.receipt()
+    }
+}

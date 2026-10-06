@@ -67,6 +67,8 @@ mod profile;
 mod source_budget;
 #[path = "builtin/source_frontier.rs"]
 mod source_frontier;
+#[path = "builtin/staged_intent.rs"]
+mod staged_intent;
 use profile::{
     BuiltinAuthorityVerifier, BuiltinCaptureBasis, BuiltinCaptureChange, BuiltinProfile,
     BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinSourceFactsChange,
@@ -430,16 +432,42 @@ fn transition_closure_lazy(
         &transaction_key,
         &transaction_bytes[..],
     ));
-    objects.extend(update.capture_objects.iter().cloned());
+    objects.extend(
+        update
+            .capture_objects
+            .iter()
+            .filter(|object| {
+                update
+                    .capture_pointer
+                    .is_some_and(|pointer| pointer.bytes() == object.version())
+            })
+            .cloned(),
+    );
     if let Some(pointer) = update.capture_pointer {
         objects.push(pointer.clone());
     }
-    objects.extend(update.source_facts_objects.iter().cloned());
+    objects.extend(
+        update
+            .source_facts_objects
+            .iter()
+            .filter(|object| {
+                update
+                    .source_facts_pointer
+                    .is_some_and(|pointer| pointer.bytes() == object.version())
+            })
+            .cloned(),
+    );
     if let Some(pointer) = update.source_facts_pointer {
         objects.push(pointer.clone());
     }
     let registry = product_relation_registry()?;
-    if update.changed_sources.is_empty() {
+    let mut frontier = update
+        .capture_objects
+        .iter()
+        .chain(update.source_facts_objects)
+        .cloned()
+        .collect::<Vec<_>>();
+    let closure = if update.changed_sources.is_empty() {
         WorkspaceClosure::extend_checked_nodes_with_registry(
             base,
             manifest,
@@ -450,11 +478,14 @@ fn transition_closure_lazy(
         )
     } else {
         for node in update.changed_semantics {
-            objects.push(
+            let object =
                 TypedObject::from_state_root(node.commitment(), node).map_err(|error| {
                     BuiltinModelError(format!("retain changed semantic node: {error:?}"))
-                })?,
-            );
+                })?;
+            if node.commitment() == update.semantic_root {
+                objects.push(object.clone());
+            }
+            frontier.push(object);
         }
         WorkspaceClosure::extend_checked_nodes_with_registry(
             base,
@@ -465,7 +496,10 @@ fn transition_closure_lazy(
             &registry,
         )
     }
-    .map_err(|error| BuiltinModelError(format!("extend lazy transition closure: {error:?}")))
+    .map_err(|error| BuiltinModelError(format!("extend lazy transition closure: {error:?}")))?;
+    closure
+        .with_checked_relation_frontier(frontier, &registry)
+        .map_err(|error| BuiltinModelError(format!("retain typed publication frontier: {error:?}")))
 }
 
 fn admit_manifest(

@@ -437,7 +437,7 @@ impl PreparedTransition {
             registry,
         )?;
         let closure_bytes = closure
-            .manifest()
+            .control_manifest()
             .encode(MAX_RECORD_BYTES)
             .map_err(WorkspaceError::store)?;
         // Retain only the manifest's non-relation roots in the fixed
@@ -457,7 +457,7 @@ impl PreparedTransition {
         );
         closure_refs.extend(commit.closure_refs());
         let mut auxiliary = closure
-            .manifest()
+            .control_manifest()
             .objects()
             .iter()
             .filter(|object| !payloads.contains(&object.id()))
@@ -478,7 +478,7 @@ impl PreparedTransition {
             manifest_bytes.into_boxed_slice(),
             delta_bytes.into_boxed_slice(),
             commit_bytes.into_boxed_slice(),
-            closure.manifest().clone(),
+            closure.control_manifest().clone(),
             closure_bytes.into_boxed_slice(),
         ));
         Ok(Self {
@@ -503,7 +503,11 @@ impl PreparedTransition {
     /// admitted into the target closure; this setter is crate-private so a
     /// caller cannot make an arbitrary catalog claim visible in the pack.
     pub(super) fn with_catalog_descriptor(mut self, descriptor: ObjectId) -> Self {
-        if self.closure.manifest().contains_object_id(descriptor) {
+        if self
+            .closure
+            .control_manifest()
+            .contains_object_id(descriptor)
+        {
             let mut auxiliary = self.auxiliary.to_vec();
             if !self.payloads.contains(&descriptor) && !auxiliary.contains(&descriptor) {
                 auxiliary.push(descriptor);
@@ -570,14 +574,18 @@ impl PreparedTransition {
         let retained_ids = objects.iter().map(TypedObject::id).collect::<Vec<_>>();
         let mut changes = Vec::new();
         if let Some(schema) = replace_schema {
-            for previous in self.closure.manifest().objects() {
+            for previous in self.closure.control_manifest().objects() {
                 if previous.schema() == schema && !retained_ids.contains(&previous.id()) {
                     changes.push(ManifestChange::delete(previous).map_err(WorkspaceError::store)?);
                 }
             }
         }
         for object in objects {
-            if !self.closure.manifest().contains_object_id(object.id()) {
+            if !self
+                .closure
+                .control_manifest()
+                .contains_object_id(object.id())
+            {
                 changes.push(ManifestChange::insert(object).map_err(WorkspaceError::store)?);
             }
         }
@@ -587,7 +595,7 @@ impl PreparedTransition {
             changes.sort_by_key(ManifestChange::key);
             let manifest = self
                 .closure
-                .manifest()
+                .control_manifest()
                 .prepare_delta(&changes)
                 .map_err(WorkspaceError::store)?
                 .commit();
@@ -615,17 +623,19 @@ impl PreparedTransition {
             rebuilt.work = self.work;
             rebuilt
         };
-        if rebuilt
-            .catalog_descriptor
-            .is_some_and(|descriptor| !rebuilt.closure.manifest().contains_object_id(descriptor))
-        {
+        if rebuilt.catalog_descriptor.is_some_and(|descriptor| {
+            !rebuilt
+                .closure
+                .control_manifest()
+                .contains_object_id(descriptor)
+        }) {
             rebuilt.catalog_descriptor = None;
         }
         let mut auxiliary = rebuilt
             .auxiliary
             .iter()
             .copied()
-            .filter(|id| rebuilt.closure.manifest().contains_object_id(*id))
+            .filter(|id| rebuilt.closure.control_manifest().contains_object_id(*id))
             .collect::<Vec<_>>();
         for object_id in retained_ids {
             if !rebuilt.payloads.contains(&object_id) && !auxiliary.contains(&object_id) {
@@ -752,7 +762,7 @@ impl PreparedTransition {
         for object_id in self.auxiliary_object_ids() {
             let object = self
                 .closure
-                .manifest()
+                .control_manifest()
                 .objects()
                 .iter()
                 .find(|object| object.id() == *object_id)

@@ -59,10 +59,10 @@ pub mod workflow;
 pub use backend_version::CoverageWitness;
 pub use canonical::{RawRelation, RawValue, StoredValue};
 pub use closure::{
-    CheckedRelationNode, ClosureId, ClosureManifest, ManifestChange, ManifestWork, ObjectEdge,
-    ObjectId, PreparedManifestDelta, RelationAdmissionRegistry, TypedObject, UntrustedObjectId,
-    WorkspaceBinding, WorkspaceClosure, admit_backend_object_version,
-    verify_backend_object_version,
+    CheckedRelationNode, ClosureId, ClosureManifest, DurableClosureManifest, ManifestChange,
+    ManifestWork, ObjectEdge, ObjectId, PreparedManifestDelta, RelationAdmissionRegistry,
+    TypedObject, UntrustedObjectId, WorkspaceBinding, WorkspaceClosure,
+    admit_backend_object_version, verify_backend_object_version,
 };
 pub use delta::{Change, DiffStats, MapDelta};
 pub use delta::{UpdateStats, WorkBudget};

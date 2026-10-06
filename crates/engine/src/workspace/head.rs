@@ -188,7 +188,7 @@ impl WorkspaceSnapshot {
         let descriptor = selected.descriptor();
         if descriptor.target() != *self.root().as_bytes()
             || descriptor.target_generation() != self.sequence()
-            || descriptor.closure() != self.state.transition.closure().manifest().id()
+            || descriptor.closure() != self.state.transition.closure().membership_id()
         {
             return Err(WorkspaceError::Corrupt(
                 "snapshot is no longer the selected durable head",
@@ -201,6 +201,12 @@ impl WorkspaceSnapshot {
     #[must_use]
     pub fn owner_epoch(&self) -> u64 {
         self.state.owner_epoch
+    }
+
+    /// Borrows the durable CAS paired with this authenticated snapshot.
+    #[must_use]
+    pub fn durable_store(&self) -> Option<&FileStore> {
+        self.store.as_deref()
     }
 
     /// Returns the compact checked work facts recorded for this publication.
@@ -259,7 +265,7 @@ impl WorkspaceSnapshot {
     ) -> Result<Option<WorkspaceRelationHandle<R>>, WorkspaceRelationError> {
         let Some(pointer) = self
             .closure()
-            .manifest()
+            .control_manifest()
             .objects()
             .iter()
             .find(|object| object.schema() == pointer_schema && object.key() == &pointer_key)
