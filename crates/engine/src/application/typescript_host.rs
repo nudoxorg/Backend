@@ -177,6 +177,7 @@ struct DirectorySnapshot {
 struct ResolverObservationLedger {
     loaded_sources: std::collections::BTreeMap<PathBuf, TypeScriptFileInput>,
     missing_paths: std::collections::BTreeMap<PathBuf, Option<PathBuf>>,
+    external_missing_node_modules: std::collections::BTreeMap<PathBuf, ExternalMissingNodeModules>,
     directories: std::collections::BTreeMap<PathBuf, DirectorySnapshot>,
     realpaths: std::collections::BTreeMap<PathBuf, RealpathSnapshot>,
     loaded_source_bytes: u64,
@@ -189,9 +190,18 @@ impl ResolverObservationLedger {
         self.loaded_sources
             .len()
             .saturating_add(self.missing_paths.len())
+            .saturating_add(self.external_missing_node_modules.len())
             .saturating_add(self.directories.len())
             .saturating_add(self.realpaths.len())
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExternalMissingNodeModules {
+    root: Box<Path>,
+    parent: Box<Path>,
+    canonical_parent: Box<Path>,
+    parent_identity: FileIdentity,
 }
 
 /// Per-program filesystem capability for TypeScript configuration and module resolution.
@@ -233,7 +243,12 @@ impl TypeScriptResolverCapability<'_> {
             )?;
             return Ok(self.observations.loaded_sources.get(&canonical));
         }
-        let (snapshot, bytes) = read_regular_file(&canonical, MAX_SOURCE_FILE_BYTES)?;
+        let input = self.witness.load_source(&canonical)?;
+        if input.identity != identity {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: canonical.into_boxed_path(),
+            });
+        }
         if self
             .capture_realpath(&lexical)?
             .as_ref()
@@ -244,12 +259,6 @@ impl TypeScriptResolverCapability<'_> {
                 path: lexical.clone().into_boxed_path(),
             });
         }
-        let input = TypeScriptFileInput {
-            path: canonical.clone().into_boxed_path(),
-            content_id: ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes),
-            identity: snapshot.identity,
-            bytes: bytes.into_boxed_slice(),
-        };
         if self.observations.observation_count() >= MAX_RESOLVER_OBSERVATIONS {
             return Err(TypeScriptProjectHostError::ResolverObservationLimit {
                 observed: self.observations.observation_count().saturating_add(1),
@@ -491,28 +500,46 @@ impl TypeScriptResolverCapability<'_> {
         update_len(&mut digest, self.observations.observation_count());
         for input in self.observations.loaded_sources.values() {
             digest.update(&[1]);
-            update_logical_path(&mut digest, self.witness, &input.path)?;
+            update_observed_path(&mut digest, self.witness, &self.observations, &input.path)?;
             digest.update(input.content_id.as_ref());
         }
         for (path, parent) in &self.observations.missing_paths {
             digest.update(&[2]);
-            update_logical_path(&mut digest, self.witness, path)?;
+            update_observed_path(&mut digest, self.witness, &self.observations, path)?;
             match parent {
                 Some(parent) => {
                     digest.update(&[1]);
-                    update_logical_path(&mut digest, self.witness, parent)?;
+                    update_observed_path(&mut digest, self.witness, &self.observations, parent)?;
                 }
                 None => {
                     digest.update(&[0]);
                 }
             }
         }
+        for snapshot in self.observations.external_missing_node_modules.values() {
+            digest.update(&[5]);
+            let distance = self
+                .witness
+                .project_root
+                .components()
+                .count()
+                .saturating_sub(snapshot.parent.components().count());
+            update_len(&mut digest, distance);
+            digest.update(b"node_modules");
+            digest.update(&snapshot.parent_identity.first.to_le_bytes());
+            digest.update(&snapshot.parent_identity.second.to_le_bytes());
+        }
         for snapshot in self.observations.directories.values() {
             digest.update(&[3]);
-            update_logical_path(&mut digest, self.witness, &snapshot.path)?;
+            update_observed_path(
+                &mut digest,
+                self.witness,
+                &self.observations,
+                &snapshot.path,
+            )?;
             update_len(&mut digest, snapshot.entries.len());
             for entry in snapshot.entries.iter() {
-                update_logical_path(&mut digest, self.witness, &entry.path)?;
+                update_observed_path(&mut digest, self.witness, &self.observations, &entry.path)?;
                 digest.update(&[match entry.kind {
                     TypeScriptDirectoryEntryKind::RegularFile => 1,
                     TypeScriptDirectoryEntryKind::Directory => 2,
@@ -522,7 +549,7 @@ impl TypeScriptResolverCapability<'_> {
                 match entry.canonical_path.as_deref() {
                     Some(path) => {
                         digest.update(&[1]);
-                        update_logical_path(&mut digest, self.witness, path)?;
+                        update_observed_path(&mut digest, self.witness, &self.observations, path)?;
                     }
                     None => {
                         digest.update(&[0]);
@@ -532,11 +559,16 @@ impl TypeScriptResolverCapability<'_> {
         }
         for snapshot in self.observations.realpaths.values() {
             digest.update(&[4]);
-            update_logical_path(&mut digest, self.witness, &snapshot.path)?;
+            update_observed_path(
+                &mut digest,
+                self.witness,
+                &self.observations,
+                &snapshot.path,
+            )?;
             match snapshot.canonical_path.as_deref() {
                 Some(path) => {
                     digest.update(&[1]);
-                    update_logical_path(&mut digest, self.witness, path)?;
+                    update_observed_path(&mut digest, self.witness, &self.observations, path)?;
                 }
                 None => {
                     digest.update(&[0]);
@@ -578,6 +610,14 @@ impl TypeScriptResolverCapability<'_> {
                         path: parent.clone().into_boxed_path(),
                     });
                 }
+            }
+        }
+        for expected in self.observations.external_missing_node_modules.values() {
+            let observed = self.witness.external_missing_node_modules(&expected.root)?;
+            if observed.as_ref() != Some(expected) {
+                return Err(TypeScriptProjectHostError::WitnessChanged {
+                    path: expected.root.clone(),
+                });
             }
         }
         for (path, expected) in &self.observations.directories {
@@ -635,9 +675,14 @@ impl TypeScriptResolverCapability<'_> {
         path: PathBuf,
         nearest_existing_parent: Option<PathBuf>,
     ) -> Result<(), TypeScriptProjectHostError> {
-        let nearest_existing_parent = match nearest_existing_parent {
-            Some(parent) => Some(parent),
-            None => nearest_existing_admitted_parent(&path, self.witness)?,
+        let external_root = self.witness.external_missing_node_modules(&path)?;
+        let nearest_existing_parent = if external_root.is_some() {
+            None
+        } else {
+            match nearest_existing_parent {
+                Some(parent) => Some(parent),
+                None => nearest_existing_admitted_parent(&path, self.witness)?,
+            }
         };
         if self
             .observations
@@ -651,6 +696,39 @@ impl TypeScriptResolverCapability<'_> {
         }
         if let Some(parent) = nearest_existing_parent.as_deref() {
             self.observe_directory(parent)?;
+        }
+        if let Some(external_root) = external_root.as_ref() {
+            match self
+                .observations
+                .external_missing_node_modules
+                .get(external_root.root.as_ref())
+            {
+                Some(previous) if previous != external_root => {
+                    return Err(TypeScriptProjectHostError::WitnessChanged {
+                        path: external_root.root.clone(),
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    ensure_observation_capacity(&self.observations, &external_root.root)?;
+                    let metadata_cost = external_root.root.as_os_str().as_encoded_bytes().len()
+                        + external_root.parent.as_os_str().as_encoded_bytes().len()
+                        + external_root
+                            .canonical_parent
+                            .as_os_str()
+                            .as_encoded_bytes()
+                            .len();
+                    ensure_metadata_capacity(
+                        &self.observations,
+                        metadata_cost,
+                        &external_root.root,
+                    )?;
+                    self.observations.retained_metadata_bytes += metadata_cost;
+                    self.observations
+                        .external_missing_node_modules
+                        .insert(external_root.root.to_path_buf(), external_root.clone());
+                }
+            }
         }
         let existed = self.observations.missing_paths.contains_key(&path);
         if !existed {
@@ -1048,13 +1126,95 @@ impl TypeScriptProjectWitness {
         path.starts_with(&self.workspace_root) || path.starts_with(&self.module_root)
     }
 
+    fn external_missing_node_modules(
+        &self,
+        path: &Path,
+    ) -> Result<Option<ExternalMissingNodeModules>, TypeScriptProjectHostError> {
+        if self.path_is_admitted(path) {
+            return Ok(None);
+        }
+        let Some(root) = path.ancestors().find(|ancestor| {
+            ancestor
+                .file_name()
+                .is_some_and(|name| name == "node_modules")
+        }) else {
+            return Ok(None);
+        };
+        let Some(parent) = root.parent() else {
+            return Ok(None);
+        };
+        let project_root = self.project_root.as_ref();
+        if !project_root.starts_with(parent)
+            || parent == project_root
+            || project_root
+                .components()
+                .count()
+                .saturating_sub(parent.components().count())
+                > MAX_PROJECT_ANCESTORS
+        {
+            return Ok(None);
+        }
+        // TypeScript searches ancestor `node_modules` directories for ambient
+        // types and packages. Admit only a negative lookup for that bounded
+        // search chain. An existing ancestor directory remains outside this
+        // source capability and requires explicit workspace admission.
+        match fs::symlink_metadata(root) {
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+            Ok(_) => return Ok(None),
+            Err(source) => {
+                return Err(TypeScriptProjectHostError::PackagePath {
+                    path: root.to_path_buf().into_boxed_path(),
+                    source,
+                });
+            }
+        }
+        match fs::symlink_metadata(path) {
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+            Ok(_) => return Ok(None),
+            Err(source) => {
+                return Err(TypeScriptProjectHostError::PackagePath {
+                    path: path.to_path_buf().into_boxed_path(),
+                    source,
+                });
+            }
+        }
+        let metadata = fs::symlink_metadata(parent).map_err(|source| {
+            TypeScriptProjectHostError::PackagePath {
+                path: parent.to_path_buf().into_boxed_path(),
+                source,
+            }
+        })?;
+        if !metadata.is_dir() {
+            return Ok(None);
+        }
+        let canonical_parent =
+            fs::canonicalize(parent).map_err(|source| TypeScriptProjectHostError::PackagePath {
+                path: parent.to_path_buf().into_boxed_path(),
+                source,
+            })?;
+        if !project_root.starts_with(&canonical_parent) {
+            return Ok(None);
+        }
+        let parent_identity =
+            file_identity(&metadata).map_err(|source| TypeScriptProjectHostError::PackagePath {
+                path: parent.to_path_buf().into_boxed_path(),
+                source,
+            })?;
+        Ok(Some(ExternalMissingNodeModules {
+            root: root.to_path_buf().into_boxed_path(),
+            parent: parent.to_path_buf().into_boxed_path(),
+            canonical_parent: canonical_parent.into_boxed_path(),
+            parent_identity,
+        }))
+    }
+
     fn admit_lexical_path(&self, path: &Path) -> Result<PathBuf, TypeScriptProjectHostError> {
         let Some(path) = normalize_absolute_path(path) else {
             return Err(TypeScriptProjectHostError::SourceOutsideCapability {
                 path: path.to_path_buf().into_boxed_path(),
             });
         };
-        if !self.path_is_admitted(&path) {
+        if !self.path_is_admitted(&path) && self.external_missing_node_modules(&path)?.is_none() {
             return Err(TypeScriptProjectHostError::SourceOutsideCapability {
                 path: path.into_boxed_path(),
             });
@@ -1340,6 +1500,59 @@ fn resolver_observation_ref_tag(observation: &TypeScriptResolverObservationRef<'
 
 fn update_len(digest: &mut Hasher, length: usize) {
     digest.update(&u64::try_from(length).unwrap_or(u64::MAX).to_le_bytes());
+}
+
+fn update_observed_path(
+    digest: &mut Hasher,
+    witness: &TypeScriptProjectWitness,
+    observations: &ResolverObservationLedger,
+    path: &Path,
+) -> Result<(), TypeScriptProjectHostError> {
+    if witness.path_is_admitted(path) {
+        return update_logical_path(digest, witness, path);
+    }
+    let Some(root) = observations
+        .external_missing_node_modules
+        .values()
+        .find(|root| path.starts_with(root.root.as_ref()))
+    else {
+        return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+            path: path.to_path_buf().into_boxed_path(),
+        });
+    };
+    let relative = path.strip_prefix(root.root.as_ref()).map_err(|_| {
+        TypeScriptProjectHostError::SourceOutsideCapability {
+            path: path.to_path_buf().into_boxed_path(),
+        }
+    })?;
+    let distance = witness
+        .project_root
+        .components()
+        .count()
+        .saturating_sub(root.parent.components().count());
+    digest.update(&[3]);
+    update_len(digest, distance);
+    digest.update(b"node_modules");
+    let mut logical = String::new();
+    for component in relative.components() {
+        let std::path::Component::Normal(value) = component else {
+            return Err(TypeScriptProjectHostError::NonPortablePath {
+                path: path.to_path_buf().into_boxed_path(),
+            });
+        };
+        let value = value
+            .to_str()
+            .ok_or_else(|| TypeScriptProjectHostError::NonPortablePath {
+                path: path.to_path_buf().into_boxed_path(),
+            })?;
+        if !logical.is_empty() {
+            logical.push('/');
+        }
+        logical.push_str(value);
+    }
+    update_len(digest, logical.len());
+    digest.update(logical.as_bytes());
+    Ok(())
 }
 
 fn update_logical_path(
@@ -4106,6 +4319,69 @@ printf 'Version 5.9.3\n'
 
         fs::write(&missing, b"declare const missing: string;")
             .expect("materialize formerly missing candidate");
+        assert!(matches!(
+            capability.validate_current(),
+            Err(TypeScriptProjectHostError::WitnessChanged { .. })
+        ));
+    }
+
+    #[test]
+    fn resolver_capability_witnesses_only_absent_ancestor_node_modules_candidates() {
+        let outer = Fixture::new();
+        let project_root = outer.0.join("workspace/app");
+        fs::create_dir_all(&project_root).expect("create project root");
+        let package_fixture = Fixture(project_root.clone());
+        package_fixture.install("5.9.3");
+        let modules = fs::canonicalize(project_root.join("node_modules"))
+            .expect("canonical local module root");
+        let ProjectTypeScriptSearch::Found(project) =
+            find_project_typescript(&project_root).expect("discover local compiler")
+        else {
+            panic!("local compiler should be selected");
+        };
+        let node = project_root.join("node");
+        fs::write(&node, b"node witness").expect("write Node witness");
+        let node = fs::canonicalize(node).expect("canonical Node");
+        let package_root = fs::canonicalize(modules.join("typescript"))
+            .expect("canonical TypeScript package root");
+        let witness = TypeScriptProjectWitness::capture(
+            &project_root,
+            None,
+            &project,
+            &project.compiler,
+            &node,
+            &modules,
+            &package_root,
+            project.workspace.as_ref(),
+        )
+        .expect("capture project witness");
+        let mut capability = TypeScriptResolverCapability {
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
+        };
+        let ancestor_modules = outer.0.join("workspace/node_modules");
+        assert!(
+            !capability
+                .directory_exists(&ancestor_modules)
+                .expect("observe bounded absent ancestor module root")
+        );
+        assert!(
+            capability
+                .read_directory(&ancestor_modules, &[".d.ts"], true, 8, 64)
+                .expect("enumerate absent ancestor candidate")
+                .is_empty()
+        );
+        assert!(
+            capability
+                .resolver_witness()
+                .expect("fingerprint negative candidate")
+                != [0; 32]
+        );
+        capability
+            .validate_current()
+            .expect("negative ancestor candidate remains absent");
+
+        fs::create_dir_all(&ancestor_modules).expect("materialize ancestor module root");
         assert!(matches!(
             capability.validate_current(),
             Err(TypeScriptProjectHostError::WitnessChanged { .. })
