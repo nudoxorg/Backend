@@ -259,12 +259,17 @@ fn derive_lexical_rows<'slots>(
         output,
         entities.iter(),
         |entity| {
+            let name = entity.name.named_bytes().ok_or(
+                BuildDerivationError::UnexpectedAnonymousEntity {
+                    entity: entity.entity,
+                },
+            )?;
             let document = EntityDocumentId {
                 artifact,
                 entity: entity.entity,
             };
             Ok(LexicalRow::new(
-                entity.name,
+                name,
                 document,
                 LexicalScore::from(ENTITY_NAME_SCORE_UNITS),
             ))

@@ -5,22 +5,22 @@ use backend_semantic::ir::{
     AtomId, BorrowedTree, ComputedState, ComputedType, ConcreteState, ConcreteType, Confidence,
     CorePayloadHash, DeclarationFamilyId, Delta, Diff, DocInput, EntityAuthorityFacts,
     EntityChange, EntityVersion, FacetComparison, FactAvailability, FrontendTree, GuardedType, Ir,
-    IrBuilder, ItemKind, LanguageExtensionInput, LinkChangeKind, LinkKind,
-    MappedModifier, OccurrenceAuthorityFacts, PackageLineage, ParentageAuthority,
-    SemanticCoreReader, SemanticDiff, SemanticEntityChange, SemanticImageView, SemanticReader,
-    SemanticLinkChangeKind, SemanticSnapshot, Snapshot, SourceIdentity, SourceSpan, TreeEntityId,
-    TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeExpr, TypeHeader, TypePairPayload,
-    TypeParameter, TypeParameterBound, TypeParameterInference, TypeParameterKind,
-    TypeParameterRequirements, TypeQuadPayload, TypeScriptFacts, TypeTriplePayload, UnknownState,
-    UnknownType, UnrepresentedAuthorityOwner, Variance, VariantFingerprint, Visibility,
+    IrBuilder, ItemKind, LanguageExtensionInput, LinkChangeKind, LinkKind, MappedModifier,
+    OccurrenceAuthorityFacts, PackageLineage, ParentageAuthority, SemanticCoreReader, SemanticDiff,
+    SemanticEntityChange, SemanticImageView, SemanticLinkChangeKind, SemanticReader,
+    SemanticSnapshot, Snapshot, SourceIdentity, SourceSpan, TreeEntityId, TreeItemInput,
+    TreeLinkInput, TreeLinkTarget, TypeExpr, TypeHeader, TypePairPayload, TypeParameter,
+    TypeParameterBound, TypeParameterInference, TypeParameterKind, TypeParameterRequirements,
+    TypeQuadPayload, TypeScriptFacts, TypeTriplePayload, UnknownState, UnknownType,
+    UnrepresentedAuthorityOwner, Variance, VariantFingerprint, Visibility,
     encode_full_semantic_image, full_semantic_image_len,
 };
 use backend_semantic::vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
 };
+use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use core::mem::{size_of, size_of_val};
 use core::{fmt, hint::black_box};
-use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 
 fn version(identity: u8, payload: u8) -> EntityVersion {
     EntityVersion {
@@ -80,6 +80,7 @@ impl FrontendTree for NativeTree<'_> {
     fn items(&self) -> impl ExactSizeIterator<Item = TreeItemInput<'_>> {
         self.names.iter().copied().map(|name| TreeItemInput {
             name,
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: unavailable_authority(),
@@ -99,8 +100,8 @@ impl FrontendTree for NativeTree<'_> {
 }
 
 #[test]
-fn native_frontend_stream_needs_no_compatibility_row_array() -> Result<(), backend_semantic::ir::BuildError>
-{
+fn native_frontend_stream_needs_no_compatibility_row_array()
+-> Result<(), backend_semantic::ir::BuildError> {
     let versions = [version(1, 1), version(2, 1)];
     let names = [b"one".as_slice(), b"two".as_slice()];
     let mut builder = IrBuilder::new();
@@ -110,21 +111,22 @@ fn native_frontend_stream_needs_no_compatibility_row_array() -> Result<(), backe
     })?;
     let ir = builder.finish()?;
     assert_eq!(ir.entity_count(), 2);
-    assert_eq!(
+    assert!(matches!(
         ir.item(backend_semantic::ir::EntityId::new(1))
             .map(|item| item.name()),
-        Some(b"two".as_slice())
-    );
+        Some(name) if name.named_bytes() == Some(b"two".as_slice())
+    ));
     Ok(())
 }
 
 #[test]
-fn authority_captured_empty_and_unavailable_remain_distinct() -> Result<(), backend_semantic::ir::BuildError>
-{
+fn authority_captured_empty_and_unavailable_remain_distinct()
+-> Result<(), backend_semantic::ir::BuildError> {
     let versions = [version(1, 1), version(2, 1)];
     let items = [
         TreeItemInput {
             name: b"captured-empty",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Module,
             visibility: Visibility::Private,
             authority: EntityAuthorityFacts {
@@ -145,6 +147,7 @@ fn authority_captured_empty_and_unavailable_remain_distinct() -> Result<(), back
         },
         TreeItemInput {
             name: b"unavailable-empty",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Module,
             visibility: Visibility::Private,
             authority: unavailable_authority(),
@@ -197,11 +200,13 @@ fn authority_captured_empty_and_unavailable_remain_distinct() -> Result<(), back
 }
 
 #[test]
-fn authority_parentage_states_are_closed_and_exact() -> Result<(), backend_semantic::ir::BuildError> {
+fn authority_parentage_states_are_closed_and_exact() -> Result<(), backend_semantic::ir::BuildError>
+{
     let versions = [version(1, 1), version(2, 1), version(3, 1), version(4, 1)];
     let items = [
         TreeItemInput {
             name: b"root",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Module,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -218,6 +223,7 @@ fn authority_parentage_states_are_closed_and_exact() -> Result<(), backend_seman
         },
         TreeItemInput {
             name: b"child",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Record,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -234,6 +240,7 @@ fn authority_parentage_states_are_closed_and_exact() -> Result<(), backend_seman
         },
         TreeItemInput {
             name: b"foreign-owner",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Record,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -252,6 +259,7 @@ fn authority_parentage_states_are_closed_and_exact() -> Result<(), backend_seman
         },
         TreeItemInput {
             name: b"unknown-owner",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Record,
             visibility: Visibility::Public,
             authority: unavailable_authority(),
@@ -294,6 +302,7 @@ fn authority_parentage_and_source_conflicts_retain_exact_facts()
     let items = [
         TreeItemInput {
             name: b"parent",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Module,
             visibility: Visibility::Public,
             authority: unavailable_authority(),
@@ -307,6 +316,7 @@ fn authority_parentage_and_source_conflicts_retain_exact_facts()
         },
         TreeItemInput {
             name: b"bad-child",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Record,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -348,6 +358,7 @@ fn authority_parentage_and_source_conflicts_retain_exact_facts()
         versions: &versions[..1],
         items: &[TreeItemInput {
             name: b"bad-source",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Constant,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -502,7 +513,9 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
     ))?;
     let mut tree = builder.reserve_tree(&versions)?;
     let entities = tree.entities();
-    let string = tree.intern_concrete(ConcreteType::Builtin(backend_semantic::ir::BuiltinType::String))?;
+    let string = tree.intern_concrete(ConcreteType::Builtin(
+        backend_semantic::ir::BuiltinType::String,
+    ))?;
     let key_name = tree.intern_atom(b"K")?;
     let keys = tree.intern_computed(ComputedType::KeyOf(string.erase()))?;
     let mapped = tree.intern_computed(ComputedType::Mapped {
@@ -541,6 +554,7 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
     let items = [
         TreeItemInput {
             name: &[0xff, b'N'],
+            anonymous_callable_anchor: None,
             kind: ItemKind::TypeAlias,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -560,6 +574,7 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
         },
         TreeItemInput {
             name: b"field",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Field,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -712,7 +727,8 @@ fn full_image_reopens_the_exact_version_qualifier_and_subpath_coordinate()
     let mut bytes = vec![0; full_semantic_image_len(&ir)?];
     encode_full_semantic_image(&ir, &mut bytes)?;
     let reopened = SemanticImageView::reopen(&bytes)?;
-    let backend_semantic::ir::ImageProvenance::Captured { scope, .. } = reopened.image_facts().provenance
+    let backend_semantic::ir::ImageProvenance::Captured { scope, .. } =
+        reopened.image_facts().provenance
     else {
         return Err("package image lost captured provenance".into());
     };
@@ -735,6 +751,7 @@ fn logical_links_are_unique_while_occurrence_sites_remain_exact()
     let items = [
         TreeItemInput {
             name: b"source",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: unavailable_authority(),
@@ -748,6 +765,7 @@ fn logical_links_are_unique_while_occurrence_sites_remain_exact()
         },
         TreeItemInput {
             name: b"target",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: unavailable_authority(),
@@ -922,6 +940,7 @@ fn occurrence_source_authority_mismatch_retains_the_exact_site()
     let versions = [version(1, 1)];
     let items = [TreeItemInput {
         name: b"owner",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility: Visibility::Public,
         authority: unavailable_authority(),
@@ -961,7 +980,8 @@ fn occurrence_source_authority_mismatch_retains_the_exact_site()
 }
 
 #[test]
-fn vcs_diffs_the_same_ir_without_lowering_or_archiving() -> Result<(), backend_semantic::ir::BuildError> {
+fn vcs_diffs_the_same_ir_without_lowering_or_archiving()
+-> Result<(), backend_semantic::ir::BuildError> {
     let before = simple_ir(
         &[version(1, 1), version(2, 1)],
         &[Some(TreeEntityId::new(0))],
@@ -1291,7 +1311,10 @@ fn vcs_reports_image_provenance_once_while_retaining_only_the_edited_entity()
             ir: &after,
         },
     );
-    assert_eq!(owned.entities.provenance.comparison, FacetComparison::Changed);
+    assert_eq!(
+        owned.entities.provenance.comparison,
+        FacetComparison::Changed
+    );
     let owned_changes = owned.entities.collect::<Vec<_>>();
     assert!(matches!(
         owned_changes.as_slice(),
@@ -1312,7 +1335,10 @@ fn vcs_reports_image_provenance_once_while_retaining_only_the_edited_entity()
             reader: &after,
         },
     );
-    assert_eq!(semantic.entities.provenance.comparison, FacetComparison::Changed);
+    assert_eq!(
+        semantic.entities.provenance.comparison,
+        FacetComparison::Changed
+    );
     assert!(matches!(
         semantic.entities.collect::<Vec<_>>().as_slice(),
         [SemanticEntityChange::Retained { identity, .. }]
@@ -1348,6 +1374,7 @@ fn typescript_extension_ir(
     let versions = [version(1, 9)];
     let items = [TreeItemInput {
         name: b"typescript-extension",
+        anonymous_callable_anchor: None,
         kind: ItemKind::TypeAlias,
         visibility: Visibility::Public,
         authority: EntityAuthorityFacts {
@@ -1385,14 +1412,15 @@ fn provenance_pair_ir(
         source.identity,
         ContentId::<ToolchainDomain>::from_canonical_bytes(b"vcs-provenance-toolchain"),
     );
-    let lineage = PackageLineage::new("cargo", "vcs-provenance")
-        .expect("fixed provenance lineage is valid");
+    let lineage =
+        PackageLineage::new("cargo", "vcs-provenance").expect("fixed provenance lineage is valid");
     let mut builder = IrBuilder::new();
     builder.set_image_provenance(source, recipe, lineage, "src/lib.rs")?;
     let versions = [version(1, payloads[0]), version(2, payloads[1])];
     let items = [
         TreeItemInput {
             name: b"edited",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: unavailable_authority(),
@@ -1406,6 +1434,7 @@ fn provenance_pair_ir(
         },
         TreeItemInput {
             name: b"unrelated",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: unavailable_authority(),
@@ -1440,6 +1469,7 @@ fn facet_ir(
     let versions = [version(1, core_payload)];
     let items = [TreeItemInput {
         name: b"facet-item",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility,
         authority: EntityAuthorityFacts {
@@ -1473,6 +1503,7 @@ fn simple_ir(
     let mut items = Vec::with_capacity(versions.len());
     items.push(TreeItemInput {
         name: b"root",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Module,
         visibility: Visibility::Public,
         authority: unavailable_authority(),
@@ -1487,6 +1518,7 @@ fn simple_ir(
     for (index, parent) in child_parents.iter().enumerate() {
         items.push(TreeItemInput {
             name: if index == 0 { b"child" } else { b"added" },
+            anonymous_callable_anchor: None,
             kind: ItemKind::Record,
             visibility: Visibility::Public,
             authority: parent
@@ -1521,7 +1553,8 @@ fn simple_ir(
 }
 
 #[test]
-fn unknown_types_are_neither_concrete_nor_computed() -> Result<(), backend_semantic::ir::BuildError> {
+fn unknown_types_are_neither_concrete_nor_computed() -> Result<(), backend_semantic::ir::BuildError>
+{
     let mut builder = IrBuilder::new();
     let ty = builder.intern_type(TypeExpr::Unknown(UnknownType::new(
         backend_semantic::ir::UnknownReason::UnresolvedLocalName,
@@ -1531,6 +1564,7 @@ fn unknown_types_are_neither_concrete_nor_computed() -> Result<(), backend_seman
         versions: &versions,
         items: &[TreeItemInput {
             name: b"value",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Constant,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -1592,7 +1626,10 @@ fn every_hot_borrowed_view_is_allocation_free() -> Result<(), backend_semantic::
         black_box(ir.canonical_items().count());
         black_box(ir.items_of_kind(ItemKind::Record).count());
         black_box(ir.items_named(b"child").count());
-        black_box(ir.links_from(backend_semantic::ir::EntityId::new(0)).count());
+        black_box(
+            ir.links_from(backend_semantic::ir::EntityId::new(0))
+                .count(),
+        );
         black_box(ir.links_to(backend_semantic::ir::EntityId::new(1)).count());
         black_box(ir.stable_links().count());
         black_box(ir.signature(backend_semantic::ir::EntityId::new(0)));

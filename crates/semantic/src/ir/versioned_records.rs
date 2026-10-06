@@ -1259,9 +1259,7 @@ where
     let key_capacity = keys
         .rows
         .capacity()
-        .checked_mul(size_of::<
-            CanonicalSemanticPlaneRowKey<Encoder::Handle>,
-        >())
+        .checked_mul(size_of::<CanonicalSemanticPlaneRowKey<Encoder::Handle>>())
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
     let key_sort_rows =
@@ -2506,6 +2504,7 @@ mod tests {
         let items: Vec<TreeItemInput<'_>> = (0..count)
             .map(|index| TreeItemInput {
                 name: names[index].as_bytes(),
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
@@ -2558,6 +2557,7 @@ mod tests {
         let items = [
             TreeItemInput {
                 name: b"caller",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
@@ -2571,6 +2571,7 @@ mod tests {
             },
             TreeItemInput {
                 name: b"callee",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
@@ -2650,6 +2651,7 @@ mod tests {
         let items = [
             TreeItemInput {
                 name: b"from",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
@@ -2663,6 +2665,7 @@ mod tests {
             },
             TreeItemInput {
                 name: b"to",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
@@ -2715,6 +2718,7 @@ mod tests {
         let docs = [DocInput::Text(text)];
         let item = TreeItemInput {
             name: b"jumbo_docs",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -2779,6 +2783,7 @@ mod tests {
         let items = [
             TreeItemInput {
                 name: b"small_first",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
@@ -2792,6 +2797,7 @@ mod tests {
             },
             TreeItemInput {
                 name: b"jumbo_second",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
@@ -2834,6 +2840,7 @@ mod tests {
         };
         let item = TreeItemInput {
             name: b"jumbo_source",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -4449,6 +4456,7 @@ mod tests {
         let source = SourceSpan::new(file, 3, 17).expect("valid half-open span");
         let item = TreeItemInput {
             name: b"source_item",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {

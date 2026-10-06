@@ -131,7 +131,13 @@ impl<'image> FullSemanticImagePlan<'image> {
             java: extension_payload(&semantic.extensions.java)?,
             clang: extension_payload(&semantic.extensions.clang)?,
         };
-        let schema = if signature_carrier_binding_ranges.is_some() {
+        let has_anonymous_callable = semantic.entities.rows.iter().any(|row| {
+            ir.semantic_entity(row.entity)
+                .is_some_and(|entity| entity.name.anonymous_callable_anchor().is_some())
+        });
+        let schema = if has_anonymous_callable {
+            super::wire::SCHEMA_TYPED_NAMES
+        } else if signature_carrier_binding_ranges.is_some() {
             super::wire::SCHEMA_CARRIER_BINDINGS
         } else if signature_carrier_roles.is_some() {
             super::wire::SCHEMA_CARRIER_ROLES
@@ -305,21 +311,23 @@ fn plan_signature_carrier_bindings(
     let _binding_lanes_byte_length =
         signature_binding_lanes_bytes(range_bytes, target_byte_length)?;
     let mut ranges = Vec::new();
-    ranges
-        .try_reserve_exact(function_count)
-        .map_err(|cause| FullSemanticImageFault::SignatureCarrierBindingAllocation {
+    ranges.try_reserve_exact(function_count).map_err(|cause| {
+        FullSemanticImageFault::SignatureCarrierBindingAllocation {
             field: FullSemanticImageField::SignatureCarrierBindingRanges,
             bytes: range_bytes,
             cause,
-        })?;
+        }
+    })?;
     let mut target_bytes = Vec::new();
     target_bytes
         .try_reserve_exact(target_byte_length)
-        .map_err(|cause| FullSemanticImageFault::SignatureCarrierBindingAllocation {
-            field: FullSemanticImageField::SignatureCarrierBindingTargets,
-            bytes: target_byte_length,
-            cause,
-        })?;
+        .map_err(
+            |cause| FullSemanticImageFault::SignatureCarrierBindingAllocation {
+                field: FullSemanticImageField::SignatureCarrierBindingTargets,
+                bytes: target_byte_length,
+                cause,
+            },
+        )?;
     for row in semantic.entities.rows.iter().copied() {
         let entity = ir
             .semantic_entity(row.entity)
@@ -940,12 +948,12 @@ fn layout(
 ) -> Result<(FullImageLayout, usize, u32), FullSemanticImageFault> {
     let kinds =
         FullDirectoryKind::kinds_for_schema(schema).ok_or(FullSemanticImageFault::Schema {
-            expected: super::wire::SCHEMA_CARRIER_BINDINGS,
+            expected: super::wire::SCHEMA_TYPED_NAMES,
             observed: schema,
         })?;
     let directory_count =
         FullDirectoryKind::count_for_schema(schema).ok_or(FullSemanticImageFault::Schema {
-            expected: super::wire::SCHEMA_CARRIER_BINDINGS,
+            expected: super::wire::SCHEMA_TYPED_NAMES,
             observed: schema,
         })?;
     let directory_bytes = DIRECTORY_BYTES
@@ -1032,7 +1040,11 @@ fn write_core_entity(
     entity: crate::ir::SemanticEntity,
     canonical: &crate::ir::semantic_image::canonical::CanonicalFullPlan<'_>,
 ) -> Result<(), FullPlanError> {
-    put_u32_array(output, 0, canonical.atom(entity.name)?);
+    put_u32_array(output, 0, canonical.atom(entity.name.atom())?);
+    output[32] = match entity.name {
+        crate::ir::ItemName::Named(_) => 0,
+        crate::ir::ItemName::AnonymousCallable(_) => 1,
+    };
     put_u16_array(output, 4, u16::from(entity.kind));
     output[6] = visibility_code(entity.visibility);
     output[7] = parentage_code(entity.authority.parentage);

@@ -9,18 +9,18 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use backend_semantic::ir::{FragmentView, ImageProvenance};
-use backend_engine::publication::immutable::ImmutableArtifactStore;
-use backend_engine::publication::{
-    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
-};
-use backend_semantic::vocabulary::{LanguageProfile, NativeTool, PythonVersion, Stage};
-use backend_version::{ContentId, SourceFactDomain};
 use backend_engine::index_build::{IndexBuildScratch, PreparedIndex, build};
 use backend_engine::index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
 };
+use backend_engine::publication::immutable::ImmutableArtifactStore;
+use backend_engine::publication::{
+    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
+};
+use backend_semantic::ir::{FragmentView, ImageProvenance};
+use backend_semantic::vocabulary::{LanguageProfile, NativeTool, PythonVersion, Stage};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_version::{ContentId, SourceFactDomain};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -349,7 +349,10 @@ fn package_class_lifecycle(journey: &Journey) -> Result<(), TestError> {
     let atom = |id: backend_semantic::ir::AtomId| ir.ir.atom(id);
     let mut facts = Vec::new();
     for (id, name) in names.iter().enumerate() {
-        let bytes = atom(*name).ok_or(TestError::Fact("entity atom missing"))?;
+        let Some(name) = name.named_atom() else {
+            continue;
+        };
+        let bytes = atom(name).ok_or(TestError::Fact("entity atom missing"))?;
         facts.push((id, bytes, columns.kinds[id]));
     }
     for wanted in journey.symbols {

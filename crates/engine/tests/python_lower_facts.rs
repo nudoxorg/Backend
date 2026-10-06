@@ -766,8 +766,7 @@ fn sixty_five_parameter_function_keeps_every_parameter() -> Result<(), TestError
 /// One parameter past the fact-child lane is still the typed ChildCapacity
 /// terminal, not a truncated signature.
 #[test]
-fn two_hundred_fifty_six_parameter_function_rejects_with_child_capacity() -> Result<(), TestError>
-{
+fn two_hundred_fifty_six_parameter_function_rejects_with_child_capacity() -> Result<(), TestError> {
     let mut source = b"def wide(\n".to_vec();
     for index in 0..256 {
         if index != 0 {
@@ -877,7 +876,11 @@ fn reopened_python_signatures_keep_exact_owner_carrier_bindings() -> Result<(), 
 
             let entity = |name: &[u8], kind: ItemKind, parent: Option<EntityId>| {
                 image.canonical_entities().find(|candidate| {
-                    image.atom(candidate.name) == Some(name)
+                    candidate
+                        .name
+                        .named_atom()
+                        .and_then(|atom| image.atom(atom))
+                        == Some(name)
                         && candidate.kind == kind
                         && candidate.parent == parent
                 })
@@ -1039,8 +1042,9 @@ fn same_name_result_slot_reuses_the_identical_parameter_row() -> Result<(), Test
                         let ty = item
                             .semantic_type()
                             .ok_or(TestError::Falsified("function value is untyped"))?;
-                        let TypeExpr::Concrete(ConcreteType::Function { results, .. }) =
-                            ir.ty(ty).ok_or(TestError::Falsified("function type row absent"))?
+                        let TypeExpr::Concrete(ConcreteType::Function { results, .. }) = ir
+                            .ty(ty)
+                            .ok_or(TestError::Falsified("function type row absent"))?
                         else {
                             return Err(TestError::Falsified(
                                 "function type is not a concrete function",
@@ -1086,7 +1090,9 @@ fn same_name_result_slot_reuses_the_identical_parameter_row() -> Result<(), Test
         let parameter = ir
             .items()
             .find(|item| item.name() == b"value" && item.kind() == ItemKind::Parameter)
-            .ok_or(TestError::Falsified("shared parameter/result carrier absent"))?;
+            .ok_or(TestError::Falsified(
+                "shared parameter/result carrier absent",
+            ))?;
         let bindings = match ir.signature_carrier_bindings(function.id()) {
             Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
                 bindings.collect::<Vec<_>>()
@@ -1141,10 +1147,10 @@ fn defaulted_python_functions_share_interned_signature_types_with_distinct_owner
                         && item.parent() == Some(owner)
                 })
             };
-            let left = function(b"left")
-                .ok_or(TestError::Falsified("left function owner absent"))?;
-            let right = function(b"right")
-                .ok_or(TestError::Falsified("right function owner absent"))?;
+            let left =
+                function(b"left").ok_or(TestError::Falsified("left function owner absent"))?;
+            let right =
+                function(b"right").ok_or(TestError::Falsified("right function owner absent"))?;
             let left_parameter = parameter(left.id(), b"item")
                 .ok_or(TestError::Falsified("left defaulted parameter absent"))?;
             let right_parameter = parameter(right.id(), b"item")
@@ -1250,13 +1256,9 @@ const WIDE_INFERRED_TUPLE: &[u8] = b"anchor: int = 0\nvalues = (1, 2, 3, 4, 5, 6
 #[test]
 fn seventy_element_inferred_tuple_carries_seventy_integer_children() -> Result<(), TestError> {
     let site = values_name_span(VALUES_FIXTURE)?;
-    let report = report_with_inference(
-        site,
-        InferredType::Tuple(repeated_integers(70)),
-    );
-    let bytes =
-        attempt_fragment_with_report(VALUES_FIXTURE, &report, "seventy-tuple")?
-            .map_err(TestError::Rejected)?;
+    let report = report_with_inference(site, InferredType::Tuple(repeated_integers(70)));
+    let bytes = attempt_fragment_with_report(VALUES_FIXTURE, &report, "seventy-tuple")?
+        .map_err(TestError::Rejected)?;
     let lane = lane_of(&bytes)?;
     let value = entity_ordinal(&lane, b"values", EntityKind::Static)?;
     let row = owned_row(&lane, value)?;
@@ -1288,10 +1290,7 @@ fn two_hundred_fifty_six_element_inferred_tuple_folds_into_chunks() -> Result<()
     const PADDED_BYTES: usize = 160;
     let source = padded_values_fixture(PADDED_BYTES);
     let site = values_name_span(source)?;
-    let report = report_with_inference(
-        site,
-        InferredType::Tuple(repeated_integers(256)),
-    );
+    let report = report_with_inference(site, InferredType::Tuple(repeated_integers(256)));
     let bytes = attempt_fragment_with_report(source, &report, "wide-tuple")?
         .map_err(TestError::Rejected)?;
     let lane = lane_of(&bytes)?;
@@ -1334,10 +1333,7 @@ fn two_hundred_fifty_six_element_inferred_union_folds_into_chunks() -> Result<()
     const PADDED_BYTES: usize = 160;
     let source = padded_values_fixture(PADDED_BYTES);
     let site = values_name_span(source)?;
-    let report = report_with_inference(
-        site,
-        InferredType::Union(repeated_integers(256)),
-    );
+    let report = report_with_inference(site, InferredType::Union(repeated_integers(256)));
     let bytes = attempt_fragment_with_report(source, &report, "wide-union")?
         .map_err(TestError::Rejected)?;
     let lane = lane_of(&bytes)?;
@@ -1377,7 +1373,8 @@ fn two_hundred_fifty_six_element_inferred_union_folds_into_chunks() -> Result<()
 /// A checker-inferred callable wider than the type-child lane lowers as an
 /// oracle gap without minting a FunctionPointer row.
 #[test]
-fn two_hundred_fifty_six_parameter_inferred_callable_admits_as_oracle_gap() -> Result<(), TestError> {
+fn two_hundred_fifty_six_parameter_inferred_callable_admits_as_oracle_gap() -> Result<(), TestError>
+{
     const PADDED_BYTES: usize = 160;
     let source = padded_values_fixture(PADDED_BYTES);
     let site = values_name_span(source)?;

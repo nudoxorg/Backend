@@ -1543,6 +1543,17 @@ struct ProjectionSpanWire {
 )]
 enum ProjectionAdmissionFaultWire {
     EmptyName,
+    AnonymousCallableAnchor {
+        #[serde(with = "ProjectionAnonymousCallableAnchorFaultWire")]
+        cause: backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorFault,
+    },
+    AnonymousCallableAnchorPoolCapacity {
+        #[serde(with = "ProjectionAnonymousCallableAnchorPoolWire")]
+        pool: backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorPool,
+        used: u64,
+        requested: u64,
+        capacity: u64,
+    },
     Capacity,
     ChildCapacity,
     ProductChildPoolCapacity {
@@ -1657,6 +1668,17 @@ enum ProjectionAdmissionFaultWire {
         requested_member: Option<u32>,
     },
 }
+
+remote_unit_enum!(
+    ProjectionAnonymousCallableAnchorFaultWire,
+    "backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorFault",
+    [InvalidRoute, Encoding, SourceIdentityUnavailable]
+);
+remote_unit_enum!(
+    ProjectionAnonymousCallableAnchorPoolWire,
+    "backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorPool",
+    [Entries, Bytes]
+);
 remote_unit_enum!(
     ClangProjectionTypeKindWire,
     "backend_semantic::vocabulary::ClangProjectionTypeKind",

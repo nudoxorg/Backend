@@ -122,13 +122,16 @@ fn rows(
 ) {
     let mut names = std::collections::BTreeMap::new();
     for item in ir.items() {
-        names.insert(item.id().raw, item.name().to_vec());
+        names.insert(
+            item.id().raw,
+            item.name().named_bytes().expect("named item").to_vec(),
+        );
     }
     let list = ir
         .items()
         .map(|item| {
             (
-                item.name().to_vec(),
+                item.name().named_bytes().expect("named item").to_vec(),
                 item.kind(),
                 item.parent().map(|parent: EntityId| parent.raw),
                 item.version(),

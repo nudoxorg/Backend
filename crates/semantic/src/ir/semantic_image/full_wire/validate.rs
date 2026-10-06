@@ -19,8 +19,8 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use crate::ir::{
-    ConcreteType, FactAvailability, ParentageAuthority, SignatureCarrierBindingRole,
-    TupleElementListId, TypeExpr,
+    AnonymousCallableAnchorView, ConcreteType, FactAvailability, ParentageAuthority,
+    SignatureCarrierBindingRole, TupleElementListId, TypeExpr,
 };
 
 use super::{
@@ -29,7 +29,7 @@ use super::{
     typed_decode,
     wire::{
         ATOM_ROW_BYTES, ENTITY_ROW_BYTES, FullDirectoryEntry, FullDirectoryKind, FullImageLayout,
-        NONE, RANGE_ROW_BYTES, SCHEMA_CARRIER_BINDINGS, SCHEMA_CARRIER_ROLES,
+        NONE, RANGE_ROW_BYTES, SCHEMA_CARRIER_BINDINGS, SCHEMA_CARRIER_ROLES, SCHEMA_TYPED_NAMES,
         SIGNATURE_CARRIER_RANGE_ROW_BYTES, SIGNATURE_CARRIER_TARGET_ROW_BYTES, get_u32,
     },
 };
@@ -95,7 +95,13 @@ pub(crate) fn reopen_full_semantic_image(
     typed_decode::validate_semantic_nodes(bytes, layout, typed)?;
     validate_entities(bytes, layout, typed)?;
     validate_signature_carrier_roles(bytes, layout)?;
-    if layout.schema == SCHEMA_CARRIER_BINDINGS {
+    if layout.schema == SCHEMA_CARRIER_BINDINGS
+        || (layout.schema == SCHEMA_TYPED_NAMES
+            && layout
+                .entry(FullDirectoryKind::SignatureCarrierBindingRanges)
+                .count
+                != 0)
+    {
         validate_signature_carrier_bindings(bytes, layout, typed)?;
     }
     validate_terminal_lists(bytes, layout, typed)?;
@@ -115,8 +121,9 @@ fn validate_signature_carrier_roles(
 ) -> Result<(), FullSemanticImageFault> {
     if !matches!(
         layout.schema,
-        SCHEMA_CARRIER_ROLES | SCHEMA_CARRIER_BINDINGS
-    ) {
+        SCHEMA_CARRIER_ROLES | SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES
+    ) || layout.entry(FullDirectoryKind::SignatureCarrierRoles).count == 0
+    {
         return Ok(());
     }
     let roles = layout.entry(FullDirectoryKind::SignatureCarrierRoles);
@@ -477,10 +484,7 @@ struct SignatureCarrierSlotRun {
 }
 
 impl SignatureCarrierBindingValidation<'_, '_> {
-    fn visit_slot(
-        &mut self,
-        run: SignatureCarrierSlotRun,
-    ) -> Result<u32, FullSemanticImageFault> {
+    fn visit_slot(&mut self, run: SignatureCarrierSlotRun) -> Result<u32, FullSemanticImageFault> {
         typed_decode::visit_tuple_elements(
             self.bytes,
             self.layout,
@@ -491,12 +495,11 @@ impl SignatureCarrierBindingValidation<'_, '_> {
                     return Ok(());
                 }
                 let target_result = (|| {
-                    let target_row = run
-                        .target_start
-                        .checked_add(position)
-                        .ok_or(FullSemanticImageFault::LengthOverflow {
+                    let target_row = run.target_start.checked_add(position).ok_or(
+                        FullSemanticImageFault::LengthOverflow {
                             field: FullSemanticImageField::SignatureCarrierBindingTargets,
-                        })?;
+                        },
+                    )?;
                     let target_offset = self
                         .targets_offset
                         .checked_add(
@@ -578,8 +581,17 @@ fn validate_entities(
             FullSemanticImageField::Entities,
             row,
             atoms,
-            entity.name.raw,
+            entity.name.atom().raw,
         )?;
+        if let Some(anchor) = entity.name.anonymous_callable_anchor() {
+            if entity.kind != crate::ir::ItemKind::Function {
+                return Err(FullSemanticImageFault::EntityNameTag { row, observed: 1 });
+            }
+            let bytes = atom_bytes(bytes, layout, anchor, row)?;
+            if !AnonymousCallableAnchorView::new(bytes).is_well_formed() {
+                return Err(FullSemanticImageFault::EntityNameTag { row, observed: 1 });
+            }
+        }
         if let Some(parent) = entity.parent {
             reference(
                 FullSemanticImageField::Entities,
@@ -659,7 +671,18 @@ fn validate_entity_reserved(
         + usize::try_from(row).map_err(|_| FullSemanticImageFault::LengthOverflow {
             field: FullSemanticImageField::Entities,
         })? * ENTITY_ROW_BYTES;
-    for value in bytes[offset + 32..offset + 36]
+    let reserved_start = if layout.schema == SCHEMA_TYPED_NAMES {
+        offset + 33
+    } else {
+        offset + 32
+    };
+    if layout.schema == SCHEMA_TYPED_NAMES && !matches!(bytes[offset + 32], 0 | 1) {
+        return Err(FullSemanticImageFault::EntityNameTag {
+            row,
+            observed: bytes[offset + 32],
+        });
+    }
+    for value in bytes[reserved_start..offset + 36]
         .iter()
         .chain(bytes[offset + 116..offset + 120].iter())
     {
@@ -702,6 +725,62 @@ fn validate_entity_reserved(
         _ => {}
     }
     Ok(())
+}
+
+fn atom_bytes<'bytes>(
+    bytes: &'bytes [u8],
+    layout: FullImageLayout,
+    atom: crate::ir::AtomId,
+    row: u32,
+) -> Result<&'bytes [u8], FullSemanticImageFault> {
+    let atoms = layout.entry(FullDirectoryKind::Atoms);
+    let atom_offset = atoms
+        .offset
+        .checked_add(
+            usize::try_from(atom.raw)
+                .map_err(|_| FullSemanticImageFault::LengthOverflow {
+                    field: FullSemanticImageField::Atoms,
+                })?
+                .checked_mul(ATOM_ROW_BYTES)
+                .ok_or(FullSemanticImageFault::LengthOverflow {
+                    field: FullSemanticImageField::Atoms,
+                })?,
+        )
+        .ok_or(FullSemanticImageFault::LengthOverflow {
+            field: FullSemanticImageField::Atoms,
+        })?;
+    let start = usize::try_from(get_u32(bytes, atom_offset, FullSemanticImageField::Atoms)?)
+        .map_err(|_| FullSemanticImageFault::LengthOverflow {
+            field: FullSemanticImageField::Atoms,
+        })?;
+    let length = usize::try_from(get_u32(
+        bytes,
+        atom_offset + 4,
+        FullSemanticImageField::Atoms,
+    )?)
+    .map_err(|_| FullSemanticImageFault::LengthOverflow {
+        field: FullSemanticImageField::Atoms,
+    })?;
+    let payload = layout.entry(FullDirectoryKind::AtomBytes);
+    let relative_end = start
+        .checked_add(length)
+        .ok_or(FullSemanticImageFault::LengthOverflow {
+            field: FullSemanticImageField::Atoms,
+        })?;
+    let range = payload
+        .offset
+        .checked_add(start)
+        .zip(payload.offset.checked_add(relative_end))
+        .ok_or(FullSemanticImageFault::LengthOverflow {
+            field: FullSemanticImageField::Atoms,
+        })?;
+    let Some(atom_bytes) = bytes.get(range.0..range.1) else {
+        return Err(FullSemanticImageFault::Truncated {
+            field: FullSemanticImageField::Atoms,
+            offset: usize::try_from(row).unwrap_or(usize::MAX),
+        });
+    };
+    Ok(atom_bytes)
 }
 
 fn validate_parent_chain(

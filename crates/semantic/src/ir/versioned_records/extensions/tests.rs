@@ -20,7 +20,7 @@ use crate::ir::{
     CSharpReferenceKind, CSharpVersion, CStandard, ClangFacts, ClangLayout, ClangQualifiers,
     ClangStorageClass, Confidence, CorePayloadHash, CxxStandard, DeclarationFamilyId,
     EntityAuthorityFacts, EntityVersion, FactAvailability, GoFacts, GoSignature, GoVersion, Ir,
-    IrBuilder, Item, ItemKind, JavaFacts, JavaRelease, Language, LanguageExtensionInput,
+    IrBuilder, Item, ItemKind, ItemName, JavaFacts, JavaRelease, Language, LanguageExtensionInput,
     LanguageProfile, ParentageAuthority, PythonFacts, PythonParameterKind, PythonVersion,
     RustEdition, RustFacts, RustOwnership, SemanticInputWitness, SemanticIrPlane,
     SemanticPlaneKind, SemanticReader, SourceSpan, TypeExpr, TypeScriptFacts, TypeScriptSource,
@@ -43,7 +43,7 @@ fn add_extension(
     extension: LanguageExtensionInput<'_>,
 ) -> crate::ir::EntityId {
     let item = Item {
-        name: builder.intern_atom(b"extension-owner").expect("owner atom"),
+        name: ItemName::Named(builder.intern_atom(b"extension-owner").expect("owner atom")),
         kind: ItemKind::Function,
         visibility: Visibility::Public,
         parent: None,
@@ -70,9 +70,11 @@ fn add_extension(
 
 fn add_plain_entity(builder: &mut IrBuilder, seed: u8) -> crate::ir::EntityId {
     let item = Item {
-        name: builder
-            .intern_atom(b"extension-target")
-            .expect("target atom"),
+        name: ItemName::Named(
+            builder
+                .intern_atom(b"extension-target")
+                .expect("target atom"),
+        ),
         kind: ItemKind::Function,
         visibility: Visibility::Public,
         parent: None,

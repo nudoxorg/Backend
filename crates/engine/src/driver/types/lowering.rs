@@ -82,6 +82,35 @@ impl SourceSpanFact {
 pub enum FactFault {
     /// The emitted declaration name is empty.
     EmptyName,
+    /// An anonymous callable route is malformed or cannot fit its bounded
+    /// typed name encoding.
+    AnonymousCallableAnchor {
+        /// Exact typed anchor validation or encoding failure.
+        cause: backend_semantic::ir::TypedDeclarationKeyFault,
+    },
+    /// The bounded anchor writer could not measure or encode this route.
+    AnonymousCallableAnchorEncoding {
+        /// Exact typed byte-width failure.
+        cause: backend_semantic::ir::PreimageOverflow,
+    },
+    /// The bounded aggregate storage for anonymous callable name anchors is full.
+    AnonymousCallableAnchorPoolCapacity {
+        /// Encoded anchor bytes already admitted.
+        used: usize,
+        /// Encoded bytes required by this callable.
+        requested: usize,
+        /// Maximum bounded anchor-pool bytes.
+        capacity: usize,
+    },
+    /// The number of retained anonymous anchor rows exceeded its bound.
+    AnonymousCallableAnchorEntryCapacity {
+        /// Anchor rows already admitted.
+        used: usize,
+        /// Maximum retained anchor rows.
+        capacity: usize,
+    },
+    /// The anonymous callable owner requires exact native TSZ source identities.
+    AnonymousCallableSourceUnavailable,
     /// The bounded fact lane is full.
     Capacity,
     /// The fact's product child lane is full.

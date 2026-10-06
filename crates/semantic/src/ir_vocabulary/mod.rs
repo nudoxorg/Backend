@@ -19,13 +19,18 @@ pub use self::coordinates::{
 };
 pub use self::entity::{EntityKind, EntityKindCodeError};
 pub use self::identity::typescript_program_identity;
+pub(crate) use self::identity::write_str_cell;
 pub use self::identity::{
-    DeclarationFamilyId, DeclarationIdentity, DeclarationKey, DeclarationKeyFault,
+    AnonymousCallableAnchor, AnonymousCallableFamilyMultiplicity, CallableAnchorStep,
+    CallableChildRole, CallableParentShape, CallableParentShapeTag, CallableTypeContainerKind,
+    DeclarationFamilyId, DeclarationIdentity, DeclarationKey, DeclarationKeyFault, DeclarationName,
     DeclarationPathFault, ExternalDeclarationIdentity, ForeignDeclarationId, ForeignKey,
-    ForeignKeyFault, ForeignOrigin, Occurrence, OccurrenceTarget, PackageLineage,
+    ForeignKeyFault, ForeignOrigin, MAX_ANONYMOUS_CALLABLE_ANCHOR_BYTES,
+    MAX_ANONYMOUS_CALLABLE_ROUTE_STEPS, Occurrence, OccurrenceTarget, PackageLineage,
     PackageLineageFault, PackageLineageView, PreimageOverflow, Resolution, StableRef,
-    TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeScriptSourceCoordinate, VariantAvailability,
-    VariantFingerprint,
+    TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeScriptCallableCoordinateFault,
+    TypeScriptCallableSourceCoordinate, TypeScriptSourceCoordinate, TypedDeclarationKey,
+    TypedDeclarationKeyFault, VariantAvailability, VariantFingerprint,
 };
 pub use self::occurrence::{
     Confidence, ConfidenceCodeError, ReferenceKind, ReferenceKindCodeError, RelSpan, RelSpanFault,

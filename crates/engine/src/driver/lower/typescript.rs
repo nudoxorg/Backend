@@ -25,12 +25,14 @@ use backend_frontend_typescript::{
     },
 };
 use backend_semantic::ir::{
-    AnnotationKind, AnonRecordForm, DocFragmentInput, DocLinkTarget, EntityId, EntityKind,
-    ExternalEntityRef, ExternalFragmentId, ForeignKey, ForeignOrigin, LatticeMappedModifier,
-    NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PackageLineage, PrimitiveShape,
-    ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeChild,
-    SemanticTypeRecord, SemanticTypeTag, TypeId, TypeParameterListId, TypeReason,
-    TypeScriptSourceCoordinate, TypeWidth, typescript_program_identity,
+    AnnotationKind, AnonRecordForm, AnonymousCallableFamilyMultiplicity, CallableAnchorStep,
+    CallableChildRole, CallableParentShape, CallableTypeContainerKind, DocFragmentInput,
+    DocLinkTarget, EntityId, EntityKind, ExternalEntityRef, ExternalFragmentId, ForeignKey,
+    ForeignOrigin, LatticeMappedModifier, NominalRef, Occurrence, OccurrenceConfidence,
+    OccurrenceTarget, PackageLineage, PrimitiveShape, ProductChildRole, ReferenceKind, RelSpan,
+    SemanticProductConstructor, SemanticTypeChild, SemanticTypeRecord, SemanticTypeTag, TypeId,
+    TypeParameterListId, TypeReason, TypeScriptSourceCoordinate, TypeWidth,
+    typescript_program_identity,
 };
 use backend_semantic::vocabulary::{
     ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
@@ -4222,6 +4224,26 @@ struct NativeTszDeclarationCoordinate {
     kind: EntityKind,
 }
 
+struct NativeAnonymousCallable<'source> {
+    span: Span,
+    step: CallableAnchorStep<'source>,
+    scope: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Copy)]
+enum NativeCallableScopeEvent {
+    Named {
+        start: u32,
+        end: u32,
+        ordinal: usize,
+    },
+    Anonymous {
+        start: u32,
+        end: u32,
+        index: usize,
+    },
+}
+
 /// Resolves a property name through the receiver's exact checker type and
 /// that type symbol's member table. No project-wide name scan participates in
 /// this operation, so same-spelled members on unrelated receivers stay apart.
@@ -4249,6 +4271,308 @@ fn native_tsz_member_symbol(
                 .and_then(|exports| exports.get(member_name))
         });
     member
+}
+
+fn native_tsz_callable_parent_step<'source>(
+    source: &'source str,
+    arena: &TszNodeArena,
+    callable: TszNodeIndex,
+) -> Option<CallableAnchorStep<'source>> {
+    let mut child = callable;
+    for _ in 0..8 {
+        let parent = arena.parent_of(child)?;
+        let node = arena.get(parent)?;
+        if node.kind == TszSyntaxKind::PARENTHESIZED_EXPRESSION
+            && arena
+                .get_parenthesized_at(parent)
+                .is_some_and(|wrapped| wrapped.expression == child)
+        {
+            child = parent;
+            continue;
+        }
+        let step = if node.kind == TszSyntaxKind::CALL_EXPRESSION {
+            let call = arena.get_call_expr_at(parent)?;
+            call.arguments
+                .as_ref()
+                .is_some_and(|arguments| arguments.nodes.contains(&child))
+                .then_some(CallableAnchorStep {
+                    child_role: CallableChildRole::CallArgument,
+                    parent: CallableParentShape::Call,
+                })?
+        } else if node.kind == TszSyntaxKind::VARIABLE_DECLARATION {
+            let declaration = arena.get_variable_declaration_at(parent)?;
+            if declaration.initializer != child
+                || arena.get_identifier_at(declaration.name).is_none()
+            {
+                return None;
+            }
+            CallableAnchorStep {
+                child_role: CallableChildRole::VariableInitializer,
+                parent: CallableParentShape::VariableBinding(source_node_bytes(
+                    source,
+                    arena,
+                    declaration.name,
+                )?),
+            }
+        } else if node.kind == TszSyntaxKind::CONDITIONAL_EXPRESSION {
+            let conditional = arena.get_conditional_expr_at(parent)?;
+            let child_role = if conditional.when_true == child {
+                CallableChildRole::ConditionalConsequent
+            } else if conditional.when_false == child {
+                CallableChildRole::ConditionalAlternate
+            } else {
+                return None;
+            };
+            CallableAnchorStep {
+                child_role,
+                parent: CallableParentShape::Conditional,
+            }
+        } else if node.kind == TszSyntaxKind::ARRAY_LITERAL_EXPRESSION {
+            let array = arena.get_literal_expr_at(parent)?;
+            if !array.elements.nodes.contains(&child) {
+                return None;
+            }
+            CallableAnchorStep {
+                child_role: CallableChildRole::ArrayElement,
+                parent: CallableParentShape::ArrayLiteral,
+            }
+        } else if node.kind == TszSyntaxKind::PROPERTY_ASSIGNMENT {
+            let property = arena.get_property_assignment_at(parent)?;
+            let object_literal = arena
+                .parent_of(parent)
+                .and_then(|object| arena.get(object))
+                .is_some_and(|object| object.kind == TszSyntaxKind::OBJECT_LITERAL_EXPRESSION);
+            if property.initializer != child
+                || !object_literal
+                || arena.get_identifier_at(property.name).is_none()
+            {
+                return None;
+            }
+            CallableAnchorStep {
+                child_role: CallableChildRole::ObjectMemberValue,
+                parent: CallableParentShape::ObjectMember(source_node_bytes(
+                    source,
+                    arena,
+                    property.name,
+                )?),
+            }
+        } else {
+            return None;
+        };
+        return Some(step);
+    }
+    None
+}
+
+/// Gives a source function type its owner-local signature role. The owning
+/// parameter name is exact syntax evidence; overload positions and byte spans
+/// are not used as durable family identity.
+fn native_tsz_function_type_parent_step<'source>(
+    source: &'source str,
+    arena: &TszNodeArena,
+    function_type: TszNodeIndex,
+) -> Option<CallableAnchorStep<'source>> {
+    let mut child = function_type;
+    for _ in 0..8 {
+        let parent = arena.parent_of(child)?;
+        let node = arena.get(parent)?;
+        if matches!(
+            node.kind,
+            TszSyntaxKind::PARENTHESIZED_TYPE
+                | TszSyntaxKind::OPTIONAL_TYPE
+                | TszSyntaxKind::REST_TYPE
+        ) && arena
+            .get_wrapped_type_at(parent)
+            .is_some_and(|wrapped| wrapped.type_node == child)
+        {
+            child = parent;
+            continue;
+        }
+        if node.kind == TszSyntaxKind::PARAMETER {
+            let parameter = arena.get_parameter_at(parent)?;
+            if parameter.type_annotation == child
+                && arena.get_identifier_at(parameter.name).is_some()
+            {
+                return Some(CallableAnchorStep {
+                    child_role: CallableChildRole::SignatureParameterType,
+                    parent: CallableParentShape::SignatureParameter(source_node_bytes(
+                        source,
+                        arena,
+                        parameter.name,
+                    )?),
+                });
+            }
+            return None;
+        }
+        if node.kind == TszSyntaxKind::TYPE_ALIAS_DECLARATION {
+            let alias = arena.get_type_alias(node)?;
+            if alias.type_node != child || arena.get_identifier_at(alias.name).is_none() {
+                return None;
+            }
+            return Some(CallableAnchorStep {
+                child_role: CallableChildRole::TypeAliasValue,
+                parent: CallableParentShape::TypeAliasName(source_node_bytes(
+                    source, arena, alias.name,
+                )?),
+            });
+        }
+        return native_tsz_type_container_for_child(arena, parent, child).map(|kind| {
+            CallableAnchorStep {
+                child_role: CallableChildRole::TypeExpression,
+                parent: CallableParentShape::TypeContainer(kind),
+            }
+        });
+    }
+    None
+}
+
+fn native_tsz_type_container_for_child(
+    arena: &TszNodeArena,
+    parent: TszNodeIndex,
+    child: TszNodeIndex,
+) -> Option<CallableTypeContainerKind> {
+    let node = arena.get(parent)?;
+    let kind = match node.kind {
+        TszSyntaxKind::ARRAY_TYPE
+            if arena
+                .get_array_type_at(parent)
+                .is_some_and(|array| array.element_type == child) =>
+        {
+            CallableTypeContainerKind::Array
+        }
+        TszSyntaxKind::TUPLE_TYPE
+            if arena
+                .get_tuple_type_at(parent)
+                .is_some_and(|tuple| tuple.elements.nodes.contains(&child)) =>
+        {
+            CallableTypeContainerKind::Tuple
+        }
+        TszSyntaxKind::UNION_TYPE | TszSyntaxKind::INTERSECTION_TYPE
+            if arena
+                .get_composite_type_at(parent)
+                .is_some_and(|composite| composite.types.nodes.contains(&child)) =>
+        {
+            if node.kind == TszSyntaxKind::UNION_TYPE {
+                CallableTypeContainerKind::Union
+            } else {
+                CallableTypeContainerKind::Intersection
+            }
+        }
+        TszSyntaxKind::FUNCTION_TYPE | TszSyntaxKind::CONSTRUCTOR_TYPE
+            if arena
+                .get_function_type_at(parent)
+                .is_some_and(|signature| signature.type_annotation == child) =>
+        {
+            if node.kind == TszSyntaxKind::FUNCTION_TYPE {
+                CallableTypeContainerKind::Function
+            } else {
+                CallableTypeContainerKind::Constructor
+            }
+        }
+        TszSyntaxKind::TYPE_REFERENCE
+            if arena
+                .get_type_ref_at(parent)
+                .and_then(|type_ref| type_ref.type_arguments.as_ref())
+                .is_some_and(|arguments| arguments.nodes.contains(&child)) =>
+        {
+            CallableTypeContainerKind::TypeReference
+        }
+        _ => return None,
+    };
+    Some(kind)
+}
+
+fn native_tsz_call_signature_parent_step(
+    arena: &TszNodeArena,
+    signature: TszNodeIndex,
+) -> Option<CallableAnchorStep<'static>> {
+    let signature_kind = arena.get(signature)?.kind;
+    let child_role = match signature_kind {
+        TszSyntaxKind::CALL_SIGNATURE => CallableChildRole::CallSignatureMember,
+        TszSyntaxKind::CONSTRUCT_SIGNATURE => CallableChildRole::ConstructSignatureMember,
+        _ => return None,
+    };
+    let parent = arena.parent_of(signature)?;
+    let parent_node = arena.get(parent)?;
+    let kind = if parent_node.kind == TszSyntaxKind::TYPE_LITERAL
+        && arena
+            .get_type_literal_at(parent)
+            .is_some_and(|literal| literal.members.nodes.contains(&signature))
+    {
+        CallableTypeContainerKind::TypeLiteral
+    } else if parent_node.kind == TszSyntaxKind::INTERFACE_DECLARATION
+        && arena
+            .get_interface_at(parent)
+            .is_some_and(|interface| interface.members.nodes.contains(&signature))
+    {
+        CallableTypeContainerKind::Interface
+    } else {
+        return None;
+    };
+    Some(CallableAnchorStep {
+        child_role,
+        parent: CallableParentShape::TypeContainer(kind),
+    })
+}
+
+fn source_node_bytes<'source>(
+    source: &'source str,
+    arena: &TszNodeArena,
+    node: TszNodeIndex,
+) -> Option<&'source [u8]> {
+    let (start, end) = arena.pos_end_at(node)?;
+    source
+        .as_bytes()
+        .get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)
+}
+
+fn hash_callable_anchor_step(hash: &mut Sha256, step: CallableAnchorStep<'_>) {
+    let role = match step.child_role {
+        CallableChildRole::CallArgument => 0,
+        CallableChildRole::VariableInitializer => 1,
+        CallableChildRole::PropertyValue => 2,
+        CallableChildRole::ConditionalConsequent => 3,
+        CallableChildRole::ConditionalAlternate => 4,
+        CallableChildRole::ArrayElement => 5,
+        CallableChildRole::ObjectMemberValue => 6,
+        CallableChildRole::SignatureParameterType => 7,
+        CallableChildRole::TypeExpression => 8,
+        CallableChildRole::TypeAliasValue => 9,
+        CallableChildRole::CallSignatureMember => 10,
+        CallableChildRole::ConstructSignatureMember => 11,
+    };
+    hash.update([role]);
+    match step.parent {
+        CallableParentShape::Call => hash.update([0]),
+        CallableParentShape::VariableBinding(name) => {
+            hash.update([1]);
+            hash.update(u32::try_from(name.len()).unwrap_or(u32::MAX).to_le_bytes());
+            hash.update(name);
+        }
+        CallableParentShape::PropertyName(name) => {
+            hash.update([2]);
+            hash.update(u32::try_from(name.len()).unwrap_or(u32::MAX).to_le_bytes());
+            hash.update(name);
+        }
+        CallableParentShape::Conditional => hash.update([3]),
+        CallableParentShape::ArrayLiteral => hash.update([4]),
+        CallableParentShape::ObjectMember(name) => {
+            hash.update([5]);
+            hash.update(u32::try_from(name.len()).unwrap_or(u32::MAX).to_le_bytes());
+            hash.update(name);
+        }
+        CallableParentShape::SignatureParameter(name) => {
+            hash.update([6]);
+            hash.update(u32::try_from(name.len()).unwrap_or(u32::MAX).to_le_bytes());
+            hash.update(name);
+        }
+        CallableParentShape::TypeContainer(kind) => hash.update([7, kind as u8]),
+        CallableParentShape::TypeAliasName(name) => {
+            hash.update([8]);
+            hash.update(u32::try_from(name.len()).unwrap_or(u32::MAX).to_le_bytes());
+            hash.update(name);
+        }
+    }
 }
 
 /// Uses TSZ's exact bound symbol and stable declaration file/span to identify
@@ -4395,6 +4719,8 @@ pub(crate) fn collect_with_tsz<'source, 'session>(
         || source_path.ends_with(".d.cts");
     let program_files = &project.program().files;
     let program_identity = native_tsz_program_identity(program_files);
+    let source_identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
+    facts.set_native_tsz_identity(program_identity, *source_identity);
     macro_rules! lower_with_tsz_checker {
         ($checker:ident, $binder:ident, $bound_file:ident, $database:ident) => {{
             let build = |module: OxcModule<'_>| {
@@ -4495,6 +4821,9 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         self.pass_members()?;
         self.pass_checker()?;
         self.pass_narrowings()?;
+        if let Some(bound_file) = self.tsz_bound_file {
+            self.pass_native_tsz_anonymous_callables(bound_file)?;
+        }
         self.pass_references()?;
         self.pass_checker_references()?;
         self.pass_enum_member_accesses()?;
@@ -5586,6 +5915,208 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                         .map_err(fault)?,
                 )
                 .map_err(fault)?;
+        }
+        Ok(())
+    }
+
+    /// Adds occurrence facts resolved by the exact borrowed TSZ program.
+    /// OXC's source occurrences remain the fallback for unsupported syntax;
+    /// only a binder/checker-resolved member or identifier with a unique
+    /// stable declaration coordinate upgrades that existing site.
+    fn pass_native_tsz_anonymous_callables(
+        &mut self,
+        bound_file: &TszBoundFile,
+    ) -> Result<(), TypeScriptCollectError> {
+        let arena = &bound_file.arena;
+        let mut callables = Vec::new();
+        for (raw_node, node) in arena.nodes.iter().enumerate() {
+            let expression_callable = node.kind == TszSyntaxKind::ARROW_FUNCTION
+                || node.kind == TszSyntaxKind::FUNCTION_EXPRESSION;
+            let function_type = node.kind == TszSyntaxKind::FUNCTION_TYPE
+                || node.kind == TszSyntaxKind::CONSTRUCTOR_TYPE;
+            let call_signature = node.kind == TszSyntaxKind::CALL_SIGNATURE
+                || node.kind == TszSyntaxKind::CONSTRUCT_SIGNATURE;
+            if !expression_callable && !function_type && !call_signature {
+                continue;
+            }
+            let Ok(raw_node) = u32::try_from(raw_node) else {
+                continue;
+            };
+            let callable = TszNodeIndex(raw_node);
+            let step = if expression_callable {
+                let Some(function) = arena.get_function_at(callable) else {
+                    continue;
+                };
+                if !function.name.is_none() {
+                    continue;
+                }
+                native_tsz_callable_parent_step(self.source, arena, callable)
+            } else {
+                if function_type {
+                    if arena.get_function_type_at(callable).is_none() {
+                        continue;
+                    }
+                    native_tsz_function_type_parent_step(self.source, arena, callable)
+                } else {
+                    if arena.get_signature_at(callable).is_none() {
+                        continue;
+                    }
+                    native_tsz_call_signature_parent_step(arena, callable)
+                }
+            };
+            let Some((start, end)) = arena.pos_end_at(callable) else {
+                continue;
+            };
+            if start >= end || self.source.get(start as usize..end as usize).is_none() {
+                continue;
+            }
+            let Some(step) = step else {
+                continue;
+            };
+            callables.push(NativeAnonymousCallable {
+                span: Span::new(start, end),
+                step,
+                scope: None,
+            });
+        }
+        if callables.is_empty() {
+            return Ok(());
+        }
+
+        let mut events = Vec::with_capacity(self.facts.len + callables.len());
+        for ordinal in 0..self.facts.len {
+            if !ts_lexical_owner(
+                self.fact_kinds
+                    .get(ordinal)
+                    .copied()
+                    .unwrap_or(EntityKind::Parameter),
+            ) {
+                continue;
+            }
+            let (Some(&start), Some(&end)) =
+                (self.decl_starts.get(ordinal), self.decl_ends.get(ordinal))
+            else {
+                continue;
+            };
+            if start != UNSET && start < end {
+                events.push(NativeCallableScopeEvent::Named {
+                    start,
+                    end,
+                    ordinal,
+                });
+            }
+        }
+        for (index, callable) in callables.iter().enumerate() {
+            events.push(NativeCallableScopeEvent::Anonymous {
+                start: callable.span.start,
+                end: callable.span.end,
+                index,
+            });
+        }
+        events.sort_unstable_by_key(|event| match event {
+            NativeCallableScopeEvent::Named { start, end, .. } => {
+                (*start, std::cmp::Reverse(*end), 0_u8)
+            }
+            NativeCallableScopeEvent::Anonymous { start, end, .. } => {
+                (*start, std::cmp::Reverse(*end), 1_u8)
+            }
+        });
+
+        let mut root_scope = Sha256::new();
+        root_scope.update(b"compiler.typescript.anonymous-scope.v1\0");
+        let mut scope_stack = Vec::<(u32, Sha256, bool)>::new();
+        let mut family_counts = HashMap::<(CallableAnchorStep<'source>, [u8; 32]), u32>::new();
+        for event in events {
+            let (start, end) = match event {
+                NativeCallableScopeEvent::Named { start, end, .. }
+                | NativeCallableScopeEvent::Anonymous { start, end, .. } => (start, end),
+            };
+            while scope_stack
+                .last()
+                .is_some_and(|(outer_end, _, _)| *outer_end <= start)
+            {
+                scope_stack.pop();
+            }
+            let (mut scope, stable_scope) = scope_stack.last().map_or_else(
+                || (root_scope.clone(), true),
+                |(_, hash, stable)| (hash.clone(), *stable),
+            );
+            match event {
+                NativeCallableScopeEvent::Named { ordinal, .. } => {
+                    scope.update(b"\0named\0");
+                    let kind = self
+                        .fact_kinds
+                        .get(ordinal)
+                        .copied()
+                        .unwrap_or(EntityKind::Parameter);
+                    scope.update(u16::from(kind).to_le_bytes());
+                    let name_start = self.name_starts.get(ordinal).copied().unwrap_or(UNSET);
+                    let name_end = self.name_ends.get(ordinal).copied().unwrap_or(UNSET);
+                    let has_name = name_start != UNSET
+                        && name_start < name_end
+                        && self
+                            .source
+                            .get(name_start as usize..name_end as usize)
+                            .is_some_and(|name| !name.is_empty());
+                    if has_name {
+                        let Some(name) = self.source.get(name_start as usize..name_end as usize)
+                        else {
+                            continue;
+                        };
+                        scope.update(u32::try_from(name.len()).unwrap_or(u32::MAX).to_le_bytes());
+                        scope.update(name.as_bytes());
+                    } else {
+                        scope.update(b"\0unnameable-owner\0");
+                    }
+                    scope_stack.push((end, scope, stable_scope && has_name));
+                }
+                NativeCallableScopeEvent::Anonymous { index, .. } => {
+                    let Some(callable) = callables.get_mut(index) else {
+                        continue;
+                    };
+                    if stable_scope {
+                        let scope_id: [u8; 32] = scope.clone().finalize().into();
+                        callable.scope = Some(scope_id);
+                        let count = family_counts.entry((callable.step, scope_id)).or_insert(0);
+                        *count = count.saturating_add(1);
+                    }
+                    // Descendants inherit the parent family route, never its
+                    // body span. Exact site coordinates are attached only to
+                    // the current instance after its durable family is built.
+                    scope.update(b"\0anonymous-family\0");
+                    hash_callable_anchor_step(&mut scope, callable.step);
+                    scope_stack.push((end, scope, stable_scope));
+                }
+            }
+        }
+
+        for callable in callables {
+            let Some(scope) = callable.scope else {
+                continue;
+            };
+            let count = family_counts
+                .get(&(callable.step, scope))
+                .copied()
+                .unwrap_or(1);
+            let multiplicity =
+                AnonymousCallableFamilyMultiplicity::new(count).ok_or_else(lane_rejection)?;
+            self.pending_type_parameters = coordinate(self.facts.type_parameter_len)?;
+            let fact = SemanticFact::new(EntityKind::Function, &[], LEAF_PRODUCT)
+                .anonymous_callable_step(callable.step, multiplicity);
+            let ordinal = self.push(fact)?;
+            let index = usize::try_from(ordinal).map_err(|_| lane_rejection())?;
+            let staged = StagedSourceSpan::new(callable.span.start, callable.span.end).ok_or(
+                TypeScriptCollectError::Span {
+                    start: callable.span.start,
+                    end: callable.span.end,
+                },
+            )?;
+            self.facts
+                .attach_source_span(ordinal, staged)
+                .map_err(fault)?;
+            *self.decl_starts.get_mut(index).ok_or_else(lane_rejection)? = callable.span.start;
+            *self.decl_ends.get_mut(index).ok_or_else(lane_rejection)? = callable.span.end;
+            *self.fact_kinds.get_mut(index).ok_or_else(lane_rejection)? = EntityKind::Function;
         }
         Ok(())
     }
@@ -10450,9 +10981,11 @@ mod lane_tests {
         TszProjectModuleResolutionTarget, TszProjectOptions, TszProjectSemanticOptions,
     };
     use backend_semantic::ir::{
-        ComputedType, EntityKind, FragmentError, FragmentView, OccurrenceFault, OccurrenceTarget,
-        ReferenceKind, SemanticReader, TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeExpr, TypeId,
-        TypeQuery, TypeScriptSourceCoordinate,
+        AnonymousCallableAnchorView, AnonymousCallableFamilyMultiplicity, CallableChildRole,
+        CallableParentShape, CallableTypeContainerKind, ComputedType, DeclarationFamilyId,
+        EntityId, EntityKind, FragmentError, FragmentView, ItemName, LinkKind, OccurrenceFault,
+        OccurrenceTarget, ReferenceKind, SemanticReader, TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeExpr,
+        TypeId, TypeQuery, TypeScriptSourceCoordinate, VariantFingerprint,
     };
     use backend_semantic::vocabulary::{
         CompileRecipeFact, LanguageProfile, NativeTool, Stage, TypeScriptSource,
@@ -10853,6 +11386,58 @@ mod lane_tests {
         Ok(coordinates)
     }
 
+    type AnonymousCallableRow = (
+        EntityId,
+        DeclarationFamilyId,
+        VariantFingerprint,
+        u32,
+        u32,
+        AnonymousCallableFamilyMultiplicity,
+    );
+
+    fn anonymous_callable_rows(ir: &backend_semantic::ir::Ir) -> Vec<AnonymousCallableRow> {
+        ir.canonical_entities()
+            .filter_map(|entity| {
+                let ItemName::AnonymousCallable(anchor) = entity.name else {
+                    return None;
+                };
+                let encoded = ir.atom(anchor)?;
+                let anchor = AnonymousCallableAnchorView::try_from_encoded(encoded)?;
+                let multiplicity = anchor.family_multiplicity()?;
+                let span = entity.source?;
+                Some((
+                    entity.id,
+                    entity.version.family,
+                    entity.version.variant,
+                    span.start(),
+                    span.end(),
+                    multiplicity,
+                ))
+            })
+            .collect()
+    }
+
+    fn smallest_callable_containing<'rows>(
+        rows: &'rows [AnonymousCallableRow],
+        source: &str,
+        needle: &str,
+    ) -> Result<&'rows AnonymousCallableRow, LaneError> {
+        let start = u32::try_from(
+            source
+                .find(needle)
+                .ok_or(LaneError::Missing("anonymous callable source needle"))?,
+        )?;
+        let end = start
+            .checked_add(u32::try_from(needle.len())?)
+            .ok_or(LaneError::Scalar)?;
+        rows.iter()
+            .filter(|row| row.3 <= start && end <= row.4)
+            .min_by_key(|row| row.4.saturating_sub(row.3))
+            .ok_or(LaneError::Missing(
+                "anonymous callable enclosing source span",
+            ))
+    }
+
     #[test]
     fn native_tsz_joins_real_nest_controller_and_spec_calls_by_exact_owner() -> Result<(), LaneError>
     {
@@ -10949,20 +11534,331 @@ mod lane_tests {
 
         let spec_facts = collect_native_tsz_file(project, "src/app.controller.spec.ts", &spec)?;
         let spec_targets = staged_tsz_coordinates(&spec_facts)?;
-        let controller_start = u32::try_from(controller.find("getHello(): string").ok_or(
+        let controller_name_start = u32::try_from(controller.find("getHello(): string").ok_or(
             LaneError::Missing("Nest controller method source coordinate"),
         )?)?;
+        let controller_declaration_start = u32::try_from(controller.find("@Get()").ok_or(
+            LaneError::Missing("Nest controller method decorator coordinate"),
+        )?)?;
+        let controller_declaration_end_offset = controller
+            .get(controller_name_start as usize..)
+            .and_then(|body| body.find("\n  }").map(|end| end + 4))
+            .ok_or(LaneError::Missing("Nest controller method end coordinate"))?;
+        let controller_declaration_end = controller_name_start
+            .checked_add(u32::try_from(controller_declaration_end_offset)?)
+            .ok_or(LaneError::Missing("Nest controller method end coordinate"))?;
         assert!(
             spec_targets
                 .iter()
                 .any(|(kind, path, start, end, name, _)| {
                     *kind == ReferenceKind::MethodCall
                         && path == "src/app.controller.ts"
-                        && *start == controller_start
-                        && *end > *start
-                        && *name == controller_start
+                        && *start == controller_declaration_start
+                        && *end == controller_declaration_end
+                        && *name == controller_name_start
                 }),
             "spec call must name the exact controller declaration: {spec_targets:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_preserves_official_rxjs_bind_callback_overload_identities()
+    -> Result<(), LaneError> {
+        let source = include_str!(
+            "../../../tests/fixtures/typescript/rxjs-7.8.1/src/internal/observable/bindCallback.ts"
+        );
+        assert_eq!(source.len(), 6_800, "pinned upstream source byte length");
+        let digest = source_digest(source.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            digest, "67e2634b866722de677ba42e11b4d878d8642e76b580ff44d5328ed9bd34064f",
+            "pinned upstream source digest"
+        );
+
+        let mut checker = TszCheckerOptions::default();
+        checker.no_lib = true;
+        let options = TszProjectOptions {
+            checker,
+            semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+            module_resolutions: Vec::new(),
+            environment: TszEnvironmentFingerprint::from_sha256([0x6b; 32]),
+        };
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update(
+                vec![TszFileInput {
+                    path: "input.ts".to_owned(),
+                    source: source.to_owned(),
+                }],
+                options,
+                &[],
+            )
+            .map_err(|_| LaneError::Missing("RxJS TSZ project admission"))?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("RxJS TSZ project result"))?;
+        let mut facts = FactSet::new();
+        super::collect_with_tsz_unmetered_for_test(
+            TypeScriptSource::TypeScript,
+            source.as_bytes(),
+            project,
+            "input.ts",
+            &mut facts,
+        )?;
+        let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+        let scope = crate::driver::types::DeclarationScope::fixture();
+        let versions = super::super::identity::versions(&facts, scope, profile)?;
+        let mut duplicate_details = Vec::new();
+        for left in 0..versions.len() {
+            for right in left + 1..versions.len() {
+                if versions[left].family != versions[right].family
+                    || versions[left].variant != versions[right].variant
+                {
+                    continue;
+                }
+                let left_name = String::from_utf8_lossy(&facts.names[left]);
+                let right_name = String::from_utf8_lossy(&facts.names[right]);
+                duplicate_details.push(format!(
+                    "{left} {:?} {left_name:?} {:?} {:?} == {right} {:?} {right_name:?} {:?} {:?}",
+                    facts.kinds[left],
+                    facts.provenance.parentage()[left],
+                    facts.provenance.source_spans()[left],
+                    facts.kinds[right],
+                    facts.provenance.parentage()[right],
+                    facts.provenance.source_spans()[right],
+                ));
+            }
+        }
+        assert!(
+            duplicate_details.is_empty(),
+            "distinct source declarations collide in identity: {duplicate_details:?}"
+        );
+        let identity = backend_semantic::ir::SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
+            byte_len: u32::try_from(source.len())?,
+        };
+        let recipe = CompileRecipeFact::derive(
+            profile,
+            Stage::LowerIr,
+            NativeTool::TypeScriptCompiler,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"tsz-rxjs-overload-fixture"),
+        );
+        let ir = facts
+            .build_ir(profile, identity, recipe, scope)
+            .map_err(LaneError::Build)?;
+        let overloads = ir
+            .items()
+            .filter(|item| item.kind() == EntityKind::Function && item.name() == b"bindCallback")
+            .map(|item| item.version())
+            .collect::<Vec<_>>();
+        assert_eq!(overloads.len(), 3, "two signatures plus implementation");
+        for left in 0..overloads.len() {
+            for right in left + 1..overloads.len() {
+                assert_eq!(overloads[left].family, overloads[right].family);
+                assert_ne!(
+                    overloads[left].variant, overloads[right].variant,
+                    "distinct upstream overloads keep distinct declaration instances"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_owns_nested_alias_and_call_signature_types() -> Result<(), LaneError> {
+        let source = "type Direct = (...args: any[]) => void;\n\
+type Nested = (callback: (...args: any[]) => void) => void;\n\
+type NestedTuple = (...args: [(...items: any[]) => void]) => void;\n\
+type Container = {\n\
+  (...args: any[]): void;\n\
+  new (...args: any[]): Container;\n\
+};\n";
+        let ir = owned_tsz_ir(source)?;
+        let rows = anonymous_callable_rows(&ir);
+        assert_eq!(rows.len(), 7, "each source callable type has an exact row");
+
+        let anchors = rows
+            .iter()
+            .map(|row| {
+                ir.item(row.0)
+                    .and_then(|item| item.name().anonymous_anchor())
+                    .and_then(|anchor| anchor.steps())
+                    .ok_or(LaneError::Missing("typed callable source anchor"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        assert!(anchors.iter().flatten().any(|step| {
+            step.child_role == CallableChildRole::TypeAliasValue
+                && step.parent == CallableParentShape::TypeAliasName(b"Direct")
+        }));
+        assert!(
+            anchors.iter().flatten().any(|step| {
+                step.child_role == CallableChildRole::TypeExpression
+                    && matches!(
+                        step.parent,
+                        CallableParentShape::TypeContainer(CallableTypeContainerKind::Tuple)
+                    )
+            }),
+            "nested type-expression anchors: {anchors:?}"
+        );
+        assert!(anchors.iter().flatten().any(|step| {
+            step.child_role == CallableChildRole::SignatureParameterType
+                && step.parent == CallableParentShape::SignatureParameter(b"callback")
+        }));
+        let call_signatures = anchors
+            .iter()
+            .flatten()
+            .filter(|step| step.child_role == CallableChildRole::CallSignatureMember)
+            .count();
+        let construct_signatures = anchors
+            .iter()
+            .flatten()
+            .filter(|step| step.child_role == CallableChildRole::ConstructSignatureMember)
+            .count();
+        assert_eq!(call_signatures, 1);
+        assert_eq!(construct_signatures, 1);
+        for (row, anchor) in rows.iter().zip(&anchors) {
+            if anchor.iter().any(|step| {
+                matches!(
+                    step.child_role,
+                    CallableChildRole::CallSignatureMember
+                        | CallableChildRole::ConstructSignatureMember
+                )
+            }) {
+                assert_eq!(
+                    row.5,
+                    AnonymousCallableFamilyMultiplicity::Unique,
+                    "call and construct signatures have distinct typed roles"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_anonymous_callables_keep_instance_sites_and_ambiguous_families()
+    -> Result<(), LaneError> {
+        let source = "function helper(value: number) { return value; }\n\
+const wrapper = (seed: number) => {\n\
+  const captured = seed;\n\
+  return [seed].map((entry: number) => helper(captured + entry));\n\
+};\n\
+describe('suite', () => {\n\
+  it('one', () => helper(1));\n\
+  it('two', () => helper(2));\n\
+});\n";
+        let ir = owned_tsz_ir(source)?;
+        let rows = anonymous_callable_rows(&ir);
+        assert_eq!(rows.len(), 5, "every supported arrow has an exact item row");
+
+        let one = smallest_callable_containing(&rows, source, "helper(1)")?;
+        let two = smallest_callable_containing(&rows, source, "helper(2)")?;
+        assert_eq!(one.1, two.1, "same-role siblings share a durable family");
+        assert_ne!(one.0, two.0, "ambiguous siblings retain separate item rows");
+        assert_ne!(one.2, two.2, "source sites distinguish current instances");
+        assert_ne!((one.3, one.4), (two.3, two.4));
+        let ambiguous = AnonymousCallableFamilyMultiplicity::Ambiguous { instance_count: 2 };
+        assert_eq!(one.5, ambiguous);
+        assert_eq!(two.5, ambiguous);
+        assert!(
+            matches!(ir.item(one.0).map(|item| item.name()), Some(name) if name.named_bytes().is_none() && name.anonymous_anchor().is_some())
+        );
+
+        let helper = ir
+            .canonical_entities()
+            .find(|entity| {
+                entity.kind == EntityKind::Function
+                    && entity.name.named_atom().and_then(|atom| ir.atom(atom))
+                        == Some(&b"helper"[..])
+            })
+            .ok_or(LaneError::Missing("named helper declaration"))?;
+        let call_start = source
+            .find("helper(captured + entry)")
+            .ok_or(LaneError::Missing("captured helper call"))?;
+        let call_start_u32 = u32::try_from(call_start)?;
+        let call_end_u32 = u32::try_from(
+            call_start
+                .checked_add("helper".len())
+                .ok_or(LaneError::Scalar)?,
+        )?;
+        let call_link = ir
+            .link_occurrences()
+            .find_map(|(_, occurrence)| {
+                let site = occurrence.source?;
+                let start = usize::try_from(site.start()).ok()?;
+                let end = usize::try_from(site.end()).ok()?;
+                (start == call_start && source.get(start..end) == Some("helper"))
+                    .then(|| ir.link(occurrence.link))?
+            })
+            .ok_or(LaneError::Missing("captured helper call relation"))?;
+        assert_eq!(call_link.kind, LinkKind::Calls);
+        assert_eq!(
+            call_link.target,
+            backend_semantic::ir::LinkTarget::Local(helper.id)
+        );
+        let map_owner = rows
+            .iter()
+            .filter(|row| row.3 <= call_start_u32 && call_end_u32 <= row.4)
+            .min_by_key(|row| row.4.saturating_sub(row.3))
+            .ok_or(LaneError::Missing("map callback owner"))?;
+        assert_eq!(
+            call_link.from, map_owner.0,
+            "captured call stays owned by its arrow"
+        );
+
+        let body_edited = source.replace("helper(1)", "helper(10000)");
+        let body_ir = owned_tsz_ir(&body_edited)?;
+        let body_rows = anonymous_callable_rows(&body_ir);
+        let edited_one = smallest_callable_containing(&body_rows, &body_edited, "helper(10000)")?;
+        let edited_two = smallest_callable_containing(&body_rows, &body_edited, "helper(2)")?;
+        assert_eq!(
+            edited_one.1, one.1,
+            "body edits preserve callable family lineage"
+        );
+        assert_eq!(
+            edited_two.1, two.1,
+            "enclosing callback body edits preserve child lineage"
+        );
+        assert_eq!(edited_one.5, ambiguous);
+        assert_eq!(edited_two.5, ambiguous);
+        assert_ne!((edited_one.3, edited_one.4), (one.3, one.4));
+
+        let relabeled = source.replace("describe('suite'", "describe('a longer suite'");
+        let relabeled_ir = owned_tsz_ir(&relabeled)?;
+        let relabeled_rows = anonymous_callable_rows(&relabeled_ir);
+        let relabeled_one = smallest_callable_containing(&relabeled_rows, &relabeled, "helper(1)")?;
+        let relabeled_two = smallest_callable_containing(&relabeled_rows, &relabeled, "helper(2)")?;
+        assert_eq!(
+            relabeled_one.1, one.1,
+            "description text is not route identity"
+        );
+        assert_eq!(
+            relabeled_two.1, two.1,
+            "description text is not route identity"
+        );
+
+        let order = "  it('one', () => helper(1));\n  it('two', () => helper(2));";
+        let reversed = "  it('two', () => helper(2));\n  it('one', () => helper(1));";
+        let reordered = source.replace(order, reversed);
+        let reordered_ir = owned_tsz_ir(&reordered)?;
+        let reordered_rows = anonymous_callable_rows(&reordered_ir);
+        let reordered_one = smallest_callable_containing(&reordered_rows, &reordered, "helper(1)")?;
+        let reordered_two = smallest_callable_containing(&reordered_rows, &reordered, "helper(2)")?;
+        assert_eq!(
+            reordered_one.1, one.1,
+            "sibling reordering preserves the family"
+        );
+        assert_eq!(
+            reordered_two.1, two.1,
+            "sibling reordering preserves the family"
+        );
+        assert_eq!(
+            reordered_rows.len(),
+            rows.len(),
+            "reordering keeps both instances"
         );
         Ok(())
     }
@@ -11817,18 +12713,19 @@ mod lane_tests {
         let mut route_entity = None;
         let mut app_parameter = None;
         for entity in ir.canonical_entities() {
-            if ir.atom(entity.name) == Some(b"route".as_slice())
+            if entity.name.named_atom().and_then(|atom| ir.atom(atom)) == Some(b"route".as_slice())
                 && entity.kind == EntityKind::Function
             {
                 route_span = entity.source;
                 route_entity = Some(entity.id);
             }
-            if ir.atom(entity.name) == Some(b"app".as_slice())
+            if entity.name.named_atom().and_then(|atom| ir.atom(atom)) == Some(b"app".as_slice())
                 && entity.kind == EntityKind::Parameter
             {
                 app_parameter = Some(entity.id);
             }
-            if ir.atom(entity.name) == Some(b"Context".as_slice())
+            if entity.name.named_atom().and_then(|atom| ir.atom(atom))
+                == Some(b"Context".as_slice())
                 && entity.kind == EntityKind::Reexport
             {
                 context_span = entity.source;

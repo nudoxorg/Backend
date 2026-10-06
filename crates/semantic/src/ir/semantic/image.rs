@@ -20,14 +20,15 @@ use super::packed_types::{
     TypeParameterBound,
 };
 use super::relations::{
-    DocFragment, EntityVersion, ExternalTarget, Link, LinkOccurrence, SourceSpan,
+    AnonymousCallableAnchorView, DocFragment, EntityVersion, ExternalTarget, ItemName,
+    ItemNameView, Link, LinkOccurrence, SourceSpan,
 };
 use super::type_model::{
     ComputedTypeId, TypeExpr, TypeState, TypedTypeId, Visibility, reopened_computed_type,
 };
 use crate::ir::{
-    AtomId, AtomTable, DeclarationFamilyId, DeclarationIdentity, EntityAuthorityColumns,
-    EntityId, ImageProvenance, ListTable, OccurrenceAuthorityColumns, TextId, TypeId,
+    AtomId, AtomTable, DeclarationFamilyId, DeclarationIdentity, EntityAuthorityColumns, EntityId,
+    ImageProvenance, ListTable, OccurrenceAuthorityColumns, TextId, TypeId,
     authority::{AuthorityColumns, OccurrenceAuthorityColumn},
 };
 
@@ -416,13 +417,18 @@ impl Ir {
     /// Binary-searches the precomputed raw-byte name index.
     #[must_use]
     pub fn items_named(&self, name: &[u8]) -> ItemIdIter<'_> {
-        let start = self
-            .indices
-            .name
-            .partition_point(|id| self.atom(self.items.names[id.index()]).unwrap_or(&[]) < name);
-        let end = self.indices.name[start..]
-            .partition_point(|id| self.atom(self.items.names[id.index()]).unwrap_or(&[]) == name)
-            + start;
+        let start = self.indices.name.partition_point(|id| {
+            let atom = self.items.names[id.index()]
+                .named_atom()
+                .expect("name index contains only named rows");
+            self.atom(atom).unwrap_or(&[]) < name
+        });
+        let end = self.indices.name[start..].partition_point(|id| {
+            let atom = self.items.names[id.index()]
+                .named_atom()
+                .expect("name index contains only named rows");
+            self.atom(atom).unwrap_or(&[]) == name
+        }) + start;
         ItemIdIter {
             ir: self,
             ids: &self.indices.name[start..end],
@@ -592,12 +598,15 @@ impl<'ir> ItemView<'ir> {
     pub fn version(self) -> EntityVersion {
         self.ir.items.versions[self.id.index()]
     }
-    /// Resolves the declaration's exact name bytes for the lifetime of the IR.
+    /// Resolves the declaration's tagged name for the lifetime of the IR.
     #[must_use]
-    pub fn name(self) -> &'ir [u8] {
-        self.ir
-            .atom(self.ir.items.names[self.id.index()])
-            .unwrap_or(&[])
+    pub fn name(self) -> ItemNameView<'ir> {
+        match self.ir.items.names[self.id.index()] {
+            ItemName::Named(name) => ItemNameView::Named(self.ir.atom(name).unwrap_or(&[])),
+            ItemName::AnonymousCallable(anchor) => ItemNameView::AnonymousCallable {
+                anchor: AnonymousCallableAnchorView::new(self.ir.atom(anchor).unwrap_or(&[])),
+            },
+        }
     }
     /// Resolves the declaration's child entity coordinates in member order.
     #[must_use]

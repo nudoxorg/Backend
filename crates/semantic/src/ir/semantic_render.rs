@@ -50,6 +50,14 @@ pub enum UnsupportedSemanticStage {
         /// Declaration whose type cannot be placed without a selected dialect.
         entity: EntityId,
     },
+    /// A source-written neutral identifier is unavailable for this callable.
+    #[error(
+        "neutral declaration rendering cannot print the anonymous callable anchor for entity {entity:?} as a source name"
+    )]
+    AnonymousCallableName {
+        /// Anonymous callable whose structural anchor is not a display name.
+        entity: EntityId,
+    },
     /// The selected profile needs a language-specific declaration grammar.
     #[error(
         "profile {profile:?} requires a language declaration syntax renderer for entity {entity:?}"
@@ -211,9 +219,13 @@ pub fn prepare_neutral<'image, R: SemanticCoreReader + ?Sized>(
     if entity.authority.semantic_type == FactAvailability::Captured {
         return Err(UnsupportedSemanticStage::NeutralTypeSuffix { entity: entity.id }.into());
     }
-    let name = reader.atom(entity.name).ok_or(RenderFailure::MissingAtom {
+    let name_atom = entity
+        .name
+        .named_atom()
+        .ok_or_else(|| UnsupportedSemanticStage::AnonymousCallableName { entity: entity.id })?;
+    let name = reader.atom(name_atom).ok_or(RenderFailure::MissingAtom {
         entity: entity.id,
-        atom: entity.name,
+        atom: name_atom,
     })?;
     let encoded_len = neutral_len(entity, name)
         .ok_or(RenderFailure::OutputLengthOverflow { entity: entity.id })?;

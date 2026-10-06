@@ -1,12 +1,10 @@
 use super::ids::{LinkOccurrenceId, TreeEntityId};
 use super::language_facts::SemanticImageAuthority;
-use super::packed_types::{
-    CallableElementRole, TupleElementKind, TypeParameterRequirements,
-};
+use super::packed_types::{CallableElementRole, TupleElementKind, TypeParameterRequirements};
 use crate::ir::{
-    AuthorityFactFault, CapacityError, DeclarationIdentity, EntityId,
-    ImageProvenanceClaim, PreimageOverflow, ProductChildRole, SignatureCarrierBindingRole,
-    SourceIdentity, TypeId, VariantFingerprint,
+    AuthorityFactFault, CapacityError, DeclarationIdentity, EntityId, ImageProvenanceClaim,
+    PreimageOverflow, ProductChildRole, SignatureCarrierBindingRole, SourceIdentity, TypeId,
+    VariantFingerprint,
 };
 use crate::vocabulary::{CompileRecipeFact, Language, LanguageProfile};
 use core::fmt;
@@ -101,6 +99,9 @@ pub enum LanguageExtensionViolation {
 /// Failure while condensing or validating frontend IR.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuildError {
+    /// A tree item supplied both a source name and an anonymous anchor, or
+    /// supplied neither; item names must use exactly one typed variant.
+    AnonymousCallableName,
     /// A builder operation exceeded a premeasured storage capacity.
     Capacity(CapacityError),
     /// A tree-local entity ID is outside the borrowed tree's entity rows.
@@ -306,6 +307,37 @@ pub enum BuildError {
         /// Precise vocabulary validation failure for its declaration facts.
         cause: crate::ir::DeclarationKeyFault,
     },
+    /// A typed named/anonymous declaration key violated its closed vocabulary.
+    TypedDeclarationKey {
+        /// Entity for which the typed declaration key could not be formed.
+        entity: EntityId,
+        /// Exact typed-name validation fault.
+        cause: crate::ir::TypedDeclarationKeyFault,
+    },
+    /// An anonymous callable has no exact native project/source witness.
+    AnonymousCallableSourceUnavailable {
+        /// Entity whose source coordinate is missing.
+        entity: EntityId,
+    },
+    /// An admitted anonymous-callable route failed its own bounded decoder.
+    AnonymousCallableAnchorInvalid {
+        /// Entity carrying the malformed encoded route.
+        entity: EntityId,
+    },
+    /// The anonymous callable's exact source range failed coordinate validation.
+    AnonymousCallableSourceCoordinate {
+        /// Entity whose source coordinate is malformed.
+        entity: EntityId,
+        /// Exact source-coordinate validation fault.
+        cause: crate::ir::TypeScriptCallableCoordinateFault,
+    },
+    /// The exact source-site witness does not bind to the typed anonymous family.
+    AnonymousCallableInstance {
+        /// Entity whose family/site binding failed.
+        entity: EntityId,
+        /// Exact current-instance validation fault.
+        cause: crate::ir::AnonymousCallableInstanceFault,
+    },
     /// The central scoped declaration-key writer rejected its exact framed
     /// preimage.  This preserves profile/parentage/collision-width causes.
     ScopedDeclarationPreimage {
@@ -436,6 +468,9 @@ impl From<CapacityError> for BuildError {
 impl fmt::Display for BuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::AnonymousCallableName => {
+                formatter.write_str("item must have exactly one typed name or callable anchor")
+            }
             Self::Capacity(error) => error.fmt(formatter),
             Self::InvalidTreeEntity { raw, count } => {
                 write!(formatter, "tree entity {raw} is outside tree size {count}")
@@ -510,6 +545,31 @@ impl fmt::Display for BuildError {
                     entity.raw
                 )
             }
+            Self::TypedDeclarationKey { entity, cause } => write!(
+                formatter,
+                "entity {} has an invalid typed declaration key: {cause:?}",
+                entity.raw
+            ),
+            Self::AnonymousCallableSourceUnavailable { entity } => write!(
+                formatter,
+                "anonymous callable entity {} has no exact native source witness",
+                entity.raw
+            ),
+            Self::AnonymousCallableAnchorInvalid { entity } => write!(
+                formatter,
+                "anonymous callable entity {} has invalid stored anchor evidence",
+                entity.raw
+            ),
+            Self::AnonymousCallableSourceCoordinate { entity, cause } => write!(
+                formatter,
+                "anonymous callable entity {} has an invalid source coordinate: {cause:?}",
+                entity.raw
+            ),
+            Self::AnonymousCallableInstance { entity, cause } => write!(
+                formatter,
+                "anonymous callable entity {} has an invalid current instance: {cause:?}",
+                entity.raw
+            ),
             Self::ScopedDeclarationPreimage { entity, cause } => write!(
                 formatter,
                 "entity {} has an invalid scoped declaration preimage: {cause:?}",

@@ -139,6 +139,7 @@ fn semantic_image(
     let items = [
         TreeItemInput {
             name: b"unchanged",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -155,6 +156,7 @@ fn semantic_image(
         },
         TreeItemInput {
             name: b"changed-body",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -172,6 +174,7 @@ fn semantic_image(
         },
         TreeItemInput {
             name: if after { b"added" } else { b"deleted" },
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -188,6 +191,7 @@ fn semantic_image(
         },
         TreeItemInput {
             name: b"stable-target",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {

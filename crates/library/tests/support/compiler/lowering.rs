@@ -256,6 +256,15 @@ pub(crate) struct GoldenProjectionSpan {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum GoldenProjectionAdmissionFault {
     EmptyName,
+    AnonymousCallableAnchor {
+        cause: GoldenAnonymousCallableAnchorFault,
+    },
+    AnonymousCallableAnchorPoolCapacity {
+        pool: GoldenAnonymousCallableAnchorPool,
+        used: u64,
+        requested: u64,
+        capacity: u64,
+    },
     Capacity,
     ChildCapacity,
     ProductChildPoolCapacity {
@@ -348,6 +357,21 @@ pub(crate) enum GoldenProjectionAdmissionFault {
         existing_member: Option<u32>,
         requested_member: Option<u32>,
     },
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenAnonymousCallableAnchorFault {
+    InvalidRoute,
+    Encoding,
+    SourceIdentityUnavailable,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenAnonymousCallableAnchorPool {
+    Entries,
+    Bytes,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -1732,6 +1756,29 @@ impl From<backend_semantic::vocabulary::ProjectionAdmissionFault> for GoldenProj
         use backend_semantic::vocabulary::ProjectionAdmissionFault;
         match fault {
             ProjectionAdmissionFault::EmptyName => Self::EmptyName,
+            ProjectionAdmissionFault::AnonymousCallableAnchor { cause } => {
+                Self::AnonymousCallableAnchor {
+                    cause: match cause {
+                        backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorFault::InvalidRoute => GoldenAnonymousCallableAnchorFault::InvalidRoute,
+                        backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorFault::Encoding => GoldenAnonymousCallableAnchorFault::Encoding,
+                        backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorFault::SourceIdentityUnavailable => GoldenAnonymousCallableAnchorFault::SourceIdentityUnavailable,
+                    },
+                }
+            }
+            ProjectionAdmissionFault::AnonymousCallableAnchorPoolCapacity {
+                pool,
+                used,
+                requested,
+                capacity,
+            } => Self::AnonymousCallableAnchorPoolCapacity {
+                pool: match pool {
+                    backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorPool::Entries => GoldenAnonymousCallableAnchorPool::Entries,
+                    backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorPool::Bytes => GoldenAnonymousCallableAnchorPool::Bytes,
+                },
+                used,
+                requested,
+                capacity,
+            },
             ProjectionAdmissionFault::Capacity => Self::Capacity,
             ProjectionAdmissionFault::ChildCapacity => Self::ChildCapacity,
             ProjectionAdmissionFault::ProductChildPoolCapacity {
