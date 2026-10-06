@@ -80,6 +80,7 @@ pub(super) fn analyze(
         .collect::<Vec<_>>();
     let mut imports = BTreeMap::new();
     let mut candidates = BTreeMap::new();
+    let mut compiled_imports = BTreeSet::new();
     let mut roots = BTreeSet::new();
     for handle in &handles {
         let config = finder.python_file(handle.module_kind(), handle.path());
@@ -145,34 +146,47 @@ pub(super) fn analyze(
                     for component in module.as_str().split('.').filter(|part| !part.is_empty()) {
                         prefix.push(component);
                         let mut paths = vec![
-                            prefix.clone(),
-                            prefix.join("__init__.pyi"),
-                            prefix.join("__init__.py"),
-                            prefix.with_extension("pyi"),
-                            prefix.with_extension("py"),
+                            (prefix.clone(), true),
+                            (prefix.join("__init__.pyi"), true),
+                            (prefix.join("__init__.py"), true),
+                            (prefix.with_extension("pyi"), true),
+                            (prefix.with_extension("py"), true),
                         ];
                         paths.extend(
                             pyrefly_python::COMPILED_FILE_SUFFIXES
                                 .iter()
-                                .map(|suffix| prefix.with_extension(suffix)),
+                                .map(|suffix| (prefix.with_extension(suffix), false)),
                         );
-                        for path in paths {
+                        for (path, requires_source_capture) in paths {
                             checkpoint(control)?;
-                            if candidates.contains_key(&path) {
-                                continue;
-                            }
-                            let probe = CandidateWitness::capture(path.clone())?;
+                            let probe = match candidates.entry(path.clone()) {
+                                std::collections::btree_map::Entry::Occupied(entry) => {
+                                    entry.into_mut()
+                                }
+                                std::collections::btree_map::Entry::Vacant(entry) => {
+                                    entry.insert(CandidateWitness::capture(path.clone())?)
+                                }
+                            };
                             let relative = path
                                 .strip_prefix(original_root)
                                 .expect("configured package-local root");
-                            if probe.is_present() && !mirror.join(relative).exists() {
+                            if probe.is_present() && !requires_source_capture {
+                                compiled_imports.insert((
+                                    source.relative_path,
+                                    import.span.start,
+                                    import.span.end,
+                                ));
+                            }
+                            if requires_source_capture
+                                && probe.is_present()
+                                && !mirror.join(relative).exists()
+                            {
                                 return Err(CheckerError::IncompleteSourceFrontier {
                                     source_path: source.relative_path.into(),
                                     module: module.as_str().into(),
                                     candidate: path,
                                 });
                             }
-                            candidates.insert(path, probe);
                         }
                     }
                 }
@@ -552,7 +566,15 @@ pub(super) fn analyze(
                     coverage_gaps.push(PythonProjectCoverageGap {
                         relative_path: source.relative_path.into(),
                         span: import.span,
-                        kind: PythonProjectCoverageGapKind::UnavailableImport,
+                        kind: if compiled_imports.contains(&(
+                            source.relative_path,
+                            import.span.start,
+                            import.span.end,
+                        )) {
+                            PythonProjectCoverageGapKind::UnavailableCompiledImport
+                        } else {
+                            PythonProjectCoverageGapKind::UnavailableImport
+                        },
                     });
                 }
                 ImportResolution {

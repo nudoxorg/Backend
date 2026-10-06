@@ -334,6 +334,92 @@ fn native_project_cannot_bind_uncaptured_files_or_external_configured_roots() {
 }
 
 #[test]
+fn native_compiled_dependency_is_typed_unavailable_with_a_membership_witness() {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-python-compiled-import-test-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).expect("fixture root");
+    let compiled = root.join("native_ext.pyx");
+    std::fs::write(&compiled, "cdef int value = 42\n").expect("Cython source, not Python");
+    let source = "import native_ext\n\ndef known():\n    return 42\n";
+    let sources = [PythonProjectSource {
+        relative_path: "core.py",
+        source,
+    }];
+    let checker = NativePythonProjectAuthority::admit().expect("compiled native producer");
+    let cancelled = AtomicBool::new(false);
+    let report = checker
+        .analyze_project(
+            &root,
+            "pkg",
+            &sources,
+            PythonVersion::Python314,
+            publication_control(&cancelled),
+        )
+        .expect("an unavailable compiled extension does not refuse the Python project");
+    assert!(
+        report
+            .module("core.py")
+            .expect("core module")
+            .imports
+            .iter()
+            .any(|import| import.module == "native_ext" && !import.resolved),
+        "no fabricated native-extension binding"
+    );
+    let gap = report
+        .coverage_gaps()
+        .iter()
+        .find(|gap| gap.kind == PythonProjectCoverageGapKind::UnavailableCompiledImport)
+        .expect("typed compiled dependency coverage gap");
+    assert_eq!(gap.relative_path.as_ref(), "core.py");
+    assert_eq!(
+        &source[gap.span.start as usize..gap.span.end as usize],
+        "native_ext"
+    );
+    assert!(
+        report
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.kind.as_ref() == "missing-import"),
+        "actual native diagnostics remain available"
+    );
+    report
+        .witness()
+        .validate_current(publication_control(&cancelled))
+        .expect("unchanged candidate witness");
+    std::fs::remove_file(&compiled).expect("change compiled candidate membership");
+    assert!(
+        report
+            .witness()
+            .validate_current(publication_control(&cancelled))
+            .is_err(),
+        "compiled candidate presence remains publication-bound"
+    );
+    let absent = checker
+        .analyze_project(
+            &root,
+            "pkg",
+            &sources,
+            PythonVersion::Python314,
+            publication_control(&cancelled),
+        )
+        .expect("absent compiled candidate");
+    assert_ne!(
+        report.witness().fingerprint(),
+        absent.witness().fingerprint(),
+        "compiled candidate membership changes input identity"
+    );
+    assert!(
+        absent
+            .coverage_gaps()
+            .iter()
+            .any(|gap| gap.kind == PythonProjectCoverageGapKind::UnavailableImport)
+    );
+    std::fs::remove_dir_all(&root).expect("cleanup");
+}
+
+#[test]
 fn namespace_and_wildcard_frontiers_refuse_unselected_internal_children() {
     let root = std::env::temp_dir().join(format!(
         "nudox-python-namespace-test-{}",

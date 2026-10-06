@@ -175,6 +175,8 @@ pub enum PythonProjectCoverageGapKind {
     WildcardImport,
     /// The native solver could not resolve this import binding.
     UnavailableImport,
+    /// A compiled-extension candidate exists, but has no captured Python authority.
+    UnavailableCompiledImport,
 }
 
 /// Typed partial dependency coverage with its original captured source range.
