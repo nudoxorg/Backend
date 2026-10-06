@@ -1,0 +1,1871 @@
+{
+  "schema": "nudox.cli-mcp.functional-evidence.v1",
+  "created_at": "2026-10-06T10:00:27.910965+00:00",
+  "source": {
+    "commit": "9f44dae6342fb286178178bda5be33ea79d969a4",
+    "tree": "ad83c231bb9f1d4612093d4c6ff14dcf916cd6b3"
+  },
+  "executables": {
+    "backend-locald": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-locald",
+      "sha256": "5344cc4d2d82c6a087a70556c75ff3d529148f08f6e27c66f1efd7b354191180",
+      "bytes": 105356480
+    },
+    "backend-cli": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-cli",
+      "sha256": "8c78bb9d91af25baac20dbf4188cfedca7429394400864e371420b324f6b989c",
+      "bytes": 43079608
+    },
+    "backend-mcp": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-mcp",
+      "sha256": "556666f2812960579ba0cd1cf406f9072ac8ef69617908810ecb3555ae9ea4a7",
+      "bytes": 31800632
+    }
+  },
+  "candidate_runtime_manifest_sha256": "08500de7a408dd4f6961f793f6b2a47570ece6e3b23d99a0ae3d53d8af873067",
+  "runtime_scope": "configured internal candidate; independent stock install and exact selected native tool process identity not established",
+  "whole_package_acceptance_passes": 0,
+  "raw_evidence": [
+    {
+      "file": "go-cancel.json",
+      "durable_local_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/dto19-deep-final/go-cancel.json",
+      "bytes": 27949,
+      "sha256": "d2f0c9f81f10f2522d0001baf537d216e77dd28c9577a6160264b49101da2576"
+    },
+    {
+      "file": "go-cold.json",
+      "durable_local_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/dto19-deep-final/go-cold.json",
+      "bytes": 625149,
+      "sha256": "22d0936d65828fbc8e4b2e3005abc72ea118a3d8b4ba1276e6de7f0230cd866e"
+    },
+    {
+      "file": "go-initial.json",
+      "durable_local_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/dto19-deep-final/go-initial.json",
+      "bytes": 29275,
+      "sha256": "186a937530bf522ec806debe5cc1b9e140e1b20a874ee1471b9f3ad999e7876f"
+    },
+    {
+      "file": "requests-function.json",
+      "durable_local_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/dto19-deep-final/requests-function.json",
+      "bytes": 932277,
+      "sha256": "cf32db98c66763d4dc5665a6ef08d76cbee3645675d5ff32a88905101f3389cd"
+    },
+    {
+      "file": "requests-initial.json",
+      "durable_local_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/dto19-deep-final/requests-initial.json",
+      "bytes": 244281,
+      "sha256": "14ae206151023ad0a627ca8783e8db026437bdc0fe783649da9762423ff37024"
+    },
+    {
+      "file": "requests-session.json",
+      "durable_local_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/dto19-deep-final/requests-session.json",
+      "bytes": 1346922,
+      "sha256": "f4bde7df4a6ac5a933ba85c9b390c429cfebf4dbfe10c451a5c1032809f9e7fb"
+    },
+    {
+      "file": "semver-cold-wire.jsonl",
+      "durable_local_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/dto19-deep-final/semver-cold-wire.jsonl",
+      "bytes": 65172,
+      "sha256": "279cec9062da680c5332ee51fffdc20d818522085b0595b467e57d6f70ff4cfa"
+    },
+    {
+      "file": "semver-deep.json",
+      "durable_local_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/dto19-deep-final/semver-deep.json",
+      "bytes": 1207243,
+      "sha256": "c661f3c742554a5598ec9806d804c67627f7797ddcf5953230c72dce5e41392b"
+    },
+    {
+      "file": "semver-initial.json",
+      "durable_local_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/dto19-deep-final/semver-initial.json",
+      "bytes": 101015,
+      "sha256": "4d80faeda0e3b5e7960110044e7dadc23ed9b2ea57e7b99422741107a93568d6"
+    },
+    {
+      "file": "semver-persistent.json",
+      "durable_local_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/dto19-deep-final/semver-persistent.json",
+      "bytes": 123718,
+      "sha256": "a853a15940a2653994293a66c49b0e13c823533043215fe1cb098e5651a0762b"
+    },
+    {
+      "file": "semver-warm-wire.jsonl",
+      "durable_local_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/dto19-deep-final/semver-warm-wire.jsonl",
+      "bytes": 88567,
+      "sha256": "5f8c43cac5be0b7d511162ad589126382112fb8515c143e4c66661f34ed36f1f"
+    }
+  ],
+  "requests_request": {
+    "coordinate": "/root/nudox-corpus-20261006/python/packages/pypi-requests-2.34.2/source/requests-2.34.2::semantic::0b86cb8576017c19627760626eb3f8d80078d3ac9418e434dddb50d9ac6e97c4::request",
+    "resolved_identity": {
+      "coordinate": "/root/nudox-corpus-20261006/python/packages/pypi-requests-2.34.2/source/requests-2.34.2::semantic::0b86cb8576017c19627760626eb3f8d80078d3ac9418e434dddb50d9ac6e97c4::request",
+      "trail": "requests-2.34.2 › src/requests/api.py:24 › request",
+      "name": "request",
+      "shape": "semantic",
+      "project": "/root/nudox-corpus-20261006/python/packages/pypi-requests-2.34.2/source/requests-2.34.2",
+      "path": "src/requests/api.py",
+      "line": 24,
+      "segments": [
+        "request"
+      ],
+      "key": "0ecca7ef"
+    },
+    "source_checks": {
+      "cold-retained": {
+        "pass": true
+      },
+      "second-cold-old-coordinate": {
+        "pass": true
+      }
+    },
+    "reference_checks": {
+      "cold-retained": {
+        "pass": true,
+        "proof": {
+          "required_sites": 7,
+          "returned_sites": 7,
+          "coverage_claim": "required-source-obligations; not the complete reference universe",
+          "required_endpoint_identities": [
+            {
+              "source": {
+                "path": "src/requests/api.py",
+                "start": 3844,
+                "end": 3851
+              },
+              "semantic_targets": [
+                {
+                  "declaration": {
+                    "family": [
+                      11,
+                      134,
+                      203,
+                      133,
+                      118,
+                      1,
+                      124,
+                      25,
+                      98,
+                      119,
+                      96,
+                      98,
+                      110,
+                      179,
+                      248,
+                      216
+                    ],
+                    "variant": [
+                      0,
+                      120,
+                      211,
+                      172,
+                      148,
+                      24,
+                      228,
+                      52,
+                      221,
+                      219,
+                      80,
+                      217,
+                      172,
+                      110,
+                      151,
+                      196
+                    ]
+                  },
+                  "scope": "local"
+                }
+              ]
+            },
+            {
+              "source": {
+                "path": "src/requests/api.py",
+                "start": 4226,
+                "end": 4233
+              },
+              "semantic_targets": [
+                {
+                  "declaration": {
+                    "family": [
+                      11,
+                      134,
+                      203,
+                      133,
+                      118,
+                      1,
+                      124,
+                      25,
+                      98,
+                      119,
+                      96,
+                      98,
+                      110,
+                      179,
+                      248,
+                      216
+                    ],
+                    "variant": [
+                      0,
+                      120,
+                      211,
+                      172,
+                      148,
+                      24,
+                      228,
+                      52,
+                      221,
+                      219,
+                      80,
+                      217,
+                      172,
+                      110,
+                      151,
+                      196
+                    ]
+                  },
+                  "scope": "local"
+                }
+              ]
+            },
+            {
+              "source": {
+                "path": "src/requests/api.py",
+                "start": 4772,
+                "end": 4779
+              },
+              "semantic_targets": [
+                {
+                  "declaration": {
+                    "family": [
+                      11,
+                      134,
+                      203,
+                      133,
+                      118,
+                      1,
+                      124,
+                      25,
+                      98,
+                      119,
+                      96,
+                      98,
+                      110,
+                      179,
+                      248,
+                      216
+                    ],
+                    "variant": [
+                      0,
+                      120,
+                      211,
+                      172,
+                      148,
+                      24,
+                      228,
+                      52,
+                      221,
+                      219,
+                      80,
+                      217,
+                      172,
+                      110,
+                      151,
+                      196
+                    ]
+                  },
+                  "scope": "local"
+                }
+              ]
+            },
+            {
+              "source": {
+                "path": "src/requests/api.py",
+                "start": 5444,
+                "end": 5451
+              },
+              "semantic_targets": [
+                {
+                  "declaration": {
+                    "family": [
+                      11,
+                      134,
+                      203,
+                      133,
+                      118,
+                      1,
+                      124,
+                      25,
+                      98,
+                      119,
+                      96,
+                      98,
+                      110,
+                      179,
+                      248,
+                      216
+                    ],
+                    "variant": [
+                      0,
+                      120,
+                      211,
+                      172,
+                      148,
+                      24,
+                      228,
+                      52,
+                      221,
+                      219,
+                      80,
+                      217,
+                      172,
+                      110,
+                      151,
+                      196
+                    ]
+                  },
+                  "scope": "local"
+                }
+              ]
+            },
+            {
+              "source": {
+                "path": "src/requests/api.py",
+                "start": 6097,
+                "end": 6104
+              },
+              "semantic_targets": [
+                {
+                  "declaration": {
+                    "family": [
+                      11,
+                      134,
+                      203,
+                      133,
+                      118,
+                      1,
+                      124,
+                      25,
+                      98,
+                      119,
+                      96,
+                      98,
+                      110,
+                      179,
+                      248,
+                      216
+                    ],
+                    "variant": [
+                      0,
+                      120,
+                      211,
+                      172,
+                      148,
+                      24,
+                      228,
+                      52,
+                      221,
+                      219,
+                      80,
+                      217,
+                      172,
+                      110,
+                      151,
+                      196
+                    ]
+                  },
+                  "scope": "local"
+                }
+              ]
+            },
+            {
+              "source": {
+                "path": "src/requests/api.py",
+                "start": 6742,
+                "end": 6749
+              },
+              "semantic_targets": [
+                {
+                  "declaration": {
+                    "family": [
+                      11,
+                      134,
+                      203,
+                      133,
+                      118,
+                      1,
+                      124,
+                      25,
+                      98,
+                      119,
+                      96,
+                      98,
+                      110,
+                      179,
+                      248,
+                      216
+                    ],
+                    "variant": [
+                      0,
+                      120,
+                      211,
+                      172,
+                      148,
+                      24,
+                      228,
+                      52,
+                      221,
+                      219,
+                      80,
+                      217,
+                      172,
+                      110,
+                      151,
+                      196
+                    ]
+                  },
+                  "scope": "local"
+                }
+              ]
+            },
+            {
+              "source": {
+                "path": "src/requests/api.py",
+                "start": 7119,
+                "end": 7126
+              },
+              "semantic_targets": [
+                {
+                  "declaration": {
+                    "family": [
+                      11,
+                      134,
+                      203,
+                      133,
+                      118,
+                      1,
+                      124,
+                      25,
+                      98,
+                      119,
+                      96,
+                      98,
+                      110,
+                      179,
+                      248,
+                      216
+                    ],
+                    "variant": [
+                      0,
+                      120,
+                      211,
+                      172,
+                      148,
+                      24,
+                      228,
+                      52,
+                      221,
+                      219,
+                      80,
+                      217,
+                      172,
+                      110,
+                      151,
+                      196
+                    ]
+                  },
+                  "scope": "local"
+                }
+              ]
+            }
+          ],
+          "typed_reference_sha256": "6edd4147a0ae11d7a9851fc81c2fb980a8c228fa71640f9740564af0ec87c720"
+        }
+      },
+      "second-cold-old-coordinate": {
+        "pass": true,
+        "proof": {
+          "required_sites": 7,
+          "returned_sites": 7,
+          "coverage_claim": "required-source-obligations; not the complete reference universe",
+          "required_endpoint_identities": [
+            {
+              "source": {
+                "path": "src/requests/api.py",
+                "start": 3844,
+                "end": 3851
+              },
+              "semantic_targets": [
+                {
+                  "declaration": {
+                    "family": [
+                      11,
+                      134,
+                      203,
+                      133,
+                      118,
+                      1,
+                      124,
+                      25,
+                      98,
+                      119,
+                      96,
+                      98,
+                      110,
+                      179,
+                      248,
+                      216
+                    ],
+                    "variant": [
+                      0,
+                      120,
+                      211,
+                      172,
+                      148,
+                      24,
+                      228,
+                      52,
+                      221,
+                      219,
+                      80,
+                      217,
+                      172,
+                      110,
+                      151,
+                      196
+                    ]
+                  },
+                  "scope": "local"
+                }
+              ]
+            },
+            {
+              "source": {
+                "path": "src/requests/api.py",
+                "start": 4226,
+                "end": 4233
+              },
+              "semantic_targets": [
+                {
+                  "declaration": {
+                    "family": [
+                      11,
+                      134,
+                      203,
+                      133,
+                      118,
+                      1,
+                      124,
+                      25,
+                      98,
+                      119,
+                      96,
+                      98,
+                      110,
+                      179,
+                      248,
+                      216
+                    ],
+                    "variant": [
+                      0,
+                      120,
+                      211,
+                      172,
+                      148,
+                      24,
+                      228,
+                      52,
+                      221,
+                      219,
+                      80,
+                      217,
+                      172,
+                      110,
+                      151,
+                      196
+                    ]
+                  },
+                  "scope": "local"
+                }
+              ]
+            },
+            {
+              "source": {
+                "path": "src/requests/api.py",
+                "start": 4772,
+                "end": 4779
+              },
+              "semantic_targets": [
+                {
+                  "declaration": {
+                    "family": [
+                      11,
+                      134,
+                      203,
+                      133,
+                      118,
+                      1,
+                      124,
+                      25,
+                      98,
+                      119,
+                      96,
+                      98,
+                      110,
+                      179,
+                      248,
+                      216
+                    ],
+                    "variant": [
+                      0,
+                      120,
+                      211,
+                      172,
+                      148,
+                      24,
+                      228,
+                      52,
+                      221,
+                      219,
+                      80,
+                      217,
+                      172,
+                      110,
+                      151,
+                      196
+                    ]
+                  },
+                  "scope": "local"
+                }
+              ]
+            },
+            {
+              "source": {
+                "path": "src/requests/api.py",
+                "start": 5444,
+                "end": 5451
+              },
+              "semantic_targets": [
+                {
+                  "declaration": {
+                    "family": [
+                      11,
+                      134,
+                      203,
+                      133,
+                      118,
+                      1,
+                      124,
+                      25,
+                      98,
+                      119,
+                      96,
+                      98,
+                      110,
+                      179,
+                      248,
+                      216
+                    ],
+                    "variant": [
+                      0,
+                      120,
+                      211,
+                      172,
+                      148,
+                      24,
+                      228,
+                      52,
+                      221,
+                      219,
+                      80,
+                      217,
+                      172,
+                      110,
+                      151,
+                      196
+                    ]
+                  },
+                  "scope": "local"
+                }
+              ]
+            },
+            {
+              "source": {
+                "path": "src/requests/api.py",
+                "start": 6097,
+                "end": 6104
+              },
+              "semantic_targets": [
+                {
+                  "declaration": {
+                    "family": [
+                      11,
+                      134,
+                      203,
+                      133,
+                      118,
+                      1,
+                      124,
+                      25,
+                      98,
+                      119,
+                      96,
+                      98,
+                      110,
+                      179,
+                      248,
+                      216
+                    ],
+                    "variant": [
+                      0,
+                      120,
+                      211,
+                      172,
+                      148,
+                      24,
+                      228,
+                      52,
+                      221,
+                      219,
+                      80,
+                      217,
+                      172,
+                      110,
+                      151,
+                      196
+                    ]
+                  },
+                  "scope": "local"
+                }
+              ]
+            },
+            {
+              "source": {
+                "path": "src/requests/api.py",
+                "start": 6742,
+                "end": 6749
+              },
+              "semantic_targets": [
+                {
+                  "declaration": {
+                    "family": [
+                      11,
+                      134,
+                      203,
+                      133,
+                      118,
+                      1,
+                      124,
+                      25,
+                      98,
+                      119,
+                      96,
+                      98,
+                      110,
+                      179,
+                      248,
+                      216
+                    ],
+                    "variant": [
+                      0,
+                      120,
+                      211,
+                      172,
+                      148,
+                      24,
+                      228,
+                      52,
+                      221,
+                      219,
+                      80,
+                      217,
+                      172,
+                      110,
+                      151,
+                      196
+                    ]
+                  },
+                  "scope": "local"
+                }
+              ]
+            },
+            {
+              "source": {
+                "path": "src/requests/api.py",
+                "start": 7119,
+                "end": 7126
+              },
+              "semantic_targets": [
+                {
+                  "declaration": {
+                    "family": [
+                      11,
+                      134,
+                      203,
+                      133,
+                      118,
+                      1,
+                      124,
+                      25,
+                      98,
+                      119,
+                      96,
+                      98,
+                      110,
+                      179,
+                      248,
+                      216
+                    ],
+                    "variant": [
+                      0,
+                      120,
+                      211,
+                      172,
+                      148,
+                      24,
+                      228,
+                      52,
+                      221,
+                      219,
+                      80,
+                      217,
+                      172,
+                      110,
+                      151,
+                      196
+                    ]
+                  },
+                  "scope": "local"
+                }
+              ]
+            }
+          ],
+          "typed_reference_sha256": "6edd4147a0ae11d7a9851fc81c2fb980a8c228fa71640f9740564af0ec87c720"
+        }
+      }
+    },
+    "paired_surface_routes": [
+      {
+        "phase": "cold-retained",
+        "route": "document",
+        "detail": "summary",
+        "parity": true
+      },
+      {
+        "phase": "cold-retained",
+        "route": "source",
+        "detail": "summary",
+        "parity": true
+      },
+      {
+        "phase": "cold-retained",
+        "route": "references",
+        "detail": "summary",
+        "parity": true
+      },
+      {
+        "phase": "cold-retained",
+        "route": "graph",
+        "detail": "summary",
+        "parity": true
+      },
+      {
+        "phase": "cold-retained",
+        "route": "document",
+        "detail": "full",
+        "parity": true
+      },
+      {
+        "phase": "cold-retained",
+        "route": "source",
+        "detail": "full",
+        "parity": true
+      },
+      {
+        "phase": "cold-retained",
+        "route": "references",
+        "detail": "full",
+        "parity": true
+      },
+      {
+        "phase": "cold-retained",
+        "route": "graph",
+        "detail": "full",
+        "parity": true
+      },
+      {
+        "phase": "second-cold-old-coordinate",
+        "route": "document",
+        "detail": "summary",
+        "parity": true
+      },
+      {
+        "phase": "second-cold-old-coordinate",
+        "route": "source",
+        "detail": "summary",
+        "parity": true
+      },
+      {
+        "phase": "second-cold-old-coordinate",
+        "route": "references",
+        "detail": "summary",
+        "parity": true
+      },
+      {
+        "phase": "second-cold-old-coordinate",
+        "route": "graph",
+        "detail": "summary",
+        "parity": true
+      },
+      {
+        "phase": "second-cold-old-coordinate",
+        "route": "document",
+        "detail": "full",
+        "parity": true
+      },
+      {
+        "phase": "second-cold-old-coordinate",
+        "route": "source",
+        "detail": "full",
+        "parity": true
+      },
+      {
+        "phase": "second-cold-old-coordinate",
+        "route": "references",
+        "detail": "full",
+        "parity": true
+      },
+      {
+        "phase": "second-cold-old-coordinate",
+        "route": "graph",
+        "detail": "full",
+        "parity": true
+      }
+    ],
+    "graph": [
+      {
+        "phase": "cold-retained",
+        "parity": true,
+        "more": false,
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/root/nudox-corpus-20261006/python/packages/pypi-requests-2.34.2/source/requests-2.34.2::semantic::0b86cb8576017c19627760626eb3f8d80078d3ac9418e434dddb50d9ac6e97c4::request",
+              "key": "0ecca7ef",
+              "line": 24,
+              "name": "request",
+              "path": "src/requests/api.py",
+              "project": "/root/nudox-corpus-20261006/python/packages/pypi-requests-2.34.2/source/requests-2.34.2",
+              "segments": [
+                "request"
+              ],
+              "shape": "semantic",
+              "trail": "requests-2.34.2 › src/requests/api.py:24 › request"
+            },
+            "kind": "function",
+            "language": "python"
+          },
+          {
+            "identity": {
+              "coordinate": "external semantic target",
+              "key": "cec0b22f",
+              "name": "external semantic target",
+              "project": "external semantic target",
+              "segments": [],
+              "shape": "package",
+              "trail": "external semantic target"
+            },
+            "kind": null,
+            "language": "unknown"
+          },
+          {
+            "identity": {
+              "coordinate": "external semantic target",
+              "key": "d2a8fe31",
+              "name": "external semantic target",
+              "project": "external semantic target",
+              "segments": [],
+              "shape": "package",
+              "trail": "external semantic target"
+            },
+            "kind": null,
+            "language": "unknown"
+          },
+          {
+            "identity": {
+              "coordinate": "/root/nudox-corpus-20261006/python/packages/pypi-requests-2.34.2/source/requests-2.34.2::semantic::5927ce2a4b6be32dcc31b773408d0db1300b209d7758196529b9eeb54375397f::UriType",
+              "key": "dc3ca434",
+              "name": "UriType",
+              "project": "/root/nudox-corpus-20261006/python/packages/pypi-requests-2.34.2/source/requests-2.34.2",
+              "segments": [
+                "UriType"
+              ],
+              "shape": "semantic",
+              "trail": "requests-2.34.2 › UriType"
+            },
+            "kind": "variable",
+            "language": "unknown"
+          },
+          {
+            "identity": {
+              "coordinate": "external semantic target",
+              "key": "fac074af",
+              "name": "external semantic target",
+              "project": "external semantic target",
+              "segments": [],
+              "shape": "package",
+              "trail": "external semantic target"
+            },
+            "kind": null,
+            "language": "unknown"
+          }
+        ]
+      },
+      {
+        "phase": "second-cold-old-coordinate",
+        "parity": true,
+        "more": false,
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/root/nudox-corpus-20261006/python/packages/pypi-requests-2.34.2/source/requests-2.34.2::semantic::0b86cb8576017c19627760626eb3f8d80078d3ac9418e434dddb50d9ac6e97c4::request",
+              "key": "0ecca7ef",
+              "line": 24,
+              "name": "request",
+              "path": "src/requests/api.py",
+              "project": "/root/nudox-corpus-20261006/python/packages/pypi-requests-2.34.2/source/requests-2.34.2",
+              "segments": [
+                "request"
+              ],
+              "shape": "semantic",
+              "trail": "requests-2.34.2 › src/requests/api.py:24 › request"
+            },
+            "kind": "function",
+            "language": "python"
+          },
+          {
+            "identity": {
+              "coordinate": "external semantic target",
+              "key": "cec0b22f",
+              "name": "external semantic target",
+              "project": "external semantic target",
+              "segments": [],
+              "shape": "package",
+              "trail": "external semantic target"
+            },
+            "kind": null,
+            "language": "unknown"
+          },
+          {
+            "identity": {
+              "coordinate": "external semantic target",
+              "key": "d2a8fe31",
+              "name": "external semantic target",
+              "project": "external semantic target",
+              "segments": [],
+              "shape": "package",
+              "trail": "external semantic target"
+            },
+            "kind": null,
+            "language": "unknown"
+          },
+          {
+            "identity": {
+              "coordinate": "/root/nudox-corpus-20261006/python/packages/pypi-requests-2.34.2/source/requests-2.34.2::semantic::5927ce2a4b6be32dcc31b773408d0db1300b209d7758196529b9eeb54375397f::UriType",
+              "key": "dc3ca434",
+              "name": "UriType",
+              "project": "/root/nudox-corpus-20261006/python/packages/pypi-requests-2.34.2/source/requests-2.34.2",
+              "segments": [
+                "UriType"
+              ],
+              "shape": "semantic",
+              "trail": "requests-2.34.2 › UriType"
+            },
+            "kind": "variable",
+            "language": "unknown"
+          },
+          {
+            "identity": {
+              "coordinate": "external semantic target",
+              "key": "fac074af",
+              "name": "external semantic target",
+              "project": "external semantic target",
+              "segments": [],
+              "shape": "package",
+              "trail": "external semantic target"
+            },
+            "kind": null,
+            "language": "unknown"
+          }
+        ]
+      }
+    ],
+    "owner_runs": [
+      {
+        "run": "cold-retained",
+        "binary_sha256": "5344cc4d2d82c6a087a70556c75ff3d529148f08f6e27c66f1efd7b354191180",
+        "exit_code": -15,
+        "stdout": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "readers_complete": true
+      },
+      {
+        "run": "second-cold-old-coordinate",
+        "binary_sha256": "5344cc4d2d82c6a087a70556c75ff3d529148f08f6e27c66f1efd7b354191180",
+        "exit_code": -15,
+        "stdout": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "readers_complete": true
+      }
+    ],
+    "strict_acceptance": false
+  },
+  "semver": {
+    "retained_coordinate": "/root/nudox-corpus-20261006/corpora/npm-attypes-materialized-batch01-20261006T0630Z/packages/eb286a60f6ef96e60d27cd7c::semantic::ee15d1246cb49a2a6eac1350de75eb48bd0f2b138014502defa12774a940326a::Options",
+    "persistent_paging_comparison": {
+      "retained-before-readd": {
+        "limit16_ended": false,
+        "limit1_ended": false,
+        "exact_record_score_multiset_equal": false,
+        "counts": {
+          "16": 16,
+          "1": 1
+        },
+        "known_baseline": "9f44 predates Root second-page query fix; this is baseline evidence, not an independently new defect"
+      },
+      "cold-after-readd": {
+        "limit16_ended": false,
+        "limit1_ended": false,
+        "exact_record_score_multiset_equal": false,
+        "counts": {
+          "16": 16,
+          "1": 1
+        },
+        "known_baseline": "9f44 predates Root second-page query fix; this is baseline evidence, not an independently new defect"
+      }
+    },
+    "unchanged_readd": {
+      "heading": "index",
+      "records": [
+        {
+          "title": "index request accepted",
+          "operand": "/root/nudox-corpus-20261006/corpora/npm-attypes-materialized-batch01-20261006T0630Z/packages/eb286a60f6ef96e60d27cd7c",
+          "tags": [
+            "intent 27510cde",
+            "pending",
+            "read `backend health` for readiness"
+          ]
+        }
+      ],
+      "answer": "product",
+      "detail": "full",
+      "budget": {
+        "bytes": 368,
+        "estimatedTokens": 92,
+        "bytesPerToken": 4
+      }
+    },
+    "owner_runs": [
+      {
+        "run": "retained-before-readd",
+        "binary_sha256": "5344cc4d2d82c6a087a70556c75ff3d529148f08f6e27c66f1efd7b354191180",
+        "exit_code": -15,
+        "stdout": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "readers_complete": true
+      },
+      {
+        "run": "cold-after-readd",
+        "binary_sha256": "5344cc4d2d82c6a087a70556c75ff3d529148f08f6e27c66f1efd7b354191180",
+        "exit_code": -15,
+        "stdout": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "readers_complete": true
+      }
+    ],
+    "useful_journey": {
+      "measurement": "Actual same-process MCP replies, bytes/4 estimates; not model-tokenizer tokens. Diagnostic polling and paging probes excluded.",
+      "calls": [
+        {
+          "id": 6,
+          "tool": "backend.search",
+          "arguments": {
+            "detail": "full",
+            "query": "Options",
+            "limit": 1
+          },
+          "reply_wire_bytes": 2206,
+          "reply_wire_estimated_tokens": 552,
+          "product_budget": {
+            "bytes": 1616,
+            "bytesPerToken": 4,
+            "estimatedTokens": 404
+          },
+          "text_bytes": 475,
+          "structured_content_bytes": 1616
+        },
+        {
+          "id": 11,
+          "tool": "backend.document",
+          "arguments": {
+            "coordinate": "/root/nudox-corpus-20261006/corpora/npm-attypes-materialized-batch01-20261006T0630Z/packages/eb286a60f6ef96e60d27cd7c::semantic::ee15d1246cb49a2a6eac1350de75eb48bd0f2b138014502defa12774a940326a::Options",
+            "detail": "summary"
+          },
+          "reply_wire_bytes": 2004,
+          "reply_wire_estimated_tokens": 501,
+          "product_budget": {
+            "bytes": 657,
+            "bytesPerToken": 4,
+            "estimatedTokens": 165
+          },
+          "text_bytes": 1215,
+          "structured_content_bytes": 657
+        },
+        {
+          "id": 12,
+          "tool": "backend.source",
+          "arguments": {
+            "coordinate": "/root/nudox-corpus-20261006/corpora/npm-attypes-materialized-batch01-20261006T0630Z/packages/eb286a60f6ef96e60d27cd7c::semantic::ee15d1246cb49a2a6eac1350de75eb48bd0f2b138014502defa12774a940326a::Options",
+            "detail": "full"
+          },
+          "reply_wire_bytes": 1589,
+          "reply_wire_estimated_tokens": 398,
+          "product_budget": {
+            "bytes": 1005,
+            "bytesPerToken": 4,
+            "estimatedTokens": 252
+          },
+          "text_bytes": 458,
+          "structured_content_bytes": 1005
+        },
+        {
+          "id": 13,
+          "tool": "backend.references",
+          "arguments": {
+            "coordinate": "/root/nudox-corpus-20261006/corpora/npm-attypes-materialized-batch01-20261006T0630Z/packages/eb286a60f6ef96e60d27cd7c::semantic::ee15d1246cb49a2a6eac1350de75eb48bd0f2b138014502defa12774a940326a::Options",
+            "detail": "full"
+          },
+          "reply_wire_bytes": 2671,
+          "reply_wire_estimated_tokens": 668,
+          "product_budget": {
+            "bytes": 1359,
+            "bytesPerToken": 4,
+            "estimatedTokens": 340
+          },
+          "text_bytes": 1194,
+          "structured_content_bytes": 1359
+        },
+        {
+          "id": 14,
+          "tool": "backend.graph",
+          "arguments": {
+            "coordinate": "/root/nudox-corpus-20261006/corpora/npm-attypes-materialized-batch01-20261006T0630Z/packages/eb286a60f6ef96e60d27cd7c::semantic::ee15d1246cb49a2a6eac1350de75eb48bd0f2b138014502defa12774a940326a::Options",
+            "detail": "full"
+          },
+          "reply_wire_bytes": 1664,
+          "reply_wire_estimated_tokens": 416,
+          "product_budget": {
+            "bytes": 1175,
+            "bytesPerToken": 4,
+            "estimatedTokens": 294
+          },
+          "text_bytes": 374,
+          "structured_content_bytes": 1175
+        }
+      ],
+      "handshake": [
+        {
+          "id": 1,
+          "tool": "initialize",
+          "arguments": null,
+          "reply_wire_bytes": 1514,
+          "reply_wire_estimated_tokens": 379,
+          "product_budget": {}
+        },
+        {
+          "id": 3,
+          "tool": "tools/list",
+          "arguments": null,
+          "reply_wire_bytes": 18855,
+          "reply_wire_estimated_tokens": 4714,
+          "product_budget": {}
+        }
+      ],
+      "totals": {
+        "journey_reply_wire_bytes": 10134,
+        "journey_reply_wire_estimated_tokens": 2535,
+        "journey_product_budget_bytes": 5812,
+        "journey_product_budget_estimated_tokens": 1455,
+        "initialize_and_tools_list_reply_wire_bytes": 20369,
+        "initialize_and_tools_list_reply_wire_estimated_tokens": 5093,
+        "journey_plus_handshake_reply_wire_estimated_tokens": 7628
+      },
+      "redundancy": "MCP text and structuredContent repeat coordinates, path/name/key and reference sites. Graph repeats the selected target; Summary document repeats identity but omits signature/body. Product budget does not equal entire JSON-RPC wire reply size."
+    }
+  },
+  "go_cancel": {
+    "clone_source": "/root/nudox-corpus-20261006/artifacts/canonical-go-gorilla-dto19/runtime-attempt01-20261006T092622Z/owner",
+    "clone_target": "/root/nudox-corpus-20261006/artifacts/canonical-go-gorilla-dto19/cancel-retry-v4-20261006T095206Z/cloned-owner",
+    "retry_operation_key": "586297214ce7fb97498fb05086ba74bcf648623df90c4b37117abff6afacd157",
+    "owner_issued_ticket": {
+      "id": 1,
+      "owner_epoch": [
+        96,
+        10,
+        122,
+        177,
+        173,
+        115,
+        32,
+        88,
+        59,
+        179,
+        248,
+        0,
+        149,
+        169,
+        118,
+        63
+      ],
+      "package": {
+        "kind": "local",
+        "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+      }
+    },
+    "durable_status": [
+      {
+        "phase": "live-retry-cancel",
+        "route": "original-failed-status",
+        "value": {
+          "detail": {
+            "execution_intent": "interactive",
+            "operation_key": "128944d8a40477ebe096fdfaedf6f49e67d050b221a8bd5d70aef5f624b17146",
+            "package": {
+              "kind": "local",
+              "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+            },
+            "request_digest": "b0414a87021919e3675cd6213e485e26a9dd893d29e852bd0324ccaeed22c727",
+            "source_capture": {
+              "commit_identity": "1c29b057a361d950e3ff98b0156f152be87baa60e68231129d92b5928e1f6c4e",
+              "operation_key": "128944d8a40477ebe096fdfaedf6f49e67d050b221a8bd5d70aef5f624b17146",
+              "profiles": [
+                {
+                  "input_digest": "c149656549c1d94a3bf5fb7309274a8fc60b71bfc83cdd7e28ae9d8eaa5acfd7",
+                  "observation_sequence": 1,
+                  "profile": [
+                    3,
+                    3
+                  ],
+                  "source_count": 16,
+                  "source_version": "53ec81c37a589b12da77c8577e41644f3dee125f57979cbe96d855cc917faa37",
+                  "state": {
+                    "detail": {
+                      "reason": "rejected"
+                    },
+                    "state": "unavailable"
+                  }
+                }
+              ],
+              "workspace_root": "821498af86909bebdff8f1f0cdd6bbafd9b6b9ad416d9ed42b353794b5e2af54",
+              "workspace_sequence": 1
+            },
+            "state": {
+              "detail": {
+                "compiler_failure": {
+                  "cause": {
+                    "family": "authority",
+                    "fault": {
+                      "class": "authority",
+                      "diagnostic": {
+                        "observed_bytes": 146,
+                        "retained_bytes": 146,
+                        "truncated": false
+                      },
+                      "phase": "open"
+                    }
+                  },
+                  "detail": "open authority fault: authority runtime",
+                  "detail_truncated": false,
+                  "kind_tag": "authority_runtime",
+                  "phase": "authority",
+                  "recipe_identity": "content:1182645b40b2aaaee0b7246125416aa377e5073bcba5eb2c884483ffb3fd3b16",
+                  "relative_path": "bench_test.go",
+                  "source_byte_len": 1399,
+                  "source_identity": "content:0e65e1d3f840e580982554922e2c842877f78db5199680aa6b7651804aac6f85"
+                },
+                "detail": "local compiler rejected bench_test.go with authority_runtime: open authority fault: authority runtime",
+                "reason": "refused"
+              },
+              "state": "failed"
+            }
+          },
+          "state": "known"
+        }
+      },
+      {
+        "phase": "live-retry-cancel",
+        "route": "retry-durable-status",
+        "value": {
+          "detail": {
+            "execution_intent": "interactive",
+            "operation_key": "586297214ce7fb97498fb05086ba74bcf648623df90c4b37117abff6afacd157",
+            "package": {
+              "kind": "local",
+              "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+            },
+            "request_digest": "b0414a87021919e3675cd6213e485e26a9dd893d29e852bd0324ccaeed22c727",
+            "source_capture": {
+              "commit_identity": "a6c8009aa114fac9845dfe88ef4e4a7a76a27b628e2ab3934c7d3090ec339cbf",
+              "operation_key": "586297214ce7fb97498fb05086ba74bcf648623df90c4b37117abff6afacd157",
+              "profiles": [
+                {
+                  "input_digest": "c149656549c1d94a3bf5fb7309274a8fc60b71bfc83cdd7e28ae9d8eaa5acfd7",
+                  "observation_sequence": 1,
+                  "profile": [
+                    3,
+                    3
+                  ],
+                  "source_count": 16,
+                  "source_version": "53ec81c37a589b12da77c8577e41644f3dee125f57979cbe96d855cc917faa37",
+                  "state": {
+                    "detail": {
+                      "reason": "cancelled"
+                    },
+                    "state": "unavailable"
+                  }
+                }
+              ],
+              "workspace_root": "821498af86909bebdff8f1f0cdd6bbafd9b6b9ad416d9ed42b353794b5e2af54",
+              "workspace_sequence": 3
+            },
+            "state": {
+              "detail": {
+                "detail": "index operation was cancelled before commit",
+                "reason": "cancelled"
+              },
+              "state": "failed"
+            }
+          },
+          "state": "known"
+        }
+      },
+      {
+        "phase": "live-retry-cancel",
+        "route": "original-failed-status-after-cancel",
+        "value": {
+          "detail": {
+            "execution_intent": "interactive",
+            "operation_key": "128944d8a40477ebe096fdfaedf6f49e67d050b221a8bd5d70aef5f624b17146",
+            "package": {
+              "kind": "local",
+              "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+            },
+            "request_digest": "b0414a87021919e3675cd6213e485e26a9dd893d29e852bd0324ccaeed22c727",
+            "source_capture": {
+              "commit_identity": "1c29b057a361d950e3ff98b0156f152be87baa60e68231129d92b5928e1f6c4e",
+              "operation_key": "128944d8a40477ebe096fdfaedf6f49e67d050b221a8bd5d70aef5f624b17146",
+              "profiles": [
+                {
+                  "input_digest": "c149656549c1d94a3bf5fb7309274a8fc60b71bfc83cdd7e28ae9d8eaa5acfd7",
+                  "observation_sequence": 1,
+                  "profile": [
+                    3,
+                    3
+                  ],
+                  "source_count": 16,
+                  "source_version": "53ec81c37a589b12da77c8577e41644f3dee125f57979cbe96d855cc917faa37",
+                  "state": {
+                    "detail": {
+                      "reason": "rejected"
+                    },
+                    "state": "unavailable"
+                  }
+                }
+              ],
+              "workspace_root": "821498af86909bebdff8f1f0cdd6bbafd9b6b9ad416d9ed42b353794b5e2af54",
+              "workspace_sequence": 1
+            },
+            "state": {
+              "detail": {
+                "compiler_failure": {
+                  "cause": {
+                    "family": "authority",
+                    "fault": {
+                      "class": "authority",
+                      "diagnostic": {
+                        "observed_bytes": 146,
+                        "retained_bytes": 146,
+                        "truncated": false
+                      },
+                      "phase": "open"
+                    }
+                  },
+                  "detail": "open authority fault: authority runtime",
+                  "detail_truncated": false,
+                  "kind_tag": "authority_runtime",
+                  "phase": "authority",
+                  "recipe_identity": "content:1182645b40b2aaaee0b7246125416aa377e5073bcba5eb2c884483ffb3fd3b16",
+                  "relative_path": "bench_test.go",
+                  "source_byte_len": 1399,
+                  "source_identity": "content:0e65e1d3f840e580982554922e2c842877f78db5199680aa6b7651804aac6f85"
+                },
+                "detail": "local compiler rejected bench_test.go with authority_runtime: open authority fault: authority runtime",
+                "reason": "refused"
+              },
+              "state": "failed"
+            }
+          },
+          "state": "known"
+        }
+      },
+      {
+        "phase": "cold-terminal-replay",
+        "route": "original-failed-status",
+        "value": {
+          "detail": {
+            "execution_intent": "interactive",
+            "operation_key": "128944d8a40477ebe096fdfaedf6f49e67d050b221a8bd5d70aef5f624b17146",
+            "package": {
+              "kind": "local",
+              "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+            },
+            "request_digest": "b0414a87021919e3675cd6213e485e26a9dd893d29e852bd0324ccaeed22c727",
+            "source_capture": {
+              "commit_identity": "1c29b057a361d950e3ff98b0156f152be87baa60e68231129d92b5928e1f6c4e",
+              "operation_key": "128944d8a40477ebe096fdfaedf6f49e67d050b221a8bd5d70aef5f624b17146",
+              "profiles": [
+                {
+                  "input_digest": "c149656549c1d94a3bf5fb7309274a8fc60b71bfc83cdd7e28ae9d8eaa5acfd7",
+                  "observation_sequence": 1,
+                  "profile": [
+                    3,
+                    3
+                  ],
+                  "source_count": 16,
+                  "source_version": "53ec81c37a589b12da77c8577e41644f3dee125f57979cbe96d855cc917faa37",
+                  "state": {
+                    "detail": {
+                      "reason": "rejected"
+                    },
+                    "state": "unavailable"
+                  }
+                }
+              ],
+              "workspace_root": "821498af86909bebdff8f1f0cdd6bbafd9b6b9ad416d9ed42b353794b5e2af54",
+              "workspace_sequence": 1
+            },
+            "state": {
+              "detail": {
+                "compiler_failure": {
+                  "cause": {
+                    "family": "authority",
+                    "fault": {
+                      "class": "authority",
+                      "diagnostic": {
+                        "observed_bytes": 146,
+                        "retained_bytes": 146,
+                        "truncated": false
+                      },
+                      "phase": "open"
+                    }
+                  },
+                  "detail": "open authority fault: authority runtime",
+                  "detail_truncated": false,
+                  "kind_tag": "authority_runtime",
+                  "phase": "authority",
+                  "recipe_identity": "content:1182645b40b2aaaee0b7246125416aa377e5073bcba5eb2c884483ffb3fd3b16",
+                  "relative_path": "bench_test.go",
+                  "source_byte_len": 1399,
+                  "source_identity": "content:0e65e1d3f840e580982554922e2c842877f78db5199680aa6b7651804aac6f85"
+                },
+                "detail": "local compiler rejected bench_test.go with authority_runtime: open authority fault: authority runtime",
+                "reason": "refused"
+              },
+              "state": "failed"
+            }
+          },
+          "state": "known"
+        }
+      },
+      {
+        "phase": "cold-terminal-replay",
+        "route": "retry-durable-status",
+        "value": {
+          "detail": {
+            "execution_intent": "interactive",
+            "operation_key": "586297214ce7fb97498fb05086ba74bcf648623df90c4b37117abff6afacd157",
+            "package": {
+              "kind": "local",
+              "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+            },
+            "request_digest": "b0414a87021919e3675cd6213e485e26a9dd893d29e852bd0324ccaeed22c727",
+            "source_capture": {
+              "commit_identity": "a6c8009aa114fac9845dfe88ef4e4a7a76a27b628e2ab3934c7d3090ec339cbf",
+              "operation_key": "586297214ce7fb97498fb05086ba74bcf648623df90c4b37117abff6afacd157",
+              "profiles": [
+                {
+                  "input_digest": "c149656549c1d94a3bf5fb7309274a8fc60b71bfc83cdd7e28ae9d8eaa5acfd7",
+                  "observation_sequence": 1,
+                  "profile": [
+                    3,
+                    3
+                  ],
+                  "source_count": 16,
+                  "source_version": "53ec81c37a589b12da77c8577e41644f3dee125f57979cbe96d855cc917faa37",
+                  "state": {
+                    "detail": {
+                      "reason": "cancelled"
+                    },
+                    "state": "unavailable"
+                  }
+                }
+              ],
+              "workspace_root": "821498af86909bebdff8f1f0cdd6bbafd9b6b9ad416d9ed42b353794b5e2af54",
+              "workspace_sequence": 3
+            },
+            "state": {
+              "detail": {
+                "detail": "index operation was cancelled before commit",
+                "reason": "cancelled"
+              },
+              "state": "failed"
+            }
+          },
+          "state": "known"
+        }
+      },
+      {
+        "phase": "cold-terminal-replay",
+        "route": "exact-key-replay",
+        "value": {
+          "detail": {
+            "execution_intent": "interactive",
+            "operation_key": "586297214ce7fb97498fb05086ba74bcf648623df90c4b37117abff6afacd157",
+            "package": {
+              "kind": "local",
+              "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+            },
+            "request_digest": "b0414a87021919e3675cd6213e485e26a9dd893d29e852bd0324ccaeed22c727",
+            "source_capture": {
+              "commit_identity": "a6c8009aa114fac9845dfe88ef4e4a7a76a27b628e2ab3934c7d3090ec339cbf",
+              "operation_key": "586297214ce7fb97498fb05086ba74bcf648623df90c4b37117abff6afacd157",
+              "profiles": [
+                {
+                  "input_digest": "c149656549c1d94a3bf5fb7309274a8fc60b71bfc83cdd7e28ae9d8eaa5acfd7",
+                  "observation_sequence": 1,
+                  "profile": [
+                    3,
+                    3
+                  ],
+                  "source_count": 16,
+                  "source_version": "53ec81c37a589b12da77c8577e41644f3dee125f57979cbe96d855cc917faa37",
+                  "state": {
+                    "detail": {
+                      "reason": "cancelled"
+                    },
+                    "state": "unavailable"
+                  }
+                }
+              ],
+              "workspace_root": "821498af86909bebdff8f1f0cdd6bbafd9b6b9ad416d9ed42b353794b5e2af54",
+              "workspace_sequence": 3
+            },
+            "state": {
+              "detail": {
+                "detail": "index operation was cancelled before commit",
+                "reason": "cancelled"
+              },
+              "state": "failed"
+            }
+          },
+          "state": "known"
+        }
+      },
+      {
+        "phase": "cold-terminal-replay",
+        "route": "original-failed-status-after-cancel",
+        "value": {
+          "detail": {
+            "execution_intent": "interactive",
+            "operation_key": "128944d8a40477ebe096fdfaedf6f49e67d050b221a8bd5d70aef5f624b17146",
+            "package": {
+              "kind": "local",
+              "value": "/root/nudox-corpus-20261006/go/workspaces/seed100/github.com-gorilla-mux-v1.8.1"
+            },
+            "request_digest": "b0414a87021919e3675cd6213e485e26a9dd893d29e852bd0324ccaeed22c727",
+            "source_capture": {
+              "commit_identity": "1c29b057a361d950e3ff98b0156f152be87baa60e68231129d92b5928e1f6c4e",
+              "operation_key": "128944d8a40477ebe096fdfaedf6f49e67d050b221a8bd5d70aef5f624b17146",
+              "profiles": [
+                {
+                  "input_digest": "c149656549c1d94a3bf5fb7309274a8fc60b71bfc83cdd7e28ae9d8eaa5acfd7",
+                  "observation_sequence": 1,
+                  "profile": [
+                    3,
+                    3
+                  ],
+                  "source_count": 16,
+                  "source_version": "53ec81c37a589b12da77c8577e41644f3dee125f57979cbe96d855cc917faa37",
+                  "state": {
+                    "detail": {
+                      "reason": "rejected"
+                    },
+                    "state": "unavailable"
+                  }
+                }
+              ],
+              "workspace_root": "821498af86909bebdff8f1f0cdd6bbafd9b6b9ad416d9ed42b353794b5e2af54",
+              "workspace_sequence": 1
+            },
+            "state": {
+              "detail": {
+                "compiler_failure": {
+                  "cause": {
+                    "family": "authority",
+                    "fault": {
+                      "class": "authority",
+                      "diagnostic": {
+                        "observed_bytes": 146,
+                        "retained_bytes": 146,
+                        "truncated": false
+                      },
+                      "phase": "open"
+                    }
+                  },
+                  "detail": "open authority fault: authority runtime",
+                  "detail_truncated": false,
+                  "kind_tag": "authority_runtime",
+                  "phase": "authority",
+                  "recipe_identity": "content:1182645b40b2aaaee0b7246125416aa377e5073bcba5eb2c884483ffb3fd3b16",
+                  "relative_path": "bench_test.go",
+                  "source_byte_len": 1399,
+                  "source_identity": "content:0e65e1d3f840e580982554922e2c842877f78db5199680aa6b7651804aac6f85"
+                },
+                "detail": "local compiler rejected bench_test.go with authority_runtime: open authority fault: authority runtime",
+                "reason": "refused"
+              },
+              "state": "failed"
+            }
+          },
+          "state": "known"
+        }
+      }
+    ],
+    "owner_runs": [
+      {
+        "run": "live-retry-cancel",
+        "binary_sha256": "5344cc4d2d82c6a087a70556c75ff3d529148f08f6e27c66f1efd7b354191180",
+        "exit_code": -15,
+        "stdout": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "readers_complete": true
+      },
+      {
+        "run": "cold-terminal-replay",
+        "binary_sha256": "5344cc4d2d82c6a087a70556c75ff3d529148f08f6e27c66f1efd7b354191180",
+        "exit_code": -15,
+        "stdout": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "readers_complete": true
+      }
+    ],
+    "setup_limitation": "State and HOME isolated; TMPDIR reused original OWNED Go diagnostic scratch. No user workspace or unowned daemon touched. This is not a fully isolated scratch-installation proof."
+  },
+  "known_failures": [
+    "Semver package history remained Pending after two bounded 60+ second cold observations; Requests strict runner retained 44 observations over approximately 60 seconds, plus two cold diagnostic windows.",
+    "Semver Options returned only two same-file references vs 33 source-backed obligations; Requests Session omitted src/requests/api.py sessions.Session use.",
+    "Requests Session Full source explicitly truncates approximately 8KiB of a 19028-byte class; source-body complete proof fails honestly.",
+    "DTO19 same-process second search page refuses cursor-mismatch; candidate predates existing second-page repair, so not a new independent defect.",
+    "Go native semantic compiler refused bench_test.go authority_runtime/open; source-only fallback has syntactic calls and is not fully compiled.",
+    "File-path outline refuses record-not-found while root outline succeeds.",
+    "Interface/class projection kinds remain trait/struct respectively; unknown external graph endpoints are not canonical declaration coordinates."
+  ],
+  "harness_limitations": [
+    "Early initial history terminal assumption corrected by observer606; initial immutable failures retained.",
+    "One-shot MCP continuation tests used separate sessions and are not product paging proof; persistent semver v3 is the actual same-session proof.",
+    "Initial Requests class obligation guessed indexed confidence; actual same-file native reference is compiler. Corrected request-function obligations use verified mapping.",
+    "Original strict runner HOME absent under cleared environment; later diagnostic owners use explicit private HOME/XDG.",
+    "Compiler snapshot and tool paths/hash are configuration evidence; no public actual selected tool-process witness available.",
+    "No complete graph universe claim: required neighbor obligations and placeholder deficiencies are separate from graph edge direction."
+  ]
+}
