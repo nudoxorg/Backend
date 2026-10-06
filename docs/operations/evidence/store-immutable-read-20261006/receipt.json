@@ -1,0 +1,26 @@
+{
+  "base_commit": "3a3f283316",
+  "scope": "Unix immutable artifact read only; publication durable seal unchanged",
+  "before": {
+    "passed": 1,
+    "failed": 2,
+    "failure": "Repeated chmod/fsync on sealed read changes same inode ctime"
+  },
+  "after_store_lib": {
+    "passed": 268,
+    "failed": 0
+  },
+  "after_final_focused": {
+    "passed": 4,
+    "failed": 0,
+    "concurrent_reopened_owned_and_pinned_reads": 160
+  },
+  "source_file_sha256": "40a2e0c22534b1569ca8cf0b9bbd01d5fe11e4d2b459c44340a14a302d2c6d10",
+  "logs": {
+    "after-store-lib.log": "5251e645d7769584704c1d4e79fa51edbcd5afb3c72902e1645f83280b165e23",
+    "after-focused.log": "af10d301675c6021476667628eb0cfb5dbbdfb7e6d7d81cbd725cbcec33626de",
+    "before-focused.log": "503ac3f03cf9c1250ac6d3a451b1d718dc28c05097bd330453b4c053fb236adb"
+  },
+  "matched_runtime_after_not_yet_tested": true,
+  "linux_syscall_gate_pending": true
+}
