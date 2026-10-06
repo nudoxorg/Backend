@@ -27,7 +27,7 @@ pub use tsz::binder::SymbolId as TszSymbolId;
 pub use tsz::checker::context::CheckerOptions as TszCheckerOptions;
 pub use tsz::checker::diagnostics::Diagnostic as TszDiagnostic;
 pub use tsz::checker::state::CheckerState as TszCheckerState;
-pub use tsz::common::ProjectSemanticOptions as TszProjectSemanticOptions;
+pub use tsz_common::ProjectSemanticOptions as TszProjectSemanticOptions;
 pub use tsz::common::{ModuleKind as TszModuleKind, ScriptTarget as TszScriptTarget};
 pub use tsz::parser::{NodeIndex as TszNodeIndex, ParseDiagnostic as TszParseDiagnostic};
 pub use tsz::tsz_solver::type_handles::TypeId as TszTypeId;
