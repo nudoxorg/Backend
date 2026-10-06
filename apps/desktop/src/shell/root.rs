@@ -3971,6 +3971,7 @@ mod responsive_shelf_scene_tests {
 mod native_hint_receipt_tests {
     use super::*;
     use crate::model::pages::{Known, PageValue, SourceOrigin, SourceText};
+    use crate::navigation::OrbitRoute;
     use gpui::AppContext as _;
 
     fn source_hint(cx: &mut gpui::TestAppContext) -> (super::super::tests::Rig, Hinted, HintScope) {

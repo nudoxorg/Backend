@@ -3231,7 +3231,7 @@ impl Render for Reader {
                 root = root.child(scroller);
                 let occupied = staged.edge.map_or(staged.plate, |edge| {
                     let bottom = edge.y.max(staged.plate.top()).min(staged.plate.bottom());
-                    Bounds::from_corners(staged.plate.top_left(), point(staged.plate.right(), bottom))
+                    Bounds::from_corners(staged.plate.origin, point(staged.plate.right(), bottom))
                 });
                 if occupied.size.height > Pixels::ZERO && occupied.size.width > Pixels::ZERO {
                     root = root.child(masked(occupied, plate_ground(&staged)));

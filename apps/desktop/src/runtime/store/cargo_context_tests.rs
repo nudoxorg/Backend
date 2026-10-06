@@ -134,7 +134,7 @@ fn display_only_tree_is_current_for_its_request_but_cannot_lend_source_or_readme
         .current_tree(&store)
         .expect("exact display observation remains readable");
     assert_eq!(current.model().request_binding(), Some(binding));
-    assert!(current.context.is_none());
+    assert!(current.model().retained_request_binding().is_none());
     assert!(plan.current_cargo_package(&store, &package).is_none());
     let source_route = package_route(&package, context);
     let source_plan = RouteDependencies::new(&source_route, None);

@@ -174,6 +174,7 @@ pub(crate) mod tests {
             operation_key: operation.key,
             request_digest: backend_library::index_operation_request_digest(&operation.package, operation.execution_intent),
             package: operation.package.clone(), execution_intent: operation.execution_intent, state,
+            source_capture: None,
         })
     }
 
