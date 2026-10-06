@@ -841,6 +841,13 @@ fn locald_executable() -> Result<PathBuf, RuntimeError> {
         return Err(RuntimeError::MissingExecutable(path));
     }
     let current = std::env::current_exe().map_err(RuntimeError::Io)?;
+    locald_sibling(&current)
+}
+
+fn locald_sibling(current: &Path) -> Result<PathBuf, RuntimeError> {
+    // macOS retains the launched symlink in current_exe. The stock installer
+    // names that link `nudox`, while the matched owner remains in the app bundle.
+    let current = fs::canonicalize(current).map_err(RuntimeError::Io)?;
     let sibling = current.with_file_name(format!("backend-locald{}", std::env::consts::EXE_SUFFIX));
     if sibling.is_file() {
         return Ok(sibling);
@@ -1073,6 +1080,29 @@ mod tests {
         assert!(message.contains("backend-locald companion executable"));
         assert!(message.contains("cargo build -p backend-locald -p backend-cli -p backend-mcp"));
         assert!(message.contains(LOCALD_BIN_ENV));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn locald_sibling_resolves_installed_cli_symlink_to_matched_bundle() {
+        let root = test_directory("installed-cli-symlink");
+        let bundle = root.join("Applications/Nudox.app/Contents/MacOS");
+        let installed = root.join(".local/bin");
+        fs::create_dir_all(&bundle).expect("bundle directory");
+        fs::create_dir_all(&installed).expect("installation directory");
+        let cli = bundle.join("backend-cli");
+        let owner = bundle.join("backend-locald");
+        fs::write(&cli, b"matched cli").expect("CLI image");
+        fs::write(&owner, b"matched owner").expect("owner image");
+        let link = installed.join("nudox");
+        std::os::unix::fs::symlink(&cli, &link).expect("stock installed CLI link");
+        // A same-directory daemon must not supersede the matched bundle owner.
+        fs::write(installed.join("backend-locald"), b"other owner").expect("other owner image");
+        assert_eq!(
+            locald_sibling(&link).expect("discover matched bundle owner"),
+            fs::canonicalize(&owner).expect("canonical matched owner")
+        );
+        fs::remove_dir_all(root).expect("remove installation fixture");
     }
 
     #[cfg(unix)]
