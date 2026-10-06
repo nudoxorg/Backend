@@ -1711,6 +1711,12 @@ impl PackageCompilerFailure {
         &self.cause
     }
 
+    /// Structured bounded cause retained for CLI, MCP, and operation receipts.
+    #[must_use]
+    pub const fn facts(&self) -> &PackageCompilerFailureCause {
+        &self.cause
+    }
+
     /// Stable specific variant tag, including its phase family.
     #[must_use]
     pub const fn kind_tag(&self) -> &'static str {
@@ -2182,8 +2188,11 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
         PackageCompilerFailureCause::Lowering(_) => "lowering fault",
         PackageCompilerFailureCause::Authority { .. } => "authority fault",
     };
-    let facts = serde_json::to_string(cause).unwrap_or_else(|_| "facts unavailable".to_owned());
-    let text = format!("{prefix} {}; facts={facts}", cause.kind_tag());
+    let facts = serde_json::to_string(cause)
+        .unwrap_or_else(|_| "facts unavailable".to_owned())
+        .replace('_', " ");
+    let tag = cause.kind_tag().replace('_', " ");
+    let text = format!("{prefix} {tag}; facts={facts}");
     sanitize_package_compiler_detail(&text, false)
 }
 
@@ -5125,7 +5134,7 @@ mod tests {
         )
         .expect("angular JSON");
         assert_eq!(
-            angular_json["cause"]["fault"]["cause"]["fault"],
+            angular_json["cause"]["fault"]["cause"]["kind"],
             "type_child"
         );
         assert_eq!(angular_json["cause"]["fault"]["cause"]["position"], 2);
@@ -5145,7 +5154,7 @@ mod tests {
         let zod_json: serde_json::Value =
             serde_json::from_slice(&zod.encode_bounded_json().expect("encode zod refusal"))
                 .expect("zod JSON");
-        assert_eq!(zod_json["cause"]["fault"]["cause"]["fault"], "type_record");
+        assert_eq!(zod_json["cause"]["fault"]["cause"]["kind"], "type_record");
         assert_eq!(
             zod_json["cause"]["fault"]["cause"]["cause"]["fault"],
             "missing_cell"

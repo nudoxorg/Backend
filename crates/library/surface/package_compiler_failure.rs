@@ -246,7 +246,7 @@ pub struct CompilerAuthorityDiagnosticFacts {
 /// Closed compact-lowering cause, with exact TypeScript projection operands
 /// and an exhaustive tag for every other existing lowering terminal.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "fault", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PackageLoweringFaultFacts {
     NoSupportedDeclaration,
     ExtensionAtomUnbound {
@@ -916,17 +916,15 @@ impl From<backend_semantic::vocabulary::Stage> for CompilerStageFact {
     }
 }
 
-impl From<ProjectionConstructorTag> for u8 {
-    fn from(value: ProjectionConstructorTag) -> Self {
-        match value {
-            ProjectionConstructorTag::Function => 0,
-            ProjectionConstructorTag::Generic => 1,
-            ProjectionConstructorTag::Tuple => 2,
-            ProjectionConstructorTag::Array => 3,
-            ProjectionConstructorTag::Union => 4,
-            ProjectionConstructorTag::Intersection => 5,
-            ProjectionConstructorTag::Product => 6,
-        }
+fn constructor_tag(value: ProjectionConstructorTag) -> u8 {
+    match value {
+        ProjectionConstructorTag::Function => 0,
+        ProjectionConstructorTag::Generic => 1,
+        ProjectionConstructorTag::Tuple => 2,
+        ProjectionConstructorTag::Array => 3,
+        ProjectionConstructorTag::Union => 4,
+        ProjectionConstructorTag::Intersection => 5,
+        ProjectionConstructorTag::Product => 6,
     }
 }
 
@@ -939,7 +937,7 @@ impl From<ProjectionConstructorFault> for PackageProjectionConstructorFaultFacts
                 payload0,
                 payload1,
             } => Self::ReservedPayload {
-                tag: tag.into(),
+                tag: constructor_tag(tag),
                 payload0,
                 payload1,
             },
@@ -948,7 +946,7 @@ impl From<ProjectionConstructorFault> for PackageProjectionConstructorFaultFacts
                 payload0,
                 payload1,
             } => Self::ArityOverflow {
-                tag: tag.into(),
+                tag: constructor_tag(tag),
                 payload0,
                 payload1,
             },
@@ -957,7 +955,7 @@ impl From<ProjectionConstructorFault> for PackageProjectionConstructorFaultFacts
                 expected,
                 actual,
             } => Self::Arity {
-                tag: tag.into(),
+                tag: constructor_tag(tag),
                 expected,
                 actual,
             },
