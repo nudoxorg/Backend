@@ -110,8 +110,11 @@ let
           (toString dependencyRustcCache)
           "${pkgs.python3}/bin/python3"
           "${toolchains.stable}/bin/rustc"
-          (toString ../scripts/cargo-shared-cache.sh)
-          (toString ../scripts/cargo-provenance.py)
+          # Interpolation admits each helper as a Nix store input. `toString`
+          # on a source path only spells the path; it can leave the wrapper
+          # pointing into an unreferenced flake source that GC may remove.
+          "${../scripts/cargo-shared-cache.sh}"
+          "${../scripts/cargo-provenance.py}"
         ]
         (builtins.readFile ../scripts/cargo-shared-cache.sh);
   };
