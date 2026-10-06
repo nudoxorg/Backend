@@ -14,6 +14,8 @@ use crate::journal::{FrameSequence, HeaderError, JournalOffset};
 
 const MAGIC: [u8; 8] = *b"NUDXJNL\0";
 const PHYSICAL_VERSION: u16 = 1;
+const JOURNAL_HEADER_BYTES_U16: u16 = 32;
+const WORKFLOW_RECORD_BYTES_U16: u16 = 68;
 pub(crate) const CHECKSUM_BYTES: usize = 16;
 const HEADER_DOMAIN: &[u8] = b"heart.journal.header.v1\0";
 const FRAME_DOMAIN: &[u8] = b"heart.journal.frame.v1\0";
@@ -49,8 +51,8 @@ impl HeaderRecord {
         let mut header = Self {
             magic: MAGIC,
             physical_version: U16::new(PHYSICAL_VERSION),
-            header_bytes: U16::new(JOURNAL_HEADER_BYTES as u16),
-            record_bytes: U16::new(WORKFLOW_RECORD_BYTES as u16),
+            header_bytes: U16::new(JOURNAL_HEADER_BYTES_U16),
+            record_bytes: U16::new(WORKFLOW_RECORD_BYTES_U16),
             reserved: U16::new(0),
             checksum: [0; CHECKSUM_BYTES],
         };
@@ -76,15 +78,15 @@ impl HeaderRecord {
                 observed: physical_version,
             });
         }
-        if self.header_bytes.get() != JOURNAL_HEADER_BYTES as u16 {
+        if self.header_bytes.get() != JOURNAL_HEADER_BYTES_U16 {
             return Err(HeaderError::HeaderWidth {
-                expected: JOURNAL_HEADER_BYTES as u16,
+                expected: JOURNAL_HEADER_BYTES_U16,
                 observed: self.header_bytes.get(),
             });
         }
-        if self.record_bytes.get() != WORKFLOW_RECORD_BYTES as u16 {
+        if self.record_bytes.get() != WORKFLOW_RECORD_BYTES_U16 {
             return Err(HeaderError::RecordWidth {
-                expected: WORKFLOW_RECORD_BYTES as u16,
+                expected: WORKFLOW_RECORD_BYTES_U16,
                 observed: self.record_bytes.get(),
             });
         }
@@ -152,9 +154,9 @@ fn truncate(hash: blake3::Hash) -> [u8; CHECKSUM_BYTES] {
 }
 
 const _: () = {
-    assert!(JOURNAL_HEADER_BYTES == 32);
+    assert!(JOURNAL_HEADER_BYTES == JOURNAL_HEADER_BYTES_U16 as usize);
     assert!(JOURNAL_FRAME_BYTES == 92);
-    assert!(WORKFLOW_RECORD_BYTES == 68);
+    assert!(WORKFLOW_RECORD_BYTES == WORKFLOW_RECORD_BYTES_U16 as usize);
 };
 
 #[cfg(test)]

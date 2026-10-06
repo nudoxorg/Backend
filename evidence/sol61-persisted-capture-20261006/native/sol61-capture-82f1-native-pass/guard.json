@@ -1,0 +1,407 @@
+{
+  "source": "82f1bc634285f3bcdc4af03c2c54ba2dc35d9be2",
+  "worktree": "/Users/rmccrar6/codex-worktrees/sol61-persisted-capture-20261006",
+  "observer_pid": 81933,
+  "owned_process_group": 81952,
+  "cargo_args": [
+    "test",
+    "--locked",
+    "--offline",
+    "-p",
+    "backend-local-service",
+    "--lib",
+    "inherited_capture_pointer_survives_source_commit_and_two_cold_reopens",
+    "--",
+    "--nocapture"
+  ],
+  "resources": [
+    {
+      "available_memory_bytes": 60084617216,
+      "sample_utc": "2026-10-06T22:31:58Z"
+    },
+    {
+      "available_memory_bytes": 60079505408,
+      "sample_utc": "2026-10-06T22:31:58Z"
+    },
+    {
+      "available_memory_bytes": 59664842752,
+      "sample_utc": "2026-10-06T22:32:00Z"
+    },
+    {
+      "available_memory_bytes": 59541520384,
+      "sample_utc": "2026-10-06T22:32:02Z"
+    },
+    {
+      "available_memory_bytes": 59933556736,
+      "sample_utc": "2026-10-06T22:32:04Z"
+    },
+    {
+      "available_memory_bytes": 59772829696,
+      "sample_utc": "2026-10-06T22:32:06Z"
+    },
+    {
+      "available_memory_bytes": 59982921728,
+      "sample_utc": "2026-10-06T22:32:08Z"
+    },
+    {
+      "available_memory_bytes": 59680784384,
+      "sample_utc": "2026-10-06T22:32:10Z"
+    },
+    {
+      "available_memory_bytes": 59688173568,
+      "sample_utc": "2026-10-06T22:32:12Z"
+    },
+    {
+      "available_memory_bytes": 59688484864,
+      "sample_utc": "2026-10-06T22:32:14Z"
+    },
+    {
+      "available_memory_bytes": 59466891264,
+      "sample_utc": "2026-10-06T22:32:16Z"
+    },
+    {
+      "available_memory_bytes": 58984202240,
+      "sample_utc": "2026-10-06T22:32:18Z"
+    },
+    {
+      "available_memory_bytes": 58667778048,
+      "sample_utc": "2026-10-06T22:32:20Z"
+    },
+    {
+      "available_memory_bytes": 58657538048,
+      "sample_utc": "2026-10-06T22:32:22Z"
+    },
+    {
+      "available_memory_bytes": 58969210880,
+      "sample_utc": "2026-10-06T22:32:24Z"
+    },
+    {
+      "available_memory_bytes": 59978399744,
+      "sample_utc": "2026-10-06T22:32:26Z"
+    },
+    {
+      "available_memory_bytes": 59992883200,
+      "sample_utc": "2026-10-06T22:32:28Z"
+    },
+    {
+      "available_memory_bytes": 60510371840,
+      "sample_utc": "2026-10-06T22:32:30Z"
+    },
+    {
+      "available_memory_bytes": 60408594432,
+      "sample_utc": "2026-10-06T22:32:32Z"
+    },
+    {
+      "available_memory_bytes": 60523593728,
+      "sample_utc": "2026-10-06T22:32:34Z"
+    },
+    {
+      "available_memory_bytes": 60923674624,
+      "sample_utc": "2026-10-06T22:32:36Z"
+    },
+    {
+      "available_memory_bytes": 60927787008,
+      "sample_utc": "2026-10-06T22:32:38Z"
+    },
+    {
+      "available_memory_bytes": 60912893952,
+      "sample_utc": "2026-10-06T22:32:40Z"
+    },
+    {
+      "available_memory_bytes": 62024941568,
+      "sample_utc": "2026-10-06T22:32:42Z"
+    },
+    {
+      "available_memory_bytes": 61218619392,
+      "sample_utc": "2026-10-06T22:32:44Z"
+    },
+    {
+      "available_memory_bytes": 61525049344,
+      "sample_utc": "2026-10-06T22:32:46Z"
+    },
+    {
+      "available_memory_bytes": 61804052480,
+      "sample_utc": "2026-10-06T22:32:48Z"
+    },
+    {
+      "available_memory_bytes": 61394583552,
+      "sample_utc": "2026-10-06T22:32:50Z"
+    },
+    {
+      "available_memory_bytes": 60905275392,
+      "sample_utc": "2026-10-06T22:32:52Z"
+    },
+    {
+      "available_memory_bytes": 60703916032,
+      "sample_utc": "2026-10-06T22:32:54Z"
+    },
+    {
+      "available_memory_bytes": 60480208896,
+      "sample_utc": "2026-10-06T22:32:56Z"
+    },
+    {
+      "available_memory_bytes": 60415393792,
+      "sample_utc": "2026-10-06T22:32:58Z"
+    },
+    {
+      "available_memory_bytes": 61277913088,
+      "sample_utc": "2026-10-06T22:33:00Z"
+    },
+    {
+      "available_memory_bytes": 60431794176,
+      "sample_utc": "2026-10-06T22:33:02Z"
+    },
+    {
+      "available_memory_bytes": 59779547136,
+      "sample_utc": "2026-10-06T22:33:04Z"
+    },
+    {
+      "available_memory_bytes": 59231420416,
+      "sample_utc": "2026-10-06T22:33:06Z"
+    },
+    {
+      "available_memory_bytes": 59003813888,
+      "sample_utc": "2026-10-06T22:33:08Z"
+    },
+    {
+      "available_memory_bytes": 58624966656,
+      "sample_utc": "2026-10-06T22:33:10Z"
+    },
+    {
+      "available_memory_bytes": 58532413440,
+      "sample_utc": "2026-10-06T22:33:12Z"
+    },
+    {
+      "available_memory_bytes": 58334822400,
+      "sample_utc": "2026-10-06T22:33:14Z"
+    },
+    {
+      "available_memory_bytes": 58239533056,
+      "sample_utc": "2026-10-06T22:33:16Z"
+    },
+    {
+      "available_memory_bytes": 58059767808,
+      "sample_utc": "2026-10-06T22:33:18Z"
+    },
+    {
+      "available_memory_bytes": 57937002496,
+      "sample_utc": "2026-10-06T22:33:20Z"
+    },
+    {
+      "available_memory_bytes": 57719701504,
+      "sample_utc": "2026-10-06T22:33:22Z"
+    },
+    {
+      "available_memory_bytes": 57435914240,
+      "sample_utc": "2026-10-06T22:33:24Z"
+    },
+    {
+      "available_memory_bytes": 57328041984,
+      "sample_utc": "2026-10-06T22:33:26Z"
+    },
+    {
+      "available_memory_bytes": 57203392512,
+      "sample_utc": "2026-10-06T22:33:28Z"
+    },
+    {
+      "available_memory_bytes": 57203884032,
+      "sample_utc": "2026-10-06T22:33:30Z"
+    },
+    {
+      "available_memory_bytes": 57256525824,
+      "sample_utc": "2026-10-06T22:33:32Z"
+    },
+    {
+      "available_memory_bytes": 57272631296,
+      "sample_utc": "2026-10-06T22:33:34Z"
+    },
+    {
+      "available_memory_bytes": 57095061504,
+      "sample_utc": "2026-10-06T22:33:36Z"
+    },
+    {
+      "available_memory_bytes": 57930334208,
+      "sample_utc": "2026-10-06T22:33:38Z"
+    },
+    {
+      "available_memory_bytes": 57985941504,
+      "sample_utc": "2026-10-06T22:33:40Z"
+    },
+    {
+      "available_memory_bytes": 57910116352,
+      "sample_utc": "2026-10-06T22:33:42Z"
+    },
+    {
+      "available_memory_bytes": 57451610112,
+      "sample_utc": "2026-10-06T22:33:45Z"
+    },
+    {
+      "available_memory_bytes": 57228214272,
+      "sample_utc": "2026-10-06T22:33:47Z"
+    },
+    {
+      "available_memory_bytes": 57237749760,
+      "sample_utc": "2026-10-06T22:33:49Z"
+    },
+    {
+      "available_memory_bytes": 57126928384,
+      "sample_utc": "2026-10-06T22:33:51Z"
+    },
+    {
+      "available_memory_bytes": 57066569728,
+      "sample_utc": "2026-10-06T22:33:53Z"
+    },
+    {
+      "available_memory_bytes": 56695472128,
+      "sample_utc": "2026-10-06T22:33:55Z"
+    },
+    {
+      "available_memory_bytes": 57141215232,
+      "sample_utc": "2026-10-06T22:33:57Z"
+    },
+    {
+      "available_memory_bytes": 57403441152,
+      "sample_utc": "2026-10-06T22:33:59Z"
+    },
+    {
+      "available_memory_bytes": 57022447616,
+      "sample_utc": "2026-10-06T22:34:01Z"
+    },
+    {
+      "available_memory_bytes": 56853807104,
+      "sample_utc": "2026-10-06T22:34:03Z"
+    },
+    {
+      "available_memory_bytes": 56994119680,
+      "sample_utc": "2026-10-06T22:34:05Z"
+    },
+    {
+      "available_memory_bytes": 56981929984,
+      "sample_utc": "2026-10-06T22:34:07Z"
+    },
+    {
+      "available_memory_bytes": 57082511360,
+      "sample_utc": "2026-10-06T22:34:09Z"
+    },
+    {
+      "available_memory_bytes": 57134891008,
+      "sample_utc": "2026-10-06T22:34:11Z"
+    },
+    {
+      "available_memory_bytes": 56802918400,
+      "sample_utc": "2026-10-06T22:34:13Z"
+    },
+    {
+      "available_memory_bytes": 56835194880,
+      "sample_utc": "2026-10-06T22:34:15Z"
+    },
+    {
+      "available_memory_bytes": 56813322240,
+      "sample_utc": "2026-10-06T22:34:17Z"
+    },
+    {
+      "available_memory_bytes": 56562221056,
+      "sample_utc": "2026-10-06T22:34:19Z"
+    },
+    {
+      "available_memory_bytes": 56795103232,
+      "sample_utc": "2026-10-06T22:34:21Z"
+    },
+    {
+      "available_memory_bytes": 57018941440,
+      "sample_utc": "2026-10-06T22:34:23Z"
+    },
+    {
+      "available_memory_bytes": 56469929984,
+      "sample_utc": "2026-10-06T22:34:25Z"
+    },
+    {
+      "available_memory_bytes": 57147293696,
+      "sample_utc": "2026-10-06T22:34:27Z"
+    },
+    {
+      "available_memory_bytes": 56881692672,
+      "sample_utc": "2026-10-06T22:34:29Z"
+    },
+    {
+      "available_memory_bytes": 57079070720,
+      "sample_utc": "2026-10-06T22:34:31Z"
+    },
+    {
+      "available_memory_bytes": 57325830144,
+      "sample_utc": "2026-10-06T22:34:33Z"
+    },
+    {
+      "available_memory_bytes": 57406816256,
+      "sample_utc": "2026-10-06T22:34:35Z"
+    },
+    {
+      "available_memory_bytes": 57927057408,
+      "sample_utc": "2026-10-06T22:34:37Z"
+    },
+    {
+      "available_memory_bytes": 56350769152,
+      "sample_utc": "2026-10-06T22:34:39Z"
+    },
+    {
+      "available_memory_bytes": 55845601280,
+      "sample_utc": "2026-10-06T22:34:41Z"
+    },
+    {
+      "available_memory_bytes": 59116634112,
+      "sample_utc": "2026-10-06T22:34:43Z"
+    },
+    {
+      "available_memory_bytes": 58896531456,
+      "sample_utc": "2026-10-06T22:34:45Z"
+    },
+    {
+      "available_memory_bytes": 58373554176,
+      "sample_utc": "2026-10-06T22:34:47Z"
+    },
+    {
+      "available_memory_bytes": 59118682112,
+      "sample_utc": "2026-10-06T22:34:49Z"
+    },
+    {
+      "available_memory_bytes": 59681931264,
+      "sample_utc": "2026-10-06T22:34:51Z"
+    },
+    {
+      "available_memory_bytes": 60203106304,
+      "sample_utc": "2026-10-06T22:34:53Z"
+    },
+    {
+      "available_memory_bytes": 59182727168,
+      "sample_utc": "2026-10-06T22:34:55Z"
+    },
+    {
+      "available_memory_bytes": 58730086400,
+      "sample_utc": "2026-10-06T22:34:57Z"
+    },
+    {
+      "available_memory_bytes": 62144626688,
+      "sample_utc": "2026-10-06T22:34:59Z"
+    },
+    {
+      "available_memory_bytes": 61240426496,
+      "sample_utc": "2026-10-06T22:35:01Z"
+    },
+    {
+      "available_memory_bytes": 61393453056,
+      "sample_utc": "2026-10-06T22:35:03Z"
+    },
+    {
+      "available_memory_bytes": 61658824704,
+      "sample_utc": "2026-10-06T22:35:05Z"
+    },
+    {
+      "available_memory_bytes": 62078566400,
+      "sample_utc": "2026-10-06T22:35:07Z"
+    }
+  ],
+  "root_allocation": "one remote Mac compiler group; Cargo <=4; owned managed graph",
+  "stop_reason": null,
+  "exit": 0,
+  "ended_utc": "2026-10-06T22:35:09Z"
+}

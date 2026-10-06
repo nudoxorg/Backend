@@ -1,0 +1,125 @@
+{
+  "schema": "nudox.native-public-phase.v1",
+  "phase": "unicode-cold-control",
+  "source": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/project",
+  "state": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/state",
+  "manifest": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/receipts/demo-native-a659d5d181-attempt01/runtime-build-manifest.json",
+  "manifest_sha256": "00074533b0281d0d92791963ca4d4ddf3254b32ed6457b0af6d427ad1af658a0",
+  "environment": {
+    "HOME": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/unicode-cold-control/home",
+    "PATH": "/Users/rmccrar6/.nix-profile/bin:/Users/rmccrar6/.npm-global/bin:/Users/rmccrar6/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "TMPDIR": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/unicode-cold-control/tmp",
+    "USER": "rmccrar6",
+    "LANG": "C.UTF-8"
+  },
+  "allocation": "Root allocated sol61-public-tantivy one private Mac runtime owner",
+  "whole_project_runtime_pass": false,
+  "all_phase_checks_pass": false,
+  "portable_package": {
+    "schema": "nudox.mac-cli-diagnostic-preview.v1",
+    "source": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+    "runtime_manifest_sha256": "00074533b0281d0d92791963ca4d4ddf3254b32ed6457b0af6d427ad1af658a0",
+    "signing": "ad-hoc",
+    "notarized": false,
+    "production_ready": false,
+    "semantic_acceptance": "demo only; actual corrected HTTPie and Requests publication/cold gates pending; unfinished automatic old-owner handoff excluded",
+    "known_unresolved_failure": "Authentic Immer full native compilation reached duplicate declaration identity after a39 ownership repair; not accepted",
+    "files": [
+      {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-demo-native-a659d5d181-attempt01/backend-cli",
+        "original_sha256": "49a50347f3e7baca793d213e0fd9c9362fdaadaad4576ae623c7eb0735ea9c91",
+        "packaged": "bin/backend-cli",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/../lib/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          }
+        ],
+        "packaged_sha256": "5a522b1238f52cd9d876f23b269674df4d5a36b6887f5ad5b2752088e8e8ea2d"
+      },
+      {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-demo-native-a659d5d181-attempt01/backend-mcp",
+        "original_sha256": "d9f4be4edd60ffdf0c1bc1c2a9b52a83bdb1e4ed3eb060485a7e4b4bde87b350",
+        "packaged": "bin/backend-mcp",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/../lib/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          }
+        ],
+        "packaged_sha256": "e342fa310db971793b68663951619009de72125952b779898388c351f0299134"
+      },
+      {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-demo-native-a659d5d181-attempt01/backend-locald",
+        "original_sha256": "d5d5fdb6de536d217da5f3007c33831720663953bab8ea367f86973e4aa68713",
+        "packaged": "bin/backend-locald",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/../lib/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          }
+        ],
+        "packaged_sha256": "668d8bff54ab60f407845cf063bbc1ac0a01855b72522544af2fea82780a6f1b"
+      },
+      {
+        "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+        "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1",
+        "packaged": "lib/libiconv.2.dylib",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          },
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+            "relocated": "@loader_path/libcharset.1.dylib",
+            "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959"
+          }
+        ],
+        "packaged_sha256": "2fbbe9796199ea41388cef1d4a707dafb2f45d2ceafb0554b9b75cf75bfe613d"
+      },
+      {
+        "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+        "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959",
+        "packaged": "lib/libcharset.1.dylib",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+            "relocated": "@loader_path/libcharset.1.dylib",
+            "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959"
+          }
+        ],
+        "packaged_sha256": "cbde7311dae0ec0bcd8af251f00b5a5794986fc800270fadb5f6a5563dc47ce9"
+      }
+    ],
+    "zero_nudox_fresh_home_help": [
+      {
+        "name": "backend-cli",
+        "exit": 0,
+        "stdout_bytes": 8687
+      },
+      {
+        "name": "backend-mcp",
+        "exit": 0,
+        "stdout_bytes": 108
+      },
+      {
+        "name": "backend-locald",
+        "exit": 0,
+        "stdout_bytes": 1623
+      }
+    ]
+  },
+  "used_images": {
+    "backend-cli": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-portable-a659-20261006/bin/backend-cli",
+    "backend-locald": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-portable-a659-20261006/bin/backend-locald",
+    "backend-mcp": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-portable-a659-20261006/bin/backend-mcp"
+  },
+  "owner_pid": 2238,
+  "error": "AssertionError('owned locald exited before readiness')",
+  "available_memory_samples": []
+}

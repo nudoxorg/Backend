@@ -1,0 +1,626 @@
+{
+  "schema": "nudox.native-public-phase.v1",
+  "phase": "unicode-edit",
+  "source": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/project",
+  "state": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/state",
+  "manifest": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/receipts/demo-native-a659d5d181-attempt01/runtime-build-manifest.json",
+  "manifest_sha256": "00074533b0281d0d92791963ca4d4ddf3254b32ed6457b0af6d427ad1af658a0",
+  "environment": {
+    "HOME": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/unicode-edit/home",
+    "PATH": "/Users/rmccrar6/.nix-profile/bin:/Users/rmccrar6/.npm-global/bin:/Users/rmccrar6/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "TMPDIR": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/unicode-edit/tmp",
+    "USER": "rmccrar6",
+    "LANG": "C.UTF-8"
+  },
+  "allocation": "Root allocated sol61-public-tantivy one private Mac runtime owner",
+  "whole_project_runtime_pass": false,
+  "all_phase_checks_pass": true,
+  "portable_package": {
+    "schema": "nudox.mac-cli-diagnostic-preview.v1",
+    "source": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+    "runtime_manifest_sha256": "00074533b0281d0d92791963ca4d4ddf3254b32ed6457b0af6d427ad1af658a0",
+    "signing": "ad-hoc",
+    "notarized": false,
+    "production_ready": false,
+    "semantic_acceptance": "demo only; actual corrected HTTPie and Requests publication/cold gates pending; unfinished automatic old-owner handoff excluded",
+    "known_unresolved_failure": "Authentic Immer full native compilation reached duplicate declaration identity after a39 ownership repair; not accepted",
+    "files": [
+      {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-demo-native-a659d5d181-attempt01/backend-cli",
+        "original_sha256": "49a50347f3e7baca793d213e0fd9c9362fdaadaad4576ae623c7eb0735ea9c91",
+        "packaged": "bin/backend-cli",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/../lib/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          }
+        ],
+        "packaged_sha256": "5a522b1238f52cd9d876f23b269674df4d5a36b6887f5ad5b2752088e8e8ea2d"
+      },
+      {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-demo-native-a659d5d181-attempt01/backend-mcp",
+        "original_sha256": "d9f4be4edd60ffdf0c1bc1c2a9b52a83bdb1e4ed3eb060485a7e4b4bde87b350",
+        "packaged": "bin/backend-mcp",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/../lib/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          }
+        ],
+        "packaged_sha256": "e342fa310db971793b68663951619009de72125952b779898388c351f0299134"
+      },
+      {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-demo-native-a659d5d181-attempt01/backend-locald",
+        "original_sha256": "d5d5fdb6de536d217da5f3007c33831720663953bab8ea367f86973e4aa68713",
+        "packaged": "bin/backend-locald",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/../lib/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          }
+        ],
+        "packaged_sha256": "668d8bff54ab60f407845cf063bbc1ac0a01855b72522544af2fea82780a6f1b"
+      },
+      {
+        "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+        "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1",
+        "packaged": "lib/libiconv.2.dylib",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          },
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+            "relocated": "@loader_path/libcharset.1.dylib",
+            "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959"
+          }
+        ],
+        "packaged_sha256": "2fbbe9796199ea41388cef1d4a707dafb2f45d2ceafb0554b9b75cf75bfe613d"
+      },
+      {
+        "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+        "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959",
+        "packaged": "lib/libcharset.1.dylib",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+            "relocated": "@loader_path/libcharset.1.dylib",
+            "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959"
+          }
+        ],
+        "packaged_sha256": "cbde7311dae0ec0bcd8af251f00b5a5794986fc800270fadb5f6a5563dc47ce9"
+      }
+    ],
+    "zero_nudox_fresh_home_help": [
+      {
+        "name": "backend-cli",
+        "exit": 0,
+        "stdout_bytes": 8687
+      },
+      {
+        "name": "backend-mcp",
+        "exit": 0,
+        "stdout_bytes": 108
+      },
+      {
+        "name": "backend-locald",
+        "exit": 0,
+        "stdout_bytes": 1623
+      }
+    ]
+  },
+  "used_images": {
+    "backend-cli": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-portable-a659-20261006/bin/backend-cli",
+    "backend-locald": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-portable-a659-20261006/bin/backend-locald",
+    "backend-mcp": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-portable-a659-20261006/bin/backend-mcp"
+  },
+  "source_change": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/project/src/cachetools/__init__.py",
+    "before_sha256": "c595cd9ea1ce7e52be423397398f33ad9fb8074d568bd664f229570e97f7a660",
+    "after_sha256": "9b2790e28e11062ea98261dd9ed57fbc4e93eb578acb50222d117e2dad1c9b64",
+    "preserved_backup_sha256": "c595cd9ea1ce7e52be423397398f33ad9fb8074d568bd664f229570e97f7a660"
+  },
+  "owner_pid": 91070,
+  "lifecycle_change": {
+    "heading": "index",
+    "records": [
+      {
+        "title": "index request accepted",
+        "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/project",
+        "tags": [
+          "intent 3aa9c19e",
+          "pending",
+          "read `backend health` for readiness"
+        ]
+      }
+    ],
+    "answer": "product",
+    "detail": "full",
+    "budget": {
+      "bytes": 389,
+      "estimatedTokens": 98,
+      "bytesPerToken": 4
+    }
+  },
+  "stale_selected_token_refusals": [
+    {
+      "surface": "cli",
+      "route": "resolve",
+      "query": "cached",
+      "refusal": {
+        "slug": "cursor-mismatch",
+        "operand": "cursor",
+        "cause": "moved",
+        "detail": "the continuation belongs to an older immutable revision; restart the query",
+        "shell": "re-run the same command",
+        "answer": "fault"
+      }
+    },
+    {
+      "surface": "mcp",
+      "route": "resolve",
+      "query": "cached",
+      "refusal": {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "error": {
+          "code": -32010,
+          "message": "Stale cursor",
+          "data": {
+            "kind": "stale_cursor",
+            "detail": "the continuation belongs to an older immutable revision; restart the query"
+          }
+        }
+      }
+    },
+    {
+      "surface": "cli",
+      "route": "resolve",
+      "query": "__getitem__",
+      "refusal": {
+        "slug": "cursor-mismatch",
+        "operand": "cursor",
+        "cause": "moved",
+        "detail": "the continuation belongs to an older immutable revision; restart the query",
+        "shell": "re-run the same command",
+        "answer": "fault"
+      }
+    },
+    {
+      "surface": "mcp",
+      "route": "resolve",
+      "query": "__getitem__",
+      "refusal": {
+        "jsonrpc": "2.0",
+        "id": 12,
+        "error": {
+          "code": -32010,
+          "message": "Stale cursor",
+          "data": {
+            "kind": "stale_cursor",
+            "detail": "the continuation belongs to an older immutable revision; restart the query"
+          }
+        }
+      }
+    },
+    {
+      "surface": "cli",
+      "route": "search",
+      "query": "cached",
+      "refusal": {
+        "slug": "cursor-mismatch",
+        "operand": "cursor",
+        "cause": "moved",
+        "detail": "the continuation belongs to an older immutable revision; restart the query",
+        "shell": "re-run the same command",
+        "answer": "fault"
+      }
+    },
+    {
+      "surface": "mcp",
+      "route": "search",
+      "query": "cached",
+      "refusal": {
+        "jsonrpc": "2.0",
+        "id": 13,
+        "error": {
+          "code": -32010,
+          "message": "Stale cursor",
+          "data": {
+            "kind": "stale_cursor",
+            "detail": "the continuation belongs to an older immutable revision; restart the query"
+          }
+        }
+      }
+    },
+    {
+      "surface": "cli",
+      "route": "search",
+      "query": "__getitem__",
+      "refusal": {
+        "slug": "cursor-mismatch",
+        "operand": "cursor",
+        "cause": "moved",
+        "detail": "the continuation belongs to an older immutable revision; restart the query",
+        "shell": "re-run the same command",
+        "answer": "fault"
+      }
+    },
+    {
+      "surface": "mcp",
+      "route": "search",
+      "query": "__getitem__",
+      "refusal": {
+        "jsonrpc": "2.0",
+        "id": 14,
+        "error": {
+          "code": -32010,
+          "message": "Stale cursor",
+          "data": {
+            "kind": "stale_cursor",
+            "detail": "the continuation belongs to an older immutable revision; restart the query"
+          }
+        }
+      }
+    }
+  ],
+  "positive_unicode_cli_mcp_answers": {
+    "cli": {
+      "query": "λ路径",
+      "coverage": [
+        {
+          "lane": "exact",
+          "state": "complete"
+        },
+        {
+          "lane": "names",
+          "state": "complete"
+        },
+        {
+          "lane": "graph",
+          "state": "complete"
+        },
+        {
+          "lane": "semantic",
+          "state": "unavailable",
+          "reason": "unconfigured"
+        }
+      ],
+      "readiness": "ready",
+      "records": [
+        {
+          "identity": {
+            "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/project::semantic::580ac101b75a8651f29cc947420c67c265bc2824faba0a464ba965920bb0a97c::cached",
+            "trail": "project › src/cachetools/__init__.py:737 › cached",
+            "name": "cached",
+            "shape": "semantic",
+            "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/project",
+            "path": "src/cachetools/__init__.py",
+            "line": 737,
+            "segments": [
+              "cached"
+            ],
+            "key": "2f9759d2",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                47,
+                151,
+                89,
+                210,
+                117,
+                103,
+                35,
+                154,
+                218,
+                4,
+                66,
+                168,
+                159,
+                226,
+                149,
+                99,
+                69,
+                123,
+                129,
+                161,
+                97,
+                64,
+                205,
+                178,
+                213,
+                145,
+                182,
+                84,
+                4,
+                233,
+                116,
+                9
+              ]
+            }
+          },
+          "kind": "function",
+          "language": "python",
+          "state": "ready",
+          "signature": "def cached(cache, key=keys.hashkey, lock=None, condition=None, info=False):",
+          "summary": "λ路径 sol61 genuine documentation refresh. Decorator to wrap a function with a memoizing callable that saves",
+          "score": 4294967295
+        }
+      ],
+      "more": false,
+      "semantic_search": {
+        "status": "unavailable",
+        "reason": "unconfigured"
+      },
+      "answer": "records",
+      "detail": "full",
+      "budget": {
+        "bytes": 1463,
+        "estimatedTokens": 366,
+        "bytesPerToken": 4
+      }
+    },
+    "mcp": {
+      "query": "λ路径",
+      "coverage": [
+        {
+          "lane": "exact",
+          "state": "complete"
+        },
+        {
+          "lane": "names",
+          "state": "complete"
+        },
+        {
+          "lane": "graph",
+          "state": "complete"
+        },
+        {
+          "lane": "semantic",
+          "state": "unavailable",
+          "reason": "unconfigured"
+        }
+      ],
+      "readiness": "ready",
+      "records": [
+        {
+          "identity": {
+            "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/project::semantic::580ac101b75a8651f29cc947420c67c265bc2824faba0a464ba965920bb0a97c::cached",
+            "trail": "project › src/cachetools/__init__.py:737 › cached",
+            "name": "cached",
+            "shape": "semantic",
+            "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/project",
+            "path": "src/cachetools/__init__.py",
+            "line": 737,
+            "segments": [
+              "cached"
+            ],
+            "key": "2f9759d2",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                47,
+                151,
+                89,
+                210,
+                117,
+                103,
+                35,
+                154,
+                218,
+                4,
+                66,
+                168,
+                159,
+                226,
+                149,
+                99,
+                69,
+                123,
+                129,
+                161,
+                97,
+                64,
+                205,
+                178,
+                213,
+                145,
+                182,
+                84,
+                4,
+                233,
+                116,
+                9
+              ]
+            }
+          },
+          "kind": "function",
+          "language": "python",
+          "state": "ready",
+          "signature": "def cached(cache, key=keys.hashkey, lock=None, condition=None, info=False):",
+          "summary": "λ路径 sol61 genuine documentation refresh. Decorator to wrap a function with a memoizing callable that saves",
+          "score": 4294967295
+        }
+      ],
+      "more": false,
+      "semantic_search": {
+        "status": "unavailable",
+        "reason": "unconfigured"
+      },
+      "answer": "records",
+      "detail": "full",
+      "budget": {
+        "bytes": 1463,
+        "estimatedTokens": 366,
+        "bytesPerToken": 4
+      }
+    }
+  },
+  "matrix_all_pass": true,
+  "matrix_cases": 240,
+  "available_memory_samples": [
+    63420153856,
+    63725764608,
+    63588876288,
+    63719063552,
+    63758123008,
+    63842533376,
+    63856246784,
+    63851855872,
+    63922683904,
+    63920668672,
+    64008044544,
+    64009420800,
+    64006422528,
+    64048955392,
+    64044531712,
+    62948950016,
+    64043630592,
+    64070844416,
+    64068763648,
+    64063324160,
+    64050593792,
+    64069517312,
+    64065945600,
+    63039963136,
+    63026774016,
+    63017975808,
+    62642274304,
+    62665031680,
+    62740774912,
+    61750001664,
+    61305896960,
+    61570940928,
+    61672620032,
+    61751345152,
+    61824991232,
+    61869113344,
+    62918443008,
+    62923636736,
+    62886445056,
+    64057966592,
+    64062603264,
+    64061915136,
+    64058359808,
+    64052985856,
+    64064716800,
+    64055394304,
+    64054493184,
+    64052477952,
+    64057245696,
+    64069419008,
+    64096010240,
+    64089964544,
+    64092176384,
+    64080216064,
+    64093962240,
+    64108740608,
+    64095485952,
+    64097157120,
+    64096518144,
+    63621660672,
+    63772655616,
+    63913345024,
+    64035209216,
+    64075776000,
+    64096665600,
+    64100040704,
+    64073695232,
+    64069484544,
+    64061833216,
+    64074055680,
+    63621726208,
+    63729876992,
+    63854854144,
+    63980060672,
+    64031834112,
+    64083509248,
+    64097484800,
+    64093683712,
+    64099172352,
+    64096878592,
+    64067026944,
+    64021151744,
+    63828574208,
+    63662718976,
+    63248629760,
+    63353110528,
+    63637880832,
+    63874301952,
+    63908495360,
+    63439372288,
+    63562366976,
+    63592726528,
+    63714426880,
+    63748997120,
+    63778619392,
+    63801851904,
+    63772147712,
+    63822282752,
+    63817056256,
+    63803179008,
+    63796576256,
+    63803785216,
+    63870959616,
+    63867338752,
+    63841992704,
+    63850266624,
+    63835963392,
+    63862063104,
+    63891030016,
+    63891128320,
+    63901614080,
+    63927304192,
+    63915425792,
+    63916589056,
+    63915687936,
+    63906070528,
+    63894552576,
+    63894863872,
+    63901450240,
+    63452348416,
+    63588089856,
+    63722340352,
+    63830671360,
+    63883640832,
+    63888031744,
+    63921586176,
+    63919570944,
+    63926206464,
+    63932661760,
+    63927451648,
+    63896092672,
+    63890751488,
+    63891849216,
+    63884001280,
+    63894847488,
+    63883067392,
+    63888752640,
+    63891521536,
+    63815565312,
+    63829377024,
+    63814385664,
+    63835766784,
+    63819579392,
+    63844909056,
+    63831523328,
+    63815254016,
+    63777062912,
+    63772966912,
+    63335251968,
+    63335432192,
+    63524044800,
+    63642189824,
+    63727435776,
+    63762022400,
+    63762857984,
+    63770230784,
+    63773523968,
+    63768100864
+  ]
+}

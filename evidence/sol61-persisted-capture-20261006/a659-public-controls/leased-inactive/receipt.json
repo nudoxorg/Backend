@@ -1,0 +1,840 @@
+{
+  "schema": "nudox.native-public-phase.v1",
+  "phase": "leased-inactive",
+  "source": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/project",
+  "state": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/state",
+  "manifest": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/receipts/demo-native-a659d5d181-attempt01/runtime-build-manifest.json",
+  "manifest_sha256": "00074533b0281d0d92791963ca4d4ddf3254b32ed6457b0af6d427ad1af658a0",
+  "environment": {
+    "HOME": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/leased-inactive/home",
+    "PATH": "/Users/rmccrar6/.nix-profile/bin:/Users/rmccrar6/.npm-global/bin:/Users/rmccrar6/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "TMPDIR": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/leased-inactive/tmp",
+    "USER": "rmccrar6",
+    "LANG": "C.UTF-8"
+  },
+  "allocation": "Root allocated sol61-public-tantivy one private Mac runtime owner",
+  "whole_project_runtime_pass": false,
+  "all_phase_checks_pass": false,
+  "portable_package": {
+    "schema": "nudox.mac-cli-diagnostic-preview.v1",
+    "source": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+    "runtime_manifest_sha256": "00074533b0281d0d92791963ca4d4ddf3254b32ed6457b0af6d427ad1af658a0",
+    "signing": "ad-hoc",
+    "notarized": false,
+    "production_ready": false,
+    "semantic_acceptance": "demo only; actual corrected HTTPie and Requests publication/cold gates pending; unfinished automatic old-owner handoff excluded",
+    "known_unresolved_failure": "Authentic Immer full native compilation reached duplicate declaration identity after a39 ownership repair; not accepted",
+    "files": [
+      {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-demo-native-a659d5d181-attempt01/backend-cli",
+        "original_sha256": "49a50347f3e7baca793d213e0fd9c9362fdaadaad4576ae623c7eb0735ea9c91",
+        "packaged": "bin/backend-cli",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/../lib/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          }
+        ],
+        "packaged_sha256": "5a522b1238f52cd9d876f23b269674df4d5a36b6887f5ad5b2752088e8e8ea2d"
+      },
+      {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-demo-native-a659d5d181-attempt01/backend-mcp",
+        "original_sha256": "d9f4be4edd60ffdf0c1bc1c2a9b52a83bdb1e4ed3eb060485a7e4b4bde87b350",
+        "packaged": "bin/backend-mcp",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/../lib/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          }
+        ],
+        "packaged_sha256": "e342fa310db971793b68663951619009de72125952b779898388c351f0299134"
+      },
+      {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-demo-native-a659d5d181-attempt01/backend-locald",
+        "original_sha256": "d5d5fdb6de536d217da5f3007c33831720663953bab8ea367f86973e4aa68713",
+        "packaged": "bin/backend-locald",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/../lib/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          }
+        ],
+        "packaged_sha256": "668d8bff54ab60f407845cf063bbc1ac0a01855b72522544af2fea82780a6f1b"
+      },
+      {
+        "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+        "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1",
+        "packaged": "lib/libiconv.2.dylib",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          },
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+            "relocated": "@loader_path/libcharset.1.dylib",
+            "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959"
+          }
+        ],
+        "packaged_sha256": "2fbbe9796199ea41388cef1d4a707dafb2f45d2ceafb0554b9b75cf75bfe613d"
+      },
+      {
+        "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+        "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959",
+        "packaged": "lib/libcharset.1.dylib",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+            "relocated": "@loader_path/libcharset.1.dylib",
+            "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959"
+          }
+        ],
+        "packaged_sha256": "cbde7311dae0ec0bcd8af251f00b5a5794986fc800270fadb5f6a5563dc47ce9"
+      }
+    ],
+    "zero_nudox_fresh_home_help": [
+      {
+        "name": "backend-cli",
+        "exit": 0,
+        "stdout_bytes": 8687
+      },
+      {
+        "name": "backend-mcp",
+        "exit": 0,
+        "stdout_bytes": 108
+      },
+      {
+        "name": "backend-locald",
+        "exit": 0,
+        "stdout_bytes": 1623
+      }
+    ]
+  },
+  "used_images": {
+    "backend-cli": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-portable-a659-20261006/bin/backend-cli",
+    "backend-locald": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-portable-a659-20261006/bin/backend-locald",
+    "backend-mcp": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-portable-a659-20261006/bin/backend-mcp"
+  },
+  "authentic_inactive_injection": {
+    "donor": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/donors/fd6b28aff45b82f69f499b86336a3e5e385bc8d0e30f0e4b8deba851a9b6b004",
+    "target": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/state/search-index-v2/v4/fd6b28aff45b82f69f499b86336a3e5e385bc8d0e30f0e4b8deba851a9b6b004",
+    "mode": "existing-actual-private-prior-root",
+    "original_binding": "fd6b28aff45b82f69f499b86336a3e5e385bc8d0e30f0e4b8deba851a9b6b004",
+    "donor_inventory": [
+      [
+        ".backend-root-reader.lock",
+        "file",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        ".last-used",
+        "file",
+        16,
+        "1130ec8d5523f132463f34223db479cdb09a911b319c0f88dc3f02eec2f1a44b"
+      ],
+      [
+        ".managed.json",
+        "file",
+        1234,
+        "1beb7e4e7a3bf1238f6d6a1696194d24cf6b6dd317e5d122de30417bedd2b976"
+      ],
+      [
+        ".tantivy-meta.lock",
+        "file",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        ".tantivy-writer.lock",
+        "file",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "0ebc140d5a5b4e30a76c5ff789bcf220.fast",
+        "file",
+        152220,
+        "8759d1a7617c3896d5d60d990093c502c8e9b099b0f08c71a3516e7c8bb46f62"
+      ],
+      [
+        "0ebc140d5a5b4e30a76c5ff789bcf220.fieldnorm",
+        "file",
+        1833,
+        "19f869e0af4e5781bce6c24adc08b1749cc37306bd0392158e9634d996cf84fb"
+      ],
+      [
+        "0ebc140d5a5b4e30a76c5ff789bcf220.idx",
+        "file",
+        68091,
+        "c0445211cf76351c1f88ee9da5a4f06905a1379a39ac678bb12092d4fbb287c5"
+      ],
+      [
+        "0ebc140d5a5b4e30a76c5ff789bcf220.pos",
+        "file",
+        129,
+        "65ff8664889f687be2c46a56de071d6f60e2f5be4fb3813669277d929b32c73b"
+      ],
+      [
+        "0ebc140d5a5b4e30a76c5ff789bcf220.store",
+        "file",
+        1507,
+        "88f2d342d891a674cd1522ad37cea6d9e84358451194d0fcb5ae4a56253c6017"
+      ],
+      [
+        "0ebc140d5a5b4e30a76c5ff789bcf220.term",
+        "file",
+        352907,
+        "850d6ccf513404de7b2788d932464eeaf00e999499516c54100fe7f9e3dd7181"
+      ],
+      [
+        "4b3615c625a644f6a65ca757014d5d9e.fast",
+        "file",
+        153232,
+        "c3845895437f45d0aeeb62ff1eb4e2fac758f67acfef95f8fa39f565d5b2d63e"
+      ],
+      [
+        "4b3615c625a644f6a65ca757014d5d9e.fieldnorm",
+        "file",
+        1843,
+        "186ab1767f70690130dc5fc8583c51afcb1ccffadd4e12d8267d4849277bc0f5"
+      ],
+      [
+        "4b3615c625a644f6a65ca757014d5d9e.idx",
+        "file",
+        67421,
+        "9206148096ae9491d449ad0abdf343c624efe01f97e2e34f46ea55739deff28a"
+      ],
+      [
+        "4b3615c625a644f6a65ca757014d5d9e.pos",
+        "file",
+        129,
+        "65ff8664889f687be2c46a56de071d6f60e2f5be4fb3813669277d929b32c73b"
+      ],
+      [
+        "4b3615c625a644f6a65ca757014d5d9e.store",
+        "file",
+        1516,
+        "110d028b89805daf489c6f589975dc347a94b46396ae9fd2be1c530ebd70edbb"
+      ],
+      [
+        "4b3615c625a644f6a65ca757014d5d9e.term",
+        "file",
+        353400,
+        "d86aa77eca7fccc609c713d51d0a296ab2c6a7e8ee1f2a6ec1180a6377f9d108"
+      ],
+      [
+        "69a67292c22944f8ad6240578312335f.fast",
+        "file",
+        152018,
+        "a2f86a33c08a6d5e4bd4e14d873d56a90a1e00f4922c819a470184f607402ebf"
+      ],
+      [
+        "69a67292c22944f8ad6240578312335f.fieldnorm",
+        "file",
+        1877,
+        "588d4bc9f3ea8f301295ff649419cb6826bfb264461d6dbbe800a3ae5ba707d7"
+      ],
+      [
+        "69a67292c22944f8ad6240578312335f.idx",
+        "file",
+        68438,
+        "d5ae8fa84fbfc59a0da0ffc2f44abfee7f1ecbe70494b58a8caa19d23f8e237c"
+      ],
+      [
+        "69a67292c22944f8ad6240578312335f.pos",
+        "file",
+        129,
+        "65ff8664889f687be2c46a56de071d6f60e2f5be4fb3813669277d929b32c73b"
+      ],
+      [
+        "69a67292c22944f8ad6240578312335f.store",
+        "file",
+        1544,
+        "35e151c82e36c2118cf0867275026880a3fe05e4db48c3673b4335c2aa811d49"
+      ],
+      [
+        "69a67292c22944f8ad6240578312335f.term",
+        "file",
+        352359,
+        "ac8fa2ece8c5049295e8c5296c0b0848a170454ffdc079f47dd8cf5071edf258"
+      ],
+      [
+        "ad7dcd6c50d0444095a64c399f03079a.fast",
+        "file",
+        138164,
+        "c477db81d7c4f6517f195d6ca49f47f26e248ac22dad811c0e110fcd95d64787"
+      ],
+      [
+        "ad7dcd6c50d0444095a64c399f03079a.fieldnorm",
+        "file",
+        1707,
+        "a5663f4554a07c4c474b41aa70a34c9261d0b71975a204225ce76551f6d242c5"
+      ],
+      [
+        "ad7dcd6c50d0444095a64c399f03079a.idx",
+        "file",
+        59932,
+        "59d086360e09bfd6057144c588eb306a1022d6fdc703c698a7be165d27168d7c"
+      ],
+      [
+        "ad7dcd6c50d0444095a64c399f03079a.pos",
+        "file",
+        129,
+        "65ff8664889f687be2c46a56de071d6f60e2f5be4fb3813669277d929b32c73b"
+      ],
+      [
+        "ad7dcd6c50d0444095a64c399f03079a.store",
+        "file",
+        1407,
+        "c74d8408b20c036a6bcc7053384b5e15aa40e79422c894e9820ab2d5e91f4054"
+      ],
+      [
+        "ad7dcd6c50d0444095a64c399f03079a.term",
+        "file",
+        316391,
+        "7cd7cf772d79cbfe3a87d7692d8867d41b334e06e394da1187aa309ab1b98f6c"
+      ],
+      [
+        "backend-binding-v3",
+        "file",
+        32,
+        "a65bc53b77d623be54c2c53df401bca1ede307147ea7924a2494d181d6714473"
+      ],
+      [
+        "backend-files-v3",
+        "file",
+        2746,
+        "655d9950aa97d98968dafef8fbb9b815a60232eda1ab938a7f79630ad8ff9411"
+      ],
+      [
+        "backend-ordinals-v1",
+        "file",
+        182488,
+        "9c869bf96d83c00bef1f34e86c2098fddc9dd401a6f6d7c62e932e65ae9ad1aa"
+      ],
+      [
+        "e2386e2dd40047438f2e4910b0946fc4.fast",
+        "file",
+        155777,
+        "58c5810a78bde9faad3bce55707d46afdf0296f3e26bbd6799f1867d8b3454b7"
+      ],
+      [
+        "e2386e2dd40047438f2e4910b0946fc4.fieldnorm",
+        "file",
+        1847,
+        "c4e9acd40e0e3c37175492f5cdaac407ebb7bff5a48755ab2942c2ca7309c7eb"
+      ],
+      [
+        "e2386e2dd40047438f2e4910b0946fc4.idx",
+        "file",
+        69563,
+        "60cd26f42d5238f94d624f1232f2dcfc7861949f60d3cec1c93f2c17da6e7a4f"
+      ],
+      [
+        "e2386e2dd40047438f2e4910b0946fc4.pos",
+        "file",
+        129,
+        "65ff8664889f687be2c46a56de071d6f60e2f5be4fb3813669277d929b32c73b"
+      ],
+      [
+        "e2386e2dd40047438f2e4910b0946fc4.store",
+        "file",
+        1519,
+        "ef8292d39823488efff64b2b97e131c5ce5ee729504d504f1c0a9a7b8036b558"
+      ],
+      [
+        "e2386e2dd40047438f2e4910b0946fc4.term",
+        "file",
+        351397,
+        "56a981332198af90705b615e09691a178daa2ec7d3f292b1b239e223518cf016"
+      ],
+      [
+        "meta.json",
+        "file",
+        2373,
+        "b01baa8e192b0fb014b3b19e8c890f45fa7177695b8bbbf08363bf51a002470d"
+      ]
+    ]
+  },
+  "inactive_before": [
+    [
+      ".backend-root-reader.lock",
+      "file",
+      0,
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    [
+      ".last-used",
+      "file",
+      16,
+      "1130ec8d5523f132463f34223db479cdb09a911b319c0f88dc3f02eec2f1a44b"
+    ],
+    [
+      ".managed.json",
+      "file",
+      1234,
+      "1beb7e4e7a3bf1238f6d6a1696194d24cf6b6dd317e5d122de30417bedd2b976"
+    ],
+    [
+      ".tantivy-meta.lock",
+      "file",
+      0,
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    [
+      ".tantivy-writer.lock",
+      "file",
+      0,
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    [
+      "0ebc140d5a5b4e30a76c5ff789bcf220.fast",
+      "file",
+      152220,
+      "8759d1a7617c3896d5d60d990093c502c8e9b099b0f08c71a3516e7c8bb46f62"
+    ],
+    [
+      "0ebc140d5a5b4e30a76c5ff789bcf220.fieldnorm",
+      "file",
+      1833,
+      "19f869e0af4e5781bce6c24adc08b1749cc37306bd0392158e9634d996cf84fb"
+    ],
+    [
+      "0ebc140d5a5b4e30a76c5ff789bcf220.idx",
+      "file",
+      68091,
+      "c0445211cf76351c1f88ee9da5a4f06905a1379a39ac678bb12092d4fbb287c5"
+    ],
+    [
+      "0ebc140d5a5b4e30a76c5ff789bcf220.pos",
+      "file",
+      129,
+      "65ff8664889f687be2c46a56de071d6f60e2f5be4fb3813669277d929b32c73b"
+    ],
+    [
+      "0ebc140d5a5b4e30a76c5ff789bcf220.store",
+      "file",
+      1507,
+      "88f2d342d891a674cd1522ad37cea6d9e84358451194d0fcb5ae4a56253c6017"
+    ],
+    [
+      "0ebc140d5a5b4e30a76c5ff789bcf220.term",
+      "file",
+      352907,
+      "850d6ccf513404de7b2788d932464eeaf00e999499516c54100fe7f9e3dd7181"
+    ],
+    [
+      "4b3615c625a644f6a65ca757014d5d9e.fast",
+      "file",
+      153232,
+      "c3845895437f45d0aeeb62ff1eb4e2fac758f67acfef95f8fa39f565d5b2d63e"
+    ],
+    [
+      "4b3615c625a644f6a65ca757014d5d9e.fieldnorm",
+      "file",
+      1843,
+      "186ab1767f70690130dc5fc8583c51afcb1ccffadd4e12d8267d4849277bc0f5"
+    ],
+    [
+      "4b3615c625a644f6a65ca757014d5d9e.idx",
+      "file",
+      67421,
+      "9206148096ae9491d449ad0abdf343c624efe01f97e2e34f46ea55739deff28a"
+    ],
+    [
+      "4b3615c625a644f6a65ca757014d5d9e.pos",
+      "file",
+      129,
+      "65ff8664889f687be2c46a56de071d6f60e2f5be4fb3813669277d929b32c73b"
+    ],
+    [
+      "4b3615c625a644f6a65ca757014d5d9e.store",
+      "file",
+      1516,
+      "110d028b89805daf489c6f589975dc347a94b46396ae9fd2be1c530ebd70edbb"
+    ],
+    [
+      "4b3615c625a644f6a65ca757014d5d9e.term",
+      "file",
+      353400,
+      "d86aa77eca7fccc609c713d51d0a296ab2c6a7e8ee1f2a6ec1180a6377f9d108"
+    ],
+    [
+      "69a67292c22944f8ad6240578312335f.fast",
+      "file",
+      152018,
+      "a2f86a33c08a6d5e4bd4e14d873d56a90a1e00f4922c819a470184f607402ebf"
+    ],
+    [
+      "69a67292c22944f8ad6240578312335f.fieldnorm",
+      "file",
+      1877,
+      "588d4bc9f3ea8f301295ff649419cb6826bfb264461d6dbbe800a3ae5ba707d7"
+    ],
+    [
+      "69a67292c22944f8ad6240578312335f.idx",
+      "file",
+      68438,
+      "d5ae8fa84fbfc59a0da0ffc2f44abfee7f1ecbe70494b58a8caa19d23f8e237c"
+    ],
+    [
+      "69a67292c22944f8ad6240578312335f.pos",
+      "file",
+      129,
+      "65ff8664889f687be2c46a56de071d6f60e2f5be4fb3813669277d929b32c73b"
+    ],
+    [
+      "69a67292c22944f8ad6240578312335f.store",
+      "file",
+      1544,
+      "35e151c82e36c2118cf0867275026880a3fe05e4db48c3673b4335c2aa811d49"
+    ],
+    [
+      "69a67292c22944f8ad6240578312335f.term",
+      "file",
+      352359,
+      "ac8fa2ece8c5049295e8c5296c0b0848a170454ffdc079f47dd8cf5071edf258"
+    ],
+    [
+      "ad7dcd6c50d0444095a64c399f03079a.fast",
+      "file",
+      138164,
+      "c477db81d7c4f6517f195d6ca49f47f26e248ac22dad811c0e110fcd95d64787"
+    ],
+    [
+      "ad7dcd6c50d0444095a64c399f03079a.fieldnorm",
+      "file",
+      1707,
+      "a5663f4554a07c4c474b41aa70a34c9261d0b71975a204225ce76551f6d242c5"
+    ],
+    [
+      "ad7dcd6c50d0444095a64c399f03079a.idx",
+      "file",
+      59932,
+      "59d086360e09bfd6057144c588eb306a1022d6fdc703c698a7be165d27168d7c"
+    ],
+    [
+      "ad7dcd6c50d0444095a64c399f03079a.pos",
+      "file",
+      129,
+      "65ff8664889f687be2c46a56de071d6f60e2f5be4fb3813669277d929b32c73b"
+    ],
+    [
+      "ad7dcd6c50d0444095a64c399f03079a.store",
+      "file",
+      1407,
+      "c74d8408b20c036a6bcc7053384b5e15aa40e79422c894e9820ab2d5e91f4054"
+    ],
+    [
+      "ad7dcd6c50d0444095a64c399f03079a.term",
+      "file",
+      316391,
+      "7cd7cf772d79cbfe3a87d7692d8867d41b334e06e394da1187aa309ab1b98f6c"
+    ],
+    [
+      "backend-binding-v3",
+      "file",
+      32,
+      "09b6f2169b36077863e3cee2f3e1e09b06d05af9ca2da60e571e418f9d6883b6"
+    ],
+    [
+      "backend-files-v3",
+      "file",
+      2746,
+      "655d9950aa97d98968dafef8fbb9b815a60232eda1ab938a7f79630ad8ff9411"
+    ],
+    [
+      "backend-ordinals-v1",
+      "file",
+      182488,
+      "9c869bf96d83c00bef1f34e86c2098fddc9dd401a6f6d7c62e932e65ae9ad1aa"
+    ],
+    [
+      "e2386e2dd40047438f2e4910b0946fc4.fast",
+      "file",
+      155777,
+      "58c5810a78bde9faad3bce55707d46afdf0296f3e26bbd6799f1867d8b3454b7"
+    ],
+    [
+      "e2386e2dd40047438f2e4910b0946fc4.fieldnorm",
+      "file",
+      1847,
+      "c4e9acd40e0e3c37175492f5cdaac407ebb7bff5a48755ab2942c2ca7309c7eb"
+    ],
+    [
+      "e2386e2dd40047438f2e4910b0946fc4.idx",
+      "file",
+      69563,
+      "60cd26f42d5238f94d624f1232f2dcfc7861949f60d3cec1c93f2c17da6e7a4f"
+    ],
+    [
+      "e2386e2dd40047438f2e4910b0946fc4.pos",
+      "file",
+      129,
+      "65ff8664889f687be2c46a56de071d6f60e2f5be4fb3813669277d929b32c73b"
+    ],
+    [
+      "e2386e2dd40047438f2e4910b0946fc4.store",
+      "file",
+      1519,
+      "ef8292d39823488efff64b2b97e131c5ce5ee729504d504f1c0a9a7b8036b558"
+    ],
+    [
+      "e2386e2dd40047438f2e4910b0946fc4.term",
+      "file",
+      351397,
+      "56a981332198af90705b615e09691a178daa2ec7d3f292b1b239e223518cf016"
+    ],
+    [
+      "meta.json",
+      "file",
+      2373,
+      "b01baa8e192b0fb014b3b19e8c890f45fa7177695b8bbbf08363bf51a002470d"
+    ]
+  ],
+  "independent_reader_holder_pid": 946,
+  "owner_pid": 948,
+  "error": "AssertionError('owned locald exited before readiness')",
+  "available_memory_samples": [],
+  "inactive_after": [
+    [
+      ".backend-root-reader.lock",
+      "file",
+      0,
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    [
+      ".last-used",
+      "file",
+      16,
+      "1130ec8d5523f132463f34223db479cdb09a911b319c0f88dc3f02eec2f1a44b"
+    ],
+    [
+      ".managed.json",
+      "file",
+      1234,
+      "1beb7e4e7a3bf1238f6d6a1696194d24cf6b6dd317e5d122de30417bedd2b976"
+    ],
+    [
+      ".tantivy-meta.lock",
+      "file",
+      0,
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    [
+      ".tantivy-writer.lock",
+      "file",
+      0,
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    [
+      "0ebc140d5a5b4e30a76c5ff789bcf220.fast",
+      "file",
+      152220,
+      "8759d1a7617c3896d5d60d990093c502c8e9b099b0f08c71a3516e7c8bb46f62"
+    ],
+    [
+      "0ebc140d5a5b4e30a76c5ff789bcf220.fieldnorm",
+      "file",
+      1833,
+      "19f869e0af4e5781bce6c24adc08b1749cc37306bd0392158e9634d996cf84fb"
+    ],
+    [
+      "0ebc140d5a5b4e30a76c5ff789bcf220.idx",
+      "file",
+      68091,
+      "c0445211cf76351c1f88ee9da5a4f06905a1379a39ac678bb12092d4fbb287c5"
+    ],
+    [
+      "0ebc140d5a5b4e30a76c5ff789bcf220.pos",
+      "file",
+      129,
+      "65ff8664889f687be2c46a56de071d6f60e2f5be4fb3813669277d929b32c73b"
+    ],
+    [
+      "0ebc140d5a5b4e30a76c5ff789bcf220.store",
+      "file",
+      1507,
+      "88f2d342d891a674cd1522ad37cea6d9e84358451194d0fcb5ae4a56253c6017"
+    ],
+    [
+      "0ebc140d5a5b4e30a76c5ff789bcf220.term",
+      "file",
+      352907,
+      "850d6ccf513404de7b2788d932464eeaf00e999499516c54100fe7f9e3dd7181"
+    ],
+    [
+      "4b3615c625a644f6a65ca757014d5d9e.fast",
+      "file",
+      153232,
+      "c3845895437f45d0aeeb62ff1eb4e2fac758f67acfef95f8fa39f565d5b2d63e"
+    ],
+    [
+      "4b3615c625a644f6a65ca757014d5d9e.fieldnorm",
+      "file",
+      1843,
+      "186ab1767f70690130dc5fc8583c51afcb1ccffadd4e12d8267d4849277bc0f5"
+    ],
+    [
+      "4b3615c625a644f6a65ca757014d5d9e.idx",
+      "file",
+      67421,
+      "9206148096ae9491d449ad0abdf343c624efe01f97e2e34f46ea55739deff28a"
+    ],
+    [
+      "4b3615c625a644f6a65ca757014d5d9e.pos",
+      "file",
+      129,
+      "65ff8664889f687be2c46a56de071d6f60e2f5be4fb3813669277d929b32c73b"
+    ],
+    [
+      "4b3615c625a644f6a65ca757014d5d9e.store",
+      "file",
+      1516,
+      "110d028b89805daf489c6f589975dc347a94b46396ae9fd2be1c530ebd70edbb"
+    ],
+    [
+      "4b3615c625a644f6a65ca757014d5d9e.term",
+      "file",
+      353400,
+      "d86aa77eca7fccc609c713d51d0a296ab2c6a7e8ee1f2a6ec1180a6377f9d108"
+    ],
+    [
+      "69a67292c22944f8ad6240578312335f.fast",
+      "file",
+      152018,
+      "a2f86a33c08a6d5e4bd4e14d873d56a90a1e00f4922c819a470184f607402ebf"
+    ],
+    [
+      "69a67292c22944f8ad6240578312335f.fieldnorm",
+      "file",
+      1877,
+      "588d4bc9f3ea8f301295ff649419cb6826bfb264461d6dbbe800a3ae5ba707d7"
+    ],
+    [
+      "69a67292c22944f8ad6240578312335f.idx",
+      "file",
+      68438,
+      "d5ae8fa84fbfc59a0da0ffc2f44abfee7f1ecbe70494b58a8caa19d23f8e237c"
+    ],
+    [
+      "69a67292c22944f8ad6240578312335f.pos",
+      "file",
+      129,
+      "65ff8664889f687be2c46a56de071d6f60e2f5be4fb3813669277d929b32c73b"
+    ],
+    [
+      "69a67292c22944f8ad6240578312335f.store",
+      "file",
+      1544,
+      "35e151c82e36c2118cf0867275026880a3fe05e4db48c3673b4335c2aa811d49"
+    ],
+    [
+      "69a67292c22944f8ad6240578312335f.term",
+      "file",
+      352359,
+      "ac8fa2ece8c5049295e8c5296c0b0848a170454ffdc079f47dd8cf5071edf258"
+    ],
+    [
+      "ad7dcd6c50d0444095a64c399f03079a.fast",
+      "file",
+      138164,
+      "c477db81d7c4f6517f195d6ca49f47f26e248ac22dad811c0e110fcd95d64787"
+    ],
+    [
+      "ad7dcd6c50d0444095a64c399f03079a.fieldnorm",
+      "file",
+      1707,
+      "a5663f4554a07c4c474b41aa70a34c9261d0b71975a204225ce76551f6d242c5"
+    ],
+    [
+      "ad7dcd6c50d0444095a64c399f03079a.idx",
+      "file",
+      59932,
+      "59d086360e09bfd6057144c588eb306a1022d6fdc703c698a7be165d27168d7c"
+    ],
+    [
+      "ad7dcd6c50d0444095a64c399f03079a.pos",
+      "file",
+      129,
+      "65ff8664889f687be2c46a56de071d6f60e2f5be4fb3813669277d929b32c73b"
+    ],
+    [
+      "ad7dcd6c50d0444095a64c399f03079a.store",
+      "file",
+      1407,
+      "c74d8408b20c036a6bcc7053384b5e15aa40e79422c894e9820ab2d5e91f4054"
+    ],
+    [
+      "ad7dcd6c50d0444095a64c399f03079a.term",
+      "file",
+      316391,
+      "7cd7cf772d79cbfe3a87d7692d8867d41b334e06e394da1187aa309ab1b98f6c"
+    ],
+    [
+      "backend-binding-v3",
+      "file",
+      32,
+      "09b6f2169b36077863e3cee2f3e1e09b06d05af9ca2da60e571e418f9d6883b6"
+    ],
+    [
+      "backend-files-v3",
+      "file",
+      2746,
+      "655d9950aa97d98968dafef8fbb9b815a60232eda1ab938a7f79630ad8ff9411"
+    ],
+    [
+      "backend-ordinals-v1",
+      "file",
+      182488,
+      "9c869bf96d83c00bef1f34e86c2098fddc9dd401a6f6d7c62e932e65ae9ad1aa"
+    ],
+    [
+      "e2386e2dd40047438f2e4910b0946fc4.fast",
+      "file",
+      155777,
+      "58c5810a78bde9faad3bce55707d46afdf0296f3e26bbd6799f1867d8b3454b7"
+    ],
+    [
+      "e2386e2dd40047438f2e4910b0946fc4.fieldnorm",
+      "file",
+      1847,
+      "c4e9acd40e0e3c37175492f5cdaac407ebb7bff5a48755ab2942c2ca7309c7eb"
+    ],
+    [
+      "e2386e2dd40047438f2e4910b0946fc4.idx",
+      "file",
+      69563,
+      "60cd26f42d5238f94d624f1232f2dcfc7861949f60d3cec1c93f2c17da6e7a4f"
+    ],
+    [
+      "e2386e2dd40047438f2e4910b0946fc4.pos",
+      "file",
+      129,
+      "65ff8664889f687be2c46a56de071d6f60e2f5be4fb3813669277d929b32c73b"
+    ],
+    [
+      "e2386e2dd40047438f2e4910b0946fc4.store",
+      "file",
+      1519,
+      "ef8292d39823488efff64b2b97e131c5ce5ee729504d504f1c0a9a7b8036b558"
+    ],
+    [
+      "e2386e2dd40047438f2e4910b0946fc4.term",
+      "file",
+      351397,
+      "56a981332198af90705b615e09691a178daa2ec7d3f292b1b239e223518cf016"
+    ],
+    [
+      "meta.json",
+      "file",
+      2373,
+      "b01baa8e192b0fb014b3b19e8c890f45fa7177695b8bbbf08363bf51a002470d"
+    ]
+  ]
+}

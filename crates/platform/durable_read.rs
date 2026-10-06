@@ -52,8 +52,14 @@ fn read_bounded(reader: impl Read, length: u64, maximum: usize) -> io::Result<Ve
         return Err(oversized(maximum));
     }
     let mut bytes = Vec::new();
+    let reserve_length = usize::try_from(length).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "state byte length cannot be represented",
+        )
+    })?;
     bytes
-        .try_reserve_exact(length as usize)
+        .try_reserve_exact(reserve_length)
         .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
     reader.take(limit).read_to_end(&mut bytes)?;
     if bytes.len() > maximum {

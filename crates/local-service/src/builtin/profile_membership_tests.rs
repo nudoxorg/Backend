@@ -44,6 +44,10 @@ impl TempWorkspace {
 }
 
 pub(super) fn open_daemon(workspace: &Path) -> super::super::ProductDaemon {
+    try_open_daemon(workspace).expect("open product daemon")
+}
+
+fn try_open_daemon(workspace: &Path) -> Result<super::super::ProductDaemon, crate::LocaldError> {
     let profile = profile_descriptor(BuiltinProfile::Product).expect("product profile");
     let dispatcher = super::super::builtin_dispatcher(
         Some(super::super::ECHO_AUTHORITY_SECRET),
@@ -60,7 +64,6 @@ pub(super) fn open_daemon(workspace: &Path) -> super::super::ProductDaemon {
         backend_engine::DaemonConfig::default(),
         registry,
     )
-    .expect("open product daemon")
 }
 
 fn commit_without_capture_upgrade(
@@ -97,6 +100,167 @@ fn commit_without_capture_upgrade(
             "legacy capture intent was sent to the wrong owner lane".to_owned(),
         )),
     }
+}
+
+#[test]
+fn inherited_capture_pointer_survives_source_commit_and_two_cold_reopens() {
+    use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, TypeScriptSource};
+
+    let temp = TempWorkspace::new();
+    let mut daemon = open_daemon(temp.0.path());
+    let label = "pkg:npm/capture-owner@1.0.0";
+    let package = backend_engine::PackageKey::from_value(label);
+    let key = ProductSemanticPublicationKey::new(
+        backend_engine::PackageReference::parse(label.to_owned()).expect("capture reference"),
+        PackageUrl::parse(label.to_owned()).expect("capture coordinate"),
+        LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+    )
+    .expect("capture key");
+    let capture = SemanticSourceCapture::new(None, [0x71; 32], [0x72; 32], 1, 1)
+        .expect("synthetic storage capture; no compiler acceptance claimed");
+    let pending = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        Vec::new(),
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            key: key.clone(),
+            expected: None,
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Pending { prior: None },
+            compiler_failure: None,
+        }],
+    )
+    .expect("pending capture");
+    super::super::commands::commit_builtin_intent(&mut daemon, 1, &pending)
+        .expect("publish initial capture pointer");
+    let before = capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
+        .expect("initial exact capture basis");
+    let other_label = "pkg:cargo/unrelated-source@1.0.0";
+    let other_package = backend_engine::PackageKey::from_value(other_label);
+    let (source_intent, _) =
+        paged_index_intent(other_package, other_label, &file_frontier(3, other_package));
+    super::super::commands::commit_builtin_intent(&mut daemon, 2, &source_intent)
+        .expect("publish source-only transition retaining capture controls");
+    let after = capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
+        .expect("source-only selected capture basis");
+    assert_eq!(after.capture_root(), before.capture_root());
+    assert_ne!(after.workspace_root(), before.workspace_root());
+    daemon.engine().daemon().owner().snapshot().with_persisted_transition(|persisted, _| {
+        assert_eq!(
+            selected_capture_root_from_objects(persisted.closure_manifest().objects())
+                .expect("recovery frontier capture root"),
+            after.capture_root(),
+            "the fixed pack must retain inherited nonrelation control pointers"
+        );
+    }).expect("inspect authenticated source-only recovery pack");
+    drop(daemon);
+    let mut daemon = open_daemon(temp.0.path());
+    assert_eq!(capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
+        .expect("first cold basis"), after);
+    let expected = semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+        .expect("selected relation").expect("capture exists")
+        .lookup(&key).expect("read pending receipt").expect("pending row");
+    let terminal = BuiltinIntent::index_with_capture(package, label, Vec::new(), Vec::new(), vec![
+        BuiltinCaptureChange { key, expected: Some(expected), capture,
+            outcome: ProductSemanticCaptureOutcome::Unavailable {
+                reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+            }, compiler_failure: None }
+    ]).expect("terminal capture");
+    let forged = terminal.clone().with_capture_basis(BuiltinCaptureBasis::new(
+        after.workspace_root(), after.workspace_sequence(), after.closure_id(), Some([0xF3; 32])
+    ).expect("well-formed forged root")).expect("bind forged before root");
+    let error = super::super::commands::commit_builtin_intent(&mut daemon, 3, &forged)
+        .expect_err("authentic closure cannot authorize a forged capture root");
+    assert!(error.to_string().contains("before-state basis"));
+    let predecessor = daemon.engine().daemon().owner().snapshot();
+    super::super::commands::commit_builtin_intent(&mut daemon, 4, &terminal)
+        .expect("publish terminal capture against exact retained predecessor");
+    let terminal_basis = capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
+        .expect("terminal basis");
+    let selected = daemon.engine().daemon().owner().snapshot();
+    let forged_error = selected.with_persisted_transition(|persisted, store| {
+        validate_persisted_capture_changes(
+            persisted, store, &forged,
+            &predecessor.relation::<BuiltinWorkspaceRelation>().expect("base source"),
+            &selected.relation::<BuiltinWorkspaceRelation>().expect("target source"),
+            &predecessor.relation::<BuiltinSemanticRelation>().expect("base semantic"),
+            &selected.relation::<BuiltinSemanticRelation>().expect("target semantic"),
+            selected.sequence(), selected.commit().id().as_bytes(),
+            persisted.closure_manifest().objects(),
+        ).expect_err("exact authenticated predecessor closure refuses substituted capture root")
+    }).expect("validate forged before root against authentic persisted transition");
+    assert!(forged_error.to_string().contains("different selected before root"));
+    drop(daemon);
+    let daemon = open_daemon(temp.0.path());
+    assert_eq!(capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
+        .expect("second cold basis"), terminal_basis);
+}
+
+#[test]
+#[ignore = "requires the preserved authentic private cachetools Unicode failure snapshot"]
+fn authentic_unicode_capture_snapshot_replays_twice_without_republishing() {
+    fn copy_directory(source: &Path, target: &Path) {
+        std::fs::create_dir_all(target).expect("private replay copy directory");
+        for entry in std::fs::read_dir(source).expect("read preserved snapshot") {
+            let entry = entry.expect("snapshot entry");
+            let kind = entry.file_type().expect("snapshot entry type");
+            let destination = target.join(entry.file_name());
+            if kind.is_dir() {
+                copy_directory(&entry.path(), &destination);
+            } else if kind.is_file() {
+                std::fs::copy(entry.path(), destination).expect("copy private snapshot file");
+            } else {
+                panic!("snapshot must contain only ordinary files and directories");
+            }
+        }
+    }
+    let source = std::env::var_os("NUDOX_TEST_CAPTURE_REPLAY_STATE")
+        .expect("explicit preserved authentic snapshot path");
+    let temp = TempWorkspace::new();
+    copy_directory(Path::new(&source), temp.0.path());
+    let head_path = temp.0.path().join("objects/HEAD");
+    let original_head = std::fs::read(&head_path).expect("original authenticated store HEAD");
+    let daemon = open_daemon(temp.0.path());
+    let first = capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
+        .expect("authentic Unicode cold capture basis");
+    assert!(first.capture_root().is_some());
+    assert_eq!(std::fs::read(&head_path).expect("first cold HEAD"), original_head);
+    drop(daemon);
+    let daemon = open_daemon(temp.0.path());
+    assert_eq!(capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
+        .expect("second authentic Unicode cold basis"), first);
+    assert_eq!(std::fs::read(&head_path).expect("second cold HEAD"), original_head);
+    let predecessor = daemon.engine().daemon().owner().snapshot().selected_base_publication()
+        .expect("authenticated predecessor descriptor").expect("non-genesis source edit");
+    let selected_pack = daemon.engine().daemon().owner().snapshot().with_persisted_transition(
+        |_, store| store.head().expect("selected physical head").expect("selected publication")
+            .descriptor().pack()
+    ).expect("exact selected pack donor");
+    let pack_name = predecessor.descriptor().pack().as_bytes().iter()
+        .map(|byte| format!("{byte:02x}")).collect::<String>();
+    drop(daemon);
+    let pack_path = temp.0.path().join("objects/packs").join(format!("{pack_name}.pack"));
+    let original_pack = std::fs::read(&pack_path).expect("original authenticated predecessor pack");
+    let selected_name = selected_pack.as_bytes().iter()
+        .map(|byte| format!("{byte:02x}")).collect::<String>();
+    let selected_bytes = std::fs::read(temp.0.path().join("objects/packs")
+        .join(format!("{selected_name}.pack"))).expect("different authentic selected pack bytes");
+    assert_ne!(selected_bytes, original_pack);
+    let mut forged_pack = original_pack.clone();
+    let last = forged_pack.len() - 1;
+    forged_pack[last] ^= 1;
+    for (label, bytes) in [("corrupt original", forged_pack), ("authentic wrong frontier", selected_bytes)] {
+        std::fs::write(&pack_path, bytes).expect("forge only private copied predecessor pack");
+        let error = try_open_daemon(temp.0.path()).err().expect("forged original frontier must refuse");
+        assert!(error.to_string().contains("read bounded capture base controls"),
+            "{label} refuses before a recovery frontier witness can be minted: {error}");
+        assert_eq!(std::fs::read(&head_path).expect("refused cold HEAD"), original_head);
+    }
+    std::fs::write(&pack_path, original_pack).expect("restore exact predecessor pack bytes");
+    let daemon = open_daemon(temp.0.path());
+    assert_eq!(capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
+        .expect("restored authentic Unicode cold basis"), first);
 }
 
 fn file_frontier(count: usize, package: backend_engine::PackageKey) -> Vec<TestFile> {

@@ -1,0 +1,18 @@
+{
+  "source_only_capture_commit": "247f840f0828d8fc5556694e31673d3d43a0c273",
+  "separate_test_api_commit": "7bd9e4b524ad1bc7f2c49ebcf2b29e086867ddea",
+  "native_tested_source": "1e08b7fa7507289ce670eb9828fe91fa1bb53490",
+  "base": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+  "bundle": "/private/tmp/sol61-persisted-capture-source-only.bundle",
+  "bundle_bytes": 6528,
+  "bundle_sha256": "d8986d2f20716fee189597af4e20044ece7040a68bb5abb156610e5bd918442d",
+  "exact_native_code_blobs": {
+    "crates/engine/src/workspace/pack.rs": "60b765fb4e3f27a45f0b4372e38dad15835079a0",
+    "crates/engine/src/workspace/recovery.rs": "734fdc32bd8a082d55e5f6d1648c08170cdf80e5",
+    "crates/engine/src/workspace/transition/mod.rs": "1795e098475b2e07b91c3ad8dec2680a2e93e2d4",
+    "crates/local-service/src/builtin/profile.rs": "e657ca902980384651340e333983cdc763d94724",
+    "crates/local-service/src/builtin/profile_membership_tests.rs": "50a3df32b10dfee3b79e8b51e99786735d5cc3f4",
+    "crates/local-service/src/discovery/package_metadata.rs": "faf2d131ae342b32d21e57217aa1b03ef7fd2b72"
+  },
+  "native_claim": "Tests ran native1e08. Source-only commits contain identical six code/test blobs and exclude evidence matrices. Source-only commit identity was not itself built."
+}

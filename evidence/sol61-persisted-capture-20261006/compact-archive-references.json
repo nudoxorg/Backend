@@ -1,0 +1,32 @@
+[
+  {
+    "inventory_path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol61-persisted-capture/evidence/sol61-persisted-capture-20261006/a659-public-controls/raw-inventory.json",
+    "inventory_sha256": "10d14ec684810a25f9fcfb34ed78fe3e24c8288aeb4d74722e31036345c682b2",
+    "bytes": 1293342,
+    "archive_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-a659-unicode-cold-failures-raw.zip",
+    "archive_sha256": "71db0e5d3615fe8024e23d30a3c4e69932fa4cfdf5208c44452677a1a6fcf55c",
+    "archive_bytes": 44783422,
+    "snapshot": null,
+    "file_count": 7810
+  },
+  {
+    "inventory_path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol61-persisted-capture/evidence/sol61-persisted-capture-20261006/a659-public-controls/original-cold-inventory.json",
+    "inventory_sha256": "fb8f1078c37e5635b8b4c5bffb2a9c2fd9ff9dc719a069c6387855a1a688d9f1",
+    "bytes": 1682192,
+    "archive_path": "/private/tmp/sol61-a659-original-cold-raw.zip",
+    "archive_sha256": "3d7105244d48a0624418b6318a8e3e1320e205a6607a179165d86170bff42934",
+    "archive_bytes": 47541596,
+    "snapshot": null,
+    "file_count": 7839
+  },
+  {
+    "inventory_path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol61-persisted-capture/evidence/sol61-persisted-capture-20261006/sol61-a659-uncorrupted-failed-state-inventory.json",
+    "inventory_sha256": "45f5340271f00a816ace9c5e35a60251538a4b2a2d58635b7a72787b6743ffdd",
+    "bytes": 799789,
+    "archive_path": null,
+    "archive_sha256": null,
+    "archive_bytes": null,
+    "snapshot": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/failures/uncorrupted-unicode-cold-state",
+    "file_count": 3369
+  }
+]

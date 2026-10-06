@@ -508,7 +508,7 @@ impl PreparedTransition {
             .iter()
             .filter(|object| !payloads.contains(&object.id()))
             .filter(|object| {
-                (membership_id.is_some() && !registry.contains_schema(object.schema()))
+                !registry.contains_schema(object.schema())
                     || closure_refs.iter().any(|reference| {
                         reference.kind() != backend_version::ClosureKind::Relation
                             && reference.schema() == object.schema()
@@ -801,6 +801,17 @@ impl PreparedTransition {
     /// the store's authenticated CAS and are loaded through lazy handles.
     pub(super) fn auxiliary_object_ids(&self) -> &[ObjectId] {
         &self.auxiliary
+    }
+
+    /// Retains the exact authenticated pack frontier while recovering an old
+    /// publication. Typed admission has already checked the complete selected
+    /// closure; this changes only its fixed pack encoding, never that closure.
+    pub(super) fn with_recovery_frontier(
+        mut self,
+        original: super::pack::AuthenticatedRecoveryFrontier,
+    ) -> Result<Self, WorkspaceError> {
+        self.auxiliary = Arc::from(original.admit_transition(&self)?);
+        Ok(self)
     }
 
     pub(crate) fn store_publication(

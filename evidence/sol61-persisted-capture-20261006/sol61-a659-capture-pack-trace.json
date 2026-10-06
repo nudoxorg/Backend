@@ -1,0 +1,63 @@
+{
+  "diagnostic_only": true,
+  "snapshot": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-a659-native-default-cachetools-20261006T2146Z/failures/uncorrupted-unicode-cold-state",
+  "journal_sha256": "d4c18b16433d5401aa619bad6d1631e077decf68563f1a897548336874bf5a4b",
+  "publications": [
+    {
+      "generation": 1,
+      "base_generation": 0,
+      "target": "35e964b882312a7c715b10066f2bfef9c1bedbe2fa2de91739b9a50471d648cc",
+      "closure": "0640e1ccb5d571565a0fff71fbc9da76075b6cfa34b3193f050368ea0597aa4c",
+      "recovery_auxiliary_count": 5,
+      "recovery_capture_pointers": [
+        "123a38b265ba0f9bee6d5d64fe844c6d25291ef5d95b6117766c891b852e8375"
+      ],
+      "successor_basis_occurrences": [
+        {
+          "path": "objects/6887ba3c4d04116f232aeb94dd8b856b8509652c49e2b66ea4073f254dbf4723.object",
+          "file_sha256": "1870bb7c156523cad24e1f7f3838074ecadf5f5c1a5ada1334a9c1d93548eb00",
+          "capture_option_bytes": "01123a38b265ba0f9bee6d5d64fe844c6d25291ef5d95b6117766c891b852e8375"
+        }
+      ]
+    },
+    {
+      "generation": 2,
+      "base_generation": 1,
+      "target": "1c5fe872d80dc7b33a71acf96ef28940b5a7bca0afb39955f0cab085a4cd1e11",
+      "closure": "c35f92f7c4761cdb09e469d41f4c9909ad14643c824d05aad9129430feb79809",
+      "recovery_auxiliary_count": 3,
+      "recovery_capture_pointers": [],
+      "successor_basis_occurrences": [
+        {
+          "path": "objects/d2398ed7c8ef520d7a12ed7e97fde7a3201d7b8e5ffd2495e834a7ca58d64172.object",
+          "file_sha256": "669a6b16b4a217154c21e2ed45fbf497cef2e3202a9106f614dc078c139ff21a",
+          "capture_option_bytes": "01853151971853a02a4d90df8934bda0286e2b3ca0c2555d639e7578b5ab99da16"
+        }
+      ]
+    },
+    {
+      "generation": 3,
+      "base_generation": 2,
+      "target": "d2290fde2897eb8a3e46d86bb988de045cb550c2f286c31700f947513904b24b",
+      "closure": "2f424571679a7a7515628511a4f3cd68ceeb028c340901e556e56c22ddc8c267",
+      "recovery_auxiliary_count": 3,
+      "recovery_capture_pointers": [],
+      "successor_basis_occurrences": [
+        {
+          "path": "objects/d1a504ca383786e996bbbcfb33d008f394ed1dc613c5909769ff29f7f41fc904.object",
+          "file_sha256": "b4c6c0693b2f677686154b6874d2d83113275d7f2113a667d7151b08e2db5421",
+          "capture_option_bytes": "01b58ddc219c2938afb5f911d6497039bbf0cd90915d0d071652c86660a47c3dcd"
+        }
+      ]
+    },
+    {
+      "generation": 4,
+      "base_generation": 3,
+      "target": "9913ffb539a46aa5432a30bdaa6e3adf9c6fe7b67e6d49f107fc81343420d8bb",
+      "closure": "36c945c66c96294f45a52b2538974f1dcf50df39ef97f167ffa3792bcf0f6647",
+      "recovery_auxiliary_count": 3,
+      "recovery_capture_pointers": [],
+      "successor_basis_occurrences": []
+    }
+  ]
+}

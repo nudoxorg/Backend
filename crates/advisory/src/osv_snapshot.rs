@@ -29,7 +29,7 @@ use crate::{
 };
 
 const SNAPSHOT_SCHEMA: u16 = 1;
-const PACKAGE_INDEX_RECORD_BYTES: u64 = 80;
+const PACKAGE_INDEX_RECORD_BYTES: usize = 80;
 const MAX_OPEN_PACKAGE_FILES: usize = 32;
 const MAX_OSV_SNAPSHOT_ROW_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OSV_QUERY_RECORDS: u64 = 100_000;
@@ -238,7 +238,7 @@ pub struct OsvSnapshotRef {
     /// Verified, sorted records retained in memory so a later on-disk index
     /// mutation cannot turn a lookup into false clean coverage.
     #[serde(skip)]
-    index_records: Option<Arc<Vec<[u8; PACKAGE_INDEX_RECORD_BYTES as usize]>>>,
+    index_records: Option<Arc<Vec<[u8; PACKAGE_INDEX_RECORD_BYTES]>>>,
 }
 
 impl PartialEq for OsvSnapshotRef {
@@ -379,9 +379,11 @@ impl OsvSnapshotRef {
             ));
         }
         let index_file = generation_directory.open_private_file("package-index.bin")?;
+        let record_width = u64::try_from(PACKAGE_INDEX_RECORD_BYTES)
+            .map_err(|_| OsvSnapshotError::Invalid("package index record width conversion"))?;
         let expected_len = self
             .package_count
-            .checked_mul(PACKAGE_INDEX_RECORD_BYTES)
+            .checked_mul(record_width)
             .ok_or(OsvSnapshotError::Invalid("package index length overflow"))?;
         if index_file.metadata()?.len() != expected_len {
             return Err(OsvSnapshotError::Invalid("package index length"));
@@ -725,7 +727,10 @@ impl OsvSnapshotBuilder {
         let maximum_root_bytes = maximum_stored_bytes.min(MAX_OSV_SNAPSHOT_STORAGE_BYTES);
         let index_reserve = maximum_packages
             .min(MAX_OSV_SNAPSHOT_PACKAGES)
-            .checked_mul(PACKAGE_INDEX_RECORD_BYTES)
+            .checked_mul(
+                u64::try_from(PACKAGE_INDEX_RECORD_BYTES)
+                    .map_err(|_| OsvSnapshotError::Limit(OsvSnapshotLimit::StoredBytes))?,
+            )
             .and_then(|bytes| bytes.checked_add(4096))
             .ok_or(OsvSnapshotError::Limit(OsvSnapshotLimit::StoredBytes))?;
         let maximum_stored_bytes = maximum_root_bytes
@@ -954,7 +959,7 @@ impl OsvSnapshotBuilder {
                 return Err(OsvSnapshotError::Invalid("package file byte count"));
             }
             entry.digest = digest_file(package_file)?;
-            let mut record = [0_u8; PACKAGE_INDEX_RECORD_BYTES as usize];
+            let mut record = [0_u8; PACKAGE_INDEX_RECORD_BYTES];
             record[..32].copy_from_slice(key);
             record[32..64].copy_from_slice(&entry.digest);
             record[64..72].copy_from_slice(&entry.rows.to_be_bytes());
@@ -1201,7 +1206,7 @@ fn validate_package_index(
     package_count: u64,
     expected_rows: u64,
     expected_bytes: u64,
-) -> Result<Vec<[u8; PACKAGE_INDEX_RECORD_BYTES as usize]>, OsvSnapshotError> {
+) -> Result<Vec<[u8; PACKAGE_INDEX_RECORD_BYTES]>, OsvSnapshotError> {
     let count = usize::try_from(package_count)
         .map_err(|_| OsvSnapshotError::Invalid("package index count conversion"))?;
     let mut records = Vec::new();
@@ -1209,7 +1214,7 @@ fn validate_package_index(
         .try_reserve_exact(count)
         .map_err(|_| OsvSnapshotError::Limit(OsvSnapshotLimit::StoredBytes))?;
     let mut hasher = blake3::Hasher::new();
-    let mut record = [0_u8; PACKAGE_INDEX_RECORD_BYTES as usize];
+    let mut record = [0_u8; PACKAGE_INDEX_RECORD_BYTES];
     let mut previous = None;
     let mut rows = 0_u64;
     let mut bytes = 0_u64;

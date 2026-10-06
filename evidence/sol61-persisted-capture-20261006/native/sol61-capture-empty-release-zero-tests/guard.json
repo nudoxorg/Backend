@@ -1,0 +1,40 @@
+{
+  "source": "1e08b7fa7507289ce670eb9828fe91fa1bb53490",
+  "worktree": "/Users/rmccrar6/codex-worktrees/sol61-persisted-capture-20261006",
+  "observer_pid": 58703,
+  "owned_process_group": 58719,
+  "cargo_args": [
+    "test",
+    "--locked",
+    "--offline",
+    "-p",
+    "backend-local-service",
+    "--lib",
+    "package_metadata_recorded_pypi_release_without_files_is_unavailable_not_missing",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "resources": [
+    {
+      "available_memory_bytes": 63242338304,
+      "sample_utc": "2026-10-06T23:38:18Z"
+    },
+    {
+      "available_memory_bytes": 63241650176,
+      "sample_utc": "2026-10-06T23:38:18Z"
+    },
+    {
+      "available_memory_bytes": 63045959680,
+      "sample_utc": "2026-10-06T23:38:20Z"
+    },
+    {
+      "available_memory_bytes": 63077875712,
+      "sample_utc": "2026-10-06T23:38:22Z"
+    }
+  ],
+  "root_allocation": "one remote Mac compiler group; Cargo <=4; owned managed graph",
+  "stop_reason": null,
+  "exit": 0,
+  "ended_utc": "2026-10-06T23:38:24Z"
+}

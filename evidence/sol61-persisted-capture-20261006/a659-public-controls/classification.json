@@ -1,0 +1,26 @@
+{
+  "source": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+  "eligible_python_and_stub_files": 23,
+  "native_selection": "Complete, Selected, freshness.current; artifacts=23 and selected_source_frontier.file_count=23",
+  "warm_names_search_matrix": "library Names and compiler-owned local lexical Tantivy Search; not package catalog Tantivy",
+  "local_search_provider_chain": [
+    "CLI Session Command::Search",
+    "builtin/commands/adapter.rs search",
+    "builtin/commands/graph.rs execute_search",
+    "SearchSnapshotOwner.select",
+    "query/local.rs QueryCoordinator",
+    "backend_extension_tantivy::TantivySource::open_or_build_in_dir_with_budget_and_action",
+    "TantivyAdapter::for_each_ranked_hit"
+  ],
+  "query_local_blob": "2429589b2790efa19307384b71181ed9a45e7daf",
+  "durable_search_cache": "private state/search-index-v2/v4",
+  "package_catalog_queries_exercised": false,
+  "package_catalog_reason": "prepared probe could not execute because Unicode cold owner failed before readiness",
+  "cold_matrix_traversals_passed": 240,
+  "old_selected_root_tokens_resumed_after_owner_restart": 8,
+  "unicode_matrix_traversals_passed": 240,
+  "unicode_old_root_token_refusals_before_expiry": 8,
+  "unicode_positive_cli_mcp_full_row_equal": true,
+  "unicode_cold": "RED before readiness, including independently restored uncorrupted binding control",
+  "graph_pc1": "original cold observer inspector rejected a valid pc1 diagnostic format; product graph full reply equality passed up to that point. Later graph gate unexecuted due startup failure. No graph expiry closure claimed."
+}
