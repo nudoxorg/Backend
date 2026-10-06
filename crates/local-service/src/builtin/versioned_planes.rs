@@ -725,9 +725,6 @@ impl SelectedNativeImageSource for OwnedSemanticAuthoritySelectionSource {
         if image_identity != selected_image.image_identity() {
             return Err(OwnedSemanticAuthoritySelectionError::StaleSelection);
         }
-        #[cfg(test)]
-        self.loader
-            .wait_at_native_history_fence_gate(&target, self.store.root());
         Ok(OwnedSemanticAuthorityPublicationFence {
             _selections: selections,
             target,
@@ -1164,6 +1161,13 @@ fn publish_native_history_commit(
                 }
             }
         })?;
+    // The test gate must pause the final package-reference CAS, not one of
+    // the per-image staging-branch CAS operations above. Staging fences are
+    // intentionally shorter lived and may be followed by a marker update.
+    #[cfg(test)]
+    source
+        .loader
+        .wait_at_native_history_fence_gate(package.target(), source.store.root());
     if fence.selected_target() != package.target()
         || fence.selected_stamp() != package.selected_stamp()
         || fence.selected_image() != final_member.binding().image_key()
