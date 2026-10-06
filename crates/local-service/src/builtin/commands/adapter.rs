@@ -2390,6 +2390,11 @@ impl CommandAdapter {
                     )
                     .map(|(reply, _)| reply);
                 let reply = match (reply, observation) {
+                    (Ok(CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
+                        observation: backend_library::RegistryPackageDiscoveryObservation::Unavailable { .. }, ..
+                    })), Some(observation @ backend_library::RegistryPackageDiscoveryObservation::Missing { .. })) => {
+                        CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery { package, observation })
+                    }
                     (Ok(CommandReply::Failed(_)) | Err(_), Some(observation)) => {
                         CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
                             package,

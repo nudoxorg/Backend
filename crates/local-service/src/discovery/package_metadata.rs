@@ -9,7 +9,7 @@ use backend_library::{ProductText, RegistryPackageDiscoveryObservation};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_CACHE_OBJECTS: usize = 32;
 const MAX_CACHE_ENCODED_BYTES: usize = 64 * 1024 * 1024;
-const PARSER_IDENTITY: &str = "exact-registry-package-metadata-v1";
+const PARSER_IDENTITY: &str = "exact-registry-package-metadata-v2";
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct ObjectKey {
@@ -21,6 +21,7 @@ struct ObjectKey {
 struct CachedObject {
     etag: Option<String>,
     releases: Vec<DiscoveryReleaseObservation>,
+    /// Establishes the requested version only; never a complete package history.
     complete: bool,
     proof: [u8; 32],
     observed: Instant,
@@ -328,6 +329,9 @@ impl DiscoveryGateway {
                 "registry metadata authority changed during the request; retry",
             ));
         }
+        // This authority check cloned the cache witness. It must not masquerade
+        // as a still-queued read and prevent replacement of the validated object.
+        drop(selected);
         let current = self.store.progress_token(source);
         if current.sequence != request.progress.sequence
             || current.cursor != request.progress.cursor
@@ -375,7 +379,9 @@ impl DiscoveryGateway {
                 .facts()
                 .filter(|(old_source, _)| **old_source == source)
             {
-                if !facts.iter().any(|fact| fact.coordinate == old.coordinate) {
+                if old.coordinate == request.package
+                    && !facts.iter().any(|fact| fact.coordinate == old.coordinate)
+                {
                     facts.push(DiscoveryFact {
                         source,
                         coordinate: old.coordinate.clone(),
@@ -557,12 +563,34 @@ fn parse_object(
 ) -> Result<(Vec<DiscoveryReleaseObservation>, bool), DiscoveryStoreError> {
     match ecosystem {
         RegistryEcosystem::Npm => {
-            let parsed = parse_npm_packument_document(bytes, name, 0, MAX_DISCOVERY_PAGE_ITEMS)?;
-            Ok((parsed.releases, !parsed.is_truncated))
+            let version =
+                admit_registry_coordinate(package).map_err(|_| DiscoveryStoreError::Decode)?;
+            let projected = exact_version_document(
+                bytes,
+                "versions",
+                version.version().as_str(),
+                MAX_NPM_PACKUMENT_BYTES,
+            )?;
+            let mut parsed = parse_npm_packument_document(&projected, name, 0, 1)?;
+            for release in &mut parsed.releases {
+                release.proof = *blake3::hash(bytes).as_bytes();
+            }
+            Ok((parsed.releases, true))
         }
         RegistryEcosystem::Pypi => {
-            let parsed = parse_pypi_project_metadata(bytes, name, MAX_DISCOVERY_PAGE_ITEMS)?;
-            Ok((parsed.releases, !parsed.is_truncated))
+            let version =
+                admit_registry_coordinate(package).map_err(|_| DiscoveryStoreError::Decode)?;
+            let projected = exact_version_document(
+                bytes,
+                "releases",
+                version.version().as_str(),
+                MAX_SOURCE_BODY_BYTES,
+            )?;
+            let mut parsed = parse_pypi_project_metadata(&projected, name, 1)?;
+            for release in &mut parsed.releases {
+                release.proof = *blake3::hash(bytes).as_bytes();
+            }
+            Ok((parsed.releases, true))
         }
         RegistryEcosystem::Golang => {
             let value: serde_json::Value =
@@ -600,6 +628,45 @@ fn parse_object(
         }
         _ => Err(DiscoveryStoreError::Decode),
     }
+}
+
+/// Parse the whole bounded JSON object, then retain only the exact target for
+/// the existing ecosystem schema/facet admission. Namespace listing limits
+/// cannot determine whether a version-pinned request exists.
+fn exact_version_document(
+    bytes: &[u8],
+    field: &str,
+    version: &str,
+    maximum: usize,
+) -> Result<Vec<u8>, DiscoveryStoreError> {
+    if bytes.len() > maximum {
+        return Err(DiscoveryStoreError::Bounds);
+    }
+    let mut value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| DiscoveryStoreError::Decode)?;
+    let object = value.as_object_mut().ok_or(DiscoveryStoreError::Decode)?;
+    let Some(serde_json::Value::Object(mut versions)) = object.remove(field) else {
+        return Err(DiscoveryStoreError::Decode);
+    };
+    let mut selected = serde_json::Map::new();
+    if let Some(metadata) = versions.remove(version) {
+        if field == "versions" {
+            let release = metadata.as_object().ok_or(DiscoveryStoreError::Decode)?;
+            if release
+                .get("version")
+                .is_some_and(|actual| actual.as_str() != Some(version))
+            {
+                return Err(DiscoveryStoreError::Decode);
+            }
+        }
+        selected.insert(version.to_owned(), metadata);
+    }
+    object.insert(field.to_owned(), serde_json::Value::Object(selected));
+    let bytes = serde_json::to_vec(&value).map_err(|_| DiscoveryStoreError::Decode)?;
+    if bytes.len() > maximum {
+        return Err(DiscoveryStoreError::Bounds);
+    }
+    Ok(bytes)
 }
 
 fn fetch_object(
@@ -1006,5 +1073,179 @@ mod tests {
             "an older negative cache entry cannot claim the newer selected source observation"
         );
         assert_eq!(server.join().expect("server").len(), 2);
+    }
+
+    #[test]
+    fn package_metadata_exact_npm_and_pypi_versions_survive_the_listing_window() {
+        for (ecosystem, kind, root) in [
+            (
+                RegistryEcosystem::Npm,
+                "versions",
+                serde_json::json!({"name":"fixture"}),
+            ),
+            (
+                RegistryEcosystem::Pypi,
+                "releases",
+                serde_json::json!({"info":{"name":"fixture","version":"99.0.0"}}),
+            ),
+        ] {
+            let mut root = root;
+            let mut versions = serde_json::Map::new();
+            for index in 0..MAX_DISCOVERY_PAGE_ITEMS + 3 {
+                let version = format!("1.0.{index}");
+                let release = if ecosystem == RegistryEcosystem::Npm {
+                    serde_json::json!({"version":version})
+                } else {
+                    serde_json::json!([{"yanked":false}])
+                };
+                versions.insert(version, release);
+            }
+            // Lexical ordering puts 10 before 2; the exact target is beyond
+            // both and beyond the unrelated namespace-listing window.
+            for version in ["10.0.0", "2.0.0", "99.0.0"] {
+                versions.insert(
+                    version.to_owned(),
+                    if ecosystem == RegistryEcosystem::Npm {
+                        serde_json::json!({"version":version})
+                    } else {
+                        serde_json::json!([{"yanked":true}])
+                    },
+                );
+            }
+            root[kind] = serde_json::Value::Object(versions);
+            let bytes = serde_json::to_vec(&root).expect("full bounded document");
+            let purl = if ecosystem == RegistryEcosystem::Npm {
+                "pkg:npm/fixture@99.0.0"
+            } else {
+                "pkg:pypi/fixture@99.0.0"
+            };
+            let package = PackageCoordinate::parse(purl).expect("exact target");
+            let (releases, complete) = parse_object(ecosystem, &bytes, "fixture", &package)
+                .expect("exact schema admission");
+            assert!(complete);
+            assert_eq!(releases.len(), 1);
+            assert_eq!(releases[0].coordinate, package);
+            assert_eq!(releases[0].proof, *blake3::hash(&bytes).as_bytes());
+            if ecosystem == RegistryEcosystem::Pypi {
+                assert_eq!(releases[0].metadata.yanked, DiscoveryFacet::Known(true));
+            }
+            let absent = PackageCoordinate::parse(purl.replace("99.0.0", "98.0.0"))
+                .expect("absent exact target");
+            let (releases, complete) = parse_object(ecosystem, &bytes, "fixture", &absent)
+                .expect("full document establishes target absence");
+            assert!(complete);
+            assert!(releases.is_empty());
+        }
+    }
+
+    #[test]
+    fn package_metadata_refresh_replaces_its_own_cache_witness_and_is_reused() {
+        let (endpoint, server) = server(vec![("200 OK", REQUESTS), ("304 Not Modified", "")]);
+        let mut owner = gateway(endpoint);
+        let package = PackageCoordinate::parse("pkg:pypi/requests@2.34.2").expect("package");
+        assert!(owner.observe_package(&package).is_none());
+        Arc::get_mut(
+            owner
+                .package_metadata
+                .objects
+                .values_mut()
+                .next()
+                .expect("cached object"),
+        )
+        .expect("unshared object")
+        .observed = Instant::now() - Duration::from_secs(61);
+        assert!(owner.observe_package(&package).is_none());
+        let cached = owner
+            .package_metadata
+            .objects
+            .values()
+            .next()
+            .expect("revalidated object");
+        let request = owner
+            .prepare_request(&package, [1; 16], 2)
+            .expect("selected authority");
+        assert_eq!(cached.admitted_sequence, request.progress.sequence);
+        assert!(cached.observed.elapsed() < Duration::from_secs(60));
+        drop(request);
+        assert!(
+            matches!(
+                owner.prepare_package(&package, [1; 16], 3),
+                PackageMetadataPreparation::Cached(None)
+            ),
+            "revalidation must not refetch forever"
+        );
+        assert_eq!(server.join().expect("server").len(), 2);
+    }
+
+    #[test]
+    fn package_metadata_exact_projection_only_withdraws_its_requested_version() {
+        const BOTH: &str = r#"{"info":{"name":"requests","version":"2.0.0"},"releases":{"1.0.0":[{"yanked":false}],"2.0.0":[{"yanked":false}]}}"#;
+        const SECOND: &str = r#"{"info":{"name":"requests","version":"2.0.0"},"releases":{"2.0.0":[{"yanked":false}]}}"#;
+        let (endpoint, server) =
+            server(vec![("200 OK", BOTH), ("200 OK", BOTH), ("200 OK", SECOND)]);
+        let mut owner = gateway(endpoint);
+        let first = PackageCoordinate::parse("pkg:pypi/requests@1.0.0").expect("first");
+        let second = PackageCoordinate::parse("pkg:pypi/requests@2.0.0").expect("second");
+        assert!(owner.observe_package(&first).is_none());
+        assert!(owner.observe_package(&second).is_none());
+        assert!(
+            owner
+                .store
+                .facts()
+                .filter(|(_, fact)| fact.standing == DiscoveryStanding::Published)
+                .any(|(_, fact)| fact.coordinate == first)
+        );
+        assert!(matches!(
+            owner.observe_package(&first),
+            Some(RegistryPackageDiscoveryObservation::Missing { .. })
+        ));
+        assert!(
+            owner.store.facts().any(|(_, fact)| fact.coordinate == first
+                && fact.standing == DiscoveryStanding::Withdrawn)
+        );
+        assert!(
+            owner
+                .store
+                .facts()
+                .any(|(_, fact)| fact.coordinate == second
+                    && fact.standing == DiscoveryStanding::Published)
+        );
+        assert_eq!(server.join().expect("server").len(), 3);
+    }
+
+    #[test]
+    fn package_metadata_missing_evidence_survives_refused_cache_retention() {
+        let (endpoint, server) = server(vec![("200 OK", REQUESTS); MAX_CACHE_OBJECTS + 1]);
+        let mut owner = gateway(endpoint);
+        for index in 0..MAX_CACHE_OBJECTS {
+            let package = PackageCoordinate::parse(format!("pkg:pypi/requests@0.0.{index}"))
+                .expect("absent version");
+            assert!(matches!(
+                owner.observe_package(&package),
+                Some(RegistryPackageDiscoveryObservation::Missing { .. })
+            ));
+        }
+        let pinned = owner
+            .package_metadata
+            .objects
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let package =
+            PackageCoordinate::parse("pkg:pypi/requests@0.1.0").expect("new absent version");
+        assert!(matches!(
+            owner.observe_package(&package),
+            Some(RegistryPackageDiscoveryObservation::Missing { .. })
+        ));
+        assert!(
+            !owner
+                .package_metadata
+                .objects
+                .keys()
+                .any(|key| key.package == package.as_str())
+        );
+        assert_eq!(owner.package_metadata.objects.len(), MAX_CACHE_OBJECTS);
+        drop(pinned);
+        assert_eq!(server.join().expect("server").len(), MAX_CACHE_OBJECTS + 1);
     }
 }
