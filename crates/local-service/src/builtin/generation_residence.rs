@@ -1709,6 +1709,13 @@ mod tests {
         use backend_semantic::ir::{JumboRopeLimits, SemanticTypedPlaneVerificationTierV2};
         use std::time::{Duration, Instant};
 
+        // FileSemanticRangeStore's persisted V3 range-CAS format requires
+        // 16 KiB chunks. Keep both writer-side and reopen-side stores on the
+        // same valid production policy rather than TransportLimits' generic
+        // 64 KiB transfer default.
+        let mut history_limits = TransportLimits::default();
+        history_limits.max_chunk = 16 * 1024;
+
         const SOURCE_A: [(&str, &str); 2] = [
             ("src/alpha.c", "int alpha(void) { return 1; }\n"),
             ("src/beta.c", "int beta(void) { return 2; }\n"),
@@ -1849,7 +1856,7 @@ mod tests {
                 || {
                     let history = FileSemanticRangeStore::open(
                         store.clone(),
-                        TransportLimits::default(),
+                        history_limits,
                     )
                     .map_err(|error| {
                         super::super::BuiltinModelError(format!(
@@ -1977,7 +1984,7 @@ mod tests {
         );
         assert_eq!(proof_b.reachable_commit, commit_b);
 
-        let history = FileSemanticRangeStore::open(authority.store(), TransportLimits::default())
+        let history = FileSemanticRangeStore::open(authority.store(), history_limits)
             .expect("reopen branch history store");
         let branch_tip = history
             .history_ref(&target, HistoryRefKind::Branch, &branch)
