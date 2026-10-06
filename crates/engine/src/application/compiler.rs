@@ -4079,6 +4079,9 @@ fn package_authority_terminal(
         cause => {
             let (phase, class) = package_authority_projection(&cause);
             let python_failure = match &cause {
+                PackageAuthorityError::NativePythonToolchainIdentityMismatch { .. } => {
+                    Some(PythonAuthorityFailureKind::ProducerIdentityMismatch)
+                }
                 PackageAuthorityError::PythonPyrefly(error) => {
                     Some(python_authority_failure_kind(error))
                 }
