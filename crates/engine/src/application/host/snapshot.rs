@@ -36,13 +36,13 @@ pub enum LocalCompilerHostSelectionIssue {
     MissingTypeScriptNode,
     /// A captured global TypeScript script has no package module root.
     MissingTypeScriptModuleRoot,
-    /// No Python interpreter was captured.
+    /// Legacy status for hosts that do not select an external Python interpreter.
     MissingPythonInterpreter,
-    /// No Pyrefly checker was captured for Python authority.
+    /// Legacy status for hosts that do not select an external Pyrefly checker.
     MissingPyreflyChecker,
     /// No Go compiler was captured.
     MissingGoCompiler,
-    /// A captured Go compiler has no package module cache.
+    /// Legacy status for hosts without an explicitly selected Go module cache.
     MissingGoModuleCache,
 }
 
@@ -58,14 +58,14 @@ impl LocalCompilerHostSelectionIssue {
                 "Install the TypeScript package or configure NUDOX_TYPESCRIPT_MODULE_ROOT, then restart locald."
             }
             Self::MissingPythonInterpreter => {
-                "Install Python 3 or configure NUDOX_PYTHON, then restart locald."
+                "Native Python source processing can run without an external interpreter; configure NUDOX_PYTHON only to select one."
             }
             Self::MissingPyreflyChecker => {
-                "Install Pyrefly or configure NUDOX_PYREFLY, then restart locald."
+                "Native Python source processing can run without an external Pyrefly checker; configure NUDOX_PYREFLY only to select one."
             }
             Self::MissingGoCompiler => "Install Go or configure NUDOX_GO, then restart locald.",
             Self::MissingGoModuleCache => {
-                "Configure GOMODCACHE, GOPATH, or NUDOX_GO_ROOT, then restart locald."
+                "Go source processing can use its private module cache; no cache environment variable is required."
             }
         }
     }
@@ -203,16 +203,8 @@ fn selection_issues(
     {
         issues.push(LocalCompilerHostSelectionIssue::MissingTypeScriptModuleRoot);
     }
-    if !has(LocalHostVariable::NudoxPython) {
-        issues.push(LocalCompilerHostSelectionIssue::MissingPythonInterpreter);
-    }
-    if !has(LocalHostVariable::NudoxPyrefly) {
-        issues.push(LocalCompilerHostSelectionIssue::MissingPyreflyChecker);
-    }
     if !has(LocalHostVariable::NudoxGo) {
         issues.push(LocalCompilerHostSelectionIssue::MissingGoCompiler);
-    } else if !has(LocalHostVariable::NudoxGoRoot) {
-        issues.push(LocalCompilerHostSelectionIssue::MissingGoModuleCache);
     }
     issues
 }

@@ -1534,11 +1534,15 @@ mod tests {
         let selection = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools)
             .capture_installed_selection()
             .expect("capture with optional Pyrefly absent");
-        assert!(
-            selection
-                .issues()
-                .contains(&super::super::LocalCompilerHostSelectionIssue::MissingPyreflyChecker)
-        );
+        assert!(!selection.issues().contains(
+            &super::super::LocalCompilerHostSelectionIssue::MissingPythonInterpreter
+        ));
+        assert!(!selection.issues().contains(
+            &super::super::LocalCompilerHostSelectionIssue::MissingPyreflyChecker
+        ));
+        assert!(!selection.issues().contains(
+            &super::super::LocalCompilerHostSelectionIssue::MissingGoModuleCache
+        ));
         assert!(
             selection
                 .snapshot()
@@ -1552,7 +1556,7 @@ mod tests {
     fn closed_snapshot_never_uses_path_or_compiler_relative_fallbacks() {
         let (root, environment) = installed_fixture("closed-host-selection", true);
         let compiler = root.join("lib/node_modules/typescript/bin/tsc");
-        let mut closed_environment = environment;
+        let mut closed_environment = environment.clone();
         closed_environment.values.clear();
         closed_environment.set(LocalHostVariable::NudoxTypeScriptCompiler, &compiler);
         let host = LocalCompilerHost::new(closed_environment, LocalHostDiscovery::ClosedSnapshot);

@@ -2896,13 +2896,14 @@ impl TypeScriptProjectHost {
         let Some(compiler) = compiler else {
             return Ok(None);
         };
-        let module_root = self
+        let module_root = match self
             .explicit_module_root
             .as_deref()
             .or(self.installed_default_module_root.as_deref())
-            .map(Path::to_path_buf)
-            .map(Ok)
-            .unwrap_or_else(|| find_module_root_for_compiler(compiler))?;
+        {
+            Some(root) => Some(root.to_path_buf()),
+            None => find_module_root_for_compiler(compiler)?,
+        };
         let Some(module_root) = module_root else {
             if self.explicit_compiler.is_some() {
                 return Err(TypeScriptProjectHostError::ExplicitModuleRootRequired {
