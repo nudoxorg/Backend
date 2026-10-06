@@ -774,6 +774,24 @@ fn retained_graph_waiting_for_owner_keeps_global_settings_reachable(cx: &mut Tes
 }
 
 #[gpui::test]
+fn retired_graph_native_control_parks_without_guessing_a_replacement_stop(cx: &mut TestAppContext) {
+    use gpui::Focusable as _;
+    let (mut rig, gate) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+    tab_to_graph_control(&mut rig, "Declarations");
+    let key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    gate.publish(crate::runtime::owner::OwnerState::Starting);
+    rig.cx.run_until_parked();
+    gate.publish(crate::runtime::owner::OwnerState::Ready { key, mode: crate::model::ServiceMode::Attached });
+    rig.cx.run_until_parked();
+    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("current replacement");
+    assert!(!rig.cx.update(|window, cx| graph.focus_handle(cx).is_focused(window)), "an old control does not authorize guessing the scene's root focus");
+    assert!(rig.cx.update(|window, cx| window.focused(cx).is_some_and(|focus| window.is_focus_handle_mounted(&focus))), "a current neutral receiver keeps dispatch alive");
+    rig.native_press("secondary-,");
+    rig.cx.run_until_parked();
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
+}
+
+#[gpui::test]
 fn stale_graph_row_pointer_and_ax_cannot_take_current_focus_before_redraw(cx: &mut TestAppContext) {
     let (mut rig, gate) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);
     tab_to_graph_control(&mut rig, "Declarations");

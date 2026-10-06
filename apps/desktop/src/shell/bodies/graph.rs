@@ -101,6 +101,7 @@ pub(crate) struct Map {
 struct GraphMountFocus {
     lease: crate::shell::keyboard::NativeReturnLease,
     retired: bool,
+    restore_scene: bool,
     // Retain the displaced receiver until handoff. Dropping the old Graph
     // must not manufacture a native blur that revokes its own valid lease.
     _origin: Option<gpui::FocusHandle>,
@@ -739,7 +740,7 @@ impl Map {
         let lease = crate::shell::keyboard::NativeReturnLease::new(
             window.window_handle().window_id(), shell.read(cx).focus_return_generation(), window.focus_epoch(),
         )?;
-        Some(GraphMountFocus { lease, retired: false, _origin: window.focused(cx) })
+        Some(GraphMountFocus { lease, retired: false, restore_scene: true, _origin: window.focused(cx) })
     }
 
     fn park_retired_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1591,10 +1592,16 @@ impl Render for Map {
                     && self.route.as_ref() == Some(snapshot.route()) && snapshot.page_overlay().is_none()
                     && self.links.shell.upgrade().is_some_and(|shell| lease.lease.current(
                         window.window_handle().window_id(), shell.read(cx).focus_return_generation(), window.focus_epoch()));
-                if current { graph.focus_handle(cx).focus(window, cx); }
+                if current && lease.restore_scene { graph.focus_handle(cx).focus(window, cx); }
             }
-            self.mounted_focus = graph.focus_handle(cx).is_focused(window)
-                .then(|| self.mount_focus_lease(window, cx)).flatten();
+            let handle = graph.focus_handle(cx);
+            self.mounted_focus = handle.contains_focused(window, cx).then(|| {
+                let mut receipt = self.mount_focus_lease(window, cx)?;
+                // The component admits parking its own retiring descendants,
+                // but their old control cannot authorize a guessed new stop.
+                receipt.restore_scene = handle.is_focused(window);
+                Some(receipt)
+            }).flatten();
             root = root.child(graph.clone()).child(
                 div()
                     .absolute()
