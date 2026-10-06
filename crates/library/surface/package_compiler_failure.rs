@@ -120,10 +120,7 @@ impl CompilerNativeToolFact {
 )]
 pub enum PackageCompilerFailureCause {
     /// Exact compact-fragment family and its required operand facts.
-    Fragment {
-        kind: CompilerFragmentFaultKind,
-        facts: CompilerFragmentFaultFacts,
-    },
+    Fragment(PackageCompilerFragmentFaultFacts),
     /// A registry-selected native tool did not match the configured tool.
     Toolchain {
         language: CompilerLanguageFact,
@@ -152,7 +149,7 @@ impl PackageCompilerFailureCause {
     #[must_use]
     pub const fn phase(&self) -> PackageCompilerFailurePhase {
         match self {
-            Self::Fragment { kind, .. } => match kind.phase() {
+            Self::Fragment(fault) => match fault.kind().phase() {
                 CompilerFragmentFaultPhase::Prepare => PackageCompilerFailurePhase::Prepare,
                 CompilerFragmentFaultPhase::Write => PackageCompilerFailurePhase::Write,
                 CompilerFragmentFaultPhase::Validate => PackageCompilerFailurePhase::Validate,
@@ -169,7 +166,7 @@ impl PackageCompilerFailureCause {
     #[must_use]
     pub const fn kind_tag(&self) -> &'static str {
         match self {
-            Self::Fragment { kind, .. } => kind.tag(),
+            Self::Fragment(fault) => fault.kind().tag(),
             Self::Toolchain { .. } => "toolchain_configuration_mismatch",
             Self::ToolingUnavailable { .. } => "tooling_unavailable",
             Self::Lowering(fault) => fault.kind_tag(),
@@ -207,6 +204,63 @@ impl PackageCompilerFailureCause {
     #[must_use]
     pub const fn requires_tool_configuration(&self) -> bool {
         matches!(self, Self::Toolchain { .. })
+    }
+}
+
+/// Checked pair of a compact-fragment kind and its matching bounded facts.
+///
+/// The kind and facts serialize as the established `kind` and `facts` members,
+/// but are validated together on construction and deserialization.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageCompilerFragmentFaultFacts {
+    kind: CompilerFragmentFaultKind,
+    facts: CompilerFragmentFaultFacts,
+}
+
+impl PackageCompilerFragmentFaultFacts {
+    /// Constructs a checked kind/facts pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns an admission error when the exact fact variant does not belong
+    /// to the supplied kind.
+    pub fn new(
+        kind: CompilerFragmentFaultKind,
+        facts: CompilerFragmentFaultFacts,
+    ) -> Result<Self, super::ProductAdmissionError> {
+        if !super::compiler_fault_facts_match_kind(kind, facts) {
+            return Err(super::ProductAdmissionError::PackageCompilerFailureShape);
+        }
+        Ok(Self { kind, facts })
+    }
+
+    /// Exact closed fragment error kind.
+    #[must_use]
+    pub const fn kind(self) -> CompilerFragmentFaultKind {
+        self.kind
+    }
+
+    /// Required bounded operands retained for the exact error kind.
+    #[must_use]
+    pub const fn facts(self) -> CompilerFragmentFaultFacts {
+        self.facts
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageCompilerFragmentFaultFactsWire {
+    kind: CompilerFragmentFaultKind,
+    facts: CompilerFragmentFaultFacts,
+}
+
+impl<'de> Deserialize<'de> for PackageCompilerFragmentFaultFacts {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+
+        let wire = PackageCompilerFragmentFaultFactsWire::deserialize(deserializer)?;
+        Self::new(wire.kind, wire.facts).map_err(D::Error::custom)
     }
 }
 
@@ -398,9 +452,10 @@ impl PackageTypeScriptProjectionFaultFacts {
     }
 }
 
-/// Exact closed vocabulary for nested non-TypeScript language projection tags.
-/// Their outer and nested variants remain distinguishable without exposing
-/// source spellings or opaque authority identities.
+/// Exact closed vocabulary for non-TypeScript language-projection tags.
+/// Current projections retain these specific tags, while only the TypeScript
+/// and shared admission projections retain all nested coordinates and facts.
+/// Source spellings and opaque authority identities remain omitted.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageLanguageProjectionFault {
@@ -1419,11 +1474,14 @@ fn clang_projection_kind(value: ClangProjectionFault) -> PackageLanguageProjecti
 /// Projection of one compiler terminal into the package-failure family.
 pub(crate) fn package_failure_from_terminal(
     terminal: &CompilerTerminal,
-) -> Option<(
-    Option<ContentId<CompileRecipeDomain>>,
-    PackageCompilerFailureCause,
-)> {
-    match terminal {
+) -> Result<
+    Option<(
+        Option<ContentId<CompileRecipeDomain>>,
+        PackageCompilerFailureCause,
+    )>,
+    super::ProductAdmissionError,
+> {
+    Ok(match terminal {
         CompilerTerminal::Toolchain {
             language,
             stage,
@@ -1457,10 +1515,10 @@ pub(crate) fn package_failure_from_terminal(
             cause: CompilerCause::FragmentFailure(failure),
         } => Some((
             Some(attempted.recipe),
-            PackageCompilerFailureCause::Fragment {
-                kind: failure.kind(),
-                facts: failure.facts(),
-            },
+            PackageCompilerFailureCause::Fragment(PackageCompilerFragmentFaultFacts::new(
+                failure.kind(),
+                failure.facts(),
+            )?),
         )),
         CompilerTerminal::Compile {
             attempted,
@@ -1492,7 +1550,7 @@ pub(crate) fn package_failure_from_terminal(
             },
         )),
         _ => None,
-    }
+    })
 }
 
 #[cfg(test)]

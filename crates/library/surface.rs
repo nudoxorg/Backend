@@ -24,11 +24,11 @@ mod package_compiler_failure;
 pub use package_compiler_failure::{
     AuthorityClassFact, AuthorityPhaseFact, CompilerAuthorityDiagnosticFacts, CompilerLanguageFact,
     CompilerNativeToolFact, CompilerStageFact, PackageCompilerFailureCause,
-    PackageCompilerFailurePhase, PackageForeignKeyFaultFacts, PackageLanguageProjectionFault,
-    PackageLineageFaultFacts, PackageLoweringFaultFacts, PackageParentageFact,
-    PackageProjectionAdmissionFaultFacts, PackageProjectionConstructorFaultFacts,
-    PackageProjectionSemanticTypeFaultFacts, PackageTypeCellFact,
-    PackageTypeScriptProjectionFaultFacts, PackageTypeTagFact,
+    PackageCompilerFailurePhase, PackageCompilerFragmentFaultFacts, PackageForeignKeyFaultFacts,
+    PackageLanguageProjectionFault, PackageLineageFaultFacts, PackageLoweringFaultFacts,
+    PackageParentageFact, PackageProjectionAdmissionFaultFacts,
+    PackageProjectionConstructorFaultFacts, PackageProjectionSemanticTypeFaultFacts,
+    PackageTypeCellFact, PackageTypeScriptProjectionFaultFacts, PackageTypeTagFact,
 };
 
 /// Largest user-authored operand retained by the product service.
@@ -1624,10 +1624,8 @@ impl PackageCompilerFailure {
         failure: &CompilerFragmentFailure,
     ) -> Result<Self, ProductAdmissionError> {
         let relative_path = package_relative_source_path(relative_path)?;
-        let cause = PackageCompilerFailureCause::Fragment {
-            kind: failure.kind(),
-            facts: failure.facts(),
-        };
+        let fragment = PackageCompilerFragmentFaultFacts::new(failure.kind(), failure.facts())?;
+        let cause = PackageCompilerFailureCause::Fragment(fragment);
         let (detail, detail_truncated) = detail_for_package_cause(&cause);
         let summary = Self {
             relative_path,
@@ -1650,7 +1648,7 @@ impl PackageCompilerFailure {
         terminal: &crate::interface::CompilerTerminal,
     ) -> Result<Option<Self>, ProductAdmissionError> {
         let Some((recipe_identity, cause)) =
-            package_compiler_failure::package_failure_from_terminal(terminal)
+            package_compiler_failure::package_failure_from_terminal(terminal)?
         else {
             return Ok(None);
         };
@@ -2148,7 +2146,7 @@ fn sanitize_package_compiler_detail(value: &str, source_truncated: bool) -> (Str
 
 fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, bool) {
     let prefix = match cause {
-        PackageCompilerFailureCause::Fragment { .. } => "compact fragment fault",
+        PackageCompilerFailureCause::Fragment(_) => "compact fragment fault",
         PackageCompilerFailureCause::Toolchain {
             selected,
             configured: None,
@@ -2190,7 +2188,13 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
             return sanitize_package_compiler_detail(&text, false);
         }
         PackageCompilerFailureCause::Lowering(_) => "lowering fault",
-        PackageCompilerFailureCause::Authority { .. } => "authority fault",
+        PackageCompilerFailureCause::Authority { phase, .. } => match phase {
+            AuthorityPhaseFact::Open => "open authority fault",
+            AuthorityPhaseFact::Parse => "parse authority fault",
+            AuthorityPhaseFact::Resolve => "resolve authority fault",
+            AuthorityPhaseFact::TypeCheck => "type check authority fault",
+            AuthorityPhaseFact::Project => "project authority fault",
+        },
     };
     let tag = cause.kind_tag().replace('_', " ");
     let text = format!("{prefix}: {tag}");
@@ -2199,8 +2203,8 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
 
 fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
     match cause {
-        PackageCompilerFailureCause::Fragment { kind, facts } => {
-            compiler_fault_facts_match_kind(*kind, *facts)
+        PackageCompilerFailureCause::Fragment(fault) => {
+            compiler_fault_facts_match_kind(fault.kind(), fault.facts())
         }
         PackageCompilerFailureCause::Toolchain {
             selected,
@@ -4956,6 +4960,17 @@ mod tests {
         assert!(displayed.contains("occurrence span"));
         assert!(!displayed.contains("facts="));
 
+        let underscored_path = compiler_failure("src/foo_bar.ts");
+        assert_eq!(underscored_path.relative_path(), "src/foo_bar.ts");
+        assert!(
+            crate::CommandFailure::CompilerRefused {
+                detail: "compiler refused source member".to_owned(),
+                failure: underscored_path,
+            }
+            .to_string()
+            .contains("src/foo_bar.ts")
+        );
+
         let json: serde_json::Value = serde_json::from_slice(&encoded).expect("JSON object");
         assert_eq!(json["cause"]["family"], "fragment");
         assert_eq!(json["cause"]["fault"]["kind"]["family"], "build");
@@ -5015,6 +5030,18 @@ mod tests {
         let mut malformed_facts = original.clone();
         malformed_facts["cause"]["fault"]["facts"]["kind"] = serde_json::json!("tree_entity");
         assert!(serde_json::from_value::<PackageCompilerFailure>(malformed_facts).is_err());
+
+        let mut mismatched_fragment = original.clone();
+        mismatched_fragment["cause"]["fault"]["kind"]["kind"] = serde_json::json!("dangling");
+        assert!(
+            serde_json::from_value::<PackageCompilerFailure>(mismatched_fragment.clone()).is_err()
+        );
+        assert!(
+            serde_json::from_value::<PackageCompilerFailureCause>(
+                mismatched_fragment["cause"].clone()
+            )
+            .is_err()
+        );
 
         let mut unknown = original;
         unknown["arbitrary_output"] = serde_json::json!("private marker");
