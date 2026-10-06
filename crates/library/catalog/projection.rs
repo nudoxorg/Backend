@@ -364,7 +364,8 @@ impl Library {
         })
     }
 
-    /// Builds a search page from an owner-selected complete relevance order.
+    /// Builds a search page from an owner-selected relevance prefix that
+    /// includes the requested page and, when present, its first successor.
     ///
     /// This is the application-service seam for replaceable local search
     /// engines. Every identity is resolved from this library's immutable view;
@@ -410,25 +411,36 @@ impl Library {
             ids.truncate(limit);
             ArrangementPage { ids, has_more }
         };
-        let start = self.check_query_cursor(query.cursor, recipe, limit, ranked_page)?;
+        // Scores encode absolute rank, independent of prefix length. The
+        // predecessor proof must resolve exactly these same scored rows.
+        let ranked_row = |id, rank| {
+            let mut row = self.view.row(id)?;
+            row.score = Some(u32::MAX.checked_sub(u32::try_from(rank).ok()?)?);
+            Some(row)
+        };
+        if u32::try_from(ranked_ids.len()).is_err() {
+            return Err(LibraryError::InvalidQuery(
+                "ranked search exceeds ordinal score space".to_owned(),
+            ));
+        }
+        let start = self.check_query_cursor_with_rows(
+            query.cursor,
+            recipe,
+            limit,
+            ranked_page,
+            ranked_row,
+        )?;
         let page = ranked_page(start);
         if query.cursor.is_some() && page.ids.is_empty() {
             return Err(LibraryError::CursorMismatch);
         }
-        // A snapshot's rows are held in key order, so the ranked order
-        // travels as each row's score: the rows left in the ranking after it,
-        // counted from its end (the first row of the whole ranking scores
-        // highest, on every page).
-        let total = ranked_ids.len();
+        // A snapshot holds rows in key order; stable ordinal scores carry
+        // relevance order across pages and cold reconstruction.
         let rows = page
             .ids
             .iter()
             .enumerate()
-            .filter_map(|(at, &id)| {
-                let mut row = self.view.row(id)?;
-                row.score = u32::try_from(total - (start + at)).ok();
-                Some(row)
-            })
+            .filter_map(|(at, &id)| ranked_row(id, start + at))
             .collect::<Vec<_>>();
         self.work.record_seek();
         self.work.record_output(rows.len());
@@ -900,6 +912,17 @@ impl Library {
         limit: usize,
         fetch: impl Fn(usize) -> ArrangementPage,
     ) -> Result<usize, LibraryError> {
+        self.check_query_cursor_with_rows(cursor, recipe, limit, fetch, |id, _| self.view.row(id))
+    }
+
+    fn check_query_cursor_with_rows(
+        &self,
+        cursor: Option<Cursor>,
+        recipe: ViewRecipeId,
+        limit: usize,
+        fetch: impl Fn(usize) -> ArrangementPage,
+        row_at: impl Fn(RowId, usize) -> Option<Row>,
+    ) -> Result<usize, LibraryError> {
         let Some(cursor) = cursor else {
             return Ok(0);
         };
@@ -928,7 +951,8 @@ impl Library {
         let previous_rows = previous_page
             .ids
             .iter()
-            .filter_map(|&id| self.view.row(id))
+            .enumerate()
+            .filter_map(|(at, &id)| row_at(id, previous_start + at))
             .collect::<Vec<_>>();
         let basis = self.revision_basis();
         let frontier = self.revision_frontier();

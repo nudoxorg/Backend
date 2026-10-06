@@ -1,0 +1,13 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 5m 17s
+     Running unittests lib.rs (.local/build/qa/.nudox-cargo/slot-0/debug/deps/backend_library-da8b1426803c57d2)
+
+running 6 tests
+test command::tests::query_cursor_keeps_the_requested_continuation ... ok
+test source_discovery::source_discovery_tests::metadata_cursors_bind_version_section_and_exact_page_continuation ... ok
+test package_graph_page::tests::checked_facts_authenticate_reverse_pages_and_keyset_continuations ... ok
+test tests::package_outline_and_graph_pages_share_root_and_query_bound_continuations ... ok
+test tests::bounded_query_continuation_is_bound_to_the_snapshot_view ... ok
+test wire::tests::graph_query_continuation_decodes_only_against_its_owner_cursor ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 279 filtered out; finished in 0.00s
+

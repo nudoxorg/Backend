@@ -28,6 +28,7 @@ pub(crate) struct QualifiedClause {
 pub struct LocalQuery {
     lexical: lexical::Query,
     limit: usize,
+    semantic_limit: usize,
     qualified: Vec<QualifiedClause>,
     /// The words as typed (case kept): what a match is placed by.
     words: Vec<String>,
@@ -74,6 +75,7 @@ impl LocalQuery {
         Ok(Self {
             lexical,
             limit,
+            semantic_limit: limit,
             qualified,
             words,
         })
@@ -83,6 +85,10 @@ impl LocalQuery {
     #[must_use]
     pub const fn limit(&self) -> usize {
         self.limit
+    }
+
+    pub(crate) const fn semantic_limit(&self) -> usize {
+        self.semantic_limit
     }
 
     pub(crate) const fn lexical(&self) -> &lexical::Query {
@@ -1111,6 +1117,29 @@ impl QueryCoordinator {
                 == semantic_evidence.evidence_digest()
     }
 
+    /// Enumerates the requested rank prefix and one successor, under the
+    /// selected relation and the provider's existing retained-rank budget.
+    pub(crate) fn search_local_page(
+        &self,
+        request: &backend_engine::Query,
+    ) -> Result<LocalAnswer, QueryError> {
+        if request.basis() != self.corpus.view.root() {
+            return Err(QueryError::StaleViewBinding);
+        }
+        let page_rows = usize::from(request.limit().get());
+        let offset = request.cursor().map_or(Ok(0), |cursor| {
+            usize::try_from(cursor.query_offset()).map_err(|_| QueryError::InvalidCursor)
+        })?;
+        let selected_rows =
+            usize::try_from(self.corpus.view.row_count()).map_err(|_| QueryError::InvalidView)?;
+        let mut query = LocalQuery::prefix(request.text(), page_rows)?;
+        query.limit = rank_prefix_limit(offset, page_rows, selected_rows)?;
+        // The semantic candidate window is independent of the requested page
+        // position, so extending a lexical prefix cannot change prior ranks.
+        query.semantic_limit = page_rows;
+        self.search_local(query)
+    }
+
     /// Executes a complete local search before optional provider work.
     ///
     /// # Errors
@@ -1118,8 +1147,16 @@ impl QueryCoordinator {
     /// Returns [`QueryError::LexicalProvider`] if the admitted local Tantivy
     /// projection cannot serve a page.
     pub fn search_local(&self, query: LocalQuery) -> Result<LocalAnswer, QueryError> {
-        let mut top_matches: Vec<(EntityId, lexical::Relevance)> =
-            Vec::with_capacity(query.limit());
+        let mut top_matches: Vec<(EntityId, lexical::Relevance)> = Vec::new();
+        top_matches
+            .try_reserve_exact(query.limit())
+            .map_err(|error| QueryError::LexicalProvider {
+                phase: LexicalPhase::ComposeRows,
+                cause: LexicalFailureCause::Allocation {
+                    requested: query.limit(),
+                    error,
+                },
+            })?;
         let mut seen_hits = 0usize;
         let mut total_matches = 0usize;
         let mut composition_failure = None;
@@ -1756,6 +1793,15 @@ pub enum QueryError {
     EmptyQuery,
     /// Page size is outside the extension bound.
     InvalidLimit,
+    /// A rank continuation cannot address the selected relation.
+    InvalidCursor,
+    /// A requested rank prefix exceeds the existing retained-rank allowance.
+    RankPrefixBudgetExceeded {
+        /// Entries needed for the requested position and lookahead.
+        requested: usize,
+        /// Entries admitted by the retained-rank byte budget.
+        maximum: usize,
+    },
     /// The selected source was not proven complete by its owner.
     IncompleteCoverage,
     /// The selected view was not published against the exact workspace
@@ -1780,6 +1826,27 @@ pub enum QueryError {
         /// Original provider error or exact failed corpus join.
         cause: LexicalFailureCause,
     },
+}
+
+pub(super) fn rank_prefix_limit(
+    offset: usize,
+    page_rows: usize,
+    selected_rows: usize,
+) -> Result<usize, QueryError> {
+    if offset > 0 && offset >= selected_rows {
+        return Err(QueryError::InvalidCursor);
+    }
+    let requested = offset
+        .checked_add(page_rows)
+        .and_then(|end| end.checked_add(1))
+        .ok_or(QueryError::InvalidCursor)?
+        .min(selected_rows.max(1));
+    let maximum = lexical::RankSnapshotBudget::default().max_retained_bytes()
+        / size_of::<(EntityId, lexical::Relevance)>();
+    if requested > maximum {
+        return Err(QueryError::RankPrefixBudgetExceeded { requested, maximum });
+    }
+    Ok(requested)
 }
 
 /// Closed local lexical operation where a failure arose.
@@ -1893,6 +1960,11 @@ impl fmt::Display for QueryError {
         match self {
             Self::EmptyQuery => formatter.write_str("query text is empty"),
             Self::InvalidLimit => formatter.write_str("query page limit is invalid"),
+            Self::InvalidCursor => formatter.write_str("search cursor offset is invalid"),
+            Self::RankPrefixBudgetExceeded { requested, maximum } => write!(
+                formatter,
+                "search rank prefix requires {requested} entries; retained-rank budget admits {maximum}"
+            ),
             Self::IncompleteCoverage => formatter.write_str("selected view coverage is incomplete"),
             Self::StaleViewBinding => {
                 formatter.write_str("selected view is bound to another workspace snapshot")

@@ -244,33 +244,15 @@ pub(super) fn execute_search(
             semantic_evidence,
         )
         .map_err(|error| BuiltinModelError(error.to_string()))?;
-    let local_query =
-        super::super::query::LocalQuery::prefix(query.text(), usize::from(query.limit().get()))
-            .map_err(|error| BuiltinModelError(error.to_string()))?;
-    let local = coordinator
-        .search_local(local_query)
-        .map_err(|error| BuiltinModelError(error.to_string()))?;
-    let reconciliation_failed = remote_semantic.reconcile(coordinator, coverage).is_err();
-    let (result, semantic_status) = remote_semantic.search_with_status(
+    super::super::query::search_page(
         coordinator,
+        daemon.engine().daemon().library(),
+        remote_semantic,
         coverage,
-        local,
-        query.text(),
-        reconciliation_failed,
-    );
-    let ranked_ids = result
-        .rows
-        .iter()
-        .map(|ranked| ranked.row.id)
-        .collect::<Vec<_>>();
-    daemon
-        .engine()
-        .daemon()
-        .library()
-        .search_from_ranked_ids(query, &ranked_ids)
-        .map(CommandReply::Search)
-        .map(|reply| (reply, semantic_status))
-        .map_err(|error| BuiltinModelError(error.to_string()))
+        query,
+    )
+    .map(|(page, status)| (CommandReply::Search(page), status))
+    .map_err(|error| BuiltinModelError(error.to_string()))
 }
 
 pub(super) fn execute_certified_graph_query(

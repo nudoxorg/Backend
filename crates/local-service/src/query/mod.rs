@@ -25,6 +25,59 @@ pub use remote::{
 };
 pub use semantic::{CompositionPolicy, SemanticAcceleration, SemanticError};
 
+/// Failure retained at the selected search-page application seam.
+#[derive(Debug)]
+pub(crate) enum SearchPageError {
+    Local(QueryError),
+    Projection(backend_library::LibraryError),
+}
+
+impl std::fmt::Display for SearchPageError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local(error) => error.fmt(formatter),
+            Self::Projection(error) => error.fmt(formatter),
+        }
+    }
+}
+
+/// Projects the exact product route after the owner selects its immutable
+/// corpus. Optional semantic work and library cursor authority stay intact.
+pub(crate) fn search_page(
+    coordinator: &QueryCoordinator,
+    library: &backend_library::Library,
+    remote: &mut RemoteSemantic,
+    coverage: backend_version::CoverageWitness,
+    query: &backend_engine::Query,
+) -> Result<
+    (
+        backend_engine::ViewSnapshot,
+        backend_library::SemanticSearchStatus,
+    ),
+    SearchPageError,
+> {
+    let local = coordinator
+        .search_local_page(query)
+        .map_err(SearchPageError::Local)?;
+    let reconciliation_failed = remote.reconcile(coordinator, coverage).is_err();
+    let (result, status) = remote.search_with_status(
+        coordinator,
+        coverage,
+        local,
+        query.text(),
+        reconciliation_failed,
+    );
+    let ranked_ids = result
+        .rows
+        .iter()
+        .map(|ranked| ranked.row.id)
+        .collect::<Vec<_>>();
+    let page = library
+        .search_from_ranked_ids(query, &ranked_ids)
+        .map_err(SearchPageError::Projection)?;
+    Ok((page, status))
+}
+
 /// Times admitting a typed search corpus against reusing the resident one.
 pub(super) fn measure_search_corpus() {
     local::measure_search_corpus();

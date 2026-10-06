@@ -75,6 +75,20 @@ fn semantic_evidence_marked(
     view: &backend_engine::ViewRoot,
     marker: [u8; 32],
 ) -> backend_extension_trustfall::SemanticQueryCorpus {
+    semantic_evidence_marked_with_limits(
+        workspace,
+        view,
+        marker,
+        backend_extension_trustfall::Limits::default(),
+    )
+}
+
+fn semantic_evidence_marked_with_limits(
+    workspace: backend_engine::WorkspaceRoot,
+    view: &backend_engine::ViewRoot,
+    marker: [u8; 32],
+    limits: backend_extension_trustfall::Limits,
+) -> backend_extension_trustfall::SemanticQueryCorpus {
     let package = backend_engine::package_key("pkg");
     let project = RowId::Package(package).stable_key();
     let profile = backend_semantic::vocabulary::LanguageProfile::Rust(
@@ -124,7 +138,7 @@ fn semantic_evidence_marked(
             )
         })
         .collect();
-    backend_extension_trustfall::SemanticQueryCorpus::admit(workspace, facts)
+    backend_extension_trustfall::SemanticQueryCorpus::admit_with_limits(workspace, facts, limits)
         .expect("typed semantic evidence")
 }
 
@@ -247,6 +261,12 @@ fn query_tokenization_matches_document_unicode_whitespace() {
 fn punctuation_query_matches_components_from_an_indexed_source_path() {
     let path = "/Users/example/projects/real-rust-canary";
     let (workspace, view) = selected_view_with_first_label(path);
+    let all_symbol_ids = view
+        .rows()
+        .iter()
+        .filter(|row| matches!(row.id, RowId::Symbol(_)))
+        .map(|row| row.id)
+        .collect::<std::collections::BTreeSet<_>>();
     let evidence = semantic_evidence(workspace, &view);
     let capability = view.capability().expect("view capability");
     let coordinator = QueryCoordinator::new(
@@ -257,10 +277,11 @@ fn punctuation_query_matches_components_from_an_indexed_source_path() {
         evidence,
     )
     .expect("coordinator");
-    for (text, terms) in [
-        ("real-rust-canary", vec!["canary", "real", "rust"]),
-        ("rea-rus-can", vec!["can", "rea", "rus"]),
-        ("can", vec!["can"]),
+    for (text, terms, expected_matches) in [
+        ("real-rust-canary", vec!["canary", "real", "rust"], 1),
+        ("rea-rus-can", vec!["can", "rea", "rus"], 1),
+        // Every symbol's admitted documentation also contains "candidate".
+        ("can", vec!["can"], 3),
     ] {
         let query = LocalQuery::prefix(text, 4).expect("query");
         assert_eq!(
@@ -274,8 +295,25 @@ fn punctuation_query_matches_components_from_an_indexed_source_path() {
             "normalized query {text:?}"
         );
         let answer = coordinator.search_local(query).expect("local search");
-        assert_eq!(answer.total_matches, 1, "query {text:?}");
-        assert_eq!(answer.rows[0].row.label, path, "query {text:?}");
+        assert_eq!(answer.total_matches, expected_matches, "query {text:?}");
+        if text == "can" {
+            assert_eq!(
+                answer
+                    .rows
+                    .iter()
+                    .map(|ranked| ranked.row.id)
+                    .collect::<std::collections::BTreeSet<_>>(),
+                all_symbol_ids
+            );
+        }
+        if text == "can" {
+            assert!(
+                answer.rows.iter().any(|ranked| ranked.row.label == path),
+                "the source-path match remains present among documentation matches"
+            );
+        } else {
+            assert_eq!(answer.rows[0].row.label, path, "query {text:?}");
+        }
     }
 }
 
@@ -313,6 +351,302 @@ fn search_snapshot_owner_reuses_the_exact_published_selection() {
             .corpus,
     );
     assert_eq!(first, second);
+}
+
+#[test]
+fn one_result_search_page_keeps_a_continuation_when_more_local_matches_exist() {
+    let (workspace, view) = selected_view();
+    let capability = view.capability().expect("view capability");
+    let coordinator = QueryCoordinator::new(
+        workspace,
+        view.clone(),
+        capability,
+        crate::builtin::admitted_coverage().expect("coverage"),
+        semantic_evidence(workspace, &view),
+    )
+    .expect("coordinator");
+    let library = backend_library::Library::from_view(
+        view.clone(),
+        backend_library::Cursor::for_view_root(&view),
+    )
+    .expect("selected search library");
+    let request = backend_engine::Query::new(
+        "alpha",
+        view.root(),
+        backend_engine::QueryLimit::new(1).expect("one-row page"),
+    );
+
+    let (page, status) = search_page(
+        &coordinator,
+        &library,
+        &mut RemoteSemantic::Unconfigured,
+        crate::builtin::admitted_coverage().expect("coverage"),
+        &request,
+    )
+    .expect("product search page");
+    assert!(matches!(
+        status,
+        backend_library::SemanticSearchStatus::Unavailable { .. }
+    ));
+
+    assert!(
+        page.next.is_some(),
+        "a one-row page over two real matches must advertise its continuation"
+    );
+}
+
+fn selected_search_route(
+    workspace: backend_engine::WorkspaceRoot,
+    view: backend_engine::ViewRoot,
+) -> (QueryCoordinator, backend_library::Library) {
+    let coordinator = QueryCoordinator::new(
+        workspace,
+        view.clone(),
+        view.capability().expect("capability"),
+        crate::builtin::admitted_coverage().expect("coverage"),
+        semantic_evidence(workspace, &view),
+    )
+    .expect("coordinator");
+    let library = backend_library::Library::from_view(
+        view.clone(),
+        backend_library::Cursor::for_view_root(&view),
+    )
+    .expect("library");
+    (coordinator, library)
+}
+
+fn route_search_page(
+    coordinator: &QueryCoordinator,
+    library: &backend_library::Library,
+    request: &backend_engine::Query,
+) -> Result<backend_engine::ViewSnapshot, SearchPageError> {
+    search_page(
+        coordinator,
+        library,
+        &mut RemoteSemantic::Unconfigured,
+        crate::builtin::admitted_coverage().expect("coverage"),
+        request,
+    )
+    .map(|(page, _)| page)
+}
+
+fn ranked_page_ids(page: &backend_engine::ViewSnapshot) -> Vec<RowId> {
+    let mut rows = page.root.rows().to_vec();
+    rows.sort_by_key(|row| std::cmp::Reverse(row.score));
+    rows.into_iter().map(|row| row.id).collect()
+}
+
+#[test]
+fn search_page_continuation_uses_stable_scores_and_rejects_changed_inputs() {
+    let (workspace, view) = selected_view();
+    let (coordinator, library) = selected_search_route(workspace, view.clone());
+    let query = backend_engine::Query::new(
+        "alpha",
+        view.root(),
+        backend_engine::QueryLimit::new(1).expect("limit"),
+    );
+    let first = route_search_page(&coordinator, &library, &query).expect("first");
+    let cursor = first.next.expect("continuation");
+    let continuation = query.clone().with_cursor(cursor);
+    // Fresh coordinator/library reconstruction must reproduce the scored
+    // predecessor exactly, without relying on a resident page result.
+    let (cold, reopened) = selected_search_route(workspace, view.clone());
+    let second = route_search_page(&cold, &reopened, &continuation).expect("cold continuation");
+    assert!(second.next.is_none());
+    assert_ne!(ranked_page_ids(&first), ranked_page_ids(&second));
+    let full = route_search_page(
+        &coordinator,
+        &library,
+        &backend_engine::Query::new(
+            "alpha",
+            view.root(),
+            backend_engine::QueryLimit::new(2).expect("limit"),
+        ),
+    )
+    .expect("full");
+    assert_eq!(
+        first.root.rows()[0].score,
+        full.root
+            .row(first.root.rows()[0].id)
+            .expect("first ranked row")
+            .score
+    );
+    assert_eq!(
+        [ranked_page_ids(&first), ranked_page_ids(&second)].concat(),
+        ranked_page_ids(&full)
+    );
+    let changed_text =
+        backend_engine::Query::new("alph", view.root(), query.limit()).with_cursor(cursor);
+    assert!(matches!(
+        route_search_page(&coordinator, &library, &changed_text),
+        Err(SearchPageError::Projection(
+            backend_library::LibraryError::CursorMismatch
+        ))
+    ));
+    let changed_limit = backend_engine::Query::new(
+        "alpha",
+        view.root(),
+        backend_engine::QueryLimit::new(2).expect("limit"),
+    )
+    .with_cursor(cursor);
+    assert!(matches!(
+        route_search_page(&coordinator, &library, &changed_limit),
+        Err(SearchPageError::Projection(
+            backend_library::LibraryError::CursorMismatch
+        ))
+    ));
+    let mut reversed = ranked_page_ids(&full);
+    reversed.reverse();
+    assert!(matches!(
+        library.search_from_ranked_ids(&continuation, &reversed),
+        Err(backend_library::LibraryError::CursorMismatch)
+    ));
+    let (_, changed_view) = selected_view_with_first_label("alpha edited");
+    let (changed, changed_library) = selected_search_route(workspace, changed_view);
+    assert!(matches!(
+        route_search_page(&changed, &changed_library, &continuation),
+        Err(SearchPageError::Local(QueryError::StaleViewBinding))
+    ));
+    let mut envelope = cursor.encode_query().to_vec();
+    envelope[backend_library::CURSOR_CONTROL_BYTES..].copy_from_slice(&u64::MAX.to_be_bytes());
+    let oversized = backend_library::Cursor::decode_query_against(&envelope, cursor)
+        .expect("typed oversized cursor");
+    assert!(matches!(
+        route_search_page(&coordinator, &library, &query.with_cursor(oversized)),
+        Err(SearchPageError::Local(QueryError::InvalidCursor))
+    ));
+}
+
+#[test]
+fn search_page_enumerates_multiple_200_row_pages_beyond_4096_with_tied_names() {
+    const MATCHES: usize = 4_205;
+    let (workspace, base) = selected_view();
+    let package = backend_engine::package_key("pkg");
+    let mut rows = vec![Row::new(RowId::Package(package), base.basis(), "pkg")];
+    for at in 0..MATCHES {
+        rows.push(
+            Row::in_package(
+                RowId::Symbol(backend_engine::symbol_key(&format!("alpha::{at}"))),
+                base.basis(),
+                package,
+                "alpha",
+            )
+            .with_signature("fn alpha()"),
+        );
+    }
+    let view = backend_engine::ViewRoot::new_checked(
+        base.recipe(),
+        base.basis(),
+        base.frontier(),
+        rows,
+        vec![ViewCoverage::Complete],
+        base.capability().expect("capability"),
+    )
+    .expect("tied-name selected view");
+    // Admit this fixture under its exact bounded cardinality, as the product
+    // does for corpora larger than Trustfall's standalone default 4096 rows.
+    let evidence = semantic_evidence_marked_with_limits(
+        workspace,
+        &view,
+        [7; 32],
+        backend_extension_trustfall::Limits {
+            max_rows: MATCHES + 1,
+            ..backend_extension_trustfall::Limits::default()
+        },
+    );
+    let coordinator = QueryCoordinator::new(
+        workspace,
+        view.clone(),
+        view.capability().expect("capability"),
+        crate::builtin::admitted_coverage().expect("coverage"),
+        evidence,
+    )
+    .expect("large bounded coordinator");
+    let library = backend_library::Library::from_view(
+        view.clone(),
+        backend_library::Cursor::for_view_root(&view),
+    )
+    .expect("large library");
+    let original = backend_engine::Query::new(
+        "alpha",
+        view.root(),
+        backend_engine::QueryLimit::new(200).expect("limit"),
+    );
+    let mut query = original.clone();
+    let mut ids = Vec::new();
+    let mut pages = 0;
+    loop {
+        if matches!(ids.len(), 0 | 200 | 4_000) {
+            let prefix = coordinator
+                .search_local_page(&query)
+                .expect("bounded retained prefix");
+            assert_eq!(prefix.rows.len(), (ids.len() + 201).min(MATCHES));
+            assert_eq!(prefix.total_matches, MATCHES);
+        }
+        let page = route_search_page(&coordinator, &library, &query).expect("bounded page");
+        let page_ids = ranked_page_ids(&page);
+        assert_eq!(page_ids.len(), (MATCHES - ids.len()).min(200));
+        for row in page.root.rows() {
+            let score = row.score.expect("stable ordinal score");
+            assert!((u32::MAX - score) as usize >= ids.len());
+        }
+        ids.extend(page_ids);
+        pages += 1;
+        match page.next {
+            Some(next) => {
+                assert_eq!(next.query_offset(), ids.len() as u64);
+                query = original.clone().with_cursor(next);
+            }
+            None => break,
+        }
+    }
+    assert_eq!(pages, 22);
+    assert_eq!(ids.len(), MATCHES);
+    assert_eq!(
+        ids.iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        MATCHES
+    );
+    // Repeated names and equal relevance have a deterministic identity tie
+    // breaker, which must survive both the 256 and 4096 positions.
+    // The set equality above proves no drops/duplicates; a repeated full walk
+    // additionally proves the stable ordering, independent of resident pages.
+    let mut replay = Vec::new();
+    let mut query = original.clone();
+    loop {
+        let page = route_search_page(&coordinator, &library, &query).expect("replay page");
+        replay.extend(ranked_page_ids(&page));
+        let Some(next) = page.next else { break };
+        query = original.clone().with_cursor(next);
+    }
+    assert_eq!(replay, ids);
+}
+
+#[test]
+fn search_page_prefix_budget_and_overflow_are_explicit_refusals() {
+    use super::local::rank_prefix_limit;
+    assert_eq!(
+        rank_prefix_limit(200, 200, 4_206).expect("second page"),
+        401
+    );
+    assert_eq!(
+        rank_prefix_limit(4_000, 200, 4_206).expect("beyond 4096"),
+        4_201
+    );
+    assert!(matches!(
+        rank_prefix_limit(usize::MAX - 1, 200, usize::MAX),
+        Err(QueryError::InvalidCursor)
+    ));
+    let maximum = backend_extension_tantivy::RankSnapshotBudget::default().max_retained_bytes()
+        / size_of::<(
+            backend_semantic::EntityId,
+            backend_extension_tantivy::Relevance,
+        )>();
+    assert!(matches!(rank_prefix_limit(maximum, 1, maximum + 10),
+        Err(QueryError::RankPrefixBudgetExceeded { requested, maximum: admitted })
+        if requested == maximum + 2 && admitted == maximum));
 }
 
 #[test]
@@ -993,6 +1327,55 @@ fn semantic_lane_only_reorders_local_matches_and_suppresses_unknown_ids() {
             ..
         }
     ));
+
+    // The same admitted semantic candidates must keep their ordering when
+    // the product's retained lexical prefix grows on each continuation.
+    let (_, page_view) = selected_view();
+    let library = backend_library::Library::from_view(
+        page_view.clone(),
+        backend_library::Cursor::for_view_root(&page_view),
+    )
+    .expect("semantic paging library");
+    let first_request = backend_engine::Query::new(
+        "alpha",
+        page_view.root(),
+        backend_engine::QueryLimit::new(1).expect("semantic page limit"),
+    );
+    let mut request = first_request.clone();
+    let mut paged_ids = Vec::new();
+    for at in 0..3 {
+        let local_page = coordinator
+            .search_local_page(&request)
+            .expect("semantic local prefix");
+        let result = local_page.accelerate(SemanticAcceleration {
+            index: &index,
+            query: &query,
+        });
+        let ranked_ids = result
+            .rows
+            .iter()
+            .map(|ranked| ranked.row.id)
+            .collect::<Vec<_>>();
+        let page = library
+            .search_from_ranked_ids(&request, &ranked_ids)
+            .expect("semantic continuation");
+        paged_ids.extend(ranked_page_ids(&page));
+        if at < 2 {
+            request = first_request
+                .clone()
+                .with_cursor(page.next.expect("semantic successor"));
+        } else {
+            assert!(page.next.is_none());
+        }
+    }
+    assert_eq!(
+        paged_ids,
+        augmented
+            .rows
+            .iter()
+            .map(|ranked| ranked.row.id)
+            .collect::<Vec<_>>()
+    );
 
     let offline =
         semantic::VectorIndex::new(index.base().clone(), index.facts().clone(), OfflineSource)

@@ -42,7 +42,7 @@ impl LocalAnswer {
         S: semantic::AnnSource,
         S::Error: fmt::Display,
     {
-        let max_additions = self.query.limit();
+        let max_additions = self.query.semantic_limit();
         self.accelerate_with(
             CompositionPolicy::AugmentCanonical { max_additions },
             acceleration,
@@ -127,7 +127,7 @@ fn refill_limit(answer: &LocalAnswer, policy: CompositionPolicy) -> usize {
         CompositionPolicy::RerankLexical => 0,
         CompositionPolicy::AugmentCanonical { max_additions } => max_additions,
     };
-    let desired = answer.query.limit().saturating_add(additions);
+    let desired = answer.query.semantic_limit().saturating_add(additions);
     desired
         .saturating_mul(4)
         .max(desired)

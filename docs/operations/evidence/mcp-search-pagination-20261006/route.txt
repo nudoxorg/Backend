@@ -1,0 +1,29 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 3m 22s
+     Running unittests src/lib.rs (.local/build/qa/.nudox-cargo/slot-0/debug/deps/backend_local_service-1bcd4b2c9ddd98cd)
+
+running 21 tests
+test builtin::query::tests::a_package_is_named_by_its_folder_less_the_version_a_registry_tree_carries ... ok
+test builtin::query::tests::punctuation_only_query_does_not_degrade_to_match_all ... ok
+test builtin::query::tests::admit_corpus_retries_after_a_failed_build_and_skips_prepare_once_resident ... locald search: the view and its search evidence disagree (1 rows without evidence, 1 evidence without a row); those are left out of search
+ok
+test builtin::query::tests::evidence_only_refresh_rebinds_the_resident_lexical_index ... ok
+test builtin::query::tests::rows_and_evidence_that_do_not_pair_are_left_out_and_said_not_fatal ... ok
+test builtin::query::tests::local_search_excludes_only_the_synthetic_result_slot ... ok
+test builtin::query::tests::qualified_owner_search_finds_the_named_method ... ok
+test builtin::query::tests::punctuation_query_matches_components_from_an_indexed_source_path ... ok
+test builtin::query::tests::search_page_prefix_budget_and_overflow_are_explicit_refusals ... ok
+test builtin::query::tests::query_tokenization_matches_document_unicode_whitespace ... ok
+test builtin::query::tests::the_words_place_the_declaration_they_name_in_the_package_they_name_first ... ok
+test builtin::query::tests::one_result_search_page_keeps_a_continuation_when_more_local_matches_exist ... ok
+test builtin::query::tests::semantic_candidate_identity_is_scoped_to_the_immutable_view ... ok
+test builtin::query::tests::shared_corpus_builds_once_and_survives_a_failed_rebuild ... ok
+test builtin::query::tests::local_answer_is_complete_and_ranked_before_optional_work ... ok
+test builtin::query::tests::one_renamed_symbol_rewrites_only_that_lexical_document ... ok
+test builtin::query::tests::search_selection_refuses_a_view_from_the_previous_workspace_frontier ... ok
+test builtin::query::tests::search_snapshot_owner_reuses_the_exact_published_selection ... ok
+test builtin::query::tests::semantic_lane_only_reorders_local_matches_and_suppresses_unknown_ids ... ok
+test builtin::query::tests::search_page_continuation_uses_stable_scores_and_rejects_changed_inputs ... ok
+test builtin::query::tests::search_page_enumerates_multiple_200_row_pages_beyond_4096_with_tied_names ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 977 filtered out; finished in 1.43s
+
