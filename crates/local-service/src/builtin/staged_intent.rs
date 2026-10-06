@@ -214,7 +214,11 @@ impl StagePool {
             }
             if selected
                 .as_ref()
-                .map(|index| index.contains_object_id(ObjectId::from_bytes(raw_id)))
+                .map(|index| {
+                    index
+                        .admit_claim(UntrustedObjectId::from_bytes(raw_id))
+                        .map(|admitted| admitted.is_some())
+                })
                 .transpose()?
                 .unwrap_or(false)
             {
