@@ -15,9 +15,9 @@ use backend_version::ObjectDomain;
 use crate::publication::manifest::{CanonicalSemanticCompilation, CompilationManifestView};
 
 use super::{
-    GenerationBuildError, MANIFEST_ENTRY_KEY, fragment_object, insert, manifest_object,
-    next_fragment_bytes, next_object, next_semantic_image_bytes, push, semantic_image_object,
-    store_capacity, verify_generation,
+    GenerationBuildError, MANIFEST_ENTRY_KEY, fragment_object, insert_contextual_object as insert,
+    manifest_object, next_fragment_bytes, next_object, next_semantic_image_bytes, push,
+    semantic_image_object, store_capacity, verify_generation,
 };
 
 /// Runs a continuation while holding a complete-generation witness over each
