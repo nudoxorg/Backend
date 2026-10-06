@@ -2966,25 +2966,36 @@ fn classify_inactive_projection(
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let name = entry.file_name().into_string().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "invalid inactive projection filename")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid inactive projection filename",
+            )
         })?;
         if is_volatile_projection_file(&name) {
             continue;
         }
         if !is_projection_file_name(&name) || actual.len() >= MAX_PROJECTION_FILES {
-            return Err(io::Error::new(io::ErrorKind::InvalidData,
-                "inactive projection contains foreign or excessive entries").into());
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "inactive projection contains foreign or excessive entries",
+            )
+            .into());
         }
         let metadata = fs::symlink_metadata(entry.path())?;
         if !metadata.file_type().is_file() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData,
-                "inactive projection contains a non-regular entry").into());
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "inactive projection contains a non-regular entry",
+            )
+            .into());
         }
         actual.insert(name, metadata.len());
     }
-    if actual.len() != expected.len() || expected.iter().any(|(name, (size, _))| {
-        actual.get(name) != Some(size)
-    }) {
+    if actual.len() != expected.len()
+        || expected
+            .iter()
+            .any(|(name, (size, _))| actual.get(name) != Some(size))
+    {
         return Err(TantivySourceError::Corrupt(
             "inactive projection file sizes do not match their integrity manifest",
         ));
@@ -3493,8 +3504,11 @@ fn prune_durable_roots_entries(
         }
         let metadata = fs::symlink_metadata(entry.path())?;
         if !metadata.file_type().is_dir() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData,
-                "durable root name refers to a foreign file or link").into());
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "durable root name refers to a foreign file or link",
+            )
+            .into());
         }
         // A typed name alone is not ownership. Admit the private directory and
         // recognized regular-file layout before considering any cleanup.
@@ -3514,17 +3528,29 @@ fn prune_durable_roots_entries(
             });
             continue;
         }
+        // Prove this exact content name belongs to our projection before a
+        // potentially creating lease open can mutate its directory.
+        let binding = read_binding_stamp(&entry.path())?;
+        if hex_fingerprint(binding) != name {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "inactive durable root name does not match its binding",
+            )
+            .into());
+        }
+        directory.verify_path(&entry.path())?;
         let lease = open_root_lease(&entry.path())?;
         match lease.try_lock() {
             Ok(()) => {
-                // The binding marker proves this is our projection for this
-                // exact content name. Hold its exclusive lease throughout
-                // validation and cleanup; foreign names and real I/O remain
-                // terminal rather than being recast as corruption.
-                let binding = read_binding_stamp(&entry.path())?;
-                if hex_fingerprint(binding) != name {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData,
-                        "inactive durable root name does not match its binding").into());
+                // Re-admit the held directory and binding under the exclusive
+                // lease before classifying or removing the owned projection.
+                directory.verify_path(&entry.path())?;
+                if read_binding_stamp(&entry.path())? != binding {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "inactive durable root binding changed after lease acquisition",
+                    )
+                    .into());
                 }
                 match classify_inactive_projection(&entry.path(), binding) {
                     Err(error) if is_definitively_corrupt_root(&error) => {
@@ -3610,10 +3636,7 @@ fn open_root_lease(root: &Path) -> Result<File, io::Error> {
     )
 }
 
-fn durable_root_last_used(
-    root: &Path,
-    fallback: std::time::SystemTime,
-) -> Result<u128, io::Error> {
+fn durable_root_last_used(root: &Path, fallback: std::time::SystemTime) -> Result<u128, io::Error> {
     // Recency is advisory eviction metadata, outside the authenticated
     // projection. An interrupted stamp update must not poison a different,
     // valid selected root. File admission and all other I/O failures remain
