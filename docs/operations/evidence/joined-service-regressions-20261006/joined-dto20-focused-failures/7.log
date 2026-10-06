@@ -1,0 +1,15 @@
+
+running 1 test
+
+thread 'builtin::owner_fairness_tests::queued_daemon_query_and_lease_expiry_progress_under_sustained_remote_admission' (14947098) panicked at crates/local-service/src/builtin.rs:2482:10:
+open retained test lease: InvalidControl("durable subscriptions require prepared response encoding")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test builtin::owner_fairness_tests::queued_daemon_query_and_lease_expiry_progress_under_sustained_remote_admission ... FAILED
+
+failures:
+
+failures:
+    builtin::owner_fairness_tests::queued_daemon_query_and_lease_expiry_progress_under_sustained_remote_admission
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 0.12s
+

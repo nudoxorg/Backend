@@ -1,0 +1,15 @@
+
+running 1 test
+
+thread 'builtin::ingest::tests::reused_scan_drops_compiler_text_until_a_sibling_edit' (14918695) panicked at crates/local-service/src/builtin/ingest.rs:3334:9:
+assertion failed: cold_retained < edited_v1.len() + kept.len()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test builtin::ingest::tests::reused_scan_drops_compiler_text_until_a_sibling_edit ... FAILED
+
+failures:
+
+failures:
+    builtin::ingest::tests::reused_scan_drops_compiler_text_until_a_sibling_edit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 0.13s
+

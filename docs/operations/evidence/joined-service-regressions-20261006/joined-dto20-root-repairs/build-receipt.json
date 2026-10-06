@@ -1,0 +1,47 @@
+{
+  "source": "a3f20e27b20cb597e57fc3bdeb4879d00b3b5ba9",
+  "tree": "87eb44e0dcbc1e2c20c1c70f639a17a0717f4b4d",
+  "source_after": "a3f20e27b20cb597e57fc3bdeb4879d00b3b5ba9",
+  "dirty_after": "",
+  "args": [
+    "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/run-cargo",
+    "qa",
+    "test",
+    "-p",
+    "backend-local-service",
+    "--lib",
+    "--no-run",
+    "--locked",
+    "--offline"
+  ],
+  "exit": 101,
+  "stop": null,
+  "elapsed": 18.07,
+  "log_sha256": "970a1fa77280a56cd8d28046fa3f6ab9ae3ae6dccaa3b471378c1c6c6d00672c",
+  "samples": [
+    {
+      "elapsed": 0.0,
+      "free": 25093332992
+    },
+    {
+      "elapsed": 3.01,
+      "free": 25112031232
+    },
+    {
+      "elapsed": 6.01,
+      "free": 25101058048
+    },
+    {
+      "elapsed": 9.01,
+      "free": 24979431424
+    },
+    {
+      "elapsed": 12.02,
+      "free": 24954945536
+    },
+    {
+      "elapsed": 15.02,
+      "free": 24943460352
+    }
+  ]
+}

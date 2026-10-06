@@ -1,0 +1,42 @@
+{
+  "source": "6fd5cbac334e5f84e6c7b60013e9de25076293a6",
+  "source_after": "6fd5cbac334e5f84e6c7b60013e9de25076293a6",
+  "binary_sha256": "9bdb48a4c827b92be7a8d32d3a0a7f8d7a4d1e37b529ac33178fc03a434ad962",
+  "results": [
+    {
+      "filter": "builtin::commands::semantic_shapes::tests::image_atom_projection_preserves_empty_space_nul_unicode_and_padding",
+      "exit": 0,
+      "stop": null,
+      "elapsed": 1.521,
+      "log_sha256": "a1468a80eb864ce69e1608e5bb88bfdcf21f77246bce4f1d2a1521ed14d44e89"
+    },
+    {
+      "filter": "builtin::commands::semantic_shapes::tests::owned_callable_binding_is_captured_empty_but_nested_function_is_unavailable",
+      "exit": 0,
+      "stop": null,
+      "elapsed": 0.514,
+      "log_sha256": "14632e3105ae05dc6db94321e53dfa2c1603a3cffb88a12f217f8938454a7d1b"
+    },
+    {
+      "filter": "builtin::projection::tests::shape_row_certificate_carries_only_direct_shape_and_package_identities",
+      "exit": 0,
+      "stop": null,
+      "elapsed": 0.515,
+      "log_sha256": "11a21b408477c946a0a86dd246c75bbc761da97be45bb68254717324f57a8bb3"
+    },
+    {
+      "filter": "builtin::semantic_authority::tests::freshness_key_rejects_immutable_generation_rows",
+      "exit": 0,
+      "stop": null,
+      "elapsed": 0.512,
+      "log_sha256": "fc615b98058cc476feb6cd4cd4daf3ae3ea9afaa3fa85de3e579380133a3bbfa"
+    },
+    {
+      "filter": "builtin::registry::tests::failed_advisory_refresh_cold_reopen_keeps_findings_and_marks_unavailable",
+      "exit": 0,
+      "stop": null,
+      "elapsed": 2.024,
+      "log_sha256": "04eca1abb6afd74415c0d28475e33e949de1dec9734f64faa4f96fceed734b4b"
+    }
+  ]
+}
