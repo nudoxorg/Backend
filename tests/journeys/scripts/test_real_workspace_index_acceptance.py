@@ -1406,5 +1406,95 @@ class BoundedProcessTests(unittest.TestCase):
             self.assertEqual(marker.read_text(encoding="ascii"), "retired")
 
 
+class GoRegistryArtifactOriginTests(unittest.TestCase):
+    def fixture(self, root: Path) -> tuple:
+        from registry_artifact_origin import go_hash1
+        import zipfile
+        source = root / "source"
+        (source / "pkg").mkdir(parents=True)
+        package = {"ecosystem": "go", "id": "example.org/module", "version": "v1.2.3"}
+        contents = {"go.mod": b"module example.org/module\n\ngo 1.20\n", "pkg/main.go": b"package pkg\nfunc NewRoute() {}\n"}
+        files = [{"path": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()} for name, data in sorted(contents.items())]
+        for name, data in contents.items():
+            (source / name).write_bytes(data)
+        def bind(name, value):
+            data = value if isinstance(value, bytes) else runner.canonical_json(value)
+            path = root / name
+            path.write_bytes(data)
+            return {"path": str(path), "sha256": hashlib.sha256(data).hexdigest()}
+        prefix = package["id"] + "@" + package["version"] + "/"
+        archive_stream = io.BytesIO()
+        with zipfile.ZipFile(archive_stream, "w") as archive:
+            for name, data in contents.items():
+                archive.writestr(prefix + name, data)
+        info = bind("info.json", {"Version": package["version"]})
+        archive = bind("module.zip", archive_stream.getvalue())
+        mod = bind("module.mod", contents["go.mod"])
+        archive_sum = go_hash1(files, prefix)
+        mod_sum = go_hash1([{"path": "go.mod", "sha256": hashlib.sha256(contents["go.mod"]).hexdigest()}])
+        lookup = bind("sumdb.txt", ("1\nexample.org/module v1.2.3 " + archive_sum + "\nexample.org/module v1.2.3/go.mod " + mod_sum + "\n\n— sum.golang.org retained-signature\n").encode())
+        download = bind("download.json", {"Path": package["id"], "Version": package["version"],
+            "Sum": archive_sum, "GoModSum": mod_sum, "Info": info["path"], "Zip": archive["path"], "GoMod": mod["path"]})
+        executable = bind("go", b"unit-test executable witness; no runtime proof")
+        snapshot = bind("snapshot.json", {})
+        process = {"schema": "nudox.go-module-download-process.v1", "request": {
+            "registry_request_path": package["id"], "resolved_version": package["version"], "query": "latest"},
+            "executable": {**executable, "snapshot_path": snapshot["path"], "snapshot_sha256": snapshot["sha256"]},
+            "argv": [executable["path"], "mod", "download", "-json", package["id"] + "@latest"],
+            "environment": {"GOPROXY": "https://proxy.golang.org", "GOSUMDB": "sum.golang.org"},
+            "exit_code": 0, "stdout": download, "stderr": bind("stderr", b""),
+            "timeout_pid_file": bind("pid", b"123\n"), "acquisition_status": bind("status", b"status=downloaded\n"),
+            "driver_files": [bind("driver.sh", b"original acquisition driver")], "proxy_artifacts": {
+                "go_mod": mod, "sumdb_lookup": lookup, "info": info, "zip": archive,
+                "ziphash": bind("ziphash", archive_sum.encode()), "sum": archive_sum, "go_mod_sum": mod_sum}}
+        listing = {"ImportPath": "example.org/module/pkg", "Dir": str(source / "pkg"),
+                   "Module": {"Path": package["id"], "Dir": str(source), "GoMod": str(source / "go.mod"), "Main": True}}
+        receipt = {"schema": "nudox.registry-artifact-origin.v1", "package": package,
+            "registry_metadata": {**info, "url": "https://proxy.golang.org/example.org/module/@v/v1.2.3.info"},
+            "archive": {**archive, "url": "https://proxy.golang.org/example.org/module/@v/v1.2.3.zip"},
+            "unpack": {"strip_prefix": prefix}, "module": {"go_mod": mod, "sumdb_lookup": lookup,
+                "download": download, "process": bind("process.json", process), "go_list": bind("go-list.json", listing)}}
+        binding = bind("origin.json", receipt)
+        return package, files, {"receipt_path": binding["path"], "receipt_sha256": binding["sha256"]}, receipt, source, process, listing
+
+    def test_go_original_authenticated_acquisition_and_target_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            package, files, binding, receipt, source, process, listing = self.fixture(Path(directory).resolve())
+            def verify():
+                return runner.verify_registry_origin(binding, package, files, runner.Deadline(1),
+                    source_root=source, target_root=source / "pkg", target_subdir="pkg")
+            proof = verify()
+            self.assertEqual(proof["target_package"]["id"], "example.org/module/pkg")
+            self.assertIn("no independent Python signature verification", proof["origin_evidence"]["authentication_source"])
+            for value in ("example.org/counterfeit/pkg", "example.org/module/other"):
+                listing["ImportPath"] = value
+                path = Path(receipt["module"]["go_list"]["path"])
+                path.write_bytes(runner.canonical_json(listing))
+                receipt["module"]["go_list"]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                path = Path(binding["receipt_path"])
+                path.write_bytes(runner.canonical_json(receipt))
+                binding["receipt_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                with self.assertRaisesRegex(runner.AcceptanceError, "actual runtime package"):
+                    verify()
+
+    def test_go_content_sum_and_original_process_cannot_be_relabelled(self) -> None:
+        for mutation in ("sum", "version", "argv", "sumdb", "module"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                package, files, binding, receipt, source, process, listing = self.fixture(Path(directory).resolve())
+                if mutation in {"sum", "version"}:
+                    path = Path(receipt["module"]["download"]["path"])
+                    data = json.loads(path.read_bytes());data["Sum" if mutation == "sum" else "Version"] = "counterfeit"
+                    path.write_bytes(runner.canonical_json(data));receipt["module"]["download"]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                elif mutation in {"argv", "sumdb"}:
+                    if mutation == "argv":process["argv"][-1] = "example.org/module@v2.0.0"
+                    else:process["environment"]["GOSUMDB"] = "off"
+                    path = Path(receipt["module"]["process"]["path"]);path.write_bytes(runner.canonical_json(process));receipt["module"]["process"]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                else:
+                    path = Path(receipt["module"]["go_mod"]["path"]);path.write_bytes(b"module counterfeit.org/module\n");receipt["module"]["go_mod"]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                path = Path(binding["receipt_path"]);path.write_bytes(runner.canonical_json(receipt));binding["receipt_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                with self.assertRaises(runner.AcceptanceError):
+                    runner.verify_registry_origin(binding, package, files, runner.Deadline(1), source_root=source, target_root=source / "pkg", target_subdir="pkg")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

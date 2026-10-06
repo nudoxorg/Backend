@@ -36,6 +36,85 @@ def normalized_pypi(value):
     return re.sub(r"[-_.]+", "-", value).lower() if isinstance(value, str) else None
 
 
+def escaped_go_module(value):
+    return "".join("!" + character.lower() if character.isupper() else character for character in value)
+
+
+def go_hash1(files, prefix=""):
+    # Go x/mod/sumdb/dirhash.Hash1 hashes sorted content-digest/name lines.
+    if any("\n" in prefix + row["path"] for row in files):
+        raise OriginError("Go content sum filenames cannot contain newlines")
+    payload = "".join(row["sha256"] + "  " + prefix + row["path"] + "\n"
+                      for row in sorted(files, key=lambda row: prefix + row["path"]))
+    return "h1:" + base64.b64encode(hashlib.sha256(payload.encode()).digest()).decode()
+
+
+def verify_go_origin(package, receipt, metadata, members, special, read_artifact, decode_json):
+    module = receipt.get("module")
+    if not isinstance(module, dict) or set(module) != {"go_mod", "sumdb_lookup", "download", "process", "go_list"}:
+        raise OriginError("Go origin lacks its closed module acquisition evidence")
+    payload = {key: read_artifact(value) for key, value in module.items()}
+    name, version = package["id"], package["version"]
+    escaped = escaped_go_module(name)
+    prefix = name + "@" + version + "/"
+    official_url(receipt["registry_metadata"]["url"], "proxy.golang.org", f"/{escaped}/@v/{version}.info")
+    official_url(receipt["archive"]["url"], "proxy.golang.org", f"/{escaped}/@v/{version}.zip")
+    if metadata.get("Version") != version or receipt["unpack"]["strip_prefix"] != prefix:
+        raise OriginError("Go proxy version or archive prefix differs from the module pin")
+    if special.get("go.mod") != payload["go_mod"]:
+        raise OriginError("Go proxy module declaration differs from the actual archive")
+    declaration = re.search(rb"(?m)^module[ \t]+([^\s]+)[ \t]*(?://[^\n]*)?$", payload["go_mod"])
+    if declaration is None or declaration[1].decode() != name:
+        raise OriginError("Go requested module differs from the archived module declaration; aliases are unsupported")
+    download = decode_json(payload["download"], "original Go download output")
+    process = decode_json(payload["process"], "original Go download process witness")
+    if not isinstance(download, dict) or not isinstance(process, dict):
+        raise OriginError("Go acquisition witness is not an object")
+    if download.get("Path") != name or download.get("Version") != version or download.get("Error") or download.get("Info") != receipt["registry_metadata"]["path"] or download.get("Zip") != receipt["archive"]["path"] or download.get("GoMod") != module["go_mod"]["path"]:
+        raise OriginError("original Go download belongs to another module or version")
+    expected_sum = go_hash1(members, prefix)
+    mod_sum = go_hash1([{"path": "go.mod", "sha256": hashlib.sha256(payload["go_mod"]).hexdigest()}])
+    if download.get("Sum") != expected_sum or download.get("GoModSum") != mod_sum:
+        raise OriginError("Go module h1 differs from the retained archive or module file")
+    lookup = payload["sumdb_lookup"].decode("utf-8")
+    if name + " " + version + " " + expected_sum not in lookup.splitlines() or name + " " + version + "/go.mod " + mod_sum not in lookup.splitlines() or "— sum.golang.org " not in lookup:
+        raise OriginError("retained SumDB lookup does not bind the exact module and content sums")
+    request, executable, environment = (process.get(key, {}) for key in ("request", "executable", "environment"))
+    if not all(isinstance(value, dict) for value in (request, executable, environment)):
+        raise OriginError("Go original acquisition process has malformed typed facts")
+    query = request.get("query")
+    if process.get("schema") != "nudox.go-module-download-process.v1" or type(process.get("exit_code")) is not int or process["exit_code"] != 0 or request.get("registry_request_path") != name or request.get("resolved_version") != version or query not in {version, "latest"}:
+        raise OriginError("Go original acquisition process lacks its exact successful pin")
+    if process.get("argv") != [executable.get("path"), "mod", "download", "-json", name + "@" + query] or environment.get("GOPROXY") != "https://proxy.golang.org" or environment.get("GOSUMDB") != "sum.golang.org":
+        raise OriginError("Go original acquisition did not use the admitted proxy and SumDB")
+    if read_artifact(process.get("stdout")) != payload["download"] or read_artifact(process.get("stderr")):
+        raise OriginError("Go original process output differs from its successful acquisition capture")
+    read_artifact({"path": executable.get("path"), "sha256": executable.get("sha256")})
+    read_artifact({"path": executable.get("snapshot_path"), "sha256": executable.get("snapshot_sha256")})
+    for key in ("timeout_pid_file", "acquisition_status"):
+        read_artifact(process.get(key))
+    drivers = process.get("driver_files")
+    if not isinstance(drivers, list) or not 1 <= len(drivers) <= 8:
+        raise OriginError("Go original acquisition has no bounded driver witness")
+    for row in drivers:
+        read_artifact(row)
+    proxy = process.get("proxy_artifacts", {})
+    if not isinstance(proxy, dict):
+        raise OriginError("Go original acquisition lacks its proxy artifact facts")
+    for key, expected in (("go_mod", payload["go_mod"]), ("sumdb_lookup", payload["sumdb_lookup"]),
+                          ("info", read_artifact(receipt["registry_metadata"])),
+                          ("zip", read_artifact(receipt["archive"]))):
+        if read_artifact(proxy.get(key)) != expected:
+            raise OriginError("Go original acquisition proxy artifacts differ from the verified module")
+    if read_artifact(proxy.get("ziphash")).decode().strip() != expected_sum or proxy.get("sum") != expected_sum or proxy.get("go_mod_sum") != mod_sum:
+        raise OriginError("Go original acquisition content sums differ from the verified module")
+    return {"go_list": decode_json(payload["go_list"], "retained Go target witness"),
+            "authentication_source": "original successful Go mod download with GOSUMDB=sum.golang.org; retained signed lookup compared, no independent Python signature verification",
+            "process_sha256": hashlib.sha256(payload["process"]).hexdigest(),
+            "sumdb_lookup_sha256": hashlib.sha256(payload["sumdb_lookup"]).hexdigest(),
+            "go_list_sha256": hashlib.sha256(payload["go_list"]).hexdigest()}
+
+
 def archive_members(archive, prefix, maximum_files, maximum_file_bytes, maximum_bytes, check=lambda: None):
     if not isinstance(prefix, str) or not prefix.endswith("/") or not prefix[:-1] or PurePosixPath(prefix[:-1]).as_posix() != prefix[:-1] or prefix.startswith("/") or "\\" in prefix or any(part in {".", ".."} for part in PurePosixPath(prefix).parts):
         raise OriginError("archive extraction prefix is not canonical")

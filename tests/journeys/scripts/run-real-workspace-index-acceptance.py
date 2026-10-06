@@ -37,7 +37,7 @@ from runtime_build_receipt import (
     verify_architecture_parser_fixtures,
     verify_runtime_build_receipt,
 )
-from registry_artifact_origin import OriginError, archive_members, verify_registry_metadata
+from registry_artifact_origin import OriginError, archive_members, verify_registry_metadata, verify_go_origin
 
 
 MANIFEST_SCHEMA = "nudox.real-workspace-index-acceptance-manifest.v1"
@@ -1684,18 +1684,23 @@ def verify_acquired_source_inventory(case: ProjectCase, manifest_sha: str, deadl
             "target_root_identity_sha256": sha256_bytes(str(target).encode()),
             "corpus_manifest_sha256": manifest_sha, "declared": case.package}
     if "origin" in binding:
-        proof.update(verify_registry_origin(binding["origin"], package, observed, deadline))
+        proof.update(verify_registry_origin(binding["origin"], package, observed, deadline,
+                                           source_root=root, target_root=target, target_subdir=binding["target_subdir"]))
         if case.package["provenance"]["kind"] == "archive-sha256" and case.package["provenance"]["sha256"] != proof["origin_evidence"]["archive_sha256"]:
             raise AcceptanceError("declared package archive differs from verified registry artifact")
     return proof
 
 
-def verify_registry_origin(binding: dict[str, Any], package: dict[str, Any], files: list[dict[str, Any]], deadline: Deadline | None) -> dict[str, Any]:
+def verify_registry_origin(binding: dict[str, Any], package: dict[str, Any], files: list[dict[str, Any]], deadline: Deadline | None,
+                           *, source_root: Path | None = None, target_root: Path | None = None,
+                           target_subdir: str | None = None) -> dict[str, Any]:
     raw = read_bounded_regular(Path(binding["receipt_path"]), MAX_CORPUS_MANIFEST_BYTES, "registry origin receipt")
     if sha256_bytes(raw) != binding["receipt_sha256"]:
         raise AcceptanceError("registry origin receipt differs from its declared digest")
     receipt = json_no_duplicate_keys(raw, "registry origin receipt")
     fields = {"schema", "package", "registry_metadata", "archive", "unpack"}
+    if package["ecosystem"] == "go":
+        fields.add("module")
     if not isinstance(receipt, dict) or set(receipt) != fields or receipt["schema"] != "nudox.registry-artifact-origin.v1" or receipt["package"] != package:
         raise Blocked("registry origin receipt has an invalid closed package binding")
     payloads = {}
@@ -1712,23 +1717,48 @@ def verify_registry_origin(binding: dict[str, Any], package: dict[str, Any], fil
     metadata = json_no_duplicate_keys(payloads["registry_metadata"], "official registry metadata")
     if not isinstance(metadata, dict):
         raise Blocked("official registry metadata is not an object")
+    module_proof = None
+    def read_go_artifact(row: Any) -> bytes:
+        if deadline:
+            deadline.check("Go origin acquisition witness")
+        if not isinstance(row, dict) or not {"path", "sha256"} <= set(row) or set(row) - {"path", "sha256", "bytes", "url"} or not isinstance(row["path"], str) or not os.path.isabs(row["path"]) or not isinstance(row["sha256"], str) or re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is None:
+            raise OriginError("Go origin artifact has an invalid closed byte binding")
+        content = read_bounded_regular(Path(row["path"]), MAX_SOURCE_FILE_BYTES, "Go origin artifact")
+        if sha256_bytes(content) != row["sha256"] or ("bytes" in row and row["bytes"] != len(content)):
+            raise OriginError("Go origin artifact differs from its retained bytes")
+        return content
     try:
         members, special = archive_members(payloads["archive"], unpack["strip_prefix"], MAX_SOURCE_CANDIDATES,
             MAX_SOURCE_FILE_BYTES, MAX_SOURCE_BYTES_TOTAL,
             (lambda: deadline.check("registry archive membership verification")) if deadline else (lambda: None))
         if members != files:
             raise OriginError("registry archive membership differs from the actual acquired source tree")
-        verify_registry_metadata(package, metadata, receipt["registry_metadata"]["url"],
-                                 payloads["archive"], receipt["archive"]["url"], special)
+        if package["ecosystem"] == "go":
+            module_proof = verify_go_origin(package, receipt, metadata, members, special,
+                                           read_go_artifact, json_no_duplicate_keys)
+            witness = module_proof["go_list"]
+            expected_import = package["id"] + ("/" + target_subdir if target_subdir and target_subdir != "." else "")
+            if source_root is None or target_root is None or target_subdir is None or not isinstance(witness, dict) or witness.get("Dir") != str(target_root) or witness.get("ImportPath") != expected_import or witness.get("Error") or witness.get("Incomplete"):
+                raise OriginError("Go target witness does not bind the actual runtime package directory")
+            module = witness.get("Module")
+            if not isinstance(module, dict) or module.get("Path") != package["id"] or module.get("Dir") != str(source_root) or module.get("GoMod") != str(source_root / "go.mod") or module.get("Version") not in {None, "", package["version"]}:
+                raise OriginError("Go target witness does not bind the acquired module origin")
+        else:
+            verify_registry_metadata(package, metadata, receipt["registry_metadata"]["url"],
+                                     payloads["archive"], receipt["archive"]["url"], special)
     except OriginError as error:
         raise AcceptanceError(str(error)) from error
-    return {"origin_verification": "verified-registry-artifact-v1", "origin_evidence": {
+    proof = {"origin_verification": "verified-registry-artifact-v1", "origin_evidence": {
         "metadata_sha256": sha256_bytes(payloads["registry_metadata"]),
         "archive_sha256": sha256_bytes(payloads["archive"]),
         "archive_membership_sha256": source_inventory_sha256(members),
         "receipt_sha256": sha256_bytes(raw),
         "verification_source": "retained official metadata, archive identity and exact acquired-file membership",
     }}
+    if module_proof is not None:
+        proof["target_package"] = {**package, "id": module_proof["go_list"]["ImportPath"]}
+        proof["origin_evidence"].update({key: value for key, value in module_proof.items() if key != "go_list"})
+    return proof
 
 
 def read_source_file(
