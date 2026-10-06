@@ -1,0 +1,24 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 3m 37s
+     Running unittests src/lib.rs (.local/build/qa/.nudox-cargo/slot-0/debug/deps/backend_local_service-89b66b0188ecc952)
+
+running 16 tests
+test builtin::view_journal::tests::compact_event_record_does_not_grow_with_the_visible_view ... ok
+test builtin::view_journal::tests::stale_generation::an_event_without_any_snapshot_still_fails_closed ... ok
+test builtin::view_journal::tests::a_reopened_journal_keeps_every_row_fact_with_its_text ... ok
+test builtin::view_journal::tests::roundtrip_retains_nonempty_view_and_exact_owner_binding ... ok
+test builtin::view_journal::tests::stale_generation::a_superseded_generation_is_checksummed_but_never_decoded ... ok
+test builtin::view_journal::tests::workspace_view_producer_rejects_forged_context_and_evidence ... ok
+test builtin::view_journal::tests::stale_generation::a_returning_root_recovers_its_newest_certified_frame ... ok
+test builtin::view_journal::tests::compacts_before_an_event_can_cross_the_scan_file_bound ... ok
+test builtin::view_journal::tests::retried_synced_event_does_not_duplicate_after_ack_fault ... ok
+test builtin::view_journal::tests::roundtrip_re_admits_occurrence_disambiguated_row_identity ... ok
+test builtin::view_journal::tests::torn_tail_repair_is_durable_across_a_second_open ... ok
+test builtin::view_journal::tests::stale_generation::the_superseded_capability_reports_a_cache_miss_and_not_a_fault ... ok
+test builtin::view_journal::tests::v14_view_snapshot_is_refused_by_v15_and_left_unchanged ... ok
+test builtin::view_journal::tests::workspace_head_change_starts_with_a_snapshot_before_any_view_event ... ok
+test builtin::view_journal::tests::snapshot_compaction_retries_are_old_or_new_at_each_publish_boundary ... ok
+generation snapshot bytes=12115; subsequent compact event bytes=9892; retained rows=1
+test builtin::view_journal::tests::capture_only_generation_rebind_cold_recovers_then_retains_compact_events ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 989 filtered out; finished in 0.70s
+

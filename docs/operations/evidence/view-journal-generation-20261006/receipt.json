@@ -1,0 +1,36 @@
+{
+  "baseline": "9fde90931581e5a44c1d28485ef9ba11c1633b2b",
+  "branch": "codex/view-journal-generation-20261006",
+  "before": {
+    "exit": 101,
+    "passed": 0,
+    "failed": 1,
+    "failure": "new generation must survive restart",
+    "source_sha256": [
+      "c9eae5026ae0b1a90b355847a17c5765ddcd5febea802a2cf1207b0d7bc6c2e4  crates/local-service/src/builtin/view_journal.rs",
+      "2b715864877fc1c72c3ead27d0aacc845795f1429e58091421c609ff6c4e7275  crates/local-service/src/builtin/view_journal_tests.rs"
+    ]
+  },
+  "after": {
+    "exit": 0,
+    "passed": 16,
+    "failed": 0,
+    "command": "run-cargo qa test --locked --offline -p backend-local-service --lib builtin::view_journal::tests -- --nocapture",
+    "source_sha256": {
+      "crates/local-service/src/builtin/view_journal.rs": "a8ccd618b45ab6f4ef203aa50abd9dc94a45a2a0a246df387dd1ecd0f7fe3ec5",
+      "crates/local-service/src/builtin/view_journal_tests.rs": "594db8c72929809f8236383733d743c2926a43e64f574ba7b7ad366f481e59fd"
+    },
+    "compile_scope": "backend-local-service lib-test includes production journal adapter setup and try_commit_row_patch/rebind_published_view call sites"
+  },
+  "oracle": "Actual capture-only owner commit; same WorkspaceRoot, distinct admitted producer context; empty checked Patch; exact cold descriptor/cursor/capability/canonical rows; old capability refused; stale/empty load misses snapshot; stable generation upsert remains compact event. Public equality excludes private retained relation admission witness identity.",
+  "storage": {
+    "new_authority_snapshot_bytes": 12115,
+    "stable_capability_event_bytes": 9892,
+    "retained_rows": 1,
+    "cost": "New authority generation persists a full snapshot: O(view) bytes, plus admission evidence. No constant-size persistence claim."
+  },
+  "logs_sha256": {
+    "before": "1605a9099765e51d8f03f7ea2aea8eb7439053c164ec0cdce86c0768c2f58d88",
+    "after": "aedde7ec8f199fa2ace4c223fc5db2d2fa5257569c7195267ba0195ba1902580"
+  }
+}
