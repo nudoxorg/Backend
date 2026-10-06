@@ -1387,6 +1387,27 @@ mod tests {
             )
             .is_err()
         );
+        let short_owner = checked_root(vec![backend_engine::Row::new(
+            RowId::Symbol(native),
+            template.basis(),
+            "short",
+        )]);
+        let short_document = Document::new(
+            native,
+            short_owner.root(),
+            Vec::<backend_engine::Fragment>::new(),
+        )
+        .with_source_basis(backend_engine::Basis {
+            root: short_owner.root(),
+            ..short_owner.basis()
+        });
+        let short_certificate = document_certificate(&short_document, &short_owner, None)
+            .expect("short row certificate");
+        let short_wire = serde_json::to_vec(
+            &ReplyDto::new(8, CommandReply::Document(short_document))
+                .with_certificate(short_certificate),
+        )
+        .expect("short selected wire");
         // Native IDs select one exact row even when its text is ambiguous or
         // exceeds the optional copied-coordinate witness's producer bound.
         for rows in [
@@ -1409,9 +1430,25 @@ mod tests {
             let dto =
                 ReplyDto::new(8, CommandReply::Document(selected)).with_certificate(certificate);
             let wire = serde_json::to_vec(&dto).expect("short selected wire");
+            let value: serde_json::Value = serde_json::from_slice(&wire).expect("selected JSON");
+            assert!(value["reply"]["data"].get("selection").is_none());
             assert!(
-                wire.len() < 4096,
-                "selected-ID route does not duplicate a long or ambiguous label"
+                !value["certificate"]["claims"]
+                    .as_array()
+                    .expect("claims")
+                    .iter()
+                    .any(|claim| claim["data"]["schema"] == "document")
+            );
+            assert!(
+                wire.len().abs_diff(short_wire.len()) <= 256,
+                "selected-ID certificate size depends only on its fixed commitments, allowing decimal JSON spelling of changed hash bytes: short={} long={}",
+                short_wire.len(),
+                wire.len()
+            );
+            eprintln!(
+                "selected-ID certificate bytes: short={} long={}",
+                short_wire.len(),
+                wire.len()
             );
             let decoded = ReplyDto::decode_with_certificate(&wire, owner.capability())
                 .expect("selected native decoder");
