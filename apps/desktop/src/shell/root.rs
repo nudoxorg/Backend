@@ -832,10 +832,11 @@ impl Shell {
                     )
                 {
                     let id: SharedString = key.as_str().to_owned().into();
+                    let visit = snapshot.session().reading.current.id;
                     let reader = self.reader.clone();
                     cx.defer(move |cx| {
                         reader.update(cx, |reader, cx| {
-                            reader.request_native_return(route, id, input, cx);
+                            reader.request_native_return(route, visit, id, input, cx);
                         });
                     });
                 }
@@ -3089,6 +3090,8 @@ mod deferred_target_admission_tests {
             .find(|(target, _)| target.peek.is_some() && target.source.is_some())
             .map(|(target, _)| target)
             .expect("mounted declaration supports both Space and S");
+        let mount = targets.mount_claim(&target.id).expect("actual painted declaration");
+        assert!(rig.cx.update(|window, _| targets.admits_mount(&mount, window)));
         targets.focus(target.id.clone());
         assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Reader);
         let shell = rig.shell.clone();
@@ -3156,6 +3159,8 @@ mod deferred_target_admission_tests {
             .find(|(target, _)| target.peek.is_some() && target.source.is_some())
             .map(|(target, _)| target.id)
             .expect("mounted declaration supports both Space and S");
+        let mount = targets.mount_claim(&selected).expect("actual painted declaration");
+        assert!(rig.cx.update(|window, _| targets.admits_mount(&mount, window)));
         targets.focus(selected.clone());
         let before_focus = rig.cx.update(|window, cx| window.focused(cx));
         gate.publish(OwnerState::Starting);

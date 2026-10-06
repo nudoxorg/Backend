@@ -2081,6 +2081,154 @@ fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut Tes
     );
 }
 
+/// Actual native paint precedes effect delivery. These schedules retain the
+/// mounted dependency but replace one admission premise before its return can
+/// run; fixture bytes are explicit TestSupport, not live producer acceptance.
+#[gpui::test]
+fn a_painted_dependency_back_return_refuses_later_focus_read_owner_or_visit(
+    cx: &mut TestAppContext,
+) {
+    #[derive(Clone, Copy, Debug)]
+    enum Interruption {
+        Focus,
+        ReadStamp,
+        Owner,
+        Visit,
+    }
+    for interruption in [
+        Interruption::Focus,
+        Interruption::ReadStamp,
+        Interruption::Owner,
+        Interruption::Visit,
+    ] {
+        let _registry = super::use_registry_binding_for_test("test-authority", 7);
+        let indexed = serde_registry_tree();
+        let pool = crate::runtime::reads::ReadPool::start(1, move |_| Depends {
+            indexed: indexed.clone(),
+        })
+        .expect("pool");
+        let mut rig =
+            crate::shell::tests::rig_with_reads(cx, Some(package_route()), 1440.0, 900.0, pool);
+        enable_dependency_native_ax(&mut rig);
+        let _ = painted(&mut rig);
+        walk_to(&mut rig, "pkg-dep-serde", 24);
+        rig.keys("enter");
+        rig.native_press("secondary-[");
+        rig.cx.run_until_parked();
+        assert_eq!(rig.route(), package_route());
+        rig.draw(); // Start the real closing plate, without settling its return.
+        rig.cx
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(700));
+        rig.cx.run_until_parked();
+        let shell = rig.shell.clone();
+        let store = rig.graph.store.clone();
+        let root = rig.graph.root.clone();
+        let expected_focus = rig.cx.update(|window, app| {
+            window.simulate_next_frame(app);
+            window.refresh();
+            window.draw(app).clear(app);
+            let reader = shell.read(app).reader_entity();
+            assert!(
+                reader
+                    .read(app)
+                    .diagnostic_native_history_return_after_paint(),
+                "{interruption:?}: the actual steady child painted before its deferred return"
+            );
+            let targets = shell.read(app).reader_targets(app);
+            let mount = targets
+                .mount_claim("pkg-dep-serde")
+                .expect("actual freshly painted dependency");
+            assert!(targets.admits_mount(&mount, window));
+            assert!(
+                targets.native_focused(window).is_none(),
+                "return has not run inside native paint"
+            );
+            match interruption {
+                Interruption::Focus => {
+                    let licence = targets
+                        .mount_claim("pkg-licence")
+                        .expect("actual freshly painted alternate native control");
+                    assert!(targets.admits_mount(&licence, window));
+                    assert!(targets.focus_native("pkg-licence", window, app));
+                    assert_eq!(targets.native_focused(window).as_deref(), Some("pkg-licence"));
+                }
+                Interruption::ReadStamp => {
+                    let package = package();
+                    let key = crate::model::pages::PageKey::Package(package.clone());
+                    let before = store.read(app).stamp(&key);
+                    store.update(app, |store, _| {
+                        let mut about = store
+                            .package(&package)
+                            .loaded_value()
+                            .cloned()
+                            .expect("current exact package fixture");
+                        about.readme_markdown = crate::model::pages::Known::Known(Arc::from(
+                            "# Replacement immutable fixture reading\n",
+                        ));
+                        crate::runtime::store::cargo_context_tests::force_land(
+                            store,
+                            &key,
+                            crate::model::pages::PageValue::Package(about),
+                        );
+                    });
+                    assert_ne!(
+                        store.read(app).stamp(&key),
+                        before,
+                        "typed read authority actually changed"
+                    );
+                }
+                Interruption::Owner => store.update(app, |store, cx| store.owner_starting(cx)),
+                Interruption::Visit => {
+                    let before = store.read(app).snapshot().session().reading.current.id;
+                    root.update(app, |root, cx| {
+                        root.dispatch(
+                            Intent::Navigate(crate::navigation::Route::Orbit(
+                                crate::navigation::OrbitRoute::Home,
+                            )),
+                            cx,
+                        );
+                        root.dispatch(Intent::Navigate(package_route()), cx);
+                    });
+                    assert_eq!(store.read(app).snapshot().route(), &package_route());
+                    assert_ne!(
+                        store.read(app).snapshot().session().reading.current.id,
+                        before,
+                        "same exact route is now a different reading visit"
+                    );
+                }
+            }
+            window.focused(app)
+        });
+        rig.settle();
+        let targets = rig
+            .shell
+            .read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        assert_ne!(
+            rig.cx
+                .update(|window, _| targets.native_focused(window))
+                .as_deref(),
+            Some("pkg-dep-serde"),
+            "{interruption:?}: the old painted return cannot take the dependency's native handle"
+        );
+        if matches!(interruption, Interruption::Focus) {
+            assert_eq!(
+                rig.cx.update(|window, cx| window.focused(cx)),
+                expected_focus,
+                "the actual later licence focus remains the native keyboard owner"
+            );
+        }
+        let reader = rig
+            .shell
+            .read_with(rig.cx, |shell, _| shell.reader_entity());
+        assert!(
+            !reader.read_with(rig.cx, |reader, _| reader
+                .diagnostic_native_history_return_pending()),
+            "{interruption:?}: denial retires the pending return instead of waiting to steal focus later"
+        );
+    }
+}
+
 /// Back puts the keyboard on the door the page was left by, and the focus
 /// bevel comes back on it as a new bevel: it does not fly in from where it
 /// last stood on the other page (J1 saw it step from a stale place).

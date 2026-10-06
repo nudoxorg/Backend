@@ -388,6 +388,7 @@ struct NativeReturn {
     /// a later request even when route, target text, and authority agree.
     ticket: Rc<()>,
     input: NativeReturnLease,
+    visit: crate::navigation::presentation::VisitId,
     place: u64,
     route: Route,
     root: crate::core::VersionedRoot,
@@ -1122,14 +1123,16 @@ impl Reader {
         self.targets.focused().is_some_and(|id| self.targets.focus_native(&id, window, cx))
     }
 
-    pub(crate) fn request_native_return(&mut self, route: Route, id: SharedString, input: NativeReturnLease, cx: &mut Context<Self>) {
+    pub(crate) fn request_native_return(&mut self, route: Route, visit: crate::navigation::presentation::VisitId, id: SharedString, input: NativeReturnLease, cx: &mut Context<Self>) {
         if self.route == route && self.overlay.is_none() {
             if let Some(place) = self.places.last() {
-                let root = self.links.snapshot(cx).key();
+                let snapshot = self.links.snapshot(cx);
+                if place.visit != visit || snapshot.session().reading.current.id != visit { return; }
+                let root = snapshot.key();
                 let store = self.links.store.read(cx);
                 let Some(attachment) = store.current_owner_attachment() else { return };
                 let read_stamp = RouteDependencies::new(&route, None).native_stamp(store, false);
-                self.native_return = Some(NativeReturn { ticket: Rc::new(()), input, place: place.key, route, root, id, attachment, read_stamp });
+                self.native_return = Some(NativeReturn { ticket: Rc::new(()), input, visit, place: place.key, route, root, id, attachment, read_stamp });
                 cx.notify();
             }
         }
@@ -1153,7 +1156,8 @@ impl Reader {
                 && shell.allows_reader_native_return(window)
         });
         let current = self.places.last();
-        if current.is_none_or(|place| place.key != pending.place || place.route != pending.route || place.overlay.is_some())
+        if current.is_none_or(|place| place.key != pending.place || place.visit != pending.visit || place.route != pending.route || place.overlay.is_some())
+            || snapshot.session().reading.current.id != pending.visit
             || snapshot.route() != &pending.route || snapshot.page_overlay().is_some()
             || !pending.root.same_authority(snapshot.key()) || !resources_current || !input_owned
             || super::titlebar::menu_open(window, cx)
@@ -1181,6 +1185,17 @@ impl Reader {
         } else {
             self.native_return = None;
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn diagnostic_native_history_return_after_paint(&self) -> bool {
+        self.native_return.as_ref().is_some_and(|pending|
+            self.painted == Some(pending.place) && self.native_motion_settled())
+    }
+
+    #[cfg(test)]
+    pub(super) fn diagnostic_native_history_return_pending(&self) -> bool {
+        self.native_return.is_some()
     }
 
     pub(crate) fn cancel_native_return(&mut self) {
