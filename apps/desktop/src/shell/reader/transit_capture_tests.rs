@@ -4,6 +4,20 @@
 #[test]
 #[ignore = "native offscreen films: NUDOX_TRANSIT_FILM=DIR NUDOX_TRANSIT_REVISION=SHA"]
 fn native_pending_reversal_and_resize_film() {
+    run_native_transit_film(false);
+}
+
+/// Apply this test file alone to the 6f38 product for the negative control.
+/// It keeps that product's original seven-frame held-read route sequence and
+/// reaches the first resize without assuming the new pending-read policy.
+/// All actual native runs and pixels are saved before the duplicate assertion.
+#[test]
+#[ignore = "native compositor negative control: same film env, test-only file atop unfixed product"]
+fn native_first_resize_compositor_control() {
+    run_native_transit_film(true);
+}
+
+fn run_native_transit_film(control: bool) {
     use crate::navigation::Intent;
     use crate::runtime::{DesktopRuntime, EngineActor, UiEntityGraph};
     use gpui::AppContext as _;
@@ -67,31 +81,37 @@ fn native_pending_reversal_and_resize_film() {
     session.quiesce().expect("real initial read settled");
     let key = session.update(|_, cx| graph.store.read(cx).snapshot().key()).expect("owner key");
     let release = ReleaseDestination(gate, key);
+    let capture = |session: &mut backend_gui_harness::Session, name: &str| {
+        let name = if control { format!("control-{name}") } else { name.to_owned() };
+        capture_native_transit(session, &shell, &out, &revision, &name);
+    };
     session.update(|_, cx| {
         let display = shell.read(cx).display_key();
         graph.root.update(cx, |root, cx| root.queue(Intent::ZoomTo { display, percent: 200 }, cx));
     }).expect("real text-size intent");
     session.advance_to(1000);
-    capture_native_transit(&mut session, &shell, &out, &revision, "rest-200");
+    capture(&mut session, "rest-200");
     session.set_quiet(None);
     session.update(|_, cx| graph.root.update(cx, |root, cx| root.queue(
         Intent::Navigate(crate::shell::tests::page_route("TransitHeldDestination")), cx)))
         .expect("native held destination navigation");
-    capture_native_transit(&mut session, &shell, &out, &revision, "pending-000");
+    capture(&mut session, "pending-000");
     received.recv_timeout(Duration::from_secs(1)).expect("real read entered before film");
     session.advance_to(1112);
-    capture_native_transit(&mut session, &shell, &out, &revision, "pending-112");
+    capture(&mut session, "pending-112");
     session.apply(&backend_gui_harness::Act::Key { chord: "secondary-[".to_owned() },
         &mut |_, _, _| {}).expect("native Back keystroke");
     session.advance_to(1128);
-    capture_native_transit(&mut session, &shell, &out, &revision, "reverse-128");
+    capture(&mut session, "reverse-128");
     session.resize(1000, 700).expect("native private window resize");
-    capture_native_transit(&mut session, &shell, &out, &revision, "resize-first-128");
+    capture(&mut session, "resize-first-128");
     session.advance_to(1144);
-    capture_native_transit(&mut session, &shell, &out, &revision, "resize-144");
+    capture(&mut session, "resize-144");
     drop(release);
     session.advance_to(2000);
-    capture_native_transit(&mut session, &shell, &out, &revision, "back-settled");
+    capture(&mut session, "back-settled");
+
+    if control { return; }
 
     // Cancellation acceptance cannot stand in for an actual moving reversal.
     // Re-open through the real now-released worker, then interrupt its plate
@@ -189,7 +209,8 @@ fn capture_native_transit(session: &mut backend_gui_harness::Session,
     std::fs::write(out.join(format!("{name}.json")), serde_json::to_vec_pretty(&evidence).expect("film JSON"))
         .expect("source-linked native film evidence");
     if matches!(name, "reverse-128" | "resize-first-128" | "resize-144"
-        | "ready-reverse-128" | "ready-resize-first-128" | "ready-resize-144") {
+        | "ready-reverse-128" | "ready-resize-first-128" | "ready-resize-144"
+        | "control-resize-first-128") {
         for unique in ["The readable label of RelationLabel.", "It names one relation group.",
             "one of 2", "Exactly one of these at a time"] {
             let runs: Vec<_> = evidence["all_native_ink"].as_array().expect("actual native ledger")
