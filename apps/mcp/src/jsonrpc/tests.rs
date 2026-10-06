@@ -1714,7 +1714,7 @@ fn the_references_tool_serves_occurrence_sites_with_source_spans() {
         "the referencing site must be named: {rendered}"
     );
     assert!(
-        rendered.contains("src/main.rs:40-46"),
+        rendered.contains("src/main.rs [bytes40..46)"),
         "the captured source span must be present: {rendered}"
     );
     assert!(
