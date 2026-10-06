@@ -1,0 +1,253 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006/vendor/gpui_ce_components/Cargo.toml
+workspace: /Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006/Cargo.toml
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling rustix v1.1.4
+   Compiling backend-version v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006/crates/version)
+   Compiling backend-platform v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006/crates/platform)
+   Compiling backend-store v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006/crates/store)
+warning: unnecessary qualification
+   --> crates/store/src/durable/gc/sweep.rs:339:8
+    |
+339 |     if super::take_test_fault(2) {
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+    |
+339 -     if super::take_test_fault(2) {
+339 +     if take_test_fault(2) {
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/gc/sweep.rs:347:8
+    |
+347 |     if super::take_test_fault(3) {
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+347 -     if super::take_test_fault(3) {
+347 +     if take_test_fault(3) {
+    |
+
+warning: unnecessary qualification
+  --> crates/store/src/durable/gc/tests.rs:52:40
+   |
+52 | fn physical_pack_path(root: &Path, id: super::super::super::PackId) -> PathBuf {
+   |                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: remove the unnecessary path segments
+   |
+52 - fn physical_pack_path(root: &Path, id: super::super::super::PackId) -> PathBuf {
+52 + fn physical_pack_path(root: &Path, id: PackId) -> PathBuf {
+   |
+
+warning: unnecessary qualification
+  --> crates/store/src/durable/gc/tests.rs:66:43
+   |
+66 | fn physical_closure_path(root: &Path, id: super::super::super::ClosureId) -> PathBuf {
+   |                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: remove the unnecessary path segments
+   |
+66 - fn physical_closure_path(root: &Path, id: super::super::super::ClosureId) -> PathBuf {
+66 + fn physical_closure_path(root: &Path, id: ClosureId) -> PathBuf {
+   |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/gc/tests.rs:677:13
+    |
+677 |             super::super::super::StoredValue::new(Vec::new(), 1, vec![*target.as_bytes()]),
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+677 -             super::super::super::StoredValue::new(Vec::new(), 1, vec![*target.as_bytes()]),
+677 +             StoredValue::new(Vec::new(), 1, vec![*target.as_bytes()]),
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/objects.rs:626:39
+    |
+626 |         let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+626 -         let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+626 +         let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/streaming_closure.rs:965:21
+    |
+965 |                     super::super::ArtifactClosureClaim::from_id(expected),
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+965 -                     super::super::ArtifactClosureClaim::from_id(expected),
+965 +                     ArtifactClosureClaim::from_id(expected),
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/streaming_closure.rs:999:17
+    |
+999 |                 super::super::ArtifactClosureClaim::from_id(expected),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+999 -                 super::super::ArtifactClosureClaim::from_id(expected),
+999 +                 ArtifactClosureClaim::from_id(expected),
+    |
+
+warning: unnecessary qualification
+    --> crates/store/src/durable/streaming_closure.rs:1092:21
+     |
+1092 |                     super::super::ArtifactClosureClaim::from_id(expected),
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1092 -                     super::super::ArtifactClosureClaim::from_id(expected),
+1092 +                     ArtifactClosureClaim::from_id(expected),
+     |
+
+warning: unnecessary qualification
+    --> crates/store/src/durable/streaming_closure.rs:1160:25
+     |
+1160 |                         super::super::ArtifactClosureClaim::from_id(expected),
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1160 -                         super::super::ArtifactClosureClaim::from_id(expected),
+1160 +                         ArtifactClosureClaim::from_id(expected),
+     |
+
+warning: unnecessary qualification
+    --> crates/store/src/durable/streaming_closure.rs:1175:21
+     |
+1175 |                     super::super::ArtifactClosureClaim::from_id(expected),
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1175 -                     super::super::ArtifactClosureClaim::from_id(expected),
+1175 +                     ArtifactClosureClaim::from_id(expected),
+     |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:175:16
+    |
+175 |     assert_eq!(core::mem::align_of::<HeaderRecord>(), 1);
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+175 -     assert_eq!(core::mem::align_of::<HeaderRecord>(), 1);
+175 +     assert_eq!(align_of::<HeaderRecord>(), 1);
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:176:16
+    |
+176 |     assert_eq!(core::mem::align_of::<FrameRecord>(), 1);
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+176 -     assert_eq!(core::mem::align_of::<FrameRecord>(), 1);
+176 +     assert_eq!(align_of::<FrameRecord>(), 1);
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:411:24
+    |
+411 |     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+411 -     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+411 +     let event_offset = size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:411:66
+    |
+411 |     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+    |                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+411 -     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+411 +     let event_offset = core::mem::size_of::<WorkflowVersion>() + size_of::<StageKey>();
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/publication/owner/tests.rs:146:9
+    |
+146 |         super::super::format::ChainLink {
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+146 -         super::super::format::ChainLink {
+146 +         ChainLink {
+    |
+
+warning: unnecessary qualification
+  --> crates/store/src/journal/publication/service/tests.rs:78:17
+   |
+78 |         latest: super::LatestPublication::empty(),
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: remove the unnecessary path segments
+   |
+78 -         latest: super::LatestPublication::empty(),
+78 +         latest: LatestPublication::empty(),
+   |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/publication/service/tests.rs:120:17
+    |
+120 |         latest: super::LatestPublication::empty(),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+120 -         latest: super::LatestPublication::empty(),
+120 +         latest: LatestPublication::empty(),
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/publication/service/tests.rs:140:17
+    |
+140 |         latest: super::LatestPublication::empty(),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+140 -         latest: super::LatestPublication::empty(),
+140 +         latest: LatestPublication::empty(),
+    |
+
+warning: `backend-store` (lib test) generated 19 warnings (run `cargo fix --lib -p backend-store --tests` to apply 19 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.60s
+     Running unittests src/lib.rs (.local/build/staged-ingest/.nudox-cargo/slot-0/debug/deps/backend_store-9a66300fbe9b1cf0)
+
+running 1 test
+test tests::stored_extension_installs_auxiliary_children_before_membership_rebind ... FAILED
+
+failures:
+
+failures:
+    tests::stored_extension_installs_auxiliary_children_before_membership_rebind
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 274 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p backend-store --lib`
