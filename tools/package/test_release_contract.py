@@ -1,7 +1,9 @@
+import io
 import hashlib
 import json
 import plistlib
 import tempfile
+import urllib.error
 import unittest
 import zipfile
 from unittest.mock import patch
@@ -57,6 +59,22 @@ class FakeGitHub(release.GitHub):
 
 
 class CandidateTests(unittest.TestCase):
+    def test_missing_release_lookup_closes_http_response(self):
+        github = FakeGitHub()
+        missing = urllib.error.HTTPError("https://api.example/releases/tag", 404, "missing", {}, io.BytesIO(b"not found"))
+
+        def api(path, method="GET", body=None):
+            if path.startswith("/releases/tags/"):
+                raise missing
+            if path.startswith("/releases?"):
+                return []
+            raise AssertionError(f"unexpected API request: {path}")
+
+        with patch.object(github, "api", side_effect=api):
+            self.assertIsNone(github.find_release("checkpoint-test"))
+
+        self.assertTrue(missing.fp.closed)
+
     def test_native_acceptance_and_archive_bytes_must_match(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
