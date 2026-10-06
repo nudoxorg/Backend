@@ -68,7 +68,7 @@ use crate::application::executor::{
     BoundedLaneQueue, LaneIdentity, LaneSendError, StagedOutputBudget, StagedOutputLease,
 };
 use crate::application::toolchain_probe::{
-    ToolchainProbeError, ToolchainProbeLimits, probe_version,
+    ToolchainProbeError, ToolchainProbeLimits, probe_typescript_script_with_node, probe_version,
 };
 use crate::application::typescript_host::TypeScriptProjectHost;
 use crate::application::{
@@ -1428,6 +1428,57 @@ pub struct LocalRuntimeToolchain {
     facts: LocalRuntimeToolchainFacts,
     executable: Option<Box<Path>>,
     probe_failure: Option<Box<ToolchainProbeError>>,
+    probe_invocation: ToolchainProbeInvocation,
+}
+
+/// The admitted interpreter is part of a script probe, never an ambient PATH lookup.
+#[derive(Clone, Debug, Default)]
+enum ToolchainProbeInvocation {
+    #[default]
+    Native,
+    TypeScriptScript {
+        node: Box<Path>,
+    },
+}
+
+#[derive(Debug)]
+enum PendingToolchainProbe {
+    Native {
+        tool: NativeTool,
+        executable: PathBuf,
+    },
+    TypeScriptScript {
+        compiler: PathBuf,
+        node: Box<Path>,
+    },
+}
+
+impl PendingToolchainProbe {
+    fn tool(&self) -> NativeTool {
+        match self {
+            Self::Native { tool, .. } => *tool,
+            Self::TypeScriptScript { .. } => NativeTool::TypeScriptCompiler,
+        }
+    }
+
+    fn admit(
+        self,
+        limits: ToolchainProbeLimits,
+    ) -> Result<LocalRuntimeToolchain, ToolchainProbeError> {
+        let tool = self.tool();
+        let (executable, version) = match self {
+            Self::Native { tool, executable } => {
+                let version = probe_version(tool, &executable, limits)?;
+                (executable, version)
+            }
+            Self::TypeScriptScript { compiler, node } => {
+                let version = probe_typescript_script_with_node(&compiler, &node, limits)?;
+                (compiler, version)
+            }
+        };
+        LocalRuntimeToolchain::resolved(tool, executable, &version)
+            .map_err(|source| ToolchainProbeError::Resolution { tool, source })
+    }
 }
 
 impl LocalRuntimeToolchain {
@@ -1467,6 +1518,7 @@ impl LocalRuntimeToolchain {
             },
             executable: Some(executable.into_boxed_path()),
             probe_failure: None,
+            probe_invocation: ToolchainProbeInvocation::Native,
         })
     }
 
@@ -1481,6 +1533,7 @@ impl LocalRuntimeToolchain {
             },
             executable: None,
             probe_failure: None,
+            probe_invocation: ToolchainProbeInvocation::Native,
         }
     }
 
@@ -1494,6 +1547,26 @@ impl LocalRuntimeToolchain {
             },
             executable: Some(executable.into_boxed_path()),
             probe_failure: None,
+            probe_invocation: ToolchainProbeInvocation::Native,
+        }
+    }
+
+    pub(crate) fn probing_typescript_script(compiler: PathBuf, node: PathBuf) -> Self {
+        debug_assert!(compiler.is_absolute() && node.is_absolute());
+        let mut row = Self::probing(NativeTool::TypeScriptCompiler, compiler);
+        row.probe_invocation = ToolchainProbeInvocation::TypeScriptScript {
+            node: node.into_boxed_path(),
+        };
+        row
+    }
+
+    pub(crate) fn admit_pending(
+        self,
+        limits: ToolchainProbeLimits,
+    ) -> Result<Self, ToolchainProbeError> {
+        match self.probe_request() {
+            Some(request) => request.admit(limits),
+            None => Ok(self),
         }
     }
 
@@ -1510,6 +1583,7 @@ impl LocalRuntimeToolchain {
             },
             executable: None,
             probe_failure: Some(Box::new(failure)),
+            probe_invocation: ToolchainProbeInvocation::Native,
         }
     }
 
@@ -1519,15 +1593,25 @@ impl LocalRuntimeToolchain {
         self.probe_failure.as_deref()
     }
 
-    fn probe_request(&self) -> Option<(NativeTool, PathBuf)> {
+    fn probe_request(&self) -> Option<PendingToolchainProbe> {
         (self.facts.state == LocalRuntimeToolchainState::Probing).then(|| {
-            (
-                self.facts.tool,
-                self.executable
-                    .as_deref()
-                    .expect("probing toolchain retains its admitted executable")
-                    .to_path_buf(),
-            )
+            let executable = self
+                .executable
+                .as_deref()
+                .expect("probing toolchain retains its admitted executable")
+                .to_path_buf();
+            match &self.probe_invocation {
+                ToolchainProbeInvocation::Native => PendingToolchainProbe::Native {
+                    tool: self.facts.tool,
+                    executable,
+                },
+                ToolchainProbeInvocation::TypeScriptScript { node } => {
+                    PendingToolchainProbe::TypeScriptScript {
+                        compiler: executable,
+                        node: node.clone(),
+                    }
+                }
+            }
         })
     }
 
@@ -1561,6 +1645,64 @@ impl core::ops::Deref for LocalRuntimeToolchain {
 
     fn deref(&self) -> &Self::Target {
         &self.facts
+    }
+}
+
+#[cfg(all(test, unix))]
+mod global_typescript_probe_tests {
+    use super::*;
+
+    #[test]
+    fn global_typescript_probe_keeps_its_admitted_interpreter_through_async_handoff() {
+        let directory = crate::test_support::private_directory("global-ts-async-probe");
+        let script = directory.join("compiler-script");
+        // Deliberately not executable: the admitted interpreter must own the
+        // launch, as it does for npm's package entry on every host platform.
+        std::fs::write(
+            &script,
+            "test \"$1\" = '--version' || exit 90\nprintf 'Version 5.9.3\\n'\n",
+        )
+        .expect("compiler version script");
+        let row = LocalRuntimeToolchain::probing_typescript_script(
+            script.clone(),
+            PathBuf::from("/bin/sh"),
+        );
+        let request = row.probe_request().expect("pending script invocation");
+        let (send, receive) = channel();
+        start_toolchain_probes(vec![request], send);
+        let observed = receive
+            .recv_timeout(Duration::from_secs(10))
+            .expect("bounded async completion");
+        assert_eq!(observed.tool, NativeTool::TypeScriptCompiler);
+        let admitted = observed
+            .result
+            .expect("version through the admitted interpreter");
+        let expected = ResolvedToolchain::from_version(
+            NativeTool::TypeScriptCompiler,
+            &script,
+            b"Version 5.9.3\n",
+        )
+        .expect("expected script identity");
+        assert_eq!(admitted.state, LocalRuntimeToolchainState::Ready);
+        assert_eq!(admitted.identity, Some(expected.identity));
+        assert_eq!(admitted.executable_path(), Some(script.as_path()));
+        std::fs::remove_dir_all(directory).expect("remove private probe directory");
+    }
+
+    #[test]
+    fn global_typescript_probe_cannot_fall_back_after_its_selected_interpreter_fails() {
+        let directory = crate::test_support::private_directory("global-ts-failed-probe");
+        let script = directory.join("compiler-script");
+        std::fs::write(&script, "printf 'Version 5.9.3\\n'\n").expect("compiler version script");
+        let row =
+            LocalRuntimeToolchain::probing_typescript_script(script, PathBuf::from("/bin/false"));
+        let limits = ToolchainProbeLimits::new(
+            Duration::from_secs(2),
+            NonZeroUsize::new(1024).expect("stream bound"),
+        )
+        .expect("probe limits");
+        assert!(row.admit_pending(limits).is_err());
+        std::fs::remove_dir_all(directory).expect("remove private probe directory");
     }
 }
 
@@ -2772,7 +2914,7 @@ struct ToolchainProbeObservation {
 }
 
 fn start_toolchain_probes(
-    pending: Vec<(NativeTool, PathBuf)>,
+    pending: Vec<PendingToolchainProbe>,
     observations: Sender<ToolchainProbeObservation>,
 ) {
     let limits = ToolchainProbeLimits::new(
@@ -2780,11 +2922,12 @@ fn start_toolchain_probes(
         NonZeroUsize::new(16 * 1024).expect("fixed probe stream bound is nonzero"),
     )
     .expect("fixed probe deadline is nonzero");
-    for (tool, executable) in pending {
+    for request in pending {
+        let tool = request.tool();
         let probe_observations = observations.clone();
         let name = format!("nudox-toolchain-{}-probe", u8::from(tool));
         let spawn = thread::Builder::new().name(name).spawn(move || {
-            let result = LocalRuntimeToolchain::probe(tool, executable, limits);
+            let result = request.admit(limits);
             let _ = probe_observations.send(ToolchainProbeObservation { tool, result });
         });
         if let Err(source) = spawn {

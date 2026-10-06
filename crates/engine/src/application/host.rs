@@ -429,9 +429,20 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             )?,
         };
         let toolchains = if admit_toolchains_now {
-            executables.admitted_toolchain_rows(probe_limits)
+            executables.admitted_toolchain_rows(
+                typescript_host
+                    .node
+                    .as_ref()
+                    .map(|node| node.path.as_path()),
+                probe_limits,
+            )
         } else {
-            executables.toolchain_rows()
+            executables.toolchain_rows(
+                typescript_host
+                    .node
+                    .as_ref()
+                    .map(|node| node.path.as_path()),
+            )
         };
         let package_roots = self.package_roots(home.as_deref())?;
         let go_module_cache = package_roots

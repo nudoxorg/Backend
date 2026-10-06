@@ -301,10 +301,21 @@ pub(super) struct NativeExecutables {
 }
 
 impl NativeExecutables {
-    pub(super) fn toolchain_rows(&self) -> Box<[LocalRuntimeToolchain]> {
+    pub(super) fn toolchain_rows(
+        &self,
+        typescript_node: Option<&Path>,
+    ) -> Box<[LocalRuntimeToolchain]> {
         self.toolchain_executables()
             .map(|(tool, executable)| match executable {
-                Some(executable) => LocalRuntimeToolchain::probing(tool, executable.to_path_buf()),
+                Some(executable) => match (tool, typescript_node) {
+                    (NativeTool::TypeScriptCompiler, Some(node)) => {
+                        LocalRuntimeToolchain::probing_typescript_script(
+                            executable.to_path_buf(),
+                            node.to_path_buf(),
+                        )
+                    }
+                    _ => LocalRuntimeToolchain::probing(tool, executable.to_path_buf()),
+                },
                 None => LocalRuntimeToolchain::unavailable(tool),
             })
             .collect::<Vec<_>>()
@@ -313,17 +324,16 @@ impl NativeExecutables {
 
     pub(super) fn admitted_toolchain_rows(
         &self,
+        typescript_node: Option<&Path>,
         limits: ToolchainProbeLimits,
     ) -> Box<[LocalRuntimeToolchain]> {
-        self.toolchain_executables()
-            .map(|(tool, executable)| match executable {
-                Some(executable) => {
-                    LocalRuntimeToolchain::probe(tool, executable.to_path_buf(), limits)
-                        .unwrap_or_else(|failure| {
-                            LocalRuntimeToolchain::probe_failed(tool, failure)
-                        })
-                }
-                None => LocalRuntimeToolchain::unavailable(tool),
+        self.toolchain_rows(typescript_node)
+            .into_vec()
+            .into_iter()
+            .map(|row| {
+                let tool = row.tool;
+                row.admit_pending(limits)
+                    .unwrap_or_else(|failure| LocalRuntimeToolchain::probe_failed(tool, failure))
             })
             .collect::<Vec<_>>()
             .into_boxed_slice()
