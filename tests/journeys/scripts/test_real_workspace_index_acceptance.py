@@ -871,17 +871,18 @@ class PairedSurfaceObligationTests(unittest.TestCase):
                 "file_sha256": hashlib.sha256(source).hexdigest(),
                 "slice_sha256": hashlib.sha256(b"Session").hexdigest(),
                 "relation": "calls", "confidence": "compiler"}],
-            "graph": [{"label": "Called by", "path": "sessions.py", "name": "session"}]}
+            "graph": [{"label": "neighbor", "path": "sessions.py", "name": "session"}]}
         identity = {"coordinate": "exact-session-coordinate", "name": "Session", "path": "sessions.py",
                     "project": str(root), "key": "01234567", "line": 1, "shape": "symbol",
                     "trail": "sessions.py::Session", "segments": ["Session"]}
         records = {"answer": "records", "readiness": "ready", "coverage": [{"state": "complete"}],
-                   "more": False, "records": [{"identity": identity, "language": "python"}]}
-        page = {"answer": "page", "identity": identity, "kind": "class", "language": "python"}
+                   "more": False, "records": [{"identity": identity, "kind": "class", "language": "python"}]}
+        page = {"answer": "page", "identity": {**identity, "key": "89abcdef"}, "language": "python"}
         source_page = {**page, "source": {"path": "sessions.py", "line": 1,
                          "lines": ["class Session:", "    pass"], "extent": "complete"}}
-        graph = {**page, "relations": [{"label": "Called by", "relations": [
-                    {"project": str(root), "path": "sessions.py", "name": "session"}]}]}
+        graph = {"answer": "records", "query": identity["coordinate"], "more": False,
+                 "readiness": "ready", "records": [{"identity":
+                    {"project": str(root), "path": "sessions.py", "name": "session"}}]}
         raw_refs = {"answer": "surface", "surface": {"result": "references", "data": {
             "target": identity["coordinate"], "references": [{"site": "exact-factory-coordinate",
                 "target": {"scope": "local", "declaration": {"family": [1] * 16, "variant": [2] * 16}},
@@ -919,7 +920,8 @@ class PairedSurfaceObligationTests(unittest.TestCase):
             self.assertEqual(cold[0]["row_stable_id"], [3] * 32)
             self.assertEqual(cold[0]["public_key_abbreviation"], "01234567")
             self.assertEqual(cold[0]["references"]["required_sites"], 1)
-            self.assertEqual(cold[0]["graph"]["required_edges"], 1)
+            self.assertEqual(cold[0]["graph"]["required_neighbors"], 1)
+            self.assertEqual(cold[0]["page_identity"]["key"], "89abcdef")
             for command in cli_commands:
                 if command[0] in {"show", "source", "references", "graph"}:
                     self.assertEqual(command[1], identity["coordinate"])
@@ -945,9 +947,11 @@ class PairedSurfaceObligationTests(unittest.TestCase):
                 "scope": "foreign", "declaration": [1] * 16, "variant": None}
             with self.assertRaisesRegex(runner.AcceptanceError, "required semantic use"):
                 runner.assert_reference_obligations(values["raw-references"], identity["coordinate"], contract["references"])
-            values["graph"]["relations"] = []
+            values["graph"]["records"] = []
             with self.assertRaisesRegex(runner.AcceptanceError, "required declaration edge"):
                 runner.assert_graph_obligations(values["graph"], identity, contract["graph"])
+            with self.assertRaisesRegex(runner.AcceptanceError, "semantic edge label"):
+                runner.assert_graph_obligations(values["graph"], identity, [{**contract["graph"][0], "label": "calls"}])
 
     def test_empty_required_sets_remain_explicit_obligations_not_completeness_claims(self) -> None:
         raw = {"answer": "surface", "surface": {"result": "references", "data": {"target": "exact", "references": []}}}

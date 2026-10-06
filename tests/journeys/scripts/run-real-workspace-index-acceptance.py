@@ -2605,7 +2605,12 @@ def dto_payload(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def assert_surface_identity(value: Any, identity: dict[str, Any], label: str) -> None:
-    if not isinstance(value, dict) or value.get("answer") != "page" or value.get("identity") != identity:
+    actual = value.get("identity") if isinstance(value, dict) else None
+    # Records and pages expose different row/projection abbreviations for the
+    # same declaration address. Retain each in the DTO proof rather than
+    # conflating those abbreviations with the exact source coordinate.
+    fields = ("coordinate", "name", "project", "path", "line", "shape", "segments")
+    if not isinstance(value, dict) or value.get("answer") != "page" or not isinstance(actual, dict) or any(actual.get(key) != identity.get(key) for key in fields) or not isinstance(actual.get("key"), str) or not actual["key"]:
         raise AcceptanceError(f"{label} lost the exact resolved declaration identity")
 
 
@@ -2661,18 +2666,21 @@ def assert_reference_obligations(raw: Any, coordinate: str, obligations: list[di
 
 
 def assert_graph_obligations(value: Any, identity: dict[str, Any], obligations: list[dict[str, str]]) -> dict[str, Any]:
-    assert_surface_identity(value, identity, "graph")
-    groups = value.get("relations", [])
-    if not isinstance(groups, list):
-        raise AcceptanceError("graph omitted its structured relation groups")
+    if not isinstance(value, dict) or value.get("answer") != "records" or value.get("query") != identity["coordinate"] or value.get("more") is not False or value.get("readiness") != "ready" or not isinstance(value.get("records"), list):
+        raise AcceptanceError("graph omitted its exact bounded neighborhood projection")
+    records = value["records"]
     for expected in obligations:
-        matches = [target for group in groups if isinstance(group, dict) and group.get("label") == expected["label"]
-                   for target in group.get("relations", []) if isinstance(target, dict)
+        if expected["label"] != "neighbor":
+            raise AcceptanceError("named graph does not expose the required semantic edge label")
+        matches = [target for record in records if isinstance(record, dict)
+                   and isinstance((target := record.get("identity")), dict)
                    and target.get("path") == expected["path"] and target.get("name") == expected["name"]
                    and target.get("project") == identity["project"]]
         if not matches:
             raise AcceptanceError("graph omitted a source-backed required declaration edge")
-    return {"required_edges": len(obligations), "coverage_claim": "required-source-obligations; not the complete graph universe"}
+    return {"required_neighbors": len(obligations), "returned_neighbors": len(records),
+            "edge_direction_and_kind": "not-exposed-by-named-graph",
+            "coverage_claim": "required-source-neighborhood-obligations; not semantic edge or complete graph coverage"}
 
 
 def run_surface_contracts(case: ProjectCase, binaries: dict[str, BinaryIdentity], workspace: Path,
@@ -2715,6 +2723,9 @@ def run_surface_contracts(case: ProjectCase, binaries: dict[str, BinaryIdentity]
         if len(candidates) != 1:
             raise AcceptanceError("resolve could not select one exact source declaration/identity plane")
         identity = candidates[0]
+        selected_record = next(record for record in records if record.get("identity") == identity)
+        if selected_record.get("kind") != contract["kind"]:
+            raise AcceptanceError("resolve did not preserve the source-backed semantic declaration kind")
         coordinate = identity.get("coordinate")
         if not isinstance(coordinate, str) or not coordinate or not isinstance(identity.get("key"), str):
             raise AcceptanceError("resolve omitted the exact coordinate or public key abbreviation")
@@ -2727,8 +2738,6 @@ def run_surface_contracts(case: ProjectCase, binaries: dict[str, BinaryIdentity]
         document, projections["show"] = pair(["show", coordinate], "backend.document",
             {"coordinate": coordinate}, label + "-show")
         assert_surface_identity(document, identity, "show")
-        if document.get("kind") != contract["kind"]:
-            raise AcceptanceError("show did not preserve the source-backed semantic declaration kind")
         source, projections["source"] = pair(["source", coordinate], "backend.source",
             {"coordinate": coordinate}, label + "-source")
         source_witness = expected_source_span(case.path, symbol["path"], contract["source"])
@@ -2759,6 +2768,7 @@ def run_surface_contracts(case: ProjectCase, binaries: dict[str, BinaryIdentity]
         results.append({"project_id": case.project_id, "profile": symbol["profile"],
             "path": symbol["path"], "name": symbol["name"], "coordinate": coordinate,
             "resolved_identity": identity, "public_key_abbreviation": identity["key"],
+            "page_identity": document["identity"],
             "row_stable_id": stable_id, "identity_planes": "public display abbreviation; row digest; references retain separate semantic endpoint identities",
             "contract_sha256": sha256_bytes(canonical_json(contract)),
             "source": {key: source_witness[key] for key in ("path", "file_sha256", "start", "end", "slice_sha256")},
