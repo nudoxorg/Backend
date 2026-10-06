@@ -8,6 +8,8 @@
 pub mod lease_contract;
 pub mod monotonic;
 #[cfg(any(unix, windows))]
+mod query_continuation;
+#[cfg(any(unix, windows))]
 mod remote_command;
 #[cfg(any(unix, windows))]
 mod reset_budget;
@@ -534,6 +536,7 @@ pub struct Session {
     transport: Box<dyn CommandTransport + Send>,
     next_request_id: u64,
     admitted_owner: Option<backend_library::Cursor>,
+    prepared_query: Option<CommandDto>,
     continuations: BTreeMap<backend_library::Cursor, RetainedContinuation>,
 }
 
@@ -542,6 +545,7 @@ pub struct Session {
 struct RetainedContinuation {
     certificate: WireCertificate,
     owner: backend_library::Cursor,
+    next_request: Option<CommandDto>,
 }
 
 /// The producer certificate state needed to resume one bounded page after a
@@ -615,6 +619,7 @@ impl Session {
             endpoint,
             next_request_id: 1,
             admitted_owner: None,
+            prepared_query: None,
             continuations: BTreeMap::new(),
         })
     }
@@ -629,6 +634,7 @@ impl Session {
             transport: Box::new(transport),
             next_request_id: 1,
             admitted_owner: None,
+            prepared_query: None,
             continuations: BTreeMap::new(),
         }
     }
@@ -671,6 +677,9 @@ impl Session {
         &mut self,
         token: &str,
     ) -> Result<PageContinuation, ClientError> {
+        if token.starts_with("pc2-") {
+            return self.decode_portable_query(token);
+        }
         let encoded = token
             .strip_prefix("pc1-")
             .ok_or_else(|| ClientError::Protocol("unknown continuation token schema".to_owned()))?;
@@ -879,6 +888,9 @@ impl Session {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        if self.prepared_query.is_some() {
+            return self.resume_prepared_query("Search", text, limit, continuation);
+        }
         let revision = self.revision()?;
         let limit = QueryLimit::new(limit)
             .ok_or_else(|| ClientError::Protocol("query limit is outside its bound".to_owned()))?;
@@ -914,6 +926,9 @@ impl Session {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        if self.prepared_query.is_some() {
+            return self.resume_prepared_query("Name", text, limit, continuation);
+        }
         let revision = self.revision()?;
         let limit = QueryLimit::new(limit)
             .ok_or_else(|| ClientError::Protocol("query limit is outside its bound".to_owned()))?;
@@ -1488,8 +1503,13 @@ impl Session {
         command: Command,
         certificate: Option<WireCertificate>,
     ) -> Result<ReplyDto, ClientError> {
+        let portable = matches!(&command, Command::Search(_) | Command::Name(_))
+            .then(|| (command.clone(), certificate.clone()));
         let reply = require_command_success(self.send(command, certificate)?)?;
         self.remember_continuation(&reply);
+        if let Some((command, Some(certificate))) = portable {
+            self.retain_portable_query(command, &certificate, &reply)?;
+        }
         Ok(reply)
     }
 
@@ -1537,7 +1557,11 @@ impl Session {
         self.continuations.clear();
         self.continuations.insert(
             continuation.cursor(),
-            RetainedContinuation { certificate, owner },
+            RetainedContinuation {
+                certificate,
+                owner,
+                next_request: None,
+            },
         );
     }
 }

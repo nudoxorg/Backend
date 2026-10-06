@@ -244,6 +244,13 @@ pub const DEFAULT_LIMIT: u16 = 25;
 /// One typed request, and the extra probes its rendering needs.
 #[derive(Clone, Debug)]
 pub enum Request {
+    /// Resume one Search/Resolve request through the shared portable proof path.
+    ResumeQuery {
+        /// Exact query request whose family/text/credit must remain unchanged.
+        query: Box<Request>,
+        /// Untrusted portable continuation exported by the shared client.
+        cursor: String,
+    },
     /// Every project on the shelf, with readiness.
     Shelf,
     /// The engine's whole state, rolled up.
@@ -290,6 +297,20 @@ pub enum Request {
     Surface(Box<SurfaceCommand>),
 }
 
+fn query_cursor(invocation: &Invocation, query: Request) -> Result<Request, Fault> {
+    match invocation.option("cursor") {
+        Some(cursor) if !cursor.is_empty() => Ok(Request::ResumeQuery {
+            query: Box::new(query),
+            cursor: cursor.to_owned(),
+        }),
+        Some(_) => Err(Fault::usage(
+            "cursor",
+            "continuation must be a non-empty opaque token",
+        )),
+        None => Ok(query),
+    }
+}
+
 /// Lowers one invocation into a typed request.
 ///
 /// # Errors
@@ -331,14 +352,20 @@ pub fn lower(invocation: &Invocation, project: &str) -> Result<Request, Fault> {
             coordinate: invocation.require(0)?.to_owned(),
             incoming: false,
         }),
-        CommandId::Search => Ok(Request::Search {
-            text: invocation.require(0)?.to_owned(),
-            limit: limit(invocation)?,
-        }),
-        CommandId::Resolve | CommandId::Name => Ok(Request::Resolve {
-            text: invocation.require(0)?.to_owned(),
-            limit: limit(invocation)?,
-        }),
+        CommandId::Search => query_cursor(
+            invocation,
+            Request::Search {
+                text: invocation.require(0)?.to_owned(),
+                limit: limit(invocation)?,
+            },
+        ),
+        CommandId::Resolve | CommandId::Name => query_cursor(
+            invocation,
+            Request::Resolve {
+                text: invocation.require(0)?.to_owned(),
+                limit: limit(invocation)?,
+            },
+        ),
         CommandId::Outline => {
             let path = path_or(invocation, project);
             let path = if Path::new(&path)

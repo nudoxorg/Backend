@@ -169,7 +169,11 @@ impl Product for SessionProduct {
         &mut self,
         continuation: PageContinuation,
     ) -> Result<String, ClientError> {
-        Ok(self.0.encode_page_continuation(continuation))
+        if self.0.has_portable_query_continuation(continuation) {
+            self.0.encode_query_continuation(continuation)
+        } else {
+            Ok(self.0.encode_page_continuation(continuation))
+        }
     }
 
     fn decode_continuation(&mut self, token: &str) -> Result<PageContinuation, ClientError> {

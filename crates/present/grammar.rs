@@ -669,7 +669,7 @@ pub const GRAMMARS: [CommandGrammar; 52] = [
             ArgumentKind::Text,
             "Text to find in names, signatures, and documentation.",
         )],
-        options: &[LIMIT],
+        options: &[LIMIT, CURSOR],
         when: "Start here for a question like where error handling lives. Match names, signatures, and documentation, then open a coordinate.",
     },
     CommandGrammar {

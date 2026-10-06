@@ -118,7 +118,18 @@ fn run_words(words: &[String], options: &Options) -> Result<String, Fault> {
     if let Request::Index(path) = &request {
         watch_readiness(&mut session, path, options);
     }
-    Ok(render::answer(&answer, options))
+    let cursor = answer
+        .continuation()
+        .map(|continuation| session.encode_query_continuation(continuation))
+        .transpose()
+        .map_err(|error| {
+            Fault::from_client_error(&error, Operand::Argument("cursor".to_owned()))
+        })?;
+    Ok(render::answer_with_cursor(
+        &answer,
+        options,
+        cursor.as_deref(),
+    ))
 }
 
 fn plan(words: &[String], options: &Options, project: &str) -> Result<Request, Fault> {

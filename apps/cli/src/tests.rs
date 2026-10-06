@@ -64,15 +64,9 @@ fn injected_transport_preserves_identity_and_freshness() {
             QueryLimit::default(),
         )),
     );
-    let snapshot = ViewSnapshot {
-        root: root(),
-        freshness: Freshness::Current,
-        next: None,
-        graph_relations: None,
-        rich_graph: None,
-    };
+    let produced = backend_library::Library::new().execute_dto(request.clone());
     let mut transport = Checked {
-        reply: Some(ReplyDto::new(7, CommandReply::Search(snapshot))),
+        reply: Some(produced),
     };
     let reply = execute_dto_with_transport(&mut transport, &request).expect("reply");
     assert_eq!(reply.request_id, 7);

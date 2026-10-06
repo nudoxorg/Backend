@@ -71,6 +71,10 @@ impl Engine for SessionEngine<'_> {
         }
     }
 
+    fn prepare_query_continuation(&mut self, token: &str) -> Result<PageContinuation, ClientError> {
+        self.0.decode_page_continuation(token)
+    }
+
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
         self.0.surface(command)
     }
