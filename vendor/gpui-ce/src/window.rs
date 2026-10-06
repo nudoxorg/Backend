@@ -5826,6 +5826,11 @@ impl Window {
         &self.painted_texts
     }
 
+    /// Whether this frame records actual native paint for cached-view replay.
+    pub(crate) fn text_trace_enabled(&self) -> bool {
+        self.text_trace_enabled
+    }
+
     /// NUDOX: records one painted text line (element coordinates) with the alpha of its ink,
     /// when [`TextTrace`] is set: placed through the layer transform, cut by the content mask,
     /// and faded by the element and group opacity in effect.
@@ -10696,6 +10701,85 @@ mod deferred_clip_tests {
                     "an unmounted owner cannot replay an old local or global draw"
                 );
             });
+        }
+    }
+
+    struct CachedTrace {
+        renders: Rc<Cell<usize>>,
+    }
+    impl Render for CachedTrace {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.renders.set(self.renders.get() + 1);
+            DeferredNative::new(
+                div()
+                    .w(px(300.0))
+                    .h(px(80.0))
+                    .child("Trace toggles actual cached ink"),
+                true,
+                Clip::Inherited,
+            )
+        }
+    }
+    struct TraceOwner {
+        part: Entity<CachedTrace>,
+    }
+    impl Render for TraceOwner {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            local(
+                "native-trace-toggle",
+                self.part
+                    .clone()
+                    .cached(crate::StyleRefinement::default().w(px(300.0)).h(px(80.0))),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn cached_native_text_repaints_on_trace_toggle_then_replays_one_actual_run(
+        cx: &mut TestAppContext,
+    ) {
+        let renders = Rc::new(Cell::new(0));
+        let (root, cx) = cx.add_window_view(|_, cx| TraceOwner {
+            part: cx.new(|_| CachedTrace {
+                renders: renders.clone(),
+            }),
+        });
+        cx.update(|window, cx| {
+            assert!(!cx.has_global::<TextTrace>());
+            window.draw(cx).clear(cx);
+            assert!(window.painted_texts().is_empty());
+        });
+        let mut previous = false;
+        for tracing in [true, true, false, false, true, true] {
+            let before = renders.get();
+            cx.update(|_, cx| {
+                if tracing {
+                    cx.set_global(TextTrace);
+                } else if cx.has_global::<TextTrace>() {
+                    cx.remove_global::<TextTrace>();
+                }
+            });
+            // The cached child itself is unchanged and is not notified. A toggle
+            // must invalidate its paint identity; a same-state frame must reuse it.
+            root.update(cx, |_, cx| cx.notify());
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                assert_eq!(
+                    window
+                        .painted_texts()
+                        .iter()
+                        .filter(|run| run.text.as_ref() == "Trace toggles actual cached ink")
+                        .count(),
+                    usize::from(tracing),
+                    "the native ledger is complete exactly when actual paint tracing is enabled",
+                );
+            });
+            assert_eq!(
+                renders.get(),
+                before + usize::from(tracing != previous),
+                "trace toggles cause one native repaint; unchanged frames replay the existing scene",
+            );
+            previous = tracing;
         }
     }
 

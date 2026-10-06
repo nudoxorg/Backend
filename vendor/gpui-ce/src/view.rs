@@ -311,6 +311,8 @@ struct ViewElementCacheKey {
     /// Cached input listeners may be replayed only for the same activation owner.
     native_activation_scope: Option<crate::NativeActivationScope>,
     local_deferred_scope: Option<GlobalElementId>,
+    // A cached scene has a native text ledger only if tracing was enabled when painted.
+    text_trace_enabled: bool,
 }
 
 impl<V: View> Element for ViewElement<V> {
@@ -430,6 +432,7 @@ impl<V: View> Element for ViewElement<V> {
                             inert: true,
                             native_activation_scope: window.native_activation_scope(),
                             local_deferred_scope: window.local_deferred_draw_scope(),
+                            text_trace_enabled: window.text_trace_enabled(),
                         };
 
                         return window.with_element_state::<ViewElementState, _>(
@@ -472,6 +475,7 @@ impl<V: View> Element for ViewElement<V> {
                             && element_state.cache_key.inert == window.is_inert_subtree()
                             && element_state.cache_key.native_activation_scope == window.native_activation_scope()
                             && element_state.cache_key.local_deferred_scope == window.local_deferred_draw_scope()
+                            && element_state.cache_key.text_trace_enabled == window.text_trace_enabled()
                             && !window.dirty_views.contains(&entity_id)
                             && !window.refreshing
                             // Replayed prepaint/paint ranges do not contain AccessKit nodes or
@@ -522,6 +526,7 @@ impl<V: View> Element for ViewElement<V> {
                                     inert: window.is_inert_subtree(),
                                     native_activation_scope: window.native_activation_scope(),
                                     local_deferred_scope: window.local_deferred_draw_scope(),
+                                    text_trace_enabled: window.text_trace_enabled(),
                                 },
                             },
                         )
