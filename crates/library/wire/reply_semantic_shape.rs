@@ -166,6 +166,7 @@ struct SemanticShapeEntryWire {
 struct SemanticShapeSourceOriginWire {
     source: crate::SemanticShapeSelection,
     selection_root: [u8; 32],
+    semantic_image_bytes: u32,
     image: Option<SemanticShapeImageOriginWire>,
     source_commitment: String,
 }
@@ -849,6 +850,7 @@ fn origin_to_wire(origin: &SemanticShapeSourceOrigin) -> SemanticShapeSourceOrig
     SemanticShapeSourceOriginWire {
         source: origin.source.clone(),
         selection_root: origin.selection_root,
+        semantic_image_bytes: origin.semantic_image_bytes.byte_length(),
         image: origin.image.map(|image| SemanticShapeImageOriginWire {
             image_identity: encode_id(image.image.identity.as_ref()),
             byte_len: image.image.byte_len,
@@ -865,6 +867,8 @@ fn origin_from_wire(
     let admitted = SemanticShapeSourceOrigin {
         source: origin.source.clone(),
         selection_root: origin.selection_root,
+        semantic_image_bytes: crate::SemanticImagePayloadBytes::new(origin.semantic_image_bytes)
+            .map_err(|error| error.to_string())?,
         image: origin
             .image
             .as_ref()

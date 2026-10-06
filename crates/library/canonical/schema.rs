@@ -156,12 +156,14 @@ impl Schema for OutlineSchema {
 /// Canonical identity of one exact selected semantic-image provenance bundle.
 ///
 /// The preimage commits selected semantic version identity, current input
-/// freshness, the durable workspace-selection root, and the exact reopened
-/// image artifact/extent. Derived history status is not selection authority.
+/// freshness, the durable workspace-selection root, the checked aggregate
+/// semantic-image payload extent, and the exact reopened image artifact/extent.
+/// Derived history status is not selection authority.
 pub struct SemanticShapeSourceSchema;
 impl Schema for SemanticShapeSourceSchema {
     const DOMAIN: u8 = 0x10;
     const TYPE: u16 = 13;
+    const VERSION: u8 = 2;
     type Value = [u8];
 
     fn encode(value: &Self::Value, out: &mut Vec<u8>) {

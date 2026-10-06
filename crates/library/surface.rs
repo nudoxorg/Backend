@@ -448,7 +448,8 @@ pub struct SemanticVersionRecord {
     pub manifest: [u8; 32],
     /// Number of semantic image artifacts in the manifest.
     pub artifacts: u32,
-    /// Canonical semantic image bytes covered by the manifest.
+    /// Encoded canonical compiler-manifest bytes committed by this generation.
+    /// This is not the aggregate payload extent of the semantic images.
     pub semantic_bytes: u32,
     /// Whether the compiler authority covered the complete declared scope.
     pub complete: bool,

@@ -36,6 +36,9 @@ pub const SEMANTIC_SHAPE_CARRIER_IDENTITY_BYTES: usize = 192;
 /// limit keeps even the densest product shape below serde_json's built-in
 /// nesting limit of 128 before the typed admission walk runs.
 pub const MAX_SEMANTIC_SHAPE_DEPTH: usize = 22;
+/// Maximum admitted aggregate payload size for one selected semantic image set.
+/// This matches the owner-side generation residence bound.
+pub const MAX_SEMANTIC_SHAPE_IMAGE_BYTES: u32 = 128 * 1024 * 1024;
 
 /// Product admission failures for the semantic-shape boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -250,6 +253,30 @@ pub struct SemanticShapeImageOrigin {
     pub profile: LanguageProfile,
 }
 
+/// Checked aggregate byte extent of the selected generation's semantic images.
+///
+/// This is distinct from `SemanticVersionRecord::semantic_bytes`, which
+/// records the encoded manifest length. Image lengths must only be compared to
+/// this payload extent, never to the manifest's encoded size.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticImagePayloadBytes(u32);
+
+impl SemanticImagePayloadBytes {
+    /// Admits a nonempty payload extent within the selected-generation limit.
+    pub fn new(byte_length: u32) -> Result<Self, SemanticShapeError> {
+        if byte_length == 0 || byte_length > MAX_SEMANTIC_SHAPE_IMAGE_BYTES {
+            return Err(SemanticShapeError::InvalidOrigin);
+        }
+        Ok(Self(byte_length))
+    }
+
+    /// Exact aggregate selected-image payload bytes.
+    #[must_use]
+    pub const fn byte_length(self) -> u32 {
+        self.0
+    }
+}
+
 /// Selected semantic generation fields that the service rechecks against its durable relation.
 ///
 /// This witness includes the full immutable compiler-generation identity and the current
@@ -370,6 +397,9 @@ pub struct SemanticShapeSourceOrigin {
     /// projection; this is an optimistic before/after check, not an atomic
     /// cross-index proof or a request-side expected-root comparison.
     pub selection_root: [u8; 32],
+    /// Aggregate byte extent from the selected generation's checked image
+    /// inventory, distinct from the encoded compiler manifest length.
+    pub semantic_image_bytes: SemanticImagePayloadBytes,
     /// Exact image containing a known declaration or shape fact. `None`
     /// denotes closure-level unavailability without falsely attributing it
     /// to the first image in a multi-image generation.
@@ -933,7 +963,8 @@ impl SemanticShapeBatch {
                     match (&origin.image, &entry.fact, entry.identity) {
                         (Some(image), _, Some(_))
                             if image.image.byte_len > 0
-                                && image.image.byte_len <= origin.source.semantic_bytes
+                                && image.image.byte_len
+                                    <= origin.semantic_image_bytes.byte_length()
                                 && image.profile == expected_profile => {}
                         (None, SemanticShapeFact::Unavailable(_), None) => {}
                         _ => return Err(SemanticShapeError::InvalidOrigin),
@@ -1409,7 +1440,7 @@ pub fn semantic_shape_source_preimage(origin: &SemanticShapeSourceOrigin) -> Vec
         bytes.extend_from_slice(value);
     }
 
-    let mut bytes = b"SEMANTIC-SHAPE-SOURCE\0v3".to_vec();
+    let mut bytes = b"SEMANTIC-SHAPE-SOURCE\0v4".to_vec();
     append(&mut bytes, origin.source.package.as_str().as_bytes());
     append(&mut bytes, origin.source.coordinate.as_str().as_bytes());
     append(&mut bytes, &origin.source.profile.to_bytes());
@@ -1436,6 +1467,7 @@ pub fn semantic_shape_source_preimage(origin: &SemanticShapeSourceOrigin) -> Vec
         crate::SemanticVersionFreshness::Unverified => bytes.push(2),
     }
     append(&mut bytes, &origin.selection_root);
+    bytes.extend_from_slice(&origin.semantic_image_bytes.byte_length().to_be_bytes());
     if let Some(image) = origin.image {
         bytes.push(1);
         append(&mut bytes, image.image.identity.as_ref());
@@ -1496,6 +1528,22 @@ mod tests {
         .expect("hard maxima are admitted caller limits")
     }
 
+    #[test]
+    fn selected_image_payload_extent_has_a_closed_nonzero_bound() {
+        assert_eq!(
+            SemanticImagePayloadBytes::new(0),
+            Err(SemanticShapeError::InvalidOrigin)
+        );
+        assert_eq!(
+            SemanticImagePayloadBytes::new(MAX_SEMANTIC_SHAPE_IMAGE_BYTES),
+            Ok(SemanticImagePayloadBytes(MAX_SEMANTIC_SHAPE_IMAGE_BYTES))
+        );
+        assert_eq!(
+            SemanticImagePayloadBytes::new(MAX_SEMANTIC_SHAPE_IMAGE_BYTES + 1),
+            Err(SemanticShapeError::InvalidOrigin)
+        );
+    }
+
     fn request(names: &[&str]) -> SemanticShapeRequest {
         request_in_profile(names, LanguageProfile::Rust(RustEdition::Rust2021))
     }
@@ -1535,6 +1583,8 @@ mod tests {
             origin: Some(SemanticShapeSourceOrigin {
                 source: SemanticShapeSelection::from_selected(&source).expect("selected source"),
                 selection_root: [7; 32],
+                semantic_image_bytes: SemanticImagePayloadBytes::new(11)
+                    .expect("fixture image extent"),
                 image: Some(
                     SemanticShapeImageOrigin {
                         image:
@@ -1568,6 +1618,57 @@ mod tests {
             entries: vec![entry(&request, 0), entry(&request, 1)].into_boxed_slice(),
         };
         assert_eq!(batch.admit_against(&request), Ok(()));
+
+        // The manifest header is smaller than an image payload here. The
+        // image must be checked against its same-unit selected payload extent,
+        // not the encoded manifest length carried by the source record.
+        let mut small_manifest_source = request.source().clone();
+        small_manifest_source.semantic_bytes = 1;
+        let small_manifest_request = SemanticShapeRequest::new(
+            request.basis().into(),
+            small_manifest_source,
+            request.symbols().to_vec().into_boxed_slice(),
+            request.budget(),
+        )
+        .expect("admit smaller manifest extent");
+        let small_manifest_batch = SemanticShapeBatch {
+            basis: small_manifest_request.basis(),
+            entries: vec![
+                entry(&small_manifest_request, 0),
+                entry(&small_manifest_request, 1),
+            ]
+            .into_boxed_slice(),
+        };
+        assert_eq!(
+            small_manifest_batch.admit_against(&small_manifest_request),
+            Ok(())
+        );
+
+        let mut too_small_payload = batch.clone();
+        let original_origin = too_small_payload.entries[0]
+            .origin
+            .as_ref()
+            .expect("fixture source witness");
+        let original_source_key = semantic_shape_source_key(original_origin);
+        too_small_payload.entries[0]
+            .origin
+            .as_mut()
+            .expect("fixture source witness")
+            .semantic_image_bytes =
+            SemanticImagePayloadBytes::new(10).expect("nonempty fixture payload extent");
+        let changed_origin = too_small_payload.entries[0]
+            .origin
+            .as_ref()
+            .expect("fixture source witness");
+        assert_ne!(
+            semantic_shape_source_key(changed_origin),
+            original_source_key,
+            "the source commitment must bind aggregate payload extent"
+        );
+        assert_eq!(
+            too_small_payload.admit_against(&request),
+            Err(SemanticShapeError::InvalidOrigin)
+        );
 
         let mut wrong_root = batch.clone();
         wrong_root.basis =

@@ -1085,6 +1085,8 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
         source: crate::SemanticShapeSelection::from_selected(&source)
             .expect("selected source witness"),
         selection_root: [36; 32],
+        semantic_image_bytes: crate::SemanticImagePayloadBytes::new(4096)
+            .expect("fixture aggregate image extent"),
         image: Some(crate::SemanticShapeImageOrigin {
             image: crate::interface::SemanticImageAuthority {
                 identity: image_identity,

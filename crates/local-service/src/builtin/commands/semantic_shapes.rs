@@ -14,12 +14,12 @@ use backend_engine::application::LocalCompilerClient;
 use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticPublicationCoverage};
 use backend_library::{
     CommandFailure, CommandReply, SemanticArrayShape, SemanticCallableCarrierBindings,
-    SemanticCallableShape, SemanticDeclarationShape, SemanticLiteral, SemanticObjectMember,
-    SemanticPropertyKey, SemanticShapeBatch, SemanticShapeEntry, SemanticShapeFact,
-    SemanticShapeImageOrigin, SemanticShapeLanguageFact, SemanticShapeLanguageFacts,
-    SemanticShapeMember, SemanticShapeRequest, SemanticShapeSelection, SemanticShapeSourceOrigin,
-    SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr, SemanticTypeFact,
-    SemanticTypeUnavailable, SymbolAddress,
+    SemanticCallableShape, SemanticDeclarationShape, SemanticImagePayloadBytes, SemanticLiteral,
+    SemanticObjectMember, SemanticPropertyKey, SemanticShapeBatch, SemanticShapeEntry,
+    SemanticShapeFact, SemanticShapeImageOrigin, SemanticShapeLanguageFact,
+    SemanticShapeLanguageFacts, SemanticShapeMember, SemanticShapeRequest, SemanticShapeSelection,
+    SemanticShapeSourceOrigin, SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr,
+    SemanticTypeFact, SemanticTypeUnavailable, SymbolAddress,
 };
 use backend_semantic::ir::{
     ArrayShape, ConcreteType, DeclarationIdentity, ExternalTarget, ExternalTargetIdentity,
@@ -295,6 +295,27 @@ pub(super) fn execute_semantic_shapes(
     }
 
     let activated = activate_semantic_publication(compiler, &key, claim, generations, image_rows)?;
+    if u32::try_from(activated.images().len()).ok() != Some(request.source().artifacts) {
+        return Err(BuiltinModelError(
+            "selected semantic image count differs from its checked manifest".to_owned(),
+        ));
+    }
+    let selected_image_bytes = activated
+        .images()
+        .iter()
+        .try_fold(0_u32, |total, image| {
+            if image.authority.byte_len == 0 {
+                return None;
+            }
+            total.checked_add(image.authority.byte_len)
+        })
+        .ok_or_else(|| {
+            BuiltinModelError(
+                "selected semantic image payload extent is empty or overflowed".to_owned(),
+            )
+        })?;
+    let semantic_image_bytes = SemanticImagePayloadBytes::new(selected_image_bytes)
+        .map_err(|error| BuiltinModelError(format!("admit selected image extent: {error}")))?;
     let selection_root = *snapshot.root().as_bytes();
     let selected_source = SemanticShapeSelection::from_selected(request.source())
         .map_err(|error| BuiltinModelError(format!("selected shape source admission: {error}")))?;
@@ -403,6 +424,7 @@ pub(super) fn execute_semantic_shapes(
             let origin = SemanticShapeSourceOrigin {
                 source: selected_source.clone(),
                 selection_root,
+                semantic_image_bytes,
                 image: Some(SemanticShapeImageOrigin {
                     image: image_snapshot.authority,
                     profile,
@@ -419,6 +441,7 @@ pub(super) fn execute_semantic_shapes(
             let fallback_origin = Some(SemanticShapeSourceOrigin {
                 source: selected_source.clone(),
                 selection_root,
+                semantic_image_bytes,
                 image: None,
             });
             entries.push(SemanticShapeEntry {

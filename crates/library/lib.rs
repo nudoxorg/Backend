@@ -202,15 +202,15 @@ pub use rich_graph::{
 };
 pub use semantic_shape::{
     MAX_SEMANTIC_SHAPE_BATCH, MAX_SEMANTIC_SHAPE_BYTES, MAX_SEMANTIC_SHAPE_DEPTH,
-    MAX_SEMANTIC_SHAPE_NODES, SEMANTIC_SHAPE_CARRIER_IDENTITY_BYTES, SemanticArrayShape,
-    SemanticCallableCarrierBindings, SemanticCallableShape, SemanticDeclarationShape,
-    SemanticLiteral, SemanticObjectMember, SemanticPropertyKey, SemanticShapeAdmissionSummary,
-    SemanticShapeBatch, SemanticShapeBudget, SemanticShapeEntry, SemanticShapeError,
-    SemanticShapeFact, SemanticShapeImageOrigin, SemanticShapeLanguageFact,
-    SemanticShapeLanguageFacts, SemanticShapeMember, SemanticShapeRequest, SemanticShapeSelection,
-    SemanticShapeSourceOrigin, SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr,
-    SemanticTypeFact, SemanticTypeUnavailable, semantic_shape_source_key,
-    semantic_shape_source_preimage,
+    MAX_SEMANTIC_SHAPE_IMAGE_BYTES, MAX_SEMANTIC_SHAPE_NODES,
+    SEMANTIC_SHAPE_CARRIER_IDENTITY_BYTES, SemanticArrayShape, SemanticCallableCarrierBindings,
+    SemanticCallableShape, SemanticDeclarationShape, SemanticImagePayloadBytes, SemanticLiteral,
+    SemanticObjectMember, SemanticPropertyKey, SemanticShapeAdmissionSummary, SemanticShapeBatch,
+    SemanticShapeBudget, SemanticShapeEntry, SemanticShapeError, SemanticShapeFact,
+    SemanticShapeImageOrigin, SemanticShapeLanguageFact, SemanticShapeLanguageFacts,
+    SemanticShapeMember, SemanticShapeRequest, SemanticShapeSelection, SemanticShapeSourceOrigin,
+    SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr, SemanticTypeFact,
+    SemanticTypeUnavailable, semantic_shape_source_key, semantic_shape_source_preimage,
 };
 pub use source_atom::SourceAtomText;
 pub use source_discovery::{

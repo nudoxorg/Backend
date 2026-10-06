@@ -1988,7 +1988,7 @@ fn semantic_row(record: &SemanticVersionRecord) -> ProductRecord {
             KeyTag::from_key(&record.generation.to_bytes())
         ),
         format!("{} artifact(s)", record.artifacts),
-        format!("{} semantic byte(s)", record.semantic_bytes),
+        format!("{} manifest byte(s)", record.semantic_bytes),
     ];
     if let PackageReference::Purl(coordinate) = &record.package {
         tags.push(format!("version {}", coordinate.version()));
