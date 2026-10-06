@@ -29,6 +29,7 @@ pub(super) struct StagedIntent {
     store: FileStore,
     cancelled: Arc<AtomicBool>,
     _admission: Option<Arc<StageAdmission>>,
+    _base_membership: Option<DurableClosureManifest>,
 }
 
 impl std::fmt::Debug for StagedIntent {
@@ -297,6 +298,49 @@ pub(super) fn stage(
         .begin(store, bound, maximum_bytes)
         .map_err(|e| error("admit staged intent", e))?;
     cancelled(&cancellation).map_err(|e| error("stage cancelled", e))?;
+    // A first selection has no durable HEAD rooting its in-memory genesis.
+    // Protect the exact borrowed base while the writer still holds its short
+    // admission barrier, then transfer to an ordinary per-closure lease.
+    let base_membership = if let Some(membership) = snapshot.closure().stored_membership() {
+        membership.clone()
+    } else {
+        let controls = snapshot.closure().control_manifest();
+        if controls.objects().len() > 128 {
+            return Err(error("staged base control frontier", StoreError::Bounds));
+        }
+        if snapshot.closure().is_root_only() {
+            store.stage_workspace_frontier(snapshot.closure())
+        } else {
+            store.write_closure(controls).map(|_| ())
+        }
+        .map_err(|e| error("install exact staged base frontier", e))?;
+        let payload = controls
+            .objects()
+            .iter()
+            .try_fold(0_u64, |bytes, object| {
+                bytes
+                    .checked_add(
+                        u64::try_from(object.bytes().len()).map_err(|_| StoreError::Bounds)?,
+                    )
+                    .ok_or(StoreError::Bounds)
+            })
+            .map_err(|e| error("staged base payload charge", e))?;
+        let base_budget = ClosureCompositionBudget::new(
+            controls.objects().len(),
+            0,
+            payload,
+            ClosureCompositionBudget::metadata_bytes_for(0)
+                .map_err(|e| error("staged base metadata charge", e))?,
+        );
+        let receipt = store
+            .reopen_pinned_workspace_closure(
+                ArtifactClosureClaim::from_id(snapshot.closure().membership_id()),
+                base_budget,
+            )
+            .map_err(|e| error("admit exact staged base membership", e))?;
+        DurableClosureManifest::from_pinned(store, receipt, base_budget)
+            .map_err(|e| error("lease exact staged base membership", e))?
+    };
     writer
         .append(
             EvidenceKind::SourceRows,
@@ -416,6 +460,7 @@ pub(super) fn stage(
         store: store.clone(),
         cancelled: cancellation,
         _admission: Some(Arc::new(admission)),
+        _base_membership: Some(base_membership),
     });
     intent.set_staged(staged, true);
     Ok(intent)
@@ -521,6 +566,7 @@ impl StagedIntent {
             store: store.clone(),
             cancelled: Arc::new(AtomicBool::new(false)),
             _admission: None,
+            _base_membership: None,
         });
         if staged.encode() != bytes {
             return Err(BuiltinModelError(
