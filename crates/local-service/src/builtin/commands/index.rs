@@ -5543,6 +5543,408 @@ fn selected_project_source_frontier(
     }))
 }
 
+/// Reads one bounded page from the exact selected Project membership. The
+/// relation root, Project version, and cursor positions all come from the same
+/// immutable snapshot; each request reopens only the referenced membership
+/// pages and the returned File rows.
+pub(super) fn package_source_membership_page(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    request: &backend_library::PackageSourceMembershipPageRequestV1,
+) -> Result<backend_library::PackageSourceMembershipPageResultV1, BuiltinModelError> {
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    package_source_membership_page_from_snapshot(&snapshot, request)
+}
+
+pub(in crate::builtin) fn package_source_membership_page_from_snapshot(
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    request: &backend_library::PackageSourceMembershipPageRequestV1,
+) -> Result<backend_library::PackageSourceMembershipPageResultV1, BuiltinModelError> {
+    use backend_engine::ProductProjectFileMembership;
+    use backend_library::{
+        PackageSourceMembershipCursorV1, PackageSourceMembershipExclusionsV1,
+        PackageSourceMembershipFileV1, PackageSourceMembershipLanguageV1,
+        PackageSourceMembershipPageResultV1, PackageSourceMembershipScopeV1,
+        PackageSourceMembershipUnavailableV1,
+    };
+
+    if !request.has_admissible_shape() {
+        return Err(BuiltinModelError(
+            "package source membership request is malformed".to_owned(),
+        ));
+    }
+    let backend_engine::PackageReference::Local(label) = &request.package else {
+        return Err(BuiltinModelError(
+            "source membership requires a local Project package".to_owned(),
+        ));
+    };
+    let package = request.package.clone();
+    let package_key = backend_engine::PackageKey::from_value(label.as_str());
+    let project_key = package_key.to_bytes();
+    let relation = match snapshot.relation::<BuiltinWorkspaceRelation>() {
+        Ok(relation) => relation,
+        Err(_) => {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        }
+    };
+    let source_relation_root = *relation.root().as_bytes();
+    let project_record = match relation.lookup(&project_key) {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            if request.expected_source_relation_root.is_some() || request.cursor.is_some() {
+                return Ok(PackageSourceMembershipPageResultV1::Stale {
+                    package,
+                    current_source_relation_root: Some(source_relation_root),
+                    current_source_version: None,
+                });
+            }
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::ProjectNotSelected,
+            });
+        }
+        Err(_) => {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        }
+    };
+    let Some(project) = project_record.project_fields() else {
+        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+            package,
+            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+        });
+    };
+    if project.label != label.as_str()
+        || project_key != backend_engine::package_key(project.label).to_bytes()
+    {
+        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+            package,
+            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+        });
+    }
+    if request
+        .expected_source_relation_root
+        .is_some_and(|expected| expected != source_relation_root)
+        || request
+            .expected_source_version
+            .is_some_and(|expected| expected != project.source_version)
+    {
+        return Ok(PackageSourceMembershipPageResultV1::Stale {
+            package,
+            current_source_relation_root: Some(source_relation_root),
+            current_source_version: Some(project.source_version),
+        });
+    }
+
+    let load_membership_page = |page_key: &[u8; 32]| -> Result<Vec<[u8; 32]>, String> {
+        let page_record = relation
+            .lookup(page_key)
+            .map_err(|error| format!("read membership page: {error}"))?
+            .ok_or_else(|| "selected Project membership page is missing".to_owned())?;
+        let fields = page_record
+            .membership_page_fields()
+            .ok_or_else(|| "selected membership reference does not name a page".to_owned())?;
+        if fields.project != project_key
+            || fields.files.is_empty()
+            || fields.files.len() > backend_engine::MAX_PROJECT_MEMBERSHIP_PAGE_FILES
+            || fields.files.windows(2).any(|pair| pair[0] >= pair[1])
+            || backend_engine::product_source_membership_page_key(project_key, fields.files)
+                .map_or(true, |expected| expected != *page_key)
+        {
+            return Err("selected Project membership page identity is invalid".to_owned());
+        }
+        Ok(fields.files.to_vec())
+    };
+
+    let (file_count, inline_files, page_keys) = match project.files {
+        ProductProjectFileMembership::Inline(files) => (files.len(), Some(files), None),
+        ProductProjectFileMembership::Paged {
+            file_count,
+            page_keys,
+        } => (file_count, None, Some(page_keys)),
+    };
+    if file_count > backend_library::MAX_SELECTED_PROJECT_FRONTIER_FILES {
+        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+            package,
+            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+        });
+    }
+
+    let mut start_offset = 0_u32;
+    let mut page_index = 0_usize;
+    let mut membership_offset = 0_usize;
+    let mut active_page = None::<Vec<[u8; 32]>>;
+    let mut previous_file_key = None;
+    if let Some(cursor) = &request.cursor {
+        if cursor.package != package || cursor.project_key != project_key {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        }
+        if cursor.source_relation_root != source_relation_root
+            || cursor.source_version != project.source_version
+        {
+            return Ok(PackageSourceMembershipPageResultV1::Stale {
+                package,
+                current_source_relation_root: Some(source_relation_root),
+                current_source_version: Some(project.source_version),
+            });
+        }
+        let (membership, actual_key) = match (inline_files, page_keys) {
+            (Some(files), None) => {
+                let offset = usize::from(cursor.membership_offset);
+                if cursor.membership_page != 0 || files.get(offset).is_none() {
+                    return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                        package,
+                        reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                    });
+                }
+                (offset, files[offset])
+            }
+            (None, Some(pages)) => {
+                page_index = usize::from(cursor.membership_page);
+                let Some(page_key) = pages.get(page_index) else {
+                    return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                        package,
+                        reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                    });
+                };
+                let mut ordinal_before_page = 0_u32;
+                for prior_page_key in pages.iter().take(page_index) {
+                    let Ok(prior) = load_membership_page(prior_page_key) else {
+                        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                            package,
+                            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                        });
+                    };
+                    let Ok(prior_len) = u32::try_from(prior.len()) else {
+                        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                            package,
+                            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                        });
+                    };
+                    let Some(next) = ordinal_before_page.checked_add(prior_len) else {
+                        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                            package,
+                            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                        });
+                    };
+                    ordinal_before_page = next;
+                }
+                let Ok(current) = load_membership_page(page_key) else {
+                    return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                        package,
+                        reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                    });
+                };
+                let offset = usize::from(cursor.membership_offset);
+                if current.get(offset).is_none()
+                    || current[offset] != cursor.last_file_key
+                    || ordinal_before_page.saturating_add(cursor.membership_offset as u32)
+                        != cursor.ordinal
+                {
+                    return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                        package,
+                        reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                    });
+                }
+                active_page = Some(current.clone());
+                (offset, current[offset])
+            }
+            _ => {
+                return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                    package,
+                    reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                });
+            }
+        };
+        if actual_key != cursor.last_file_key
+            || (inline_files.is_some() && membership as u32 != cursor.ordinal)
+            || cursor.ordinal.saturating_add(1) >= file_count as u32
+        {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        }
+        membership_offset = membership.saturating_add(1);
+        start_offset = cursor.ordinal.saturating_add(1);
+        previous_file_key = Some(cursor.last_file_key);
+    }
+
+    let mut files = Vec::with_capacity(usize::from(request.limit));
+    let mut last_position = None::<(usize, usize, [u8; 32])>;
+    let mut exhausted = false;
+    while files.len() < usize::from(request.limit) {
+        let next = if let Some(inline) = inline_files {
+            let Some(key) = inline.get(membership_offset).copied() else {
+                exhausted = true;
+                break;
+            };
+            let position = membership_offset;
+            membership_offset += 1;
+            (key, 0, position)
+        } else {
+            let pages = page_keys.unwrap_or_default();
+            let mut found = None;
+            loop {
+                if active_page.is_none() {
+                    let Some(page_key) = pages.get(page_index) else {
+                        exhausted = true;
+                        break;
+                    };
+                    let Ok(page) = load_membership_page(page_key) else {
+                        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                            package,
+                            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                        });
+                    };
+                    if previous_file_key
+                        .is_some_and(|previous| page.first().is_none_or(|first| previous >= *first))
+                    {
+                        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                            package,
+                            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                        });
+                    }
+                    active_page = Some(page);
+                }
+                let Some(page) = active_page.as_ref() else {
+                    return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                        package,
+                        reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                    });
+                };
+                if let Some(key) = page.get(membership_offset).copied() {
+                    let position = (key, page_index, membership_offset);
+                    membership_offset += 1;
+                    found = Some(position);
+                    break;
+                }
+                active_page = None;
+                membership_offset = 0;
+                page_index = page_index.saturating_add(1);
+            }
+            let Some(found) = found else {
+                break;
+            };
+            found
+        };
+        let (file_key, file_page, file_offset) = next;
+        if previous_file_key.is_some_and(|previous| previous >= file_key)
+            || start_offset >= file_count as u32
+        {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        }
+        let file_record = match relation.lookup(&file_key) {
+            Ok(Some(record)) => record,
+            _ => {
+                return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                    package,
+                    reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                });
+            }
+        };
+        if super::super::profile::validate_project_file(project_key, file_key, &file_record)
+            .is_err()
+        {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        }
+        let Some(source) = file_record.file_fields() else {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        };
+        files.push(PackageSourceMembershipFileV1 {
+            file_key,
+            path: source.path.to_owned(),
+            language: PackageSourceMembershipLanguageV1::from(source.language),
+            content_version: source.content_version,
+            source_identity: source.source_identity.map(|identity| *identity.as_ref()),
+        });
+        previous_file_key = Some(file_key);
+        start_offset += 1;
+        last_position = Some((file_page, file_offset, file_key));
+    }
+
+    let has_more = if exhausted {
+        false
+    } else if let Some(inline) = inline_files {
+        membership_offset < inline.len()
+    } else {
+        let pages = page_keys.unwrap_or_default();
+        active_page
+            .as_ref()
+            .is_some_and(|page| membership_offset < page.len())
+            || page_index.saturating_add(1) < pages.len()
+    };
+    if (!has_more && start_offset != file_count as u32)
+        || (has_more && start_offset >= file_count as u32)
+    {
+        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+            package,
+            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+        });
+    }
+
+    let next = if has_more {
+        let Some((membership_page, membership_offset, last_file_key)) = last_position else {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        };
+        Some(PackageSourceMembershipCursorV1 {
+            schema: backend_library::PACKAGE_SOURCE_MEMBERSHIP_SCHEMA,
+            package: package.clone(),
+            project_key,
+            source_relation_root,
+            source_version: project.source_version,
+            membership_page: u16::try_from(membership_page)
+                .map_err(|_| BuiltinModelError("membership page cursor exceeds u16".to_owned()))?,
+            membership_offset: u16::try_from(membership_offset)
+                .map_err(|_| BuiltinModelError("membership file cursor exceeds u16".to_owned()))?,
+            last_file_key,
+            ordinal: start_offset - 1,
+        })
+    } else {
+        None
+    };
+    Ok(PackageSourceMembershipPageResultV1::Page {
+        package,
+        project_key,
+        source_relation_root,
+        source_version: project.source_version,
+        file_count: u32::try_from(file_count).map_err(|_| {
+            BuiltinModelError("selected project source count exceeds u32".to_owned())
+        })?,
+        start_offset: if request.cursor.is_some() {
+            request
+                .cursor
+                .as_ref()
+                .map_or(0, |cursor| cursor.ordinal + 1)
+        } else {
+            0
+        },
+        scope: PackageSourceMembershipScopeV1::IndexedProjectMembership,
+        exclusions: PackageSourceMembershipExclusionsV1::NotCaptured,
+        files: files.into_boxed_slice(),
+        next,
+    })
+}
+
 pub(super) fn semantic_versions(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     package: &backend_engine::PackageReference,

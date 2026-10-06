@@ -197,6 +197,7 @@ fn take_json(
             ArgumentKind::IndexJobTicket
                 | ArgumentKind::CargoPackageReadmeOrigin
                 | ArgumentKind::CargoPackageSourceRequest
+                | ArgumentKind::PackageSourceMembershipRequest
         ) && scalar.is_object()
         {
             serde_json::to_string(&scalar).ok()
@@ -718,6 +719,18 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
         CommandId::SemanticVersions => SurfaceCommand::SemanticVersions {
             package: package(invocation, 0)?,
         },
+        CommandId::PackageSourceMembership => {
+            let request = serde_json::from_str::<
+                backend_library::PackageSourceMembershipPageRequestV1,
+            >(invocation.require(0)?)
+            .map_err(|error| {
+                Fault::usage(
+                    "request",
+                    format!("use the exact package source-membership page request: {error}"),
+                )
+            })?;
+            SurfaceCommand::PackageSourceMembership { request }
+        }
         CommandId::SelectSemanticVersion => select_semantic_version(invocation)?,
         CommandId::PackageProfile => SurfaceCommand::PackageProfile {
             package: package(invocation, 0)?,

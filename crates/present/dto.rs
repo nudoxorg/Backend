@@ -775,6 +775,10 @@ pub struct ProductDto {
     /// Exact checked Project membership captured with the selected semantic generations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_source_frontier: Option<backend_library::SelectedProjectSourceFrontier>,
+    /// Exact selected Project source-membership page and its continuation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_source_membership_page:
+        Option<backend_library::PackageSourceMembershipPageResultV1>,
 }
 
 /// Shared page envelope projected for CLI, MCP, and desktop product replies.
@@ -860,6 +864,7 @@ impl ProductDto {
             index_job: view.index_job().cloned(),
             index_operation: view.index_operation().cloned(),
             selected_source_frontier: view.selected_source_frontier().cloned(),
+            package_source_membership_page: view.package_source_membership_page().cloned(),
         }
     }
 }

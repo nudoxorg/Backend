@@ -12,7 +12,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) struct StoredSnapshot {
     snapshot: WorkspaceSnapshot,
+    head: backend_engine::WorkspaceHead,
     directory: PathBuf,
+}
+
+impl StoredSnapshot {
+    fn cold_reopen(&self) -> Result<WorkspaceSnapshot, BuiltinModelError> {
+        let registry = backend_engine::RelationAdmissionRegistry::new()
+            .with_relation::<backend_engine::ProductSourceRelation>()
+            .map_err(|error| BuiltinModelError(format!("register source relation: {error:?}")))?;
+        let store = backend_engine::FileStore::open_with_registry(
+            &self.directory,
+            16 * 1024 * 1024,
+            registry,
+        )
+        .map_err(|error| BuiltinModelError(format!("reopen source store: {error:?}")))?;
+        Ok(self.head.snapshot_in(Arc::new(store)))
+    }
 }
 
 impl Drop for StoredSnapshot {
@@ -320,6 +336,7 @@ fn store_relation(
     let head = super::head_from_relation(relation)?;
     Ok(StoredSnapshot {
         snapshot: head.snapshot_in(Arc::new(store)),
+        head,
         directory,
     })
 }
@@ -448,8 +465,220 @@ fn percentiles(samples: &[u128]) -> (u128, u128) {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use super::{shared_declarations, snapshot_holding};
+    use super::{shared_declarations, snapshot_holding, store_relation};
+    use backend_library::{
+        PackageReference, PackageSourceMembershipPageRequestV1,
+        PackageSourceMembershipPageResultV1, PackageSourceMembershipUnavailableV1,
+    };
+    use backend_version::{ContentId, SourceFactDomain};
+    use std::collections::BTreeSet;
     use std::sync::Arc;
+
+    fn membership_page(
+        snapshot: &backend_engine::WorkspaceSnapshot,
+        request: &PackageSourceMembershipPageRequestV1,
+    ) -> PackageSourceMembershipPageResultV1 {
+        super::super::commands::package_source_membership_page_from_snapshot(snapshot, request)
+            .expect("typed membership page")
+    }
+
+    fn local_package(label: &str) -> PackageReference {
+        PackageReference::parse(label).expect("local package reference")
+    }
+
+    #[test]
+    fn source_membership_pages_are_bounded_root_bound_and_cold_replayable() {
+        let declarations = shared_declarations(1).expect("declarations");
+        let stored = snapshot_holding(1, 2_043, &declarations).expect("indexed snapshot");
+        let package = local_package("pkg-0");
+        let mut first_request = PackageSourceMembershipPageRequestV1::first(package.clone());
+        first_request.limit = 128;
+        let first = membership_page(&stored, &first_request);
+        let (source_relation_root, source_version, file_count, first_files, first_cursor) =
+            match first {
+                PackageSourceMembershipPageResultV1::Page {
+                    source_relation_root,
+                    source_version,
+                    file_count,
+                    start_offset,
+                    files,
+                    next,
+                    ..
+                } => {
+                    assert_eq!(start_offset, 0);
+                    assert_eq!(files.len(), 128);
+                    assert_eq!(file_count, 2_043);
+                    (
+                        source_relation_root,
+                        source_version,
+                        file_count,
+                        files,
+                        next.expect("first page continuation"),
+                    )
+                }
+                other => panic!("expected first membership page, got {other:?}"),
+            };
+
+        // Open the same stored head through a fresh FileStore, then resume with
+        // only the typed cursor. The API keeps no page state between calls.
+        let reopened = stored.cold_reopen().expect("cold source store reopen");
+        let mut continuation_request = PackageSourceMembershipPageRequestV1::first(package.clone())
+            .with_selection(source_relation_root, source_version)
+            .with_cursor(first_cursor.clone());
+        continuation_request.limit = 128;
+        let continuation = membership_page(&reopened, &continuation_request);
+        let (second_files, second_cursor) = match continuation {
+            PackageSourceMembershipPageResultV1::Page {
+                source_relation_root: resumed_root,
+                source_version: resumed_version,
+                file_count: resumed_count,
+                start_offset,
+                files,
+                next,
+                ..
+            } => {
+                assert_eq!(resumed_root, source_relation_root);
+                assert_eq!(resumed_version, source_version);
+                assert_eq!(resumed_count, file_count);
+                assert_eq!(start_offset, 128);
+                assert_eq!(files.len(), 128);
+                (files, next)
+            }
+            other => panic!("expected resumed membership page, got {other:?}"),
+        };
+
+        let changed = snapshot_holding(1, 2_044, &declarations).expect("changed snapshot");
+        assert!(
+            matches!(
+                membership_page(&changed, &continuation_request),
+                PackageSourceMembershipPageResultV1::Stale { .. }
+            ),
+            "a changed selected relation root must refuse the old cursor"
+        );
+
+        let mut selected = first_files
+            .iter()
+            .map(|file| (file.file_key, file.path.clone()))
+            .collect::<BTreeSet<_>>();
+        selected.extend(
+            second_files
+                .iter()
+                .map(|file| (file.file_key, file.path.clone())),
+        );
+        let mut next = second_cursor;
+        let mut expected_offset = 256_u32;
+        let mut pages = 2;
+        while let Some(cursor) = next {
+            let mut request = PackageSourceMembershipPageRequestV1::first(package.clone())
+                .with_selection(source_relation_root, source_version)
+                .with_cursor(cursor);
+            request.limit = 128;
+            let result = membership_page(&reopened, &request);
+            let PackageSourceMembershipPageResultV1::Page {
+                start_offset,
+                files,
+                next: following,
+                ..
+            } = result
+            else {
+                panic!("same-root page must remain readable");
+            };
+            assert_eq!(start_offset, expected_offset);
+            assert!(!files.is_empty());
+            assert!(files.len() <= 128);
+            expected_offset += u32::try_from(files.len()).expect("bounded page count");
+            selected.extend(files.iter().map(|file| (file.file_key, file.path.clone())));
+            next = following;
+            pages += 1;
+        }
+        assert!(
+            pages > 2,
+            "the fixture must cross several bounded API pages"
+        );
+        assert_eq!(expected_offset, file_count);
+        assert_eq!(selected.len(), file_count as usize);
+        let expected =
+            super::super::read_package_sources(&reopened, backend_engine::package_key("pkg-0"))
+                .expect("fixture's selected Project members")
+                .files
+                .into_iter()
+                .map(|(key, record)| {
+                    let path = record.file_fields().expect("file fields").path.to_owned();
+                    (key, path)
+                })
+                .collect::<BTreeSet<_>>();
+        assert_eq!(selected, expected);
+    }
+
+    #[test]
+    fn source_membership_preserves_typed_digest_and_rejects_absent_members() {
+        let label = "pkg-identities";
+        let project = backend_engine::package_key(label).to_bytes();
+        let path = "src/lib.ts";
+        let bytes = b"export const answer = 42;\n";
+        let content_version =
+            backend_compile::typed_of::<backend_compile::InputContentSchema>(bytes).to_bytes();
+        let source_identity = ContentId::<SourceFactDomain>::from_canonical_bytes(bytes);
+        let file_key = backend_engine::product_source_file_key(project, path);
+        let declarations = shared_declarations(1).expect("declarations");
+        let file = backend_engine::ProductSourceRecord::identified_file_within_row_capacity(
+            project,
+            path,
+            backend_compile::SourceLanguage::TypeScript,
+            content_version,
+            [2; 32],
+            Arc::clone(&declarations),
+            source_identity,
+        )
+        .expect("identified source file");
+        let project_record =
+            backend_engine::ProductSourceRecord::project(label, [3; 32], vec![file_key])
+                .expect("selected Project");
+        let relation =
+            backend_engine::RelationState::<backend_engine::ProductSourceRelation>::from_entries(
+                vec![(project, project_record), (file_key, file)],
+                super::super::admitted_coverage().expect("coverage"),
+            )
+            .expect("source relation");
+        let snapshot = store_relation(relation, "source-membership-identities".to_owned())
+            .expect("stored source relation");
+        let result = membership_page(
+            &snapshot,
+            &PackageSourceMembershipPageRequestV1::first(local_package(label)),
+        );
+        let PackageSourceMembershipPageResultV1::Page { files, .. } = result else {
+            panic!("identified member page");
+        };
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, path);
+        assert_eq!(files[0].content_version, content_version);
+        assert_eq!(files[0].source_identity, Some(*source_identity.as_ref()));
+
+        let missing_label = "pkg-absent-member";
+        let missing_project = backend_engine::package_key(missing_label).to_bytes();
+        let absent_key = backend_engine::product_source_file_key(missing_project, "src/missing.ts");
+        let project_record =
+            backend_engine::ProductSourceRecord::project(missing_label, [4; 32], vec![absent_key])
+                .expect("Project referring to absent row");
+        let relation =
+            backend_engine::RelationState::<backend_engine::ProductSourceRelation>::from_entries(
+                vec![(missing_project, project_record)],
+                super::super::admitted_coverage().expect("coverage"),
+            )
+            .expect("relation with absent selected member");
+        let snapshot = store_relation(relation, "source-membership-absent-file".to_owned())
+            .expect("stored incomplete relation");
+        assert_eq!(
+            membership_page(
+                &snapshot,
+                &PackageSourceMembershipPageRequestV1::first(local_package(missing_label)),
+            ),
+            PackageSourceMembershipPageResultV1::Unavailable {
+                package: local_package(missing_label),
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            }
+        );
+    }
 
     #[test]
     fn one_package_lookup_matches_its_rows_in_the_full_page() {

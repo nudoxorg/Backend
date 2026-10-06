@@ -63,6 +63,8 @@ pub enum ArgumentKind {
     CargoPackageReadmeOrigin,
     /// The exact JSON package and tree binding returned by a ProjectTree.
     CargoPackageSourceRequest,
+    /// Exact package source-membership page request JSON.
+    PackageSourceMembershipRequest,
     /// A non-negative progress event sequence.
     Sequence,
 }
@@ -88,6 +90,7 @@ impl ArgumentKind {
             Self::IndexJobTicket => "TICKET",
             Self::CargoPackageReadmeOrigin => "ORIGIN_JSON",
             Self::CargoPackageSourceRequest => "SOURCE_REQUEST_JSON",
+            Self::PackageSourceMembershipRequest => "MEMBERSHIP_REQUEST_JSON",
             Self::Sequence => "SEQUENCE",
             Self::Generation => "GENERATION",
             Self::GraphDirection => "DIRECTION",
@@ -106,6 +109,7 @@ impl ArgumentKind {
             Self::IndexJobTicket
             | Self::CargoPackageReadmeOrigin
             | Self::CargoPackageSourceRequest => "object",
+            Self::PackageSourceMembershipRequest => "object",
             _ => "string",
         }
     }
@@ -346,6 +350,7 @@ impl CommandGrammar {
             | CommandId::IndexSearch
             | CommandId::PackageVersions
             | CommandId::SemanticVersions
+            | CommandId::PackageSourceMembership
             | CommandId::SelectSemanticVersion
             | CommandId::PackageProfile
             | CommandId::Subscribe
@@ -481,7 +486,7 @@ const CURSOR: ArgumentSpec = ArgumentSpec::optional(
 );
 
 /// The calling convention of every registry row, in registry order.
-pub const GRAMMARS: [CommandGrammar; 51] = [
+pub const GRAMMARS: [CommandGrammar; 52] = [
     CommandGrammar {
         name: "advisory",
         tool: "backend.advisory",
@@ -782,6 +787,18 @@ pub const GRAMMARS: [CommandGrammar; 51] = [
         )],
         options: &[],
         when: "Use before select-semantic-version to see which compiler generations were retained.",
+    },
+    CommandGrammar {
+        name: "package-source-membership",
+        tool: "backend.package_source_membership",
+        aliases: &[],
+        positional: &[ArgumentSpec::required(
+            "request",
+            ArgumentKind::PackageSourceMembershipRequest,
+            "Exact local package plus the selected source root/version and continuation returned by the preceding page.",
+        )],
+        options: &[],
+        when: "Use to enumerate the exact File rows selected by a local Project, with package-relative paths, parser language, content version, and optional SourceFact identity. The reply states that tsconfig, build-tag, and platform exclusion reasons were not captured.",
     },
     CommandGrammar {
         name: "select-semantic-version",

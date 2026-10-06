@@ -65,7 +65,7 @@ const MIN_PROJECT_MEMBERSHIP_PAGE_FILES: usize = 256;
 
 /// Maximum file keys in one membership page. The row-value capacity, rather
 /// than a logical project limit, remains the hard encoded-byte bound.
-const MAX_PROJECT_MEMBERSHIP_PAGE_FILES: usize = 1024;
+pub const MAX_PROJECT_MEMBERSHIP_PAGE_FILES: usize = 1024;
 
 /// Content-defined cuts use stable file-key anchors between the minimum and
 /// maximum page geometry. The forced maximum can reflow later pages in the

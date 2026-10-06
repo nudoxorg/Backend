@@ -2661,6 +2661,11 @@ pub enum SurfaceCommand {
         /// Exact product package reference.
         package: PackageReference,
     },
+    /// Read one snapshot-bound page of exact selected local Project File rows.
+    PackageSourceMembership {
+        /// Exact package, expected selected root, and optional continuation.
+        request: crate::PackageSourceMembershipPageRequestV1,
+    },
     /// Select one exact retained compiler generation for product projection.
     SelectSemanticVersion {
         /// Exact product package reference.
@@ -2843,6 +2848,7 @@ impl SurfaceCommand {
             Self::IndexSearch { .. } => CommandId::IndexSearch,
             Self::PackageVersions { .. } => CommandId::PackageVersions,
             Self::SemanticVersions { .. } => CommandId::SemanticVersions,
+            Self::PackageSourceMembership { .. } => CommandId::PackageSourceMembership,
             Self::SelectSemanticVersion { .. } => CommandId::SelectSemanticVersion,
             Self::PackageProfile { .. } => CommandId::PackageProfile,
             Self::Subscribe { .. } => CommandId::Subscribe,
@@ -2905,6 +2911,9 @@ impl SurfaceCommand {
             }
             Self::CargoPackageSourceInventory { request } if !request.has_admissible_shape() => {
                 Err(ProductAdmissionError::CargoSourceShape)
+            }
+            Self::PackageSourceMembership { request } if !request.has_admissible_shape() => {
+                Err(ProductAdmissionError::PackageSourceMembershipShape)
             }
             Self::CargoPackageReadme { request } if !request.has_admissible_shape() => {
                 Err(ProductAdmissionError::CargoSourceShape)
@@ -4150,6 +4159,8 @@ pub enum SurfaceReply {
     PackageVersions(Box<[RegistryPackageRecord]>),
     /// Immutable compiler generations for one exact package.
     SemanticVersions(Box<[SemanticVersionRecord]>),
+    /// One bounded page of exact selected Project source membership.
+    PackageSourceMembershipPage(crate::PackageSourceMembershipPageResultV1),
     /// Immediate status returned after an index start request.
     IndexStarted(IndexStartResult),
     /// Immediate status for a start or replay using a durable operation key.
@@ -4238,6 +4249,7 @@ impl SurfaceReply {
             Self::IndexSearchPage(_) => CommandId::IndexSearch,
             Self::PackageVersions(_) => CommandId::PackageVersions,
             Self::SemanticVersions(_) => CommandId::SemanticVersions,
+            Self::PackageSourceMembershipPage(_) => CommandId::PackageSourceMembership,
             Self::IndexStarted(_) => CommandId::IndexStart,
             Self::IndexOperationStarted(_) => CommandId::IndexStart,
             Self::IndexOperationStatus(_) => CommandId::IndexProgress,
@@ -4337,6 +4349,16 @@ impl SurfaceReply {
                     }
                 }
                 records.len()
+            }
+            Self::PackageSourceMembershipPage(result) => {
+                if !result.has_admissible_shape() {
+                    return Err(ProductAdmissionError::PackageSourceMembershipShape);
+                }
+                match result {
+                    crate::PackageSourceMembershipPageResultV1::Page { files, .. } => files.len(),
+                    crate::PackageSourceMembershipPageResultV1::Stale { .. }
+                    | crate::PackageSourceMembershipPageResultV1::Unavailable { .. } => 1,
+                }
             }
             Self::SemanticVersionSelected(record) => {
                 record.admit()?;
@@ -4554,6 +4576,9 @@ impl SurfaceReply {
                 .saturating_add(record.coordinate.as_str().len())
                 .saturating_add(serialized_json_size(&record.history_status))
                 .saturating_add(serialized_json_size(&record.selected_source_frontier)),
+            Self::PackageSourceMembershipPage(result) => {
+                serde_json::to_vec(result).map_or(0, |bytes| bytes.len())
+            }
             Self::IndexStarted(result) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(result).map_or(0, |bytes| bytes.len())),
             Self::IndexOperationStarted(observation) | Self::IndexOperationStatus(observation) => {
@@ -4853,6 +4878,8 @@ pub enum ProductAdmissionError {
     PackageGraphPage,
     /// Cargo source package or relative file authority is malformed.
     CargoSourceShape,
+    /// Selected Project source-membership request or page is malformed.
+    PackageSourceMembershipShape,
     /// An index progress page contains mismatched tickets or invalid sequence/profile facts.
     IndexProgressShape,
     /// An index cancellation terminal receipt belongs to a different ticket.
@@ -4899,6 +4926,9 @@ impl core::fmt::Display for ProductAdmissionError {
             }
             Self::PackageGraphPage => "package graph request or page is invalid",
             Self::CargoSourceShape => "Cargo source authority or relative file path is invalid",
+            Self::PackageSourceMembershipShape => {
+                "selected Project source membership is malformed or outside its bound"
+            }
             Self::IndexProgressShape => {
                 "index progress page has inconsistent sequence or profile facts"
             }

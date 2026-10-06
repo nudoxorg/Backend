@@ -48,13 +48,13 @@ use backend_library::{
     CompileExecutionIntent, CoverageCapability, DiffRecord, DocumentQuery, GraphNeighborhoodQuery,
     GraphQueryPage, GraphQueryRequest, GraphValue, HealthReport, IndexCancelReceipt,
     IndexJobObservation, IndexJobTerminal, IndexJobTicket, IndexOperationKey,
-    IndexOperationObservation, IndexStartResult, NameQuery, OutlineQuery,
-    PackageReference, PageContinuation, PageRequest, PageTerminal, Query, QueryLimit,
-    ReplyAdmissionError, ReplyDto, RequestAdmissionError, SemanticGenerationId,
-    SemanticLanguageProfile, SemanticShapeBatch, SemanticShapeBudget, SemanticShapeRequest,
-    SemanticVersionRecord, SurfaceCommand, SurfaceReply, SymbolAddress, SymbolKey,
-    ViewProjectionError, ViewStateRoot, WireCertificate, WireClaim, WireSchema, encode_id,
-    package_key, symbol_key,
+    IndexOperationObservation, IndexStartResult, NameQuery, OutlineQuery, PackageReference,
+    PackageSourceMembershipPageRequestV1, PackageSourceMembershipPageResultV1, PageContinuation,
+    PageRequest, PageTerminal, Query, QueryLimit, ReplyAdmissionError, ReplyDto,
+    RequestAdmissionError, SemanticGenerationId, SemanticLanguageProfile, SemanticShapeBatch,
+    SemanticShapeBudget, SemanticShapeRequest, SemanticVersionRecord, SurfaceCommand, SurfaceReply,
+    SymbolAddress, SymbolKey, ViewProjectionError, ViewStateRoot, WireCertificate, WireClaim,
+    WireSchema, encode_id, package_key, symbol_key,
 };
 pub use backend_replication::SelectedGenerationStamp as SelectedStamp;
 use backend_replication::{
@@ -1376,6 +1376,26 @@ impl Session {
             SurfaceReply::SemanticVersions(records) => Ok(records),
             _ => Err(ClientError::Protocol(
                 "semantic versions reply changed shape".to_owned(),
+            )),
+        }
+    }
+
+    /// Reads one bounded page of exact source File rows selected by a local Project.
+    ///
+    /// Continuations are stateless and bound to the same package, selected
+    /// source relation root, source version, and canonical last file key.
+    ///
+    /// # Errors
+    /// Returns an error when request admission, transport, or the page reply
+    /// contract fails.
+    pub fn package_source_membership_page(
+        &mut self,
+        request: PackageSourceMembershipPageRequestV1,
+    ) -> Result<PackageSourceMembershipPageResultV1, ClientError> {
+        match self.surface(SurfaceCommand::PackageSourceMembership { request })? {
+            SurfaceReply::PackageSourceMembershipPage(page) => Ok(page),
+            _ => Err(ClientError::Protocol(
+                "package source membership reply changed shape".to_owned(),
             )),
         }
     }

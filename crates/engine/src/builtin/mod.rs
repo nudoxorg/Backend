@@ -52,10 +52,11 @@ pub use profile::{
     execution_manifest, execution_resources, profile_descriptor, profile_ids, profile_output_len,
 };
 pub use relation::{
-    BuiltinInputSchema, Container, DeclarationKind, DeclarationRetention, ProductFileRef,
-    ProductInput, ProductProjectFileMembership, ProductProjectMembership, ProductProjectRef,
-    ProductSourceDeltaFacts, ProductSourceMembershipPageRef, ProductSourceProjectUpdate,
-    ProductSourceRecord, ProductSourceRelation, ProductSourceRetentionFacts, ProductSourceSnapshot,
+    BuiltinInputSchema, Container, DeclarationKind, DeclarationRetention,
+    MAX_PROJECT_MEMBERSHIP_PAGE_FILES, ProductFileRef, ProductInput, ProductProjectFileMembership,
+    ProductProjectMembership, ProductProjectRef, ProductSourceDeltaFacts,
+    ProductSourceMembershipPageRef, ProductSourceProjectUpdate, ProductSourceRecord,
+    ProductSourceRelation, ProductSourceRetentionFacts, ProductSourceSnapshot,
     ProductSourceTransition, RetainedDeclarations, SourceDeclaration, SourceLanguage,
     SourceLocation, SourceUnavailableReason, legacy_product_source_file_key,
     product_source_file_key, product_source_membership_page_key,

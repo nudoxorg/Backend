@@ -11,6 +11,7 @@ mod semantic_shapes;
 mod snapshot;
 
 pub(in crate::builtin) use adapter::{CommandAdapter, Executed};
+pub(in crate::builtin) use index::package_source_membership_page_from_snapshot;
 #[cfg(test)]
 pub(in crate::builtin) use index::prepare_source_facts_changes;
 #[cfg(any(test, feature = "test-support"))]

@@ -139,8 +139,7 @@ pub fn bounded_text(text: &str) -> String {
     if text.len() <= MAX_PREVIEW_TEXT_BYTES {
         return text.to_owned();
     }
-    const MARKER: &str =
-        "\n\n… output truncated; request a narrower page or detail=summary";
+    const MARKER: &str = "\n\n… output truncated; request a narrower page or detail=summary";
     let mut end = MAX_PREVIEW_TEXT_BYTES.saturating_sub(MARKER.len());
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
@@ -278,6 +277,7 @@ pub fn encode_answer(
                         index_job: product.index_job,
                         index_operation: product.index_operation,
                         selected_source_frontier: product.selected_source_frontier,
+                        package_source_membership_page: product.package_source_membership_page,
                     },
                     budget,
                 )
@@ -587,6 +587,8 @@ struct SummaryProductDto {
     index_operation: Option<backend_library::IndexOperationObservation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     selected_source_frontier: Option<backend_library::SelectedProjectSourceFrontier>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
 }
 
 #[derive(Default)]

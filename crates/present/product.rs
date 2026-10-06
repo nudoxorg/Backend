@@ -190,6 +190,7 @@ pub struct ProductView {
     index_job: Option<IndexJobProjection>,
     index_operation: Option<backend_library::IndexOperationObservation>,
     selected_source_frontier: Option<SelectedProjectSourceFrontier>,
+    package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
 }
 
 /// Exact owner-issued indexing state retained alongside its readable projection.
@@ -389,6 +390,14 @@ impl ProductView {
         self.selected_source_frontier.as_ref()
     }
 
+    /// Returns the exact typed page needed to resume selected source membership.
+    #[must_use]
+    pub fn package_source_membership_page(
+        &self,
+    ) -> Option<&backend_library::PackageSourceMembershipPageResultV1> {
+        self.package_source_membership_page.as_ref()
+    }
+
     /// Returns this product answer's typed owner cursor, when it has one.
     #[must_use]
     pub fn cursor_family(&self) -> Option<&ContinuationCursor> {
@@ -447,6 +456,14 @@ impl ProductView {
         self
     }
 
+    fn with_package_source_membership_page(
+        mut self,
+        page: backend_library::PackageSourceMembershipPageResultV1,
+    ) -> Self {
+        self.package_source_membership_page = Some(page);
+        self
+    }
+
     /// Records one product answer a surface assembled itself.
     ///
     /// An accepted intent is not a [`SurfaceReply`], but it is the same shape
@@ -462,6 +479,7 @@ impl ProductView {
             index_job: None,
             index_operation: None,
             selected_source_frontier: None,
+            package_source_membership_page: None,
         }
     }
 
@@ -477,6 +495,7 @@ impl ProductView {
             index_job: None,
             index_operation: None,
             selected_source_frontier: None,
+            package_source_membership_page: None,
         }
     }
 
@@ -490,6 +509,7 @@ impl ProductView {
             index_job: None,
             index_operation: None,
             selected_source_frontier: None,
+            package_source_membership_page: None,
         }
     }
 
@@ -503,6 +523,7 @@ impl ProductView {
             index_job: None,
             index_operation: None,
             selected_source_frontier: None,
+            package_source_membership_page: None,
         }
     }
 
@@ -516,6 +537,7 @@ impl ProductView {
             index_job: None,
             index_operation: None,
             selected_source_frontier: None,
+            package_source_membership_page: None,
         }
     }
 }
@@ -585,6 +607,80 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         ),
         SurfaceReply::SemanticVersionSelected(record) => {
             ProductView::rows("select-semantic-version", vec![semantic_row(record)])
+        }
+        SurfaceReply::PackageSourceMembershipPage(page) => {
+            let view = match page {
+                backend_library::PackageSourceMembershipPageResultV1::Page {
+                    package,
+                    file_count,
+                    files,
+                    next,
+                    exclusions,
+                    ..
+                } => {
+                    let mut rows = Vec::with_capacity(files.len().saturating_add(1));
+                    rows.push(ProductRecord::new(
+                        format!(
+                            "{} · {} selected source file(s)",
+                            package.as_str(),
+                            files.len()
+                        ),
+                        None,
+                        vec![
+                            format!("Project frontier: {file_count} file(s) total"),
+                            format!("exclusions: {exclusions:?}"),
+                            format!(
+                                "continuation: {}",
+                                if next.is_some() {
+                                    "available"
+                                } else {
+                                    "complete"
+                                }
+                            ),
+                        ],
+                    ));
+                    rows.extend(files.iter().map(|file| {
+                        ProductRecord::new(
+                            file.path.clone(),
+                            Some(file.path.clone()),
+                            vec![
+                                format!("{:?}", file.language),
+                                format!(
+                                    "InputContentSchema v1: {}",
+                                    encode_id(&file.content_version)
+                                ),
+                                file.source_identity.map_or_else(
+                                    || "SourceFactDomain: not recorded".to_owned(),
+                                    |identity| {
+                                        format!("SourceFactDomain: {}", encode_id(&identity))
+                                    },
+                                ),
+                            ],
+                        )
+                    }));
+                    ProductView::rows("package-source-membership", rows)
+                }
+                backend_library::PackageSourceMembershipPageResultV1::Stale { package, .. } => {
+                    ProductView::scalar(
+                        "package-source-membership",
+                        format!(
+                            "The selected Project source root for {} changed. Start a fresh first page.",
+                            package.as_str()
+                        ),
+                    )
+                }
+                backend_library::PackageSourceMembershipPageResultV1::Unavailable {
+                    package,
+                    reason,
+                } => ProductView::scalar(
+                    "package-source-membership",
+                    format!(
+                        "The selected source membership for {} is unavailable: {reason:?}.",
+                        package.as_str()
+                    ),
+                ),
+            };
+            view.with_package_source_membership_page(page.clone())
         }
         SurfaceReply::IndexStarted(result) => {
             index_start_view(result).with_index_job(IndexJobProjection::Started(result.clone()))
@@ -2362,6 +2458,74 @@ mod tests {
                 .and_then(|page| page.next_cursor)
                 .as_deref(),
             Some("mcp1-signed-token")
+        );
+    }
+
+    #[test]
+    fn package_source_membership_dto_preserves_typed_cursor_and_reads_older_payloads() {
+        let package = PackageReference::parse("demo-package").expect("local package");
+        let cursor = backend_library::PackageSourceMembershipCursorV1 {
+            schema: backend_library::PACKAGE_SOURCE_MEMBERSHIP_SCHEMA,
+            package: package.clone(),
+            project_key: [0x11; 32],
+            source_relation_root: [0x22; 32],
+            source_version: [0x33; 32],
+            membership_page: 0,
+            membership_offset: 0,
+            ordinal: 0,
+            last_file_key: [0x44; 32],
+        };
+        let page = backend_library::PackageSourceMembershipPageResultV1::Page {
+            package,
+            project_key: [0x11; 32],
+            source_relation_root: [0x22; 32],
+            source_version: [0x33; 32],
+            file_count: 2,
+            start_offset: 0,
+            scope: backend_library::PackageSourceMembershipScopeV1::IndexedProjectMembership,
+            exclusions: backend_library::PackageSourceMembershipExclusionsV1::NotCaptured,
+            files: vec![backend_library::PackageSourceMembershipFileV1 {
+                file_key: [0x44; 32],
+                path: "src/index.ts".to_owned(),
+                language: backend_library::PackageSourceMembershipLanguageV1::TypeScript,
+                content_version: [0x55; 32],
+                source_identity: Some([0x66; 32]),
+            }]
+            .into_boxed_slice(),
+            next: Some(cursor),
+        };
+        let view = product_view(&SurfaceReply::PackageSourceMembershipPage(page.clone()));
+        let dto = crate::dto::ProductDto::new(&view);
+        let encoded = serde_json::to_value(&dto).expect("product DTO JSON");
+        assert_eq!(
+            encoded["package_source_membership_page"]["next"]["last_file_key"][0],
+            0x44
+        );
+        assert_eq!(
+            encoded["package_source_membership_page"]["files"][0]["path"],
+            "src/index.ts"
+        );
+        assert_eq!(
+            encoded["package_source_membership_page"]["files"][0]["language"],
+            "typescript"
+        );
+        assert_eq!(
+            serde_json::from_value::<crate::dto::ProductDto>(encoded.clone())
+                .expect("current DTO round trip")
+                .package_source_membership_page,
+            Some(page)
+        );
+
+        let mut older_payload = encoded;
+        older_payload
+            .as_object_mut()
+            .expect("object DTO")
+            .remove("package_source_membership_page");
+        assert!(
+            serde_json::from_value::<crate::dto::ProductDto>(older_payload)
+                .expect("previous DTO without source page")
+                .package_source_membership_page
+                .is_none()
         );
     }
 

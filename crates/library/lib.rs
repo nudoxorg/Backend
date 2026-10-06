@@ -48,6 +48,7 @@ mod rich_graph;
 mod semantic_shape;
 mod source_atom;
 mod source_discovery;
+mod source_membership;
 mod surface;
 mod view;
 mod wire;
@@ -228,6 +229,14 @@ pub use source_discovery::{
     MAX_DISCOVERY_EVENT_TEXT_BYTES, MAX_DISCOVERY_METADATA_PAGE_ENCODED_BYTES,
     MAX_DISCOVERY_METADATA_PAGE_ROWS, MAX_DISCOVERY_PAGE_ITEMS, MAX_DISCOVERY_PROJECTS,
     MAX_DISCOVERY_REVISION_BYTES, RegistryFactReadError, RegistryFactVersionId,
+};
+pub use source_membership::{
+    MAX_PACKAGE_SOURCE_MEMBERSHIP_PAGE_FILES, MAX_PACKAGE_SOURCE_MEMBERSHIP_PATH_BYTES,
+    PACKAGE_SOURCE_MEMBERSHIP_SCHEMA, PackageSourceMembershipCursorV1,
+    PackageSourceMembershipExclusionsV1, PackageSourceMembershipFileV1,
+    PackageSourceMembershipLanguageV1, PackageSourceMembershipPageRequestV1,
+    PackageSourceMembershipPageResultV1, PackageSourceMembershipScopeV1,
+    PackageSourceMembershipUnavailableV1,
 };
 pub use surface::{
     AuthorityClassFact, AuthorityPhaseFact, CompilerAuthorityDiagnosticFacts, CompilerLanguageFact,

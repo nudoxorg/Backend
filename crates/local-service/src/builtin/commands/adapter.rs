@@ -16,8 +16,9 @@ use super::index::{
     IndexScanResult, IndexScanWork, PreparedIndex, PreparedProductSelection, capture_index_scan,
     commit_pending_capture_failure, deferred_compile_was_cancelled, finish_deferred_index,
     finish_deferred_profile, finish_index_scan, index_project_intent_at,
-    index_project_intent_with_cluster_and_intent, remove_project_intent, run_deferred_compile,
-    run_index_scan, semantic_version_record, semantic_versions,
+    index_project_intent_with_cluster_and_intent, package_source_membership_page,
+    remove_project_intent, run_deferred_compile, run_index_scan, semantic_version_record,
+    semantic_versions,
 };
 use super::index_operation::{
     Acceptance as IndexOperationAcceptance, IndexOperationJournal, JournalEntry,
@@ -393,6 +394,7 @@ fn answers_while_indexing(command: &Command) -> bool {
                 | S::IndexSearch { .. }
                 | S::PackageVersions { .. }
                 | S::SemanticVersions { .. }
+                | S::PackageSourceMembership { .. }
                 | S::PackageProfile { .. }
                 | S::Subscriptions
                 | S::Releases { .. }
@@ -3595,6 +3597,20 @@ impl CommandAdapter {
                     CommandReply::Surface(backend_engine::SurfaceReply::SemanticVersions(records))
                 },
             ),
+            backend_engine::SurfaceCommand::PackageSourceMembership { request } => {
+                package_source_membership_page(daemon, &request).map_or_else(
+                    |error| {
+                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
+                            error.to_string(),
+                        ))
+                    },
+                    |page| {
+                        CommandReply::Surface(
+                            backend_engine::SurfaceReply::PackageSourceMembershipPage(page),
+                        )
+                    },
+                )
+            }
             backend_engine::SurfaceCommand::SelectSemanticVersion {
                 package,
                 coordinate,

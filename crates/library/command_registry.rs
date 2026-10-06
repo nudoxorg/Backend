@@ -39,6 +39,7 @@ impl CommandSpec {
                 | CommandId::IndexSearch
                 | CommandId::PackageVersions
                 | CommandId::SemanticVersions
+                | CommandId::PackageSourceMembership
                 | CommandId::SelectSemanticVersion
                 | CommandId::PackageProfile
                 | CommandId::Subscribe
@@ -95,7 +96,7 @@ pub enum CommandDomain {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 51] = [
+pub const COMMANDS: [CommandSpec; 52] = [
     CommandSpec {
         id: CommandId::Advisory,
         name: "advisory",
@@ -504,6 +505,14 @@ pub const COMMANDS: [CommandSpec; 51] = [
         mutation: CommandMutation::Read,
         domain: CommandDomain::Library,
     },
+    CommandSpec {
+        id: CommandId::PackageSourceMembership,
+        name: "package-source-membership",
+        title: "Package Source Membership",
+        description: "Read a bounded, snapshot-bound page of exact File rows selected by one local Project, including package-relative paths and source identities.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
 ];
 
 /// Finds one shared command row or internal owner-command description.
@@ -571,6 +580,7 @@ pub fn command_spec(id: CommandId) -> CommandSpec {
         CommandId::CargoPackageSourceInventory => 48,
         CommandId::CargoPackageReadme => 49,
         CommandId::CargoPackageReadmeLink => 50,
+        CommandId::PackageSourceMembership => 51,
     };
     COMMANDS[index]
 }
