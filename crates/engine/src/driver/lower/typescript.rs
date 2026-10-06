@@ -4163,7 +4163,8 @@ pub(crate) fn collect_with_tsz<'source>(
         || source_path.ends_with(".d.cts");
     let program_files = &project.program().files;
     let program_identity = native_tsz_program_identity(program_files);
-    let consume = |checker, binder, bound_file, database| {
+    macro_rules! lower_with_tsz_checker {
+        ($checker:ident, $binder:ident, $bound_file:ident, $database:ident) => {{
             let build = |module: OxcModule<'_>| {
                 let mut projector = Projector {
                     semantic: &module.semantic,
@@ -4204,22 +4205,23 @@ pub(crate) fn collect_with_tsz<'source>(
                 };
                 projector.run()?;
                 projector.pass_native_tsz_occurrences(
-                    checker,
-                    binder,
-                    bound_file,
+                    &mut *$checker,
+                    $binder,
+                    $bound_file,
                     program_files,
                     file_index,
                     program_identity,
                 )?;
-                projector.pass_native_tsz(checker, bound_file, database, project)
+                projector.pass_native_tsz(&mut *$checker, $bound_file, $database, project)
             };
             if declaration_file {
                 with_analysis_declaration(profile, source, true, build)
             } else {
                 with_analysis(profile, source, build)
             }
-            .map_err(TypeScriptCollectError::Authority)
-    };
+            .map_err(TypeScriptCollectError::Authority)?
+        }};
+    }
     #[cfg(test)]
     let lowered = {
         let mut session = project
@@ -4238,7 +4240,12 @@ pub(crate) fn collect_with_tsz<'source>(
             ));
         }
         session
-            .with_file_checker_and_types(session_file_index, consume)
+            .with_file_checker_and_types(
+                session_file_index,
+                |checker, binder, bound_file, database| {
+                    lower_with_tsz_checker!(checker, binder, bound_file, database)
+                },
+            )
             .map_err(|error| {
                 TypeScriptCollectError::TszAuthority(TszAuthorityError::ProjectCheckerSession(
                     error,
@@ -4247,7 +4254,9 @@ pub(crate) fn collect_with_tsz<'source>(
     };
     #[cfg(not(test))]
     let lowered = project
-        .with_file_checker_and_types(file_index, consume)
+        .with_file_checker_and_types(file_index, |checker, binder, bound_file, database| {
+            lower_with_tsz_checker!(checker, binder, bound_file, database)
+        })
         .map_err(TypeScriptCollectError::TszAuthority)?;
     lowered
 }
