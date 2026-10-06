@@ -1013,9 +1013,9 @@ fn publish_native_history_commit(
         .map_err(NativeHistoryPublicationError::Refused)?;
     if staging_prefix.is_empty() {
         if staging_tip_ready != stage_anchor {
-            if let Err(reason) = history.compare_and_swap_history_ref(
+            if let Err(reason) = reset_native_history_staging_ref(
+                &history,
                 package.target(),
-                backend_replication::HistoryRefKind::Branch,
                 staging_branch.clone(),
                 staging_tip_ready,
                 stage_anchor,
@@ -1033,6 +1033,21 @@ fn publish_native_history_commit(
                         "reset stale package staging ref: {reason}"
                     )));
                 }
+                // An equal ref is not proof of a readable typed closure. A
+                // competing writer may have won the CAS, but cold admission
+                // must still succeed under that exact expected tip.
+                reset_native_history_staging_ref(
+                    &history,
+                    package.target(),
+                    staging_branch.clone(),
+                    stage_anchor,
+                    stage_anchor,
+                )
+                .map_err(|error| {
+                    NativeHistoryPublicationError::Refused(format!(
+                        "re-admit converged package staging ref: {error}"
+                    ))
+                })?;
             } else {
                 staging_tip_ready = stage_anchor;
             }
@@ -1235,6 +1250,57 @@ fn selected_native_history_staging_branch() -> Result<HistoryRefName, NativeHist
 {
     HistoryRefName::new("selected-native-v3/staging")
         .map_err(NativeHistoryPublicationError::Refused)
+}
+
+/// Reuses an earlier package tip through its own format's cold admission.
+/// A history ID describes stored content; only a verified closure permits a
+/// typed ref update. The cold paths retain their GC pin through the exact CAS.
+fn reset_native_history_staging_ref(
+    history: &FileSemanticRangeStore,
+    target: &SemanticTargetKey,
+    branch: HistoryRefName,
+    expected: Option<HistoryCommitId>,
+    anchor: Option<HistoryCommitId>,
+) -> Result<backend_replication::HistoryRefUpdateReceipt, String> {
+    let Some(commit_id) = anchor else {
+        return history.compare_and_swap_history_ref(
+            target,
+            backend_replication::HistoryRefKind::Branch,
+            branch,
+            expected,
+            None,
+        );
+    };
+    match history.history_commit(target, commit_id)?.generation_root() {
+        backend_replication::HistoryGenerationRoot::TypedV3(_) => history
+            .publish_typed_v3_history_ref_cold(
+                target,
+                backend_replication::HistoryRefKind::Branch,
+                branch,
+                expected,
+                commit_id,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+            ),
+        backend_replication::HistoryGenerationRoot::TypedV2(_) => history
+            .publish_typed_v2_history_ref_cold(
+                target,
+                backend_replication::HistoryRefKind::Branch,
+                branch,
+                expected,
+                commit_id,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+            ),
+        backend_replication::HistoryGenerationRoot::NxfiV1(_) => history
+            .compare_and_swap_history_ref(
+                target,
+                backend_replication::HistoryRefKind::Branch,
+                branch,
+                expected,
+                Some(commit_id),
+            ),
+    }
 }
 
 fn history_prefix_parent(
@@ -2152,6 +2218,54 @@ mod tests {
     use std::time::Instant;
 
     static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn staging_anchor_refuses_unknown_commit_and_stale_expected_tip() {
+        let directory = path();
+        let store = FileStore::open(&directory, 8 * 1024 * 1024).expect("open history CAS");
+        let history = FileSemanticRangeStore::open(store.clone(), TransportLimits::default())
+            .expect("open history facade");
+        let branch = selected_native_history_staging_branch().expect("staging branch");
+        let target = target();
+        let unknown = HistoryCommitId::from_bytes([0x91; 32]);
+
+        assert!(
+            reset_native_history_staging_ref(
+                &history,
+                &target,
+                branch.clone(),
+                None,
+                Some(unknown)
+            )
+            .is_err(),
+            "a claimed history ID cannot install a staging ref without admitted content",
+        );
+        assert!(
+            reset_native_history_staging_ref(
+                &history,
+                &target,
+                branch.clone(),
+                Some(unknown),
+                None
+            )
+            .is_err(),
+            "clearing a ref still requires its exact expected tip",
+        );
+        assert!(
+            history
+                .history_ref(
+                    &target,
+                    backend_replication::HistoryRefKind::Branch,
+                    &branch
+                )
+                .expect("read unchanged branch")
+                .is_none(),
+            "neither refusal may install a partial staging ref",
+        );
+        drop(history);
+        drop(store);
+        std::fs::remove_dir_all(directory).expect("remove history workspace");
+    }
 
     #[test]
     fn native_history_range_status_keeps_transient_and_integrity_failures_distinct() {
