@@ -1,0 +1,9 @@
+{
+  "archive": "/root/nudox-corpus-20261006/artifacts/sol-tantivy-dto20-packet-20261006/packet.tar.gz",
+  "bytes": 353064,
+  "sha256": "ec0fb01441cb4c01e3ce09571c3552283f87f47b0d40b7876d31e07f85dc0ad9",
+  "file_count": 2320,
+  "matrix_receipt_sha256": "51e0c9b8e3d2c18b21efb9a0b0474764f115feec20acdc7fe9aeada313701081",
+  "summary_sha256": "52608e73aba08b700c4c8ab22ccfd53bec8775b6c32b69fc5eacd97b57c6f347",
+  "whole_package_runtime_pass": false
+}
