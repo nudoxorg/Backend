@@ -603,7 +603,10 @@ fn is_segment_store_stage_name(name: &str) -> bool {
     let Some((process, stage)) = owner.split_once('-') else {
         return false;
     };
-    segment.len() == 32
+    // LexicalSegmentId is a full 32-byte content id, rendered as 64 hex
+    // characters by `hex_id`. Match the actual generated stage grammar so a
+    // cold sweep does not strand every production stage as an unknown name.
+    segment.len() == 64
         && segment.bytes().all(|byte| byte.is_ascii_hexdigit())
         && !process.is_empty()
         && process.bytes().all(|byte| byte.is_ascii_digit())
@@ -815,7 +818,10 @@ mod namespace_fence_tests {
         let both_ready = first_ready && ready_rx.recv_timeout(Duration::from_secs(3)).is_ok();
         release.store(true, Ordering::Release);
         for worker in workers {
-            assert!(worker.join().expect("projection worker").is_ok());
+            match worker.join().expect("projection worker") {
+                Ok(_) => {}
+                Err(error) => panic!("projection worker failed: {error}"),
+            }
         }
         assert!(
             both_ready,
