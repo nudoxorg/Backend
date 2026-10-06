@@ -1,0 +1,17 @@
+{
+  "receipt_count": 94,
+  "archive_sha256": "22ce5ee2e7c4589ad3d3655d23879d248f2b1364fca2206056722fb4099da7a7",
+  "archive_bytes": 330930,
+  "scripts": {
+    "refused-add-successor-cold.py": "565257307a39daab752f0bc1340ad1fa2c8a5f85d97eeabcd8d4963115cdde64",
+    "replay-original-state-successor.py": "1fc6b7def66ee25745f2768db650c3c5aee208d390e4234c5c994611a070e4d0",
+    "verify-successor-paging.py": "c978bf7018066f8feee52236af9042760f239b6ad7f83e8e476db64750be1554",
+    "capture-successor-wire.py": "523a2daa197425a7260f5a8dd3779f2378feb0559ba5ea0ba4518c800e4d6bb1",
+    "replay-successor-query-cold.py": "af5cd6c4c4f0b9d93e947b8759acc8f0c209a7cd5e3946aa99cc4090856f24c2",
+    "source-successor-fresh.py": "a2d2cf241bd25cd9e11af162f5dea0f0a2d326e9d76802becc77b99c10e3ae03",
+    "current-runtime.py": "6545ca51c3877419c05fc58e3bf4e26d73d618bd6483e01163bddced85f9d6b9",
+    "build-successor-mac.py": "80680964792ab20482464d0bbc40e97f6e3324ecf2f9a449f6ce49409ec49083",
+    "verify-successor-host-boundary.py": "e6c259f79ac9a197eb9a835f013ffa73b3778d2dda9f6acb440b29febf20fd06"
+  },
+  "state_excluded": "Original and fresh HOME state+authority secrets, binaries, provider caches excluded; preserved privately under .local. Existing original59fd failurestate unchanged."
+}
