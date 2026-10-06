@@ -207,6 +207,51 @@ fn assert_complete(
 }
 
 #[test]
+fn warm_facts_reuse_requires_the_exact_selected_source_and_manifest() {
+    let workspace = TempWorkspace::new();
+    let label = "pkg:npm/source-facts-reuse-fence@1.0.0";
+    let package = PackageKey::from_value(label);
+    let (original, original_facts) = parsed_file(package, "source.ts", 2);
+    let mut daemon = open_daemon(workspace.0.path());
+    commit_files(
+        &mut daemon,
+        package,
+        label,
+        1,
+        &[(original.clone(), Some(original_facts))],
+    );
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let before = daemon.engine().daemon().owner().head().root();
+    let sources = snapshot
+        .relation::<BuiltinWorkspaceRelation>()
+        .expect("actual selected sources");
+    let facts = product_source_file_facts_relation(&snapshot)
+        .expect("selected facts")
+        .expect("complete facts root");
+    let key = backend_engine::product_source_file_key(package.to_bytes(), "source.ts");
+    let (changed, _) = parsed_file(package, "source.ts", 3);
+    for (selected, selected_facts, previous) in [
+        (vec![(key, changed)], Some(&facts), vec![key]),
+        (vec![(key, original.clone())], None, vec![key]),
+        (vec![(key, original)], Some(&facts), Vec::new()),
+    ] {
+        assert!(
+            super::super::commands::prepare_source_facts_changes(
+                &sources,
+                selected_facts,
+                &[],
+                &selected,
+                &previous,
+            )
+            .is_err(),
+            "missing provenance or changed source cannot reuse an old complete tree"
+        );
+        assert_eq!(daemon.engine().daemon().owner().head().root(), before);
+        assert_complete(&daemon, package, "source.ts", 2);
+    }
+}
+
+#[test]
 fn warm_complete_facts_survive_real_commits_and_shrinking_pages_are_retired() {
     let workspace = TempWorkspace::new();
     let label = "pkg:npm/warm-source-facts@1.0.0";
