@@ -20,6 +20,7 @@ use std::sync::Arc;
 use crate::Utf8Span;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use tsz_common::ExecutionCheckpoint;
 use tsz::tsz_solver::construction::TypeDatabase;
 
 pub use tsz::binder::BinderState as TszBinderState;
@@ -182,6 +183,14 @@ pub enum TszAuthorityError {
     /// checker for one exact file query.
     #[error(transparent)]
     ProjectCheckerSession(#[from] tsz::parallel::ProjectCheckerSessionError),
+    /// A complete project check could not finish under the admitted inputs or
+    /// shared execution checkpoint.
+    #[error(transparent)]
+    ProjectCheck(#[from] tsz::parallel::ProjectProgramCheckError),
+    /// A parse, bind, or project merge stopped under the shared execution
+    /// checkpoint before a complete project could be published.
+    #[error("TSZ project update stopped: {0:?}")]
+    ExecutionStopped(tsz_common::ProjectExecutionStop),
 }
 
 /// Explicit TSZ checker/binder options resolved by the project configuration layer.
@@ -291,6 +300,42 @@ impl TszProjectAuthority {
         options: TszProjectOptions,
         lib_files: &[Arc<tsz::lib_loader::LibFile>],
     ) -> Result<TszUpdateReport, TszAuthorityError> {
+        self.update_inner(sources, options, lib_files, None)
+    }
+
+    /// Parses, binds, merges, and checks a caller-resolved project under one
+    /// shared cancellation, deadline, and finite-work checkpoint.
+    ///
+    /// The same checkpoint must be passed to later query sessions opened from
+    /// the returned project. If it stops, no new [`TszProject`] is published;
+    /// changed projects also invalidate the prior ready result before any
+    /// changed source is rebound.
+    ///
+    /// # Errors
+    /// Returns the exact source, module-resolution, project-check, or stop
+    /// reason that prevented a complete checked project.
+    pub fn update_with_execution_checkpoint(
+        &mut self,
+        sources: Vec<TszFileInput>,
+        options: TszProjectOptions,
+        lib_files: &[Arc<tsz::lib_loader::LibFile>],
+        checkpoint: &dyn ExecutionCheckpoint,
+    ) -> Result<TszUpdateReport, TszAuthorityError> {
+        self.update_inner(sources, options, lib_files, Some(checkpoint))
+    }
+
+    fn update_inner(
+        &mut self,
+        sources: Vec<TszFileInput>,
+        options: TszProjectOptions,
+        lib_files: &[Arc<tsz::lib_loader::LibFile>],
+        checkpoint: Option<&dyn ExecutionCheckpoint>,
+    ) -> Result<TszUpdateReport, TszAuthorityError> {
+        if let Some(checkpoint) = checkpoint {
+            checkpoint
+                .checkpoint(0)
+                .map_err(TszAuthorityError::ExecutionStopped)?;
+        }
         if sources.is_empty() {
             return Err(TszSourceError::EmptyProject.into());
         }
@@ -366,6 +411,13 @@ impl TszProjectAuthority {
             }
         }
 
+        // A previous checked program is no longer Ready as soon as its source
+        // frontier changes. Clear it before parsing so a stop never leaves a
+        // stale project reachable from this owner.
+        if report.removed_sources != 0 || !files_to_parse.is_empty() {
+            self.project = None;
+        }
+
         if files_to_parse.is_empty()
             && !environment_changed
             && self.project.as_ref().is_some_and(|current| {
@@ -377,18 +429,35 @@ impl TszProjectAuthority {
             })
             && report.removed_sources == 0
         {
+            if let Some(checkpoint) = checkpoint {
+                checkpoint
+                    .checkpoint(0)
+                    .map_err(TszAuthorityError::ExecutionStopped)?;
+            }
             report.reused_project_result = true;
             return Ok(report);
         }
 
         report.parsed_and_bound = files_to_parse.len();
         if !files_to_parse.is_empty() {
-            let parsed = tsz::parallel::parse_and_bind_parallel_with_libs_and_options(
-                files_to_parse,
-                lib_files,
-                options.checker.target,
-                options.checker.module_detection,
-            );
+            let parsed = match checkpoint {
+                Some(checkpoint) => {
+                    tsz::parallel::parse_and_bind_parallel_with_libs_and_options_and_execution_checkpoint(
+                        files_to_parse,
+                        lib_files,
+                        options.checker.target,
+                        options.checker.module_detection,
+                        checkpoint,
+                    )
+                    .map_err(TszAuthorityError::ExecutionStopped)?
+                }
+                None => tsz::parallel::parse_and_bind_parallel_with_libs_and_options(
+                    files_to_parse,
+                    lib_files,
+                    options.checker.target,
+                    options.checker.module_detection,
+                ),
+            };
             for result in parsed {
                 let path = result.file_name.clone();
                 let source = result
@@ -413,17 +482,48 @@ impl TszProjectAuthority {
             .map(|(path, cached)| (path.clone(), Arc::clone(&cached.result)))
             .collect();
         let bind_refs: Vec<_> = bound_sources.values().map(Arc::as_ref).collect();
-        let mut program = tsz::parallel::merge_bind_results_ref_with_project_semantic_options(
-            &bind_refs,
-            options.semantic_options,
-        );
+        let mut program = match checkpoint {
+            Some(checkpoint) => {
+                tsz::parallel::merge_bind_results_ref_with_project_semantic_options_and_execution_checkpoint(
+                    &bind_refs,
+                    options.semantic_options,
+                    checkpoint,
+                )
+                .map_err(TszAuthorityError::ExecutionStopped)?
+            }
+            None => tsz::parallel::merge_bind_results_ref_with_project_semantic_options(
+                &bind_refs,
+                options.semantic_options,
+            ),
+        };
+        if let Some(checkpoint) = checkpoint {
+            checkpoint
+                .checkpoint(0)
+                .map_err(TszAuthorityError::ExecutionStopped)?;
+        }
         program.set_project_module_resolutions(&options.module_resolutions)?;
-        let check = tsz::parallel::check_files_parallel_with_project_semantic_options(
-            &program,
-            &options.checker,
-            lib_files,
-            options.semantic_options,
-        );
+        let check = match checkpoint {
+            Some(checkpoint) => tsz::parallel::check_files_parallel_with_project_inputs_and_execution_checkpoint(
+                &program,
+                &options.checker,
+                lib_files,
+                options.semantic_options,
+                &options.module_resolutions,
+                checkpoint,
+            )
+            .map_err(TszAuthorityError::ProjectCheck)?,
+            None => tsz::parallel::check_files_parallel_with_project_semantic_options(
+                &program,
+                &options.checker,
+                lib_files,
+                options.semantic_options,
+            ),
+        };
+        if let Some(checkpoint) = checkpoint {
+            checkpoint
+                .checkpoint(0)
+                .map_err(TszAuthorityError::ExecutionStopped)?;
+        }
         self.project = Some(TszProject {
             checker_options_digest: checker_digest,
             semantic_options_digest: semantic_digest,
@@ -890,6 +990,8 @@ fn module_resolution_digest(resolutions: &[TszProjectModuleResolution]) -> [u8; 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
 
     fn options() -> TszProjectOptions {
         let mut checker = TszCheckerOptions::default();
@@ -907,6 +1009,81 @@ mod tests {
             path: path.to_owned(),
             source: source.to_owned(),
         }
+    }
+
+    fn execution_budget<'cancel>(
+        cancelled: &'cancel AtomicBool,
+        maximum_work_units: u64,
+    ) -> tsz_common::ProjectExecutionBudget<'cancel> {
+        tsz_common::ProjectExecutionBudget::new(
+            Instant::now() + Duration::from_secs(30),
+            cancelled,
+            maximum_work_units,
+        )
+    }
+
+    #[test]
+    fn checked_query_session_reuses_the_project_execution_checkpoint() {
+        let cancelled = AtomicBool::new(false);
+        let budget = execution_budget(&cancelled, 1_000_000);
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update_with_execution_checkpoint(
+                vec![input("src/value.ts", "export const value: number = 1;")],
+                options(),
+                &[],
+                &budget,
+            )
+            .expect("the bounded project should parse, bind, merge, and check");
+
+        let project = authority.project().expect("checked project exists");
+        let session = project
+            .checked_query_session(&budget)
+            .expect("query session borrows the same project budget");
+        let file_index = session
+            .file_index("src/value.ts")
+            .expect("the exact source path is present");
+        let observed = session
+            .with_file_checker_and_types(file_index, |checker, binder, _file, _database| {
+                let symbol = binder
+                    .file_locals
+                    .get("value")
+                    .expect("the exported declaration is bound");
+                checker.format_type(checker.get_type_of_symbol(symbol))
+            })
+            .expect("the shared full-program checker lends the file");
+        assert_eq!(observed, "number");
+    }
+
+    #[test]
+    fn stopped_changed_project_is_not_left_ready() {
+        let cancelled = AtomicBool::new(false);
+        let initial_budget = execution_budget(&cancelled, 1_000_000);
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update_with_execution_checkpoint(
+                vec![input("src/value.ts", "export const value: number = 1;")],
+                options(),
+                &[],
+                &initial_budget,
+            )
+            .expect("the initial project should be ready");
+        assert!(authority.project().is_some());
+
+        let exhausted_budget = execution_budget(&cancelled, 0);
+        let stopped = authority.update_with_execution_checkpoint(
+            vec![input("src/value.ts", "export const value: number = 2;")],
+            options(),
+            &[],
+            &exhausted_budget,
+        );
+        assert!(matches!(
+            stopped,
+            Err(TszAuthorityError::ExecutionStopped(
+                tsz_common::ProjectExecutionStop::WorkBudgetExhausted
+            ))
+        ));
+        assert!(authority.project().is_none());
     }
 
     #[test]

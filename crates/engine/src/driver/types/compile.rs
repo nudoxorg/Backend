@@ -245,6 +245,7 @@ enum EnteredAuthority<'source> {
         tsz: Option<(
             &'source backend_frontend_typescript::TszProject,
             &'source str,
+            &'source backend_frontend_typescript::TszProjectQuerySession<'source>,
         )>,
     },
     Python {
@@ -350,6 +351,7 @@ impl LanguageSpec for TypeScriptSpec {
         Option<(
             &'source backend_frontend_typescript::TszProject,
             &'source str,
+            &'source backend_frontend_typescript::TszProjectQuerySession<'source>,
         )>,
     );
     type Extension = backend_semantic::ir::TypeScriptFacts;
@@ -361,12 +363,13 @@ impl LanguageSpec for TypeScriptSpec {
         facts: &mut lower::FactSet<'source>,
     ) -> Result<(), CompileFailure<'diagnostic>> {
         let source = prepared.lease.bytes();
-        if let Some((project, source_path)) = authority.2 {
+        if let Some((project, source_path, session)) = authority.2 {
             return lower::typescript::collect_with_tsz(
                 authority.0,
                 source,
                 project,
                 source_path,
+                session,
                 facts,
             )
             .map_err(|cause| {
@@ -732,12 +735,13 @@ fn enter_authority<'source, 'diagnostic>(
             LanguageProfile::TypeScript(profile),
             SemanticAuthorityInput::TypeScriptTsz {
                 project,
+                session,
                 source_path,
             },
         ) => Ok(EnteredAuthority::TypeScript {
             profile,
             report: None,
-            tsz: Some((project, source_path)),
+            tsz: Some((project, source_path, session)),
         }),
         (LanguageProfile::Python(profile), SemanticAuthorityInput::None) => {
             Ok(EnteredAuthority::Python {

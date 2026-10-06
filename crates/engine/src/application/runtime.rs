@@ -2979,9 +2979,6 @@ fn run_worker_generation(
     let authority = PackageAuthorityConfiguration {
         clang: configuration.package_authority.clang.as_ref(),
         typescript: configuration.package_authority.typescript.as_ref(),
-        tsz_source_frontier_experiment: configuration
-            .package_authority
-            .tsz_source_frontier_experiment,
         typescript_project_host: configuration.typescript_project_host.as_ref(),
         python: configuration.package_authority.python.as_ref(),
         rust,

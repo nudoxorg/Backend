@@ -289,6 +289,8 @@ pub enum SemanticAuthorityInput<'source> {
     TypeScriptTsz {
         /// Project-scoped native TSZ parser, binder, and checker result.
         project: &'source backend_frontend_typescript::TszProject,
+        /// Shared full-program query session owned by the package compiler.
+        session: &'source backend_frontend_typescript::TszProjectQuerySession<'source>,
         /// Exact stable project path for the source bytes in this request.
         source_path: &'source str,
     },

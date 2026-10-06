@@ -52,10 +52,6 @@ pub struct PackageAuthorityConfiguration<'config> {
     pub clang: Option<&'config ClangAuthorityEnvironment>,
     /// TypeScript checker that stages the explicitly selected package root.
     pub typescript: Option<&'config ExplicitTypeScriptChecker>,
-    /// Runs the current source-frontier TSZ experiment with an explicit no-lib, no-tsconfig policy.
-    /// Production callers must leave this false until a manifest-bound TypeScript project is
-    /// admitted with its complete config, module, ambient-type, triple-slash, and library closure.
-    pub tsz_source_frontier_experiment: bool,
     /// Closed host inputs for request-scoped project compiler admission.
     pub typescript_project_host: Option<&'config TypeScriptProjectHost>,
     /// Python pyrefly adapter that owns inferred-type and resolution facts.
@@ -80,7 +76,6 @@ impl PackageAuthorityConfiguration<'static> {
     pub const UNAVAILABLE: Self = Self {
         clang: None,
         typescript: None,
-        tsz_source_frontier_experiment: false,
         typescript_project_host: None,
         python: None,
         rust: None,
@@ -914,7 +909,6 @@ mod tests {
         PackageAuthorityConfiguration {
             clang: None,
             typescript: None,
-            tsz_source_frontier_experiment: false,
             typescript_project_host: None,
             python: None,
             rust: None,
@@ -957,7 +951,6 @@ mod tests {
         let configuration = PackageAuthorityConfiguration {
             clang: None,
             typescript: Some(&typescript),
-            tsz_source_frontier_experiment: false,
             typescript_project_host: None,
             python: None,
             rust: None,
