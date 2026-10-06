@@ -14,13 +14,13 @@ use backend_engine::registry::{
     DiscoveryCursor, DiscoveryError, DiscoveryFacet, DiscoveryFact, DiscoveryMetadata,
     DiscoveryObservedAt, DiscoveryPackageRetraction, DiscoveryReleaseObservation,
     DiscoverySourceEvent, DiscoverySourceIdentity, DiscoveryStanding,
-    MAX_DISCOVERY_BATCH_ENCODED_BYTES, MAX_DISCOVERY_PAGE_ITEMS, MAX_PYPI_PROJECT_INDEX_BYTES,
-    NugetCatalogEvent, RegistryEcosystem, RegistryEndpoint, crates_sparse_index_path,
-    discovery_source_identity, parse_conan_recipe_tree, parse_conan_recipe_versions,
-    parse_crates_recent_page, parse_crates_sparse_package, parse_go_module_index_page,
-    parse_maven_search_page, parse_npm_changes_page, parse_npm_packument_document,
-    parse_nuget_catalog_index, parse_nuget_catalog_leaf, parse_nuget_catalog_page,
-    parse_pypi_project_list, parse_pypi_project_metadata,
+    MAX_DISCOVERY_BATCH_ENCODED_BYTES, MAX_DISCOVERY_PAGE_ITEMS, MAX_NPM_PACKUMENT_BYTES,
+    MAX_PYPI_PROJECT_INDEX_BYTES, NugetCatalogEvent, RegistryEcosystem, RegistryEndpoint,
+    crates_sparse_index_path, discovery_source_identity, parse_conan_recipe_tree,
+    parse_conan_recipe_versions, parse_crates_recent_page, parse_crates_sparse_package,
+    parse_go_module_index_page, parse_maven_search_page, parse_npm_changes_page,
+    parse_npm_packument_document, parse_nuget_catalog_index, parse_nuget_catalog_leaf,
+    parse_nuget_catalog_page, parse_pypi_project_list, parse_pypi_project_metadata,
 };
 use backend_platform::durable;
 use base64::Engine as _;
@@ -699,7 +699,7 @@ fn refresh_npm(
             let name = percent_encode_component(&package.name);
             let packument_url = format!("{}/{name}", base.trim_end_matches('/'));
             let packument_bytes =
-                fetch_metadata(&packument_url, MAX_SOURCE_BODY_BYTES, deadline, cancelled)?;
+                fetch_metadata(&packument_url, MAX_NPM_PACKUMENT_BYTES, deadline, cancelled)?;
             let sequence = package
                 .source_event_time
                 .parse::<u64>()

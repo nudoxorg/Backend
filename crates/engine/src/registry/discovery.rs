@@ -42,6 +42,10 @@ pub use backend_library::{
 /// still bounded by [`MAX_DISCOVERY_PROJECTS`].
 pub const MAX_PYPI_PROJECT_INDEX_BYTES: usize = 128 * 1024 * 1024;
 
+/// Decoded npm packument budget shared with native package acquisition.
+/// Full packuments for ordinary packages can exceed a discovery event page.
+pub const MAX_NPM_PACKUMENT_BYTES: usize = super::ecosystem::MAX_NATIVE_METADATA_BYTES;
+
 /// Derives the neutral discovery source identity from an admitted endpoint.
 #[must_use]
 pub const fn discovery_source_identity(endpoint: &RegistryEndpoint) -> DiscoverySourceIdentity {
@@ -483,7 +487,7 @@ pub fn parse_npm_packument_document(
     sequence: u64,
     max_versions: usize,
 ) -> Result<NpmPackument, DiscoveryError> {
-    if bytes.len() > 32 * 1024 * 1024 {
+    if bytes.len() > MAX_NPM_PACKUMENT_BYTES {
         return Err(DiscoveryError::Bounds);
     }
     let value: serde_json::Value =
@@ -2550,6 +2554,31 @@ mod tests {
             r#"{{"results":[{{"seq":1,"id":"pkg","doc":{{"name":"pkg","_rev":"{oversized_revision}","versions":{{"1.0.0":{{}}}}}}}}],"last_seq":1}}"#
         );
         assert_eq!(parse(&oversized), Err(DiscoveryError::Bounds));
+    }
+
+    #[test]
+    fn npm_packument_uses_the_native_package_document_budget() {
+        let mut bytes =
+            br#"{"name":"vite","_rev":"1-fixture","versions":{"8.3.3":{"license":"MIT"}}}"#
+                .to_vec();
+        bytes.resize(32 * 1024 * 1024 + 1, b' ');
+        let packument = parse_npm_packument_document(&bytes, "vite", 1, 1)
+            .expect("ordinary package packument larger than an event page");
+        assert_eq!(packument.revision.as_deref(), Some("1-fixture"));
+        assert_eq!(packument.releases.len(), 1);
+        assert_eq!(
+            packument.releases[0].coordinate.as_str(),
+            "pkg:npm/vite@8.3.3"
+        );
+        assert_eq!(
+            packument.releases[0].metadata.license,
+            DiscoveryFacet::Known("MIT".to_owned())
+        );
+        bytes.resize(MAX_NPM_PACKUMENT_BYTES + 1, b' ');
+        assert_eq!(
+            parse_npm_packument_document(&bytes, "vite", 1, 1),
+            Err(DiscoveryError::Bounds)
+        );
     }
 
     #[test]
