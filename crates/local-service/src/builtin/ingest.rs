@@ -1268,12 +1268,14 @@ fn scan_source_paths(
         thread::available_parallelism().map_or(1, usize::from),
         paths.len(),
     );
+    // The stop flag is owned by the caller of the scoped workers, so its
+    // borrow outlives every join without shared ownership or a mutex.
+    let stop = AtomicBool::new(false);
     thread::scope(|scope| {
         let queue = workers
             .checked_mul(RESULT_QUEUE_PER_WORKER)
             .ok_or_else(|| "source result queue width overflow".to_owned())?;
         let (sender, receiver) = mpsc::sync_channel(queue);
-        let stop = AtomicBool::new(false);
         let mut handles = Vec::with_capacity(workers);
         let mut acknowledgements = Vec::with_capacity(workers);
         // Stride adjacent path positions across workers. Contiguous chunks
@@ -1345,7 +1347,9 @@ fn scan_source_paths(
                 let Some((pending_worker, result)) = pending.remove(&next_path_index) else {
                     break;
                 };
-                match result {
+                // Cancellation may arrive while an earlier path is admitted.
+                // Poll each result already held in the ordered window too.
+                match check_scan_cancellation(cancellation).and_then(|()| result) {
                     Ok(Some(file)) => {
                         let charge = source_policy.admit_actual_file(file.source_bytes).and_then(
                             |admitted| {
