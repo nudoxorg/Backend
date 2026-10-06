@@ -1381,6 +1381,7 @@ mod tsz_source_coordinate_tests {
         };
         let root = TreeItemInput {
             name: if is_caller { b"caller" } else { b"AppService" },
+            anonymous_callable_anchor: None,
             kind: if is_caller {
                 ItemKind::Function
             } else {
@@ -1408,6 +1409,7 @@ mod tsz_source_coordinate_tests {
                 root,
                 TreeItemInput {
                     name: b"getHello",
+                    anonymous_callable_anchor: None,
                     kind: ItemKind::Function,
                     visibility: Visibility::Public,
                     authority: method_authority,
