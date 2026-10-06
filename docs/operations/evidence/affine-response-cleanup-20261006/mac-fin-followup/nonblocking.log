@@ -1,0 +1,7 @@
+closed_read_timeout=Err(Os { code: 22, kind: InvalidInput, message: "Invalid argument" })
+closed_nonblocking=Ok(())
+buffered_header=Ok(()):[0, 0, 0, 2]
+buffered_body=Ok(()):[41, 42]
+closed_eof=Ok(0)
+closed_restore_blocking=Ok(())
+live_missing_body attempts=40 elapsed_us=50263
