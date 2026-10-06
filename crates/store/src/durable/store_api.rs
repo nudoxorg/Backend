@@ -436,7 +436,7 @@ impl FileStore {
             }
             self.verify_closure_member_limited(id, None).map(|_| ())
         })?;
-        membership.validate_physical_allocation()
+        membership.validate_physical_allocation_in(self)
     }
 
     /// Reads and admits a complete immutable closure manifest.

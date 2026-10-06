@@ -91,8 +91,15 @@ impl DurableClosureManifest {
     }
 
     pub(crate) fn validate_physical_allocation(&self) -> Result<(), StoreError> {
+        self.validate_physical_allocation_in(&self.store)
+    }
+
+    pub(crate) fn validate_physical_allocation_in(
+        &self,
+        store: &FileStore,
+    ) -> Result<(), StoreError> {
         if let Some(budget) = self.allocation_budget {
-            budget.admit(&self.store)?;
+            budget.admit(store)?;
         }
         Ok(())
     }
