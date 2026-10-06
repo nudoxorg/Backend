@@ -279,6 +279,21 @@ impl PreparedTransition {
             .closure
             .with_stored_membership(membership)
             .map_err(WorkspaceError::store)?;
+        // Stored membership separates a small typed control frontier from
+        // paged evidence. Keep every direct control pointer in the fixed
+        // recovery pack, including selected auxiliary relation roots whose
+        // references are not part of the workspace root-of-roots grammar.
+        self.auxiliary = Arc::from(
+            self.closure
+                .control_manifest()
+                .objects()
+                .iter()
+                .filter(|object| !self.payloads.contains(&object.id()))
+                .map(TypedObject::id)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>(),
+        );
         let persisted = Arc::make_mut(&mut self.persisted);
         persisted.membership = Some(self.closure.membership_id());
         let mut encoded = Vec::from(&b"SCM1"[..]);
@@ -492,11 +507,12 @@ impl PreparedTransition {
             .iter()
             .filter(|object| !payloads.contains(&object.id()))
             .filter(|object| {
-                closure_refs.iter().any(|reference| {
-                    reference.kind() != backend_version::ClosureKind::Relation
-                        && reference.schema() == object.schema()
-                        && reference.version() == *object.version()
-                })
+                membership_id.is_some()
+                    || closure_refs.iter().any(|reference| {
+                        reference.kind() != backend_version::ClosureKind::Relation
+                            && reference.schema() == object.schema()
+                            && reference.version() == *object.version()
+                    })
             })
             .map(TypedObject::id)
             .collect::<Vec<_>>();
