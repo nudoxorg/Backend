@@ -120,17 +120,28 @@ class FleetCapacityTests(unittest.TestCase):
         self.assertEqual(result["current_fleet_compiler_group_count"], 16)
         self.assertFalse(result["advisory_allowed"])
 
-    def test_unknown_compiler_and_unknown_or_overlarge_cargo_jobs_refuse(self) -> None:
+    def test_unknown_processes_count_conservatively_and_known_overlarge_jobs_refuse(self) -> None:
         self.samples["ilo"]["census"]["compiler_groups"] = [
             compiler_group(2200, kind="cargo", classification="unknown")
         ]
-        self.assertFalse(self.evaluate("h16001mac")["advisory_allowed"])
+        result = self.evaluate("h16001mac")
+        self.assertTrue(result["advisory_allowed"])
+        self.assertEqual(result["current_fleet_compiler_group_count"], 1)
+        self.assertTrue(any("counted-conservatively" in item for item in result["limitations"]))
 
         self.samples = empty_samples(self.now)
         self.samples["ilo"]["census"]["compiler_groups"] = [
             compiler_group(2201, kind="cargo", classification="build", jobs=5)
         ]
         self.assertFalse(self.evaluate("h16001mac")["advisory_allowed"])
+
+        self.samples = empty_samples(self.now)
+        self.samples["h16001mac"]["census"]["compiler_groups"] = [
+            compiler_group(2202, kind="runtime-owner", classification="runtime-owner")
+        ]
+        runtime_result = self.evaluate("h16001mac")
+        self.assertTrue(runtime_result["advisory_allowed"])
+        self.assertEqual(runtime_result["current_fleet_compiler_group_count"], 1)
 
         self.samples = empty_samples(self.now)
         result = fleet.evaluate_fleet(

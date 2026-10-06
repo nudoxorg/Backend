@@ -192,6 +192,7 @@ def evaluate_fleet(
         reasons.append("invalid-sample-age-policy")
 
     host_summaries: dict[str, Any] = {}
+    limitations: list[str] = []
     total_groups = 0
     for name, config in hosts.items():
         sample = samples.get(name)
@@ -251,20 +252,20 @@ def evaluate_fleet(
             pgid = group.get("pgid")
             kind = group.get("kind")
             classification = group.get("classification")
-            if type(pgid) is not int or pgid <= 0 or pgid in seen_pgids or kind not in {"cargo", "orphan-rustc"}:
+            if type(pgid) is not int or pgid <= 0 or pgid in seen_pgids or kind not in {"cargo", "orphan-rustc", "runtime-owner"}:
                 reasons.append(f"{name}:compiler-group-identity-invalid")
                 continue
             seen_pgids.add(pgid)
-            if classification not in {"build", "unknown", "orphan-rustc"}:
+            if classification not in {"build", "unknown", "orphan-rustc", "runtime-owner"}:
                 reasons.append(f"{name}:compiler-group-classification-invalid")
                 continue
             active_groups.append(dict(group))
             if classification == "unknown":
-                reasons.append(f"{name}:unresolved-compiler-group")
+                limitations.append(f"{name}:unresolved-compiler-group-counted-conservatively")
             if kind == "cargo":
                 jobs = group.get("requested_cargo_jobs")
                 if group.get("job_limit_known") is not True or type(jobs) is not int:
-                    reasons.append(f"{name}:active-cargo-jobs-unknown")
+                    limitations.append(f"{name}:active-cargo-jobs-unknown-group-counted-conservatively")
                 elif jobs > MAX_CARGO_JOBS:
                     reasons.append(f"{name}:active-cargo-jobs-exceed-4")
         count = len(active_groups)
@@ -317,6 +318,7 @@ def evaluate_fleet(
         "max_sample_age_seconds": max_age_seconds,
         "advisory_allowed": not unique_reasons,
         "reasons": unique_reasons,
+        "limitations": list(dict.fromkeys(limitations)),
         "slot_reserved": False,
         "managed_host_permit_required": True,
         "processes_signaled": [],
