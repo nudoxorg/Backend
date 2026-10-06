@@ -2228,6 +2228,49 @@ fn durable_root_pin_survives_cross_process_pruning_then_releases_for_eviction() 
 }
 
 #[test]
+fn torn_recency_stamp_on_another_root_cannot_disable_selected_search() {
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-torn-recency-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let previous = state_for(
+        vec![(document(1), vec![("name".into(), "previousrevision".into())])],
+        [81; 32],
+    );
+    let previous_source = TantivySource::open_or_build_in_dir(&previous, Limits::default(), &root)
+        .expect("publish and pin previous root");
+    let previous_root = root
+        .join(DURABLE_ROOTS_DIRECTORY)
+        .join(hex_fingerprint(projection_fingerprint(previous.binding())));
+    let selected = state_for(
+        vec![(document(2), vec![("name".into(), "currentrevision".into())])],
+        [82; 32],
+    );
+
+    // A crash while refreshing an advisory stamp can leave either an empty
+    // file or a partial write. This is independent of the immutable index.
+    for length in [0, 7, 17] {
+        std::fs::write(previous_root.join(".last-used"), vec![0_u8; length])
+            .expect("simulate interrupted recency update");
+        let current = TantivySource::open_or_build_in_dir(&selected, Limits::default(), &root)
+            .expect("another root's advisory metadata must not disable selected search");
+        assert_eq!(term_hits(&current, "currentrevision"), vec![document(2)]);
+        assert_eq!(term_hits(&previous_source, "previousrevision"), vec![document(1)]);
+        drop(current);
+    }
+    drop(previous_source);
+    let reopened = TantivySource::open_or_build_in_dir(&selected, Limits::default(), &root)
+        .expect("cold selected reopen after old reader releases its lease");
+    assert_eq!(term_hits(&reopened, "currentrevision"), vec![document(2)]);
+    drop(reopened);
+    std::fs::remove_dir_all(root).expect("remove private projection fixture");
+}
+
+#[test]
 fn pinned_and_selected_root_bytes_remain_charged_after_evicting_unretained_roots() {
     let root = std::env::temp_dir().join(format!(
         "backend-tantivy-pin-quota-{}-{}",
