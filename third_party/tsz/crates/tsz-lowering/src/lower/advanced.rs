@@ -169,7 +169,7 @@ impl TypeLowering<'_> {
                 name,
                 constraint,
                 default,
-                origin: TypeParamOrigin::User,
+                origin: self.decl_scoped_origin(param_data.name),
             },
             constraint_type,
         )

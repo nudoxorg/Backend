@@ -795,6 +795,48 @@ fn project_semantic_options_scope_decl_identity_to_the_query_database() {
 }
 
 #[test]
+fn project_semantic_options_scope_mapped_parameter_origin_to_its_name_node() {
+    let (arena, mapped_idx) = parse_mapped_type("type T = { [K in string]: number };");
+    let mapped_node = arena.get(mapped_idx).expect("mapped AST node should exist");
+    let mapped_data = arena
+        .get_mapped_type(mapped_node)
+        .expect("mapped AST data should exist");
+    let type_parameter_node = arena
+        .get(mapped_data.type_parameter)
+        .expect("mapped type parameter should exist");
+    let type_parameter = arena
+        .get_type_parameter(type_parameter_node)
+        .expect("mapped type parameter data should exist");
+
+    let interner = TypeInterner::new();
+    let structural_db = tsz_solver::construction::QueryCache::new(&interner);
+    let structural_id = TypeLowering::new(&arena, &structural_db).lower_type(mapped_idx);
+    let TypeData::Mapped(structural_shape_id) = interner.lookup(structural_id).unwrap() else {
+        panic!("expected structural mapped type");
+    };
+    assert!(matches!(
+        interner.mapped_type(structural_shape_id).type_param.origin,
+        TypeParamOrigin::User
+    ));
+
+    let declaration_db = tsz_solver::construction::QueryCache::new(&interner)
+        .with_project_semantic_options(tsz_common::ProjectSemanticOptions::declaration_scoped());
+    let declaration_id = TypeLowering::new(&arena, &declaration_db).lower_type(mapped_idx);
+    let TypeData::Mapped(declaration_shape_id) = interner.lookup(declaration_id).unwrap() else {
+        panic!("expected declaration-scoped mapped type");
+    };
+    let origin = interner
+        .mapped_type(declaration_shape_id)
+        .type_param
+        .origin;
+    let TypeParamOrigin::DeclScoped { file, node } = origin else {
+        panic!("expected mapped parameter to retain its declaration origin");
+    };
+    assert_eq!(node, type_parameter.name.0);
+    assert_eq!(interner.resolve_atom(file), "test.ts");
+}
+
+#[test]
 fn test_lower_function_type_with_type_predicate_return() {
     let (arena, func_type_idx) = parse_type_alias("type F = (x: any) => x is string;");
     let interner = TypeInterner::new();

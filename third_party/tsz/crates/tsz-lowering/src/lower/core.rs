@@ -1633,7 +1633,7 @@ impl<'a> TypeLowering<'a> {
     /// name `NodeIndex`. Two distinct declarations differ in `(file, node)` so
     /// they intern distinctly; the SAME declaration lowered repeatedly yields the
     /// SAME `(file, node)` so it stays a single identity (no over-split).
-    fn decl_scoped_origin(&self, name_node: NodeIndex) -> TypeParamOrigin {
+    pub(super) fn decl_scoped_origin(&self, name_node: NodeIndex) -> TypeParamOrigin {
         if self.interner.project_semantic_options().type_param_origin()
             == tsz_common::TypeParamOriginMode::DeclarationScoped
         {
