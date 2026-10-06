@@ -257,6 +257,7 @@ const fs = require('fs');
 const compilerApiPath = process.argv[1];
 const configPath = process.argv[2];
 const workspaceRoot = process.argv[3];
+const inferredRootNames = JSON.parse(process.argv[4] || "null");
 const observations = new Map();
 const directoryViews = new Map();
 const directoryEntryCache = new Map();
@@ -688,10 +689,12 @@ try {
   const parseHost = Object.assign({}, ts.sys, {
     onUnRecoverableConfigFileDiagnostic: diagnostic => configDiagnostics.push(diagnostic)
   });
-  const parsed = ts.getParsedCommandLineOfConfigFile(configPath, {}, parseHost);
+  const parsed = configPath
+    ? ts.getParsedCommandLineOfConfigFile(configPath, {}, parseHost)
+    : {options:ts.getDefaultCompilerOptions(), fileNames:inferredRootNames, errors:[], projectReferences:[]};
   if (!parsed) throw new Error('getParsedCommandLineOfConfigFile returned no project');
   if (parsed.projectReferences && parsed.projectReferences.length) {
-    result({schema:1, version:ts.version, config_path:path.resolve(configPath), compiler_options:{compilerOptions:{}},
+    result({schema:1, version:ts.version, config_path:configPath ? path.resolve(configPath) : "", compiler_options:{compilerOptions:{}},
       project_references:parsed.projectReferences.map(r => r.path), files:[], resolutions:[], accesses:Array.from(observations.values()),
       directory_views:Array.from(directoryViews.values()), access_operations:accessOperations, directory_queries:directoryQueries,
       directory_enumerations:directoryEnumerations, directory_visited_entries:directoryVisitedEntries, directory_verification_entries:directoryVerificationEntries,
@@ -809,7 +812,7 @@ try {
       const name = declaration.name;
       if ((declaration.affectsSemanticDiagnostics || declaration.affectsBindDiagnostics) && options[name] !== undefined && !checkerRelevant.has(name)) unsupported.push(name);
     }
-    result({schema:1, version:ts.version, config_path:path.resolve(configPath), compiler_options:{compilerOptions:normalized},
+    result({schema:1, version:ts.version, config_path:configPath ? path.resolve(configPath) : "", compiler_options:{compilerOptions:normalized},
       project_references:[], files:sourceFiles, resolutions, accesses:Array.from(observations.values()),
       directory_views:Array.from(directoryViews.values()), access_operations:accessOperations, directory_queries:directoryQueries,
       directory_enumerations:directoryEnumerations, directory_visited_entries:directoryVisitedEntries, directory_verification_entries:directoryVerificationEntries,
@@ -819,7 +822,7 @@ try {
       unsupported_options:Array.from(new Set(unsupported)).sort(), error:null, failure_kind:null});
   }
 } catch (error) {
-  result({schema:1, version:'', config_path:path.resolve(configPath), compiler_options:{compilerOptions:{}},
+  result({schema:1, version:'', config_path:configPath ? path.resolve(configPath) : "", compiler_options:{compilerOptions:{}},
     project_references:[], files:[], resolutions:[], accesses:Array.from(observations.values()), directory_views:Array.from(directoryViews.values()),
     access_operations:accessOperations, directory_queries:directoryQueries, directory_enumerations:directoryEnumerations,
     directory_visited_entries:directoryVisitedEntries, directory_verification_entries:directoryVerificationEntries,
@@ -864,7 +867,8 @@ pub(crate) fn build_native_inputs(
         })?;
     let report = run_program_bridge(
         inputs,
-        config.path.as_ref(),
+        config.map(|config| config.path.as_ref()),
+        package_sources,
         &compiler_api_path,
         deadline,
         cancelled,
@@ -894,7 +898,9 @@ pub(crate) fn build_native_inputs(
         ));
     }
     let observed_config = Path::new(&report.config_path);
-    if normalize_path(observed_config) != normalize_path(config.path.as_ref()) {
+    if config.map(|selected| normalize_path(selected.path.as_ref()))
+        != (!report.config_path.is_empty()).then(|| normalize_path(observed_config))
+    {
         return Err(bridge_error(
             "the compiler API parsed a different tsconfig than the selected project config",
         ));
@@ -1124,7 +1130,8 @@ pub(crate) fn build_native_inputs(
 
 fn run_program_bridge(
     inputs: &TypeScriptProjectInputs<'_>,
-    config_path: &Path,
+    config_path: Option<&Path>,
+    package_sources: &[PackageSource<'_>],
     compiler_api_path: &Path,
     deadline: Instant,
     cancelled: &AtomicBool,
@@ -1140,10 +1147,24 @@ fn run_program_bridge(
         NonZeroUsize::new(MAX_BRIDGE_STDOUT_BYTES).expect("nonzero bridge stream cap"),
     )
     .map_err(|error| bridge_error(&error.to_string()))?;
+    // A configless package uses exactly the caller's already selected source frontier.
+    // No file is synthesized, and the existing resolver still witnesses every compiler read.
+    let inferred_roots = package_sources
+        .iter()
+        .map(|source| inputs.package_root.join(source.relative_path()))
+        .collect::<Vec<_>>();
+    let inferred_roots = serde_json::to_string(&inferred_roots).map_err(|error| {
+        bridge_error(&format!(
+            "captured source roots could not be encoded: {error}"
+        ))
+    })?;
     let arguments = [
         OsString::from(compiler_api_path.as_os_str()),
-        OsString::from(config_path.as_os_str()),
+        config_path
+            .map(|path| OsString::from(path.as_os_str()))
+            .unwrap_or_default(),
         OsString::from(inputs.workspace_root.as_os_str()),
+        OsString::from(inferred_roots),
     ];
     let output = run_typescript_program_bridge(
         inputs.node_path,
@@ -1163,14 +1184,14 @@ fn run_program_bridge(
 
 fn select_config<'a>(
     inputs: &'a TypeScriptProjectInputs<'_>,
-) -> Result<&'a super::typescript_host::TypeScriptConfigInput, TypeScriptProjectHostError> {
+) -> Result<Option<&'a super::typescript_host::TypeScriptConfigInput>, TypeScriptProjectHostError> {
     let selected = inputs
         .config_candidates
         .iter()
         .filter(|candidate| candidate.selected_build_config)
         .collect::<Vec<_>>();
     if selected.len() == 1 {
-        return Ok(selected[0]);
+        return Ok(Some(selected[0]));
     }
     if selected.len() > 1 {
         return Err(bridge_error(
@@ -1190,7 +1211,7 @@ fn select_config<'a>(
     candidates
         .sort_unstable_by_key(|candidate| std::cmp::Reverse(candidate.path.components().count()));
     match candidates.as_slice() {
-        [only] => Ok(*only),
+        [only] => Ok(Some(*only)),
         [first, second, ..]
             if first.path.components().count() == second.path.components().count() =>
         {
@@ -1198,10 +1219,8 @@ fn select_config<'a>(
                 "the nearest TypeScript project config is ambiguous",
             ))
         }
-        [first, ..] => Ok(*first),
-        [] => Err(bridge_error(
-            "no admitted TypeScript project config applies to this package",
-        )),
+        [first, ..] => Ok(Some(*first)),
+        [] => Ok(None),
     }
 }
 
