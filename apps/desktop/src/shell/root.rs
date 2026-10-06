@@ -135,14 +135,6 @@ struct HintScope {
     local_input: gpui::NativeActivationScope,
 }
 
-/// One selected target's native input turn. Later physical input or focus
-/// intent retires a deferred activation even if its target remains mounted.
-#[derive(Clone, Copy)]
-struct TargetInputClaim {
-    generation: u64,
-    focus_epoch: u64,
-}
-
 struct HintSession {
     mode: HintMode,
     scope: HintScope,
@@ -1765,13 +1757,15 @@ impl Shell {
         }
     }
 
-    fn target_input_claim(&self, window: &Window) -> Option<TargetInputClaim> {
-        Some(TargetInputClaim { generation: self.transient_generation?, focus_epoch: window.focus_epoch() })
+    fn target_input_claim(&self, window: &Window) -> Option<super::keyboard::NativeReturnLease> {
+        super::keyboard::NativeReturnLease::new(
+            window.window_handle().window_id(), self.transient_generation, window.focus_epoch(),
+        )
     }
 
-    fn target_claim_current(&self, zone: Zone, claim: &super::focus::TargetMountClaim, scope: &HintScope, input: &TargetInputClaim, must_be_focused: bool, window: &Window, cx: &App) -> bool {
-        if self.transient_generation != Some(input.generation)
-            || window.focus_epoch() != input.focus_epoch
+    fn target_claim_current(&self, zone: Zone, claim: &super::focus::TargetMountClaim, scope: &HintScope, input: &super::keyboard::NativeReturnLease, must_be_focused: bool, window: &Window, cx: &App) -> bool {
+        if !input.current(window.window_handle().window_id(), self.transient_generation, window.focus_epoch())
+            || !window.is_focus_handle_mounted(&self.focus)
             || !self.target_structure_current(scope, cx) { return false; }
         let targets = self.hinted_targets(zone, cx);
         targets.admits_mount(claim, window)

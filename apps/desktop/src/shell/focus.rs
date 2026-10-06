@@ -616,8 +616,8 @@ impl Targets {
             && self.list.with(|list| list.iter().any(|target| target.id == claim.id)).unwrap_or(false)
     }
 
-    /// A hint can focus only the exact target list frame that supplied it.
-    /// Reader redraws may reuse ids while replacing actions and evidence.
+    /// Numeric frame for immediate registration probes and diagnostics.
+    /// Deferred activation uses an actually painted mount receipt instead.
     pub(crate) fn hint_frame(&self) -> u64 {
         self.native.borrow().frame
     }
