@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "platform": "linux-x64",
+  "archive_sha256": "replace-with-the-release-manifest-sha256",
+  "source_sha": "replace-with-the-release-source-commit",
+  "tested_by": "",
+  "tested_at": "",
+  "ubuntu_release": "",
+  "glibc_version": "",
+  "cases": {
+    "cli_version": false,
+    "project_add_search": false,
+    "mcp_help": false,
+    "mcp_session": false,
+    "locald_sibling_discovery": false,
+    "clean_environment_without_nix_paths": false,
+    "ubuntu_glibc_floor": false
+  }
+}

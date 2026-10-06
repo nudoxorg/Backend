@@ -15,11 +15,14 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
+import tarfile
 import zipfile
 from pathlib import Path
 
 ASSET = "nudox-macos-arm64.zip"
 QA_CASES = {"finder_launch", "project_index_search", "bundled_helpers", "preferences", "cold_restart", "clean_environment", "gatekeeper", "minimum_os"}
+LINUX_ASSET_RE = re.compile(r"nudox-linux-x86_64-[a-f0-9]{10,40}\.tar\.gz\Z")
+LINUX_QA_CASES = {"cli_version", "project_add_search", "mcp_help", "mcp_session", "locald_sibling_discovery", "clean_environment_without_nix_paths", "ubuntu_glibc_floor"}
 
 
 def sha256(path):
@@ -40,6 +43,8 @@ def read_json(path):
 def validate(directory, source=None):
     directory = Path(directory)
     manifest = read_json(directory / "release-manifest.json")
+    if manifest.get("platform") == "linux-x64":
+        return validate_linux(directory, manifest, source)
     required = {"schema", "version", "source_sha", "source_tree", "cargo_lock_sha256", "platform", "target", "asset", "sha256", "size_bytes", "minimum_os", "build_manifest_sha256", "signed", "notarized"}
     if set(manifest) != required or manifest["schema"] != 1:
         raise ValueError("invalid release manifest schema")
@@ -104,6 +109,109 @@ def validate(directory, source=None):
     return manifest
 
 
+def validate_linux(directory, manifest, source=None):
+    """Validate a receipted Ubuntu x86-64 archive and its native QA record."""
+    required = {"schema", "version", "source_sha", "source_tree", "cargo_lock_sha256", "platform", "target", "asset", "sha256", "size_bytes", "minimum_glibc", "build_manifest_sha256", "packaging_manifest_sha256"}
+    if set(manifest) != required or manifest["schema"] != 1:
+        raise ValueError("invalid Linux release manifest schema")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", manifest["version"]):
+        raise ValueError("invalid Linux release version")
+    for name in ("source_sha", "source_tree"):
+        if not re.fullmatch(r"[a-f0-9]{40}", manifest[name]):
+            raise ValueError(f"invalid Linux {name}")
+    for name in ("cargo_lock_sha256", "sha256", "build_manifest_sha256", "packaging_manifest_sha256"):
+        if not re.fullmatch(r"[a-f0-9]{64}", manifest[name]):
+            raise ValueError(f"invalid Linux {name}")
+    if manifest["platform"] != "linux-x64" or manifest["target"] != "x86_64-unknown-linux-gnu" or not LINUX_ASSET_RE.fullmatch(manifest["asset"]):
+        raise ValueError("Linux candidate has an unsupported platform, target or archive name")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+", manifest["minimum_glibc"]):
+        raise ValueError("Linux candidate has an invalid minimum glibc version")
+    archive = directory / manifest["asset"]
+    if archive.is_symlink() or not archive.is_file() or archive.stat().st_size != manifest["size_bytes"] or sha256(archive) != manifest["sha256"]:
+        raise ValueError("Linux archive differs from its immutable manifest")
+    checksum = directory / (manifest["asset"] + ".sha256")
+    if checksum.is_symlink() or not checksum.is_file() or checksum.read_text() != f'{manifest["sha256"]}  {manifest["asset"]}\n':
+        raise ValueError("Linux checksum sidecar differs from manifest")
+    required_files = {"nudox-linux-x86_64/bin/backend-cli", "nudox-linux-x86_64/bin/backend-mcp", "nudox-linux-x86_64/bin/backend-locald", "nudox-linux-x86_64/build-manifest.json", "nudox-linux-x86_64/packaging-manifest.json", "nudox-linux-x86_64/README.txt"}
+    try:
+        with tarfile.open(archive, "r:gz") as bundle:
+            members = bundle.getmembers()
+            names = [member.name for member in members]
+            if len(names) != len(set(names)) or not required_files.issubset(names):
+                raise ValueError("Linux archive has duplicate paths or omits required product files")
+            if len(members) > 10000:
+                raise ValueError("Linux archive has too many members")
+            for member in members:
+                path = Path(member.name)
+                if member.name.startswith("/") or "\\" in member.name or ".." in path.parts or not member.name.startswith("nudox-linux-x86_64/"):
+                    raise ValueError("Linux archive contains an unsafe path")
+                if member.issym() or member.islnk() or not (member.isdir() or member.isreg()):
+                    raise ValueError("Linux archive contains links or special files")
+                if member.size < 0 or member.size > 1024 * 1024 * 1024:
+                    raise ValueError("Linux archive member exceeds the safety limit")
+            for name in required_files & {"nudox-linux-x86_64/bin/backend-cli", "nudox-linux-x86_64/bin/backend-mcp", "nudox-linux-x86_64/bin/backend-locald"}:
+                if not (bundle.getmember(name).mode & 0o111):
+                    raise ValueError("Linux product executable lost its executable bit")
+            build_bytes = bundle.extractfile("nudox-linux-x86_64/build-manifest.json").read(16 * 1024 * 1024 + 1)
+            packaging_bytes = bundle.extractfile("nudox-linux-x86_64/packaging-manifest.json").read(16 * 1024 * 1024 + 1)
+            if len(build_bytes) > 16 * 1024 * 1024 or len(packaging_bytes) > 16 * 1024 * 1024:
+                raise ValueError("Linux package evidence exceeds the 16 MiB safety limit")
+            if hashlib.sha256(build_bytes).hexdigest() != manifest["build_manifest_sha256"] or hashlib.sha256(packaging_bytes).hexdigest() != manifest["packaging_manifest_sha256"]:
+                raise ValueError("Linux archive evidence hashes differ from release manifest")
+            build = json.loads(build_bytes)
+            package = json.loads(packaging_bytes)
+            source_record = build.get("source", {})
+            build_revision = build.get("source_sha", (source_record.get("commit") or source_record.get("git_revision")) if isinstance(source_record, dict) else None)
+            if build_revision != manifest["source_sha"]:
+                raise ValueError("Linux build manifest source differs from release manifest")
+            if package.get("schema") != "nudox.linux-portable-package.v1":
+                raise ValueError("Linux package manifest has an unsupported schema")
+            release_tag = package.get("release_tag")
+            if not isinstance(release_tag, str) or not re.fullmatch(r"checkpoint-[0-9]{8}-[a-f0-9]{10}-linux-x64", release_tag) or not release_tag.endswith("-" + manifest["source_sha"][:10] + "-linux-x64"):
+                raise ValueError("Linux package has no source-bound immutable checkpoint tag")
+    except (tarfile.TarError, OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"could not validate Linux archive: {error}") from error
+    qa = read_json(directory / "native-qa-linux-x64.json")
+    qa_fields = {"schema", "platform", "archive_sha256", "source_sha", "tested_by", "tested_at", "ubuntu_release", "glibc_version", "cases"}
+    if set(qa) != qa_fields or qa["schema"] != 1 or qa["platform"] != "linux-x64":
+        raise ValueError("invalid Linux native acceptance record")
+    if qa["archive_sha256"] != manifest["sha256"] or qa["source_sha"] != manifest["source_sha"]:
+        raise ValueError("Linux native QA does not attest this exact archive and source")
+    for name in ("tested_by", "tested_at", "ubuntu_release", "glibc_version"):
+        if not isinstance(qa[name], str) or not qa[name]:
+            raise ValueError("Linux native QA requires operator, timestamp, Ubuntu release and glibc version")
+    if set(qa["cases"]) != LINUX_QA_CASES or any(value is not True for value in qa["cases"].values()):
+        raise ValueError("Linux native acceptance has missing or failed cases")
+    installer = directory / "install-linux-x64.py"
+    channel_installer = directory / "install-linux-x64-channel.py"
+    if installer.is_symlink() or not installer.is_file() or channel_installer.is_symlink() or not channel_installer.is_file():
+        raise ValueError("Linux candidate is missing its checkpoint or channel installer bootstrap")
+    if source is not None:
+        source = Path(source)
+        revision = manifest["source_sha"]
+        subprocess.run(["git", "-C", str(source), "merge-base", "--is-ancestor", revision, "HEAD"], check=True)
+        def blob(path):
+            return subprocess.check_output(["git", "-C", str(source), "show", f"{revision}:{path}"])
+        if hashlib.sha256(blob("Cargo.lock")).hexdigest() != manifest["cargo_lock_sha256"]:
+            raise ValueError("Linux candidate lock differs from selected canonical source")
+        tree = subprocess.check_output(["git", "-C", str(source), "rev-parse", revision + "^{tree}"], text=True).strip()
+        version = tomllib.loads(blob("Cargo.toml").decode())["workspace"]["package"]["version"]
+        if tree != manifest["source_tree"] or version != manifest["version"]:
+            raise ValueError("Linux candidate version/tree differs from selected canonical source")
+        current = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+        if subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True).strip():
+            raise ValueError("packaging source checkout must be clean")
+        expected_installer = subprocess.check_output(["git", "-C", str(source), "show", f"{current}:tools/package/install_linux.py"])
+        if channel_installer.read_bytes() != expected_installer:
+            raise ValueError("channel installer bootstrap differs from clean packaging source")
+        pinned_installer = expected_installer.decode()
+        pinned_installer = pinned_installer.replace('PINNED_RELEASE_TAG = ""', f'PINNED_RELEASE_TAG = "{release_tag}"', 1)
+        pinned_installer = pinned_installer.replace('PINNED_MANIFEST_SHA256 = ""', f'PINNED_MANIFEST_SHA256 = "{sha256(directory / "release-manifest.json")}"', 1)
+        if installer.read_bytes() != pinned_installer.encode():
+            raise ValueError("checkpoint installer does not pin this tag and exact manifest bytes")
+    return manifest
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -122,10 +230,10 @@ class GitHub:
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.load(response)
 
-    def upload(self, release_id, path):
+    def upload(self, release_id, path, name=None):
         path = Path(path)
         connection = http.client.HTTPSConnection("uploads.github.com", timeout=120)
-        endpoint = f"/repos/{self.repo}/releases/{release_id}/assets?name=" + urllib.parse.quote(path.name)
+        endpoint = f"/repos/{self.repo}/releases/{release_id}/assets?name=" + urllib.parse.quote(name or path.name)
         try:
             connection.putrequest("POST", endpoint)
             connection.putheader("Authorization", "Bearer " + self.token)
@@ -168,6 +276,7 @@ class GitHub:
         except urllib.error.HTTPError as error:
             if error.code != 404:
                 raise
+            error.close()
         # GitHub's tag endpoint finds published releases. Include drafts when
         # retrying staging or a partially uploaded stable release.
         matches = []
@@ -188,25 +297,40 @@ class GitHub:
         if stable and tag != "v" + manifest["version"]:
             raise ValueError("stable tag does not match candidate version")
         if not stable and not re.fullmatch(re.escape("v" + manifest["version"]) + r"-rc\.[0-9]+", tag):
-            raise ValueError("candidate tag must be v<version>-rc.<number>")
+            if manifest["platform"] != "linux-x64":
+                raise ValueError("candidate tag must match its immutable checkpoint or be v<version>-rc.<number>")
+            with tarfile.open(directory / manifest["asset"], "r:gz") as bundle:
+                package = json.load(bundle.extractfile("nudox-linux-x86_64/packaging-manifest.json"))
+            if tag != package.get("release_tag"):
+                raise ValueError("candidate tag must match its immutable checkpoint or be v<version>-rc.<number>")
         release = self.find_release(tag)
         if release is None:
-            release = self.api("/releases", "POST", {"tag_name": tag, "name": "NuDox " + tag, "draft": True, "prerelease": not stable, "make_latest": "false", "body": f'Apple Silicon macOS. Canonical Forgejo Backend source: {manifest["source_sha"]}. The GitHub tag is a distribution identifier.'})
+            release = self.api("/releases", "POST", {"tag_name": tag, "name": "NuDox " + tag, "draft": True, "prerelease": not stable, "make_latest": "false", "body": f'NuDox distribution assets. Canonical Forgejo Backend source: {manifest["source_sha"]}. The GitHub tag is a distribution identifier.'})
         assets = {asset["name"]: asset for asset in release["assets"]}
         if not release["draft"] and bool(release.get("prerelease")) == stable:
             raise ValueError("published tag has the wrong stable/prerelease status; use a new version")
-        for name in (ASSET, ASSET + ".sha256", "release-manifest.json", "native-qa.json"):
-            path = directory / name
+        if manifest["platform"] == "linux-x64":
+            publish_files = (
+                (manifest["asset"], manifest["asset"]),
+                (manifest["asset"] + ".sha256", manifest["asset"] + ".sha256"),
+                ("release-manifest-linux-x64.json", "release-manifest.json"),
+                ("native-qa-linux-x64.json", "native-qa-linux-x64.json"),
+                ("install-linux-x64.py", "install-linux-x64.py" if not stable else "install-linux-x64-channel.py"),
+            )
+        else:
+            publish_files = tuple((name, name) for name in (ASSET, ASSET + ".sha256", "release-manifest.json", "native-qa.json"))
+        for published_name, local_name in publish_files:
+            path = directory / local_name
             expected = sha256(path)
-            if name in assets:
-                if self.asset_hash(assets[name]) != expected:
-                    raise ValueError(f"refusing to overwrite immutable asset {name} in {tag}")
-            elif release["draft"]:
-                uploaded = self.upload(release["id"], path)
+            if published_name in assets:
+                if self.asset_hash(assets[published_name]) != expected:
+                    raise ValueError(f"refusing to overwrite immutable asset {published_name} in {tag}")
+            elif release["draft"] or manifest["platform"] == "linux-x64":
+                uploaded = self.upload(release["id"], path) if published_name == local_name else self.upload(release["id"], path, published_name)
                 if self.asset_hash(uploaded) != expected:
                     raise ValueError("uploaded release bytes failed read-back verification")
             else:
-                raise ValueError("published release is missing an expected asset; use a new version")
+                raise ValueError(f"published release is missing expected asset {published_name}; use a new version")
         if release["draft"]:
             self.api(f'/releases/{release["id"]}', "PATCH", {"draft": False, "prerelease": not stable, "make_latest": "false"})
         return manifest
@@ -233,7 +357,10 @@ def promote(manifest, host, key, known_hosts):
     current = request({"action": "show"})
     if public_metadata() != current["catalog"]:
         raise ValueError("public auth release metadata does not match the active channel catalog; deploy routing first")
-    channel = {name: manifest[name] for name in ("version", "source_sha", "asset", "sha256", "minimum_os")}
+    channel = {name: manifest[name] for name in ("version", "source_sha", "asset", "sha256")}
+    for optional in ("minimum_os", "minimum_glibc"):
+        if optional in manifest:
+            channel[optional] = manifest[optional]
     channel.update(tag="v" + manifest["version"], status="available")
     updated = request({"action": "promote", "expected_sha256": current["sha256"], "platform": manifest["platform"], "channel": channel})
     for platform, before in current["catalog"]["platforms"].items():
@@ -248,7 +375,8 @@ def promote(manifest, host, key, known_hosts):
                 raise ValueError("rollback verification failed")
         except (ValueError, OSError, subprocess.CalledProcessError) as rollback_error:
             raise ValueError("public download verification failed; automatic rollback also failed, inspect the active catalog") from rollback_error
-        raise ValueError("public download verification failed; previous Mac channel restored") from error
+        restored_channel = "Mac" if manifest["platform"] == "macos" else manifest["platform"]
+        raise ValueError(f"public download verification failed; previous {restored_channel} channel restored") from error
     return updated["sha256"]
 
 
@@ -264,7 +392,7 @@ def verify_public_download(manifest, expected_catalog):
     if public_metadata() != expected_catalog:
         raise ValueError("public metadata did not refresh to promoted release")
     digest = hashlib.sha256()
-    with urllib.request.urlopen("https://api.nudox.org/v1/downloads/macos", timeout=120) as response:
+    with urllib.request.urlopen(f"https://api.nudox.org/v1/downloads/{manifest['platform']}", timeout=120) as response:
         for chunk in iter(lambda: response.read(1024 * 1024), b""):
             digest.update(chunk)
     if digest.hexdigest() != manifest["sha256"]:
