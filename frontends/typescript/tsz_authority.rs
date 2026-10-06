@@ -20,24 +20,24 @@ use std::sync::Arc;
 use crate::Utf8Span;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tsz_common::ExecutionCheckpoint;
 use tsz::tsz_solver::construction::TypeDatabase;
+use tsz_common::ExecutionCheckpoint;
 
 pub use tsz::binder::BinderState as TszBinderState;
 pub use tsz::binder::SymbolId as TszSymbolId;
 pub use tsz::checker::context::CheckerOptions as TszCheckerOptions;
 pub use tsz::checker::diagnostics::Diagnostic as TszDiagnostic;
 pub use tsz::checker::state::CheckerState as TszCheckerState;
-pub use tsz_common::ProjectSemanticOptions as TszProjectSemanticOptions;
 pub use tsz::common::{ModuleKind as TszModuleKind, ScriptTarget as TszScriptTarget};
-pub use tsz::parser::{NodeIndex as TszNodeIndex, ParseDiagnostic as TszParseDiagnostic};
 pub use tsz::parallel::{
     ProjectModuleRequestKind as TszProjectModuleRequestKind,
     ProjectModuleResolution as TszProjectModuleResolution,
     ProjectModuleResolutionError as TszProjectModuleResolutionError,
     ProjectModuleResolutionTarget as TszProjectModuleResolutionTarget,
 };
+pub use tsz::parser::{NodeIndex as TszNodeIndex, ParseDiagnostic as TszParseDiagnostic};
 pub use tsz::tsz_solver::type_handles::TypeId as TszTypeId;
+pub use tsz_common::ProjectSemanticOptions as TszProjectSemanticOptions;
 pub use tsz_common::options::module_detection::ModuleDetectionKind as TszModuleDetectionKind;
 
 #[path = "tsz_query_session.rs"]
@@ -191,6 +191,41 @@ pub enum TszAuthorityError {
     /// checkpoint before a complete project could be published.
     #[error("TSZ project update stopped: {0:?}")]
     ExecutionStopped(tsz_common::ProjectExecutionStop),
+}
+
+/// Effective TypeScript compiler options could not be mapped onto the
+/// supported native TSZ checker option model.
+#[derive(Debug, Error)]
+#[error("TypeScript compiler options could not be mapped into TSZ: {message}")]
+pub struct TszCompilerOptionsError {
+    message: Box<str>,
+}
+
+/// Maps compiler-API-normalized options into the exact TSZ checker options.
+///
+/// The input is one JSON object containing a `compilerOptions` member. The
+/// project bridge must first resolve the selected tsconfig with the admitted
+/// TypeScript compiler API and materialize its version-specific effective
+/// defaults. This function then applies the TSZ config parser's supported
+/// option validation and returns the typed checker options consumed by the
+/// same project update and query session.
+///
+/// # Errors
+/// Returns a typed failure when the JSON is invalid or TSZ does not recognize
+/// a checker option value.
+pub fn checker_options_from_compiler_api_json(
+    source: &str,
+) -> Result<TszCheckerOptions, TszCompilerOptionsError> {
+    let config = tsz::config::parse_tsconfig(source).map_err(|error| {
+        TszCompilerOptionsError {
+            message: error.to_string().into_boxed_str(),
+        }
+    })?;
+    tsz::config::resolve_compiler_options(config.compiler_options.as_ref())
+        .map(|resolved| resolved.checker)
+        .map_err(|error| TszCompilerOptionsError {
+            message: error.to_string().into_boxed_str(),
+        })
 }
 
 /// Explicit TSZ checker/binder options resolved by the project configuration layer.
@@ -503,15 +538,17 @@ impl TszProjectAuthority {
         }
         program.set_project_module_resolutions(&options.module_resolutions)?;
         let check = match checkpoint {
-            Some(checkpoint) => tsz::parallel::check_files_parallel_with_project_inputs_and_execution_checkpoint(
-                &program,
-                &options.checker,
-                lib_files,
-                options.semantic_options,
-                &options.module_resolutions,
-                checkpoint,
-            )
-            .map_err(TszAuthorityError::ProjectCheck)?,
+            Some(checkpoint) => {
+                tsz::parallel::check_files_parallel_with_project_inputs_and_execution_checkpoint(
+                    &program,
+                    &options.checker,
+                    lib_files,
+                    options.semantic_options,
+                    &options.module_resolutions,
+                    checkpoint,
+                )
+                .map_err(TszAuthorityError::ProjectCheck)?
+            }
             None => tsz::parallel::check_files_parallel_with_project_semantic_options(
                 &program,
                 &options.checker,
@@ -1004,6 +1041,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn compiler_api_options_preserve_explicit_checker_overrides() {
+        let checker = checker_options_from_compiler_api_json(
+            r#"{"compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"noImplicitAny":false,"strictNullChecks":true,"noUncheckedIndexedAccess":true,"skipLibCheck":true,"lib":["ES2022"]}}"#,
+        )
+        .expect("compiler-API options should resolve through the typed TSZ config model");
+
+        assert!(checker.strict);
+        assert!(!checker.no_implicit_any);
+        assert!(checker.strict_null_checks);
+        assert!(checker.no_unchecked_indexed_access);
+        assert!(checker.skip_lib_check);
+        assert!(checker.module_explicitly_set);
+    }
+
     fn input(path: &str, source: &str) -> TszFileInput {
         TszFileInput {
             path: path.to_owned(),
@@ -1246,29 +1298,29 @@ mod tests {
             target,
         };
         let mut initial_options = options();
-        initial_options.module_resolutions = vec![resolution(
-            TszProjectModuleResolutionTarget::File {
+        initial_options.module_resolutions =
+            vec![resolution(TszProjectModuleResolutionTarget::File {
                 path: "src/value.ts".to_owned(),
-            },
-        )];
+            })];
         let mut authority = TszProjectAuthority::new();
         let initial = authority
             .update(sources.clone(), initial_options, &[])
             .expect("exact file resolution builds");
         assert_eq!(initial.parsed_and_bound, 2);
-        assert!(authority
-            .project()
-            .expect("initial project exists")
-            .program()
-            .project_module_resolution_outcomes
-            .is_some());
+        assert!(
+            authority
+                .project()
+                .expect("initial project exists")
+                .program()
+                .project_module_resolution_outcomes
+                .is_some()
+        );
 
         let mut external_options = options();
-        external_options.module_resolutions = vec![resolution(
-            TszProjectModuleResolutionTarget::External {
+        external_options.module_resolutions =
+            vec![resolution(TszProjectModuleResolutionTarget::External {
                 identity: "npm:fixture/value@1".to_owned(),
-            },
-        )];
+            })];
         let changed = authority
             .update(sources.clone(), external_options.clone(), &[])
             .expect("changed exact outcome rechecks the same binds");
@@ -1282,11 +1334,10 @@ mod tests {
         assert!(repeated.reused_project_result);
 
         let mut invalid_options = options();
-        invalid_options.module_resolutions = vec![resolution(
-            TszProjectModuleResolutionTarget::File {
+        invalid_options.module_resolutions =
+            vec![resolution(TszProjectModuleResolutionTarget::File {
                 path: "src/not-admitted.ts".to_owned(),
-            },
-        )];
+            })];
         assert!(matches!(
             authority.update(sources, invalid_options, &[]),
             Err(TszAuthorityError::ModuleResolution(

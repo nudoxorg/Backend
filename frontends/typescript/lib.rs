@@ -34,12 +34,14 @@ pub use tsz::tsz_solver::construction::TypeDatabase as TszTypeDatabase;
 /// Native TSZ type handles and structural shapes used by direct IR adapters.
 pub use tsz::tsz_solver::type_handles as tsz_type_handles;
 pub use tsz_authority::{
-    TszAuthorityError, TszBinderState, TszCheckerOptions, TszCheckerState, TszDiagnostic,
+    TszAuthorityError, TszBinderState, TszCheckerOptions, TszCheckerState, TszCompilerOptionsError,
+    TszDiagnostic,
     TszEnvironmentFingerprint, TszFileInput, TszLibraryInput, TszModuleDetectionKind,
     TszModuleKind, TszNodeIndex, TszParseDiagnostic, TszProject, TszProjectAuthority,
     TszProjectModuleRequestKind, TszProjectModuleResolution, TszProjectModuleResolutionError,
     TszProjectModuleResolutionTarget, TszProjectOptions, TszProjectSemanticOptions,
     TszScriptTarget, TszSourceError, TszSymbolId, TszTypeId, TszUpdateReport,
+    checker_options_from_compiler_api_json,
 };
 pub use tsz_authority::{TszProjectQuerySession, TszProjectQuerySessionError};
 /// Shared cancellation, deadline, and work control for one native TSZ project.
