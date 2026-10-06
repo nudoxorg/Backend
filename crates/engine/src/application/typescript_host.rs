@@ -1024,8 +1024,17 @@ struct WorkspaceBoundary {
     files: Box<[FileSnapshot]>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+enum TypeScriptProjectDiscoveryOrigin {
+    ProjectLocal = 1,
+    InstalledFallback = 2,
+}
+
 #[derive(Debug)]
 pub(crate) struct TypeScriptProjectWitness {
+    discovery_origin: TypeScriptProjectDiscoveryOrigin,
+    discovered_compiler_origin: TypeScriptSelectionOrigin,
     project_root: Box<Path>,
     home_root: Option<Box<Path>>,
     discovered_compiler: Box<Path>,
@@ -1171,7 +1180,11 @@ impl TypeScriptProjectWitness {
         );
         files.sort_unstable_by(|left, right| left.path.cmp(&right.path));
         files.dedup_by(|left, right| left.path == right.path);
-        let fingerprint = witness_fingerprint(&files);
+        let mut discovery_fingerprint = Sha256::new();
+        discovery_fingerprint.update(b"typescript.project-discovery-origin.v1\0");
+        discovery_fingerprint.update([discovered.discovery_origin as u8]);
+        discovery_fingerprint.update(witness_fingerprint(&files));
+        let fingerprint = discovery_fingerprint.finalize().into();
         let selected_snapshot = |path: &Path| {
             files
                 .iter()
@@ -1214,6 +1227,8 @@ impl TypeScriptProjectWitness {
             module_closure_digest,
         };
         Ok(Self {
+            discovery_origin: discovered.discovery_origin,
+            discovered_compiler_origin: discovered.compiler_origin,
             project_root: project_root.into_boxed_path(),
             home_root: home_root.map(|root| root.to_path_buf().into_boxed_path()),
             discovered_compiler: discovered.compiler.to_path_buf().into_boxed_path(),
@@ -1323,8 +1338,26 @@ impl TypeScriptProjectWitness {
         let current_project =
             match find_project_typescript_with_home(&self.project_root, self.home_root.as_deref())?
             {
-                ProjectTypeScriptSearch::Found(project) => project,
-                ProjectTypeScriptSearch::NotFound | ProjectTypeScriptSearch::Pnp(_) => {
+                ProjectTypeScriptSearch::Found(project)
+                    if self.discovery_origin == TypeScriptProjectDiscoveryOrigin::ProjectLocal => project,
+                ProjectTypeScriptSearch::NotFound
+                    if self.discovery_origin == TypeScriptProjectDiscoveryOrigin::InstalledFallback => {
+                        // Revalidate the originally selected host installation. Never select a
+                        // new PATH entry or turn a vanished project installation into fallback.
+                        let (module_root, version) = read_typescript_module(&self.discovered_module_root)?;
+                        let compiler = fs::canonicalize(&self.discovered_compiler).map_err(|source| {
+                            TypeScriptProjectHostError::PackagePath {
+                                path: self.discovered_compiler.clone(), source,
+                            }
+                        })?;
+                        ProjectTypeScript {
+                            module_root, compiler, version,
+                            workspace: discover_workspace_boundary(&self.project_root, self.home_root.as_deref())?,
+                            compiler_origin: self.discovered_compiler_origin,
+                            discovery_origin: TypeScriptProjectDiscoveryOrigin::InstalledFallback,
+                        }
+                    }
+                ProjectTypeScriptSearch::Found(_) | ProjectTypeScriptSearch::NotFound | ProjectTypeScriptSearch::Pnp(_) => {
                     return Err(TypeScriptProjectHostError::WitnessChanged {
                         path: self.project_root.to_path_buf().into_boxed_path(),
                     });
@@ -2977,6 +3010,7 @@ impl TypeScriptProjectHost {
             compiler,
             version,
             workspace,
+            discovery_origin: TypeScriptProjectDiscoveryOrigin::InstalledFallback,
             compiler_origin: if self.explicit_compiler.is_some() {
                 TypeScriptSelectionOrigin::ExplicitConfiguration
             } else {
@@ -3052,6 +3086,7 @@ impl AdmittedTypeScriptProject {
 
 #[derive(Debug)]
 struct ProjectTypeScript {
+    discovery_origin: TypeScriptProjectDiscoveryOrigin,
     module_root: PathBuf,
     compiler: PathBuf,
     version: String,
@@ -3229,6 +3264,7 @@ fn inspect_project_package(
         version,
         workspace,
         compiler_origin: TypeScriptSelectionOrigin::ProjectLocalInstallation,
+        discovery_origin: TypeScriptProjectDiscoveryOrigin::ProjectLocal,
     }))
 }
 
@@ -4923,6 +4959,69 @@ if [ "$1" = "--version" ]; then printf 'v22.0.0\n'; elif [ "$2" = "--version" ];
             fs::canonicalize(local_modules).expect("canonical project-local module root")
         );
         assert_eq!(admitted.inputs().compiler_version, b"Version 5.8.4\n");
+    }
+
+    fn installed_fallback_witness(fixture: &Fixture) -> TypeScriptProjectWitness {
+        let project_root = fixture.0.join("project");
+        fs::create_dir_all(&project_root).expect("create package root");
+        let module_root = fixture.0.join("host-modules");
+        install_at(&module_root, "5.9.3");
+        let compiler = fs::canonicalize(module_root.join("typescript/bin/tsc")).unwrap();
+        let node = fixture.0.join("host-node");
+        fs::write(&node, b"captured node executable").unwrap();
+        let package_root = fs::canonicalize(module_root.join("typescript")).unwrap();
+        let project = ProjectTypeScript {
+            module_root: module_root.clone(), compiler: compiler.clone(), version: "5.9.3".into(),
+            workspace: None, compiler_origin: TypeScriptSelectionOrigin::InstalledHostSelection,
+            discovery_origin: TypeScriptProjectDiscoveryOrigin::InstalledFallback,
+        };
+        TypeScriptProjectWitness::capture(&project_root, None, &project, &compiler, &node,
+            &module_root, &package_root, None).expect("capture exact host fallback")
+    }
+
+    #[test]
+    fn installed_fallback_witness_revalidates_without_project_sdk_and_refuses_new_local_sdk() {
+        let fixture = Fixture::new();
+        let witness = installed_fallback_witness(&fixture);
+        witness.validate_current().expect("unchanged installed fallback remains valid");
+        let project_modules = fixture.0.join("project/node_modules");
+        install_at(&project_modules, "5.9.3");
+        assert!(matches!(witness.validate_current(), Err(TypeScriptProjectHostError::WitnessChanged { .. })),
+            "a newly present project installation requires a new selection even at the same version");
+    }
+
+    #[test]
+    fn installed_fallback_witness_refuses_changed_or_deleted_host_sdk_and_node() {
+        let fixture = Fixture::new();
+        let witness = installed_fallback_witness(&fixture);
+        fs::write(fixture.0.join("host-node"), b"changed node executable").unwrap();
+        assert!(witness.validate_current().is_err(), "Node bytes remain witnessed");
+        fs::write(fixture.0.join("host-node"), b"captured node executable").unwrap();
+        fs::write(fixture.0.join("host-modules/typescript/package.json"),
+            r#"{"name":"typescript","version":"5.8.4"}"#).unwrap();
+        assert!(witness.validate_current().is_err(), "selected SDK version cannot change");
+        fs::remove_dir_all(fixture.0.join("host-modules/typescript")).unwrap();
+        assert!(witness.validate_current().is_err(), "missing SDK cannot silently fall back");
+    }
+
+    #[test]
+    fn project_local_witness_cannot_become_installed_fallback_when_local_sdk_disappears() {
+        let fixture = Fixture::new();
+        let _host_witness = installed_fallback_witness(&fixture);
+        let project_root = fixture.0.join("project");
+        let modules = project_root.join("node_modules");
+        install_at(&modules, "5.9.3");
+        let ProjectTypeScriptSearch::Found(project) = find_project_typescript(&project_root).unwrap() else {
+            panic!("actual project installation required");
+        };
+        let node = fixture.0.join("host-node");
+        let package_root = fs::canonicalize(modules.join("typescript")).unwrap();
+        let witness = TypeScriptProjectWitness::capture(&project_root, None, &project,
+            &project.compiler, &node, &modules, &package_root, project.workspace.as_ref()).unwrap();
+        witness.validate_current().expect("unchanged local selection");
+        fs::remove_dir_all(modules).unwrap();
+        assert!(matches!(witness.validate_current(), Err(TypeScriptProjectHostError::WitnessChanged { .. })),
+            "a disappeared project installation does not inherit the valid host installation");
     }
 
     fn install_at(modules: &Path, version: &str) {
