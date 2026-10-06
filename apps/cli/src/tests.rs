@@ -727,10 +727,12 @@ fn cli_resolve_selector_round_trips_into_the_shared_shape_request() {
         }
     }
     let key = symbol_key("retained-selected-row");
-    let base = root();
-    let basis = base.basis();
+    let basis = Basis::new(
+        backend_library::view_state_root(&[]),
+        object_version(b"library-source-v1"),
+    );
     let root = ViewRoot::new_checked(
-        view_key(b"selector-owner"),
+        view_key(b"library-view-v1"),
         basis,
         Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
         vec![Row::new(
