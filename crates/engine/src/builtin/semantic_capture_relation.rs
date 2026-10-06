@@ -499,7 +499,7 @@ pub struct ProductSemanticCaptureBaseRootSchema;
 
 impl Schema for ProductSemanticCaptureBaseRootSchema {
     const DOMAIN: u8 = 0x97;
-    const TYPE: u16 = 6;
+    const TYPE: u16 = 8;
     const VERSION: u8 = 1;
     type Value = [u8; 33];
 
