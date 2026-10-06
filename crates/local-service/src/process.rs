@@ -165,9 +165,10 @@ pub struct ProcessConfig {
     /// Aggregate admission policy for resident dependency facts and their index.
     /// These bound counts and copied key payloads, not total process RSS.
     pub package_graph_limits: backend_library::PackageGraphIndexLimits,
-    /// Optional compiler-host environment snapshot. `None` retains the ordinary
-    /// standalone process-environment mode; `Some` is closed, so every omitted
-    /// role is absent. The workspace-owned data root is always supplied by the
+    /// Optional compiler-host environment snapshot received from the launcher.
+    /// Some is closed, so every omitted role is absent. None asks locald to
+    /// capture installed paths once at startup and then close that selection before
+    /// the owner serves. The workspace-owned data root is always supplied by the
     /// embedded owner and is not part of this snapshot.
     pub compiler_environment: Option<ClosedLocalHostEnvironmentSnapshot>,
 }

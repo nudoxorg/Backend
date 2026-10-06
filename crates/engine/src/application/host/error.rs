@@ -11,7 +11,10 @@ use backend_semantic::vocabulary::NativeTool;
 use backend_store::journal::PublicationLimitError;
 use thiserror::Error;
 
-use super::{LocalHostDirectory, LocalHostPathKind, LocalHostPathRole, LocalHostVariable};
+use super::{
+    ClosedLocalHostEnvironmentSnapshotError, LocalHostDirectory, LocalHostPathKind,
+    LocalHostPathRole, LocalHostVariable,
+};
 use crate::application::{
     LocalCompilerRuntimeConfigurationError, LocalCompilerRuntimeOpenError,
     LocalCompilerScratchError, LocalCompilerTimeoutError, LocalPackageRootError,
@@ -21,6 +24,12 @@ use crate::application::{
 /// Exact failure while admitting and starting a process-local compiler owner.
 #[derive(Debug, Error)]
 pub enum LocalCompilerHostError {
+    /// Installed-tool capture was requested from a host configured with another discovery mode.
+    #[error("installed compiler selection requires the installed-tools capture policy")]
+    InstalledSelectionRequiresCapturePolicy,
+    /// The selected host snapshot could not be encoded or admitted.
+    #[error(transparent)]
+    HostSnapshot(#[from] ClosedLocalHostEnvironmentSnapshotError),
     /// No platform data-root authority was available.
     #[error("no durable local compiler data root is configured for this platform")]
     DataRootUnavailable,

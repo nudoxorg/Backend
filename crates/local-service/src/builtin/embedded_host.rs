@@ -90,6 +90,20 @@ impl LocalHostEnvironment for EmbeddedCompilerEnvironment {
     fn search_path(&self) -> Option<OsString> {
         self.search_path.clone()
     }
+
+    fn go_module_cache(&self) -> Option<OsString> {
+        self.compiler_environment
+            .is_none()
+            .then(|| ProcessHostEnvironment.go_module_cache())
+            .flatten()
+    }
+
+    fn go_path(&self) -> Option<OsString> {
+        self.compiler_environment
+            .is_none()
+            .then(|| ProcessHostEnvironment.go_path())
+            .flatten()
+    }
 }
 
 impl EmbeddedCompilerEnvironment {

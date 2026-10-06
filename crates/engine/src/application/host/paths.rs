@@ -100,8 +100,17 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         if let Some(path) = self.optional_absolute_path(variable)? {
             return self.validate_file(role, variable, path).map(Some);
         }
-        if self.discovery == LocalHostDiscovery::ExplicitOnly {
+        if self.discovery == LocalHostDiscovery::ExplicitOnly
+            || self.discovery == LocalHostDiscovery::ClosedSnapshot
+        {
             return Ok(None);
+        }
+        if self.discovery == LocalHostDiscovery::InstalledTools
+            && let Some(name) = installed_tool_name(variable)
+            && let Some(path) =
+                first_executable_on_search_path(role, self.environment.search_path(), name)?
+        {
+            return Ok(Some(path));
         }
         first_existing(role, candidates)
     }
@@ -121,6 +130,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let explicit_compiler = self.optional_absolute_path(variable)?;
         let compiler_candidates = match explicit_compiler.as_ref() {
             Some(path) => vec![self.validate_file(role, variable, path.clone())?],
+            None if self.discovery == LocalHostDiscovery::ClosedSnapshot => Vec::new(),
             None => typescript_compiler_candidates(home, self.environment.search_path()),
         };
 
@@ -173,6 +183,9 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 })
             });
         }
+        if self.discovery == LocalHostDiscovery::ClosedSnapshot {
+            return Ok(None);
+        }
         if let Some(directory) = compiler.and_then(Path::parent) {
             let candidate = directory.join(if cfg!(windows) { "node.exe" } else { "node" });
             let mut candidates = ArrayVec::new();
@@ -219,7 +232,9 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         if let Some(path) = self.optional_absolute_path(variable)? {
             return self.validate_directory(role, variable, path).map(Some);
         }
-        if self.discovery == LocalHostDiscovery::ExplicitOnly {
+        if self.discovery == LocalHostDiscovery::ExplicitOnly
+            || self.discovery == LocalHostDiscovery::ClosedSnapshot
+        {
             return Ok(None);
         }
         first_existing_directory(role, candidates)
@@ -440,6 +455,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 .map(Some);
         }
 
+        if self.discovery == LocalHostDiscovery::ClosedSnapshot {
+            return Ok(None);
+        }
+
         let mut candidates = ArrayVec::new();
         if let Some(compiler) = compiler {
             if let Some(binary_directory) = compiler.parent() {
@@ -462,6 +481,24 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         ecosystem: PackageEcosystem,
     ) -> ArrayVec<PathBuf, PLATFORM_PATH_CAPACITY> {
         let mut candidates = ArrayVec::new();
+        if ecosystem == PackageEcosystem::Golang {
+            if let Some(cache) = self.environment.go_module_cache().map(PathBuf::from)
+                && cache.is_absolute()
+            {
+                push_candidate(&mut candidates, cache);
+            }
+            if let Some(gopath) = self.environment.go_path() {
+                for root in std::env::split_paths(&gopath).take(PLATFORM_PATH_CAPACITY) {
+                    if root.is_absolute() {
+                        push_candidate(&mut candidates, root.join("pkg/mod"));
+                    }
+                }
+            }
+            if let Some(home) = home {
+                push_candidate(&mut candidates, home.join("go/pkg/mod"));
+            }
+            return candidates;
+        }
         let Some(home) = home else {
             return candidates;
         };
@@ -469,9 +506,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             PackageEcosystem::Cargo => {
                 push_candidate(&mut candidates, home.join(".cargo/registry/src"));
             }
-            PackageEcosystem::Golang => {
-                push_candidate(&mut candidates, home.join("go/pkg/mod"));
-            }
+            PackageEcosystem::Golang => unreachable!("handled above"),
             PackageEcosystem::Maven => {
                 push_candidate(&mut candidates, home.join(".m2/repository"));
             }
@@ -481,6 +516,23 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             PackageEcosystem::Npm | PackageEcosystem::Pypi | PackageEcosystem::Generic => {}
         }
         candidates
+    }
+}
+
+fn installed_tool_name(variable: LocalHostVariable) -> Option<&'static str> {
+    match variable {
+        LocalHostVariable::NudoxPython => Some(if cfg!(windows) {
+            "python.exe"
+        } else {
+            "python3"
+        }),
+        LocalHostVariable::NudoxGo => Some(if cfg!(windows) { "go.exe" } else { "go" }),
+        LocalHostVariable::NudoxPyrefly => Some(if cfg!(windows) {
+            "pyrefly.exe"
+        } else {
+            "pyrefly"
+        }),
+        _ => None,
     }
 }
 
@@ -1291,6 +1343,209 @@ mod tests {
             Err(LocalCompilerHostError::BundleManifest { .. })
         ));
         fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[derive(Clone, Default)]
+    struct InstalledToolsEnvironment {
+        values: Vec<(LocalHostVariable, std::ffi::OsString)>,
+        search_path: Option<std::ffi::OsString>,
+        go_module_cache: Option<std::ffi::OsString>,
+        go_path: Option<std::ffi::OsString>,
+    }
+
+    impl InstalledToolsEnvironment {
+        fn set(&mut self, variable: LocalHostVariable, path: &Path) {
+            self.values
+                .push((variable, path.as_os_str().to_os_string()));
+        }
+    }
+
+    impl LocalHostEnvironment for InstalledToolsEnvironment {
+        fn value(&self, variable: LocalHostVariable) -> Option<std::ffi::OsString> {
+            self.values
+                .iter()
+                .find(|(selected, _)| *selected == variable)
+                .map(|(_, value)| value.clone())
+        }
+
+        fn search_path(&self) -> Option<std::ffi::OsString> {
+            self.search_path.clone()
+        }
+
+        fn go_module_cache(&self) -> Option<std::ffi::OsString> {
+            self.go_module_cache.clone()
+        }
+
+        fn go_path(&self) -> Option<std::ffi::OsString> {
+            self.go_path.clone()
+        }
+    }
+
+    fn installed_fixture(
+        name: &str,
+        include_pyrefly: bool,
+    ) -> (PathBuf, InstalledToolsEnvironment) {
+        let root = private_test_directory(name);
+        let home = root.join("home");
+        let bin = root.join("bin");
+        let module_root = root.join("lib/node_modules");
+        let compiler = module_root.join("typescript/bin/tsc");
+        executable(&compiler);
+        executable(&bin.join("node"));
+        executable(&bin.join("python3"));
+        executable(&bin.join("go"));
+        if include_pyrefly {
+            executable(&bin.join("pyrefly"));
+        }
+        let go_module_cache = root.join("go/pkg/mod");
+        fs::create_dir_all(&home).expect("create home fixture");
+        fs::create_dir_all(&go_module_cache).expect("create Go module cache fixture");
+        let compiler_bin = compiler.parent().expect("compiler bin directory");
+        let search_path =
+            std::env::join_paths([compiler_bin, bin.as_path()]).expect("join fixture PATH");
+        let mut environment = InstalledToolsEnvironment {
+            search_path: Some(search_path),
+            go_module_cache: Some(go_module_cache.as_os_str().to_os_string()),
+            ..InstalledToolsEnvironment::default()
+        };
+        environment.set(LocalHostVariable::Home, &home);
+        (root, environment)
+    }
+
+    #[test]
+    fn installed_tool_capture_closes_one_paired_selection_and_repeats_its_witness() {
+        let (root, environment) = installed_fixture("installed-tools", true);
+        let host = LocalCompilerHost::new(environment.clone(), LocalHostDiscovery::InstalledTools);
+        let first = host
+            .capture_installed_selection()
+            .expect("capture installed compilers");
+        let restarted = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools)
+            .capture_installed_selection()
+            .expect("repeat installed compiler capture");
+
+        let snapshot = first.snapshot();
+        assert_eq!(
+            first.source(),
+            super::super::LocalCompilerHostSelectionSource::CapturedInstalledTools
+        );
+        assert_eq!(
+            snapshot.path(LocalHostVariable::NudoxTypeScriptCompiler),
+            Some(
+                fs::canonicalize(root.join("lib/node_modules/typescript/bin/tsc"))
+                    .unwrap()
+                    .as_path()
+            ),
+        );
+        assert_eq!(
+            snapshot.path(LocalHostVariable::NudoxTypeScriptNode),
+            Some(fs::canonicalize(root.join("bin/node")).unwrap().as_path()),
+        );
+        assert_eq!(
+            snapshot.path(LocalHostVariable::NudoxTypeScriptModuleRoot),
+            Some(
+                fs::canonicalize(root.join("lib/node_modules"))
+                    .unwrap()
+                    .as_path()
+            ),
+        );
+        assert_eq!(
+            snapshot.path(LocalHostVariable::NudoxPython),
+            Some(
+                fs::canonicalize(root.join("bin/python3"))
+                    .unwrap()
+                    .as_path()
+            ),
+        );
+        assert_eq!(
+            snapshot.path(LocalHostVariable::NudoxPyrefly),
+            Some(
+                fs::canonicalize(root.join("bin/pyrefly"))
+                    .unwrap()
+                    .as_path()
+            ),
+        );
+        assert_eq!(
+            snapshot.path(LocalHostVariable::NudoxGo),
+            Some(fs::canonicalize(root.join("bin/go")).unwrap().as_path()),
+        );
+        assert_eq!(
+            snapshot.path(LocalHostVariable::NudoxGoRoot),
+            Some(fs::canonicalize(root.join("go/pkg/mod")).unwrap().as_path()),
+        );
+        assert!(first.issues().is_empty());
+        assert_eq!(first.fingerprint(), restarted.fingerprint());
+        assert_eq!(first.fingerprint_hex(), restarted.fingerprint_hex(),);
+        let incoming = super::super::LocalCompilerHostSelection::from_closed_snapshot(
+            first.snapshot().clone(),
+        )
+        .expect("wrap incoming closed snapshot");
+        assert_ne!(first.fingerprint(), incoming.fingerprint());
+        let receipt = first.encode_receipt().expect("encode status receipt");
+        assert!(receipt.contains("captured_installed_tools"));
+        assert!(receipt.contains(&first.fingerprint_hex()));
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn installed_capture_preserves_bad_explicit_overrides_and_reports_missing_pyrefly() {
+        let (root, mut environment) = installed_fixture("installed-tools-invalid", false);
+        let missing_node = root.join("absent/node");
+        environment.set(LocalHostVariable::NudoxTypeScriptNode, &missing_node);
+        let error = LocalCompilerHost::new(environment.clone(), LocalHostDiscovery::InstalledTools)
+            .capture_installed_selection()
+            .expect_err("invalid explicit Node must not be replaced by PATH");
+        assert!(matches!(
+            error,
+            LocalCompilerHostError::ConfiguredPath {
+                variable: LocalHostVariable::NudoxTypeScriptNode,
+                ..
+            }
+        ));
+
+        environment
+            .values
+            .retain(|(variable, _)| *variable != LocalHostVariable::NudoxTypeScriptNode);
+        let selection = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools)
+            .capture_installed_selection()
+            .expect("capture with optional Pyrefly absent");
+        assert!(
+            selection
+                .issues()
+                .contains(&super::super::LocalCompilerHostSelectionIssue::MissingPyreflyChecker)
+        );
+        assert!(
+            selection
+                .snapshot()
+                .path(LocalHostVariable::NudoxPyrefly)
+                .is_none()
+        );
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn closed_snapshot_never_uses_path_or_compiler_relative_fallbacks() {
+        let (root, environment) = installed_fixture("closed-host-selection", true);
+        let compiler = root.join("lib/node_modules/typescript/bin/tsc");
+        let mut closed_environment = environment;
+        closed_environment.values.clear();
+        closed_environment.set(LocalHostVariable::NudoxTypeScriptCompiler, &compiler);
+        let host = LocalCompilerHost::new(closed_environment, LocalHostDiscovery::ClosedSnapshot);
+        let selection = host
+            .typescript_host_selection(None)
+            .expect("inspect closed TypeScript roles");
+        assert!(selection.compiler.is_some());
+        assert!(selection.node.is_none());
+        assert!(selection.module_root.is_none());
+        assert!(
+            host.executable(
+                LocalHostVariable::NudoxPython,
+                LocalHostPathRole::Native(NativeTool::Python),
+                ArrayVec::new(),
+            )
+            .expect("closed Python role")
+            .is_none()
+        );
+        fs::remove_dir_all(root).expect("remove fixture");
     }
 
     #[test]

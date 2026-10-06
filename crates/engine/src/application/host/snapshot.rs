@@ -18,6 +18,213 @@ const SNAPSHOT_PREFIX_BYTES: usize = br#"{"version":1,"paths":["#.len();
 const SNAPSHOT_SUFFIX_BYTES: usize = 2; // `]}`
 const ENTRY_FIXED_BYTES: usize = br#"{"variable":"","path":}"#.len();
 
+/// How the current local owner obtained its compiler-host paths.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalCompilerHostSelectionSource {
+    /// locald captured installed paths from this process before the owner began serving.
+    CapturedInstalledTools,
+    /// The launching host supplied a complete version-1 closed snapshot.
+    IncomingClosedSnapshot,
+}
+
+/// Actionable missing-tool states retained with the immutable owner selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalCompilerHostSelectionIssue {
+    /// No Node runtime was captured for project-local TypeScript.
+    MissingTypeScriptNode,
+    /// A captured global TypeScript script has no package module root.
+    MissingTypeScriptModuleRoot,
+    /// No Python interpreter was captured.
+    MissingPythonInterpreter,
+    /// No Pyrefly checker was captured for Python authority.
+    MissingPyreflyChecker,
+    /// No Go compiler was captured.
+    MissingGoCompiler,
+    /// A captured Go compiler has no package module cache.
+    MissingGoModuleCache,
+}
+
+impl LocalCompilerHostSelectionIssue {
+    /// Returns concise setup guidance suitable for an owner status doctor.
+    #[must_use]
+    pub const fn guidance(self) -> &'static str {
+        match self {
+            Self::MissingTypeScriptNode => {
+                "Install Node.js or configure NUDOX_TYPESCRIPT_NODE, then restart locald."
+            }
+            Self::MissingTypeScriptModuleRoot => {
+                "Install the TypeScript package or configure NUDOX_TYPESCRIPT_MODULE_ROOT, then restart locald."
+            }
+            Self::MissingPythonInterpreter => {
+                "Install Python 3 or configure NUDOX_PYTHON, then restart locald."
+            }
+            Self::MissingPyreflyChecker => {
+                "Install Pyrefly or configure NUDOX_PYREFLY, then restart locald."
+            }
+            Self::MissingGoCompiler => "Install Go or configure NUDOX_GO, then restart locald.",
+            Self::MissingGoModuleCache => {
+                "Configure GOMODCACHE, GOPATH, or NUDOX_GO_ROOT, then restart locald."
+            }
+        }
+    }
+}
+
+/// Immutable owner-startup selection receipt: a closed path snapshot, its source, and a
+/// reproducible fingerprint. The source domain is part of the fingerprint, so an incoming
+/// explicit snapshot is distinguishable from an ambient selection even when their paths match.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalCompilerHostSelection {
+    snapshot: ClosedLocalHostEnvironmentSnapshot,
+    source: LocalCompilerHostSelectionSource,
+    fingerprint: [u8; 32],
+    issues: Vec<LocalCompilerHostSelectionIssue>,
+}
+
+impl LocalCompilerHostSelection {
+    /// Wraps a caller-supplied snapshot as a closed input. This constructor never discovers or
+    /// repairs missing paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns a snapshot serialization error.
+    pub fn from_closed_snapshot(
+        snapshot: ClosedLocalHostEnvironmentSnapshot,
+    ) -> Result<Self, ClosedLocalHostEnvironmentSnapshotError> {
+        Self::new(
+            snapshot,
+            LocalCompilerHostSelectionSource::IncomingClosedSnapshot,
+        )
+    }
+
+    pub(super) fn captured_installed_tools(
+        snapshot: ClosedLocalHostEnvironmentSnapshot,
+    ) -> Result<Self, ClosedLocalHostEnvironmentSnapshotError> {
+        Self::new(
+            snapshot,
+            LocalCompilerHostSelectionSource::CapturedInstalledTools,
+        )
+    }
+
+    fn new(
+        snapshot: ClosedLocalHostEnvironmentSnapshot,
+        source: LocalCompilerHostSelectionSource,
+    ) -> Result<Self, ClosedLocalHostEnvironmentSnapshotError> {
+        let encoded = snapshot.encode()?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"backend-local-compiler-host-selection-v1\0");
+        hasher.update(&[match source {
+            LocalCompilerHostSelectionSource::CapturedInstalledTools => 1,
+            LocalCompilerHostSelectionSource::IncomingClosedSnapshot => 2,
+        }]);
+        hasher.update(encoded.as_bytes());
+        let fingerprint = *hasher.finalize().as_bytes();
+        let issues = selection_issues(&snapshot);
+        Ok(Self {
+            snapshot,
+            source,
+            fingerprint,
+            issues,
+        })
+    }
+
+    /// Returns the exact closed path set supplied to the owner.
+    #[must_use]
+    pub fn snapshot(&self) -> &ClosedLocalHostEnvironmentSnapshot {
+        &self.snapshot
+    }
+
+    /// Returns whether paths were captured from the locald process or supplied by its launcher.
+    #[must_use]
+    pub const fn source(&self) -> LocalCompilerHostSelectionSource {
+        self.source
+    }
+
+    /// Returns the deterministic BLAKE3 witness over source mode and canonical snapshot bytes.
+    #[must_use]
+    pub const fn fingerprint(&self) -> [u8; 32] {
+        self.fingerprint
+    }
+
+    /// Returns the lower-case hexadecimal fingerprint for a status receipt.
+    #[must_use]
+    pub fn fingerprint_hex(&self) -> String {
+        hex_fingerprint(&self.fingerprint)
+    }
+
+    /// Returns setup issues found without changing or filling the closed snapshot.
+    #[must_use]
+    pub fn issues(&self) -> &[LocalCompilerHostSelectionIssue] {
+        &self.issues
+    }
+
+    /// Encodes a bounded receipt suitable for private locald state and a setup doctor.
+    ///
+    /// The nested snapshot keeps the receipt's native path encoding lossless. It is data, not a
+    /// second input source: only the already selected paths are recorded.
+    ///
+    /// # Errors
+    ///
+    /// Returns a snapshot serialization error.
+    pub fn encode_receipt(&self) -> Result<String, ClosedLocalHostEnvironmentSnapshotError> {
+        #[derive(Serialize)]
+        struct Receipt<'a> {
+            version: u8,
+            source: LocalCompilerHostSelectionSource,
+            fingerprint: String,
+            snapshot: String,
+            issues: &'a [LocalCompilerHostSelectionIssue],
+        }
+
+        let receipt = Receipt {
+            version: 1,
+            source: self.source,
+            fingerprint: self.fingerprint_hex(),
+            snapshot: self.snapshot.encode()?,
+            issues: &self.issues,
+        };
+        serde_json::to_string(&receipt)
+            .map_err(|_| ClosedLocalHostEnvironmentSnapshotError::InvalidEncoding)
+    }
+}
+
+fn selection_issues(
+    snapshot: &ClosedLocalHostEnvironmentSnapshot,
+) -> Vec<LocalCompilerHostSelectionIssue> {
+    let has = |variable| snapshot.path(variable).is_some();
+    let mut issues = Vec::new();
+    if !has(LocalHostVariable::NudoxTypeScriptNode) {
+        issues.push(LocalCompilerHostSelectionIssue::MissingTypeScriptNode);
+    }
+    if has(LocalHostVariable::NudoxTypeScriptCompiler)
+        && !has(LocalHostVariable::NudoxTypeScriptModuleRoot)
+    {
+        issues.push(LocalCompilerHostSelectionIssue::MissingTypeScriptModuleRoot);
+    }
+    if !has(LocalHostVariable::NudoxPython) {
+        issues.push(LocalCompilerHostSelectionIssue::MissingPythonInterpreter);
+    }
+    if !has(LocalHostVariable::NudoxPyrefly) {
+        issues.push(LocalCompilerHostSelectionIssue::MissingPyreflyChecker);
+    }
+    if !has(LocalHostVariable::NudoxGo) {
+        issues.push(LocalCompilerHostSelectionIssue::MissingGoCompiler);
+    } else if !has(LocalHostVariable::NudoxGoRoot) {
+        issues.push(LocalCompilerHostSelectionIssue::MissingGoModuleCache);
+    }
+    issues
+}
+
+fn hex_fingerprint(fingerprint: &[u8; 32]) -> String {
+    let mut output = String::with_capacity(64);
+    for byte in fingerprint {
+        use fmt::Write as _;
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
 /// A complete snapshot of the compiler-host variables selected by one owner.
 ///
 /// The snapshot is closed: roles omitted from it are absent. The containing owner configuration
