@@ -1941,7 +1941,7 @@ fn workspace_virtual_path(
 
 fn program_environment_fingerprint(
     inputs: &TypeScriptProjectInputs<'_>,
-    config: &super::typescript_host::TypeScriptConfigInput,
+    config: Option<&super::typescript_host::TypeScriptConfigInput>,
     compiler_version: &str,
     options: &serde_json::Value,
     content_ids: &BTreeMap<String, ContentId<SourceFactDomain>>,
@@ -1951,10 +1951,18 @@ fn program_environment_fingerprint(
     resolver_digest: &[u8; 32],
 ) -> Result<TszEnvironmentFingerprint, TypeScriptProjectHostError> {
     let mut digest = blake3::Hasher::new();
-    digest.update(b"compiler.typescript.tsz-program.v1\0");
+    digest.update(b"compiler.typescript.tsz-program.v2\0");
     digest.update(&inputs.fingerprint);
     digest.update(compiler_version.as_bytes());
-    digest.update(config.content_id.as_ref());
+    match config {
+        Some(config) => {
+            digest.update(&[1]);
+            digest.update(config.content_id.as_ref());
+        }
+        None => {
+            digest.update(&[2]);
+        }
+    }
     digest.update(compiler_api_content_id.as_ref());
     digest.update(compiler_access_digest);
     digest.update(resolver_digest);
