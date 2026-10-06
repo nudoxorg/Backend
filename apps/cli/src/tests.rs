@@ -1023,6 +1023,39 @@ fn markdown_output_is_the_shared_renderer_and_json_is_the_typed_dto() {
 }
 
 #[test]
+fn an_oversized_json_page_is_a_nonzero_typed_transport_refusal() {
+    let snapshot = ViewSnapshot {
+        root: root(),
+        freshness: Freshness::Current,
+        next: None,
+        graph_relations: None,
+        rich_graph: None,
+    };
+    let answer = Answer::Records(Box::new(backend_present::record_list(
+        "q".repeat(backend_present::DEFAULT_RESPONSE_BUDGET_BYTES + 1),
+        &snapshot,
+    )));
+    let session = backend_client::Session::from_transport(
+        "/private/oversized-answer.sock",
+        Checked { reply: None },
+    );
+    let options = options::split(&["--json".to_owned()])
+        .expect("JSON options")
+        .0;
+
+    let fault = process::render_admitted_answer(&session, &answer, &options)
+        .expect_err("an incomplete JSON DTO cannot be reported as success");
+    assert_eq!(fault.slug(), FaultSlug::Transport);
+    assert_eq!(fault.cause().slug(), backend_present::CauseSlug::Oversized);
+    assert_eq!(render::exit_code(&fault), ExitCode::from(render::EXIT_IO));
+
+    let rendered: serde_json::Value =
+        serde_json::from_str(&render::answer(&answer, &options)).expect("bounded fault JSON");
+    assert_eq!(rendered["answer"], "fault");
+    assert_eq!(rendered["cause"]["slug"], "oversized");
+}
+
+#[test]
 fn cli_named_versions_preserves_the_captured_semver_operand_at_every_detail() {
     let packet: serde_json::Value = serde_json::from_str(include_str!(
         "../../../crates/present/fixtures/semantic-versions-semver-public.json"

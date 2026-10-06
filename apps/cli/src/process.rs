@@ -148,11 +148,7 @@ pub(crate) fn render_admitted_answer(
         .map_err(|error| {
             Fault::from_client_error(&error, Operand::Argument("cursor".to_owned()))
         })?;
-    Ok(render::answer_with_cursor(
-        answer,
-        options,
-        cursor.as_deref(),
-    ))
+    render::try_answer_with_cursor(answer, options, cursor.as_deref())
 }
 
 fn plan(words: &[String], options: &Options, project: &str) -> Result<Request, Fault> {
