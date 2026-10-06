@@ -116,6 +116,32 @@ pub(crate) fn collect_with_checker<'a, 'source>(
     Ok(())
 }
 
+/// Streams one package report whose native target text remains borrowed until admission.
+pub(crate) fn collect_with_project_checker<'source>(
+    module: &ModuleFacts,
+    source: &'source [u8],
+    facts: &mut FactSet<'source>,
+    checker: &'source CheckerReport,
+) -> Result<(), PythonCollectError> {
+    let mut emitter = Emitter::new(source, module, facts, Some(checker));
+    emitter.project_definitions = checker
+        .symbols
+        .iter()
+        .filter_map(|symbol| match &symbol.outcome {
+            SymbolOutcome::Definition { target, .. } => {
+                Some(((symbol.span.start, symbol.span.end), target))
+            }
+            _ => None,
+        })
+        .collect();
+    emitter.emit_classes()?;
+    emitter.emit_non_class_declarations()?;
+    emitter.emit_parentage()?;
+    emitter.emit_occurrences()?;
+    emitter.emit_docs()?;
+    Ok(())
+}
+
 /// Runs the pyrefly authority transaction, preserving its typed terminal.
 ///
 /// An explicit checker result. `Unavailable` means no authority transaction
@@ -211,6 +237,9 @@ struct Emitter<'a, 'source> {
     child_rows: Vec<(u32, usize, Span)>,
     /// The pyrefly authority report, when the checker answered.
     checker: Option<CheckerIndex<'a>>,
+    /// Native definitions whose owned target text is borrowed through admission.
+    project_definitions:
+        HashMap<(u32, u32), &'source backend_frontend_python::legacy::checker::DefinitionTarget>,
     /// Reserved owner while the first structural class is being lowered.
     reserved_anchor: Option<u32>,
 }
@@ -316,6 +345,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             pushed: Vec::new(),
             child_rows: Vec::new(),
             checker: checker.map(CheckerIndex::build),
+            project_definitions: HashMap::new(),
             reserved_anchor: None,
         }
     }
@@ -610,6 +640,15 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 }
                 None => return Ok(None),
             }
+        }
+        if self.return_annotation(member).is_none()
+            && let Some(inferred) = self.checker_inference(member.name_span, true)
+        {
+            let Some(row) = self.inferred_row(inferred, tables, anchor)? else {
+                return Ok(None);
+            };
+            children.push(row);
+            payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
         }
         self.parent_row(function_pointer_record(payload1), &children, anchor)
     }
@@ -964,6 +1003,44 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     .push((coordinate, index, declaration.name_span));
                 result_ordinal = Some(coordinate);
             }
+        }
+        if returns.is_none()
+            && let Some(inferred) = self.checker_inference(declaration.name_span, true)
+        {
+            let (record, children) = self
+                .inferred_root(inferred, tables)?
+                .unwrap_or_else(|| (unknown_record(TypeReason::OracleGap), Vec::new()));
+            let reused = parameter_ordinals
+                .iter()
+                .zip(&parameter_shapes)
+                .find(
+                    |(_, (parameter_name, parameter_record, parameter_children))| {
+                        *parameter_name == name
+                            && *parameter_record == record
+                            && *parameter_children == children
+                    },
+                )
+                .map(|(ordinal, _)| *ordinal);
+            if let Some(ordinal) = reused {
+                result_ordinal = Some(ordinal);
+            } else {
+                let extension = self.python_extension(&[], None, Confidence::Compiler)?;
+                let mut fact =
+                    SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT).typed(record);
+                for ordinal in children {
+                    fact = fact.type_child(ordinal, None, 0);
+                }
+                let ordinal = push_fact(
+                    self.facts,
+                    fact.with_extension(EmissionExtension::Python(extension)),
+                )
+                .map_err(PythonCollectError::Rejected)?;
+                let coordinate = Self::coordinate(declaration.name_span, ordinal)?;
+                self.child_rows
+                    .push((coordinate, index, declaration.name_span));
+                result_ordinal = Some(coordinate);
+            }
+            any_checked = true;
         }
         let arity =
             u32::try_from(parameter_ordinals.len()).map_err(|_| PythonCollectError::Span {
@@ -1853,6 +1930,49 @@ impl<'a, 'source> Emitter<'a, 'source> {
         rows: &[Pushed<'source>],
         occurrence: &OccurrenceFact,
     ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, PythonCollectError> {
+        if let Some(target) = self
+            .project_definitions
+            .get(&(occurrence.span.start, occurrence.span.end))
+        {
+            if target.same_module {
+                let ordinal = self
+                    .module
+                    .declarations
+                    .iter()
+                    .enumerate()
+                    .find(|(_, declaration)| {
+                        declaration.name_span == target.name_span && declaration.kind == target.kind
+                    })
+                    .and_then(|(index, _)| self.ordinals[index]);
+                return Ok(ordinal.map(|ordinal| {
+                    (
+                        OccurrenceTarget::Local(EntityId::new(ordinal)),
+                        OccurrenceConfidence::Oracle,
+                    )
+                }));
+            }
+            let kind = match target.kind {
+                DeclarationKind::Class => EntityKind::Record,
+                DeclarationKind::Function => EntityKind::Function,
+                DeclarationKind::Field => EntityKind::Field,
+                DeclarationKind::Constant => EntityKind::Constant,
+                DeclarationKind::Alias => EntityKind::Alias,
+                DeclarationKind::Module => return Ok(None),
+            };
+            let lineage = PackageLineage::new("pypi", &target.package)
+                .map_err(|cause| lineage_fault(cause, occurrence.span))?;
+            let key = ForeignKey::new(
+                ForeignOrigin::Package(lineage),
+                &target.qualified_name,
+                &target.name,
+                Some(kind),
+            )
+            .map_err(|cause| foreign_key_fault(cause, occurrence.span))?;
+            return Ok(Some((
+                OccurrenceTarget::Foreign(key),
+                OccurrenceConfidence::Oracle,
+            )));
+        }
         let checked = self
             .checker
             .as_ref()
@@ -7296,27 +7416,41 @@ fn lineage_fault(
     })
 }
 
-/// Strips the matching quote run from one docstring slice. A docstring whose
-/// quotes do not close keeps its exact bytes rather than a guessed body.
+/// Strips a supported Python string prefix and the matching quote run from
+/// one docstring slice. A docstring whose quotes do not close keeps its exact
+/// bytes rather than a guessed body.
 fn docstring_content(raw: &[u8]) -> &[u8] {
-    let Some(&first) = raw.first() else {
+    let quote_offset = match raw.first().copied() {
+        Some(b'r' | b'R' | b'u' | b'U')
+            if raw.get(1).is_some_and(|byte| matches!(*byte, b'"' | b'\'')) =>
+        {
+            1
+        }
+        Some(b'"' | b'\'') => 0,
+        _ => return raw,
+    };
+    let Some(&first) = raw.get(quote_offset) else {
         return raw;
     };
-    if first != b'"' && first != b'\'' {
-        return raw;
-    }
-    let triple = raw.get(1) == Some(&first) && raw.get(2) == Some(&first);
+    let triple =
+        raw.get(quote_offset + 1) == Some(&first) && raw.get(quote_offset + 2) == Some(&first);
     let quote_width = usize::from(triple) * 2 + 1;
     let Some(body_end) = raw.len().checked_sub(quote_width) else {
+        return raw;
+    };
+    let Some(body_start) = quote_offset
+        .checked_add(quote_width)
+        .filter(|start| *start <= body_end)
+    else {
         return raw;
     };
     let Some(suffix) = raw.get(body_end..) else {
         return raw;
     };
     if suffix.iter().all(|byte| *byte == first) {
-        // The quote run is proven to fit both ends, so the body borrow is
-        // exactly the interior range.
-        let body = raw.get(quote_width..body_end);
+        // The prefix and matching quote runs fit both ends, so the body
+        // borrow is exactly the interior range.
+        let body = raw.get(body_start..body_end);
         return body.unwrap_or(raw);
     }
     raw
@@ -7577,6 +7711,29 @@ mod tests {
             );
             assert!(item.members().is_empty());
         }
+    }
+
+    #[test]
+    fn raw_docstring_prefix_is_removed_before_fragmenting_prose() {
+        let source = b"r\"\"\"First sentence.\nMore detail.\"\"\"";
+        let docstring = backend_frontend_python::legacy::DocstringFact {
+            raw: "r\"\"\"First sentence.\nMore detail.\"\"\"".to_owned(),
+            span: Span {
+                start: 0,
+                end: u32::try_from(source.len()).unwrap_or(u32::MAX),
+            },
+        };
+        let Ok(fragments) = super::doc_fragments(source, &docstring, &[]) else {
+            panic!("raw docstring should produce prose fragments");
+        };
+        assert!(matches!(
+            fragments.first(),
+            Some(backend_semantic::ir::DocFragmentInput::Text(line)) if *line == b"First sentence."
+        ));
+        assert!(!fragments.iter().any(|fragment| matches!(
+            fragment,
+            backend_semantic::ir::DocFragmentInput::Text(line) if line.starts_with(b"r\"\"\"")
+        )));
     }
 
     #[test]

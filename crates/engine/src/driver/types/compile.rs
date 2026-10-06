@@ -447,7 +447,7 @@ impl LanguageSpec for PythonSpec {
                             lower::python::PythonCollectError::Authority(cause),
                         )
                     })?;
-                lower::python::collect_with_checker(&module, source, facts, Some(report))
+                lower::python::collect_with_project_checker(&module, source, facts, report)
                     .map_err(|cause| python_terminal(prepared.source, prepared.recipe, cause))
             }
         }

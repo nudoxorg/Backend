@@ -1,0 +1,58 @@
+{
+  "schema": "python-native-owned-target-reclaim-proof.v1",
+  "captured_at_utc": "2026-10-06T16:31:59.882690+00:00",
+  "scope": "Read-only ownership/process snapshot; no removal performed; acquire the managed worktree/slot locks and revalidate before reclaim",
+  "source_commit": "f91ee8a837348ee1f67531279aa3020762bab9e8",
+  "source_clean": true,
+  "ownership_stamps": {
+    "/root/.cache/nudox/cargo-1.97/build/slot-5/.nudox-worktree-root": "/root/nudox-corpus-20261006/python/product-983fa",
+    "/root/nudox-corpus-20261006/python/product-983fa/.local/target/.nudox-worktree-root": "/root/nudox-corpus-20261006/python/product-983fa",
+    "/root/.cache/nudox/cargo-1.97/affinity/slot-5.owner": "/root/nudox-corpus-20261006/python/product-983fa"
+  },
+  "sizes": {
+    "/root/nudox-corpus-20261006/python/product-983fa/.local/target": {
+      "entry_count": 42,
+      "logical_unique_inode_bytes": 2437250598,
+      "allocated_unique_inode_bytes": 2434572288
+    },
+    "/root/.cache/nudox/cargo-1.97/build/slot-5": {
+      "entry_count": 18133,
+      "logical_unique_inode_bytes": 14391515761,
+      "allocated_unique_inode_bytes": 14430285824
+    }
+  },
+  "combined_allocated_unique_inode_bytes": 14431186944,
+  "matching_active_processes": [],
+  "permission_denied_processes": [],
+  "matching_slot_worktree_locks": [],
+  "retained_outputs": [
+    {
+      "path": "/root/nudox-corpus-20261006/python/product-983fa/.local/target/debug/backend-cli",
+      "sha256": "3ca288d087217230d223d218bfd1d4dc9207c5413f894ee5d4f2abbb0f78c2fe",
+      "size": 1106846664,
+      "allocated_bytes": 1105604608,
+      "device": 66309,
+      "inode": 3439436,
+      "links": 2
+    },
+    {
+      "path": "/root/nudox-corpus-20261006/python/product-983fa/.local/target/debug/backend-mcp",
+      "sha256": "c15329bab7bae84fbd7ff0b98c65b6476c532eb125c232402b593df9aefb9d54",
+      "size": 955266264,
+      "allocated_bytes": 954499072,
+      "device": 66309,
+      "inode": 3439420,
+      "links": 2
+    },
+    {
+      "path": "/root/nudox-corpus-20261006/python/project-recovery/bin/project_report-native-05",
+      "sha256": "929200a51a6e3f1dabc6cec95a61be87acc961a722602ce2fe18c2d6091b1876",
+      "size": 340034088,
+      "allocated_bytes": 339243008,
+      "device": 66309,
+      "inode": 14219474,
+      "links": 1
+    }
+  ],
+  "disk_available_bytes": 4450885632
+}

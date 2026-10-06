@@ -45,6 +45,8 @@ use super::ir_hydration_wire::{
     MAX_CAS_CHECKPOINT_BYTES, MAX_RANGE_BYTES, SelectedSemanticImageChunk, WireReader, WireWriter,
 };
 
+const MAX_SELECTED_NATIVE_HISTORY_PACKAGE_IMAGES: usize = 200_000;
+
 mod history_v2;
 mod history_v3;
 pub use history_v2::{
@@ -929,6 +931,71 @@ impl FileSemanticRangeStore {
         ancestor: crate::HistoryCommitId,
     ) -> Result<crate::HistoryRefAncestryProof, String> {
         self.history_ref_ancestry_proof_inner(target, kind, name, ancestor, || Ok(()))
+    }
+
+    /// Proves every member of one ordered first-parent chain from a named ref
+    /// tip in a single linear metadata walk. The supplied commit IDs are in
+    /// oldest-to-newest order, and `expected_first_parent` binds the chain's
+    /// oldest member to its prior package/ref generation. Every returned proof
+    /// is bound to the same exact ref tip; no ancestry result is inferred from
+    /// catalog ordinals or commit-list position alone.
+    pub fn history_ref_ancestry_proofs_for_chain(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: &crate::HistoryRefName,
+        commit_ids: &[crate::HistoryCommitId],
+        expected_first_parent: Option<crate::HistoryCommitId>,
+    ) -> Result<Box<[crate::HistoryRefAncestryProof]>, String> {
+        if commit_ids.is_empty() || commit_ids.len() > MAX_SELECTED_NATIVE_HISTORY_PACKAGE_IMAGES {
+            return Err(
+                "history ancestry chain is empty or exceeds its bounded image count".to_owned(),
+            );
+        }
+        let tip = *commit_ids
+            .last()
+            .ok_or_else(|| "history ancestry chain is empty".to_owned())?;
+        {
+            let _state_lock = self.acquire_state_lock()?;
+            self.require_ancestry_ref_tip(target, kind, name, tip)?;
+        }
+
+        let mut proofs = Vec::new();
+        proofs
+            .try_reserve_exact(commit_ids.len())
+            .map_err(|_| "history ancestry proof allocation failed".to_owned())?;
+        let mut expected_parent = expected_first_parent;
+        for chunk in commit_ids.chunks(crate::MAX_HISTORY_REPLAY_COMMITS) {
+            let _state_lock = self.acquire_state_lock()?;
+            self.require_ancestry_ref_tip(target, kind, name, tip)?;
+            for commit_id in chunk {
+                let commit = self.generations.history_commit(target, *commit_id)?;
+                if commit.identity() != *commit_id
+                    || commit.parents().len() != if expected_parent.is_some() { 1 } else { 0 }
+                    || commit.parents().first().copied() != expected_parent
+                {
+                    return Err(
+                        "history commits do not form the exact requested first-parent chain"
+                            .to_owned(),
+                    );
+                }
+                expected_parent = Some(*commit_id);
+            }
+        }
+        {
+            let _state_lock = self.acquire_state_lock()?;
+            self.require_ancestry_ref_tip(target, kind, name, tip)?;
+        }
+        proofs.extend(commit_ids.iter().copied().map(|ancestor| {
+            crate::HistoryRefAncestryProof::from_validated_first_parent_chain(
+                target.clone(),
+                kind,
+                name.clone(),
+                tip,
+                ancestor,
+            )
+        }));
+        Ok(proofs.into_boxed_slice())
     }
 
     #[cfg(test)]

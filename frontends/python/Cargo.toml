@@ -17,5 +17,11 @@ tree-sitter-python = "=0.25.0"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+pyrefly = { path = "../../vendor/pyrefly_native_1_2" }
+pyrefly_config = { git = "https://github.com/facebook/pyrefly", rev = "30b5ca5250db9f2d9264d5e889662cf1224a75b7" }
+pyrefly_python = { git = "https://github.com/facebook/pyrefly", rev = "30b5ca5250db9f2d9264d5e889662cf1224a75b7" }
+pyrefly_types = { git = "https://github.com/facebook/pyrefly", rev = "30b5ca5250db9f2d9264d5e889662cf1224a75b7" }
+pyrefly_util = { git = "https://github.com/facebook/pyrefly", rev = "30b5ca5250db9f2d9264d5e889662cf1224a75b7" }
+ruff_native_text_size = { package = "ruff_text_size", git = "https://github.com/astral-sh/ruff/", rev = "db5aa0a5f1b92cb91d910bf0866a967554dd94f5" }
 [lib]
 path = "lib.rs"

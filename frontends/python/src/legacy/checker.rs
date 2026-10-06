@@ -32,6 +32,15 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+#[path = "project.rs"]
+mod project;
+#[path = "project_native.rs"]
+mod project_native;
+pub use project::{
+    DefinitionTarget, PythonProjectControl, PythonProjectReport, PythonProjectSource,
+    PythonProjectWitness,
+};
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -64,11 +73,62 @@ const REVEAL_HEADER: &[u8] = b"from typing import reveal_type\n";
 const REVEAL_CALL: &[u8] = b"reveal_type(";
 /// Versioned identity of package-scoped Pyrefly env and working-directory policy.
 pub const PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str =
-    "pyrefly-package-child-environment.v1";
+    "pyrefly-native-project-state-30b5ca52.classdef-declaration+constructor-callee.mirror-only.v4";
+
+/// Exact upstream revision of the compiled native Python State authority.
+pub const PYTHON_NATIVE_PROJECT_SOURCE_REVISION: &str = "30b5ca5250db9f2d9264d5e889662cf1224a75b7";
 
 /// Typed failure of one pyrefly authority transaction, preserving operands.
 #[derive(Debug, Error)]
 pub enum CheckerError {
+    /// The pinned native project State unwound before admission.
+    #[error("native Python project State panicked before admission")]
+    ProjectPanic,
+    /// The caller cancelled a project transaction before completion.
+    #[error("pyrefly cancelled during {phase}")]
+    Cancelled {
+        /// Exact interrupted phase.
+        phase: &'static str,
+    },
+    /// The caller deadline expired before completion.
+    #[error("pyrefly deadline expired during {phase}")]
+    Deadline {
+        /// Exact interrupted phase.
+        phase: &'static str,
+    },
+    /// One captured module was rejected by the syntax authority.
+    #[error("pyrefly project source {path:?} was rejected by Ruff: {source}")]
+    ProjectSyntax {
+        /// Original relative source path.
+        path: PathBuf,
+        /// Exact parser rejection.
+        #[source]
+        source: Box<crate::legacy::ExtractionError>,
+    },
+    /// A native dependency root was not captured in the project mirror.
+    #[error("pyrefly dependency source is outside the captured project: {path:?}")]
+    UncapturedDependency {
+        /// Explicit unsupported dependency/source path.
+        path: PathBuf,
+    },
+    /// A native project report failed the source or schema join.
+    #[error("pyrefly project report {path:?}: {message}")]
+    ProjectReport {
+        /// Native module path at the failing join.
+        path: PathBuf,
+        /// Bounded description of the schema failure.
+        message: String,
+    },
+    /// Pyrefly solved different bytes from the selected package source.
+    #[error("pyrefly source digest for {path:?}: expected {expected}, observed {observed}")]
+    SourceDigest {
+        /// Original relative source path.
+        path: PathBuf,
+        /// Digest of the selected source.
+        expected: String,
+        /// Digest exported from the native State.
+        observed: String,
+    },
     /// A package-scoped authority root must be an existing absolute directory.
     #[error("pyrefly package root is not an existing absolute directory: {path:?}")]
     PackageRoot {
@@ -205,6 +265,10 @@ pub enum InferenceSite {
     ModuleBinding,
     /// A function or method parameter.
     Parameter,
+    /// An unannotated function return at its declaration identifier.
+    Return,
+    /// An unannotated class-body field.
+    ClassField,
 }
 
 /// One inferred type keyed by the exact original name span it belongs to.
@@ -234,6 +298,14 @@ pub struct ImportResolution {
 /// How the authority resolved one call target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SymbolOutcome {
+    /// A native definition joined to an exact selected source declaration.
+    Definition {
+        /// Validated target identity and original byte coordinates.
+        target: DefinitionTarget,
+        /// A distinct native constructor callee reached by the same occurrence.
+        /// Class declaration binding and invocation target are separate families.
+        callee: Option<DefinitionTarget>,
+    },
     /// The oracle bound the name to a local module declaration.
     Local,
     /// The oracle bound the name to a resolved import binding.
@@ -374,7 +446,20 @@ impl Pyrefly {
         digest.update(b"compiler.python.package-authority.v1\0");
         digest.update(PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1.as_bytes());
         digest.update(&[0]);
-        digest.update(b"cwd=selected-package-root;env=isolated;systemroot=windows-only\0");
+        digest.update(b"native=1.2.0-dev.1;mirror=captured-frontier;config=bounded-captured;filesystem-deps=mirror-only;bundled=producer-immutable;interpreter-query=disabled;site-discovery=disabled;readset=no-cross-call-reuse;session=fresh;families=classdef-declaration+constructor-callee\0");
+        digest.update(PYTHON_NATIVE_PROJECT_SOURCE_REVISION.as_bytes());
+        digest.update(
+            blake3::hash(include_bytes!(
+                "../../../../vendor/pyrefly_native_1_2/Cargo.toml"
+            ))
+            .as_bytes(),
+        );
+        digest.update(
+            blake3::hash(include_bytes!(
+                "../../../../vendor/pyrefly_native_1_2/NUDOX-UPSTREAM.json"
+            ))
+            .as_bytes(),
+        );
         let program = self.program.as_os_str().as_encoded_bytes();
         digest.update(&program.len().to_be_bytes());
         digest.update(program);
@@ -510,8 +595,7 @@ impl Pyrefly {
 
         let imports = resolve_imports(facts, source, &line_index, &rows)?;
         let symbols = resolve_symbols(facts, &line_index, &rows, &imports)?;
-        let inferences =
-            self.infer_bindings(source, profile, facts, &workspace, package_root)?;
+        let inferences = self.infer_bindings(source, profile, facts, &workspace, package_root)?;
 
         Ok(CheckerReport {
             inferences,
@@ -572,20 +656,48 @@ impl Pyrefly {
         profile: PythonVersion,
         package_root: Option<&Path>,
     ) -> Result<Vec<u8>, CheckerError> {
+        self.run_check_files(&[file.to_path_buf()], profile, package_root, None, false)
+    }
+
+    fn run_native_version(
+        &self,
+        profile: PythonVersion,
+        root: &Path,
+        control: PythonProjectControl<'_>,
+    ) -> Result<Vec<u8>, CheckerError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(5).min(self.timeout))
+            .with_output_limit(4096)
+            .run_check_files(&[], profile, Some(root), Some(control), true)
+    }
+
+    fn run_check_files(
+        &self,
+        files: &[PathBuf],
+        profile: PythonVersion,
+        package_root: Option<&Path>,
+        control: Option<PythonProjectControl<'_>>,
+        version_only: bool,
+    ) -> Result<Vec<u8>, CheckerError> {
         let mut command = std::process::Command::new(&self.program);
         for argument in &self.arguments {
             command.arg(argument);
         }
+        if version_only {
+            command.arg("--version");
+        } else {
+            command
+                .args(["check", "--preset", "all", "--color", "never"])
+                .args([
+                    "--output-format",
+                    "json",
+                    "--python-version",
+                    profile_tag(profile),
+                ])
+                .args(["-j", "1"])
+                .args(files);
+        }
         command
-            .args(["check", "--preset", "all", "--color", "never"])
-            .args([
-                "--output-format",
-                "json",
-                "--python-version",
-                profile_tag(profile),
-            ])
-            .args(["-j", "1"])
-            .arg(file)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
         if let Some(package_root) = package_root {
@@ -618,7 +730,15 @@ impl Pyrefly {
             std::thread::spawn(move || read_bounded(stderr, limit, "stderr", limit_sender));
         let started = std::time::Instant::now();
         let mut overrun = None;
+        let mut project_terminal = None;
         let terminal = loop {
+            if let Some(control) = control
+                && let Err(cause) = project::checkpoint(control)
+            {
+                project_terminal = Some(cause);
+                terminate_child(&mut child);
+                break None;
+            }
             if let Ok((stream, observed)) = limit_receiver.try_recv() {
                 overrun = Some((stream, observed));
                 terminate_child(&mut child);
@@ -663,6 +783,9 @@ impl Pyrefly {
                 observed,
                 limit,
             });
+        }
+        if let Some(cause) = project_terminal {
+            return Err(cause);
         }
         let Some(status) = terminal else {
             return Err(CheckerError::Timeout {
@@ -1840,7 +1963,15 @@ impl Workspace {
             .map_or(0, |duration| duration.as_nanos());
         let path =
             std::env::temp_dir().join(format!("pyrefly-check-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&path).map_err(|source| CheckerError::Workspace { source })?;
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&path)
+            .map_err(|source| CheckerError::Workspace { source })?;
         Ok(Self { path })
     }
 

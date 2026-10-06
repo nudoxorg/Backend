@@ -28,6 +28,9 @@ use backend_frontend_go::legacy::{ConfiguredGoOracle, OracleError};
 use backend_frontend_java::legacy::harness::{
     Harness, HarnessError, HarnessRequest, JavaSource, JdkToolchain,
 };
+use backend_frontend_python::legacy::checker::{
+    PythonProjectControl, PythonProjectReport, PythonProjectSource,
+};
 use backend_frontend_python::legacy::{
     CheckerError as PyreflyError, CheckerReport as PythonReport, ExtractionError, Pyrefly, extract,
 };
@@ -284,6 +287,88 @@ pub fn enter_package_authority<'request, 'config>(
     enter_package_authority_with_go_authority_witness(request, None)
 }
 
+/// Admits one native Python project session through the same closed package
+/// authority guards used by the per-module entry point.
+pub(crate) fn enter_python_project_authority(
+    request: PackageAuthorityRequest<'_, '_>,
+    package_name: &str,
+    sources: &[PythonProjectSource<'_>],
+) -> Result<PythonProjectReport, PackageAuthorityError> {
+    checkpoint(
+        request.control,
+        request.profile,
+        PackageAuthorityStage::Admission,
+    )?;
+    if request.unit_key != &CompilationUnitKeyV2::PackageRoot {
+        return Err(PackageAuthorityError::CompilationUnitMismatch {
+            profile: request.profile,
+        });
+    }
+    require_resolved_toolchain(request.toolchain, request.profile)?;
+    request
+        .source_path
+        .strip_prefix(request.package_root)
+        .map_err(|_| PackageAuthorityError::SourceOutsidePackage {
+            profile: request.profile,
+            package_root: request.package_root.to_path_buf().into_boxed_path(),
+            source_path: request.source_path.to_path_buf().into_boxed_path(),
+        })?;
+    let LanguageProfile::Python(profile) = request.profile else {
+        return Err(PackageAuthorityError::AdapterUnavailable {
+            profile: request.profile,
+            stage: PackageAuthorityStage::PythonPyrefly,
+        });
+    };
+    let checker = require_python_checker(request.configuration.python_checker, request.profile)?;
+    let report = checker
+        .analyze_project(
+            request.package_root,
+            package_name,
+            sources,
+            profile,
+            PythonProjectControl {
+                cancelled: request.control.cancelled,
+                deadline: request.control.deadline,
+            },
+        )
+        .map_err(PackageAuthorityError::PythonPyrefly)?;
+    checkpoint(
+        request.control,
+        request.profile,
+        PackageAuthorityStage::PythonPyrefly,
+    )?;
+    Ok(report)
+}
+
+fn require_python_checker(
+    admission: super::LocalRuntimePythonCheckerAdmission<&Pyrefly>,
+    profile: LanguageProfile,
+) -> Result<&Pyrefly, PackageAuthorityError> {
+    match admission {
+        super::LocalRuntimePythonCheckerAdmission::Unconfigured => {
+            Err(PackageAuthorityError::RequiredTool {
+                profile,
+                stage: PackageAuthorityStage::PythonPyrefly,
+                issue: CompilerToolIssue {
+                    requirement: CompilerToolRequirement::PythonChecker,
+                    failure: CompilerToolFailure::Missing,
+                },
+            })
+        }
+        super::LocalRuntimePythonCheckerAdmission::ProbeFailed { .. } => {
+            Err(PackageAuthorityError::RequiredTool {
+                profile,
+                stage: PackageAuthorityStage::PythonPyrefly,
+                issue: CompilerToolIssue {
+                    requirement: CompilerToolRequirement::PythonChecker,
+                    failure: CompilerToolFailure::ProbeFailed,
+                },
+            })
+        }
+        super::LocalRuntimePythonCheckerAdmission::Ready { adapter, .. } => Ok(adapter),
+    }
+}
+
 pub(crate) fn enter_package_authority_with_go_authority_witness<'request, 'config>(
     request: PackageAuthorityRequest<'request, 'config>,
     captured_go_authority: Option<&GoPackageAuthorityWitness>,
@@ -382,29 +467,8 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 PackageAuthorityOwner::TypeScript { profile, report }
             }
             LanguageProfile::Python(profile) => {
-                let pyrefly = match request.configuration.python_checker {
-                    super::LocalRuntimePythonCheckerAdmission::Unconfigured => {
-                        return Err(PackageAuthorityError::RequiredTool {
-                            profile: request.profile,
-                            stage: PackageAuthorityStage::PythonPyrefly,
-                            issue: CompilerToolIssue {
-                                requirement: CompilerToolRequirement::PythonChecker,
-                                failure: CompilerToolFailure::Missing,
-                            },
-                        });
-                    }
-                    super::LocalRuntimePythonCheckerAdmission::ProbeFailed { .. } => {
-                        return Err(PackageAuthorityError::RequiredTool {
-                            profile: request.profile,
-                            stage: PackageAuthorityStage::PythonPyrefly,
-                            issue: CompilerToolIssue {
-                                requirement: CompilerToolRequirement::PythonChecker,
-                                failure: CompilerToolFailure::ProbeFailed,
-                            },
-                        });
-                    }
-                    super::LocalRuntimePythonCheckerAdmission::Ready { adapter, .. } => adapter,
-                };
+                let pyrefly =
+                    require_python_checker(request.configuration.python_checker, request.profile)?;
                 let syntax = extract(request.source, profile)
                     .map_err(PackageAuthorityError::PythonSyntax)?;
                 checkpoint(

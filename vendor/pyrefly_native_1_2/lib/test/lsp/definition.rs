@@ -1,0 +1,3564 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+use itertools::Itertools as _;
+use pretty_assertions::assert_eq;
+use pyrefly_build::handle::Handle;
+use pyrefly_python::module::TextRangeWithModule;
+use ruff_text_size::TextRange;
+use ruff_text_size::TextSize;
+
+use crate::state::state::State;
+use crate::test::util::TestEnv;
+use crate::test::util::code_frame_of_source_at_range;
+use crate::test::util::extract_cursors_for_test;
+use crate::test::util::get_batched_lsp_operations_report;
+use crate::test::util::get_batched_lsp_operations_report_allow_error;
+
+fn get_test_report(state: &State, handle: &Handle, position: TextSize) -> String {
+    let defs = state
+        .transaction()
+        .goto_definition(handle, position)
+        .unwrap_or_default();
+    if !defs.is_empty() {
+        defs.into_iter()
+            .map(
+                |TextRangeWithModule {
+                     module: module_info,
+                     range,
+                 }| {
+                    format!(
+                        "Definition Result:\n{}",
+                        code_frame_of_source_at_range(module_info.contents(), range)
+                    )
+                },
+            )
+            .join("\n")
+    } else {
+        "Definition Result: None".to_owned()
+    }
+}
+
+fn get_test_report_do_not_jump_through_renamed_import(
+    state: &State,
+    handle: &Handle,
+    position: TextSize,
+) -> String {
+    if let Some(TextRangeWithModule {
+        module: module_info,
+        range,
+    }) = state
+        .transaction()
+        .goto_definition_do_not_jump_through_renamed_import(handle, position)
+    {
+        format!(
+            "Definition Result:\n{}",
+            code_frame_of_source_at_range(module_info.contents(), range)
+        )
+    } else {
+        "Definition Result: None".to_owned()
+    }
+}
+
+#[test]
+fn ignored_test() {
+    let code = r#"
+x = 1 # go-to-definition is unsupported for literals
+#   ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    println!("REPORT=>{}<=", report);
+    assert_eq!(
+        r#"
+# main.py
+2 | x = 1 # go-to-definition is unsupported for literals
+        ^
+Definition Result: None
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn no_crash_on_dead_branch_test() {
+    let code = r#"
+from typing import TYPE_CHECKING
+
+if not TYPE_CHECKING:
+    x = 1
+#   ^
+    y = x
+#       ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    // We are just testing that gotodef won't crash on these examples
+    assert_eq!(
+        r#"
+# main.py
+5 |     x = 1
+        ^
+Definition Result: None
+
+7 |     y = x
+            ^
+Definition Result: None
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn basic_test() {
+    let code = r#"
+from typing import Literal
+
+def f(x: list[int], y: str, z: Literal[42]):
+#   ^                           ^
+    return x
+
+yyy = f([1, 2, 3], "test", 42)
+#     ^
+
+class A: pass
+class B(A): pass
+#       ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+4 | def f(x: list[int], y: str, z: Literal[42]):
+        ^
+Definition Result:
+4 | def f(x: list[int], y: str, z: Literal[42]):
+        ^
+
+4 | def f(x: list[int], y: str, z: Literal[42]):
+                                    ^
+Definition Result:
+255 | Literal: _SpecialForm
+      ^^^^^^^
+
+8 | yyy = f([1, 2, 3], "test", 42)
+          ^
+Definition Result:
+4 | def f(x: list[int], y: str, z: Literal[42]):
+        ^
+
+12 | class B(A): pass
+             ^
+Definition Result:
+11 | class A: pass
+           ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn pytest_fixture_parameter_goes_to_fixture_definition() {
+    let code = r#"
+import pytest  # type: ignore
+
+@pytest.fixture
+def my_fixture():
+    return 1
+
+def test_thing(my_fixture):
+#              ^
+    assert my_fixture == 1
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+8 | def test_thing(my_fixture):
+                   ^
+Definition Result:
+5 | def my_fixture():
+        ^^^^^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn pytest_fixture_parameter_without_fixture_definition_uses_parameter_definition() {
+    let code = r#"
+def test_thing(missing_fixture):
+#              ^
+    assert missing_fixture == 1
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+2 | def test_thing(missing_fixture):
+                   ^
+Definition Result:
+2 | def test_thing(missing_fixture):
+                   ^^^^^^^^^^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn pytest_fixture_parameter_ignores_non_fixture_function() {
+    let code = r#"
+def my_fixture():
+    return 1
+
+def test_thing(my_fixture):
+#              ^
+    assert my_fixture == 1
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+5 | def test_thing(my_fixture):
+                   ^
+Definition Result:
+5 | def test_thing(my_fixture):
+                   ^^^^^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn pytest_fixture_parameter_ignores_non_test_function() {
+    let code = r#"
+import pytest  # type: ignore
+
+@pytest.fixture
+def my_fixture():
+    return 1
+
+def helper(my_fixture):
+#          ^
+    assert my_fixture == 1
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+8 | def helper(my_fixture):
+               ^
+Definition Result:
+8 | def helper(my_fixture):
+               ^^^^^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn pytest_fixture_parameter_uses_pytest_fixture_scope() {
+    let code = r#"
+import pytest  # type: ignore
+
+@pytest.fixture
+def my_fixture():
+    return 1
+
+class TestThing:
+    @pytest.fixture
+    def my_fixture(self):
+        return 2
+
+    def test_thing(self, my_fixture):
+#                         ^
+        assert my_fixture == 2
+
+class TestOther:
+    def test_other(self, my_fixture):
+#                         ^
+        assert my_fixture == 1
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+13 |     def test_thing(self, my_fixture):
+                               ^
+Definition Result:
+10 |     def my_fixture(self):
+             ^^^^^^^^^^
+
+18 |     def test_other(self, my_fixture):
+                               ^
+Definition Result:
+5 | def my_fixture():
+        ^^^^^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn narrow_test() {
+    let code = r#"
+def f(x: int | None) -> int:
+    if x is None:
+        raise ValueError("x is None")
+    return 0 if x else 1
+#               ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+5 |     return 0 if x else 1
+                    ^
+Definition Result:
+2 | def f(x: int | None) -> int:
+          ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn narrow_test_consecutive() {
+    let code = r#"
+def f(x: list[int]) -> None:
+    x[0] = 0
+    x[1] = 1
+#   ^
+
+class C:
+    y: int
+    z: int
+def g(x: C) -> None:
+    x.y = 0
+    x.z = 1
+#   ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+4 |     x[1] = 1
+        ^
+Definition Result:
+2 | def f(x: list[int]) -> None:
+          ^
+
+12 |     x.z = 1
+         ^
+Definition Result:
+10 | def g(x: C) -> None:
+           ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn branch_with_pinning_test() {
+    let code = r#"
+def test(flag: bool, x: str | None) -> None:
+    if flag:
+        y = "derp"
+        x = y
+    x
+#   ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    // Why didn't it go to the parameter `x`? That's because we don't explore all branches of Phi nodes
+    // in gotodef yet
+    assert_eq!(
+        r#"
+# main.py
+6 |     x
+        ^
+Definition Result:
+5 |         x = y
+            ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn shadowed_def_test0() {
+    let code = r#"
+def test() -> None:
+  x = 0
+# ^
+  x = 1
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+3 |   x = 0
+      ^
+Definition Result:
+3 |   x = 0
+      ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn shadowed_def_test1() {
+    let code = r#"
+def test(flag: bool) -> None:
+  x = 0
+  if flag:
+    x = 1
+#   ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+5 |     x = 1
+        ^
+Definition Result:
+5 |     x = 1
+        ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn function_and_class_name_test() {
+    let code = r#"
+def foo() -> None:
+#   ^
+  pass
+
+class Foo:
+#     ^
+  def bar(self) -> int:
+#     ^
+    return 42
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+2 | def foo() -> None:
+        ^
+Definition Result:
+2 | def foo() -> None:
+        ^^^
+
+6 | class Foo:
+          ^
+Definition Result:
+6 | class Foo:
+          ^^^
+
+8 |   def bar(self) -> int:
+          ^
+Definition Result:
+8 |   def bar(self) -> int:
+          ^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn exception_handler_name_test() {
+    let code = r#"
+def test(flag: bool) -> None:
+  try:
+    raise Exception()
+  except Exception as e:
+#                     ^
+    pass
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+5 |   except Exception as e:
+                          ^
+Definition Result:
+5 |   except Exception as e:
+                          ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn pattern_match_test() {
+    let code = r#"
+from typing import Any
+class Foo:
+  x: int
+
+def test(o: Any) -> None:
+  match o:
+    case Foo(x=0): pass
+# NOTE(grievejia): The keyword case doesn't work currently because of a visitor bug in Ruff
+    case [*args]: pass
+#          ^
+    case {**kwargs}: pass
+#           ^
+    case _ as y: pass
+#             ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+10 |     case [*args]: pass
+                ^
+Definition Result:
+10 |     case [*args]: pass
+                ^^^^
+
+12 |     case {**kwargs}: pass
+                 ^
+Definition Result:
+12 |     case {**kwargs}: pass
+                 ^^^^^^
+
+14 |     case _ as y: pass
+                   ^
+Definition Result:
+14 |     case _ as y: pass
+                   ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn keyword_argument_test_function() {
+    let code = r#"
+def foo(x: int, y: str) -> None: pass
+def bar(x: int, *, y: str) -> None: pass
+def baz(x: int, /) -> None: pass
+
+def test() -> None:
+  foo(0, y="foo")
+#        ^
+  bar(1, y="bar")
+#        ^
+  baz(x=0)
+#     ^
+"#;
+    let report = get_batched_lsp_operations_report_allow_error(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+7 |   foo(0, y="foo")
+             ^
+Definition Result:
+2 | def foo(x: int, y: str) -> None: pass
+                    ^
+
+9 |   bar(1, y="bar")
+             ^
+Definition Result:
+3 | def bar(x: int, *, y: str) -> None: pass
+                       ^
+
+11 |   baz(x=0)
+           ^
+Definition Result:
+4 | def baz(x: int, /) -> None: pass
+        ^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn keyword_argument_test_method() {
+    let code = r#"
+class Foo:
+    def foo(self, x: int, y: str) -> None:
+        pass
+    def bar(self) -> None:
+        pass
+
+def test(a: Foo) -> None:
+    a.foo(0, y="foo")
+#            ^
+    a.bar(x=1)
+#         ^
+"#;
+    let report = get_batched_lsp_operations_report_allow_error(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+9 |     a.foo(0, y="foo")
+                 ^
+Definition Result:
+3 |     def foo(self, x: int, y: str) -> None:
+                              ^
+
+11 |     a.bar(x=1)
+               ^
+Definition Result:
+5 |     def bar(self) -> None:
+            ^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn keyword_argument_test_multiple_methods() {
+    let code = r#"
+class A:
+    def foo(self, x: int, y: str) -> None:
+        pass
+class B:
+    def foo(self, y: str, x: int) -> None:
+        pass
+
+def test(u: A | B) -> None:
+    u.foo(x=0, y="foo")
+#              ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+10 |     u.foo(x=0, y="foo")
+                    ^
+Definition Result:
+3 |     def foo(self, x: int, y: str) -> None:
+                              ^
+Definition Result:
+6 |     def foo(self, y: str, x: int) -> None:
+                      ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn keyword_argument_multi_file() {
+    let code_function_provider = r#"
+def foo(x: int, y: str) -> None:
+    pass
+"#;
+    let code = r#"
+from .my_func import foo
+foo(0, y="foo")
+#      ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[("main", code), ("my_func", code_function_provider)],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+3 | foo(0, y="foo")
+           ^
+Definition Result:
+2 | def foo(x: int, y: str) -> None:
+                    ^
+
+
+# my_func.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn named_import_tests() {
+    let code_import_provider: &str = r#"
+from typing import Literal
+
+def f(x: list[int], y: str, z: Literal[42]):
+    return x
+"#;
+    let code_test: &str = r#"
+from typing import Literal
+from .import_provider import f
+# ^         ^                ^
+
+foo: Literal[1] = 1
+#        ^
+bar = f([1], "", 42)
+#     ^
+"#;
+
+    let report = get_batched_lsp_operations_report(
+        &[
+            ("main", code_test),
+            ("import_provider", code_import_provider),
+        ],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+3 | from .import_provider import f
+      ^
+Definition Result: None
+
+3 | from .import_provider import f
+                ^
+Definition Result:
+1 | 
+    ^
+
+3 | from .import_provider import f
+                                 ^
+Definition Result:
+4 | def f(x: list[int], y: str, z: Literal[42]):
+        ^
+
+6 | foo: Literal[1] = 1
+             ^
+Definition Result:
+255 | Literal: _SpecialForm
+      ^^^^^^^
+
+8 | bar = f([1], "", 42)
+          ^
+Definition Result:
+4 | def f(x: list[int], y: str, z: Literal[42]):
+        ^
+
+
+# import_provider.py
+"#
+        .trim(),
+        report.trim()
+    );
+}
+
+#[test]
+fn aliased_import_tests() {
+    let code_import_provider: &str = r#"
+# top of module
+class Foo: pass
+    "#;
+    let code_test: &str = r#"
+from import_provider import Foo as F
+#                                  ^
+import import_provider as ip
+#                         ^
+
+def f(x: ip.Foo, y: F):
+#        ^          ^
+    return x
+"#;
+
+    let report = get_batched_lsp_operations_report(
+        &[
+            ("main", code_test),
+            ("import_provider", code_import_provider),
+        ],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+2 | from import_provider import Foo as F
+                                       ^
+Definition Result:
+3 | class Foo: pass
+          ^^^
+
+4 | import import_provider as ip
+                              ^
+Definition Result:
+1 | 
+    ^
+
+7 | def f(x: ip.Foo, y: F):
+             ^
+Definition Result:
+1 | 
+    ^
+
+7 | def f(x: ip.Foo, y: F):
+                        ^
+Definition Result:
+3 | class Foo: pass
+          ^^^
+
+
+# import_provider.py
+"#
+        .trim(),
+        report.trim()
+    );
+
+    let report = get_batched_lsp_operations_report(
+        &[
+            ("main", code_test),
+            ("import_provider", code_import_provider),
+        ],
+        get_test_report_do_not_jump_through_renamed_import,
+    );
+    assert_eq!(
+        r#"
+# main.py
+2 | from import_provider import Foo as F
+                                       ^
+Definition Result:
+2 | from import_provider import Foo as F
+                                       ^
+
+4 | import import_provider as ip
+                              ^
+Definition Result:
+1 | 
+    ^
+
+7 | def f(x: ip.Foo, y: F):
+             ^
+Definition Result:
+1 | 
+    ^
+
+7 | def f(x: ip.Foo, y: F):
+                        ^
+Definition Result:
+2 | from import_provider import Foo as F
+                                       ^
+
+
+# import_provider.py
+"#
+        .trim(),
+        report.trim()
+    );
+}
+
+#[test]
+fn incorrect_import_tests() {
+    let code_test: &str = r#"
+from .....import_provider import baz
+baz
+# ^
+"#;
+    let report =
+        get_batched_lsp_operations_report_allow_error(&[("main", code_test)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+3 | baz
+      ^
+Definition Result:
+2 | from .....import_provider import baz
+                                     ^^^
+"#
+        .trim(),
+        report.trim()
+    )
+}
+
+#[test]
+fn star_import_tests() {
+    let code_import_provider: &str = r#"
+def f():
+    pass
+"#;
+    let code_test: &str = r#"
+from .import_provider import *
+
+bar = f() # should jump to definition in import_provider
+#     ^
+"#;
+
+    let report = get_batched_lsp_operations_report(
+        &[
+            ("main", code_test),
+            ("import_provider", code_import_provider),
+        ],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+4 | bar = f() # should jump to definition in import_provider
+          ^
+Definition Result:
+2 | def f():
+        ^
+
+
+# import_provider.py
+"#
+        .trim(),
+        report.trim()
+    );
+}
+
+#[test]
+fn inline_import_test() {
+    let code_import_provider: &str = r#"
+def f():
+        pass"#;
+    let code_test: &str = r#"
+def foo() -> None:
+    from .import_provider import f
+    bar = f()
+    #     ^
+    "#;
+    let report = get_batched_lsp_operations_report(
+        &[
+            ("main", code_test),
+            ("import_provider", code_import_provider),
+        ],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+4 |     bar = f()
+              ^
+Definition Result:
+2 | def f():
+        ^
+
+
+# import_provider.py
+"#
+        .trim(),
+        report.trim()
+    );
+}
+
+#[test]
+fn import_of_import_test() {
+    let code_import_provider2: &str = r#"
+def f():
+        pass"#;
+    let code_import_provider: &str = r#"
+from .import_provider2 import f
+"#;
+    let code_test: &str = r#"
+from .import_provider import *
+
+bar = f() # should jump to definition in import_provider2
+#     ^
+    "#;
+    let report = get_batched_lsp_operations_report(
+        &[
+            ("main", code_test),
+            ("import_provider", code_import_provider),
+            ("import_provider2", code_import_provider2),
+        ],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+4 | bar = f() # should jump to definition in import_provider2
+          ^
+Definition Result:
+2 | def f():
+        ^
+
+
+# import_provider.py
+
+# import_provider2.py
+"#
+        .trim(),
+        report.trim()
+    );
+}
+
+#[test]
+fn unresolved_named_import_test() {
+    let code: &str = r#"
+from .unresolved_import import f
+
+bar = f()
+#     ^
+"#;
+
+    let report = get_batched_lsp_operations_report_allow_error(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+4 | bar = f()
+          ^
+Definition Result:
+2 | from .unresolved_import import f
+                                   ^
+"#
+        .trim(),
+        report.trim()
+    );
+}
+
+#[test]
+fn unresolved_star_import_test() {
+    let code: &str = r#"
+from .unresolved_import import *
+
+bar = f()
+#     ^
+"#;
+
+    let report = get_batched_lsp_operations_report_allow_error(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+4 | bar = f()
+          ^
+Definition Result: None
+
+"#
+        .trim(),
+        report.trim()
+    );
+}
+
+#[test]
+fn import_via_module_getattr_test() {
+    // `from m import name` where `m` defines a module-level
+    // `__getattr__`. Go-to-definition for `name` (in the import
+    // statement and at usage sites) should land on `__getattr__`
+    // in the imported module.
+    let code_provider: &str = r#"
+def __getattr__(name: str) -> int: ...
+"#;
+    let code_test: &str = r#"
+from .provider import foo
+#                     ^
+
+bar = foo
+#     ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[("main", code_test), ("provider", code_provider)],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+2 | from .provider import foo
+                          ^
+Definition Result:
+2 | def __getattr__(name: str) -> int: ...
+        ^^^^^^^^^^^
+
+5 | bar = foo
+          ^
+Definition Result:
+2 | def __getattr__(name: str) -> int: ...
+        ^^^^^^^^^^^
+
+
+# provider.py
+"#
+        .trim(),
+        report.trim()
+    );
+}
+
+#[test]
+fn import_via_reexported_module_getattr_test() {
+    // `from m import name` where `m` re-exports `__getattr__` from
+    // another module. Go-to-definition should follow the re-export
+    // chain to where `__getattr__` is actually defined.
+    let code_inner: &str = r#"
+def __getattr__(name: str) -> int: ...
+"#;
+    let code_provider: &str = r#"
+from .inner import __getattr__
+"#;
+    let code_test: &str = r#"
+from .provider import foo
+#                     ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[
+            ("main", code_test),
+            ("provider", code_provider),
+            ("inner", code_inner),
+        ],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+2 | from .provider import foo
+                          ^
+Definition Result:
+2 | def __getattr__(name: str) -> int: ...
+        ^^^^^^^^^^^
+
+
+# provider.py
+
+# inner.py
+"#
+        .trim(),
+        report.trim()
+    );
+}
+
+#[test]
+fn import_via_reexported_module_getattr_indirect_test() {
+    // `from m import name` where `m` re-exports `name` from another
+    // module that itself only resolves `name` via `__getattr__`. The
+    // chase walks `provider` -> `inner`, finds `name` missing there,
+    // and the `__getattr__` fallback in `resolve_named_import` lands
+    // at `__getattr__` in `inner`.
+    let code_inner: &str = r#"
+def __getattr__(name: str) -> int: ...
+"#;
+    let code_provider: &str = r#"
+from .inner import foo
+"#;
+    let code_test: &str = r#"
+from .provider import foo
+#                     ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[
+            ("main", code_test),
+            ("provider", code_provider),
+            ("inner", code_inner),
+        ],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+2 | from .provider import foo
+                          ^
+Definition Result:
+2 | def __getattr__(name: str) -> int: ...
+        ^^^^^^^^^^^
+
+
+# provider.py
+
+# inner.py
+"#
+        .trim(),
+        report.trim()
+    );
+}
+
+#[test]
+fn import_submodule_via_from_test() {
+    // `from pkg import sub` where `sub` is a submodule of `pkg`
+    // (not an explicit export of `pkg/__init__.py`). Go-to-definition
+    // for `sub` should land on `pkg/sub.py`.
+    let code_pkg_init: &str = r#"# pkg/__init__.py
+"#;
+    let code_pkg_sub: &str = r#"# pkg/sub.py
+def f(): pass
+"#;
+    let code_test: &str = r#"
+from pkg import sub
+#               ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[
+            ("main", code_test),
+            ("pkg", code_pkg_init),
+            ("pkg.sub", code_pkg_sub),
+        ],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+2 | from pkg import sub
+                    ^
+Definition Result:
+1 | # pkg/sub.py
+    ^
+
+
+# pkg.py
+
+# pkg.sub.py
+"#
+        .trim(),
+        report.trim()
+    );
+}
+
+#[test]
+fn unresolved_no_hop_import_test() {
+    // `from x import Y` where `x` doesn't define `Y` and has no
+    // fallback. Go-to-def lands at the import statement -- the
+    // import-site fallback in `resolve_intermediate_definition`
+    // gives the user somewhere meaningful to land when the chase
+    // finds nothing.
+    let code_x: &str = r#"
+"#;
+    let code_test: &str = r#"
+from x import Y
+#             ^
+"#;
+    let report = get_batched_lsp_operations_report_allow_error(
+        &[("main", code_test), ("x", code_x)],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+2 | from x import Y
+                  ^
+Definition Result:
+2 | from x import Y
+                  ^
+
+
+# x.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn unresolved_multi_hop_import_test() {
+    // `from x import Y` where `x` re-exports `Y` from `z` but `z`
+    // doesn't define `Y`. Go-to-def lands at the import statement,
+    // matching `unresolved_no_hop_import_test`.
+    let code_z: &str = r#"
+"#;
+    let code_x: &str = r#"
+from z import Y
+"#;
+    let code_test: &str = r#"
+from x import Y
+#             ^
+"#;
+    let report = get_batched_lsp_operations_report_allow_error(
+        &[("main", code_test), ("x", code_x), ("z", code_z)],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+2 | from x import Y
+                  ^
+Definition Result:
+2 | from x import Y
+                  ^
+
+
+# x.py
+
+# z.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn unresolved_no_hop_missing_module_test() {
+    // `from x import Y` where `x` itself can't be found. Same
+    // import-site fallback as `unresolved_no_hop_import_test`:
+    // go-to-def lands at the import statement.
+    let code_test: &str = r#"
+from x import Y
+#             ^
+"#;
+    let report =
+        get_batched_lsp_operations_report_allow_error(&[("main", code_test)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+2 | from x import Y
+                  ^
+Definition Result:
+2 | from x import Y
+                  ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn unresolved_multi_hop_missing_module_test() {
+    // `from x import Y` where `x` re-exports `from z import Y`
+    // but `z` itself can't be found. Same result as
+    // `unresolved_multi_hop_import_test`: lands at the import
+    // statement.
+    let code_x: &str = r#"
+from z import Y
+"#;
+    let code_test: &str = r#"
+from x import Y
+#             ^
+"#;
+    let report = get_batched_lsp_operations_report_allow_error(
+        &[("main", code_test), ("x", code_x)],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+2 | from x import Y
+                  ^
+Definition Result:
+2 | from x import Y
+                  ^
+
+
+# x.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_dead_code() {
+    let code: &str = r#"
+if False:
+    x
+#   ^
+"#;
+
+    let report = get_batched_lsp_operations_report_allow_error(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+3 |     x
+        ^
+Definition Result: None
+"#
+        .trim(),
+        report.trim()
+    );
+}
+
+#[test]
+fn legacy_typevar_test() {
+    let code = r#"
+from pathlib import Path
+
+class A[T, U]:
+    pass
+
+class B:
+    pass
+
+def f(x: A[B, Path]) -> None:
+#          ^  ^
+    pass
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+10 | def f(x: A[B, Path]) -> None:
+                ^
+Definition Result:
+7 | class B:
+          ^
+
+10 | def f(x: A[B, Path]) -> None:
+                   ^
+Definition Result:
+185 | class Path(PurePath):
+            ^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn multi_definition_test() {
+    let code = r#"
+if True:
+    xxxx = 1
+else:
+    xxxx = 2
+xxxx # it's reasonable to only return the first def, but also reasonable to return both defs
+# ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+6 | xxxx # it's reasonable to only return the first def, but also reasonable to return both defs
+      ^
+Definition Result:
+3 |     xxxx = 1
+        ^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn untyped_param_test() {
+    let code = r#"
+def f(untyped):
+  untyped
+#    ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+3 |   untyped
+         ^
+Definition Result:
+2 | def f(untyped):
+          ^^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn global_reference_test() {
+    let code = r#"
+x = 3
+def f(untyped):
+  global x
+  x
+# ^
+"#;
+    let report = get_batched_lsp_operations_report_allow_error(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+5 |   x
+      ^
+Definition Result:
+2 | x = 3
+    ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn reassigned_test() {
+    let code = r#"
+xxxx = 1
+xxxx = 2
+xxxx # should jump to the most recent definition
+# ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+4 | xxxx # should jump to the most recent definition
+      ^
+Definition Result:
+3 | xxxx = 2
+    ^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn param_def_test() {
+    let code = r#"
+def f(x, /, y, *, z):
+#     ^     ^     ^
+  pass
+def g(*args, **kwargs):
+#      ^       ^
+  pass
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+2 | def f(x, /, y, *, z):
+          ^
+Definition Result:
+2 | def f(x, /, y, *, z):
+          ^
+
+2 | def f(x, /, y, *, z):
+                ^
+Definition Result:
+2 | def f(x, /, y, *, z):
+                ^
+
+2 | def f(x, /, y, *, z):
+                      ^
+Definition Result:
+2 | def f(x, /, y, *, z):
+                      ^
+
+5 | def g(*args, **kwargs):
+           ^
+Definition Result:
+5 | def g(*args, **kwargs):
+           ^^^^
+
+5 | def g(*args, **kwargs):
+                   ^
+Definition Result:
+5 | def g(*args, **kwargs):
+                   ^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn generics_test() {
+    let code = r#"
+def f[T](input: T):
+#     ^         ^
+  pass
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+2 | def f[T](input: T):
+          ^
+Definition Result:
+2 | def f[T](input: T):
+          ^
+
+2 | def f[T](input: T):
+                    ^
+Definition Result:
+2 | def f[T](input: T):
+          ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn property_test() {
+    let code = r#"
+class MyClass:
+  x = 5
+c1 = MyClass()
+c1.x
+#  ^
+
+class MyClassWithImplicitField:
+  def __init__(self, name: str):
+    self.name = name
+
+c2 = MyClassWithImplicitField("")
+c2.name
+#  ^
+
+class ExtendsMyClass(MyClass):
+  y = 6
+c3 = ExtendsMyClass()
+c3.x
+#  ^
+c3.y
+#  ^
+
+dict = {"foo": '', "bar": 3}
+dict["foo"]
+#      ^
+dict["bar"]
+#      ^
+"#;
+    // TODO: property go-to-definition is unsupported
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+5 | c1.x
+       ^
+Definition Result:
+3 |   x = 5
+      ^
+
+13 | c2.name
+        ^
+Definition Result:
+10 |     self.name = name
+              ^^^^
+
+19 | c3.x
+        ^
+Definition Result:
+3 |   x = 5
+      ^
+
+21 | c3.y
+        ^
+Definition Result:
+17 |   y = 6
+       ^
+
+25 | dict["foo"]
+            ^
+Definition Result:
+3738 |     def __getitem__(self, key: _KT, /) -> _VT:
+               ^^^^^^^^^^^
+
+27 | dict["bar"]
+            ^
+Definition Result:
+3738 |     def __getitem__(self, key: _KT, /) -> _VT:
+               ^^^^^^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn import_module_test() {
+    let code_x_init = r#"# x/__init__.py
+def f():
+    pass
+"#;
+    let code_x_y = r#"# x/y.py
+def g():
+    pass
+"#;
+    let code = r#"
+import x.y
+def test():
+    x.f()
+#   ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[("main", code), ("x", code_x_init), ("x.y", code_x_y)],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+4 |     x.f()
+        ^
+Definition Result:
+1 | # x/__init__.py
+    ^
+
+
+# x.py
+
+# x.y.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn cross_module_property_test() {
+    let code_class_provider = r#"
+class MyClass:
+  x = 5
+"#;
+    let code = r#"
+from .my_class import MyClass
+c1 = MyClass()
+c1.x
+#  ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[("main", code), ("my_class", code_class_provider)],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+4 | c1.x
+       ^
+Definition Result:
+3 |   x = 5
+      ^
+
+
+# my_class.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn module_attribute_test() {
+    let code_class_provider = r#"
+class MyClass:
+  x = 5
+"#;
+    let code = r#"
+import my_class
+my_class.MyClass
+#        ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[("main", code), ("my_class", code_class_provider)],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+3 | my_class.MyClass
+             ^
+Definition Result:
+2 | class MyClass:
+          ^^^^^^^
+
+
+# my_class.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn union_attribute_access_test() {
+    let code = r#"
+class A:
+    x: int = 0
+
+class B:
+    x: str = "abc"
+
+def test(y: A | B) -> int | str:
+    return y.x
+           # ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+9 |     return y.x
+                 ^
+Definition Result:
+3 |     x: int = 0
+        ^
+Definition Result:
+6 |     x: str = "abc"
+        ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn union_method_access_test() {
+    let code = r#"
+class State:
+    def get_location(self) -> str: ...
+
+class NewYork:
+    def get_location(self) -> str:
+        return "10016"
+
+class Massachusetts:
+    def get_location(self) -> str:
+        return "02108"
+
+def find_location(x: Massachusetts | NewYork):
+    x.get_location()
+      # ^
+
+def find_location2(x: NewYork | Massachusetts):
+    x.get_location()
+      # ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+14 |     x.get_location()
+             ^
+Definition Result:
+10 |     def get_location(self) -> str:
+             ^^^^^^^^^^^^
+Definition Result:
+6 |     def get_location(self) -> str:
+            ^^^^^^^^^^^^
+
+18 |     x.get_location()
+             ^
+Definition Result:
+10 |     def get_location(self) -> str:
+             ^^^^^^^^^^^^
+Definition Result:
+6 |     def get_location(self) -> str:
+            ^^^^^^^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn global_keyword() {
+    let code = r#"
+x = 5
+def test():
+    global x
+    #      ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+4 |     global x
+               ^
+Definition Result:
+2 | x = 5
+    ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn nonlocal_keyword() {
+    let code = r#"
+def outer():
+    x = 5
+    def inner():
+        nonlocal x
+        #        ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+5 |         nonlocal x
+                     ^
+Definition Result:
+3 |     x = 5
+        ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn module_attr_access_should_follow_exports_not_dunder_all_test() {
+    let code_name_provider = r#"
+__all__ = []
+x: int = 42
+"#;
+    let code = r#"
+import foo
+foo.x
+#   ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[("main", code), ("foo", code_name_provider)],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+3 | foo.x
+        ^
+Definition Result:
+3 | x: int = 42
+    ^
+
+
+# foo.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn dunder_all_entry_definition_test() {
+    let pkg = r#"
+from pkg.bar import Bar
+
+class Baz:
+    pass
+
+__all__ = (
+    "Bar",
+#    ^
+    "Baz",
+#    ^
+)
+"#;
+    let bar = r#"
+class Bar:
+    pass
+"#;
+    let report =
+        get_batched_lsp_operations_report(&[("pkg", pkg), ("pkg.bar", bar)], get_test_report);
+    assert_eq!(
+        r#"
+# pkg.py
+8 |     "Bar",
+         ^
+Definition Result:
+2 | class Bar:
+          ^^^
+
+10 |     "Baz",
+          ^
+Definition Result:
+4 | class Baz:
+          ^^^
+
+
+# pkg.bar.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn string_literal_not_in_dunder_all() {
+    let pkg = r#"
+class Foo:
+    pass
+
+x = "Foo"
+#    ^
+
+__all__ = ["Foo"]
+"#;
+    let report = get_batched_lsp_operations_report(&[("pkg", pkg)], get_test_report);
+    assert_eq!(
+        r#"
+# pkg.py
+5 | x = "Foo"
+         ^
+Definition Result: None
+
+
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn dunder_all_nonexistent_symbol() {
+    let pkg = r#"
+__all__ = ["NonExistent"]
+#            ^
+"#;
+    let report = get_batched_lsp_operations_report_allow_error(&[("pkg", pkg)], get_test_report);
+    assert_eq!(
+        r#"
+# pkg.py
+2 | __all__ = ["NonExistent"]
+                 ^
+Definition Result:
+2 | __all__ = ["NonExistent"]
+               ^^^^^^^^^^^^^
+
+
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn renamed_reexport() {
+    let lib2 = r#"
+def foo() -> None: ...
+"#;
+    let lib = r#"
+from lib2 import foo as foo_renamed
+"#;
+    let code = r#"
+from lib import foo_renamed
+#                    ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[("main", code), ("lib", lib), ("lib2", lib2)],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+2 | from lib import foo_renamed
+                         ^
+Definition Result:
+2 | def foo() -> None: ...
+        ^^^
+
+
+# lib.py
+
+# lib2.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn renamed_assignment_reexport() {
+    let lib2 = r#"
+def foo() -> None: ...
+"#;
+    let lib = r#"
+from lib2 import foo
+foo_renamed = foo
+"#;
+    let code = r#"
+from lib import foo_renamed
+#                    ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[("main", code), ("lib", lib), ("lib2", lib2)],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+2 | from lib import foo_renamed
+                         ^
+Definition Result:
+3 | foo_renamed = foo
+    ^^^^^^^^^^^
+
+
+# lib.py
+
+# lib2.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn operator_comparison_overload() {
+    let code = r#"
+class My:
+    def __lt__(self, other: object) -> bool:
+        return True
+    def __le__(self, other: object) -> bool:
+        return True
+    def __gt__(self, other: object) -> bool:
+        return True
+    def __ge__(self, other: object) -> bool:
+        return True
+
+a = My()
+b = My()
+result1 = a < b
+#           ^
+result2 = a <= b
+#            ^
+result3 = a > b
+#           ^
+result4 = a >= b
+#            ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+14 | result1 = a < b
+                 ^
+Definition Result:
+3 |     def __lt__(self, other: object) -> bool:
+            ^^^^^^
+
+16 | result2 = a <= b
+                  ^
+Definition Result:
+5 |     def __le__(self, other: object) -> bool:
+            ^^^^^^
+
+18 | result3 = a > b
+                 ^
+Definition Result:
+7 |     def __gt__(self, other: object) -> bool:
+            ^^^^^^
+
+20 | result4 = a >= b
+                  ^
+Definition Result:
+9 |     def __ge__(self, other: object) -> bool:
+            ^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn unreachable_branch() {
+    let code = r#"
+x = 5
+if False:
+    print(x)
+    #     ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+4 |     print(x)
+              ^
+Definition Result: None
+
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn operator_binop_overload() {
+    let code = r#"
+class My:
+    def __add__(self, other: object) -> "My":
+        return self
+    def __sub__(self, other: object) -> "My":
+        return self
+    def __mul__(self, other: object) -> "My":
+        return self
+    def __truediv__(self, other: object) -> "My":
+        return self
+
+a = My()
+b = My()
+result1 = a + b
+#           ^
+result2 = a - b
+#           ^
+result3 = a * b
+#           ^
+result4 = a / b
+#           ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+14 | result1 = a + b
+                 ^
+Definition Result:
+3 |     def __add__(self, other: object) -> "My":
+            ^^^^^^^
+
+16 | result2 = a - b
+                 ^
+Definition Result:
+5 |     def __sub__(self, other: object) -> "My":
+            ^^^^^^^
+
+18 | result3 = a * b
+                 ^
+Definition Result:
+7 |     def __mul__(self, other: object) -> "My":
+            ^^^^^^^
+
+20 | result4 = a / b
+                 ^
+Definition Result:
+9 |     def __truediv__(self, other: object) -> "My":
+            ^^^^^^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn operator_unaryop_overload() {
+    let code = r#"
+class My:
+    def __neg__(self) -> "My":
+        return self
+    def __pos__(self) -> "My":
+        return self
+    def __invert__(self) -> "My":
+        return self
+
+a = My()
+result1 = -a
+#         ^
+result2 = +a
+#         ^
+result3 = ~a
+#         ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+11 | result1 = -a
+               ^
+Definition Result:
+3 |     def __neg__(self) -> "My":
+            ^^^^^^^
+
+13 | result2 = +a
+               ^
+Definition Result:
+5 |     def __pos__(self) -> "My":
+            ^^^^^^^
+
+15 | result3 = ~a
+               ^
+Definition Result:
+7 |     def __invert__(self) -> "My":
+            ^^^^^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_on_none_test() {
+    let code = r#"
+x = None
+#   ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    // None should resolve to builtins.pyi
+    assert!(report.contains("Definition Result:"));
+    assert!(report.contains("None"));
+}
+
+#[test]
+fn goto_def_on_import_same_name_alias_first_token_test() {
+    let lib = r#"
+def func():
+    pass
+"#;
+    let code = r#"
+from lib import func as func
+#                ^
+"#;
+    let report =
+        get_batched_lsp_operations_report(&[("main", code), ("lib", lib)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+2 | from lib import func as func
+                     ^
+Definition Result:
+2 | def func():
+        ^^^^
+
+
+# lib.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_on_import_same_name_alias_second_token_test() {
+    let lib = r#"
+def func():
+    pass
+"#;
+    let code = r#"
+from lib import func as func
+#                        ^
+"#;
+    let report =
+        get_batched_lsp_operations_report(&[("main", code), ("lib", lib)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+2 | from lib import func as func
+                             ^
+Definition Result:
+2 | def func():
+        ^^^^
+
+
+# lib.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_on_import_different_name_alias_test() {
+    let lib = r#"
+def bar():
+    pass
+"#;
+    let code = r#"
+from lib import bar as baz
+#                ^      ^
+"#;
+    let report =
+        get_batched_lsp_operations_report(&[("main", code), ("lib", lib)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+2 | from lib import bar as baz
+                     ^
+Definition Result:
+2 | def bar():
+        ^^^
+
+2 | from lib import bar as baz
+                            ^
+Definition Result:
+2 | def bar():
+        ^^^
+
+
+# lib.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_on_first_component_of_multi_part_import() {
+    let mymod_init = r#"# mymod/__init__.py
+def version() -> str: ...
+"#;
+    let mymod_submod_init = r#"# mymod/submod/__init__.py
+class Foo: ...
+"#;
+    let code = r#"
+import mymod.submod
+#       ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[
+            ("main", code),
+            ("mymod", mymod_init),
+            ("mymod.submod", mymod_submod_init),
+        ],
+        get_test_report,
+    );
+    assert!(
+        report.contains("# mymod/__init__.py"),
+        "Expected go-to-definition to point to mymod/__init__.py, got: {report}"
+    );
+    assert!(
+        !report.contains("# mymod/submod/__init__.py"),
+        "Go-to-definition should not point to mymod/submod/__init__.py when clicking on 'mymod', got: {report}"
+    );
+}
+
+#[test]
+fn goto_def_on_middle_component_of_multi_part_import() {
+    let mymod_init = r#"# mymod/__init__.py
+def version() -> str: ...
+"#;
+    let mymod_submod_init = r#"# mymod/submod/__init__.py
+class Foo: ...
+"#;
+    let mymod_submod_deep_init = r#"# mymod/submod/deep/__init__.py
+class Bar: ...
+"#;
+    let code = r#"
+from mymod.submod.deep import Bar
+#            ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[
+            ("main", code),
+            ("mymod", mymod_init),
+            ("mymod.submod", mymod_submod_init),
+            ("mymod.submod.deep", mymod_submod_deep_init),
+        ],
+        get_test_report,
+    );
+    assert!(
+        report.contains("# mymod/submod/__init__.py"),
+        "Expected go-to-definition to point to mymod/submod/__init__.py, got: {report}"
+    );
+    assert!(
+        !report.contains("# mymod/submod/deep/__init__.py"),
+        "Go-to-definition should not point to mymod/submod/deep/__init__.py when clicking on 'submod', got: {report}"
+    );
+}
+
+#[test]
+fn goto_def_on_first_component_when_intermediate_module_missing() {
+    // Only mymod.submod exists, not mymod itself
+    let mymod_submod_init = r#"# mymod/submod/__init__.py
+class Foo: ...
+"#;
+    let code = r#"
+import mymod.submod
+#       ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[("main", code), ("mymod.submod", mymod_submod_init)],
+        get_test_report,
+    );
+    assert!(
+        report.contains("Definition Result:") && report.contains("None"),
+        "Expected no definition when clicking on 'mymod' if mymod/__init__.py doesn't exist, got: {report}"
+    );
+}
+
+#[test]
+fn goto_def_on_middle_component_when_intermediate_module_missing() {
+    // Only mymod and mymod.submod.deep exist, not mymod.submod
+    let mymod_init = r#"# mymod/__init__.py
+def version() -> str: ...
+"#;
+    let mymod_submod_deep_init = r#"# mymod/submod/deep/__init__.py
+class Bar: ...
+"#;
+    let code = r#"
+from mymod.submod.deep import Bar
+#            ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[
+            ("main", code),
+            ("mymod", mymod_init),
+            ("mymod.submod.deep", mymod_submod_deep_init),
+        ],
+        get_test_report,
+    );
+    assert!(
+        report.contains("Definition Result:") && report.contains("None"),
+        "Expected no definition when clicking on 'submod' if mymod/submod/__init__.py doesn't exist, got: {report}"
+    );
+}
+
+#[test]
+fn goto_def_on_in_membership_operator() {
+    let code = r#"
+class Container:
+    def __contains__(self, item: int) -> bool: ...
+
+c = Container()
+1 in c
+# ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert!(
+        report.contains("__contains__"),
+        "Expected definition to jump to __contains__ method, got: {report}"
+    );
+}
+
+#[test]
+fn goto_def_on_in_iteration_for_loop() {
+    let code = r#"
+from typing import Iterator
+
+class MyIterable:
+    def __iter__(self) -> Iterator[int]: ...
+
+it = MyIterable()
+for x in it:
+#     ^
+    pass
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert!(
+        report.contains("__iter__"),
+        "Expected definition to jump to __iter__ method, got: {report}"
+    );
+}
+
+#[test]
+fn goto_def_on_in_iteration_comprehension() {
+    let code = r#"
+from typing import Iterator
+
+class MyIterable:
+    def __iter__(self) -> Iterator[int]: ...
+
+it = MyIterable()
+result = [x for x in it]
+#                 ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert!(
+        report.contains("__iter__"),
+        "Expected definition to jump to __iter__ method in comprehension, got: {report}"
+    );
+}
+
+#[test]
+fn goto_def_in_fstring_simple() {
+    let code = r#"
+def f() -> int:
+    return 0
+
+y = f"hello {f()}"
+#            ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert!(
+        report.contains("def f()"),
+        "Expected definition to jump to function f, got: {report}"
+    );
+}
+
+#[test]
+fn goto_def_in_fstring_format_specifier() {
+    let code = r#"
+def f() -> int:
+    return 0
+
+x = 1
+y = f"hello {x:{f()}}"
+#               ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert!(
+        report.contains("def f()"),
+        "Expected definition to jump to function f, got: {report}"
+    );
+}
+
+#[test]
+fn goto_def_list_comprehension_target() {
+    let code = r#"
+items = [1, 2, 3]
+result = [x for x in items]
+#               ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+3 | result = [x for x in items]
+                    ^
+Definition Result:
+3 | result = [x for x in items]
+                    ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_list_comprehension_usage() {
+    let code = r#"
+items = [1, 2, 3]
+result = [x for x in items]
+#         ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    // Go-to-def on the usage `x` should jump to the target `x` (the iteration variable)
+    assert_eq!(
+        r#"
+# main.py
+3 | result = [x for x in items]
+              ^
+Definition Result:
+3 | result = [x for x in items]
+                    ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_list_comprehension_tuple_unpacking_target_x() {
+    let code = r#"
+result = [(y, x) for x, y in [(1, 2)]]
+#                    ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+2 | result = [(y, x) for x, y in [(1, 2)]]
+                         ^
+Definition Result:
+2 | result = [(y, x) for x, y in [(1, 2)]]
+                         ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_list_comprehension_tuple_unpacking_target_y() {
+    let code = r#"
+result = [(y, x) for x, y in [(1, 2)]]
+#                       ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+2 | result = [(y, x) for x, y in [(1, 2)]]
+                            ^
+Definition Result:
+2 | result = [(y, x) for x, y in [(1, 2)]]
+                            ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_list_comprehension_tuple_unpacking_usage_y() {
+    let code = r#"
+result = [(y, x) for x, y in [(1, 2)]]
+#          ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+2 | result = [(y, x) for x, y in [(1, 2)]]
+               ^
+Definition Result:
+2 | result = [(y, x) for x, y in [(1, 2)]]
+                            ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_list_comprehension_tuple_unpacking_usage_x() {
+    let code = r#"
+result = [(y, x) for x, y in [(1, 2)]]
+#             ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+2 | result = [(y, x) for x, y in [(1, 2)]]
+                  ^
+Definition Result:
+2 | result = [(y, x) for x, y in [(1, 2)]]
+                         ^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_constructor_call_same_module() {
+    let code = r#"
+class Bar:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+Bar("hello")
+# ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+6 | Bar("hello")
+      ^
+Definition Result:
+3 |     def __init__(self, name: str) -> None:
+            ^^^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_constructor_call_cross_module() {
+    let class_code = r#"
+class Foo:
+    def __init__(self, x: int) -> None:
+        self.x = x
+"#;
+    let code = r#"
+from .foo_mod import Foo
+Foo(1)
+# ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[("main", code), ("foo_mod", class_code)],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+3 | Foo(1)
+      ^
+Definition Result:
+3 |     def __init__(self, x: int) -> None:
+            ^^^^^^^^
+
+
+# foo_mod.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_constructor_inherits_init_from_base() {
+    let base_code = r#"
+class Base:
+    def __init__(self, x: int) -> None:
+        self.x = x
+"#;
+    let code = r#"
+from .base_mod import Base
+
+class Child(Base):
+    pass
+
+Child(1)
+#  ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[("main", code), ("base_mod", base_code)],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+7 | Child(1)
+       ^
+Definition Result:
+3 |     def __init__(self, x: int) -> None:
+            ^^^^^^^^
+
+
+# base_mod.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_constructor_with_new_only() {
+    let code = r#"
+class Singleton:
+    _instance = None
+    def __new__(cls) -> "Singleton":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+Singleton()
+#    ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+9 | Singleton()
+         ^
+Definition Result:
+4 |     def __new__(cls) -> "Singleton":
+            ^^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_constructor_with_both_init_and_new() {
+    let code = r#"
+class MyClass:
+    def __new__(cls) -> "MyClass":
+        return super().__new__(cls)
+    def __init__(self) -> None:
+        self.x = 1
+
+MyClass()
+#  ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+8 | MyClass()
+       ^
+Definition Result:
+5 |     def __init__(self) -> None:
+            ^^^^^^^^
+Definition Result:
+3 |     def __new__(cls) -> "MyClass":
+            ^^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_constructor_via_module_attribute() {
+    let class_code = r#"
+class Foo:
+    def __init__(self, x: int) -> None:
+        self.x = x
+"#;
+    let code = r#"
+import foo_mod
+foo_mod.Foo(1)
+#       ^
+"#;
+    let report = get_batched_lsp_operations_report_allow_error(
+        &[("main", code), ("foo_mod", class_code)],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+3 | foo_mod.Foo(1)
+            ^
+Definition Result:
+3 |     def __init__(self, x: int) -> None:
+            ^^^^^^^^
+
+
+# foo_mod.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_callable_instance() {
+    let code = r#"
+class Adder:
+    def __call__(self, x: int) -> int:
+        return x + 1
+
+adder = Adder()
+adder(5)
+# ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+7 | adder(5)
+      ^
+Definition Result:
+3 |     def __call__(self, x: int) -> int:
+            ^^^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_non_constructor_call_goes_to_function() {
+    let code = r#"
+def foo(x: int) -> int:
+    return x
+
+foo(1)
+# ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+5 | foo(1)
+      ^
+Definition Result:
+2 | def foo(x: int) -> int:
+        ^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_cached_function_call_goes_to_function() {
+    let code = r#"
+from functools import cache, lru_cache
+import functools
+
+@cache
+def cached_add(a: int, b: int) -> int:
+    return a + b
+
+@lru_cache
+def bare_lru_add(a: int, b: int) -> int:
+    return a + b
+
+@lru_cache(maxsize=None)
+def called_lru_add(a: int, b: int) -> int:
+    return a + b
+
+@functools.lru_cache(maxsize=128)
+def qualified_lru_add(a: int, b: int) -> int:
+    return a + b
+
+cached_add(1, 2)
+# ^
+bare_lru_add(1, 2)
+# ^
+called_lru_add(1, 2)
+# ^
+qualified_lru_add(1, 2)
+# ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+21 | cached_add(1, 2)
+       ^
+Definition Result:
+6 | def cached_add(a: int, b: int) -> int:
+        ^^^^^^^^^^
+
+23 | bare_lru_add(1, 2)
+       ^
+Definition Result:
+10 | def bare_lru_add(a: int, b: int) -> int:
+         ^^^^^^^^^^^^
+
+25 | called_lru_add(1, 2)
+       ^
+Definition Result:
+14 | def called_lru_add(a: int, b: int) -> int:
+         ^^^^^^^^^^^^^^
+
+27 | qualified_lru_add(1, 2)
+       ^
+Definition Result:
+18 | def qualified_lru_add(a: int, b: int) -> int:
+         ^^^^^^^^^^^^^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_class_name_without_call_goes_to_class() {
+    let code = r#"
+class Baz:
+    def __init__(self) -> None:
+        pass
+
+x = Baz
+#   ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+6 | x = Baz
+        ^
+Definition Result:
+2 | class Baz:
+          ^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_constructor_dataclass_synthesized_init() {
+    // Dataclass with no inherited explicit __init__: gotodef correctly falls
+    // back to the class definition since the synthesized __init__ has no
+    // source location.
+    let code = r#"
+from dataclasses import dataclass
+
+@dataclass
+class Point:
+    x: int
+    y: int
+
+Point(1, 2)
+#  ^
+"#;
+    let report = get_batched_lsp_operations_report(&[("main", code)], get_test_report);
+    assert_eq!(
+        r#"
+# main.py
+9 | Point(1, 2)
+       ^
+Definition Result:
+5 | class Point:
+          ^^^^^
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_constructor_basemodel_subclass() {
+    // BUG: Gotodef on a subclass constructor call jumps to the inherited
+    // BaseModel.__init__ instead of the subclass class definition. When a
+    // class has synthesized fields (like pydantic models), the user expects
+    // gotodef to navigate to the class definition, not to the base __init__.
+    let basemodel_code = r#"
+class BaseModel:
+    def __init__(self, **kwargs: object) -> None: ...
+"#;
+    let code = r#"
+from .models import BaseModel
+
+class UserConfig(BaseModel):
+    name: str
+    age: int
+
+UserConfig(name="test", age=1)
+#     ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[("main", code), ("models", basemodel_code)],
+        get_test_report,
+    );
+    // Currently jumps to BaseModel.__init__ — should jump to `class UserConfig`.
+    assert_eq!(
+        r#"
+# main.py
+8 | UserConfig(name="test", age=1)
+          ^
+Definition Result:
+3 |     def __init__(self, **kwargs: object) -> None: ...
+            ^^^^^^^^
+
+
+# models.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+#[test]
+fn goto_def_constructor_dataclass_inheriting_init() {
+    // Dataclass inheriting from a base with explicit __init__: gotodef
+    // should jump to the class definition because the dataclass synthesizes
+    // its own __init__ which takes precedence over the inherited one.
+    let base_code = r#"
+class Base:
+    def __init__(self, **kwargs: object) -> None: ...
+"#;
+    let code = r#"
+from dataclasses import dataclass
+from .base_mod import Base
+
+@dataclass
+class Config(Base):
+    name: str
+    value: int
+
+Config(name="x", value=1)
+#   ^
+"#;
+    let report = get_batched_lsp_operations_report(
+        &[("main", code), ("base_mod", base_code)],
+        get_test_report,
+    );
+    assert_eq!(
+        r#"
+# main.py
+10 | Config(name="x", value=1)
+         ^
+Definition Result:
+6 | class Config(Base):
+          ^^^^^^
+
+
+# base_mod.py
+"#
+        .trim(),
+        report.trim(),
+    );
+}
+
+/// When importing a name from a non-Python module (e.g. a .thrift file),
+/// go-to-definition on the imported name should navigate to the actual
+/// symbol definition in the source file, not just the top of the file.
+#[test]
+fn non_python_module_import_goto_symbol_test() {
+    let thrift_content =
+        "// This is a comment!\nstruct AggregatedAlertSpec {\n  1: string name\n}\n";
+    let main_code = r#"
+from aggregation_rule.thrift import AggregatedAlertSpec
+#                                   ^
+x = AggregatedAlertSpec
+#   ^
+"#;
+    let positions = extract_cursors_for_test(main_code);
+    let mut test_env = TestEnv::new().with_extra_file_extensions(vec!["thrift".to_owned()]);
+    test_env.add_with_path(
+        "aggregation_rule.thrift",
+        "aggregation_rule.thrift",
+        thrift_content,
+    );
+    test_env.add("main", main_code);
+    let (state, handle) = test_env.to_state();
+    let main_handle = handle("main");
+
+    // "from aggregation_rule.thrift import AggregatedAlertSpec"
+    //                                      ^
+    let import_name_pos = positions[0];
+    let defs = state
+        .transaction()
+        .goto_definition(&main_handle, import_name_pos)
+        .expect("go-to-definition should return a result for non-Python imports");
+    let report = defs
+        .iter()
+        .map(|d| format!("module={}, range={:?}", d.module.path(), d.range))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        !defs.is_empty(),
+        "go-to-definition should return a non-empty result"
+    );
+    assert!(
+        defs[0]
+            .module
+            .path()
+            .to_string()
+            .contains("aggregation_rule.thrift"),
+        "should navigate to the .thrift file, got: {report}",
+    );
+    // The definition range should point to "AggregatedAlertSpec" (19 chars)
+    // in the thrift file at byte offset 7..26 (after "struct "), not just the
+    // start of the file.
+    assert_eq!(
+        defs[0].range,
+        TextRange::new(TextSize::new(29), TextSize::new(48)),
+        "should point to the symbol name, not the start of file. Got: {report}",
+    );
+
+    // Test positions:
+    // "from aggregation_rule.thrift import AggregatedAlertSpec"
+    // "x = AggregatedAlertSpec
+    //      ^
+    // For non-Python modules, go-to-definition on a name usage should jump
+    // through the import to the symbol in the source file.
+    let use_name_pos = positions[1];
+    let defs = state
+        .transaction()
+        .goto_definition(&main_handle, use_name_pos)
+        .expect("go-to-definition should return a result for non-Python imports");
+    let report = defs
+        .iter()
+        .map(|d| format!("module={}, range={:?}", d.module.path(), d.range))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        !defs.is_empty(),
+        "go-to-definition should return a non-empty result"
+    );
+    assert!(
+        defs[0]
+            .module
+            .path()
+            .to_string()
+            .contains("aggregation_rule.thrift"),
+        "should navigate to the .thrift file, got: {report}",
+    );
+    assert_eq!(
+        defs[0].range,
+        TextRange::new(TextSize::new(29), TextSize::new(48)),
+        "should point to the symbol name, not the start of file. Got: {report}",
+    );
+}
+
+/// When accessing an attribute on a non-Python module (e.g. thrift_mod.AggregatedAlertSpec),
+/// go-to-definition should fall back to navigating to the module file.
+#[test]
+fn non_python_module_attribute_fallback_test() {
+    let thrift_content = "";
+    let main_code = r#"
+import aggregation_rule.thrift as thrift_mod
+x = thrift_mod.AggregatedAlertSpec
+#              ^
+"#;
+    let positions = extract_cursors_for_test(main_code);
+    let mut test_env = TestEnv::new().with_extra_file_extensions(vec!["thrift".to_owned()]);
+    test_env.add_with_path(
+        "aggregation_rule.thrift",
+        "aggregation_rule.thrift",
+        thrift_content,
+    );
+    test_env.add("main", main_code);
+    let (state, handle) = test_env.to_state();
+    let main_handle = handle("main");
+
+    let defs = state
+        .transaction()
+        .goto_definition(&main_handle, positions[0])
+        .expect("go-to-definition should return a result for non-Python module attribute");
+    let report = defs
+        .iter()
+        .map(|d| format!("module={}, range={:?}", d.module.path(), d.range))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        !defs.is_empty(),
+        "go-to-definition should return a non-empty result"
+    );
+    assert!(
+        defs[0]
+            .module
+            .path()
+            .to_string()
+            .contains("aggregation_rule.thrift"),
+        "should navigate to the .thrift file, got: {report}",
+    );
+    assert_eq!(defs[0].range, TextRange::empty(TextSize::new(0)));
+}
+
+/// When accessing a nested attribute on a non-Python module
+/// (e.g. thrift_mod.MyEnum.VARIANT), go-to-definition on the member should
+/// navigate to the module source file via text search.
+#[test]
+fn non_python_module_nested_attribute_test() {
+    let thrift_content = "enum Targeting {\n  CUSTOM_AUDIENCES = 0,\n  INTERESTS = 1,\n}\n\nstruct Foo {\n  1: string INTERESTS;\n}\n";
+    let main_code = r#"
+import aggregation_rule.thrift as thrift_mod
+x = thrift_mod.Targeting.CUSTOM_AUDIENCES
+#                        ^
+y = thrift_mod.Targeting.INTERESTS
+#                        ^
+"#;
+    let positions = extract_cursors_for_test(main_code);
+    let mut test_env = TestEnv::new().with_extra_file_extensions(vec!["thrift".to_owned()]);
+    test_env.add_with_path(
+        "aggregation_rule.thrift",
+        "aggregation_rule.thrift",
+        thrift_content,
+    );
+    test_env.add("main", main_code);
+    let (state, handle) = test_env.to_state();
+    let main_handle = handle("main");
+
+    // "thrift_mod.Targeting.CUSTOM_AUDIENCES"
+    //                       ^
+    let defs = state
+        .transaction()
+        .goto_definition(&main_handle, positions[0])
+        .expect("go-to-definition should return a result for nested non-Python attribute");
+    let report = defs
+        .iter()
+        .map(|d| format!("module={}, range={:?}", d.module.path(), d.range))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        !defs.is_empty(),
+        "go-to-definition should return a non-empty result"
+    );
+    assert!(
+        defs[0]
+            .module
+            .path()
+            .to_string()
+            .contains("aggregation_rule.thrift"),
+        "should navigate to the .thrift file, got: {report}",
+    );
+    // "CUSTOM_AUDIENCES" appears at byte offset 19..35 in the thrift content
+    assert_eq!(
+        defs[0].range,
+        TextRange::new(TextSize::new(19), TextSize::new(35)),
+        "should point to CUSTOM_AUDIENCES in the .thrift file. Got: {report}",
+    );
+
+    // "thrift_mod.Targeting.INTERESTS"
+    //                       ^
+    // "INTERESTS" appears twice in the thrift content (as an enum value and
+    // a struct field name). find_symbol_range_in_text returns the first
+    // whole-word occurrence.
+    let defs = state
+        .transaction()
+        .goto_definition(&main_handle, positions[1])
+        .expect("go-to-definition should return a result for nested non-Python attribute");
+    let report = defs
+        .iter()
+        .map(|d| format!("module={}, range={:?}", d.module.path(), d.range))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        !defs.is_empty(),
+        "go-to-definition should return a non-empty result"
+    );
+    assert!(
+        defs[0]
+            .module
+            .path()
+            .to_string()
+            .contains("aggregation_rule.thrift"),
+        "should navigate to the .thrift file, got: {report}",
+    );
+    // First occurrence of "INTERESTS" is the enum value at byte offset 43..52
+    assert_eq!(
+        defs[0].range,
+        TextRange::new(TextSize::new(43), TextSize::new(52)),
+        "should point to first INTERESTS in the .thrift file. Got: {report}",
+    );
+}
+
+/// When a name is imported from a non-Python module via `from ... import Name`
+/// and used in attribute access (`Name.MEMBER`), go-to-definition on the
+/// attribute should navigate to the symbol in the non-Python source file.
+#[test]
+fn non_python_module_from_import_attribute_test() {
+    let thrift_content = "enum Targeting {\n  CUSTOM_AUDIENCES = 0,\n  INTERESTS = 1,\n}\n";
+    let main_code = r#"
+from aggregation_rule.thrift import Targeting
+x = Targeting.CUSTOM_AUDIENCES
+#             ^
+y = Targeting.INTERESTS
+#             ^
+"#;
+    let positions = extract_cursors_for_test(main_code);
+    let mut test_env = TestEnv::new().with_extra_file_extensions(vec!["thrift".to_owned()]);
+    test_env.add_with_path(
+        "aggregation_rule.thrift",
+        "aggregation_rule.thrift",
+        thrift_content,
+    );
+    test_env.add("main", main_code);
+    let (state, handle) = test_env.to_state();
+    let main_handle = handle("main");
+
+    // "Targeting.CUSTOM_AUDIENCES"
+    //            ^
+    let defs = state
+        .transaction()
+        .goto_definition(&main_handle, positions[0])
+        .expect("go-to-definition should return a result for from-imported non-Python attribute");
+    let report = defs
+        .iter()
+        .map(|d| format!("module={}, range={:?}", d.module.path(), d.range))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        !defs.is_empty(),
+        "go-to-definition should return a non-empty result"
+    );
+    assert!(
+        defs[0]
+            .module
+            .path()
+            .to_string()
+            .contains("aggregation_rule.thrift"),
+        "should navigate to the .thrift file, got: {report}",
+    );
+    // "CUSTOM_AUDIENCES" appears at byte offset 19..35 in the thrift content
+    assert_eq!(
+        defs[0].range,
+        TextRange::new(TextSize::new(19), TextSize::new(35)),
+        "should point to CUSTOM_AUDIENCES in the .thrift file. Got: {report}",
+    );
+
+    // "Targeting.INTERESTS"
+    //            ^
+    let defs = state
+        .transaction()
+        .goto_definition(&main_handle, positions[1])
+        .expect("go-to-definition should return a result for from-imported non-Python attribute");
+    let report = defs
+        .iter()
+        .map(|d| format!("module={}, range={:?}", d.module.path(), d.range))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        !defs.is_empty(),
+        "go-to-definition should return a non-empty result"
+    );
+    assert!(
+        defs[0]
+            .module
+            .path()
+            .to_string()
+            .contains("aggregation_rule.thrift"),
+        "should navigate to the .thrift file, got: {report}",
+    );
+    // "INTERESTS" appears at byte offset 43..52 in the thrift content
+    assert_eq!(
+        defs[0].range,
+        TextRange::new(TextSize::new(43), TextSize::new(52)),
+        "should point to INTERESTS in the .thrift file. Got: {report}",
+    );
+}
+
+/// When clicking on a filename component in a non-Python module import
+/// (e.g. `TranslationCheckConfig` in `from pkg.TranslationCheckConfig.thrift import XYZ`),
+/// go-to-definition should navigate to the file, not fail because the truncated
+/// module name `pkg.TranslationCheckConfig` doesn't resolve on its own.
+#[test]
+fn non_python_module_import_filename_component_test() {
+    let thrift_content = "struct Config {\n  1: string name\n}\n";
+    let main_code = r#"
+from translation.TranslationCheckConfig.thrift import Config
+#                 ^                      ^
+"#;
+    let positions = extract_cursors_for_test(main_code);
+    let mut test_env = TestEnv::new().with_extra_file_extensions(vec!["thrift".to_owned()]);
+    test_env.add_with_path(
+        "translation.TranslationCheckConfig.thrift",
+        "translation/TranslationCheckConfig.thrift",
+        thrift_content,
+    );
+    test_env.add("main", main_code);
+    let (state, handle) = test_env.to_state();
+    let main_handle = handle("main");
+
+    // Clicking on `TranslationCheckConfig`
+    let defs = state
+        .transaction()
+        .goto_definition(&main_handle, positions[0])
+        .expect("go-to-definition on filename component should navigate to the module file");
+    assert!(
+        defs[0]
+            .module
+            .path()
+            .to_string()
+            .contains("TranslationCheckConfig.thrift"),
+        "should navigate to the .thrift file, got: {}",
+        defs[0].module.path(),
+    );
+
+    // Clicking on `thrift` (the extension component) should also work
+    let defs = state
+        .transaction()
+        .goto_definition(&main_handle, positions[1])
+        .expect("go-to-definition on extension component should navigate to the module file");
+    assert!(
+        defs[0]
+            .module
+            .path()
+            .to_string()
+            .contains("TranslationCheckConfig.thrift"),
+        "should navigate to the .thrift file, got: {}",
+        defs[0].module.path(),
+    );
+}
+
+/// Go-to-definition on a __files__ directory import should fall back to
+/// the parent module when the virtual __files__ module doesn't exist on disk.
+#[test]
+fn files_directory_import_goto_definition_test() {
+    let main_code = r#"
+import foo.bar.__files__ as files
+#                ^
+"#;
+    let positions = extract_cursors_for_test(main_code);
+    let mut test_env = TestEnv::new();
+    test_env.add("foo.bar", "x = 1\n");
+    test_env.add("main", main_code);
+    let (state, handle) = test_env.to_state();
+    let main_handle = handle("main");
+
+    let defs = state
+        .transaction()
+        .goto_definition(&main_handle, positions[0])
+        .expect("go-to-definition should return a result for __files__ import");
+    let report = defs
+        .iter()
+        .map(|d| format!("module={}, range={:?}", d.module.path(), d.range))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        !defs.is_empty(),
+        "go-to-definition should return a non-empty result"
+    );
+    assert!(
+        defs[0].module.path().to_string().contains("foo/bar"),
+        "should navigate to the parent module foo.bar, got: {report}",
+    );
+}
+
+/// Go-to-definition on a __recursefiles__ directory import should fall back to
+/// the parent module when the virtual __recursefiles__ module doesn't exist on disk.
+#[test]
+fn recursefiles_directory_import_goto_definition_test() {
+    let main_code = r#"
+import foo.bar.__recursefiles__ as files
+#                   ^
+"#;
+    let positions = extract_cursors_for_test(main_code);
+    let mut test_env = TestEnv::new();
+    test_env.add("foo.bar", "x = 1\n");
+    test_env.add("main", main_code);
+    let (state, handle) = test_env.to_state();
+    let main_handle = handle("main");
+
+    let defs = state
+        .transaction()
+        .goto_definition(&main_handle, positions[0])
+        .expect("go-to-definition should return a result for __recursefiles__ import");
+    let report = defs
+        .iter()
+        .map(|d| format!("module={}, range={:?}", d.module.path(), d.range))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        !defs.is_empty(),
+        "go-to-definition should return a non-empty result"
+    );
+    assert!(
+        defs[0].module.path().to_string().contains("foo/bar"),
+        "should navigate to the parent module foo.bar, got: {report}",
+    );
+}

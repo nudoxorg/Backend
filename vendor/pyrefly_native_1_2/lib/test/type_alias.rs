@@ -1,0 +1,1357 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+use crate::test::util::TestEnv;
+use crate::testcase;
+
+testcase!(
+    test_type_alias_simple,
+    r#"
+from typing import assert_type
+type X = int
+def f(x: X):
+    assert_type(x, int)
+    "#,
+);
+
+testcase!(
+    test_type_alias_type,
+    r#"
+from typing import assert_type, TypeAliasType, TypeVar
+X1 = TypeAliasType("X1", int)
+def f(x: X1):
+    assert_type(x, int)
+
+T = TypeVar('T')
+T2 = TypeVar('T2')
+X2 = TypeAliasType("X2", list[T], type_params=(T,))
+X3 = TypeAliasType("X3", list[T])  # E: Type variable `T` is out of scope for this `TypeAliasType`
+X4 = TypeAliasType("X4", list[T] | list[T2], type_params=(T,))  # E: Type variable `T2` is out of scope for this `TypeAliasType`
+X5 = TypeAliasType(name="X5", value=int)
+
+def f2(x: X2[int]):
+    assert_type(x, list[int])
+    "#,
+);
+
+testcase!(
+    test_type_alias_generic,
+    r#"
+from typing import assert_type
+type X[T] = list[T]
+def f(x: X[int]):
+    assert_type(x, list[int])
+    "#,
+);
+
+testcase!(
+    test_type_alias_missing_quantifieds,
+    r#"
+from typing import TypeVar
+T = TypeVar('T')
+type X = list[T]  # E: Type parameters used in `X`
+    "#,
+);
+
+testcase!(
+    test_type_alias_unused_quantifieds,
+    r#"
+# Questionable code, but not an error
+type X[T] = list
+    "#,
+);
+
+testcase!(
+    test_bad_type_alias,
+    r#"
+type X = 1  # E: Number literal cannot be used in annotations
+    "#,
+);
+
+testcase!(
+    test_generic_alias_implicit,
+    r#"
+from typing import TypeVar, assert_type
+T = TypeVar('T')
+X = list[T]
+def f(x: X[int]):
+    assert_type(x, list[int])
+    "#,
+);
+
+testcase!(
+    test_any_alias_implicit,
+    r#"
+from typing import Any, TypeAlias, assert_type
+T = Any
+def f(x: T):
+    assert_type(x, Any)
+f(0)
+f(None)
+"#,
+);
+
+testcase!(
+    test_any_alias_explicit,
+    r#"
+from typing import Any, TypeAlias, assert_type
+T: TypeAlias = Any
+def f(x: T):
+    assert_type(x, Any)
+f(0)
+f(None)
+"#,
+);
+
+testcase!(
+    test_generic_alias_explicit,
+    r#"
+from typing import TypeAlias, TypeVar, assert_type
+T = TypeVar('T')
+X: TypeAlias = list[T]
+def f(x: X[int]):
+    assert_type(x, list[int])
+    "#,
+);
+
+testcase!(
+    test_generic_alias_union_implicit,
+    r#"
+from typing import TypeVar, assert_type
+T = TypeVar('T')
+X = T | list[T] | None
+def f(x: X[int]):
+    assert_type(x, int | list[int] | None)
+    "#,
+);
+
+testcase!(
+    test_generic_alias_union_explicit,
+    r#"
+from typing import TypeVar, assert_type, TypeAlias
+T = TypeVar('T')
+X: TypeAlias = T | list[T] | None
+def f(x: X[int]):
+    assert_type(x, int | list[int] | None)
+    "#,
+);
+
+testcase!(
+    test_type_var_tuple_alias_generic,
+    r#"
+from typing import Any, assert_type
+type X[*T] = tuple[*T]
+def f(x: X[int, str]):
+    assert_type(x, tuple[int, str])
+def f2(x: X):
+    assert_type(x, tuple[Any, ...])
+    "#,
+);
+
+testcase!(
+    test_generic_type_var_tuple_alias_implicit,
+    r#"
+from typing import Any, TypeVarTuple, assert_type
+Ts = TypeVarTuple('Ts')
+X = tuple[*Ts]
+def f(x: X[int, str]):
+    assert_type(x, tuple[int, str])
+def f2(x: X):
+    assert_type(x, tuple[Any, ...])
+    "#,
+);
+
+testcase!(
+    test_generic_type_var_tuple_alias_explicit,
+    r#"
+from typing import Any, TypeVarTuple, TypeAlias, assert_type
+Ts = TypeVarTuple('Ts')
+X: TypeAlias = tuple[*Ts]
+def f(x: X[int, str]):
+    assert_type(x, tuple[int, str])
+def f2(x: X):
+    assert_type(x, tuple[Any, ...])
+    "#,
+);
+
+testcase!(
+    test_param_spec_alias_generic,
+    r#"
+from typing import assert_type, Callable
+type X[**P] = Callable[P, None]
+def f(x: X[int, str]):
+    assert_type(x, Callable[[int, str], None])
+def f2(x: X[[int, str]]):
+    assert_type(x, Callable[[int, str], None])
+    "#,
+);
+
+testcase!(
+    test_generic_param_spec_alias_implicit,
+    r#"
+from typing import ParamSpec, Callable, assert_type
+P = ParamSpec('P')
+X = Callable[P, None]
+def f(x: X[int, str]):
+    assert_type(x, Callable[[int, str], None])
+def f2(x: X[[int, str]]):
+    assert_type(x, Callable[[int, str], None])
+    "#,
+);
+
+testcase!(
+    test_generic_param_spec_alias_explicit,
+    r#"
+from typing import Callable, ParamSpec, TypeAlias, assert_type
+P = ParamSpec('P')
+X: TypeAlias = Callable[P, None]
+def f(x: X[int, str]):
+    assert_type(x, Callable[[int, str], None])
+def f2(x: X[[int, str]]):
+    assert_type(x, Callable[[int, str], None])
+    "#,
+);
+
+testcase!(
+    test_param_spec_alias_concatenate_generic,
+    r#"
+from typing import assert_type, Callable, Concatenate
+type X[**P] = Callable[Concatenate[int, P], None]
+def f(x: X[int, str]):
+    assert_type(x, Callable[[int, int, str], None])
+    "#,
+);
+
+testcase!(
+    test_generic_param_spec_alias_concatenate_implicit,
+    r#"
+from typing import ParamSpec, Callable, Concatenate, assert_type
+P = ParamSpec('P')
+X = Callable[Concatenate[int, P], None]
+def f(x: X[int, str]):
+    assert_type(x, Callable[[int, int, str], None])
+    "#,
+);
+
+testcase!(
+    test_generic_param_spec_alias_concatenate_explicit,
+    r#"
+from typing import Callable, ParamSpec, TypeAlias, assert_type, Concatenate
+P = ParamSpec('P')
+X: TypeAlias = Callable[Concatenate[int, P], None]
+def f(x: X[int, str]):
+    assert_type(x, Callable[[int, int, str], None])
+    "#,
+);
+
+testcase!(
+    test_generic_alias_callable,
+    r#"
+from typing import Callable, TypeVar, assert_type
+T = TypeVar('T')
+X1 = Callable[..., T]
+X2 = Callable[[T], str]
+def f(x1: X1[int], x2: X2[int]):
+    assert_type(x1, Callable[..., int])
+    assert_type(x2, Callable[[int], str])
+    "#,
+);
+
+testcase!(
+    test_generic_alias_checked,
+    r#"
+from typing import Any, assert_type
+type X[T1, T2] = dict[T1, T2]
+def f(x: X[int]):  # E: Expected 2 type arguments for `X`, got 1
+    assert_type(x, dict[int, Any])
+    "#,
+);
+
+testcase!(
+    test_generic_alias_annotated,
+    r#"
+from typing import Annotated, TypeVar, assert_type
+T = TypeVar('T')
+X = Annotated[T, 'the world is quiet here']
+def f(x: X[int]):
+    assert_type(x, int)
+    "#,
+);
+
+testcase!(
+    test_bad_annotated_alias,
+    r#"
+from typing import TypeAlias
+X: TypeAlias = 1  # E: Number literal cannot be used in annotations
+    "#,
+);
+
+testcase!(
+    test_not_a_type_alias,
+    r#"
+TypeAlias = int
+x: TypeAlias = 1
+    "#,
+);
+
+testcase!(
+    test_type_alias_import_direct,
+    r#"
+from typing import TypeAlias
+class C: pass
+x: TypeAlias = "C"
+y: x = C()
+"#,
+);
+
+testcase!(
+    test_type_alias_import_star,
+    r#"
+from typing import *
+class C: pass
+x: TypeAlias = "C"
+y: x = C()
+"#,
+);
+
+testcase!(
+    test_type_alias_import_module,
+    r#"
+import typing
+class C: pass
+x: typing.TypeAlias = "C"
+y: x = C()
+"#,
+);
+
+testcase!(
+    test_type_alias_import_named,
+    r#"
+import typing as tt
+class C: pass
+x: tt.TypeAlias = "C"
+y: x = C()
+"#,
+);
+
+testcase!(
+    test_attribute_access,
+    r#"
+from typing import TypeAlias
+X1 = int
+X2: TypeAlias = int
+type X3 = int
+
+X1.__add__  # ok
+X2.__add__  # ok
+X3.__add__  # E: Object of class `TypeAliasType` has no attribute `__add__`
+    "#,
+);
+
+testcase!(
+    test_forward_ref,
+    r#"
+from typing import TypeAlias, assert_type
+
+X1 = "A"  # Just a normal alias to a str
+X2: TypeAlias = "A"  # Forward ref
+type X3 = "A"  # Forward ref
+
+class A:
+    pass
+
+def f(x1: X1):  # E: Expected a type form, got instance of `Literal['A']`
+    pass
+
+def g(x2: X2, x3: X3):
+    assert_type(x2, A)
+    assert_type(x3, A)
+    "#,
+);
+
+testcase!(
+    test_recursive_alias_explicit,
+    r#"
+from typing import TypeAlias, assert_type
+
+Alias: TypeAlias = int | list["Alias"]
+
+x: Alias = 1
+y: Alias = [1]
+z: Alias = [[1, 2]]
+"#,
+);
+
+testcase!(
+    test_recursive_alias_implicit,
+    r#"
+X = int | list["X"]
+x: X = 1
+x: X = [1]
+x: X = [[1, 2]]
+    "#,
+);
+
+testcase!(
+    test_container_variance,
+    r#"
+from typing import Iterable
+type X1[T] = Iterable[T]
+type X2[T] = list[T]
+def f1(x: X1[int]):
+    pass
+def f2(x: X2[int]):
+    pass
+def g(x: list[bool]):
+    f1(x)
+    f2(x)  # E: Argument `list[bool]` is not assignable to parameter `x` with type `list[int]`
+    "#,
+);
+
+testcase!(
+    test_type_alias_inside_class,
+    r#"
+from typing import assert_type
+class C:
+    type X = int
+def f(x: C.X):
+    assert_type(x, int)
+    "#,
+);
+
+// Note: this test documents how Pyre currently treats type aliases inside classes
+// when the try to "close" over class type parameters. It is not 100% clear what
+// the behavior should be. But we disagree with Pyright, which disallows the use of
+// an instance attribute `c.X` and *does* allow both `bad1` (as `list[Any]`) and
+// `bad2` (as `list[int]`).
+//
+// TODO(stroxler) We probably should at least allow the uses that Pyright allows.
+testcase!(
+    test_parameterized_type_alias_inside_class,
+    r#"
+from typing import assert_type
+class C[T]:
+    type X = list[T]
+    x: X = []
+def f(c: C[int]):
+    assert_type(c.x, list[int])
+    x: c.X = []
+    assert_type(x, list[int])
+bad1: C.X  # E: Generic attribute `X` of class `C` is not visible on the class
+bad2: C[int].X  # E: Generic attribute `X` of class `C` is not visible on the class
+    "#,
+);
+
+// Type alias scopes (PEP 695) should have access to enclosing class scopes,
+// similar to annotation scopes.
+testcase!(
+    test_type_alias_sees_class_scope,
+    r#"
+from typing import assert_type
+class Foo:
+    class Bar: ...
+
+    attr = Bar()
+    type Baz = Bar | None
+
+def f(x: Foo.Baz):
+    assert_type(x, Foo.Bar | None)
+    "#,
+);
+
+testcase!(
+    test_union_alias,
+    r#"
+from typing import TypeAlias
+StringOrInt: TypeAlias = str | int
+x: StringOrInt = 1
+"#,
+);
+
+fn env_type_alias() -> TestEnv {
+    TestEnv::one(
+        "foo",
+        r#"
+from typing import TypeAlias
+StringOrInt: TypeAlias = str | int
+"#,
+    )
+}
+
+testcase!(
+    test_alias_import,
+    env_type_alias(),
+    r#"
+from foo import StringOrInt
+x: StringOrInt = 1
+"#,
+);
+
+testcase!(
+    test_union_none,
+    r#"
+from typing import TypeAlias
+NoneOrInt: TypeAlias = None | int
+IntOrNone: TypeAlias = int | None
+NoneOrStr = None | str
+StrOrNone = str | None
+
+a: NoneOrInt = None
+b: IntOrNone = 1
+c: NoneOrStr = "test"
+d: StrOrNone = None
+e: NoneOrInt = "test"  # E: `Literal['test']` is not assignable to `int | None`
+"#,
+);
+
+testcase!(
+    test_type_alias_full_name,
+    r#"
+import typing
+from typing import assert_type
+X: typing.TypeAlias = int
+def f(x: X | str):
+    assert_type(x, int | str)
+    "#,
+);
+
+testcase!(
+    test_type_alias_union,
+    r#"
+from typing import Union, Optional
+class Y: pass
+X = Union[int, "Y"]
+Z = Optional["Y"]
+"#,
+);
+
+testcase!(
+    test_bare_special_form_assignment_alias,
+    r#"
+import typing
+from typing import Literal, assert_type
+
+MyOptional = typing.Optional
+AlsoOptional = MyOptional
+MyLiteral = typing.Literal
+
+x: AlsoOptional[int] = None
+y: AlsoOptional[int] = 1
+z: MyLiteral[1] = 1
+
+assert_type(x, int | None)
+assert_type(y, int | None)
+assert_type(z, Literal[1])
+"#,
+);
+
+testcase!(
+    test_type_alias_recursive,
+    r#"
+type X = int | list["X"]
+x1: X = 1
+x2: X = [1]
+x3: X = [[1, 2]]
+x4: X = [1, [2, 3]]
+x5: X = ["foo"]  # E: not assignable
+"#,
+);
+
+testcase!(
+    bug = "Doesn't detect as a TypeAlias, but it is one. Maybe this is reasonable.",
+    test_type_alias_with_string,
+    r#"
+class Y: pass
+class C[T]: pass
+X = C["Y"] # E: Expected a type form, got instance of `Literal['Y']`
+"#,
+);
+
+testcase!(
+    test_type_alias_validation,
+    r#"
+from typing import *
+Ts = TypeVarTuple('Ts')
+P = ParamSpec('P')
+t1: TypeAlias = Unpack[TypedDict]  # E: `Unpack` is not allowed in this context # E: `TypedDict` is not allowed in this context
+t2: TypeAlias = P  # E: `ParamSpec` is not allowed in this context
+t3: TypeAlias = Unpack[Ts]  # E: `Unpack` is not allowed in this context
+t4: TypeAlias = Literal  # E: Expected a type argument for `Literal`
+t5: TypeAlias = Ts  # E: `TypeVarTuple` must be unpacked
+t6: TypeAlias = Generic  # E: Expected a type argument for `Generic`
+t7: TypeAlias = Protocol  # E: Expected a type argument for `Protocol`
+t8: TypeAlias = Generic[int]  # E: `Generic` is not allowed in this context
+t9: TypeAlias = Protocol[int]  # E: `Protocol` is not allowed in this context
+t10: TypeAlias = Final  # E: Expected a type argument for `Final`
+t11: TypeAlias = Final[int]  # E: `Final` is not allowed in this context
+t12: TypeAlias = TypeAlias  # OK
+t13: TypeAlias = [int][0]  # E: Invalid subscript expression cannot be used in annotations
+"#,
+);
+
+testcase!(
+    test_type_alias_argparse,
+    r#"
+from typing import Callable, Any
+def foo(x: Callable[[str], Any]) -> None:
+    pass
+
+foo(str)
+    "#,
+);
+
+testcase!(
+    test_type_alias_generics,
+    r#"
+from typing import Generic, Hashable, Iterable, TypeVar, TypeAlias
+
+_Node = TypeVar("_Node", bound=Hashable)
+_NBunch: TypeAlias = _Node | Iterable[_Node] | None
+
+class DiDegreeView(Generic[_Node]):
+    def __init__(
+        self,
+        nbunch: _NBunch[_Node] = None,
+    ) -> None: ...
+    "#,
+);
+
+testcase!(
+    test_type_alias_bin_op,
+    r#"
+from typing import TypeAlias
+
+class B: ...
+R: TypeAlias = B
+class C: ...
+class F:
+    T: TypeAlias = C
+    def memmove(self, arg: T | R) -> None: ...
+    "#,
+);
+
+testcase!(
+    test_type_alias_implicit_bad_syntax,
+    r#"
+def get_class() -> type[object]:
+    return object
+
+get_class()
+foo = get_class() # Cannot be an alias because of syntax
+bar: type[object] = get_class()
+"#,
+);
+
+testcase!(
+    test_union_with_implicit_generic_alias,
+    r#"
+from typing import Any, TypeVar, assert_type
+T = TypeVar('T')
+X = list[T]
+def f(x1: X | None, x2: X[int] | None):
+    assert_type(x1, list[Any] | None)
+    assert_type(x2, list[int] | None)
+    "#,
+);
+
+testcase!(
+    test_union_with_implicit_generic_alias_union,
+    r#"
+from typing import Any, TypeVar, assert_type
+T = TypeVar('T')
+Y = list[T] | set[T]
+def f(y1: Y | None, y2: Y[int] | None):
+    assert_type(y1, list[Any] | set[Any] | None)
+    assert_type(y2, list[int] | set[int] | None)
+    "#,
+);
+
+testcase!(
+    test_implicit_alias_of_typevar_type,
+    r#"
+from typing import TypeVar
+T = TypeVar('T', bound=int)
+X = type[T]
+def f(x: X[bool]) -> bool:
+    return x()
+def g(x: type[T][int]):  # E: Invalid subscript expression
+    pass
+def h(x: X[str]):  # E: `str` is not assignable to upper bound `int`
+    pass
+    "#,
+);
+
+testcase!(
+    test_bad_type_variable_aliases,
+    r#"
+from typing import ParamSpec, TypeVarTuple, Unpack
+P = ParamSpec('P')
+Ts = TypeVarTuple('Ts')
+Error1 = type[P]  # E: `ParamSpec` is not allowed
+Error2 = type[Ts]  # E: `TypeVarTuple` must be unpacked
+Error3 = type[Unpack[Ts]]  # E: `Unpack` is not allowed
+    "#,
+);
+
+testcase!(
+    test_bound_mismatch,
+    r#"
+from typing import TypeAlias, TypeVar
+
+T = TypeVar('T', bound=int)
+
+ImplicitAlias = list[T]
+ExplicitAlias: TypeAlias = list[T]
+type ScopedAlias[S: int] = list[S]
+
+def f(
+    x: ImplicitAlias[str],  # E: `str` is not assignable to upper bound `int` of type variable `T`
+    y: ExplicitAlias[str],  # E: `str` is not assignable to upper bound `int`
+    z: ScopedAlias[str],  # E: `str` is not assignable to upper bound `int`
+): ...
+    "#,
+);
+
+testcase!(
+    test_constraint_mismatch,
+    r#"
+from typing import TypeAlias, TypeVar
+
+T = TypeVar('T', int, bytes)
+
+ImplicitAlias = list[T]
+ExplicitAlias: TypeAlias = list[T]
+type ScopedAlias[S: (int, bytes)] = list[S]
+
+def f(
+    x: ImplicitAlias[str],  # E: `str` is not assignable to upper bound `bytes | int` of type variable `T`
+    y: ExplicitAlias[str],  # E: `str` is not assignable to upper bound `bytes | int`
+    z: ScopedAlias[str],  # E: `str` is not assignable to upper bound `bytes | int`
+): ...
+    "#,
+);
+
+testcase!(
+    test_specialize_typevar_with_typevar,
+    r#"
+from typing import TypeAlias, TypeVar
+
+T = TypeVar('T', bound=int)
+S = TypeVar('S', bound=bool)
+U = TypeVar('U', bound=str)
+
+X: TypeAlias = list[T]
+Y: TypeAlias = X[S]
+Z: TypeAlias = X[U]  # E: `U` is not assignable to upper bound `int`
+    "#,
+);
+
+testcase!(
+    test_invalid_scoped_alias,
+    r#"
+def test():
+    type X = int  # E: `type` statement is not allowed in this context
+    "#,
+);
+
+testcase!(
+    test_type_alias_base_class,
+    r#"
+from typing import TypeAlias
+
+# Test that scoped type aliases cannot be used as base classes
+type X = int
+Y: TypeAlias = int
+Z = int
+
+class C1(X): pass  # E: Cannot use scoped type alias `X` as a base class
+class C2(Y): pass  # Should work - legacy explicit type alias
+class C3(Z): pass  # Should work - legacy implicit type alias
+    "#,
+);
+
+testcase!(
+    test_annotated_type_alias_base_class,
+    r#"
+from typing import Annotated, TypeAlias, TypeVar
+
+T = TypeVar("T")
+
+# Legacy explicit type alias using Annotated
+Ignore: TypeAlias = Annotated[T, "Ignore"]
+
+class A: ...
+class B(Ignore[A]): ...
+class C: ...  # unrelated class
+
+def test(o: A) -> None: ...
+test(B())  # should pass: B inherits from A
+
+def test2(o: C) -> None: ...
+test2(B())  # E: Argument `B` is not assignable to parameter `o` with type `C`
+
+# Legacy implicit type alias using Annotated
+Wrapper = Annotated[T, "Wrapper"]
+
+class D: ...
+class E(Wrapper[D]): ...
+
+def test3(o: D) -> None: ...
+test3(E())  # should pass: E inherits from D
+
+def test4(o: C) -> None: ...
+test4(E())  # E: Argument `E` is not assignable to parameter `o` with type `C`
+
+# PEP 695 type alias using Annotated
+type Tagged[S] = Annotated[S, "Tagged"]
+
+class F: ...
+class G(Tagged[F]): ...  # E: Cannot use scoped type alias `Tagged` as a base class
+    "#,
+);
+
+testcase!(
+    test_string_annotations,
+    r#"
+from typing import Annotated, Callable, Dict, List, Tuple, Type
+from collections.abc import Callable as Callable2
+X1 = Annotated["A", "foo"]
+X2 = Callable[..., "A"]
+X3 = Callable2[..., "A"]
+X4 = Dict[str, "A"]
+X5 = dict[str, "A"]
+X6 = List["A"]
+X7 = list["A"]
+X8 = Tuple["A", ...]
+X9 = tuple["A", ...]
+XA = type["A"]
+XB = Type["A"]
+class A:
+    pass
+    "#,
+);
+
+testcase!(
+    test_generic_typealias_of_typealiastype,
+    r#"
+from typing import TypeAlias, TypeAliasType, TypeVar
+
+T1 = TypeVar("T1")
+T2 = TypeVar("T2", bound=str | bytes)
+
+Spam1 = TypeAliasType("Spam1", T2 | type[T1], type_params=(T1, T2))
+Spam2: TypeAlias = Spam1[T1, T2]
+
+x1: Spam1[int, str] = int
+x2: Spam2[int, str] = int
+    "#,
+);
+
+testcase!(
+    test_generic_typealias_of_scopedtypealias,
+    r#"
+from typing import TypeAlias, TypeAliasType, TypeVar
+
+T1 = TypeVar("T1")
+T2 = TypeVar("T2", bound=str | bytes)
+
+type Spam1[T1, T2] = T2 | type[T1]
+Spam2: TypeAlias = Spam1[T1, T2]
+
+x1: Spam1[int, str] = int
+x2: Spam2[int, str] = int
+    "#,
+);
+
+testcase!(
+    test_generic_typealias_of_explicit_typealias,
+    r#"
+from typing import TypeAlias, TypeAliasType, TypeVar
+
+T1 = TypeVar("T1")
+T2 = TypeVar("T2", bound=str | bytes)
+
+Spam1: TypeAlias = type[T1] | T2
+Spam2: TypeAlias = Spam1[T1, T2]
+
+x1: Spam1[int, str] = int
+x2: Spam2[int, str] = int
+    "#,
+);
+
+testcase!(
+    test_variable_in_function_is_not_type_alias,
+    r#"
+from typing import TypeVar, Generic
+class C:
+    @classmethod
+    def make(cls) -> C:
+        raise NotImplementedError()
+T = TypeVar("T", bound=C)
+class UseC(Generic[T]):
+    _class: type[T] | None
+    def use(self) -> None:
+        current = self._class # this is not a type alias
+        if current is not None:
+            current.make()
+    "#,
+);
+
+fn env_with_alias() -> TestEnv {
+    TestEnv::one(
+        "foo",
+        r#"
+type TA = int | str
+
+def f(x: TA) -> TA:
+  return x
+"#,
+    )
+}
+
+testcase!(
+    test_alias_union_name,
+    env_with_alias(),
+    r#"
+from foo import TA, f
+from typing import Callable
+
+val1: int | str = 1
+val2: TA = 1
+
+# Union names are only shown when nested in another type
+
+f(object())  # E: Argument `object` is not assignable to parameter `x` with type `int | str` in function `foo.f`
+f(val1)
+f(val2)
+x1: TA = object()  # E: `object` is not assignable to `int | str`
+x2: TA = val1
+x3: TA = val2
+c1: Callable[[int], int] = f  # E: `(x: TA) -> TA` is not assignable to `(int) -> int`
+
+# Union names are lost when flattened into another union
+
+class C: pass
+def f2(x: TA | C) -> TA | C:
+  return x
+
+f2(object())  # E: Argument `object` is not assignable to parameter `x` with type `C | int | str` in function `f2`
+f2(val1)
+f2(val2)
+f2(C())
+x4: TA | C = object()  # E: `object` is not assignable to `C | int | str`
+x5: TA | C = val1
+x6: TA | C = val2
+x7: TA | C = C()
+c2: Callable[[int], int] = f2  # E: `(x: C | int | str) -> C | int | str` is not assignable to `(int) -> int`
+    "#,
+);
+
+testcase!(
+    test_named_expression_in_type_alias,
+    r#"
+# Named expressions (walrus operator) are not allowed inside type aliases (PEP 695).
+# This matches Python's behavior which raises a SyntaxError.
+type T = (a := 1)  # E: Named expression cannot be used within a type alias # E: Expected `T` to be a type alias
+type U = (a := 1)  # E: Named expression cannot be used within a type alias # E: Expected `U` to be a type alias
+type V = int | (b := str)  # E: Named expression cannot be used within a type alias
+    "#,
+);
+
+testcase!(
+    test_union_type_alias_typevar_order,
+    r#"
+import dataclasses as dc
+from typing import TypeVar, Iterable
+
+@dc.dataclass
+class Ok[T]:
+    value: T
+
+@dc.dataclass
+class Error[T: Exception]:
+    error: T
+
+_T = TypeVar("_T")
+_TE = TypeVar("_TE", bound=Exception)
+Result = Ok[_T] | Error[_TE]
+
+def func[T, TE: Exception](
+    results: Iterable[Result[T, TE]],
+) -> tuple[Iterable[Ok[T]], Iterable[Error[TE]]]: ...
+
+# Verify instantiation works correctly
+def test(r: Result[int, ValueError]) -> None:
+    pass
+
+test(Ok(42))
+test(Error(ValueError("error")))
+    "#,
+);
+
+testcase!(
+    test_union_type_alias_typevar_order_multiple,
+    r#"
+from typing import TypeVar, assert_type
+import dataclasses as dc
+
+@dc.dataclass
+class Zebra[T]:
+    value: T
+
+@dc.dataclass
+class Bee[T]:
+    value: T
+
+@dc.dataclass
+class Aardvark[T]:
+    value: T
+
+_T1 = TypeVar("_T1")
+_T2 = TypeVar("_T2")
+_T3 = TypeVar("_T3")
+
+# Source order: _T1, _T2, _T3 (from Zebra, Bee, Aardvark)
+# Alphabetical order would be: Aardvark[_T3], Bee[_T2], Zebra[_T1] -> _T3, _T2, _T1
+Combined = Zebra[_T1] | Bee[_T2] | Aardvark[_T3]
+
+# This should work: int->_T1, str->_T2, float->_T3
+x: Combined[int, str, float] = Zebra(42)
+assert_type(x, Zebra[int] | Bee[str] | Aardvark[float])
+
+y: Combined[int, str, float] = Bee("hello")
+z: Combined[int, str, float] = Aardvark(3.14)
+    "#,
+);
+
+// Test that duplicate TypeVars are handled correctly (only first occurrence counts)
+testcase!(
+    test_union_type_alias_duplicate_typevar,
+    r#"
+from typing import TypeVar, assert_type
+import dataclasses as dc
+
+_T = TypeVar("_T")
+
+@dc.dataclass
+class First[T]:
+    value: T
+
+@dc.dataclass
+class Second[T]:
+    value: T
+
+# _T appears in both, but should only be one type parameter
+Alias = First[_T] | Second[_T]
+
+x: Alias[int] = First(42)
+assert_type(x, First[int] | Second[int])
+
+y: Alias[str] = Second("hello")
+assert_type(y, First[str] | Second[str])
+    "#,
+);
+
+testcase!(
+    test_type_alias_subscript_forward_ref,
+    r#"
+from typing import TypeVar, Generic, Iterator
+
+T = TypeVar("T")
+E = TypeVar("E")
+
+class Ok(Generic[T]):
+    def __init__(self, value: T) -> None:
+        self.value = value
+
+class Err(Generic[E]):
+    def __init__(self, error: E) -> None:
+        self.error = error
+
+Result = Ok[T] | Err[E]
+
+class CannotTransform(Exception):
+    pass
+
+TResult = Result[T, CannotTransform]
+
+class Line:
+    pass
+
+def type_alias_subscript() -> Iterator["TResult[Line]"]:
+    yield Ok(Line())
+    "#,
+);
+
+testcase!(
+    test_bad_implicit_type_alias_conformance,
+    r#"
+BadTypeAlias1 = eval("".join(map(chr, [105, 110, 116])))
+BadTypeAlias6 = (lambda: int)()
+BadTypeAlias7 = [int][0]
+BadTypeAlias8 = int if 1 < 3 else str
+BadTypeAlias12 = list or set
+
+def bad_type_aliases(
+    p1: BadTypeAlias1,  # E: `BadTypeAlias1` is not a valid type alias: Function call cannot be used in annotations
+    p6: BadTypeAlias6,  # E: `BadTypeAlias6` is not a valid type alias: Function call cannot be used in annotations
+    p7: BadTypeAlias7,  # E: `BadTypeAlias7` is not a valid type alias: Invalid subscript expression cannot be used in annotations
+    p8: BadTypeAlias8,  # E: `BadTypeAlias8` is not a valid type alias: If expression cannot be used in annotations
+    p12: BadTypeAlias12,  # E: `BadTypeAlias12` is not a valid type alias: Boolean operation cannot be used in annotations
+):
+    pass
+"#,
+);
+
+testcase!(
+    test_implicit_alias_exempt_class_constructors,
+    r#"
+from typing import NamedTuple
+from typing_extensions import TypedDict
+
+Point = NamedTuple("Point", [("x", int), ("y", int)])
+Config = TypedDict("Config", {"x": int})
+DynClass = type("DynClass", (), {})
+
+def f(p: Point, c: Config, d: DynClass) -> tuple[Point, Config, DynClass]:
+    return p, c, d
+"#,
+);
+
+testcase!(
+    test_implicit_alias_base_class_not_checked,
+    r#"
+BadBase = eval("int")
+
+class Foo(BadBase):
+    pass
+"#,
+);
+
+testcase!(
+    test_type_alias_variance_conformance,
+    r#"
+from typing import Generic, TypeVar, TypeAlias
+
+T = TypeVar("T")
+T_co = TypeVar("T_co", covariant=True)
+T_contra = TypeVar("T_contra", contravariant=True)
+
+class ClassA(Generic[T]): ...
+
+A_Alias_1: TypeAlias = ClassA[T_co]
+A_Alias_2: TypeAlias = A_Alias_1[T_co]
+
+class ClassA_1(ClassA[T_co]): ...  # E: Type variable `T_co` is covariant but is used in invariant position
+class ClassA_2(A_Alias_1[T_co]): ...  # E: Type variable `T_co` is covariant but is used in invariant position
+class ClassA_3(A_Alias_2[T_co]): ...  # E: Type variable `T_co` is covariant but is used in invariant position
+
+class ClassB(Generic[T, T_co]): ...
+
+B_Alias_1 = ClassB[T_co, T_contra]
+
+class ClassB_1(B_Alias_1[T_contra, T_co]): ...  # E: Type variable `T_contra` is contravariant but is used in invariant position
+"#,
+);
+
+testcase!(
+    test_typealiastype_circular_conformance,
+    r#"
+from typing import TypeAliasType, TypeVar
+
+T = TypeVar("T")
+
+# Direct self-reference
+BadAlias4 = TypeAliasType("BadAlias4", "BadAlias4")  # E: cyclic self-reference in `BadAlias4`
+
+# Self-reference in union with type param
+BadAlias5 = TypeAliasType("BadAlias5", T | "BadAlias5[str]", type_params=(T,))  # E: cyclic self-reference in `BadAlias5`
+
+# Mutual circular reference
+BadAlias6 = TypeAliasType("BadAlias6", "BadAlias7")  # E: cyclic self-reference in `BadAlias6`
+BadAlias7 = TypeAliasType("BadAlias7", BadAlias6)  # E: cyclic self-reference in `BadAlias7`
+
+# Self-reference via list
+BadAlias21 = TypeAliasType("BadAlias21", list[BadAlias21])  # E: cyclic self-reference in `BadAlias21`
+"#,
+);
+
+testcase!(
+    test_forward_ref_in_typealiastype_value_by_kw,
+    r#"
+from typing import TypeAliasType
+X = TypeAliasType("X", value="C")
+class C: ...
+def f(x: X): ...
+f(C())
+f(0)  # E: not assignable
+    "#,
+);
+
+testcase!(
+    test_unused_and_out_of_order_tparams_in_typealiastype,
+    r#"
+from typing import TypeAliasType, TypeVar, assert_type
+T1 = TypeVar("T1")
+T2 = TypeVar("T2")
+T3 = TypeVar("T3")
+X = TypeAliasType("X", dict[T2, T1], type_params=(T1, T2, T3))
+def f(x: X[int, str, bytes]):
+    assert_type(x, dict[str, int])
+    "#,
+);
+
+testcase!(
+    test_type_statement_circular_conformance,
+    r#"
+from typing import Callable
+
+# Direct self-reference (not through generic param)
+type RecursiveTypeAlias3 = RecursiveTypeAlias3  # E: cyclic self-reference in `RecursiveTypeAlias3`
+
+type RecursiveTypeAlias4[T] = T | RecursiveTypeAlias4[str]  # E: cyclic self-reference in `RecursiveTypeAlias4`
+
+type RecursiveTypeAlias6 = RecursiveTypeAlias7  # E: cyclic self-reference in `RecursiveTypeAlias6`
+type RecursiveTypeAlias7 = RecursiveTypeAlias6  # E: cyclic self-reference in `RecursiveTypeAlias7`
+"#,
+);
+
+testcase!(
+    test_type_statement_redeclaration_conformance,
+    r#"
+type BadTypeAlias14 = int
+type BadTypeAlias14 = int # E: Cannot redefine existing type alias `BadTypeAlias14`
+
+class C:
+    type T = int
+    type T = int # E: Cannot redefine existing type alias `T`
+"#,
+);
+
+testcase!(
+    test_redeclare_type_alias_as_non_type_alias,
+    r#"
+type BadTypeAlias14 = int
+BadTypeAlias14 = 0  # E: Cannot redefine existing type alias `BadTypeAlias14`
+"#,
+);
+
+testcase!(
+    test_redeclare_non_type_alias_as_type_alias,
+    r#"
+BadTypeAlias14 = 0
+type BadTypeAlias14 = int  # E: Cannot redefine existing name `BadTypeAlias14` as a type alias
+"#,
+);
+
+testcase!(
+    test_redeclare_legacy_type_alias,
+    r#"
+from typing import TypeAlias, Union
+
+X1: TypeAlias = int
+X1 = 0  # E: Cannot redefine existing type alias `X1`
+
+X2 = Union[int, str]
+X2 = 0  # E: Cannot redefine existing type alias `X2`
+    "#,
+);
+
+testcase!(
+    test_redeclare_typealiastype,
+    r#"
+from typing import TypeAliasType
+X = TypeAliasType("X", int)
+X = 0  # E: Cannot redefine existing type alias `X`
+    "#,
+);
+
+testcase!(
+    test_redeclare_type_alias_in_nested_scope_ok,
+    r#"
+type X = int
+class C:
+    type X = str
+    "#,
+);
+
+testcase!(
+    test_display_instance_vs_type,
+    r#"
+from typing import reveal_type, TypeVar
+
+X = int | str
+reveal_type([X])  # E: list[type[X]]
+def f(x: X):
+    reveal_type([x])  # E: list[X]
+
+T = TypeVar("T")
+X = list[T]
+reveal_type([X])  # E: list[type[X[T]]]
+    "#,
+);
+
+testcase!(
+    test_logger_alias,
+    r#"
+from typing import Any
+import logging
+
+LoggerLike = logging.Logger | logging.LoggerAdapter[Any]
+
+def f(x: LoggerLike | None = None): ...
+    "#,
+);
+
+testcase!(
+    test_annotated_type_alias,
+    r#"
+from typing import Annotated
+X = Annotated[int, "metadata"]
+Y = Annotated[X, "more metadata"]
+
+class C:
+    y: Y
+
+class D:
+    x: X
+    def __init__(self, c: C):
+        self.x = c.y
+"#,
+);
+
+testcase!(
+    test_chained_type_alias_substitution,
+    r#"
+from typing import TypeVar, TypeAlias, assert_type
+
+_T = TypeVar("_T")
+_U = TypeVar("_U")
+
+A: TypeAlias = list[_T]
+B: TypeAlias = A[_U]
+C: TypeAlias = B[int]
+
+def f1(x: A[int]) -> None:
+    assert_type(x, list[int])
+
+def f2(x: B[int]) -> None:
+    assert_type(x, list[int])
+
+def f3(x: C) -> None:
+    assert_type(x, list[int])
+    "#,
+);
+
+testcase!(
+    test_union_is_not_callable,
+    r#"
+from typing import TypeAlias
+X: TypeAlias = int | str
+X()  # E: Expected a callable
+    "#,
+);
