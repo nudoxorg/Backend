@@ -21,7 +21,6 @@ use core::num::NonZeroU32;
 const LEGACY_MAGIC: &[u8; 4] = b"PSC1";
 const MAGIC: &[u8; 4] = b"PSC2";
 const ROOT_KEY: [u8; 32] = [0x53; 32];
-const BASE_ROOT_KEY: [u8; 33] = [0x54; 33];
 
 /// Outcome retained independently from the selected semantic publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -493,21 +492,6 @@ impl Schema for ProductSemanticCaptureRootSchema {
     }
 }
 
-/// Auxiliary pointer schema that authenticates the capture relation selected
-/// immediately before a transition carrying capture changes.
-pub struct ProductSemanticCaptureBaseRootSchema;
-
-impl Schema for ProductSemanticCaptureBaseRootSchema {
-    const DOMAIN: u8 = 0x97;
-    const TYPE: u16 = 8;
-    const VERSION: u8 = 1;
-    type Value = [u8; 33];
-
-    fn encode(value: &Self::Value, output: &mut Vec<u8>) {
-        output.extend_from_slice(value);
-    }
-}
-
 /// Returns the canonical key for the selected target capture-root pointer.
 #[must_use]
 pub fn semantic_capture_root_pointer_key() -> ObjectKey<ProductSemanticCaptureRootSchema> {
@@ -524,50 +508,30 @@ pub fn semantic_capture_root_object(
     TypedObject::from_value(&key, root.as_bytes())
 }
 
-/// Creates the before-root witness retained beside a target capture pointer.
-/// A zero tag records that the base closure had no capture relation yet.
-#[must_use]
-pub fn semantic_capture_base_root_object(root: Option<[u8; 32]>) -> TypedObject {
-    let mut value = [0_u8; 33];
-    if let Some(root) = root {
-        value[0] = 1;
-        value[1..].copy_from_slice(&root);
-    }
-    let key = ObjectKey::<ProductSemanticCaptureBaseRootSchema>::from_value(&BASE_ROOT_KEY);
-    TypedObject::from_value(&key, &value)
-}
-
-/// Reads one canonical before-root witness from an admitted closure object.
+/// Reads one canonical selected capture-root pointer from an admitted closure.
 ///
 /// # Errors
-/// Rejects a foreign key/schema, malformed tag, reserved root, or bytes other
-/// than the canonical absent-root marker.
-pub fn semantic_capture_base_root_from_object(
-    object: &TypedObject,
-) -> Result<Option<[u8; 32]>, &'static str> {
-    let key = ObjectKey::<ProductSemanticCaptureBaseRootSchema>::from_value(&BASE_ROOT_KEY);
+/// Rejects a foreign key/schema, reserved root, or malformed width.
+pub fn semantic_capture_root_from_object(object: &TypedObject) -> Result<[u8; 32], &'static str> {
+    let key = semantic_capture_root_pointer_key();
     if object.schema()
         != SchemaIdentity::new(
-            ProductSemanticCaptureBaseRootSchema::DOMAIN,
-            ProductSemanticCaptureBaseRootSchema::TYPE,
-            ProductSemanticCaptureBaseRootSchema::VERSION,
+            ProductSemanticCaptureRootSchema::DOMAIN,
+            ProductSemanticCaptureRootSchema::TYPE,
+            ProductSemanticCaptureRootSchema::VERSION,
         )
         || object.key() != key.as_bytes()
     {
-        return Err("semantic capture before-root witness has a foreign identity");
+        return Err("semantic capture root pointer has a foreign identity");
     }
-    let bytes = object.bytes();
-    let (tag, root) = bytes
-        .split_first()
-        .ok_or("semantic capture before-root witness is truncated")?;
-    let root: [u8; 32] = root
+    let root: [u8; 32] = object
+        .bytes()
         .try_into()
-        .map_err(|_| "semantic capture before-root witness has an invalid width")?;
-    match *tag {
-        0 if root == [0; 32] => Ok(None),
-        1 if root != [0; 32] => Ok(Some(root)),
-        _ => Err("semantic capture before-root witness is noncanonical"),
+        .map_err(|_| "semantic capture root pointer has an invalid width")?;
+    if root.iter().all(|byte| *byte == 0) {
+        return Err("semantic capture root pointer is reserved");
     }
+    Ok(root)
 }
 
 /// Opens the auxiliary capture relation selected by this exact workspace

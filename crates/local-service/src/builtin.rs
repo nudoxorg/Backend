@@ -68,10 +68,11 @@ mod source_budget;
 #[path = "builtin/source_frontier.rs"]
 mod source_frontier;
 use profile::{
-    BuiltinAuthorityVerifier, BuiltinCaptureChange, BuiltinProfile, BuiltinSemanticChange,
-    BuiltinSemanticRelation, BuiltinSourceChange, BuiltinSourceFactsChange, BuiltinValidator,
-    BuiltinWorkspaceRelation, ProfileDescriptor, ProfileIds, builtin_dispatcher,
-    execution_manifest, execution_resources, product_dependency_manifest, profile_descriptor,
+    BuiltinAuthorityVerifier, BuiltinCaptureBasis, BuiltinCaptureChange, BuiltinProfile,
+    BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinSourceFactsChange,
+    BuiltinValidator, BuiltinWorkspaceRelation, ProfileDescriptor, ProfileIds, builtin_dispatcher,
+    capture_basis_for_snapshot, execution_manifest, execution_resources,
+    product_dependency_manifest, profile_descriptor,
 };
 pub use profile::{BuiltinIntent, BuiltinModel, BuiltinModelError};
 
@@ -407,7 +408,6 @@ pub(super) struct LazyClosureUpdate<'a> {
     pub(super) intent: &'a BuiltinIntent,
     pub(super) capture_objects: &'a [TypedObject],
     pub(super) capture_pointer: Option<&'a TypedObject>,
-    pub(super) capture_base_pointer: Option<&'a TypedObject>,
     pub(super) source_facts_objects: &'a [TypedObject],
     pub(super) source_facts_pointer: Option<&'a TypedObject>,
 }
@@ -432,9 +432,6 @@ fn transition_closure_lazy(
     ));
     objects.extend(update.capture_objects.iter().cloned());
     if let Some(pointer) = update.capture_pointer {
-        objects.push(pointer.clone());
-    }
-    if let Some(pointer) = update.capture_base_pointer {
         objects.push(pointer.clone());
     }
     objects.extend(update.source_facts_objects.iter().cloned());

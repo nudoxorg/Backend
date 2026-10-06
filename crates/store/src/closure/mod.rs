@@ -119,14 +119,20 @@ impl ObjectEdge {
 pub struct ClosureId(Hash);
 
 impl ClosureId {
+    /// Constructs an opaque closure identity from fixed-width persisted bytes.
+    ///
+    /// This does not admit closure contents. Use the identity only with a
+    /// reader such as [`crate::FileStore::read_workspace_root_closure`], which
+    /// verifies the content-addressed manifest before returning it.
+    #[must_use]
+    pub const fn from_bytes(bytes: Hash) -> Self {
+        Self(bytes)
+    }
+
     /// Returns the fixed-width closure identity bytes.
     #[must_use]
     pub const fn as_bytes(&self) -> &Hash {
         &self.0
-    }
-
-    pub(crate) const fn from_bytes(bytes: Hash) -> Self {
-        Self(bytes)
     }
 }
 

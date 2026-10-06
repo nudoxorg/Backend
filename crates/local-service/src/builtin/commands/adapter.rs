@@ -5,7 +5,8 @@ use super::super::registry::{
 use super::super::{
     BuiltinIntent, BuiltinModel, BuiltinModelError, BuiltinSemanticChange, BuiltinSemanticRelation,
     Command, CommandReply, ForgeGateway, ProductDaemon, RegistryGateway, WireCertificate,
-    WireClaim, WorkspaceModel, ingest, projection, publish_builtin_view,
+    WireClaim, WorkspaceModel, capture_basis_for_snapshot, ingest, projection,
+    publish_builtin_view,
 };
 use super::browse_lane::{BrowseLane, Terminal as BrowseTerminal};
 use super::diff::execute_semantic_diff;
@@ -3964,7 +3965,15 @@ pub(in crate::builtin) fn commit_builtin_intent(
     request_id: u64,
     intent: &BuiltinIntent,
 ) -> Result<(), BuiltinModelError> {
-    let request = BuiltinModel.request_id(intent);
+    let intent = if intent.has_capture_changes() && intent.capture_basis().is_none() {
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        intent
+            .clone()
+            .with_capture_basis(capture_basis_for_snapshot(&snapshot)?)?
+    } else {
+        intent.clone()
+    };
+    let request = BuiltinModel.request_id(&intent);
     let expected = daemon.engine().daemon().owner().head().expectation();
     let receiver = daemon
         .client()
@@ -3973,7 +3982,7 @@ pub(in crate::builtin) fn commit_builtin_intent(
             crate::Request::Commit {
                 request,
                 expected,
-                intent: intent.clone(),
+                intent,
             },
         )
         .map_err(|error| BuiltinModelError(format!("queue builtin intent: {error:?}")))?;
