@@ -136,19 +136,22 @@ trace state. A first-resize negative control and native cache/clip tests are
 source checkpoints; the joined runtime and every capture still need checking.
 
 The retained-local Graph/Source worker now uses an actual production owner and
-certified assembled rows. Its latest run reaches retained Graph state after
-owner withdrawal, but fails Settings return because Reader incorrectly requires
-an owner attachment for a local painted place. The repair separates actual
-local paint ownership from resource authority. Positive keyboard paths after
-reconnect prevent a blanket denial from satisfying its negative checks.
-The dependency Back tests independently expose a missing native focus owner;
-the current packet is still being audited for duplicate card/link Tab owners.
+certified assembled rows. Its full native production-composed proof passes at
+`37b376afdb`: owner withdrawal, later actual stale reply, Settings return,
+current/stale wheel input, pinch, drag, blur denial, reconnect, Find to an exact
+symbol, Graph Return, Code and retained Source typing. GPUI hover state was the
+wrong wheel/pinch admission predicate after keyboard use; scroll hit-testing
+repairs that input boundary. This is one exact fixture test, not installed-app
+acceptance. A later source checkpoint also covers attachment loss while the
+service registry remains present; that rerun remains pending.
+The dependency Back packet targets one native card owner; its joined native
+keyboard/accessibility checks still need running.
 
 Native hint actions now use continuously painted mount receipts, the original
 typed payload, exact visit and window-bound input leases. Tree requests now
 separate exact submitted identity from canonical physical invocation and
-refuse alias retargeting. These are uncompiled source packets, not completed
-native or cold-start acceptance. No candidate application has passed live GUI
+refuse alias retargeting. The joined desktop test compilation passes at `3e4d2c208f`;
+their native and cold-start acceptance remains pending. No candidate application has passed live GUI
 computer-use acceptance after this restart.
 
 ## Current compiler/index gates
@@ -157,17 +160,29 @@ Paged source facts and lazy verified reads are joined with bounded compiler
 source handles. The source-admission checkpoint `4f10910d5` passes eleven
 focused checks, including an 85 MiB structural scan/reopen and selected source
 materialization. This is not an 85 MiB semantic index, publication or GUI gate.
-The 128 MiB accepted compact-row ledger did not bound peak projection heap or
-complete-fact accumulation. Root-alias handoff, cooperative reopen cancellation
-and pre-accumulation accounting remain separate work.
+The original 128 MiB compact-row ledger did not account for complete fact
+pages. Root's `549428bda` joins root-alias/cancellation fencing, charges complete
+encoded file manifests/pages before coordinator output retention, and stripes
+workers across consecutive path positions. Contiguous chunks under ordered
+acknowledgements had serialized useful work. The new policy identity is v3;
+Rust test compilation passes, runtime regressions are pending. At most one
+unacknowledged result per worker is retained, but page construction and parser
+heap expansion happen before that charge: this is not a hard peak-RAM bound.
 
 The actual 900-function TSX cold-capture test exposed another overflow at
 `0c5ff1a8f`: attaching source identity after compaction changes both the header
 and every declaration's containment encoding, producing a row 14 bytes beyond
 capacity. `f6a5701bb` constructs and probes the final identified encoding and
 strictly refuses an oversized post-construction identity attachment. Its
-local-service test compilation passes; the exact cold-capture runtime rerun is
-pending. Full file facts remain in separate pages; this repair does not raise
+local-service test compilation passes. Its runtime reached committed source
+facts and terminal capture, then exposed a cold-only no-op rejection. The new
+`4d2d0d46c` shares live/recovery work counting and exact capture state derivation.
+Root review caught its initial immediate-before assumption: a valid Pending
+capture can survive unrelated commits. The follow-up retains a typed before
+capture-root witness and tests Pending A, unrelated B, terminal A, cold reopen.
+Its frozen metadata/runtime gate remains pending. Cold fact comparisons now
+use the parser's exact output, with absolute line reconstruction and all 900
+function docs/excerpts required. Full file facts remain in separate pages; this repair does not raise
 the canonical row limit or claim that compact summaries contain every fact.
 
 The TypeScript host checkpoint `4be9e6e323` passes Rust test compilation,
@@ -175,8 +190,8 @@ twenty-one host tests and five path tests. It embeds the relocatable driver,
 admits project-local TypeScript, binds ordinary config/import/library closure,
 and distinguishes discovered package roots from explicitly pinned module
 roots. The launcher no longer forces bundled checker, module, compiler or Node
-paths over project admission. Twenty-six launcher contracts pass at
-`dd57cd84ea`; the joined bundle has not been built or installed.
+paths over project admission. All 32 joined launcher/package contracts pass at
+`3e4d2c208f`; the joined bundle has not been built or installed.
 TSZ's immutable options and exact resolver bindings pass focused frontend
 checks, but full configured production dispatch, bounded shared queries and
 cross-file reference fidelity are still open. No native semantic fallback is
@@ -186,23 +201,34 @@ The typed compiler refusal producer `a02e2ac8b` passes Rust test compilation.
 Fragment kind and operands form one checked pair at construction and strict
 wire decoding; human detail uses closed phase/kind labels and preserves source
 paths. Projection admission errors propagate instead of silently erasing the
-failure. Its runtime package selector is pending. Shared CLI/MCP consumer
-`373cb11833` retains the exact bounded failure and getter-derived tool setup
-facts while excluding raw legacy detail. Consumer compilation and installed
-acceptance remain pending; this does not close `Fragment(Prepare)` itself.
+failure. The complete library unit suite at `1c764d19b` passes 282 tests, with one
+ignored measurement. Shared CLI/MCP consumer `373cb11833` retains the exact
+bounded failure and getter-derived tool setup facts while excluding raw legacy
+detail. Later shared presentation and MCP adapters pass 87 and 90 unit tests
+respectively at `bcd805338a`. Protocol strings, including valid serialized
+compiler JSON, remain unproven instead of being guessed into typed failures.
+Three additional real error adapters have a source-only follow-up awaiting
+checks. Installed acceptance remains pending; diagnostics alone do not close
+`Fragment(Prepare)` itself.
 
 Python `f8321dbeab` and `fd1d2c5382` pass five focused checks. A real empty
 Requests module compiles with admitted Pyrefly authority; class-source lookup
 retains the exact path/digest/kind. Full Requests publication and cold-owner
 retrieval are unproven, and an unrelated indexed-path punctuation test fails.
 Go `e4576da2dc` passes 36 protocol tests and focused Go closure checks, including
-child/descendant timeout cleanup. The full helper suite still fails its cgo
-promoted-method expectation; no complete Go product acceptance is claimed.
+child/descendant timeout cleanup. The corrected cgo fixture at `04fc616614` models the actual special `C.Row`
+package. Full helper suites pass with CGO disabled and enabled on Go 1.26.4.
+The previous fixture failure is preserved; complete Mux CLI/MCP publication
+and cold retrieval still await a matched candidate.
 
-Several Luna workers stopped with provider-capacity errors. Their dirty source
-and receipts are preserved. Root took over the ingest and compiler-fault
-repairs; the Sol CLI/MCP worker completed host corrections and owns consumer
-acceptance. Unfinished workers are not credited as running or passing.
+The Luna provider later recovered. Ingest, TSZ dispatch, projection and
+reference workers resumed from preserved source; unfinished work is not
+credited as passing. The exact full-context ProjectCheckerSession improves
+cross-file member resolution: alias/reexport and overload tests pass, as does
+Nest controller-to-service target resolution. A spec invocation still loses
+its MethodCall, and mapped/operator/depth/cycle/width projection regressions
+remain red. The unmetered session constructor is exposed only to dev tests;
+production requires the shared cancellation/deadline/work budget.
 
 Npm's post-integrity live run streamed 25 packages with zero failures and 31,288
 selected version rows. Ten npm tests, bounded-manifest and chunk-integrity
@@ -219,6 +245,26 @@ semantic fidelity.
 
 CLI/MCP parity by itself also does not establish semantic correctness: the
 recovered Nest and Requests runs agree on missing concrete reference edges.
+
+## Joined review checkpoint
+
+Root joined the coworker's `origin/canonical` at `6c98128cc5` into the recovery
+candidate; the original checkout and user Nix edit remain untouched. Draft
+Forgejo PR 24 is https://dev.nudox.org/git/Nudox/Backend/pulls/24. Desktop test
+compilation and 32 packaging contracts pass at `3e4d2c208f`. Subsequent typed
+consumer and native compositor packets are still undergoing joined checks.
+No new bundle, installed journey, exact Plural acceptance or 14-frame visual
+acceptance is claimed. The old released preview remains a confirmed semantic
+index failure despite its successful installer.
+
+The first six native vendor clip/cache checks passed three and failed three.
+Those three failures came from a test wrapper adding the child's layout origin
+twice; the corrected wrapper uses the same offset contract as production Flow
+without changing comparisons. A separate real defect was found: local deferred
+hitboxes used global prepaint order while their pixels used local paint order.
+The new seam prepares local motion at its native owner and adds actual cached
+occlusion/input-delivery regression. Joined test compilation passes; all seven
+native vendor checks and the 14 captured frames remain required.
 
 ## Build discipline
 
