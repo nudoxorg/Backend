@@ -283,6 +283,7 @@ pub fn execute() {}
         let items = [
             TreeItemInput {
                 name: b"Worker",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Record,
                 visibility: Visibility::Public,
                 authority: fixture_authority(ParentageAuthority::Root),
@@ -296,6 +297,7 @@ pub fn execute() {}
             },
             TreeItemInput {
                 name: b"name",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Field,
                 visibility: Visibility::Public,
                 authority: fixture_authority(fixture_identity(1)),
@@ -309,6 +311,7 @@ pub fn execute() {}
             },
             TreeItemInput {
                 name: b"Event",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Enum,
                 visibility: Visibility::Public,
                 authority: fixture_authority(ParentageAuthority::Root),
@@ -322,6 +325,7 @@ pub fn execute() {}
             },
             TreeItemInput {
                 name: b"Started",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Variant,
                 visibility: Visibility::Public,
                 authority: fixture_authority(fixture_identity(3)),
@@ -589,6 +593,7 @@ pub fn execute() {}
         let items = [
             TreeItemInput {
                 name: b"make",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: captured_planes(ParentageAuthority::Root),
@@ -602,6 +607,7 @@ pub fn execute() {}
             },
             TreeItemInput {
                 name: b"fresh",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: captured_planes(ParentageAuthority::Root),
@@ -615,6 +621,7 @@ pub fn execute() {}
             },
             TreeItemInput {
                 name: b"blind",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: fixture_authority(ParentageAuthority::Root),
@@ -662,6 +669,7 @@ pub fn execute() {}
         let items = [
             TreeItemInput {
                 name: b"Shape",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Trait,
                 visibility: Visibility::Public,
                 authority: documented,
@@ -675,6 +683,7 @@ pub fn execute() {}
             },
             TreeItemInput {
                 name: b"Area",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: EntityAuthorityFacts {
@@ -691,6 +700,7 @@ pub fn execute() {}
             },
             TreeItemInput {
                 name: b"Old",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: documented,

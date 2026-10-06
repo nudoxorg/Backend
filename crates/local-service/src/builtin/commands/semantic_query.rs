@@ -1255,6 +1255,7 @@ mod project_call_tests {
             };
             items.push(TreeItemInput {
                 name: ancestor.name,
+                anonymous_callable_anchor: None,
                 kind: ancestor.kind,
                 visibility: Visibility::Public,
                 authority: authority(parentage),
@@ -1277,6 +1278,7 @@ mod project_call_tests {
             .unwrap_or(ParentageAuthority::Root);
         items.push(TreeItemInput {
             name: callee_name,
+            anonymous_callable_anchor: None,
             kind: callee_kind,
             visibility: Visibility::Public,
             authority: authority(callee_parentage),
@@ -1292,6 +1294,7 @@ mod project_call_tests {
         versions.push(caller_version);
         items.push(TreeItemInput {
             name: caller_name,
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -1385,6 +1388,7 @@ mod project_call_tests {
         };
         let items = [TreeItemInput {
             name: item_name,
+            anonymous_callable_anchor: None,
             kind: item_kind,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -1528,6 +1532,7 @@ mod project_call_tests {
         };
         let items = [TreeItemInput {
             name: item_name,
+            anonymous_callable_anchor: None,
             kind: item_kind,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -1622,6 +1627,7 @@ mod project_call_tests {
         let items = [
             TreeItemInput {
                 name: b"caller",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -1635,6 +1641,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"callee",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -3277,6 +3284,7 @@ mod project_call_tests {
         };
         let items = [TreeItemInput {
             name: caller_name,
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -3655,6 +3663,7 @@ mod project_call_tests {
         let items = [
             TreeItemInput {
                 name: b"Workout",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Record,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -3668,6 +3677,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"SetNote",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Bound(workout_version.identity())),
@@ -3730,6 +3740,7 @@ mod project_call_tests {
         let items = [
             TreeItemInput {
                 name: b"Workout",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Record,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -3743,6 +3754,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"SetNote",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Bound(workout_version.identity())),
@@ -3756,6 +3768,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"Session",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Record,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -3769,6 +3782,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"SetNote",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Bound(session_version.identity())),
@@ -3830,6 +3844,7 @@ mod project_call_tests {
         let drive_version = fixture_version(drive_version_byte);
         let items = [TreeItemInput {
             name: b"Drive",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -7087,6 +7102,7 @@ mod project_call_tests {
         };
         let items = [TreeItemInput {
             name: b"drive",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -8758,6 +8774,7 @@ mod project_call_tests {
         let items = [
             TreeItemInput {
                 name: b"caller",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -8771,6 +8788,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"callee",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -10176,6 +10194,7 @@ mod project_call_tests {
         let items = [
             TreeItemInput {
                 name: b"Demo",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Module,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -10189,6 +10208,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"WorkoutService",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Record,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Bound(versions[0].identity())),
@@ -10202,6 +10222,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"SetNote",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Bound(versions[1].identity())),
@@ -10255,6 +10276,7 @@ mod project_call_tests {
         };
         let items = [TreeItemInput {
             name: b"Sync",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -10777,6 +10799,7 @@ mod references_tests {
         let items = [
             TreeItemInput {
                 name: b"Caller",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -10790,6 +10813,7 @@ mod references_tests {
             },
             TreeItemInput {
                 name: b"Callee",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),

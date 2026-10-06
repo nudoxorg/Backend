@@ -81,6 +81,7 @@ fn project_module_item_image(
     };
     let items = [TreeItemInput {
         name: item_name,
+        anonymous_callable_anchor: None,
         kind: item_kind,
         visibility: Visibility::Public,
         authority: authority(ParentageAuthority::Root),
@@ -139,6 +140,7 @@ fn project_module_items_image(
         versions.push(version);
         tree_items.push(TreeItemInput {
             name,
+            anonymous_callable_anchor: None,
             kind: *kind,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -196,6 +198,7 @@ fn project_package_field_read_image(
     };
     let items = [TreeItemInput {
         name: caller_name,
+        anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility: Visibility::Public,
         authority: authority(ParentageAuthority::Root),
@@ -297,6 +300,7 @@ fn project_namespace_field_image(
     let items = [
         TreeItemInput {
             name: b"WorkoutService",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Record,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -310,6 +314,7 @@ fn project_namespace_field_image(
         },
         TreeItemInput {
             name: field_name,
+            anonymous_callable_anchor: None,
             kind: ItemKind::Field,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Bound(record_version.identity())),
@@ -323,6 +328,7 @@ fn project_namespace_field_image(
         },
         TreeItemInput {
             name: caller_name,
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),

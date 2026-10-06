@@ -1462,6 +1462,7 @@ mod tests {
         }];
         let items = [TreeItemInput {
             name: b"Worker",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Record,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {

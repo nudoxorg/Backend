@@ -76,6 +76,7 @@ fn project_item_image(
     };
     let items = [TreeItemInput {
         name: item_name,
+        anonymous_callable_anchor: None,
         kind: item_kind,
         visibility: Visibility::Public,
         authority: authority(ParentageAuthority::Root),
