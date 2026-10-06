@@ -299,6 +299,39 @@ fn staged_large_parser_facts_use_small_queue_exact_shared_cas_and_cold_replay() 
         inline.encode()
     );
     assert_eq!(first.encode().len(), 180);
+    #[cfg(unix)]
+    {
+        let orphan_label = "pkg:npm/staged-unselected-orphan@1.0.0";
+        let orphan_bytes = BuiltinIntent::add(PackageKey::from_value(orphan_label), orphan_label)
+            .unwrap()
+            .encode();
+        let orphan = backend_store::TypedObject::from_value(
+            &backend_version::ObjectKey::<BuiltinIntentSchema>::from_value(&orphan_bytes),
+            &orphan_bytes,
+        );
+        let store = before.durable_store().unwrap();
+        store.write_object(&orphan).unwrap();
+        let collector = backend_store::FileStore::open(store.root(), 64 * 1024 * 1024).unwrap();
+        let (completed, result) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            completed
+                .send(collector.collect_garbage(
+                    &backend_store::GcRoots::new(),
+                    backend_store::GcLimits::default(),
+                ))
+                .unwrap();
+        });
+        result
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("live staged admission does not hold a global GC barrier")
+            .expect("independent normal GC retains exact leased stage pages");
+        worker.join().unwrap();
+        assert!(!store.contains_object(orphan.id()).unwrap());
+        assert_eq!(
+            first_evidence.hydrate(Some(&before)).unwrap().encode(),
+            inline.encode()
+        );
+    }
     eprintln!(
         "staged queue bytes={} pointer bytes={} exact members={}",
         first.queue_bytes(),
