@@ -106,6 +106,48 @@ fn missing_reachable_object_fails_closed_before_sweep() {
 }
 
 #[test]
+fn direct_object_mark_pages_continue_at_the_existing_byte_limit() {
+    struct PageSchema;
+    impl Schema for PageSchema {
+        const DOMAIN: u8 = 0xf1;
+        const TYPE: u16 = 2;
+        type Value = Vec<u8>;
+        fn encode(value: &Self::Value, output: &mut Vec<u8>) {
+            output.extend_from_slice(value);
+        }
+    }
+    let (store, path) = temp_store("direct-object-byte-pages");
+    let mut roots = GcRoots::new();
+    let live = (0..3)
+        .map(|byte| {
+            let value = vec![byte; 40 * 1024];
+            let object = super::super::super::TypedObject::from_value(
+                &ObjectKey::<PageSchema>::from_value(&value),
+                &value,
+            );
+            store.write_object(&object).expect("write page");
+            roots.add(GcRoot::Object(object.id()));
+            object
+        })
+        .collect::<Vec<_>>();
+    let orphan = object(99);
+    store.write_object(&orphan).expect("write orphan");
+    let limits = GcLimits {
+        mark_page_bytes: 64 * 1024,
+        ..GcLimits::default()
+    };
+    let report = store
+        .collect_garbage(&roots, limits)
+        .expect("bounded mark continuation");
+    assert_eq!(report.swept_items, 1);
+    for object in live {
+        assert_eq!(store.read_object(object.id()).unwrap(), object);
+    }
+    assert!(!store.contains_object(orphan.id()).unwrap());
+    let _ = fs::remove_dir_all(path);
+}
+
+#[test]
 fn remote_residency_requires_scoped_verifier_and_keeps_unlisted_members() {
     let (store, path) = temp_store("remote-residency-allowlist");
     let remote = object(101);
