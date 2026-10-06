@@ -526,11 +526,12 @@ fn selected_symbol_by_name(
         .iter()
         .map(|row| row.label.as_str())
         .collect::<Vec<_>>();
+    let semantic_suffix = format!("::{name}");
     snapshot
         .root
         .rows()
         .iter()
-        .find(|row| row.label == name)
+        .find(|row| row.label == name || row.label.ends_with(&semantic_suffix))
         .and_then(|row| match row.id {
             RowId::Symbol(symbol) => Some(symbol),
             RowId::Package(_) | RowId::Object(_) => None,
