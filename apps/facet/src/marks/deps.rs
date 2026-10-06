@@ -27,7 +27,7 @@ use crate::probe;
 use crate::theme::ActiveFacet;
 use crate::tokens::motion::GLIDE;
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    AnyElement, App, ClickEvent, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
     SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use std::cell::Cell;
@@ -242,6 +242,7 @@ pub struct DepLink {
     parent: SharedString,
     measure: Measure,
     on_open: Option<Open>,
+    focus: Option<FocusHandle>,
     sheet: Option<u64>,
 }
 
@@ -254,11 +255,19 @@ pub fn dep_link(id: impl Into<ElementId>, facts: DepFacts, parent: impl Into<Sha
         parent: parent.into(),
         measure: *measure,
         on_open: None,
+        focus: None,
         sheet: None,
     }
 }
 
 impl DepLink {
+    /// The host's existing native target, shared with this painted link.
+    #[must_use]
+    pub fn focus_handle(mut self, focus: FocusHandle) -> Self {
+        self.focus = Some(focus);
+        self
+    }
+
     /// Where following the link goes: called with its target.
     #[must_use]
     pub fn on_open(mut self, open: impl Fn(&SharedString, &mut Window, &mut App) + 'static) -> Self {
@@ -336,18 +345,25 @@ impl RenderOnce for DepLink {
         // tall, its words centred in it.
         let link = div()
             .id(ElementId::NamedChild(Arc::new(self.id.clone()), "link".into()))
+            .role(gpui::Role::Link)
+            .aria_label(format!("Open dependency {}", self.facts.name))
             .flex()
             .items_center()
             .min_h(px(24.0 * s))
             .gap(px(7.0 * s))
             .cursor_pointer()
             .child(diamond)
-            .child(name)
-            .on_click(move |_: &ClickEvent, window, cx| {
-                if let Some(open) = &open {
-                    open(&click_target, window, cx);
-                }
-            });
+            .child(name);
+        let activate_link = move |window: &mut Window, cx: &mut App| {
+            if let Some(open) = &open {
+                open(&click_target, window, cx);
+            }
+        };
+        let link = if let Some(focus) = self.focus {
+            crate::controls::button::native_button(link, &focus, activate_link)
+        } else {
+            link.on_click(move |_: &ClickEvent, window, cx| activate_link(window, cx))
+        };
         let activate: Option<Activate> = self.on_open.clone().map(|open| {
             let target = target.clone();
             Rc::new(move |window: &mut Window, cx: &mut App| open(&target, window, cx)) as Activate
@@ -456,6 +472,7 @@ pub struct DepLine {
     open_look: bool,
     card_look: Vec<(SharedString, u64)>,
     wrap: Option<Rc<dyn Fn(&DepFacts, AnyElement) -> AnyElement>>,
+    native_focus: Option<Rc<dyn Fn(&DepFacts, &mut App) -> Option<FocusHandle>>>,
 }
 
 /// The dependency line of `parent` over `deps`, as wide as `measure`.
@@ -470,10 +487,22 @@ pub fn dep_line(id: impl Into<ElementId>, deps: impl Into<Rc<[DepFacts]>>, paren
         open_look: false,
         card_look: Vec::new(),
         wrap: None,
+        native_focus: None,
     }
 }
 
 impl DepLine {
+    /// Binds only the dependency links actually mounted by this line to the
+    /// host's native targets. Unresolved names never receive a focus owner.
+    #[must_use]
+    pub fn native_focus(
+        mut self,
+        focus: impl Fn(&DepFacts, &mut App) -> Option<FocusHandle> + 'static,
+    ) -> Self {
+        self.native_focus = Some(Rc::new(focus));
+        self
+    }
+
     /// The host's hook on each link that goes somewhere (one with a
     /// target): it gets the dependency and its link, so it can make the
     /// link a keyboard target. A name with no place is not a door.
@@ -618,6 +647,11 @@ impl RenderOnce for DepLine {
                 self.parent.clone(),
                 &measure,
             );
+            if dep.target.is_some()
+                && let Some(focus) = self.native_focus.as_ref().and_then(|focus| focus(dep, cx))
+            {
+                link = link.focus_handle(focus);
+            }
             if let Some(open) = self.on_open.clone() {
                 link = link.on_open(move |target, window, cx| open(target, window, cx));
             }
