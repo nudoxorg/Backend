@@ -122,6 +122,44 @@ pub(super) fn descriptor_matches_base(
 }
 
 impl FileStore {
+    /// Reopens the exact selected publication immediately before the current
+    /// selected head. The current publication's authenticated journal
+    /// descriptor binds the requested base root and generation; this method
+    /// then replays the hash-chained journal prefix to recover that base's
+    /// exact closure descriptor.
+    ///
+    /// The scan uses constant memory and stops at the requested generation.
+    /// It is intended for cold persisted-transition admission, not a hot
+    /// publication path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Corrupt`] when the request is not the exact base
+    /// of the selected publication or the journal prefix is malformed.
+    pub fn workspace_base_publication(
+        &self,
+        base_root: Hash,
+        base_generation: u64,
+    ) -> Result<Option<SelectedHead>, StoreError> {
+        let _process_lock = self.acquire_process_lock()?;
+        let current = self.read_state()?.selected.ok_or(StoreError::Corrupt)?;
+        let descriptor = current.descriptor();
+        let binding = descriptor.workspace().ok_or(StoreError::Corrupt)?;
+        if binding.root() != &descriptor.target() || binding.closure() != descriptor.closure() {
+            return Err(StoreError::Corrupt);
+        }
+        if descriptor.base() != Some(base_root) || descriptor.base_generation() != base_generation {
+            return Err(StoreError::Corrupt);
+        }
+        if base_generation == 0 {
+            return Ok(None);
+        }
+
+        let publication =
+            find_workspace_publication(&self.root.join("journal"), base_root, base_generation)?;
+        publication.ok_or(StoreError::Corrupt).map(Some)
+    }
+
     pub(super) fn read_state(&self) -> Result<JournalState, StoreError> {
         super::objects::scavenge_store_temps(&self.root)?;
         let head_file = head::read_head(&self.root.join("HEAD"))?;
@@ -262,6 +300,47 @@ fn scan_journal(path: &Path, length: u64) -> Result<JournalTail, StoreError> {
         Err(error) => return Err(io_error(&error)),
     };
     validate_stream(path, &mut file, 0, length, 1, [0; 32], None)
+}
+
+fn find_workspace_publication(
+    path: &Path,
+    workspace_root: Hash,
+    generation: u64,
+) -> Result<Option<SelectedHead>, StoreError> {
+    let length = journal_length(path)?;
+    let mut file = File::open(path).map_err(|error| io_error(&error))?;
+    let mut offset = 0_u64;
+    let mut expected_sequence = 1_u64;
+    let mut previous = [0_u8; 32];
+    let mut selected = None;
+    let record_bytes = u64::try_from(JOURNAL_RECORD_BYTES).map_err(|_| StoreError::Bounds)?;
+    while offset < length {
+        let frame = journal::read_record(&mut file)?;
+        if frame.sequence != expected_sequence || frame.previous != previous {
+            return Err(StoreError::Corrupt);
+        }
+        selected = apply_frame(path, &frame, selected.as_ref())?;
+        if frame.tag == PUBLISHED_TAG
+            && frame.payload.target == workspace_root
+            && frame.payload.target_generation == generation
+        {
+            let binding = frame.payload.workspace.ok_or(StoreError::Corrupt)?;
+            if binding.root() != &workspace_root || binding.closure() != frame.payload.closure {
+                return Err(StoreError::Corrupt);
+            }
+            return Ok(Some(SelectedHead {
+                journal_sequence: frame.sequence,
+                descriptor: frame.payload,
+            }));
+        }
+        previous = frame.checksum;
+        expected_sequence = expected_sequence.checked_add(1).ok_or(StoreError::Bounds)?;
+        offset = offset.checked_add(record_bytes).ok_or(StoreError::Bounds)?;
+    }
+    if offset != length {
+        return Err(StoreError::Corrupt);
+    }
+    Ok(None)
 }
 
 fn extend_journal(

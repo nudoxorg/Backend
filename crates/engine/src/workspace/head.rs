@@ -5,7 +5,9 @@ use super::owner::WorkspaceError;
 use super::transition::{PreparedTransition, TransactionId, TransitionWork};
 use crate::journal::ChainHash;
 use crate::schema::{RecordId, WorkspaceLog};
-use backend_store::{FileStore, ObjectId, RelationAdmissionRegistry, WorkspaceClosure};
+use backend_store::{
+    FileStore, ObjectId, RelationAdmissionRegistry, SelectedHead, WorkspaceClosure,
+};
 use backend_version::{
     CheckedCommit, CommitProvenance, ObjectClosure as VersionObjectClosure, SchemaIdentity,
     WorkspaceManifest, WorkspaceRoot, commit_capability, commit_checked,
@@ -134,6 +136,28 @@ impl WorkspaceSnapshot {
     #[must_use]
     pub fn sequence(&self) -> u64 {
         self.state.sequence
+    }
+
+    /// Returns the authenticated publication selected immediately before
+    /// this snapshot, when it has a durable predecessor.
+    ///
+    /// The store verifies that this snapshot is still the selected target and
+    /// resolves its exact base descriptor through the publication journal.
+    /// This is intended for cold persisted-transition admission; it scans a
+    /// bounded journal prefix with constant memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this snapshot has no attached durable store, is no
+    /// longer the selected head, or its publication history is corrupt.
+    pub fn selected_base_publication(&self) -> Result<Option<SelectedHead>, WorkspaceError> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or(WorkspaceError::Corrupt("snapshot has no durable store"))?;
+        store
+            .workspace_base_publication(*self.root().as_bytes(), self.sequence())
+            .map_err(WorkspaceError::store)
     }
 
     /// Returns the owner epoch that selected this snapshot.

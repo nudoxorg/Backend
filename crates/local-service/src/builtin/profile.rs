@@ -497,7 +497,7 @@ pub(super) struct BuiltinCaptureBasis {
 }
 
 impl BuiltinCaptureBasis {
-    fn new(
+    pub(super) fn new(
         workspace_root: [u8; 32],
         workspace_sequence: u64,
         closure_id: [u8; 32],
@@ -522,6 +522,18 @@ impl BuiltinCaptureBasis {
 
     pub(super) const fn capture_root(self) -> Option<[u8; 32]> {
         self.capture_root
+    }
+
+    pub(super) const fn workspace_root(self) -> [u8; 32] {
+        self.workspace_root
+    }
+
+    pub(super) const fn workspace_sequence(self) -> u64 {
+        self.workspace_sequence
+    }
+
+    pub(super) const fn closure_id(self) -> [u8; 32] {
+        self.closure_id
     }
 }
 
@@ -594,6 +606,11 @@ impl BuiltinIntent {
     const CAPTURE_VERSION: u8 = 6;
     const FACTS_VERSION: u8 = 7;
     const TYPED_FAILURE_VERSION: u8 = 8;
+    /// First format that binds capture before-rows to the authenticated base
+    /// publication closure. Older capture intents remain decodable for
+    /// diagnostics, but cannot be newly published or cold-replayed because
+    /// their self-contained before-root receipt does not identify the selected
+    /// base descriptor.
     const CAPTURE_BASIS_VERSION: u8 = 9;
     const ADD: u8 = 1;
     const REMOVE: u8 = 2;
@@ -2475,7 +2492,10 @@ fn prepare_capture_relation_update(
         .as_ref()
         .map(|relation| *relation.root().as_bytes());
     let basis = intent.capture_basis().ok_or_else(|| {
-        BuiltinModelError("capture intent has no selected before-state basis".to_owned())
+        BuiltinModelError(format!(
+            "capture intent BPI{} predates authenticated base-closure binding; BPI9 is required for publication",
+            intent.encoding_version
+        ))
     })?;
     validate_capture_basis_against_snapshot(base, basis, selected_capture_root)?;
     let source_relation = if intent
@@ -3266,6 +3286,19 @@ fn selected_capture_root_from_objects(
         .map_err(|error| BuiltinModelError(error.to_owned()))
 }
 
+pub(super) fn validate_capture_basis_closure_id(
+    basis: BuiltinCaptureBasis,
+    selected_closure_id: backend_store::ClosureId,
+) -> Result<(), BuiltinModelError> {
+    if basis.closure_id != *selected_closure_id.as_bytes() {
+        return Err(BuiltinModelError(
+            "capture basis closure differs from the authenticated selected base publication"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_persisted_capture_changes(
     persisted: &backend_engine::PersistedTransition,
     store: &backend_engine::FileStore,
@@ -3315,7 +3348,10 @@ fn validate_persisted_capture_changes(
         BuiltinModelError("persisted capture target sequence has no base".to_owned())
     })?;
     let basis = intent.capture_basis().ok_or_else(|| {
-        BuiltinModelError("persisted capture update has no selected base basis".to_owned())
+        BuiltinModelError(format!(
+            "persisted capture intent BPI{} predates authenticated base-closure binding; BPI9 is required for cold replay",
+            intent.encoding_version
+        ))
     })?;
     if basis.workspace_root != *base_manifest.root().as_bytes()
         || basis.workspace_sequence != base_sequence
@@ -3325,8 +3361,41 @@ fn validate_persisted_capture_changes(
                 .to_owned(),
         ));
     }
+    let selected_base_closure_id = if base_sequence == 0 {
+        let genesis = super::genesis()?;
+        if *genesis.root().as_bytes() != basis.workspace_root {
+            return Err(BuiltinModelError(
+                "persisted capture base does not match the checked genesis workspace".to_owned(),
+            ));
+        }
+        *genesis.closure().binding().closure().as_bytes()
+    } else {
+        store
+            .workspace_base_publication(basis.workspace_root, basis.workspace_sequence)
+            .map_err(|error| {
+                BuiltinModelError(format!(
+                    "resolve authenticated persisted capture base publication: {error:?}"
+                ))
+            })?
+            .ok_or_else(|| {
+                BuiltinModelError(
+                    "persisted capture base publication is absent from the selected journal"
+                        .to_owned(),
+                )
+            })?
+            .descriptor()
+            .closure()
+            .as_bytes()
+            .to_owned()
+    };
+    validate_capture_basis_closure_id(
+        basis,
+        backend_store::ClosureId::from_bytes(selected_base_closure_id),
+    )?;
     let base_closure = store
-        .read_workspace_root_closure(backend_store::ClosureId::from_bytes(basis.closure_id))
+        .read_workspace_root_closure(backend_store::ClosureId::from_bytes(
+            selected_base_closure_id,
+        ))
         .map_err(|error| {
             BuiltinModelError(format!(
                 "read exact persisted capture base closure: {error:?}"

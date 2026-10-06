@@ -60,6 +60,42 @@ pub(super) fn open_daemon(workspace: &Path) -> super::super::ProductDaemon {
     .expect("open product daemon")
 }
 
+fn commit_without_capture_upgrade(
+    daemon: &mut super::super::ProductDaemon,
+    request_id: u64,
+    intent: &BuiltinIntent,
+) -> Result<(), BuiltinModelError> {
+    let request = BuiltinModel.request_id(intent);
+    let expected = daemon.engine().daemon().owner().head().expectation();
+    let receiver = daemon
+        .client()
+        .request(
+            request_id,
+            crate::Request::Commit {
+                request,
+                expected,
+                intent: intent.clone(),
+            },
+        )
+        .map_err(|error| BuiltinModelError(format!("queue legacy capture intent: {error:?}")))?;
+    if !daemon.serve_one() {
+        return Err(BuiltinModelError(
+            "legacy capture intent owner did not make progress".to_owned(),
+        ));
+    }
+    match crate::service::wait_for_daemon_reply(daemon, &receiver)
+        .map_err(|error| BuiltinModelError(error.to_string()))?
+    {
+        backend_engine::DaemonReply::Commit(Ok(_)) => Ok(()),
+        backend_engine::DaemonReply::Commit(Err(error)) => {
+            Err(BuiltinModelError(error.to_string()))
+        }
+        _ => Err(BuiltinModelError(
+            "legacy capture intent was sent to the wrong owner lane".to_owned(),
+        )),
+    }
+}
+
 fn file_frontier(count: usize, package: backend_engine::PackageKey) -> Vec<TestFile> {
     let mut files = (0..count)
         .map(|index| {
@@ -761,10 +797,24 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         }],
     )
     .expect("source plus pending capture intent")
-    .with_source_facts(source_facts_changes)
+    .with_source_facts(source_facts_changes.clone())
     .expect("atomic complete facts update");
 
     let mut daemon = open_daemon(temp.0.path());
+    let initial_basis = capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
+        .expect("exact selected genesis basis");
+    let intent = intent
+        .with_capture_basis(initial_basis)
+        .expect("bind source-first capture to exact selected genesis closure");
+    assert_eq!(intent.encode()[4], 9, "capture intent uses BPI9");
+    let roundtrip = BuiltinIntent::decode(&intent.encode()).expect("BPI9 roundtrip");
+    assert_eq!(roundtrip.capture_basis(), Some(initial_basis));
+    assert_eq!(roundtrip.encode()[4], 9);
+    let recomposed = roundtrip
+        .with_source_facts(source_facts_changes.clone())
+        .expect("source-facts composition preserves authenticated basis");
+    assert_eq!(recomposed.encode()[4], 9);
+    assert_eq!(recomposed.capture_basis(), Some(initial_basis));
     super::super::commands::commit_builtin_intent(&mut daemon, 1, &intent)
         .expect("atomically commit structural source facts and pending capture");
     let source_capture_root = daemon.engine().daemon().owner().head().root();
@@ -784,8 +834,6 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
             .expect("exact selected basis before unrelated capture");
     let unrelated_label = "pkg:npm/intervening-project@1.0.0";
     let unrelated_package = backend_engine::PackageKey::from_value(unrelated_label);
-    let unrelated_project = BuiltinPackageRecord::project(unrelated_label, [0xB2; 32], Vec::new())
-        .expect("independent project source row");
     let unrelated_reference = backend_engine::PackageReference::parse(unrelated_label.to_owned())
         .expect("independent capture package reference");
     let unrelated_coordinate =
@@ -801,10 +849,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     let unrelated_intent = BuiltinIntent::index_with_capture(
         unrelated_package,
         unrelated_label,
-        vec![BuiltinSourceChange {
-            key: unrelated_package.to_bytes(),
-            after: Some(unrelated_project),
-        }],
+        Vec::new(),
         Vec::new(),
         vec![BuiltinCaptureChange {
             key: unrelated_capture_key.clone(),
@@ -829,6 +874,80 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         basis_before_unrelated.capture_root(),
         basis_after_unrelated.capture_root(),
         "the unrelated capture changes the selected capture relation root"
+    );
+    assert_eq!(
+        basis_before_unrelated.workspace_root(),
+        basis_after_unrelated.workspace_root(),
+        "capture-only commits preserve the workspace manifest root"
+    );
+    assert_ne!(
+        basis_before_unrelated.workspace_sequence(),
+        basis_after_unrelated.workspace_sequence(),
+        "capture-only commits still advance the selected sequence"
+    );
+    let legacy_v6 = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        Vec::new(),
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            key: capture_key.clone(),
+            expected: Some(pending_capture.clone()),
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Unavailable {
+                reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+            },
+            compiler_failure: None,
+        }],
+    )
+    .expect("decodeable legacy BPI6 capture intent");
+    let legacy_v7 = legacy_v6
+        .clone()
+        .with_source_facts(Vec::new())
+        .expect("decodeable legacy BPI7 capture intent");
+    let legacy_v8 = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        Vec::new(),
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            key: capture_key.clone(),
+            expected: Some(pending_capture.clone()),
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Unavailable {
+                reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+            },
+            compiler_failure: Some(failure.clone()),
+        }],
+    )
+    .expect("decodeable legacy BPI8 typed capture refusal");
+    let before_legacy = daemon.engine().daemon().owner().head().root();
+    for (offset, (version, legacy_intent)) in [(6, legacy_v6), (7, legacy_v7), (8, legacy_v8)]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(legacy_intent.encode()[4], version);
+        let request_id = 3 + u64::try_from(offset).expect("legacy request offset");
+        let legacy_error = commit_without_capture_upgrade(&mut daemon, request_id, &legacy_intent)
+            .expect_err("legacy capture cannot publish without an authenticated base closure");
+        assert!(
+            legacy_error.to_string().contains(&format!("BPI{version}"))
+                && legacy_error.to_string().contains("BPI9 is required"),
+            "legacy capture refusal states the compatibility boundary: {legacy_error}"
+        );
+    }
+    assert_eq!(
+        daemon.engine().daemon().owner().head().root(),
+        before_legacy
+    );
+    assert_eq!(
+        semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+            .expect("selected legacy refusal base relation")
+            .expect("selected capture relation")
+            .lookup(&capture_key)
+            .expect("selected legacy refusal base receipt"),
+        Some(pending_capture.clone()),
+        "legacy refusal preserves the selected source receipt"
     );
     let forged_before = ProductSemanticCaptureRecord::new(
         pending_capture.operation_key().copied(),
@@ -862,7 +981,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     .expect("substitute a valid earlier selected capture root");
     let before_forged = daemon.engine().daemon().owner().head().root();
     let forged_error =
-        super::super::commands::commit_builtin_intent(&mut daemon, 3, &forged_intent)
+        super::super::commands::commit_builtin_intent(&mut daemon, 6, &forged_intent)
             .expect_err("a forged expected receipt cannot replace the selected Pending row");
     assert!(
         forged_error.to_string().contains("before-state basis"),
@@ -889,8 +1008,45 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         }],
     )
     .expect("typed terminal semantic refusal intent");
-    super::super::commands::commit_builtin_intent(&mut daemon, 4, &terminal_intent)
+    super::super::commands::commit_builtin_intent(&mut daemon, 7, &terminal_intent)
         .expect("commit terminal typed refusal against its exact pending capture");
+    let terminal_snapshot = daemon.engine().daemon().owner().snapshot();
+    let selected_base = terminal_snapshot
+        .selected_base_publication()
+        .expect("resolve exact selected base publication")
+        .expect("terminal capture has a durable base publication")
+        .descriptor();
+    assert_eq!(
+        selected_base.base(),
+        Some(basis_after_unrelated.workspace_root()),
+        "the authenticated descriptor binds the basis workspace root"
+    );
+    assert_eq!(
+        selected_base.base_generation(),
+        basis_after_unrelated.workspace_sequence(),
+        "the authenticated descriptor binds the basis sequence"
+    );
+    assert_eq!(
+        *selected_base.closure().as_bytes(),
+        basis_after_unrelated.closure_id(),
+        "the journal selects the actual current base closure"
+    );
+    let hybrid_basis = BuiltinCaptureBasis::new(
+        basis_after_unrelated.workspace_root(),
+        basis_after_unrelated.workspace_sequence(),
+        basis_before_unrelated.closure_id(),
+        basis_before_unrelated.capture_root(),
+    )
+    .expect("well-shaped hybrid basis with current root/sequence and old closure");
+    let hybrid_error =
+        super::profile::validate_capture_basis_closure_id(hybrid_basis, selected_base.closure())
+            .expect_err("a valid alternate old closure is not the selected base descriptor");
+    assert!(
+        hybrid_error
+            .to_string()
+            .contains("authenticated selected base publication"),
+        "same-manifest/current-sequence basis rejects an old authenticated closure: {hybrid_error}"
+    );
     let selected_root = daemon.engine().daemon().owner().head().root();
     drop(daemon);
 
