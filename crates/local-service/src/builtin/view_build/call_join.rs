@@ -1158,7 +1158,16 @@ pub(crate) fn join_project_call(
     ) {
         return Ok(None);
     }
+    // Native TSZ calls carry a program- and declaration-bound source
+    // coordinate, so admit that proof before the package/namespace retargets.
+    // A malformed or stale TSZ coordinate deliberately does not fall back to
+    // display-name matching: neither of the other retargeters accepts its
+    // `Universe` origin.
     let identity = if let Some(identity) =
+        foreign_tsz_source_retarget(image, external, ItemKind::Function, index)?
+    {
+        Some(identity)
+    } else if let Some(identity) =
         foreign_package_call_retarget(image, external, caller_path, project_paths, index)?
     {
         Some(identity)
@@ -1188,19 +1197,22 @@ pub(crate) fn foreign_display_name(
 
 #[cfg(test)]
 mod tsz_source_coordinate_tests {
-    use super::ProjectCallableIndex;
+    use super::{
+        ProjectCallableIndex, TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, join_project_call,
+        join_project_field, typescript_program_identity,
+    };
     use backend_semantic::ir::{
         BorrowedTree, CompileRecipeFact, Confidence, CorePayloadHash, DeclarationFamilyId,
         DeclarationIdentity, EntityAuthorityFacts, EntityVersion, ExternalDeclarationIdentity,
         ExternalTarget, FactAvailability, ForeignDeclarationId, ForeignExternalTarget,
         ForeignTargetOrigin, IrBuilder, ItemKind, LanguageProfile, LinkKind, NativeTool,
-        OccurrenceAuthorityFacts, PackageUrl, ParentageAuthority, SourceIdentity, SourceSpan,
-        Stage, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeScriptSource,
-        TypeScriptSourceCoordinate, VariantAvailability, VariantFingerprint, Visibility,
-        encode_full_semantic_image, full_semantic_image_len,
+        OccurrenceAuthorityFacts, PackageUrl, ParentageAuthority, SemanticImageView,
+        SourceIdentity, SourceSpan, Stage, TreeEntityId, TreeItemInput, TreeLinkInput,
+        TreeLinkTarget, TypeScriptSource, TypeScriptSourceCoordinate, VariantAvailability,
+        VariantFingerprint, Visibility, encode_full_semantic_image, full_semantic_image_len,
     };
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn identity(bytes: u8) -> DeclarationIdentity {
         DeclarationIdentity {
@@ -1251,7 +1263,7 @@ mod tsz_source_coordinate_tests {
         path: &str,
         source: &str,
         identity_byte: u8,
-        target: Option<(String, u32, u32, u32, [u8; 32], u32, u32)>,
+        target: Option<(String, u32, u32, u32, [u8; 32], [u8; 32], u32, u32)>,
     ) -> Result<(Vec<u8>, DeclarationIdentity), String> {
         let source_identity =
             ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
@@ -1276,55 +1288,62 @@ mod tsz_source_coordinate_tests {
             .intern_atom(path.as_bytes())
             .map_err(|error| error.to_string())?;
         let is_caller = target.is_some();
-        let method =
-            if let Some((target_path, start, end, name_start, program, site_start, site_end)) =
-                target.as_ref()
-            {
-                let encoded = TypeScriptSourceCoordinate {
-                    program: *program,
-                    source: *source_identity,
-                    path: target_path,
-                    declaration_start: *start,
-                    declaration_end: *end,
-                    name_start: *name_start,
-                }
-                .encode()
-                .ok_or_else(|| "fixture TSZ coordinate was invalid".to_owned())?;
-                let ecosystem = builder
-                    .intern_atom(TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM.as_bytes())
-                    .map_err(|error| error.to_string())?;
-                let path = builder
-                    .intern_atom(encoded.as_bytes())
-                    .map_err(|error| error.to_string())?;
-                let display = builder
-                    .intern_atom(b"getHello")
-                    .map_err(|error| error.to_string())?;
-                let external = builder
-                    .intern_external(ExternalTarget::Foreign(ForeignExternalTarget {
-                        identity: ExternalDeclarationIdentity {
-                            foreign: ForeignDeclarationId::from_raw([identity_byte; 16]),
-                            variant: VariantAvailability::Unavailable,
-                        },
-                        origin: ForeignTargetOrigin::Universe { ecosystem },
-                        path,
-                        display,
-                        kind: Some(ItemKind::Function),
-                    }))
-                    .map_err(|error| error.to_string())?;
-                let link = TreeLinkInput {
-                    from: TreeEntityId::new(0),
-                    target: TreeLinkTarget::External(external),
-                    kind: LinkKind::MethodCall,
-                    confidence: Confidence::Compiler,
-                    authority: OccurrenceAuthorityFacts {
-                        source: FactAvailability::Captured,
+        let method = if let Some((
+            target_path,
+            start,
+            end,
+            name_start,
+            program,
+            target_source,
+            site_start,
+            site_end,
+        )) = target.as_ref()
+        {
+            let encoded = TypeScriptSourceCoordinate {
+                program: *program,
+                source: *target_source,
+                path: target_path,
+                declaration_start: *start,
+                declaration_end: *end,
+                name_start: *name_start,
+            }
+            .encode()
+            .ok_or_else(|| "fixture TSZ coordinate was invalid".to_owned())?;
+            let ecosystem = builder
+                .intern_atom(TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM.as_bytes())
+                .map_err(|error| error.to_string())?;
+            let path = builder
+                .intern_atom(encoded.as_bytes())
+                .map_err(|error| error.to_string())?;
+            let display = builder
+                .intern_atom(b"getHello")
+                .map_err(|error| error.to_string())?;
+            let external = builder
+                .intern_external(ExternalTarget::Foreign(ForeignExternalTarget {
+                    identity: ExternalDeclarationIdentity {
+                        foreign: ForeignDeclarationId::from_raw([identity_byte; 16]),
+                        variant: VariantAvailability::Unavailable,
                     },
-                    source: SourceSpan::new(path_atom, *site_start, *site_end),
-                };
-                Some(link)
-            } else {
-                None
+                    origin: ForeignTargetOrigin::Universe { ecosystem },
+                    path,
+                    display,
+                    kind: Some(ItemKind::Function),
+                }))
+                .map_err(|error| error.to_string())?;
+            let link = TreeLinkInput {
+                from: TreeEntityId::new(0),
+                target: TreeLinkTarget::External(external),
+                kind: LinkKind::MethodCall,
+                confidence: Confidence::Compiler,
+                authority: OccurrenceAuthorityFacts {
+                    source: FactAvailability::Captured,
+                },
+                source: SourceSpan::new(path_atom, *site_start, *site_end),
             };
+            Some(link)
+        } else {
+            None
+        };
         let root_identity = fixture_version(identity_byte).identity();
         let root_authority = EntityAuthorityFacts {
             parentage: ParentageAuthority::Root,
@@ -1334,7 +1353,7 @@ mod tsz_source_coordinate_tests {
         let method_source = if is_caller {
             let (start, end) = target
                 .as_ref()
-                .map(|(_, _, _, _, _, start, end)| (*start, *end))
+                .map(|(_, _, _, _, _, _, start, end)| (*start, *end))
                 .ok_or_else(|| "caller fixture is missing its call source span".to_owned())?;
             SourceSpan::new(path_atom, start, end)
         } else {
@@ -1409,11 +1428,16 @@ mod tsz_source_coordinate_tests {
                 fixture_version(identity_byte.wrapping_add(1)),
             ]
         };
+        let links = method.map_or_else(Vec::new, |link| {
+            let mut reference = link;
+            reference.kind = LinkKind::Reads;
+            vec![link, reference]
+        });
         builder
             .add_borrowed_tree(BorrowedTree {
                 versions: &versions,
                 items: &items,
-                links: link.as_slice(),
+                links: &links,
             })
             .map_err(|error| error.to_string())?;
         let ir = builder.finish().map_err(|error| error.to_string())?;
@@ -1518,16 +1542,26 @@ mod tsz_source_coordinate_tests {
     fn native_tsz_source_call_retargets_to_exact_captured_declaration() -> Result<(), String> {
         let service = "export class AppService { getHello(): string { return ''; } }\n";
         let caller = "import { AppService } from './app.service.js';\nconst service = new AppService();\nservice.getHello();\n";
-        let declaration_start = u32::try_from(service.find("getHello(): string").unwrap())
-            .map_err(|error| error.to_string())?;
+        let declaration_start = u32::try_from(
+            service
+                .find("getHello(): string")
+                .ok_or_else(|| "service method should be present".to_owned())?,
+        )
+        .map_err(|error| error.to_string())?;
         let declaration_end = u32::try_from(
-            service.find("getHello(): string { return ''; }").unwrap()
+            service
+                .find("getHello(): string { return ''; }")
+                .ok_or_else(|| "service method body should be present".to_owned())?
                 + "getHello(): string { return ''; }".len(),
         )
         .map_err(|error| error.to_string())?;
-        let call_start =
-            u32::try_from(caller.find("service.getHello()").unwrap() + "service.".len())
-                .map_err(|error| error.to_string())?;
+        let call_start = u32::try_from(
+            caller
+                .find("service.getHello()")
+                .ok_or_else(|| "caller method call should be present".to_owned())?
+                + "service.".len(),
+        )
+        .map_err(|error| error.to_string())?;
         let call_end =
             call_start + u32::try_from("getHello".len()).map_err(|error| error.to_string())?;
         let program = typescript_program_identity(&[
@@ -1542,17 +1576,18 @@ mod tsz_source_coordinate_tests {
         ])
         .ok_or_else(|| "fixture project identity should be complete".to_owned())?;
         let (service_bytes, service_identity) =
-            source_image("src/app.service.ts", service, 1, None)?;
+            source_image("src/app.service.ts", service, 3, None)?;
         let (caller_bytes, caller_identity) = source_image(
             "src/app.controller.ts",
             caller,
-            2,
+            8,
             Some((
                 "src/app.service.ts".to_owned(),
                 declaration_start,
                 declaration_end,
                 declaration_start,
                 program,
+                *ContentId::<SourceFactDomain>::from_canonical_bytes(service.as_bytes()),
                 call_start,
                 call_end,
             )),
@@ -1562,13 +1597,24 @@ mod tsz_source_coordinate_tests {
             ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
         let caller_image =
             SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
-        let external = caller_image
+        let external_call = caller_image
             .links_from(backend_semantic::ir::EntityId::new(0))
-            .find_map(|(_, link)| match link.target {
-                backend_semantic::ir::LinkTarget::External(external) => Some(external),
+            .find_map(|(_, link)| match (link.kind, link.target) {
+                (LinkKind::MethodCall, backend_semantic::ir::LinkTarget::External(external)) => {
+                    Some(external)
+                }
                 _ => None,
             })
-            .ok_or_else(|| "caller image should retain its TSZ target".to_owned())?;
+            .ok_or_else(|| "caller image should retain its TSZ call target".to_owned())?;
+        let external_reference = caller_image
+            .links_from(backend_semantic::ir::EntityId::new(0))
+            .find_map(|(_, link)| match (link.kind, link.target) {
+                (LinkKind::Reads, backend_semantic::ir::LinkTarget::External(external)) => {
+                    Some(external)
+                }
+                _ => None,
+            })
+            .ok_or_else(|| "caller image should retain its TSZ reference target".to_owned())?;
         let published = BTreeSet::from([service_identity, caller_identity]);
         let paths = BTreeSet::from([
             "src/app.controller.ts".to_owned(),
@@ -1577,7 +1623,7 @@ mod tsz_source_coordinate_tests {
         let joined = join_project_call(
             &caller_image,
             LinkKind::MethodCall,
-            external,
+            external_call,
             "src/app.controller.ts",
             &paths,
             &index,
@@ -1585,6 +1631,104 @@ mod tsz_source_coordinate_tests {
         )
         .map_err(|error| error.to_string())?;
         assert_eq!(joined, Some(service_identity));
+        let referenced = join_project_field(
+            &caller_image,
+            LinkKind::Reads,
+            external_reference,
+            "src/app.controller.ts",
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(referenced, Some(service_identity));
+
+        let edited_service = service.replace("return ''", "return 'edited'");
+        let (edited_service_bytes, edited_identity) =
+            source_image("src/app.service.ts", &edited_service, 3, None)?;
+        let edited_images = [&edited_service_bytes[..], &caller_bytes[..]];
+        let edited_index = ProjectCallableIndex::build_from_bytes(&edited_images)
+            .map_err(|error| error.to_string())?;
+        let edited_published = BTreeSet::from([edited_identity, caller_identity]);
+        let stale = join_project_call(
+            &caller_image,
+            LinkKind::MethodCall,
+            external_call,
+            "src/app.controller.ts",
+            &paths,
+            &edited_index,
+            &edited_published,
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(
+            stale, None,
+            "a body-only source edit invalidates the previous program-bound target"
+        );
+
+        let edited_declaration_start = declaration_start;
+        let edited_method = "getHello(): string { return 'edited'; }";
+        let edited_declaration_end = u32::try_from(
+            edited_service
+                .find(edited_method)
+                .ok_or_else(|| "edited service method should be present".to_owned())?
+                + edited_method.len(),
+        )
+        .map_err(|error| error.to_string())?;
+        let edited_program = typescript_program_identity(&[
+            (
+                "src/app.service.ts".to_owned(),
+                *ContentId::<SourceFactDomain>::from_canonical_bytes(edited_service.as_bytes()),
+            ),
+            (
+                "src/app.controller.ts".to_owned(),
+                *ContentId::<SourceFactDomain>::from_canonical_bytes(caller.as_bytes()),
+            ),
+        ])
+        .ok_or_else(|| "edited source project identity should be complete".to_owned())?;
+        let (current_caller_bytes, current_caller_identity) = source_image(
+            "src/app.controller.ts",
+            caller,
+            12,
+            Some((
+                "src/app.service.ts".to_owned(),
+                edited_declaration_start,
+                edited_declaration_end,
+                declaration_start,
+                edited_program,
+                *ContentId::<SourceFactDomain>::from_canonical_bytes(edited_service.as_bytes()),
+                call_start,
+                call_end,
+            )),
+        )?;
+        let current_images = [&edited_service_bytes[..], &current_caller_bytes[..]];
+        let current_index = ProjectCallableIndex::build_from_bytes(&current_images)
+            .map_err(|error| error.to_string())?;
+        let current_published = BTreeSet::from([edited_identity, current_caller_identity]);
+        let current_image =
+            SemanticImageView::reopen(&current_caller_bytes).map_err(|error| error.to_string())?;
+        let current_call = current_image
+            .links_from(backend_semantic::ir::EntityId::new(0))
+            .find_map(|(_, link)| match (link.kind, link.target) {
+                (LinkKind::MethodCall, backend_semantic::ir::LinkTarget::External(external)) => {
+                    Some(external)
+                }
+                _ => None,
+            })
+            .ok_or_else(|| "current caller image should retain its exact call target".to_owned())?;
+        assert_eq!(
+            join_project_call(
+                &current_image,
+                LinkKind::MethodCall,
+                current_call,
+                "src/app.controller.ts",
+                &paths,
+                &current_index,
+                &current_published,
+            )
+            .map_err(|error| error.to_string())?,
+            Some(edited_identity),
+            "a fresh source coordinate joins to the current edited declaration"
+        );
         Ok(())
     }
 }
