@@ -18,12 +18,12 @@ use super::{
 use backend_engine::builtin::SemanticPublicationClaim;
 use backend_engine::builtin::{
     ProductSemanticCaptureOutcome, ProductSemanticCaptureRecord, ProductSemanticCaptureRelation,
-    ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
-    ProductSemanticPublicationRelation, ProductSourceFileFactsRecord,
-    ProductSourceFileFactsRelation, ProductSourceFileFactsRootSchema, SemanticPublicationVersion,
-    SemanticSourceCapture, admit_product_source_file_facts, product_source_file_facts_record_key,
-    product_source_file_facts_relation, product_source_file_facts_root_object,
-    semantic_capture_relation, semantic_capture_root_object,
+    ProductSemanticCaptureRootSchema, ProductSemanticPublicationKey,
+    ProductSemanticPublicationRecord, ProductSemanticPublicationRelation,
+    ProductSourceFileFactsRecord, ProductSourceFileFactsRelation, ProductSourceFileFactsRootSchema,
+    SemanticPublicationVersion, SemanticSourceCapture, admit_product_source_file_facts,
+    product_source_file_facts_record_key, product_source_file_facts_relation,
+    product_source_file_facts_root_object, semantic_capture_relation, semantic_capture_root_object,
 };
 use backend_engine::{
     CanonicalRelation, LazyPreparedUpdate, Relation, SemanticCoverageValidator, TransitionWork,
@@ -2045,15 +2045,12 @@ pub(super) fn prepare_transition_with_source_update(
     intent.admit_semantic_selection_against(&semantic)?;
     let semantic_update = prepare_semantic_update(&semantic, intent.semantic_changes())?;
     let source_facts_update = prepare_source_facts_relation_update(base, intent)?;
-    let source_changed = update.delta().changes().next().is_some();
-    let semantic_changed = semantic_update.delta().changes().next().is_some();
-    let changed_items = update
-        .delta()
-        .changes()
-        .count()
-        .saturating_add(semantic_update.delta().changes().count())
-        .saturating_add(intent.source_facts_changes().len())
-        .saturating_add(intent.capture_changes().len());
+    let source_change_count = update.delta().changes().count();
+    let semantic_change_count = semantic_update.delta().changes().count();
+    let source_changed = source_change_count != 0;
+    let semantic_changed = semantic_change_count != 0;
+    let changed_items =
+        checked_product_change_count(source_change_count, semantic_change_count, intent)?;
     if changed_items == 0 {
         return Err(BuiltinModelError(
             "product source intent is a no-op".to_owned(),
@@ -2174,6 +2171,22 @@ struct PreparedCaptureRelationUpdate {
 struct PreparedSourceFactsRelationUpdate {
     node_objects: Vec<TypedObject>,
     pointer: Option<TypedObject>,
+}
+
+fn checked_product_change_count(
+    source_changes: usize,
+    semantic_changes: usize,
+    intent: &BuiltinIntent,
+) -> Result<usize, BuiltinModelError> {
+    [
+        source_changes,
+        semantic_changes,
+        intent.source_facts_changes().len(),
+        intent.capture_changes().len(),
+    ]
+    .into_iter()
+    .try_fold(0_usize, usize::checked_add)
+    .ok_or_else(|| BuiltinModelError("product transition change count overflow".to_owned()))
 }
 
 fn prepare_source_facts_relation_update(
@@ -2320,20 +2333,7 @@ fn prepare_capture_relation_update(
                             .to_owned(),
                     )
                 })?;
-            let fields = row.file_fields().ok_or_else(|| {
-                BuiltinModelError(
-                    "typed compiler refusal path resolves to a non-file source row".to_owned(),
-                )
-            })?;
-            if fields.project != project
-                || fields.path != failure.relative_path()
-                || fields.source_identity != Some(failure.source_identity())
-            {
-                return Err(BuiltinModelError(
-                    "typed compiler refusal source identity does not match captured source"
-                        .to_owned(),
-                ));
-            }
+            validate_compiler_failure_source(&change.key, failure, &row)?;
         }
         let current = selected_capture_relation
             .as_ref()
@@ -2346,110 +2346,17 @@ fn prepare_capture_relation_update(
                 "semantic capture base does not match its persisted before value".to_owned(),
             ));
         }
-        let after = match (current.as_ref(), change.outcome) {
-            (None, ProductSemanticCaptureOutcome::Pending { prior })
-            | (Some(_), ProductSemanticCaptureOutcome::Pending { prior }) => {
-                if current.as_ref().is_some_and(|current| {
-                    matches!(
-                        current.outcome(),
-                        ProductSemanticCaptureOutcome::Pending { .. }
-                    )
-                }) {
-                    return Err(BuiltinModelError(
-                        "semantic capture refresh cannot replace an in-flight source marker"
-                            .to_owned(),
-                    ));
-                }
-                let selected = semantic.lookup(&change.key).map_err(|error| {
-                    BuiltinModelError(format!("read captured semantic selection: {error}"))
-                })?;
-                let selected_prior = selected.as_ref().and_then(|record| match record {
-                    ProductSemanticPublicationRecord::Published { coverage, claim } => {
-                        Some(SemanticPublicationVersion::new(*coverage, *claim))
-                    }
-                    ProductSemanticPublicationRecord::Unavailable(_) => None,
-                });
-                if selected_prior != prior {
-                    return Err(BuiltinModelError(
-                        "semantic capture prior does not match the selected coherent generation"
-                            .to_owned(),
-                    ));
-                }
-                let source_sequence = base_sequence.checked_add(1).ok_or_else(|| {
-                    BuiltinModelError("semantic capture workspace sequence overflow".to_owned())
-                })?;
-                ProductSemanticCaptureRecord::new_with_compiler_failure(
-                    change.capture.operation_key().copied(),
-                    request_identity,
-                    change.capture,
-                    *base.root().as_bytes(),
-                    base_sequence,
-                    *target_root.as_bytes(),
-                    source_sequence,
-                    source_commit,
-                    change.outcome,
-                    change.compiler_failure.clone(),
-                )
-                .map_err(|error| BuiltinModelError(error.to_owned()))?
-            }
-            (Some(current), outcome) => {
-                let ProductSemanticCaptureOutcome::Pending {
-                    prior: pending_prior,
-                } = current.outcome()
-                else {
-                    return Err(BuiltinModelError(
-                        "semantic capture terminal has no pending source marker".to_owned(),
-                    ));
-                };
-                if current.capture() != change.capture {
-                    return Err(BuiltinModelError(
-                        "semantic capture terminal does not match its exact pending source marker"
-                            .to_owned(),
-                    ));
-                }
-                match outcome {
-                    ProductSemanticCaptureOutcome::Unavailable { .. }
-                        if pending_prior.is_some() =>
-                    {
-                        return Err(BuiltinModelError(
-                            "unavailable semantic capture would discard its prior generation"
-                                .to_owned(),
-                        ));
-                    }
-                    ProductSemanticCaptureOutcome::Failed { prior, .. }
-                        if Some(prior) != pending_prior =>
-                    {
-                        return Err(BuiltinModelError(
-                            "failed semantic capture changed its prior generation".to_owned(),
-                        ));
-                    }
-                    ProductSemanticCaptureOutcome::Pending { .. } => {
-                        return Err(BuiltinModelError(
-                            "semantic capture refresh cannot replace an in-flight source marker"
-                                .to_owned(),
-                        ));
-                    }
-                    ProductSemanticCaptureOutcome::Unavailable { .. }
-                    | ProductSemanticCaptureOutcome::Failed { .. }
-                    | ProductSemanticCaptureOutcome::Published { .. } => {}
-                }
-                let terminal = current
-                    .with_outcome(outcome)
-                    .map_err(|error| BuiltinModelError(error.to_owned()))?;
-                let terminal = match &change.compiler_failure {
-                    Some(failure) => terminal
-                        .with_compiler_failure(failure.clone())
-                        .map_err(|error| BuiltinModelError(error.to_owned()))?,
-                    None => terminal,
-                };
-                terminal
-            }
-            (None, _) => {
-                return Err(BuiltinModelError(
-                    "semantic capture terminal has no exact pending source marker".to_owned(),
-                ));
-            }
-        };
+        let selected_prior = selected_semantic_prior(semantic, &change.key)?;
+        let after = next_capture_record(
+            current.as_ref(),
+            change,
+            selected_prior,
+            request_identity,
+            *base.root().as_bytes(),
+            base_sequence,
+            *target_root.as_bytes(),
+            source_commit,
+        )?;
         if let ProductSemanticCaptureOutcome::Published { coverage, claim } = after.outcome() {
             let selected = intent
                 .semantic_changes()
@@ -2531,6 +2438,149 @@ fn prepare_capture_relation_update(
             pointer: Some(semantic_capture_root_object(state.root())),
         })
     }
+}
+
+fn selected_semantic_prior(
+    semantic: &WorkspaceRelationHandle<BuiltinSemanticRelation>,
+    key: &ProductSemanticPublicationKey,
+) -> Result<Option<SemanticPublicationVersion>, BuiltinModelError> {
+    let selected = semantic
+        .lookup(key)
+        .map_err(|error| BuiltinModelError(format!("read captured semantic selection: {error}")))?;
+    Ok(selected.as_ref().and_then(|record| match record {
+        ProductSemanticPublicationRecord::Published { coverage, claim } => {
+            Some(SemanticPublicationVersion::new(*coverage, *claim))
+        }
+        ProductSemanticPublicationRecord::Unavailable(_) => None,
+    }))
+}
+
+/// Applies the same capture state machine while preparing a live transition
+/// and while re-admitting its persisted receipt. Persisted admission supplies
+/// the intent's exact `expected` value as `current`, then compares this result
+/// with the row reached through the authenticated target pointer.
+fn next_capture_record(
+    current: Option<&ProductSemanticCaptureRecord>,
+    change: &BuiltinCaptureChange,
+    selected_prior: Option<SemanticPublicationVersion>,
+    request_identity: [u8; 32],
+    base_workspace_root: [u8; 32],
+    base_workspace_sequence: u64,
+    source_workspace_root: [u8; 32],
+    source_commit: [u8; 32],
+) -> Result<ProductSemanticCaptureRecord, BuiltinModelError> {
+    match (current, change.outcome) {
+        (None, ProductSemanticCaptureOutcome::Pending { prior })
+        | (Some(_), ProductSemanticCaptureOutcome::Pending { prior }) => {
+            if current.is_some_and(|current| {
+                matches!(
+                    current.outcome(),
+                    ProductSemanticCaptureOutcome::Pending { .. }
+                )
+            }) {
+                return Err(BuiltinModelError(
+                    "semantic capture refresh cannot replace an in-flight source marker".to_owned(),
+                ));
+            }
+            if selected_prior != prior {
+                return Err(BuiltinModelError(
+                    "semantic capture prior does not match the selected coherent generation"
+                        .to_owned(),
+                ));
+            }
+            let source_workspace_sequence =
+                base_workspace_sequence.checked_add(1).ok_or_else(|| {
+                    BuiltinModelError("semantic capture workspace sequence overflow".to_owned())
+                })?;
+            ProductSemanticCaptureRecord::new_with_compiler_failure(
+                change.capture.operation_key().copied(),
+                request_identity,
+                change.capture,
+                base_workspace_root,
+                base_workspace_sequence,
+                source_workspace_root,
+                source_workspace_sequence,
+                source_commit,
+                change.outcome,
+                change.compiler_failure.clone(),
+            )
+            .map_err(|error| BuiltinModelError(error.to_owned()))
+        }
+        (Some(current), outcome) => {
+            let ProductSemanticCaptureOutcome::Pending {
+                prior: pending_prior,
+            } = current.outcome()
+            else {
+                return Err(BuiltinModelError(
+                    "semantic capture terminal has no pending source marker".to_owned(),
+                ));
+            };
+            if current.capture() != change.capture {
+                return Err(BuiltinModelError(
+                    "semantic capture terminal does not match its exact pending source marker"
+                        .to_owned(),
+                ));
+            }
+            match outcome {
+                ProductSemanticCaptureOutcome::Unavailable { .. } if pending_prior.is_some() => {
+                    return Err(BuiltinModelError(
+                        "unavailable semantic capture would discard its prior generation"
+                            .to_owned(),
+                    ));
+                }
+                ProductSemanticCaptureOutcome::Failed { prior, .. }
+                    if Some(prior) != pending_prior =>
+                {
+                    return Err(BuiltinModelError(
+                        "failed semantic capture changed its prior generation".to_owned(),
+                    ));
+                }
+                ProductSemanticCaptureOutcome::Pending { .. } => {
+                    return Err(BuiltinModelError(
+                        "semantic capture refresh cannot replace an in-flight source marker"
+                            .to_owned(),
+                    ));
+                }
+                ProductSemanticCaptureOutcome::Unavailable { .. }
+                | ProductSemanticCaptureOutcome::Failed { .. }
+                | ProductSemanticCaptureOutcome::Published { .. } => {}
+            }
+            let terminal = current
+                .with_outcome(outcome)
+                .map_err(|error| BuiltinModelError(error.to_owned()))?;
+            match &change.compiler_failure {
+                Some(failure) => terminal
+                    .with_compiler_failure(failure.clone())
+                    .map_err(|error| BuiltinModelError(error.to_owned())),
+                None => Ok(terminal),
+            }
+        }
+        (None, _) => Err(BuiltinModelError(
+            "semantic capture terminal has no exact pending source marker".to_owned(),
+        )),
+    }
+}
+
+fn validate_compiler_failure_source(
+    key: &ProductSemanticPublicationKey,
+    failure: &backend_library::PackageCompilerFailure,
+    row: &BuiltinPackageRecord,
+) -> Result<(), BuiltinModelError> {
+    let fields = row.file_fields().ok_or_else(|| {
+        BuiltinModelError(
+            "typed compiler refusal path resolves to a non-file source row".to_owned(),
+        )
+    })?;
+    let package = key.package_key().to_bytes();
+    if fields.project != package
+        || fields.path != failure.relative_path()
+        || fields.source_identity != Some(failure.source_identity())
+    {
+        return Err(BuiltinModelError(
+            "typed compiler refusal source identity does not match captured source".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -2791,13 +2841,15 @@ fn admit_persisted_relations(
     )?;
     let semantic_update =
         prepare_semantic_update(&base_semantic, persisted_intent.semantic_changes())?;
-    let source_changed = update.delta().changes().next().is_some();
-    let semantic_changed = semantic_update.delta().changes().next().is_some();
-    let changed_items = update
-        .delta()
-        .changes()
-        .count()
-        .saturating_add(semantic_update.delta().changes().count());
+    let source_change_count = update.delta().changes().count();
+    let semantic_change_count = semantic_update.delta().changes().count();
+    let source_changed = source_change_count != 0;
+    let semantic_changed = semantic_change_count != 0;
+    let changed_items = checked_product_change_count(
+        source_change_count,
+        semantic_change_count,
+        &persisted_intent,
+    )?;
     if changed_items == 0 {
         return Err(BuiltinModelError(
             "persisted product transition is a no-op".to_owned(),
@@ -2893,6 +2945,18 @@ fn admit_persisted_relations(
                 backend_engine::encode_id(closure_id.as_bytes())
             ))
         })?;
+    validate_persisted_capture_changes(
+        persisted,
+        store,
+        &persisted_intent,
+        &base_tree,
+        &target_tree,
+        &base_semantic,
+        &target_semantic,
+        selected.descriptor().target_generation(),
+        commit.id().as_bytes(),
+        persisted_objects.objects(),
+    )?;
     validate_persisted_source_facts(
         persisted,
         store,
@@ -2995,6 +3059,163 @@ fn validate_persisted_source_facts(
             .map_err(|error| {
                 BuiltinModelError(format!("admit persisted complete source facts: {error}"))
             })?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_persisted_capture_changes(
+    persisted: &backend_engine::PersistedTransition,
+    store: &backend_engine::FileStore,
+    intent: &BuiltinIntent,
+    base_source: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    target_source: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    base_semantic: &WorkspaceRelationHandle<BuiltinSemanticRelation>,
+    target_semantic: &WorkspaceRelationHandle<BuiltinSemanticRelation>,
+    target_sequence: u64,
+    target_commit: &[u8; 32],
+    closure_objects: &[TypedObject],
+) -> Result<(), BuiltinModelError> {
+    if intent.capture_changes().is_empty() {
+        return Ok(());
+    }
+    let pointer_schema = backend_version::SchemaIdentity::new(
+        ProductSemanticCaptureRootSchema::DOMAIN,
+        ProductSemanticCaptureRootSchema::TYPE,
+        ProductSemanticCaptureRootSchema::VERSION,
+    );
+    let pointer_key = ObjectKey::<ProductSemanticCaptureRootSchema>::from_value(&[0x53; 32]);
+    let mut pointers = closure_objects
+        .iter()
+        .filter(|object| object.schema() == pointer_schema);
+    let pointer = pointers.next().ok_or_else(|| {
+        BuiltinModelError("persisted capture update has no target root pointer".to_owned())
+    })?;
+    if pointers.next().is_some() || pointer.key() != pointer_key.as_bytes() {
+        return Err(BuiltinModelError(
+            "persisted capture target has an ambiguous or noncanonical root pointer".to_owned(),
+        ));
+    }
+    let capture_root: [u8; 32] = pointer
+        .bytes()
+        .try_into()
+        .map_err(|_| BuiltinModelError("malformed persisted capture root".to_owned()))?;
+    let target_capture = persisted
+        .relation::<ProductSemanticCaptureRelation>(store, capture_root)
+        .map_err(|error| {
+            BuiltinModelError(format!("open persisted target semantic capture: {error}"))
+        })?;
+    let base_manifest =
+        workspace_manifest_from_root(&base_source.root_handle(), &base_semantic.root_handle())?;
+    let target_manifest =
+        workspace_manifest_from_root(&target_source.root_handle(), &target_semantic.root_handle())?;
+    let base_sequence = target_sequence.checked_sub(1).ok_or_else(|| {
+        BuiltinModelError("persisted capture target sequence has no base".to_owned())
+    })?;
+    for change in intent.capture_changes() {
+        if !matches!(
+            change.outcome,
+            ProductSemanticCaptureOutcome::Pending { .. }
+        ) && let Some(expected) = &change.expected
+        {
+            if !matches!(
+                expected.outcome(),
+                ProductSemanticCaptureOutcome::Pending { .. }
+            ) || expected.capture() != change.capture
+                || expected.source_workspace_root() != base_manifest.root().as_bytes()
+                || expected.source_workspace_sequence() != base_sequence
+            {
+                return Err(BuiltinModelError(
+                    "persisted semantic terminal does not match its exact before receipt"
+                        .to_owned(),
+                ));
+            }
+        }
+        let selected_prior = selected_semantic_prior(base_semantic, &change.key)?;
+        let after = next_capture_record(
+            change.expected.as_ref(),
+            change,
+            selected_prior,
+            persisted.request(),
+            *base_manifest.root().as_bytes(),
+            base_sequence,
+            *target_manifest.root().as_bytes(),
+            *target_commit,
+        )?;
+        let actual = target_capture
+            .lookup(&change.key)
+            .map_err(|error| {
+                BuiltinModelError(format!("read persisted target semantic capture: {error}"))
+            })?
+            .ok_or_else(|| {
+                BuiltinModelError("persisted capture root omits its exact intent row".to_owned())
+            })?;
+        if actual != after {
+            return Err(BuiltinModelError(
+                "persisted capture root does not match its exact before receipt and terminal"
+                    .to_owned(),
+            ));
+        }
+        if let Some(failure) = &change.compiler_failure {
+            let project = change.key.package_key().to_bytes();
+            let file_key =
+                backend_engine::product_source_file_key(project, failure.relative_path());
+            let row = target_source
+                .lookup(&file_key)
+                .map_err(|error| {
+                    BuiltinModelError(format!("read terminal capture source row: {error}"))
+                })?
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "typed compiler refusal names a source path outside the captured project"
+                            .to_owned(),
+                    )
+                })?;
+            validate_compiler_failure_source(&change.key, failure, &row)?;
+        }
+        let selected_target_prior = selected_semantic_prior(target_semantic, &change.key)?;
+        match change.outcome {
+            ProductSemanticCaptureOutcome::Pending { prior }
+                if selected_prior != prior || selected_target_prior != prior =>
+            {
+                return Err(BuiltinModelError(
+                    "persisted pending capture does not match the selected semantic prior"
+                        .to_owned(),
+                ));
+            }
+            ProductSemanticCaptureOutcome::Unavailable { .. }
+                if selected_target_prior.is_some() =>
+            {
+                return Err(BuiltinModelError(
+                    "unavailable capture changed a coherent semantic selection".to_owned(),
+                ));
+            }
+            ProductSemanticCaptureOutcome::Failed { prior, .. }
+                if selected_target_prior != Some(prior) =>
+            {
+                return Err(BuiltinModelError(
+                    "failed capture did not retain its exact semantic prior".to_owned(),
+                ));
+            }
+            ProductSemanticCaptureOutcome::Published { coverage, claim } => {
+                let selected = target_semantic.lookup(&change.key).map_err(|error| {
+                    BuiltinModelError(format!("read published capture selection: {error}"))
+                })?;
+                if !selected.is_some_and(|record| {
+                    matches!(record, ProductSemanticPublicationRecord::Published {
+                        coverage: selected_coverage,
+                        claim: selected_claim,
+                    } if selected_coverage == coverage && selected_claim == claim)
+                }) {
+                    return Err(BuiltinModelError(
+                        "published capture does not match the selected semantic generation"
+                            .to_owned(),
+                    ));
+                }
+            }
+            ProductSemanticCaptureOutcome::Pending { .. }
+            | ProductSemanticCaptureOutcome::Unavailable { .. }
+            | ProductSemanticCaptureOutcome::Failed { .. } => {}
         }
     }
     Ok(())
