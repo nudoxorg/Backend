@@ -999,7 +999,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         Vec::new(),
         vec![BuiltinCaptureChange {
             key: capture_key.clone(),
-            expected: Some(pending_capture),
+            expected: Some(pending_capture.clone()),
             capture,
             outcome: ProductSemanticCaptureOutcome::Unavailable {
                 reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
