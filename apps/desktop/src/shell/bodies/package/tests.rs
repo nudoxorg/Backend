@@ -815,8 +815,10 @@ impl crate::runtime::reads::PageReader for RegistryPackagePage {
         let crate::runtime::reads::ReadRequest::Package(package) = request else {
             return crate::shell::tests::Fixture.read(request, context);
         };
-        let mut about = dossier();
-        about.package = package.clone();
+        let mut about = crate::shell::tests::registry_dossier(package);
+        assert!(matches!(about.record_evidence(),
+            crate::model::pages::package::PackageRecordEvidence::Bound(_)),
+            "the release fixture must bind its record and outline to the exact requested registry release");
         let name = package.display_name().to_owned();
         let entry = |version: &str| crate::model::pages::VersionEntry {
             package: PackageRef::parse(&format!("pkg:cargo/{name}@{version}"))
@@ -1381,7 +1383,13 @@ fn the_releases_are_doors_and_enter_travels_to_one(cx: &mut TestAppContext) {
         crate::runtime::fixture_releases::install(cx);
         facet::probe::enable(cx);
     });
-    let _ = painted(&mut rig);
+    let ledger = painted(&mut rig);
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.package(&package)
+        .loaded_value().is_some_and(|dossier| matches!(dossier.record_evidence(),
+            crate::model::pages::package::PackageRecordEvidence::Bound(_)))),
+        "the native walk starts from the admitted exact registry dossier");
+    assert!(ledger.targets.iter().any(|target| target.key == "pkg-release-newest"),
+        "the release fixture actually paints the production newest-release door");
     walk_to(&mut rig, "pkg-release-newest", 40);
     rig.keys("enter");
     assert!(
