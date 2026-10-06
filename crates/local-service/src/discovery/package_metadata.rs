@@ -9,7 +9,7 @@ use backend_library::{ProductText, RegistryPackageDiscoveryObservation};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_CACHE_OBJECTS: usize = 32;
 const MAX_CACHE_ENCODED_BYTES: usize = 64 * 1024 * 1024;
-const PARSER_IDENTITY: &str = "exact-registry-package-metadata-v2";
+const PARSER_IDENTITY: &str = "exact-registry-package-metadata-v3";
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct ObjectKey {
