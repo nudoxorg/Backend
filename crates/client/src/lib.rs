@@ -677,7 +677,7 @@ impl Session {
         &mut self,
         token: &str,
     ) -> Result<PageContinuation, ClientError> {
-        if token.starts_with("pc2-") {
+        if token.starts_with("pc2-") || token.starts_with("pc3-") {
             return self.decode_portable_query(token);
         }
         let encoded = token
