@@ -16,6 +16,7 @@ import os
 import re
 import stat
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -24,6 +25,9 @@ ATTEMPT_SCHEMA = "nudox.language-corpus-attempt.v1"
 RESULT_SCHEMA = "nudox.real-workspace-index-acceptance-result.v1"
 MAX_LINE_BYTES = 64 * 1024
 MAX_RESULT_BYTES = 32 * 1024 * 1024
+MAX_JOURNAL_BYTES = 256 * 1024 * 1024
+MAX_ATTEMPT_RECORDS = 500_000
+MAX_DISTINCT_PACKAGES = 100_000
 LANGUAGES = ("typescript", "python", "go")
 PREFIX = {"typescript": "npm:", "python": "pypi:", "go": "go:"}
 REQUIRED = {
@@ -79,14 +83,34 @@ def read_result(path: Path) -> bytes:
     return raw
 
 
+@contextmanager
+def open_journal(path: Path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise InvalidEvidence("journal must be a single-link regular file")
+        if info.st_size > MAX_JOURNAL_BYTES:
+            raise InvalidEvidence("journal exceeded its byte bound")
+        yield stream
+
+
 def verify_package_binding(attempt: Attempt, project: dict[str, Any]) -> None:
     provenance = project.get("package_provenance")
     if (not isinstance(provenance, dict)
             or provenance.get("verification") != "verified-source-inventory-v1"):
         raise InvalidEvidence("pass has no independently verified package source inventory")
+    if provenance.get("origin_verification") != "verified-registry-artifact-v1":
+        raise InvalidEvidence("pass has no verified registry artifact identity and tree membership")
+    origin_evidence = provenance.get("origin_evidence")
+    if not isinstance(origin_evidence, dict):
+        raise InvalidEvidence("pass omits the retained registry artifact evidence")
+    for field in ("metadata_sha256", "archive_sha256", "archive_membership_sha256"):
+        digest(origin_evidence.get(field))
     expected = {"ecosystem": PREFIX[attempt.language][:-1],
                 "id": attempt.package[len(PREFIX[attempt.language]):], "version": attempt.version}
-    if provenance.get("package") != expected:
+    origin = provenance.get("package")
+    if provenance.get("target_package") != expected:
         raise InvalidEvidence("pass belongs to another package or pinned version")
     if digest(provenance.get("source_tree_sha256")) != attempt.source_sha256:
         raise InvalidEvidence("pass belongs to another acquired source tree")
@@ -103,6 +127,17 @@ def verify_package_binding(attempt: Attempt, project: dict[str, Any]) -> None:
         if (parts.is_absolute() or str(parts) != target or "\\" in target
                 or any(part in {".", ".."} for part in parts.parts)):
             raise InvalidEvidence("pass names a noncanonical package target subdirectory")
+    if attempt.language == "go":
+        if (not isinstance(origin, dict) or set(origin) != {"ecosystem", "id", "version"}
+                or origin.get("ecosystem") != "go" or origin.get("version") != attempt.version
+                or not isinstance(origin.get("id"), str) or not origin["id"]
+                or origin["id"].endswith("/")):
+            raise InvalidEvidence("Go pass omits its exact module origin")
+        import_path = origin["id"] + ("/" + target if target != "." else "")
+        if import_path != expected["id"]:
+            raise InvalidEvidence("Go package target differs from module/subdirectory identity")
+    elif origin != expected:
+        raise InvalidEvidence("package target differs from its acquired registry origin")
 
 
 def verify_setup_binding(attempt: Attempt, run: dict[str, Any]) -> None:
@@ -234,9 +269,15 @@ def summarize(journals: list[Path], candidate: str, target: int = 10_000) -> dic
     latest: dict[tuple[str, str], Attempt] = {}
     other_builds = 0
     incomplete_tails = 0
+    records = 0
     for journal in journals:
-        with journal.open("rb") as stream:
+        consumed = 0
+        with open_journal(journal) as stream:
             while raw := stream.readline(MAX_LINE_BYTES + 1):
+                consumed += len(raw)
+                records += 1
+                if consumed > MAX_JOURNAL_BYTES or records > MAX_ATTEMPT_RECORDS:
+                    raise InvalidEvidence("attempt history exceeded its byte or record bound")
                 if len(raw) > MAX_LINE_BYTES:
                     raise InvalidEvidence("attempt record exceeded its byte bound")
                 if not raw.endswith(b"\n"):
@@ -248,6 +289,8 @@ def summarize(journals: list[Path], candidate: str, target: int = 10_000) -> dic
                     continue
                 key = (attempt.language, attempt.package)
                 prior = latest.get(key)
+                if prior is None and len(latest) >= MAX_DISTINCT_PACKAGES:
+                    raise InvalidEvidence("distinct package history exceeded its bound")
                 if prior is None or attempt.attempt > prior.attempt:
                     latest[key] = attempt
                 elif attempt.attempt == prior.attempt and attempt != prior:

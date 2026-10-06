@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import language_corpus_ledger as ledger
 
@@ -27,7 +28,12 @@ class CorpusLedgerTests(unittest.TestCase):
                           "root_identity_sha256": "f" * 64,
                           "package_provenance": {
                               "verification": "verified-source-inventory-v1",
+                              "origin_verification": "verified-registry-artifact-v1",
+                              "origin_evidence": {"metadata_sha256": "e" * 64,
+                                                  "archive_sha256": "e" * 64,
+                                                  "archive_membership_sha256": "b" * 64},
                               "package": {"ecosystem": "pypi", "id": "requests", "version": version},
+                              "target_package": {"ecosystem": "pypi", "id": "requests", "version": version},
                               "source_tree_sha256": "b" * 64,
                               "acquired_inventory_sha256": "e" * 64,
                               "corpus_manifest_sha256": "a" * 64,
@@ -106,6 +112,8 @@ class CorpusLedgerTests(unittest.TestCase):
     def test_declared_source_or_wrong_package_tree_and_target_refuse_credit(self):
         for changes in [
             {"verification": "declared-by-corpus-manifest"},
+            {"origin_verification": "unverified-declared-package"},
+            {"origin_evidence": {}},
             {"source_tree_sha256": "e" * 64},
             {"package": {"ecosystem": "pypi", "id": "urllib3", "version": "1"}},
             {"package": {"ecosystem": "pypi", "id": "requests", "version": "2"}},
@@ -139,6 +147,28 @@ class CorpusLedgerTests(unittest.TestCase):
                 self.write(attempt)
                 self.assertEqual(self.counts()["invalid_evidence"], 1)
 
+    def test_go_counts_exact_import_paths_without_relabelling_the_module_origin(self):
+        attempt = self.attempt()
+        path = Path(attempt["result_path"])
+        run = json.loads(path.read_bytes())
+        run["scope"]["language"] = "go"
+        run["queries"][0]["profile"] = "go"
+        provenance = run["projects"][0]["package_provenance"]
+        origin = {"ecosystem": "go", "id": "example.org/library/v2", "version": "1"}
+        target = dict(origin, id="example.org/library/v2/subpackage")
+        provenance.update(package=origin, target_package=target, target_subdir="subpackage")
+        attempt.update(language="go", package="go:" + target["id"])
+        for valid in [True, False]:
+            if not valid:
+                provenance["target_package"] = dict(target, id="example.org/library/v2/other")
+            raw = json.dumps(run).encode()
+            path.write_bytes(raw)
+            attempt["result_sha256"] = hashlib.sha256(raw).hexdigest()
+            self.write(attempt)
+            counts = ledger.summarize([self.journal], self.candidate)["languages"]["go"]["counts"]
+            self.assertEqual(counts.get("passed_stock", 0), int(valid))
+            self.assertEqual(counts.get("invalid_evidence", 0), int(not valid))
+
     def test_special_or_multilink_result_cannot_block_reader_or_count(self):
         for kind in ["fifo", "symlink", "hardlink"]:
             with self.subTest(kind=kind):
@@ -154,6 +184,19 @@ class CorpusLedgerTests(unittest.TestCase):
                 attempt["result_path"] = str(selected)
                 self.write(attempt)
                 self.assertEqual(self.counts()["invalid_evidence"], 1)
+
+    def test_fifo_journal_refuses_without_waiting_for_a_writer(self):
+        os.mkfifo(self.journal)
+        with self.assertRaisesRegex(ledger.InvalidEvidence, "regular file"):
+            self.counts()
+
+    def test_committed_attempt_history_is_bounded_even_for_other_builds(self):
+        first = self.attempt()
+        second = dict(first, attempt=2, candidate_manifest_sha256="e" * 64)
+        self.write(first, second)
+        with patch.object(ledger, "MAX_ATTEMPT_RECORDS", 1):
+            with self.assertRaisesRegex(ledger.InvalidEvidence, "record bound"):
+                self.counts()
 
     def test_partial_tail_and_pending_attempt_cannot_manufacture_a_pass(self):
         pending = dict(self.attempt(), result_path=None, result_sha256=None)
