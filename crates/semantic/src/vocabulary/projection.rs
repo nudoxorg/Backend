@@ -535,4 +535,19 @@ pub enum ProjectionAdmissionFault {
         /// Parentage state reported by the later authority pass.
         requested: ProjectionParentageState,
     },
+    /// Conflicting complete direct-declaration inventories; operands name the first difference.
+    ConflictingMemberInventory {
+        /// Owner whose complete inventories disagree.
+        entity: u32,
+        /// Length of the retained canonical inventory.
+        existing_count: u64,
+        /// Length of the rejected canonical inventory.
+        requested_count: u64,
+        /// First differing canonical ordinal position.
+        first_difference: u64,
+        /// Retained member at that position, absent at the end of the run.
+        existing_member: Option<u32>,
+        /// Rejected member at that position, absent at the end of the run.
+        requested_member: Option<u32>,
+    },
 }

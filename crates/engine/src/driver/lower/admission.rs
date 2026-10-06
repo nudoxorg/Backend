@@ -338,6 +338,21 @@ pub(crate) fn portable_admission(fault: FactFault) -> ProjectionAdmissionFault {
             existing: portable_span(existing),
             requested: portable_span(requested),
         },
+        FactFault::ConflictingMemberInventory {
+            entity,
+            existing_count,
+            requested_count,
+            first_difference,
+            existing_member,
+            requested_member,
+        } => ProjectionAdmissionFault::ConflictingMemberInventory {
+            entity: entity.raw,
+            existing_count,
+            requested_count,
+            first_difference,
+            existing_member,
+            requested_member,
+        },
         FactFault::ConflictingParentage {
             entity,
             existing,

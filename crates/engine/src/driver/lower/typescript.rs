@@ -3883,6 +3883,102 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         self.pass_property_accesses()?;
         self.pass_docs()?;
         self.pass_parentage()?;
+        self.pass_declared_member_inventories()?;
+        Ok(())
+    }
+
+    /// OXC body lists prove direct declared membership, independently of the
+    /// checker object's effective structural shape. Every body element must
+    /// map to one emitted declaration. Merged declarations, unsupported body
+    /// elements and constructor parameter properties stay unavailable until
+    /// their complete inventory has a dedicated producer proof.
+    fn pass_declared_member_inventories(&mut self) -> Result<(), TypeScriptCollectError> {
+        let mut declarations: HashMap<(u32, u32), Option<u32>> = HashMap::new();
+        for ordinal in 0..self.facts.len() {
+            if matches!(
+                self.fact_kinds.get(ordinal),
+                Some(EntityKind::Field | EntityKind::Function | EntityKind::Variant)
+            ) {
+                let span = (self.decl_starts[ordinal], self.decl_ends[ordinal]);
+                declarations
+                    .entry(span)
+                    .and_modify(|entry| *entry = None)
+                    .or_insert(Some(coordinate(ordinal)?));
+            }
+        }
+        let semantic = self.semantic;
+        for node in semantic.nodes().iter() {
+            let kind = node.kind();
+            let (name, spans): (Span, Vec<Span>) = if let Some(class) = kind.as_class() {
+                let Some(name) = class.id.as_ref().map(|id| id.span) else {
+                    continue;
+                };
+                if self.parameter_properties.iter().any(|ordinal| {
+                    self.decl_starts
+                        .get(*ordinal as usize)
+                        .is_some_and(|start| *start >= class.span.start && *start < class.span.end)
+                }) {
+                    continue;
+                }
+                (
+                    name,
+                    class.body.body.iter().map(|member| member.span()).collect(),
+                )
+            } else if let Some(interface) = kind.as_ts_interface_declaration() {
+                (
+                    interface.id.span,
+                    interface
+                        .body
+                        .body
+                        .iter()
+                        .map(|member| member.span())
+                        .collect(),
+                )
+            } else if let Some(enumeration) = kind.as_ts_enum_declaration() {
+                (
+                    enumeration.id.span,
+                    enumeration
+                        .body
+                        .members
+                        .iter()
+                        .map(|member| member.span())
+                        .collect(),
+                )
+            } else {
+                continue;
+            };
+            let Some(owner) = self.fact_at_name_start(name.start) else {
+                continue;
+            };
+            // Legal declaration merging widens the emitted owner's span.
+            // One merge part cannot prove the whole merged inventory.
+            let declaration = kind.span();
+            if self.decl_starts.get(owner as usize) != Some(&declaration.start)
+                || self.decl_ends.get(owner as usize) != Some(&declaration.end)
+            {
+                continue;
+            }
+            let mut members = Vec::with_capacity(spans.len());
+            let mut complete = true;
+            for span in spans {
+                let Some(Some(member)) = declarations.get(&(span.start, span.end)) else {
+                    complete = false;
+                    break;
+                };
+                members.push(*member);
+            }
+            if complete {
+                self.facts
+                    .capture_declared_members(owner, &members)
+                    .map_err(|cause| {
+                        TypeScriptCollectError::Rejected(FactRejection {
+                            fact: owner as usize,
+                            name_len: self.facts.names[owner as usize].len(),
+                            cause,
+                        })
+                    })?;
+            }
+        }
         Ok(())
     }
 
@@ -8293,6 +8389,71 @@ mod lane_tests {
     };
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use thiserror::Error;
+
+    #[test]
+    fn declared_member_inventory_is_direct_and_partial_or_merged_stays_unavailable()
+    -> Result<(), LaneError> {
+        use backend_semantic::ir::FactAvailability;
+        let ir = owned_ir(
+            concat!(
+                "class Base { inherited: number = 1; }\n",
+                "class Child extends Base { own: string = 'x'; run(arg: number): number { return arg; } }\n",
+                "class Empty {}\n",
+                "class Runtime { static { const local = 1; } }\n",
+                "class ParameterProperty { constructor(public field: number) {} }\n",
+                "interface Written { value: number; run(arg: string): void; }\n",
+                "interface Merged { first: number; } interface Merged { second: number; }\n",
+                "enum Choice { First, Second }\n",
+            ),
+            None,
+        )?;
+        for (name, expected) in [
+            (&b"Child"[..], &[&b"own"[..], &b"run"[..]][..]),
+            (&b"Empty"[..], &[][..]),
+            (&b"Written"[..], &[&b"value"[..], &b"run"[..]][..]),
+            (&b"Choice"[..], &[&b"First"[..], &b"Second"[..]][..]),
+        ] {
+            let item = ir
+                .items()
+                .find(|item| item.name() == name)
+                .ok_or(LaneError::Missing("inventory owner"))?;
+            assert_eq!(
+                ir.entity(item.id())
+                    .expect("emitted entity")
+                    .authority
+                    .members,
+                FactAvailability::Captured,
+                "{name:?}"
+            );
+            let mut names = item
+                .members()
+                .iter()
+                .map(|member| ir.item(*member).expect("captured member").name().to_vec())
+                .collect::<Vec<_>>();
+            names.sort();
+            let mut expected = expected
+                .iter()
+                .map(|name| name.to_vec())
+                .collect::<Vec<_>>();
+            expected.sort();
+            assert_eq!(names, expected);
+        }
+        for name in [&b"Runtime"[..], &b"ParameterProperty"[..], &b"Merged"[..]] {
+            let item = ir
+                .items()
+                .find(|item| item.name() == name)
+                .ok_or(LaneError::Missing("unavailable owner"))?;
+            assert_eq!(
+                ir.entity(item.id())
+                    .expect("emitted entity")
+                    .authority
+                    .members,
+                FactAvailability::Unavailable
+            );
+            assert_eq!(item.members().len(), 0);
+        }
+        Ok(())
+    }
 
     /// Typed fixture failure; every assertion failure names what was missing.
     #[derive(Debug, Error)]

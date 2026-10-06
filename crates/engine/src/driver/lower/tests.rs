@@ -32,6 +32,82 @@ use crate::driver::types::{ParentageState, SourceSpanFact};
 const SOURCE_BYTES: &[u8] = b"emission-seam-source";
 const OUTPUT_CAPACITY: usize = 1_024;
 
+#[test]
+fn declared_member_inventory_excludes_other_children_and_rejects_conflicts() -> Result<(), TestError>
+{
+    let mut facts = FactSet::new();
+    for (kind, name) in [
+        (EntityKind::Record, &b"owner"[..]),
+        (EntityKind::Field, &b"declared"[..]),
+        (EntityKind::Parameter, &b"carrier"[..]),
+        (EntityKind::Record, &b"empty"[..]),
+    ] {
+        facts
+            .push(SemanticFact::new(
+                kind,
+                name,
+                SemanticProductConstructor::PRODUCT,
+            ))
+            .map_err(rejected)?;
+    }
+    facts.mark_parentage_root(0).map_err(lane_fault)?;
+    facts.attach_parent(1, 0).map_err(lane_fault)?;
+    facts.attach_parent(2, 0).map_err(lane_fault)?;
+    facts.mark_parentage_root(3).map_err(lane_fault)?;
+    assert_eq!(
+        owned_authority_projection(&facts)?[0].members,
+        FactAvailability::Unavailable
+    );
+    assert!(owned_topology_projection(&facts)?.members[0].is_empty());
+    facts
+        .capture_declared_members(0, &[1, 1])
+        .map_err(lane_fault)?;
+    facts
+        .capture_declared_members(0, &[1])
+        .map_err(lane_fault)?;
+    facts.mark_members_captured(3).map_err(lane_fault)?;
+    let before = owned_topology_projection(&facts)?;
+    assert_eq!(before.members[0], vec![EntityId::new(1)]);
+    assert!(before.members[3].is_empty());
+    assert_eq!(
+        owned_authority_projection(&facts)?[3].members,
+        FactAvailability::Captured
+    );
+    assert_eq!(
+        facts.capture_declared_members(0, &[1, 2]),
+        Err(FactFault::ConflictingMemberInventory {
+            entity: EntityId::new(0),
+            existing_count: 1,
+            requested_count: 2,
+            first_difference: 1,
+            existing_member: None,
+            requested_member: Some(2),
+        })
+    );
+    assert_eq!(
+        facts.capture_declared_members(0, &[4]),
+        Err(FactFault::RefTarget {
+            lane: backend_semantic::vocabulary::ProjectionFactLane::EntityMembers,
+            raw: 4,
+            fact_count: 4,
+        })
+    );
+    assert_eq!(
+        facts.capture_declared_members(3, &[1]),
+        Err(FactFault::ConflictingParentage {
+            entity: EntityId::new(1),
+            existing: ParentageState::Bound {
+                parent: EntityId::new(0)
+            },
+            requested: ParentageState::Bound {
+                parent: EntityId::new(3)
+            },
+        })
+    );
+    assert_eq!(owned_topology_projection(&facts)?, before);
+    Ok(())
+}
+
 #[derive(Debug, Error)]
 enum TestError {
     #[error("fixture source length does not fit the source identity")]

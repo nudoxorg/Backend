@@ -561,6 +561,19 @@ pub struct ModuleFacts {
     pub annotations: Vec<AnnotationFact>,
     /// Function, lambda, and comprehension binding-scope facts.
     pub binding_scopes: Vec<BindingScopeFact>,
+    /// Ruff-proven complete direct class-body declaration inventories. Missing
+    /// entries mean unavailable, including bodies with unsupported binding
+    /// statements; inheritance and runtime instance attributes are excluded.
+    pub declared_member_inventories: Vec<DeclaredMemberInventory>,
+}
+
+/// Exact written declaration sites of one complete direct class-body inventory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredMemberInventory {
+    /// Class identifier site, distinct from nested and same-name classes.
+    pub owner: Span,
+    /// Directly declared member identifier sites, excluding parameters.
+    pub members: Vec<Span>,
 }
 /// One annotation expression attached to a declaration or assignment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -731,6 +744,33 @@ fn assignment_declaration(target: Option<&ast::Expr>) -> Option<RuffDeclaration>
     })
 }
 
+/// The extraction walk does not emit every Python binding form. Claim a
+/// complete inventory only for class bodies whose direct statements are all
+/// represented, or are known not to declare a member. Conditional bindings,
+/// imports, multiple assignment targets, aliases and runtime expressions
+/// require their own proof and keep the inventory unavailable.
+fn declared_class_members(class: &ast::StmtClassDef) -> Option<DeclaredMemberInventory> {
+    let mut members = Vec::new();
+    for statement in &class.body {
+        match statement {
+            ast::Stmt::Pass(_) => continue,
+            ast::Stmt::Expr(expression)
+                if matches!(expression.value.as_ref(), ast::Expr::StringLiteral(_)) =>
+            {
+                continue;
+            }
+            ast::Stmt::FunctionDef(_) | ast::Stmt::ClassDef(_) | ast::Stmt::AnnAssign(_) => {}
+            ast::Stmt::Assign(assign) if assign.targets.len() == 1 => {}
+            _ => return None,
+        }
+        members.push(ruff_declaration(statement)?.name);
+    }
+    Some(DeclaredMemberInventory {
+        owner: span(class.name.range()),
+        members,
+    })
+}
+
 /// Validates source representation and derives its full byte span once.
 fn source_text(source: &[u8]) -> Result<(&str, Span), ExtractionError> {
     let module_span = source_span(source, 0, source.len())?;
@@ -797,6 +837,7 @@ fn module_facts(
         docstring: module_doc,
         annotations: Vec::new(),
         binding_scopes: Vec::new(),
+        declared_member_inventories: Vec::new(),
     })
 }
 
@@ -2248,6 +2289,9 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 self.push_binding_frame(BodyKind::Class, class.range);
                 visitor::walk_stmt(self, statement);
                 self.pop_binding_frame();
+                if let Some(inventory) = declared_class_members(class) {
+                    self.facts.declared_member_inventories.push(inventory);
+                }
                 self.class_depth -= 1;
                 self.owner = old;
                 self.enclosing_class = old_enclosing_class;
@@ -2807,6 +2851,7 @@ mod tests {
             docstring: None,
             annotations: Vec::new(),
             binding_scopes: Vec::new(),
+            declared_member_inventories: Vec::new(),
         };
         let mut projection = Projection {
             text: "x",

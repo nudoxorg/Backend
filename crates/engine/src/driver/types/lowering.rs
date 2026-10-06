@@ -225,6 +225,21 @@ pub enum FactFault {
         /// New incompatible authority claim.
         requested: ParentageState,
     },
+    /// Two authority passes supplied different complete direct-declaration inventories.
+    ConflictingMemberInventory {
+        /// Owner whose explicit inventories disagree.
+        entity: EntityId,
+        /// Number of members retained from the first observation.
+        existing_count: u64,
+        /// Number of members in the rejected observation.
+        requested_count: u64,
+        /// First differing position in canonical ordinal order.
+        first_difference: u64,
+        /// Retained member at that position, absent at the end of the run.
+        existing_member: Option<u32>,
+        /// Rejected member at that position, absent at the end of the run.
+        requested_member: Option<u32>,
+    },
 }
 
 /// Exact rejection of one emitted fact, retained by value at the shared

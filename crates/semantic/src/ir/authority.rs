@@ -83,7 +83,8 @@ pub struct EntityAuthorityFacts {
     pub source: FactAvailability,
     /// Primary source-file identity availability for `source`.
     pub source_file: FactAvailability,
-    /// Complete local member-set availability.
+    /// Complete directly declared member inventory availability. Inherited,
+    /// effective and runtime structural members are outside this plane.
     pub members: FactAvailability,
     /// Semantic type availability.
     pub semantic_type: FactAvailability,
@@ -247,7 +248,8 @@ pub enum AuthorityFactPlane {
     Source,
     /// Source-file identity associated with the primary span.
     SourceFile,
-    /// Complete set of local members owned by the declaration.
+    /// Complete directly declared member inventory, excluding inherited,
+    /// effective and runtime structural membership.
     Members,
     /// Semantic type assigned to the declaration.
     SemanticType,

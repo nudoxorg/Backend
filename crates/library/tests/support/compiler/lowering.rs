@@ -333,6 +333,14 @@ pub(crate) enum GoldenProjectionAdmissionFault {
         existing: GoldenProjectionParentageState,
         requested: GoldenProjectionParentageState,
     },
+    ConflictingMemberInventory {
+        entity: u32,
+        existing_count: u64,
+        requested_count: u64,
+        first_difference: u64,
+        existing_member: Option<u32>,
+        requested_member: Option<u32>,
+    },
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -1826,6 +1834,21 @@ impl From<backend_semantic::vocabulary::ProjectionAdmissionFault> for GoldenProj
                 entity,
                 existing: existing.into(),
                 requested: requested.into(),
+            },
+            ProjectionAdmissionFault::ConflictingMemberInventory {
+                entity,
+                existing_count,
+                requested_count,
+                first_difference,
+                existing_member,
+                requested_member,
+            } => Self::ConflictingMemberInventory {
+                entity,
+                existing_count,
+                requested_count,
+                first_difference,
+                existing_member,
+                requested_member,
             },
             ProjectionAdmissionFault::ConflictingParentage {
                 entity,

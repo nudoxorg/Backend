@@ -459,6 +459,8 @@ pub enum SemanticTypeUnavailable {
 pub enum SemanticShapeUnavailable {
     /// An exact referenced entity or atom is missing from the validated image.
     MissingImageFact,
+    /// The producer did not prove a complete directly declared member inventory.
+    MemberInventoryNotCaptured,
     /// The selected semantic publication did not cover its declared scope completely.
     PartialPublication,
     /// The selected target has no published semantic image.
@@ -736,7 +738,9 @@ pub struct SemanticShapeMember {
 pub enum SemanticDeclarationShape {
     /// Ordered callable contract.
     Callable(SemanticCallableShape),
-    /// Ordered record/object members.
+    /// Complete directly declared member inventory. Inherited, effective and
+    /// runtime structural members are separate type or language facts. A
+    /// producer without a complete inventory returns typed unavailability.
     Aggregate(Box<[SemanticShapeMember]>),
     /// Type alias, field, property, or other directly typed declaration.
     Typed(SemanticTypeFact),

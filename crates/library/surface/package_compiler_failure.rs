@@ -819,6 +819,14 @@ pub enum PackageProjectionAdmissionFaultFacts {
         existing: PackageParentageFact,
         requested: PackageParentageFact,
     },
+    ConflictingMemberInventory {
+        entity: u32,
+        existing_count: u64,
+        requested_count: u64,
+        first_difference: u64,
+        existing_member: Option<u32>,
+        requested_member: Option<u32>,
+    },
 }
 
 impl PackageProjectionAdmissionFaultFacts {
@@ -867,6 +875,9 @@ impl PackageProjectionAdmissionFaultFacts {
             Self::RefTarget { .. } => "lowering_projection_ref_target",
             Self::SourceSpan { .. } => "lowering_projection_source_span",
             Self::ConflictingSourceSpan { .. } => "lowering_projection_conflicting_source_span",
+            Self::ConflictingMemberInventory { .. } => {
+                "lowering_projection_conflicting_member_inventory"
+            }
             Self::ConflictingParentage { .. } => "lowering_projection_conflicting_parentage",
         }
     }
@@ -1238,6 +1249,21 @@ impl From<ProjectionAdmissionFault> for PackageProjectionAdmissionFaultFacts {
                 existing_end: existing.end,
                 requested_start: requested.start,
                 requested_end: requested.end,
+            },
+            F::ConflictingMemberInventory {
+                entity,
+                existing_count,
+                requested_count,
+                first_difference,
+                existing_member,
+                requested_member,
+            } => Self::ConflictingMemberInventory {
+                entity,
+                existing_count,
+                requested_count,
+                first_difference,
+                existing_member,
+                requested_member,
             },
             F::ConflictingParentage {
                 entity,

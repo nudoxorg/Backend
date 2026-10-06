@@ -1749,6 +1749,17 @@ impl<'source> FactSet<'source> {
         self.provenance.mark_members_captured(self.len, entity)
     }
 
+    /// Publishes only an explicitly enumerated complete direct-declaration
+    /// inventory; inherited/effective members and carriers remain separate.
+    pub(super) fn capture_declared_members(
+        &mut self,
+        entity: u32,
+        members: &[u32],
+    ) -> Result<(), FactFault> {
+        self.provenance
+            .capture_declared_members(self.len, entity, members)
+    }
+
     /// First pooled position of one fact's type-record children.
     ///
     /// Admission records this prefix coordinate with the row. Recursive
@@ -2768,56 +2779,20 @@ impl<'source> FactSet<'source> {
                 None => {}
             }
         }
-        // Member lists enter owned IR only when the authority explicitly
-        // captured that parent's complete local set. A bound child alone is
-        // containment evidence, never permission to manufacture a partial
-        // member list from parentage.
-        let mut member_counts = vec![0_usize; fact_count];
-        for parent in self.provenance.parentage()[..fact_count]
-            .iter()
-            .copied()
-            .filter_map(local_parent)
-        {
-            if self.provenance.member_sets().get(parent.index())
-                != Some(&MemberSetCapture::Captured)
-            {
-                continue;
-            }
-            let Some(count) = member_counts.get_mut(parent.raw as usize) else {
-                return Err(backend_semantic::ir::BuildError::Dangling {
-                    space: backend_semantic::ir::SemanticSpace::Entity,
-                    raw: parent.raw,
-                });
-            };
-            *count += 1;
-        }
+        // Only the producer's explicit direct-declaration inventory enters
+        // owned IR. Parentage also covers carriers and effective members and
+        // cannot stand in for this independently captured semantic fact.
         let mut member_ranges = vec![(0_usize, 0_usize); fact_count];
-        let mut member_total = 0_usize;
-        for (ordinal, count) in member_counts.iter().copied().enumerate() {
-            member_ranges[ordinal] = (member_total, count);
-            member_total += count;
-        }
-        let mut member_cursors = member_ranges
-            .iter()
-            .map(|range| range.0)
-            .collect::<Vec<_>>();
-        let mut members = vec![backend_semantic::ir::TreeEntityId::new(0); member_total];
-        for (child, parentage) in self.provenance.parentage()[..fact_count]
-            .iter()
-            .copied()
-            .enumerate()
-        {
-            let Some(parent) = local_parent(parentage) else {
-                continue;
-            };
-            if self.provenance.member_sets().get(parent.index())
-                != Some(&MemberSetCapture::Captured)
-            {
-                continue;
-            }
-            let slot = member_cursors[parent.raw as usize];
-            members[slot] = backend_semantic::ir::TreeEntityId::new(child as u32);
-            member_cursors[parent.raw as usize] += 1;
+        let mut members = Vec::new();
+        for (ordinal, range) in member_ranges.iter_mut().enumerate() {
+            let captured = self.provenance.declared_members(ordinal).unwrap_or(&[]);
+            *range = (members.len(), captured.len());
+            members.extend(
+                captured
+                    .iter()
+                    .copied()
+                    .map(backend_semantic::ir::TreeEntityId::new),
+            );
         }
         let source_file = self.provenance.source_spans()[..fact_count]
             .iter()

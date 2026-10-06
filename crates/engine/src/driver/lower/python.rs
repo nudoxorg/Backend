@@ -110,6 +110,7 @@ pub(crate) fn collect_with_checker<'a, 'source>(
     emitter.emit_classes()?;
     emitter.emit_non_class_declarations()?;
     emitter.emit_parentage()?;
+    emitter.emit_declared_member_inventories()?;
     emitter.emit_occurrences()?;
     emitter.emit_docs()?;
     Ok(())
@@ -723,6 +724,42 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     .attach_parent(child, parent)
                     .map_err(|fault| parentage_fault(span.start, span.end, fault))?;
             }
+        }
+        Ok(())
+    }
+
+    /// Bind Ruff's explicit class-body proof to emitted sites. Any missing or
+    /// shadowed declaration keeps the whole inventory unavailable.
+    fn emit_declared_member_inventories(&mut self) -> Result<(), PythonCollectError> {
+        let mut declarations: HashMap<(u32, u32), Option<u32>> = HashMap::new();
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if self.live[index] {
+                declarations
+                    .entry((declaration.name_span.start, declaration.name_span.end))
+                    .and_modify(|entry| *entry = None)
+                    .or_insert(self.ordinals[index]);
+            }
+        }
+        for inventory in &self.module.declared_member_inventories {
+            let ordinal_at =
+                |site: Span| declarations.get(&(site.start, site.end)).copied().flatten();
+            let Some(owner) = ordinal_at(inventory.owner) else {
+                continue;
+            };
+            let Some(members) = inventory
+                .members
+                .iter()
+                .copied()
+                .map(ordinal_at)
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            self.facts
+                .capture_declared_members(owner, &members)
+                .map_err(|fault| {
+                    parentage_fault(inventory.owner.start, inventory.owner.end, fault)
+                })?;
         }
         Ok(())
     }
@@ -7457,6 +7494,90 @@ mod tests {
         ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
         PythonProjectionFault,
     };
+
+    #[test]
+    fn declared_member_inventory_excludes_inherited_runtime_and_unrepresented_bindings() {
+        use backend_semantic::{
+            ir::{FactAvailability, SemanticReader, SourceIdentity},
+            vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, PythonVersion, Stage},
+        };
+        use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
+        let source = concat!(
+            "class Base:\n    inherited: int = 1\n",
+            "class Child(Base):\n    own: str = 'x'\n    def run(self, arg: int) -> int:\n        self.runtime = arg\n        return arg\n",
+            "class Empty:\n    pass\n",
+            "class Imported:\n    import math\n",
+            "class Conditional:\n    if True:\n        hidden: int = 1\n",
+            "class Multiple:\n    first = second = 1\n",
+        ).as_bytes();
+        let profile = LanguageProfile::Python(PythonVersion::Python312);
+        let module = backend_frontend_python::legacy::extract(source, PythonVersion::Python312)
+            .expect("Ruff parses fixture");
+        let mut facts = crate::driver::lower::FactSet::new();
+        super::collect_with_checker(&module, source, &mut facts, None)
+            .expect("Ruff facts enter canonical lane");
+        let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source);
+        let recipe = CompileRecipeFact::derive(
+            profile,
+            Stage::LowerIr,
+            NativeTool::Python,
+            identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"python-member-inventory-fixture"),
+        );
+        let ir = facts
+            .build_ir(
+                profile,
+                SourceIdentity {
+                    identity,
+                    byte_len: source.len() as u32,
+                },
+                recipe,
+                crate::driver::types::DeclarationScope::fixture(),
+            )
+            .expect("owned image admits proof");
+        for (name, expected) in [
+            (&b"Child"[..], &[&b"own"[..], &b"run"[..]][..]),
+            (&b"Empty"[..], &[][..]),
+        ] {
+            let item = ir
+                .items()
+                .find(|item| item.name() == name)
+                .expect("inventory owner");
+            assert_eq!(
+                ir.entity(item.id())
+                    .expect("owner entity")
+                    .authority
+                    .members,
+                FactAvailability::Captured
+            );
+            let mut names = item
+                .members()
+                .iter()
+                .map(|id| ir.item(*id).expect("member").name().to_vec())
+                .collect::<Vec<_>>();
+            names.sort();
+            let mut expected = expected
+                .iter()
+                .map(|name| name.to_vec())
+                .collect::<Vec<_>>();
+            expected.sort();
+            assert_eq!(names, expected);
+        }
+        for name in [&b"Imported"[..], &b"Conditional"[..], &b"Multiple"[..]] {
+            let item = ir
+                .items()
+                .find(|item| item.name() == name)
+                .expect("unavailable owner");
+            assert_eq!(
+                ir.entity(item.id())
+                    .expect("owner entity")
+                    .authority
+                    .members,
+                FactAvailability::Unavailable
+            );
+            assert!(item.members().is_empty());
+        }
+    }
 
     #[test]
     fn foreign_spelling_utf8_retains_the_occurrence_span() {

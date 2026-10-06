@@ -1621,6 +1621,14 @@ enum ProjectionAdmissionFaultWire {
         #[serde(with = "ProjectionParentageStateWire")]
         requested: ProjectionParentageState,
     },
+    ConflictingMemberInventory {
+        entity: u32,
+        existing_count: u64,
+        requested_count: u64,
+        first_difference: u64,
+        existing_member: Option<u32>,
+        requested_member: Option<u32>,
+    },
 }
 remote_unit_enum!(
     ClangProjectionTypeKindWire,

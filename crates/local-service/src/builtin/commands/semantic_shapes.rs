@@ -566,6 +566,9 @@ fn project_declaration(
                             | ItemKind::Namespace
                     ) =>
             {
+                if entity.authority.members != backend_semantic::ir::FactAvailability::Captured {
+                    return Err(SemanticShapeUnavailable::MemberInventoryNotCaptured);
+                }
                 SemanticDeclarationShape::Aggregate(project_members(
                     image,
                     entity.members,
@@ -1507,6 +1510,98 @@ mod tests {
         vocabulary::{LanguageProfile, PythonVersion, RustEdition},
     };
     use std::collections::BTreeSet;
+
+    #[test]
+    fn declared_member_inventory_reader_distinguishes_captured_empty_from_unavailable() {
+        let mut builder = IrBuilder::new();
+        let item = TreeItemInput {
+            name: b"empty",
+            kind: ItemKind::Record,
+            visibility: Visibility::Unknown,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Root,
+                members: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        };
+        let versions = [31, 32].map(|byte| EntityVersion {
+            family: DeclarationFamilyId::from_raw([byte; 16]),
+            variant: VariantFingerprint::from_raw([byte; 16]),
+            core_payload: CorePayloadHash::from_raw([byte; 16]),
+        });
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &[
+                    item,
+                    TreeItemInput {
+                        name: b"unproven",
+                        authority: EntityAuthorityFacts {
+                            members: FactAvailability::Unavailable,
+                            ..item.authority
+                        },
+                        ..item
+                    },
+                ],
+                links: &[],
+            })
+            .expect("both authority states are valid");
+        let ir = builder.finish().expect("authority image finalizes");
+        let mut bytes = vec![0; full_semantic_image_len(&ir).expect("bounded image")];
+        encode_full_semantic_image(&ir, &mut bytes).expect("authority facts encode");
+        let image = SemanticImageView::reopen(&bytes).expect("authority facts survive reopen");
+        let basis = backend_engine::Basis::new(
+            backend_engine::view_state_root(&[]),
+            backend_engine::object_version(b"member-authority"),
+        );
+        let frontier =
+            backend_engine::Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0);
+        let view = backend_engine::ViewRoot::new_incomplete(
+            backend_engine::view_key(b"member-authority"),
+            basis,
+            frontier,
+            vec![],
+            vec![],
+        )
+        .expect("coherent projection view");
+        let mut meter = ProjectionMeter {
+            nodes: 0,
+            bytes: 0,
+            max_nodes: backend_library::MAX_SEMANTIC_SHAPE_NODES,
+            max_bytes: backend_library::MAX_SEMANTIC_SHAPE_BYTES,
+            proof_symbols: BTreeSet::new(),
+            proof_packages: BTreeSet::new(),
+            omitted_proof_symbols: BTreeSet::new(),
+        };
+        let package = backend_engine::package_key("member-authority");
+        let project = |id, meter: &mut ProjectionMeter| {
+            super::project_declaration(
+                &image,
+                image.entity(EntityId::new(id)).expect("owner"),
+                package,
+                &view,
+                LanguageProfile::Rust(RustEdition::Rust2021),
+                meter,
+            )
+        };
+        assert!(
+            matches!(project(0, &mut meter), backend_library::SemanticShapeFact::Available {
+            shape: SemanticDeclarationShape::Aggregate(members), .. } if members.is_empty())
+        );
+        assert_eq!(
+            project(1, &mut meter),
+            backend_library::SemanticShapeFact::Unavailable(
+                backend_library::SemanticShapeUnavailable::MemberInventoryNotCaptured
+            )
+        );
+    }
 
     #[test]
     fn python_parameter_convention_is_not_projected_from_a_function_row() {

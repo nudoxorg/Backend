@@ -564,6 +564,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.emit_crate_file_owner()?;
         self.rebuild_owner_order();
         self.emit_parentage()?;
+        self.emit_declared_member_inventories(&declarations)?;
         self.attach_macros()?;
         self.emit_occurrences()?;
         self.emit_computed()?;
@@ -2461,6 +2462,39 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                     .mark_parentage_root(ordinal)
                     .map_err(|fault| parentage_fault(ordinal, name_len, fault))?,
             }
+        }
+        Ok(())
+    }
+
+    /// HIR owns the complete field list of a struct or union. Capture it only
+    /// when every field has an emitted local row. Trait/enum/module and
+    /// implementation membership require their own proof and stay unavailable.
+    fn emit_declared_member_inventories(
+        &mut self,
+        declarations: &[Decl<'source>],
+    ) -> Result<(), RustAuthorityError> {
+        for (index, declaration) in declarations.iter().enumerate() {
+            let RustDefinition::Record(adt) = &declaration.definition else {
+                continue;
+            };
+            let Some(Some(owner)) = self.ordinals.get(index).copied() else {
+                continue;
+            };
+            let fields = match adt {
+                ra_ap_hir::Adt::Struct(record) => record.fields(self.database),
+                ra_ap_hir::Adt::Union(record) => record.fields(self.database),
+                ra_ap_hir::Adt::Enum(_) => continue,
+            };
+            let Some(members) = fields
+                .iter()
+                .map(|field| self.ordinal_of_field(field))
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            self.facts
+                .capture_declared_members(owner, &members)
+                .map_err(|fault| parentage_fault(owner, declaration.name.len(), fault))?;
         }
         Ok(())
     }
