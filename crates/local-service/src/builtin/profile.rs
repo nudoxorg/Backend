@@ -3292,7 +3292,7 @@ pub(super) fn validate_capture_basis_closure_id(
 ) -> Result<(), BuiltinModelError> {
     if basis.closure_id != *selected_closure_id.as_bytes() {
         return Err(BuiltinModelError(
-            "capture basis closure differs from the authenticated selected base publication"
+            "capture basis closure differs from the authenticated selected base descriptor"
                 .to_owned(),
         ));
     }

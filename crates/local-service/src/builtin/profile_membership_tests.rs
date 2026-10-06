@@ -1061,7 +1061,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     assert!(
         hybrid_error
             .to_string()
-            .contains("authenticated selected base publication"),
+            .contains("authenticated selected base descriptor"),
         "same-manifest/current-sequence basis rejects an old authenticated closure: {hybrid_error}"
     );
     let selected_root = daemon.engine().daemon().owner().head().root();
