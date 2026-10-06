@@ -715,9 +715,19 @@ fn source_address(text: &str) -> (bool, Option<SourceAddress<'_>>) {
 }
 
 fn semantic_address(text: &str) -> bool {
-    let Some((package, declaration)) = text.split_once("::semantic::") else {
+    // Classify producer-shaped addresses independently of their spelling. The
+    // selected admitted label still has to match every byte exactly.
+    let marker = b"::semantic::";
+    let Some(at) = text
+        .as_bytes()
+        .windows(marker.len())
+        .position(|cell| cell.eq_ignore_ascii_case(marker))
+    else {
         return false;
     };
+    // An ASCII marker begins and ends at UTF-8 character boundaries.
+    let package = &text[..at];
+    let declaration = &text[at + marker.len()..];
     let Some((identity, _)) = declaration.split_once("::") else {
         return false;
     };
