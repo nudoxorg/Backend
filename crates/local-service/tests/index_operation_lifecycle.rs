@@ -573,6 +573,12 @@ fn selected_symbol_by_name_and_kind(
         return Err(io::Error::other("name lookup returned another reply shape").into());
     };
     let semantic_name_suffix = format!("::{name}");
+    let returned_rows = snapshot
+        .root
+        .rows()
+        .iter()
+        .map(|row| (row.label.as_str(), row.kind, row.package, row.id))
+        .collect::<Vec<_>>();
     snapshot
         .root
         .rows()
@@ -589,7 +595,7 @@ fn selected_symbol_by_name_and_kind(
         })
         .ok_or_else(|| {
             io::Error::other(format!(
-                "name lookup did not return {name} with kind {kind:?}"
+                "name lookup did not return {name} with kind {kind:?}; returned rows: {returned_rows:?}"
             ))
             .into()
         })
