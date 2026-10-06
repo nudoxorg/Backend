@@ -528,7 +528,7 @@ struct FactRegistry<'a, 'source> {
     tsz_project: Option<&'source TszProject>,
     /// Exact virtual path of the source file being projected, required when
     /// a native anonymous property has no TSZ declaration symbol.
-    source_path: Option<&'source str>,
+    source_path: Option<String>,
     decl_starts: &'a [u32],
     decl_ends: &'a [u32],
     name_starts: &'a [u32],
@@ -5659,7 +5659,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let registry = FactRegistry {
             source: self.source,
             tsz_project: Some(project),
-            source_path: Some(&bound_file.file_name),
+            source_path: Some(bound_file.file_name.clone()),
             decl_starts: &self.decl_starts,
             decl_ends: &self.decl_ends,
             name_starts: &self.name_starts,
@@ -9638,7 +9638,7 @@ fn intern_native_tsz_object<'source>(
                     return None;
                 }
                 registry.tsz_project?.property_name_source_in_declaration(
-                    registry.source_path?,
+                    registry.source_path.as_deref()?,
                     (start, end),
                     &name,
                 )
