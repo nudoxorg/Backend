@@ -538,7 +538,7 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
         positional: &[ArgumentSpec::optional(
             "path",
             ArgumentKind::ProjectPath,
-            "Absolute local project directory to index or re-index.",
+            "Local project directory to index or re-index; use `.` for the current directory.",
         )],
         options: &[ArgumentSpec::optional_with_json_name(
             "execution-intent",

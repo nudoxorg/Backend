@@ -482,8 +482,16 @@ impl<P: Product> Server<P> {
     fn instructions(&self) -> String {
         let project = bounded_text(&self.project);
         let directory = self.working_directory.as_deref().map(bounded_text);
-        let mut instructions = String::with_capacity(INSTRUCTIONS.len() + project.len() + 160);
+        let mut instructions = String::with_capacity(INSTRUCTIONS.len() + project.len() + 400);
         instructions.push_str(INSTRUCTIONS);
+        instructions.push_str(
+            "\n\nQuick start: `nudox add .`, then `nudox search \"error handling\"`. \
+             Register this stdio server in Claude Code with `claude mcp add --scope user \
+             --transport stdio nudox -- \"$(command -v backend-mcp)\" --project \
+             '${CLAUDE_PROJECT_DIR:-.}'`, then verify with \
+             `claude mcp get nudox`. Use `backend.package` for one pinned registry package and \
+             `backend.index_search` for a name-first registry lookup.",
+        );
         instructions.push_str("\n\nMCP workspace selection:\n- selected project: ");
         instructions.push_str(&project);
         instructions.push_str(

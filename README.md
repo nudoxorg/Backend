@@ -87,3 +87,6 @@ a small graph fixture or a metadata-only preflight.
 The root pointer advances only after immutable objects and the intent journal
 are durable. Remote workers may accelerate pure recipes, but local durable
 state and result admission remain authoritative.
+
+For the installed `nudox` quick start and Claude Code stdio registration, see
+[CLI and Claude Code onboarding](docs/operations/cli-mcp-onboarding.md).

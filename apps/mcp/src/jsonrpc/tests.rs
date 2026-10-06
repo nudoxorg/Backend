@@ -981,6 +981,8 @@ fn every_registry_row_is_reachable_as_exactly_one_tool() {
         "read",
         "references",
         "graph",
+        "package",
+        "index-search",
     ];
     for name in SESSION {
         let spec = COMMANDS
@@ -1057,6 +1059,8 @@ fn every_registry_row_is_reachable_as_exactly_one_tool() {
             "backend.read",
             "backend.references",
             "backend.graph",
+            "backend.package",
+            "backend.index_search",
             "backend.index_start",
             "backend.index_progress",
             "backend.index_cancel",
@@ -1481,6 +1485,70 @@ fn the_session_tool_list_leads_with_packages_and_index() {
             .all(|name| *name != "backend.surface" && *name != "backend.query"),
         "the session list must not advertise the escape hatches: {names:?}"
     );
+}
+
+#[test]
+fn registry_lookup_tools_are_advertised_with_bounded_typed_inputs() {
+    let mut server = ready(Fake::default());
+    let listed = request(&mut server, "tools/list", &json!({}));
+    let tools = &listed["result"]["tools"];
+
+    let package = tool_named(tools, "backend.package");
+    assert_eq!(package["inputSchema"]["required"], json!(["package"]));
+    assert_eq!(
+        package["inputSchema"]["properties"]["package"]["type"],
+        "string"
+    );
+    assert_eq!(package["inputSchema"]["additionalProperties"], false);
+
+    let search = tool_named(tools, "backend.index_search");
+    assert_eq!(search["inputSchema"]["required"], json!(["query"]));
+    assert_eq!(
+        search["inputSchema"]["properties"]["query"]["type"],
+        "string"
+    );
+    assert_eq!(search["inputSchema"]["properties"]["limit"]["minimum"], 1);
+    assert_eq!(search["inputSchema"]["properties"]["limit"]["maximum"], 200);
+    assert_eq!(
+        search["inputSchema"]["properties"]["cursor"]["type"],
+        "string"
+    );
+    assert_eq!(search["inputSchema"]["additionalProperties"], false);
+}
+
+#[test]
+fn advertised_registry_lookups_reach_the_typed_product_commands() {
+    let mut package_server = ready(Fake {
+        surface_reply: Some(SurfaceReply::Package(Box::new([]))),
+        ..Fake::default()
+    });
+    let package = call(
+        &mut package_server,
+        "backend.package",
+        &json!({"package":"pkg:cargo/serde@1.0.228"}),
+    );
+    assert_eq!(package["isError"], false);
+    assert!(matches!(
+        package_server.product.surface_commands.as_slice(),
+        [SurfaceCommand::Package { package }]
+            if package.as_str() == "pkg:cargo/serde@1.0.228"
+    ));
+
+    let mut search_server = ready(Fake {
+        surface_index_search_pages: true,
+        ..Fake::default()
+    });
+    let search = call(
+        &mut search_server,
+        "backend.index_search",
+        &json!({"query":"serde","limit":3}),
+    );
+    assert_eq!(search["isError"], false);
+    assert!(matches!(
+        search_server.product.surface_commands.as_slice(),
+        [SurfaceCommand::IndexSearch { query, limit: 3, cursor: None }]
+            if query.as_str() == "serde"
+    ));
 }
 
 #[test]
@@ -2156,6 +2224,28 @@ fn the_handshake_reports_the_stable_protocol_and_its_instructions() {
     assert!(instructions.contains("backend.index"), "{instructions}");
     assert!(instructions.contains("absolute path"), "{instructions}");
     assert!(instructions.contains("backend.document"), "{instructions}");
+    assert!(instructions.contains("nudox add ."), "{instructions}");
+    assert!(
+        instructions.contains("nudox search \"error handling\""),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("claude mcp add --scope user --transport stdio nudox"),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("--project '${CLAUDE_PROJECT_DIR:-.}'"),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("claude mcp get nudox"),
+        "{instructions}"
+    );
+    assert!(instructions.contains("backend.package"), "{instructions}");
+    assert!(
+        instructions.contains("backend.index_search"),
+        "{instructions}"
+    );
     assert!(
         instructions.contains("backend://workspace/current"),
         "{instructions}"

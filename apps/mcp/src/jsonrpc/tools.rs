@@ -1,12 +1,12 @@
 //! The tool table an MCP client should see.
 //!
 //! The command registry stays complete for the CLI. This list is the session
-//! an agent needs to add a project, manage owner indexing jobs, and read it:
-//! shelf, index, search, and the coordinate tools. Registry schemas come from
+//! an agent needs to add a project, search it, inspect coordinates, and run two
+//! compact registry lookups. Registry schemas come from
 //! [`backend_present::GRAMMARS`]; the three owner-job tools project the same
-//! typed `SurfaceCommand` API. Registry rows that are not in this list stay
-//! callable by name for existing probes; they are not advertised, and neither
-//! are the Trustfall or surface escape hatches.
+//! typed `SurfaceCommand` API. Other registry rows stay callable by name for
+//! existing probes but are not advertised, and neither are the Trustfall or
+//! surface escape hatches.
 
 use super::codec::empty_cursor;
 use super::{RpcError, default_detail};
@@ -46,6 +46,8 @@ const SESSION_TOOLS: &[&str] = &[
     "backend.read",
     "backend.references",
     "backend.graph",
+    "backend.package",
+    "backend.index_search",
 ];
 
 pub(super) const INDEX_JOB_TOOLS: &[&str] =
@@ -278,7 +280,10 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     // of the command grammar avoids making a presentation preference look
     // like a daemon operand while still making the accepted JSON explicit.
     properties.insert("detail".to_owned(), detail_property(grammar.tool()));
-    if matches!(grammar.name(), "search" | "resolve" | "name" | "graph") {
+    if matches!(
+        grammar.name(),
+        "search" | "resolve" | "name" | "graph" | "index-search"
+    ) {
         properties.insert(
             "cursor".to_owned(),
             json!({

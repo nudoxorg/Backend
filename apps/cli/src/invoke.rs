@@ -145,6 +145,12 @@ pub fn help() -> String {
         "backend — local-first, versioned code intelligence\n\n\
          Usage: backend [OPTIONS] <COMMAND> [OPERANDS]\n",
     );
+    out.push_str("\nquick start (installed command name: nudox)\n");
+    out.push_str(concat!(
+        "  nudox add .  Index this directory\n",
+        "  nudox search \"error handling\"  Find matching declarations\n",
+        "  Claude Code: claude mcp add --scope user --transport stdio nudox -- \"$(command -v backend-mcp)\" --project '${CLAUDE_PROJECT_DIR:-.}'\n",
+    ));
     for domain in domains() {
         let _ = writeln!(out, "\n{}", domain_name(domain));
         for grammar in grammars_in(domain) {

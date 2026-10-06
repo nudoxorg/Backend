@@ -470,6 +470,10 @@ fn help_is_grouped_by_domain_and_names_every_domain() {
     assert!(help.contains("surface <JSON>"), "the escape hatch stays");
     assert!(help.contains("--format human|markdown|json"));
     assert!(help.contains("--passive"));
+    assert!(help.contains("nudox add ."));
+    assert!(help.contains("nudox search \"error handling\""));
+    assert!(help.contains("claude mcp add --scope user --transport stdio nudox"));
+    assert!(help.contains("--project '${CLAUDE_PROJECT_DIR:-.}'"));
 }
 
 #[test]
@@ -557,8 +561,31 @@ fn add_defaults_to_interactive_and_advertises_the_background_option() {
     assert_eq!(path, "/abs/project");
 
     let help = invoke::help_for(grammar_for("add").expect("Add grammar"));
+    assert!(help.contains("use `.` for the current directory"));
     assert!(help.contains("--execution-intent INTENT"));
     assert!(help.contains("bounded remote calibration"));
+}
+
+#[test]
+fn installed_quick_start_words_lower_to_the_same_add_and_search_requests() {
+    let add = invoke::parse(&words("add ."), None).expect("parse the quick-start add");
+    assert!(matches!(
+        lower(&add, "/abs/project").expect("lower add"),
+        Request::Index(path) if path == "."
+    ));
+
+    let index_alias = invoke::parse(&words("index ."), None).expect("parse the index alias");
+    assert!(matches!(
+        lower(&index_alias, "/abs/project").expect("lower index alias"),
+        Request::Index(path) if path == "."
+    ));
+
+    let search = invoke::parse(&["search".to_owned(), "error handling".to_owned()], None)
+        .expect("parse the positional search query");
+    assert!(matches!(
+        lower(&search, "/abs/project").expect("lower search"),
+        Request::Search { text, .. } if text == "error handling"
+    ));
 }
 
 #[test]
