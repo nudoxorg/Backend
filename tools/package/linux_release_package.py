@@ -134,6 +134,35 @@ def admit_receipt(build: dict) -> dict:
     return receipt
 
 
+def public_build_manifest(build: dict) -> dict:
+    """Retain build identity and hashes while omitting machine-local paths."""
+    if build.get("schema") != "nudox.runtime-build-manifest.v1":
+        fail("build manifest has an unsupported runtime-artifact schema")
+    source = build.get("source")
+    if not isinstance(source, dict) or not all(key in source for key in ("commit", "tree", "clean")):
+        fail("build manifest omits its source identity")
+    executables = build.get("executables")
+    if not isinstance(executables, dict) or set(executables) != set(BINARIES):
+        fail("build manifest omits or adds executable identities")
+    public_executables = {}
+    for name in BINARIES:
+        record = executables[name]
+        if not isinstance(record, dict) or not re.fullmatch(r"[a-f0-9]{64}", record.get("sha256", "")):
+            fail(f"build manifest has an invalid {name} hash")
+        if not isinstance(record.get("bytes"), int) or isinstance(record["bytes"], bool) or record["bytes"] <= 0:
+            fail(f"build manifest has an invalid {name} size")
+        public_executables[name] = {"sha256": record["sha256"], "bytes": record["bytes"]}
+    receipt = build.get("root_receipt")
+    if not isinstance(receipt, dict) or receipt.get("schema") != "nudox.runtime-artifact-build-receipt.v1" or not re.fullmatch(r"[a-f0-9]{64}", receipt.get("sha256", "")):
+        fail("build manifest has no hash-bound runtime artifact receipt")
+    return {
+        "schema": build["schema"],
+        "source": {"commit": source["commit"], "tree": source["tree"], "clean": source["clean"]},
+        "executables": public_executables,
+        "root_receipt": {"schema": receipt["schema"], "sha256": receipt["sha256"]},
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path, help="successful source-bound Linux build manifest")
@@ -234,7 +263,8 @@ def main() -> int:
         fail("ELF dependency scan found no glibc symbol floor")
     minimum_glibc = max(glibc_versions, key=version_tuple)
 
-    shutil.copyfile(manifest_path, root / "build-manifest.json")
+    public_build = public_build_manifest(build)
+    (root / "build-manifest.json").write_text(json.dumps(public_build, indent=2, sort_keys=True) + "\n")
     package_tools = Path(__file__).resolve().parent
     installer_source = (package_tools / "install_linux.py").read_text()
     (output / "install-linux-x64-channel.py").write_text(installer_source)
