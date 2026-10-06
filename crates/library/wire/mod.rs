@@ -65,9 +65,9 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. Version 20 binds query continuations to their
-/// query family and page credit independently of successor page roots, and
-/// carries typed required-tool setup refusals. These extend version 19's
-/// durable compiler failures, complete-package history proofs, and unchanged
-/// view authority rebinding. Clients and services must use matching contracts.
-pub const DTO_VERSION: u16 = 20;
+/// Current transport DTO version. Version 21 distinguishes anonymous callable
+/// shape members from source names and adds exact registry discovery outcomes.
+/// Version 20 bound continuations to their query family and page credit and
+/// added required-tool refusals; version 19 added complete-package history and
+/// durable compiler failures. Clients and services must use matching contracts.
+pub const DTO_VERSION: u16 = 21;
