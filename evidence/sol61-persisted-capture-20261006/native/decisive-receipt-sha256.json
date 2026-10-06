@@ -1,0 +1,140 @@
+{
+  "sol61-capture-40b187-native-failure": {
+    "source": "40b1878ff9f80188fbf8f651754d268665f5f3a9",
+    "exit": 101,
+    "credit": "refer to exact selected native test log",
+    "files": {
+      "exit": {
+        "bytes": 3,
+        "sha256": "16dc368a89b428b2485484313ba67a3912ca03f2b2b42429174a4f8b3dc84e44"
+      },
+      "fleet-admission.json": {
+        "bytes": 16309,
+        "sha256": "a58b48af51e327bfd8969ff5e10aa9554fcffbd34a49b7d44371755991a211db"
+      },
+      "guard.json": {
+        "bytes": 18281,
+        "sha256": "604920bf7b1c4a63124dffbab0bd334b98ab08d1509304229813b2dd914e4240"
+      },
+      "test.log": {
+        "bytes": 305614,
+        "sha256": "f1b1339c50d5043d222b1698ad01262fb817f2df2508f054fd66b525796cd2b0"
+      }
+    }
+  },
+  "sol61-capture-82f1-native-pass": {
+    "source": "82f1bc634285f3bcdc4af03c2c54ba2dc35d9be2",
+    "exit": 0,
+    "credit": "refer to exact selected native test log",
+    "files": {
+      "exit": {
+        "bytes": 1,
+        "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+      },
+      "fleet-admission.json": {
+        "bytes": 27677,
+        "sha256": "a65b962a021256fb1dd1ea9009d0ccb7a01f4535239e0d2bc4c24e032c5fe431"
+      },
+      "guard.json": {
+        "bytes": 10300,
+        "sha256": "718cfb39623c04203c4e424e3190b12bbd07a8cea3555bffe3e93e095899a7f2"
+      },
+      "test.log": {
+        "bytes": 298845,
+        "sha256": "97fdab8605866aa98ed4f025ac36decc8fe43c166d51e1b0d5fa67a5052f609b"
+      }
+    }
+  },
+  "sol61-capture-authentic-1e08-native-pass": {
+    "source": "1e08b7fa7507289ce670eb9828fe91fa1bb53490",
+    "exit": 0,
+    "credit": "refer to exact selected native test log",
+    "files": {
+      "exit": {
+        "bytes": 1,
+        "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+      },
+      "fleet-admission.json": {
+        "bytes": 25209,
+        "sha256": "09b27a232168cefd4c29ee24c91c18005f10fb6bab681187b7ed9717d700e96d"
+      },
+      "guard.json": {
+        "bytes": 7085,
+        "sha256": "b43c1b3f4cc0a48a8636bb6dec3ae5fefdc452d70b1167dd9f52b88dfba083b1"
+      },
+      "test.log": {
+        "bytes": 298613,
+        "sha256": "42cc935711daec90bd019b82555cbd77cf938c08d6eb953fe4cf50d6afd7c990"
+      }
+    }
+  },
+  "sol61-capture-empty-release-exact-1e08-native-pass": {
+    "source": "1e08b7fa7507289ce670eb9828fe91fa1bb53490",
+    "exit": 0,
+    "credit": "refer to exact selected native test log",
+    "files": {
+      "exit": {
+        "bytes": 1,
+        "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+      },
+      "fleet-admission.json": {
+        "bytes": 19698,
+        "sha256": "c734f3ae5d61b2b63c88c075d6cf4c0553b3786daa3b168bf681422e4de4544c"
+      },
+      "guard.json": {
+        "bytes": 1069,
+        "sha256": "fc19eeb6f647eac7f41842b808f5de3547c7a50893dc6a11b2ba013b1cdb1d6f"
+      },
+      "test.log": {
+        "bytes": 298492,
+        "sha256": "99f746606bf5c6ac843f58dc71354397cfa766620771ba387314e9e011b803fc"
+      }
+    }
+  },
+  "sol61-capture-empty-release-zero-tests": {
+    "source": "1e08b7fa7507289ce670eb9828fe91fa1bb53490",
+    "exit": 0,
+    "credit": "NONE: zero selected tests",
+    "files": {
+      "exit": {
+        "bytes": 1,
+        "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+      },
+      "fleet-admission.json": {
+        "bytes": 21736,
+        "sha256": "814d34605cf5a08a12ce1750f6ccffa5f06cb56b92bbac6c3c95fd164c6a369b"
+      },
+      "guard.json": {
+        "bytes": 1033,
+        "sha256": "d4662f924b00b911f57cd4ef1a707697473f077fefa4230ef3e177f7280e03b5"
+      },
+      "test.log": {
+        "bytes": 298365,
+        "sha256": "3836149cc9caa72d1bfbdbf41cf40bb628757ce0d5d0c4a54d83ed397fd85781"
+      }
+    }
+  },
+  "sol61-capture-membership-1e08-native-pass": {
+    "source": "1e08b7fa7507289ce670eb9828fe91fa1bb53490",
+    "exit": 0,
+    "credit": "refer to exact selected native test log",
+    "files": {
+      "exit": {
+        "bytes": 1,
+        "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+      },
+      "fleet-admission.json": {
+        "bytes": 25591,
+        "sha256": "c944981d5e67fab24a5d622f94b83e398d39741930dfc8ae237878c30b131c1c"
+      },
+      "guard.json": {
+        "bytes": 28368,
+        "sha256": "eb77113b6f7b5253e8419567366242d9e535ffa770ec77a521c6cc23750eb63e"
+      },
+      "test.log": {
+        "bytes": 299179,
+        "sha256": "3c0b5f984cf32d58407e5e2e5b718f150820a50c047df7434b02d245bfe596b0"
+      }
+    }
+  }
+}
