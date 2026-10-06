@@ -279,7 +279,7 @@ fn key_tags_are_eight_hex_and_never_parsed_back() {
 
 #[test]
 fn selected_symbol_operand_uses_retained_row_bytes_and_preserves_key_families() {
-    let key = symbol_key(b"selected-row-not-the-coordinate-image-key");
+    let key = symbol_key("selected-row-not-the-coordinate-image-key");
     let label = format!("/abs/p::semantic::{}::ferris", "ab".repeat(32));
     let row = backend_library::Row::new(RowId::Symbol(key), basis(), label);
     let record = Record::from_row(&row);

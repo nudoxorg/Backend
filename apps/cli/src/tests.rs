@@ -676,7 +676,7 @@ fn cli_resolve_selector_round_trips_into_the_shared_shape_request() {
             admit_reply(&request, self.0.execute_dto(request.clone()))
         }
     }
-    let key = symbol_key(b"retained-selected-row");
+    let key = symbol_key("retained-selected-row");
     let base = root();
     let basis = base.basis();
     let root = ViewRoot::new_incomplete(
