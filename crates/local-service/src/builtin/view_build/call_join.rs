@@ -648,7 +648,7 @@ pub(crate) fn foreign_package_call_retarget(
     Ok(callable_index.resolve(&resolved_paths, display))
 }
 
-fn python_record_module_specifier<'a>(path: &'a str, display: &str) -> Option<&'a str> {
+fn python_record_module_specifier<'a>(path: &'a str, display: &'a str) -> Option<&'a str> {
     let path = foreign_dotted_module_specifier(path, display)?;
     let (prefix, terminal) = path.rsplit_once('.')?;
     if terminal == display {
@@ -1917,6 +1917,8 @@ mod python_native_call_tests {
                 (source.start(), source.end()),
                 (expected_start, expected_start + 7)
             );
+            let constructor_only = BTreeSet::from([constructor]);
+            let absent_paths = BTreeSet::new();
             let join = |paths, published| {
                 join_project_call(
                     caller,
@@ -1930,8 +1932,8 @@ mod python_native_call_tests {
                 .expect("exact compiler call join")
             };
             assert_eq!(join(&paths, &published), Some(class));
-            assert_eq!(join(&paths, &BTreeSet::from([constructor])), None);
-            assert_eq!(join(&BTreeSet::new(), &published), None);
+            assert_eq!(join(&paths, &constructor_only), None);
+            assert_eq!(join(&absent_paths, &published), None);
             observed_calls += 1;
         }
         assert_eq!(observed_calls, 1, "native class binding must be present");
