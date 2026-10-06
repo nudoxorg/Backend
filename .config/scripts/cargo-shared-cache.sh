@@ -90,12 +90,12 @@ slot_count="${NUDOX_CARGO_BUILD_SLOTS:-4}"
 
 case "$slot_count" in
   ""|*[!0-9]*)
-    echo "NUDOX_CARGO_BUILD_SLOTS must be an integer from 1 through 4" >&2
+    echo "NUDOX_CARGO_BUILD_SLOTS must be an integer from 1 through 6" >&2
     exit 64
     ;;
 esac
-if [ "$slot_count" -lt 1 ] || [ "$slot_count" -gt 4 ]; then
-  echo "NUDOX_CARGO_BUILD_SLOTS must be an integer from 1 through 4" >&2
+if [ "$slot_count" -lt 1 ] || [ "$slot_count" -gt 6 ]; then
+  echo "NUDOX_CARGO_BUILD_SLOTS must be an integer from 1 through 6" >&2
   exit 64
 fi
 
