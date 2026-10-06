@@ -35,11 +35,11 @@ use crate::{
     SemanticSearchStatus, ViewRoot, ViewSnapshot,
 };
 use backend_version::ProducerObservationVerifier;
-pub use reply_semantic_shape::semantic_shape_batch_key;
 use reply_semantic_shape::{
     SemanticShapeBatchWire, admit_shape_wire_tree, semantic_shape_batch_from_wire,
     semantic_shape_batch_to_wire,
 };
+pub use reply_semantic_shape::{SemanticShapeExport, semantic_shape_batch_key};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

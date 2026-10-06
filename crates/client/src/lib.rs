@@ -1214,6 +1214,25 @@ impl Session {
     /// # Errors
     /// Returns an error when request admission, transport, or reply-shape admission fails.
     pub fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+        if let SurfaceCommand::SemanticShapes { request } = command {
+            let keys = request
+                .symbols()
+                .iter()
+                .copied()
+                .map(SymbolKey::from_bytes)
+                .collect::<Vec<_>>();
+            let budget = request
+                .budget()
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            let (_, admitted_request, reply) =
+                self.read_semantic_shapes(request.source().clone(), &keys, budget)?;
+            let export = backend_library::SemanticShapeExport::from_admitted_reply(
+                &reply,
+                &admitted_request,
+            )
+            .map_err(ClientError::Protocol)?;
+            return Ok(SurfaceReply::SemanticShapes(export));
+        }
         let expected = command.id();
         let reply = self.send_success(Command::Surface(command), None)?;
         let CommandReply::Surface(reply) = reply.reply else {
@@ -1455,6 +1474,16 @@ impl Session {
         symbols: &[SymbolKey],
         budget: SemanticShapeBudget,
     ) -> Result<SemanticShapeBatch, ClientError> {
+        self.read_semantic_shapes(source, symbols, budget)
+            .map(|(batch, _, _)| batch)
+    }
+
+    fn read_semantic_shapes(
+        &mut self,
+        source: SemanticVersionRecord,
+        symbols: &[SymbolKey],
+        budget: SemanticShapeBudget,
+    ) -> Result<(SemanticShapeBatch, SemanticShapeRequest, ReplyDto), ClientError> {
         if symbols.is_empty() || symbols.len() > backend_library::MAX_SEMANTIC_SHAPE_BATCH {
             return Err(ClientError::Protocol(
                 backend_library::SemanticShapeError::BatchBound.to_string(),
@@ -1473,13 +1502,17 @@ impl Session {
             .iter()
             .copied()
             .fold(revision.certificate, selected_symbol_certificate);
-        let reply = self.send_success(Command::SemanticShapes(request), Some(certificate))?;
-        let CommandReply::SemanticShapes(batch) = reply.reply else {
+        let reply =
+            self.send_success(Command::SemanticShapes(request.clone()), Some(certificate))?;
+        let CommandReply::SemanticShapes(batch) = &reply.reply else {
             return Err(ClientError::Protocol(
                 "semantic-shape reply changed shape".to_owned(),
             ));
         };
-        Ok(batch)
+        batch
+            .admit_against(&request)
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        Ok((batch.clone(), request, reply))
     }
 
     fn send(

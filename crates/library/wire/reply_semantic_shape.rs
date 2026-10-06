@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 macro_rules! closed_wire_discriminant {
     ($wire:ident, $semantic:ty, u8, { $($code:literal => $variant:path),+ $(,)? }) => {
-        #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
         #[serde(try_from = "u8", into = "u8")]
         struct $wire($semantic);
 
@@ -42,7 +42,7 @@ macro_rules! closed_wire_discriminant {
         }
     };
     ($wire:ident, $semantic:ty, u16, { $($code:literal => $variant:path),+ $(,)? }) => {
-        #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
         #[serde(try_from = "u16", into = "u16")]
         struct $wire($semantic);
 
@@ -145,14 +145,14 @@ closed_wire_discriminant!(ItemKindWire, ItemKind, u16, {
     12 => ItemKind::Parameter, 13 => ItemKind::Macro, 14 => ItemKind::Namespace,
 });
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SemanticShapeBatchWire {
     basis: String,
     entries: Vec<SemanticShapeEntryWire>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SemanticShapeEntryWire {
     symbol: SymbolAddressWire,
@@ -161,7 +161,7 @@ struct SemanticShapeEntryWire {
     fact: SemanticShapeFactWire,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SemanticShapeSourceOriginWire {
     source: crate::SemanticShapeSelection,
@@ -171,7 +171,7 @@ struct SemanticShapeSourceOriginWire {
     source_commitment: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SemanticShapeImageOriginWire {
     image_identity: String,
@@ -179,7 +179,7 @@ struct SemanticShapeImageOriginWire {
     profile: crate::SemanticLanguageProfile,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -191,14 +191,14 @@ enum SymbolAddressKindWire {
     Selected,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SymbolAddressWire {
     kind: SymbolAddressKindWire,
     id: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "state",
     content = "data",
@@ -220,7 +220,7 @@ enum SemanticShapeFactWire {
     Unavailable(SemanticShapeUnavailable),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "data",
@@ -233,7 +233,7 @@ enum SemanticDeclarationShapeWire {
     Typed(SemanticTypeFactWire),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SemanticCallableShapeWire {
     parameters: Vec<SemanticTypeElementWire>,
@@ -244,7 +244,7 @@ struct SemanticCallableShapeWire {
     unsafe_: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "capture",
     content = "bindings",
@@ -259,7 +259,7 @@ enum SemanticCallableCarrierBindingsWire {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SemanticTypeElementWire {
     label: Option<crate::SourceAtomText>,
@@ -267,7 +267,7 @@ struct SemanticTypeElementWire {
     ty: SemanticTypeFactWire,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SemanticShapeMemberWire {
     identity: SemanticDeclarationIdentity,
@@ -277,7 +277,7 @@ struct SemanticShapeMemberWire {
     language: SemanticShapeLanguageFactsWire,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "coverage",
     content = "data",
@@ -297,7 +297,7 @@ enum SemanticShapeLanguageFactsWire {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "data",
@@ -335,7 +335,7 @@ enum SemanticShapeLanguageFactWire {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "state",
     content = "data",
@@ -354,7 +354,7 @@ enum SemanticTypeFactWire {
     Unavailable(SemanticTypeUnavailable),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "data",
@@ -410,7 +410,7 @@ enum SemanticTypeExprWire {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "data",
@@ -426,7 +426,7 @@ enum SemanticLiteralWire {
     Undefined,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "data",
@@ -441,7 +441,7 @@ enum SemanticArrayShapeWire {
     Incomplete,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "data",
@@ -455,7 +455,7 @@ enum SemanticPropertyKeyWire {
     Computed(Box<SemanticTypeFactWire>),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "data",
@@ -511,6 +511,101 @@ pub fn semantic_shape_batch_key(
     Ok(ObjectKey::<crate::SemanticShapeBatchSchema>::from_value(
         preimage.as_slice(),
     ))
+}
+
+/// Bounded egress view of the existing shape wire tree. Deserializing this
+/// view does not admit compiler facts or grant any certificate commitments.
+/// There is deliberately no conversion from this view into SemanticShapeBatch.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticShapeExport {
+    schema: u8,
+    source: crate::SemanticShapeSelection,
+    max_nodes: u16,
+    max_bytes: u32,
+    batch: SemanticShapeBatchWire,
+}
+
+impl SemanticShapeExport {
+    /// Exports only a certificate-bearing direct reply after rechecking every
+    /// wire commitment and the exact request/source/budget. A deserialized
+    /// egress view cannot call this path or become admitted compiler facts.
+    pub fn from_admitted_reply(
+        reply: &crate::ReplyDto,
+        request: &crate::SemanticShapeRequest,
+    ) -> Result<Self, String> {
+        let crate::CommandReply::SemanticShapes(batch) = &reply.reply else {
+            return Err("semantic shape export requires the direct shape reply".to_owned());
+        };
+        let certificate = reply
+            .certificate()
+            .ok_or_else(|| "semantic shape export requires its certificate".to_owned())?;
+        let admitted =
+            semantic_shape_batch_from_wire(semantic_shape_batch_to_wire(batch)?, certificate)?;
+        Self::from_batch(&admitted, request)
+    }
+
+    fn from_batch(
+        batch: &SemanticShapeBatch,
+        request: &crate::SemanticShapeRequest,
+    ) -> Result<Self, String> {
+        batch
+            .admit_against(request)
+            .map_err(|error| error.to_string())?;
+        let value = Self {
+            schema: 1,
+            source: crate::SemanticShapeSelection::from_selected(request.source())
+                .map_err(|error| error.to_string())?,
+            max_nodes: request.budget().max_nodes(),
+            max_bytes: request.budget().max_bytes(),
+            batch: semantic_shape_batch_to_wire(batch)?,
+        };
+        value.encode_bounded_json()?;
+        Ok(value)
+    }
+    /// Encodes the view under the existing fixed byte ceiling.
+    pub fn encode_bounded_json(&self) -> Result<Vec<u8>, String> {
+        bounded_shape_json(self)
+    }
+    /// Number of requested declaration entries, including typed unavailable rows.
+    #[must_use]
+    pub fn entry_count(&self) -> usize {
+        self.batch.entries.len()
+    }
+}
+
+impl<'de> Deserialize<'de> for SemanticShapeExport {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct ExportWire {
+            schema: u8,
+            source: crate::SemanticShapeSelection,
+            max_nodes: u16,
+            max_bytes: u32,
+            batch: SemanticShapeBatchWire,
+        }
+        let value = ExportWire::deserialize(deserializer)?;
+        if value.schema != 1 {
+            return Err(serde::de::Error::custom(
+                "unsupported semantic shape export schema",
+            ));
+        }
+        crate::SemanticShapeBudget::new(value.max_nodes, value.max_bytes)
+            .map_err(serde::de::Error::custom)?;
+        admit_shape_wire_tree(&value.batch).map_err(serde::de::Error::custom)?;
+        let result = Self {
+            schema: value.schema,
+            source: value.source,
+            max_nodes: value.max_nodes,
+            max_bytes: value.max_bytes,
+            batch: value.batch,
+        };
+        result
+            .encode_bounded_json()
+            .map_err(serde::de::Error::custom)?;
+        Ok(result)
+    }
 }
 
 pub(crate) fn semantic_shape_batch_from_wire(

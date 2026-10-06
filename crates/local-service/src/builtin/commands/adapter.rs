@@ -401,6 +401,7 @@ fn answers_while_indexing(command: &Command) -> bool {
                 | S::IndexSearch { .. }
                 | S::PackageVersions { .. }
                 | S::SemanticVersions { .. }
+                | S::SemanticShapes { .. }
                 | S::PackageSourceMembership { .. }
                 | S::PackageProfile { .. }
                 | S::Subscriptions
@@ -3633,6 +3634,9 @@ impl CommandAdapter {
                     CommandReply::Surface(backend_engine::SurfaceReply::SemanticVersions(records))
                 },
             ),
+            backend_engine::SurfaceCommand::SemanticShapes { .. } => CommandReply::Failed(
+                backend_engine::CommandFailure::InvalidQuery(
+                    "semantic shapes require the certificate-bearing direct command selected by Session".to_owned())),
             backend_engine::SurfaceCommand::PackageSourceMembership { request } => {
                 package_source_membership_page(daemon, &request).map_or_else(
                     |error| {

@@ -278,6 +278,7 @@ pub fn encode_answer(
                         index_operation: product.index_operation,
                         selected_source_frontier: product.selected_source_frontier,
                         package_source_membership_page: product.package_source_membership_page,
+                        semantic_shapes: product.semantic_shapes,
                     },
                     budget,
                 )
@@ -589,6 +590,8 @@ struct SummaryProductDto {
     selected_source_frontier: Option<backend_library::SelectedProjectSourceFrontier>,
     #[serde(skip_serializing_if = "Option::is_none")]
     package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic_shapes: Option<backend_library::SemanticShapeExport>,
 }
 
 #[derive(Default)]

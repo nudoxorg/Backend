@@ -191,6 +191,7 @@ pub struct ProductView {
     index_operation: Option<backend_library::IndexOperationObservation>,
     selected_source_frontier: Option<SelectedProjectSourceFrontier>,
     package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
+    semantic_shapes: Option<backend_library::SemanticShapeExport>,
 }
 
 /// Exact owner-issued indexing state retained alongside its readable projection.
@@ -384,6 +385,12 @@ impl ProductView {
         self.index_operation.as_ref()
     }
 
+    /// Complete bounded compiler shape egress, never a reconstructed source projection.
+    #[must_use]
+    pub fn semantic_shapes(&self) -> Option<&backend_library::SemanticShapeExport> {
+        self.semantic_shapes.as_ref()
+    }
+
     /// Returns the exact selected Project membership captured with this semantic query.
     #[must_use]
     pub fn selected_source_frontier(&self) -> Option<&SelectedProjectSourceFrontier> {
@@ -480,6 +487,7 @@ impl ProductView {
             index_operation: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
+            semantic_shapes: None,
         }
     }
 
@@ -496,6 +504,7 @@ impl ProductView {
             index_operation: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
+            semantic_shapes: None,
         }
     }
 
@@ -510,6 +519,7 @@ impl ProductView {
             index_operation: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
+            semantic_shapes: None,
         }
     }
 
@@ -524,6 +534,7 @@ impl ProductView {
             index_operation: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
+            semantic_shapes: None,
         }
     }
 
@@ -538,6 +549,7 @@ impl ProductView {
             index_operation: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
+            semantic_shapes: None,
         }
     }
 }
@@ -607,6 +619,14 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         ),
         SurfaceReply::SemanticVersionSelected(record) => {
             ProductView::rows("select-semantic-version", vec![semantic_row(record)])
+        }
+        SurfaceReply::SemanticShapes(export) => {
+            let mut view = ProductView::stated(
+                "semantic-shapes",
+                "Compiler-owned shapes with exact selected-source provenance.",
+            );
+            view.semantic_shapes = Some(export.clone());
+            view
         }
         SurfaceReply::PackageSourceMembershipPage(page) => {
             let view = match page {

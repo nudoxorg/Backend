@@ -915,6 +915,47 @@ fn every_registry_row_has_exactly_one_grammar() {
 }
 
 #[test]
+fn semantic_shapes_cli_and_mcp_grammar_preserve_exact_selected_operands_and_egress() {
+    let encoded = include_str!("../library/fixtures/semantic-shape-read.json");
+    let value: serde_json::Value = serde_json::from_str(encoded).expect("operands");
+    let grammar = grammar_for("semantic-shapes").expect("public shape grammar");
+    assert_eq!(grammar.tool(), "backend.semantic_shapes");
+    let mut cli = Invocation::new(grammar);
+    cli.push(encoded);
+    let mcp = Invocation::from_json(
+        grammar,
+        serde_json::json!({"request":value})
+            .as_object()
+            .expect("object"),
+    )
+    .expect("MCP operands");
+    let cli = lower(&cli, PROJECT).expect("CLI lowering");
+    let mcp = lower(&mcp, PROJECT).expect("MCP lowering");
+    assert_eq!(cli, mcp);
+    let Request::Surface(command) = cli else {
+        panic!("shared SurfaceCommand required")
+    };
+    let backend_library::SurfaceCommand::SemanticShapes { request } = *command else {
+        panic!("shape command")
+    };
+    assert_eq!(request.symbols(), &[[6; 32]]);
+    let export: backend_library::SemanticShapeExport = serde_json::from_str(include_str!(
+        "../library/fixtures/semantic-shape-egress-view.json"
+    ))
+    .expect("untrusted egress fixture");
+    let view = product_view(&backend_library::SurfaceReply::SemanticShapes(
+        export.clone(),
+    ));
+    let dto = crate::dto::ProductDto::new(&view);
+    assert_eq!(dto.semantic_shapes, Some(export));
+    assert_eq!(dto.heading, "semantic-shapes");
+    assert!(
+        dto.records.is_empty(),
+        "no shape inference from declarations"
+    );
+}
+
+#[test]
 fn every_registry_row_is_reachable_by_both_a_cli_spelling_and_a_tool_name() {
     // The two surfaces address the same rows through different vocabularies.
     // Neither vocabulary is maintained by hand, and this is what says so: a row

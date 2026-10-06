@@ -198,6 +198,7 @@ fn take_json(
                 | ArgumentKind::CargoPackageReadmeOrigin
                 | ArgumentKind::CargoPackageSourceRequest
                 | ArgumentKind::PackageSourceMembershipRequest
+                | ArgumentKind::SemanticShapeRequest
         ) && scalar.is_object()
         {
             serde_json::to_string(&scalar).ok()
@@ -746,6 +747,18 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
         CommandId::SemanticVersions => SurfaceCommand::SemanticVersions {
             package: package(invocation, 0)?,
         },
+        CommandId::SemanticShapes => {
+            let request = serde_json::from_str::<backend_library::SemanticShapeReadRequest>(
+                invocation.require(0)?,
+            )
+            .map_err(|error| {
+                Fault::usage(
+                    "request",
+                    format!("use exact selected shape operands: {error}"),
+                )
+            })?;
+            SurfaceCommand::SemanticShapes { request }
+        }
         CommandId::PackageSourceMembership => {
             let request = serde_json::from_str::<
                 backend_library::PackageSourceMembershipPageRequestV1,

@@ -138,6 +138,94 @@ impl SemanticShapeBudget {
     }
 }
 
+/// Public read operands; they are selectors, not admitted compiler facts.
+/// Full selected SymbolKey bytes are required, never a display abbreviation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    try_from = "SemanticShapeReadRequestWire",
+    into = "SemanticShapeReadRequestWire"
+)]
+pub struct SemanticShapeReadRequest {
+    source: SemanticVersionRecord,
+    symbols: Box<[[u8; 32]]>,
+    max_nodes: u16,
+    max_bytes: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticShapeReadRequestWire {
+    source: SemanticVersionRecord,
+    symbols: Box<[[u8; 32]]>,
+    max_nodes: u16,
+    max_bytes: u32,
+}
+
+impl SemanticShapeReadRequest {
+    /// Checks selection, distinct full keys, and fixed caller budget bounds.
+    pub fn new(
+        source: SemanticVersionRecord,
+        symbols: Box<[[u8; 32]]>,
+        max_nodes: u16,
+        max_bytes: u32,
+    ) -> Result<Self, SemanticShapeError> {
+        SemanticShapeSelection::from_selected(&source)?;
+        SemanticShapeBudget::new(max_nodes, max_bytes)?;
+        if symbols.is_empty() || symbols.len() > MAX_SEMANTIC_SHAPE_BATCH {
+            return Err(SemanticShapeError::BatchBound);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for key in &symbols {
+            if *key == [0; 32] || !seen.insert(*key) {
+                return Err(SemanticShapeError::DuplicateSymbol);
+            }
+        }
+        Ok(Self {
+            source,
+            symbols,
+            max_nodes,
+            max_bytes,
+        })
+    }
+
+    /// Exact selected generation supplied by the caller.
+    #[must_use]
+    pub const fn source(&self) -> &SemanticVersionRecord {
+        &self.source
+    }
+    /// Full selected symbol key bytes in requested order.
+    #[must_use]
+    pub fn symbols(&self) -> &[[u8; 32]] {
+        &self.symbols
+    }
+    /// Checked caller limits; deserialization applies the same admission.
+    pub fn budget(&self) -> Result<SemanticShapeBudget, SemanticShapeError> {
+        SemanticShapeBudget::new(self.max_nodes, self.max_bytes)
+    }
+}
+
+impl TryFrom<SemanticShapeReadRequestWire> for SemanticShapeReadRequest {
+    type Error = SemanticShapeError;
+    fn try_from(value: SemanticShapeReadRequestWire) -> Result<Self, Self::Error> {
+        Self::new(
+            value.source,
+            value.symbols,
+            value.max_nodes,
+            value.max_bytes,
+        )
+    }
+}
+impl From<SemanticShapeReadRequest> for SemanticShapeReadRequestWire {
+    fn from(value: SemanticShapeReadRequest) -> Self {
+        Self {
+            source: value.source,
+            symbols: value.symbols,
+            max_nodes: value.max_nodes,
+            max_bytes: value.max_bytes,
+        }
+    }
+}
+
 /// Exact selected-source read pinned to one visible view revision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SemanticShapeRequest {
@@ -1530,6 +1618,31 @@ mod tests {
             MAX_SEMANTIC_SHAPE_BYTES as u32,
         )
         .expect("hard maxima are admitted caller limits")
+    }
+
+    #[test]
+    fn public_shape_operands_reject_abbreviations_wrong_family_and_unselected_source() {
+        let value: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/semantic-shape-read.json"))
+                .expect("public request fixture");
+        let admitted: SemanticShapeReadRequest =
+            serde_json::from_value(value.clone()).expect("closed operands");
+        assert_eq!(admitted.symbols(), &[[6; 32]]);
+        for changed in [
+            serde_json::json!({"source": value["source"], "symbols": ["06060606"], "max_nodes": 4096, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "symbols": [{"kind":"canonical","id":"06".repeat(32)}], "max_nodes": 4096, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "symbols": [], "max_nodes": 4096, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "symbols": vec![[6u8;32];33], "max_nodes": 4096, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "symbols": vec![[6u8;32];2], "max_nodes": 4096, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "symbols": vec![[6u8;32]], "max_nodes": 4097, "max_bytes": 49152}),
+        ] {
+            assert!(serde_json::from_value::<SemanticShapeReadRequest>(changed).is_err());
+        }
+        for field in ["complete", "selected"] {
+            let mut changed = value.clone();
+            changed["source"][field] = serde_json::json!(false);
+            assert!(serde_json::from_value::<SemanticShapeReadRequest>(changed).is_err());
+        }
     }
 
     #[test]

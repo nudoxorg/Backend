@@ -440,6 +440,49 @@ fn call(server: &mut Server<Fake>, tool: &str, arguments: &Value) -> Value {
         .clone()
 }
 
+#[test]
+fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
+    let operands: Value = serde_json::from_str(include_str!(
+        "../../../../crates/library/fixtures/semantic-shape-read.json"
+    ))
+    .expect("shared operands fixture");
+    let export: backend_library::SemanticShapeExport = serde_json::from_str(include_str!(
+        "../../../../crates/library/fixtures/semantic-shape-egress-view.json"
+    ))
+    .expect("egress fixture");
+    for detail in ["summary", "full"] {
+        let mut server = ready(Fake {
+            surface_reply: Some(SurfaceReply::SemanticShapes(export.clone())),
+            ..Fake::default()
+        });
+        let result = call(
+            &mut server,
+            "backend.semantic_shapes",
+            &json!({"request":operands,"detail":detail}),
+        );
+        assert_ne!(result["isError"], true, "{result}");
+        assert_eq!(
+            result["structuredContent"]["semantic_shapes"],
+            serde_json::to_value(&export).expect("view")
+        );
+        assert_eq!(server.product.surface_commands.len(), 1);
+        assert!(
+            matches!(&server.product.surface_commands[0], SurfaceCommand::SemanticShapes { request }
+            if request.symbols() == &[[6;32]])
+        );
+    }
+    let mut server = ready(Fake::default());
+    let mut wrong = operands.clone();
+    wrong["symbols"] = json!([{"kind":"canonical","id":"06".repeat(32)}]);
+    let result = request(
+        &mut server,
+        "tools/call",
+        &json!({"name":"backend.semantic_shapes","arguments":{"request":wrong}}),
+    );
+    assert!(result.get("error").is_some(), "{result}");
+    assert!(server.product.surface_commands.is_empty());
+}
+
 fn text_of(result: &Value) -> String {
     result["content"][0]["text"]
         .as_str()

@@ -209,9 +209,10 @@ pub use semantic_shape::{
     SemanticObjectMember, SemanticPropertyKey, SemanticShapeAdmissionSummary, SemanticShapeBatch,
     SemanticShapeBudget, SemanticShapeEntry, SemanticShapeError, SemanticShapeFact,
     SemanticShapeImageOrigin, SemanticShapeLanguageFact, SemanticShapeLanguageFacts,
-    SemanticShapeMember, SemanticShapeRequest, SemanticShapeSelection, SemanticShapeSourceOrigin,
-    SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr, SemanticTypeFact,
-    SemanticTypeUnavailable, semantic_shape_source_key, semantic_shape_source_preimage,
+    SemanticShapeMember, SemanticShapeReadRequest, SemanticShapeRequest, SemanticShapeSelection,
+    SemanticShapeSourceOrigin, SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr,
+    SemanticTypeFact, SemanticTypeUnavailable, semantic_shape_source_key,
+    semantic_shape_source_preimage,
 };
 pub use source_atom::SourceAtomText;
 pub use source_discovery::{
@@ -285,6 +286,7 @@ pub use view::{
     ViewError, ViewPageCursor, ViewPageError, ViewProjection, ViewProjectionError, ViewRoot,
     ViewRootDescriptor, ViewRootDescriptorClaim, ViewSnapshot, ViewSnapshotPage,
 };
+pub use wire::SemanticShapeExport;
 pub use wire::{
     CommandDto, DTO_VERSION, EventDto, MAX_COMMAND_BODY, MAX_COMMAND_TEXT, MAX_REPLY_BODY,
     ReplyAdmissionError, ReplyDto, RequestAdmissionError, SnapshotHydrator, SnapshotPageClaim,

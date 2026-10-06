@@ -1907,8 +1907,6 @@ impl PackageCompilerFailure {
         }
         Ok(())
     }
-
-
 }
 
 fn compiler_fault_facts_match_kind(
@@ -2785,6 +2783,11 @@ pub enum SurfaceCommand {
         /// Exact product package reference.
         package: PackageReference,
     },
+    /// Read compiler-owned member/type shapes for exact selected keys.
+    SemanticShapes {
+        /// Source selection and bounded full-key operands.
+        request: crate::SemanticShapeReadRequest,
+    },
     /// Read one snapshot-bound page of exact selected local Project File rows.
     PackageSourceMembership {
         /// Exact package, expected selected root, and optional continuation.
@@ -2972,6 +2975,7 @@ impl SurfaceCommand {
             Self::IndexSearch { .. } => CommandId::IndexSearch,
             Self::PackageVersions { .. } => CommandId::PackageVersions,
             Self::SemanticVersions { .. } => CommandId::SemanticVersions,
+            Self::SemanticShapes { .. } => CommandId::SemanticShapes,
             Self::PackageSourceMembership { .. } => CommandId::PackageSourceMembership,
             Self::SelectSemanticVersion { .. } => CommandId::SelectSemanticVersion,
             Self::PackageProfile { .. } => CommandId::PackageProfile,
@@ -4283,6 +4287,8 @@ pub enum SurfaceReply {
     PackageVersions(Box<[RegistryPackageRecord]>),
     /// Immutable compiler generations for one exact package.
     SemanticVersions(Box<[SemanticVersionRecord]>),
+    /// Egress view exported after direct shape certificate admission.
+    SemanticShapes(crate::SemanticShapeExport),
     /// One bounded page of exact selected Project source membership.
     PackageSourceMembershipPage(crate::PackageSourceMembershipPageResultV1),
     /// Immediate status returned after an index start request.
@@ -4373,6 +4379,7 @@ impl SurfaceReply {
             Self::IndexSearchPage(_) => CommandId::IndexSearch,
             Self::PackageVersions(_) => CommandId::PackageVersions,
             Self::SemanticVersions(_) => CommandId::SemanticVersions,
+            Self::SemanticShapes(_) => CommandId::SemanticShapes,
             Self::PackageSourceMembershipPage(_) => CommandId::PackageSourceMembership,
             Self::IndexStarted(_) => CommandId::IndexStart,
             Self::IndexOperationStarted(_) => CommandId::IndexStart,
@@ -4473,6 +4480,12 @@ impl SurfaceReply {
                     }
                 }
                 records.len()
+            }
+            Self::SemanticShapes(export) => {
+                export
+                    .encode_bounded_json()
+                    .map_err(|_| ProductAdmissionError::SemanticVersionShape)?;
+                export.entry_count()
             }
             Self::PackageSourceMembershipPage(result) => {
                 if !result.has_admissible_shape() {
@@ -4700,6 +4713,9 @@ impl SurfaceReply {
                 .saturating_add(record.coordinate.as_str().len())
                 .saturating_add(serialized_json_size(&record.history_status))
                 .saturating_add(serialized_json_size(&record.selected_source_frontier)),
+            Self::SemanticShapes(export) => export
+                .encode_bounded_json()
+                .map_or(usize::MAX, |bytes| bytes.len()),
             Self::PackageSourceMembershipPage(result) => {
                 serde_json::to_vec(result).map_or(0, |bytes| bytes.len())
             }
@@ -5325,12 +5341,10 @@ mod tests {
                     failure: failure_kind,
                 },
             };
-            let failure = PackageCompilerFailure::from_package_terminal(
-                "src/quart/__init__.py",
-                &terminal,
-            )
-            .expect("valid setup summary")
-            .expect("required checker failure is projected");
+            let failure =
+                PackageCompilerFailure::from_package_terminal("src/quart/__init__.py", &terminal)
+                    .expect("valid setup summary")
+                    .expect("required checker failure is projected");
 
             assert_eq!(failure.source_identity(), source.identity);
             assert_eq!(failure.source_byte_len(), source.byte_len);
@@ -5361,10 +5375,7 @@ mod tests {
                 json["cause"]["fault"]["issue"]["requirement"],
                 "python_checker"
             );
-            assert_eq!(
-                json["cause"]["fault"]["issue"]["failure"],
-                expected_failure
-            );
+            assert_eq!(json["cause"]["fault"]["issue"]["failure"], expected_failure);
             assert_eq!(
                 PackageCompilerFailure::decode_bounded_json(&encoded),
                 Ok(failure.clone())
@@ -5388,7 +5399,6 @@ mod tests {
             assert!(displayed.contains("NUDOX_PYREFLY"));
         }
     }
-
 
     #[test]
     fn package_lowering_failure_keeps_nested_source_recovery_reasons_distinct() {

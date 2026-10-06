@@ -1354,9 +1354,48 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
             schema: WireSchema::SemanticShapeBatch,
             id: encode_id(batch_key.as_bytes()),
         });
-    let command = CommandDto::new(44, Command::SemanticShapes(request));
+    let command = CommandDto::new(44, Command::SemanticShapes(request.clone()));
     let reply = ReplyDto::new(44, CommandReply::SemanticShapes(batch.clone()))
         .with_certificate(valid_certificate);
+    let exported = crate::SemanticShapeExport::from_admitted_reply(&reply, &request)
+        .expect("certificate-admitted shape export");
+    let json = exported.encode_bounded_json().expect("bounded egress");
+    let view: crate::SemanticShapeExport =
+        serde_json::from_slice(&json).expect("egress view roundtrip");
+    assert_eq!(view, exported);
+    let value: serde_json::Value = serde_json::from_slice(&json).expect("egress JSON");
+    assert_eq!(value["schema"], 1);
+    assert_eq!(
+        value["source"]["generation"],
+        serde_json::json!(vec![31u8; 32])
+    );
+    assert_eq!(value["max_nodes"], 4096);
+    assert_eq!(
+        value["batch"]["entries"][0]["origin"]["selection_root"],
+        serde_json::json!(vec![36u8; 32])
+    );
+    assert!(
+        crate::SemanticShapeExport::from_admitted_reply(
+            &ReplyDto::new(44, CommandReply::SemanticShapes(batch.clone())),
+            &request
+        )
+        .is_err(),
+        "certificate-free typed values must not become exported admitted products"
+    );
+    let mut wrong_origin = batch.clone();
+    wrong_origin.entries[0]
+        .origin
+        .as_mut()
+        .expect("origin")
+        .selection_root = [99; 32];
+    assert!(
+        crate::SemanticShapeExport::from_admitted_reply(
+            &ReplyDto::new(44, CommandReply::SemanticShapes(wrong_origin))
+                .with_certificate(reply.certificate().expect("certificate").clone()),
+            &request
+        )
+        .is_err()
+    );
     let encoded = serde_json::to_vec(&reply).expect("encode complete reply DTO");
     let decoded = crate::decode_reply_body(&encoded).expect("decode complete reply DTO");
     admit_reply(&command, &decoded).expect("admit exact request and reply");

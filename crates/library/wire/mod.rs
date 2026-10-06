@@ -37,7 +37,7 @@ pub use codec::{
 };
 pub use command::{CommandDto, ReplyDto, ViewDto};
 pub use event_dto::EventDto;
-pub use reply::semantic_shape_batch_key;
+pub use reply::{SemanticShapeExport, semantic_shape_batch_key};
 pub use subscription::{SubscriptionDto, encode_compact_subscription};
 pub use subscription_snapshot::{
     SnapshotHydrator, SnapshotPageClaim, SnapshotPageDto, encode_view_root_descriptor,

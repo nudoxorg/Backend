@@ -39,6 +39,7 @@ impl CommandSpec {
                 | CommandId::IndexSearch
                 | CommandId::PackageVersions
                 | CommandId::SemanticVersions
+                | CommandId::SemanticShapes
                 | CommandId::PackageSourceMembership
                 | CommandId::SelectSemanticVersion
                 | CommandId::PackageProfile
@@ -510,6 +511,14 @@ pub const COMMANDS: [CommandSpec; 52] = [
         name: "package-source-membership",
         title: "Package Source Membership",
         description: "Read a bounded, snapshot-bound page of exact File rows selected by one local Project, including package-relative paths and source identities.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Library,
+    },
+    CommandSpec {
+        id: CommandId::SemanticShapes,
+        name: "semantic-shapes",
+        title: "Semantic Shapes",
+        description: "Read bounded compiler-owned callable and member shapes for selected declarations.",
         mutation: CommandMutation::Read,
         domain: CommandDomain::Library,
     },

@@ -65,6 +65,8 @@ pub enum ArgumentKind {
     CargoPackageSourceRequest,
     /// Exact package source-membership page request JSON.
     PackageSourceMembershipRequest,
+    /// Exact source selection, full selected keys, and caller shape budgets.
+    SemanticShapeRequest,
     /// A non-negative progress event sequence.
     Sequence,
 }
@@ -91,6 +93,7 @@ impl ArgumentKind {
             Self::CargoPackageReadmeOrigin => "ORIGIN_JSON",
             Self::CargoPackageSourceRequest => "SOURCE_REQUEST_JSON",
             Self::PackageSourceMembershipRequest => "MEMBERSHIP_REQUEST_JSON",
+            Self::SemanticShapeRequest => "SHAPE_REQUEST_JSON",
             Self::Sequence => "SEQUENCE",
             Self::Generation => "GENERATION",
             Self::GraphDirection => "DIRECTION",
@@ -109,7 +112,7 @@ impl ArgumentKind {
             Self::IndexJobTicket
             | Self::CargoPackageReadmeOrigin
             | Self::CargoPackageSourceRequest => "object",
-            Self::PackageSourceMembershipRequest => "object",
+            Self::PackageSourceMembershipRequest | Self::SemanticShapeRequest => "object",
             _ => "string",
         }
     }
@@ -787,6 +790,18 @@ pub const GRAMMARS: [CommandGrammar; 52] = [
         )],
         options: &[],
         when: "Use before select-semantic-version to see which compiler generations were retained.",
+    },
+    CommandGrammar {
+        name: "semantic-shapes",
+        tool: "backend.semantic_shapes",
+        aliases: &[],
+        positional: &[ArgumentSpec::required(
+            "request",
+            ArgumentKind::SemanticShapeRequest,
+            "Exact selected SemanticVersionRecord, full selected SymbolKey byte arrays, max_nodes and max_bytes.",
+        )],
+        options: &[],
+        when: "Use after semantic-versions and an exact selected-key read to obtain compiler-owned member/type shapes with source/image provenance. Unavailable and unsupported remain typed facts; no source-text fallback is inferred.",
     },
     CommandGrammar {
         name: "package-source-membership",
