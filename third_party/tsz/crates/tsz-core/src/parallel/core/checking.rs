@@ -224,6 +224,117 @@ pub struct CheckResult {
     pub diagnostic_count: usize,
 }
 
+/// Why a reusable project checker session could not be created or queried.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectCheckerSessionError {
+    /// The merged program has not been bound to compiler-owned module
+    /// resolution outcomes, so queries could otherwise guess by filename.
+    MissingProjectModuleResolutions,
+    /// The requested file index is outside the exact merged program.
+    FileIndexOutOfRange { file_index: usize, file_count: usize },
+}
+
+impl std::fmt::Display for ProjectCheckerSessionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingProjectModuleResolutions => {
+                formatter.write_str("project checker session requires exact module resolutions")
+            }
+            Self::FileIndexOutOfRange {
+                file_index,
+                file_count,
+            } => write!(
+                formatter,
+                "project checker file index {file_index} is outside {file_count} files"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProjectCheckerSessionError {}
+
+/// Reusable, read-only project checking context for exact semantic queries.
+///
+/// The session owns one `ParallelCheckPlan`, so binders, arenas, module
+/// resolution outcomes, library contexts, and shared query caches are built
+/// once. Per-file checker state is lent only for the callback duration.
+/// `TypeId` is a copyable arena-local handle rather than a branded value, so
+/// callers must also keep any returned IDs tied to the exact `MergedProgram`
+/// used to create this session.
+pub struct ProjectCheckerSession<'a> {
+    plan: ParallelCheckPlan<'a>,
+}
+
+impl<'a> ProjectCheckerSession<'a> {
+    /// Build the shared project context for a program with exact compiler
+    /// module-resolution outcomes attached.
+    pub fn new(
+        program: &'a MergedProgram,
+        checker_options: &'a CheckerOptions,
+        lib_files: &[Arc<LibFile>],
+        project_semantic_options: ProjectSemanticOptions,
+    ) -> Result<Self, ProjectCheckerSessionError> {
+        let project_module_resolution_outcomes = program
+            .project_module_resolution_outcomes
+            .clone()
+            .ok_or(ProjectCheckerSessionError::MissingProjectModuleResolutions)?;
+        let plan = ParallelCheckPlan::build(
+            program,
+            checker_options,
+            lib_files,
+            project_semantic_options,
+            Some(project_module_resolution_outcomes),
+        );
+        plan.prime_module_augmentation_bodies();
+        Ok(Self { plan })
+    }
+
+    /// Lend the exact configured checker for one file and its type database.
+    ///
+    /// The higher-ranked callback and owned `Output` prevent checker state,
+    /// binders, or type-database borrows from escaping this session call.
+    pub fn with_file_checker_and_types<Output>(
+        &self,
+        file_index: usize,
+        consume: impl for<'checker> FnOnce(
+            &mut CheckerState<'checker>,
+            &BinderState,
+            &BoundFile,
+            &dyn tsz_solver::construction::TypeDatabase,
+        ) -> Output,
+    ) -> Result<Output, ProjectCheckerSessionError> {
+        let file = self
+            .plan
+            .program
+            .files
+            .get(file_index)
+            .ok_or(ProjectCheckerSessionError::FileIndexOutOfRange {
+                file_index,
+                file_count: self.plan.program.files.len(),
+            })?;
+        let output = self
+            .plan
+            .with_bound_file_checker_and_types(file_index, file, consume);
+        Ok(output)
+    }
+
+    /// Lend the checker and bound file when the caller does not need the
+    /// underlying type database directly.
+    pub fn with_file_checker<Output>(
+        &self,
+        file_index: usize,
+        consume: impl for<'checker> FnOnce(
+            &mut CheckerState<'checker>,
+            &BinderState,
+            &BoundFile,
+        ) -> Output,
+    ) -> Result<Output, ProjectCheckerSessionError> {
+        self.with_file_checker_and_types(file_index, |checker, binder, file, _types| {
+            consume(checker, binder, file)
+        })
+    }
+}
+
 /// Collect all function declarations from a source file
 fn collect_functions(arena: &NodeArena, source_file: NodeIndex) -> Vec<NodeIndex> {
     let mut functions = Vec::new();
@@ -956,52 +1067,9 @@ impl<'a> ParallelCheckPlan<'a> {
         }
 
         let file = &self.program.files[0];
-        let binder = Arc::clone(&self.all_binders[0]);
-        let query_cache = self.make_query_cache();
-        let mut checker = CheckerState::with_options_and_shared_def_store(
-            &file.arena,
-            binder.as_ref(),
-            &query_cache,
-            file.file_name.clone(),
-            self.checker_options,
-            std::sync::Arc::clone(&self.program.definition_store),
-        );
-        checker.ctx.set_all_arenas(Arc::clone(&self.all_arenas));
-        checker.ctx.set_all_binders(Arc::clone(&self.all_binders));
-        checker.ctx.set_current_file_idx(0);
-        checker
-            .ctx
-            .set_resolved_module_paths(Arc::clone(&self.resolved_module_paths));
-        checker
-            .ctx
-            .set_resolved_modules(Arc::clone(&self.resolved_modules));
-        if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
-            checker
-                .ctx
-                .set_project_module_resolution_outcomes(Arc::clone(outcomes));
-        }
-        checker
-            .ctx
-            .set_global_symbol_file_index(Arc::clone(&self.global_symbol_file_index));
-
-        if let Some(ref modules) = self.shared_declared_modules {
-            checker
-                .ctx
-                .set_declared_modules_from_skeleton(Arc::clone(modules));
-        }
-        if !self.lib_contexts.is_empty() {
-            checker
-                .ctx
-                .set_lib_contexts_shared(Arc::clone(&self.lib_contexts));
-            checker
-                .ctx
-                .set_lib_file_local_names(self.lib_file_local_names.clone());
-            checker
-                .ctx
-                .set_actual_lib_file_count(self.lib_contexts.len());
-        }
-
-        checker.prime_module_augmentation_bodies();
+        self.with_bound_file_checker_and_types(0, file, |checker, _binder, _file, _types| {
+            checker.prime_module_augmentation_bodies();
+        });
     }
 
     /// Build a `FileCheckResult` for a lib file at `lib_idx` with the given
@@ -1027,12 +1095,20 @@ impl<'a> ParallelCheckPlan<'a> {
         diagnostics.dedup_by(|a, b| a.start == b.start && a.code == b.code);
     }
 
-    /// Check a single user file, returning its sorted, deduplicated diagnostics.
-    fn check_one_file(&self, file_idx: usize, file: &BoundFile) -> FileCheckResult {
+    /// Lend a project-configured checker with all shared program context.
+    fn with_bound_file_checker_and_types<Output>(
+        &self,
+        file_idx: usize,
+        file: &BoundFile,
+        consume: impl for<'checker> FnOnce(
+            &mut CheckerState<'checker>,
+            &BinderState,
+            &BoundFile,
+            &dyn tsz_solver::construction::TypeDatabase,
+        ) -> Output,
+    ) -> Output {
         let binder = Arc::clone(&self.all_binders[file_idx]);
-
         let query_cache = self.make_query_cache();
-
         let mut checker = CheckerState::with_options_and_shared_def_store(
             &file.arena,
             binder.as_ref(),
@@ -1079,9 +1155,19 @@ impl<'a> ParallelCheckPlan<'a> {
                 .set_actual_lib_file_count(self.lib_contexts.len());
         }
 
-        checker.check_source_file(file.source_file);
+        consume(&mut checker, binder.as_ref(), file, &query_cache)
+    }
 
-        let mut diagnostics = std::mem::take(&mut checker.ctx.diagnostics);
+    /// Check a single user file, returning its sorted, deduplicated diagnostics.
+    fn check_one_file(&self, file_idx: usize, file: &BoundFile) -> FileCheckResult {
+        let mut diagnostics = self.with_bound_file_checker_and_types(
+            file_idx,
+            file,
+            |checker, _binder, file, _types| {
+                checker.check_source_file(file.source_file);
+                std::mem::take(&mut checker.ctx.diagnostics)
+            },
+        );
 
         // Sort diagnostics by position for deterministic output within each file.
         diagnostics.sort_by(|a, b| a.compare(b));
@@ -1330,6 +1416,64 @@ mod project_module_resolution_tests {
         ResolutionModeOverride, ResolutionRequestKind, ResolvedModuleRequestOutcome,
         ResolvedModuleRequestOutcomeMap,
     };
+
+    #[test]
+    fn project_checker_session_resolves_imported_members_in_full_program_context() {
+        let mut program = compile_files_with_libs(
+            vec![
+                (
+                    "src/app.service.ts".to_owned(),
+                    "export class AppService { value = 42; }".to_owned(),
+                ),
+                (
+                    "src/app.controller.ts".to_owned(),
+                    "import { AppService } from './app.service'; const appService = new AppService(); export const result = appService.value;".to_owned(),
+                ),
+            ],
+            &[],
+        );
+        let importer_index = program
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/app.controller.ts")
+            .unwrap();
+        program
+            .set_project_module_resolutions(&[ProjectModuleResolution {
+                importer_path: "src/app.controller.ts".to_owned(),
+                specifier: "./app.service".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmImport,
+                resolution_mode: None,
+                target: ProjectModuleResolutionTarget::File {
+                    path: "src/app.service.ts".to_owned(),
+                },
+            }])
+            .unwrap();
+
+        let file = &program.files[importer_index];
+        let access_index = (0..file.arena.len())
+            .map(|index| NodeIndex(index as u32))
+            .find(|&index| {
+                file.arena
+                    .get(index)
+                    .is_some_and(|node| node.kind == syntax_kind_ext::PROPERTY_ACCESS_EXPRESSION)
+            })
+            .expect("fixture should contain the imported member access");
+        let checker_options = CheckerOptions::default();
+        let session = ProjectCheckerSession::new(
+            &program,
+            &checker_options,
+            &[],
+            ProjectSemanticOptions::structural(),
+        )
+        .unwrap();
+        let actual = session
+            .with_file_checker(importer_index, |checker, _binder, _file| {
+                checker.get_type_of_node(access_index)
+            })
+            .unwrap();
+
+        assert_eq!(actual, TypeId::NUMBER);
+    }
 
     #[test]
     fn explicit_project_resolution_preserves_outcomes_and_disables_filename_guessing() {
