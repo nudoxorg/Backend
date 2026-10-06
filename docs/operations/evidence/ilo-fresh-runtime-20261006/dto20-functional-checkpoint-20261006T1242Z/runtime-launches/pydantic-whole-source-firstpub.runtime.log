@@ -1,0 +1,10 @@
+{"label": "tool-node", "exit": 0, "seconds": 0.005869, "stdout_bytes": 9, "fault": null}
+{"label": "tool-tsc", "exit": 0, "seconds": 0.104313, "stdout_bytes": 14, "fault": null}
+{"label": "tool-python3", "exit": 0, "seconds": 0.002085, "stdout_bytes": 15, "fault": null}
+{"label": "tool-pyrefly", "exit": 0, "seconds": 0.004836, "stdout_bytes": 20, "fault": null}
+{"label": "tool-go", "exit": 0, "seconds": 0.003207, "stdout_bytes": 32, "fault": null}
+{"label": "fresh-health", "exit": 0, "seconds": 3.384742, "stdout_bytes": 802, "fault": null}
+{"label": "fresh-add", "exit": 2, "seconds": 0.50608, "stdout_bytes": 370, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: index job did not publish: Refused(ProductText(\"queue builtin intent: Queue(Bytes)\"))", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T115435Z-python-configured-0683ea42/project", "slug": "protocol"}}
+{"label": "post-add-health", "exit": 0, "seconds": 0.075862, "stdout_bytes": 802, "fault": null}
+{"label": "post-add-packages", "exit": 0, "seconds": 0.010793, "stdout_bytes": 132, "fault": null}
+{"root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T115435Z-python-configured-0683ea42", "source_unchanged": true, "accepted_project_pass": false, "remaining_owned_daemons": [], "journey_error": null}

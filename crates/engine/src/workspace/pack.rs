@@ -52,7 +52,7 @@ pub(super) fn workspace_pack(
     let mut index = Vec::with_capacity(index_bytes);
     index.extend_from_slice(WORKSPACE_PACK_MAGIC);
     index.extend_from_slice(&transition.target().to_bytes());
-    index.extend_from_slice(transition.closure().manifest().id().as_bytes());
+    index.extend_from_slice(transition.closure().membership_id().as_bytes());
     index.extend_from_slice(&transition.transaction().as_bytes());
     for object in transition.payload_object_ids() {
         index.extend_from_slice(object.as_bytes());

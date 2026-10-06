@@ -1,0 +1,6 @@
+
+running 1 test
+test builtin::query::tests::search_selection_refuses_a_view_from_the_previous_workspace_frontier ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1007 filtered out; finished in 0.01s
+

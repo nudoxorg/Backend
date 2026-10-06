@@ -1310,7 +1310,13 @@ pub(super) fn rehydrate_cargo_source_authority(
     if !tree.has_admissible_shape() {
         return Err(shape("Cargo project-tree proof"));
     }
-    if tree.request_binding != Some(browse.request_binding()) {
+    if tree.retained_request_binding().is_none() {
+        return Err(ReadFailure::Fault(ErrorValue::new(
+            FaultCode::Missing,
+            "This project Tree is display-only; the owner did not retain its source observation. Reopen the current Tree before reading source.",
+        )));
+    }
+    if tree.retained_request_binding() != Some(browse.request_binding()) {
         return Err(ReadFailure::Fault(ErrorValue::new(
             FaultCode::Missing,
             "This project tree now has a different Cargo browse binding. Reopen its current tree.",
@@ -2204,7 +2210,7 @@ mod tests {
             &tree.root,
         )
         .expect("owner fixture binding");
-        tree.request_binding = Some(binding);
+        tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding });
         let row = tree.package(PACKAGE_NAME, PACKAGE_VERSION).expect("exact row");
         let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &row.source_authority else {
             panic!("metadata receipt")
@@ -2264,7 +2270,7 @@ mod tests {
                         } = &self.current
                         {
                             assert_eq!(&request.package, current);
-                            assert_eq!(Some(request.request_binding), self.tree.request_binding);
+                            assert_eq!(Some(request.request_binding), self.tree.retained_request_binding());
                         }
                         Ok(SurfaceReply::CargoPackageSourceFile(self.current.clone()))
                     }
@@ -2303,12 +2309,17 @@ mod tests {
         ));
         assert_eq!(engine.seen, ["file", "tree", "file"]);
 
+        let mut display_tree = engine.tree.clone();
+        display_tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::DisplayOnly { binding });
+        assert!(display_tree.has_admissible_shape(), "display-only is a readable exact Tree");
+        let mut display = ColdEngine { tree: display_tree, current: engine.current.clone(), seen: Vec::new() };
+        assert!(matches!(compose_cargo_source(&mut display, &key, &context), Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing));
+        assert_eq!(display.seen, ["file", "tree"], "display-only never triggers a source retry even with the same exact binding and package receipts");
+
         let mut changed_tree = engine.tree.clone();
-        changed_tree
-            .request_binding
-            .as_mut()
-            .expect("binding")
-            .requested_root_digest = [4; 32];
+        let mut binding = changed_tree.retained_request_binding().expect("binding");
+        binding.requested_root_digest = [4; 32];
+        changed_tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding });
         let mut changed = ColdEngine {
             tree: changed_tree,
             current: engine.current.clone(),

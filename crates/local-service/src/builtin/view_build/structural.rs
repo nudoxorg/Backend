@@ -7,20 +7,162 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 pub(super) fn duplicate_declaration_coordinates(
+    sources: &IndexedSources,
+    record: &super::super::ProductSourceRecord,
     containment: &FileContainment<'_>,
-    declarations: &[backend_compile::SourceDeclaration],
-) -> BTreeSet<String> {
+) -> Result<BTreeSet<String>, BuiltinModelError> {
     let mut counts = BTreeMap::<String, u32>::new();
-    for declaration in declarations {
+    visit_complete_declarations(sources, record, |declaration| {
         let coordinate = containment.coordinate(declaration);
         let count = counts.entry(coordinate).or_default();
         *count = count.saturating_add(1);
-    }
-    counts
+        Ok(())
+    })?;
+    Ok(counts
         .into_iter()
         .filter_map(|(coordinate, count)| (count > 1).then_some(coordinate))
-        .collect()
+        .collect())
 }
+
+/// Visits one file's exact complete declarations without hydrating its page
+/// tree or the project's facts relation. Legacy compact rows are accepted
+/// only when their retention marker proves that the row itself is complete.
+pub(super) fn visit_complete_declarations(
+    sources: &IndexedSources,
+    record: &super::super::ProductSourceRecord,
+    mut visit: impl FnMut(&backend_compile::SourceDeclaration) -> Result<(), BuiltinModelError>,
+) -> Result<(), BuiltinModelError> {
+    let file = record.file_fields().ok_or_else(|| {
+        BuiltinModelError("complete source facts requested for a non-file row".to_owned())
+    })?;
+    if let Some(snapshot) = &sources.source_snapshot {
+        match snapshot
+            .admit_complete_file_facts(record)
+            .map_err(|error| BuiltinModelError(format!("admit complete source facts: {error}")))?
+        {
+            Some(backend_engine::ProductSourceFileFactsAdmission::Unavailable(_reason)) => {
+                // The row retains the reason; there is no extracted declaration to visit.
+            }
+            Some(backend_engine::ProductSourceFileFactsAdmission::InlineComplete(inline)) => {
+                for declaration in inline.declarations() {
+                    visit(declaration)?;
+                }
+            }
+            Some(backend_engine::ProductSourceFileFactsAdmission::PagedVerified(mut paged)) => {
+                paged
+                    .visit_pages(|page| {
+                        for index in 0..page.len() {
+                            let declaration = page
+                                .declaration(index)
+                                .ok_or_else(|| {
+                                    "verified source-facts page item is missing".to_owned()
+                                })?
+                                .to_owned()?;
+                            visit(&declaration).map_err(|error| error.to_string())?;
+                        }
+                        Ok(())
+                    })
+                    .map_err(|error| {
+                        BuiltinModelError(format!("visit complete source-facts pages: {error}"))
+                    })?;
+            }
+            None => {
+                for declaration in file.declarations.iter() {
+                    visit(declaration)?;
+                }
+            }
+        }
+        return Ok(());
+    }
+    if file
+        .admitted_unavailable_reason()
+        .map_err(BuiltinModelError)?
+        .is_some()
+    {
+        return Ok(());
+    }
+    if !file.retention.is_complete() {
+        return Err(BuiltinModelError(
+            "compact source row is incomplete and has no selected complete facts relation"
+                .to_owned(),
+        ));
+    }
+    for declaration in file.declarations.iter() {
+        visit(declaration)?;
+    }
+    Ok(())
+}
+
+/// Collects one source file's complete declarations for a consumer that must
+/// retain them while projecting that file's semantic image. The selected
+/// relation is paged and authenticated first; only this single file is
+/// materialized, so a project-wide semantic refresh never hydrates every
+/// declaration page at once.
+pub(super) fn complete_declarations_for_file(
+    sources: &IndexedSources,
+    record: &super::super::ProductSourceRecord,
+) -> Result<Vec<backend_compile::SourceDeclaration>, BuiltinModelError> {
+    let file = record.file_fields().ok_or_else(|| {
+        BuiltinModelError("complete source facts requested for a non-file row".to_owned())
+    })?;
+    if let Some(snapshot) = &sources.source_snapshot {
+        match snapshot
+            .admit_complete_file_facts(record)
+            .map_err(|error| BuiltinModelError(format!("admit complete source facts: {error}")))?
+        {
+            Some(backend_engine::ProductSourceFileFactsAdmission::Unavailable(_reason)) => {
+                return Ok(Vec::new());
+            }
+            Some(backend_engine::ProductSourceFileFactsAdmission::InlineComplete(inline)) => {
+                return Ok(inline.declarations().to_vec());
+            }
+            Some(backend_engine::ProductSourceFileFactsAdmission::PagedVerified(mut paged)) => {
+                let expected_count = usize::try_from(paged.declaration_count()).map_err(|_| {
+                    BuiltinModelError("source facts declaration count exceeds usize".to_owned())
+                })?;
+                let mut declarations = Vec::with_capacity(expected_count);
+                paged
+                    .visit_pages(|page| {
+                        for index in 0..page.len() {
+                            let declaration = page
+                                .declaration(index)
+                                .ok_or_else(|| {
+                                    "verified source-facts page item is missing".to_owned()
+                                })?
+                                .to_owned()?;
+                            declarations.push(declaration);
+                        }
+                        Ok(())
+                    })
+                    .map_err(|error| {
+                        BuiltinModelError(format!("visit complete source-facts pages: {error}"))
+                    })?;
+                if declarations.len() != expected_count {
+                    return Err(BuiltinModelError(
+                        "complete source-facts page count changed during visitation".to_owned(),
+                    ));
+                }
+                return Ok(declarations);
+            }
+            None => return Ok(file.declarations.to_vec()),
+        }
+    }
+    if file
+        .admitted_unavailable_reason()
+        .map_err(BuiltinModelError)?
+        .is_some()
+    {
+        return Ok(Vec::new());
+    }
+    if !file.retention.is_complete() {
+        return Err(BuiltinModelError(
+            "compact source row is incomplete and has no selected complete facts relation"
+                .to_owned(),
+        ));
+    }
+    Ok(file.declarations.to_vec())
+}
+
 pub(super) fn is_file_module(declaration: &backend_compile::SourceDeclaration, path: &str) -> bool {
     declaration.kind() == DeclarationKind::Module
         && declaration.line() == 1
@@ -52,15 +194,15 @@ pub(super) struct ProjectTypeIndex {
 }
 
 impl ProjectTypeIndex {
-    pub(super) fn of(sources: &IndexedSources) -> Self {
+    pub(super) fn of(sources: &IndexedSources) -> Result<Self, BuiltinModelError> {
         let mut index = Self::default();
         for (_, record) in &sources.files {
             let Some(file) = record.file_fields() else {
                 continue;
             };
-            for declaration in file.declarations.iter() {
+            visit_complete_declarations(sources, record, |declaration| {
                 if !declares_a_type(declaration.kind()) {
-                    continue;
+                    return Ok(());
                 }
                 let entry = (file.path.to_owned(), declaration.line());
                 index
@@ -72,9 +214,10 @@ impl ProjectTypeIndex {
                         }
                     })
                     .or_insert(entry);
-            }
+                Ok(())
+            })?;
         }
-        index
+        Ok(index)
     }
 
     fn resolve(&self, project: [u8; 32], type_name: &str) -> Option<(&str, u32)> {
@@ -169,7 +312,7 @@ impl StructuralProjectionPlan {
         complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
         only: Option<&BTreeSet<[u8; 32]>>,
     ) -> Result<Self, BuiltinModelError> {
-        let types = ProjectTypeIndex::of(sources);
+        let types = ProjectTypeIndex::of(sources)?;
         let mut plan = Self::default();
         for (file_key, record) in &sources.files {
             if only.is_some_and(|keys| !keys.contains(file_key)) {
@@ -184,13 +327,12 @@ impl StructuralProjectionPlan {
             if semantic_profile_is_complete(complete, Some(project.package), file.path)? {
                 continue;
             }
-            let containment =
-                FileContainment::new(&project.label, file.path, file.project, file.declarations);
+            let containment = FileContainment::for_file(sources, record, &project.label)?;
             let duplicate_coordinates =
-                duplicate_declaration_coordinates(&containment, file.declarations);
+                duplicate_declaration_coordinates(sources, record, &containment)?;
             let mut occurrences = BTreeMap::new();
-            let mut declarations = Vec::with_capacity(file.declarations.len());
-            for declaration in file.declarations.iter() {
+            let mut declarations = Vec::new();
+            visit_complete_declarations(sources, record, |declaration| {
                 let coordinate = containment.coordinate(declaration);
                 let (id, identity_preimage) = declaration_symbol(
                     &coordinate,
@@ -220,7 +362,8 @@ impl StructuralProjectionPlan {
                     identity_preimage,
                     is_file_module: is_file_module(declaration, file.path),
                 });
-            }
+                Ok(())
+            })?;
             plan.files.insert(
                 *file_key,
                 StructuralFilePlan {
@@ -337,7 +480,7 @@ pub(super) struct FileContainment<'a> {
     path: &'a str,
     project: [u8; 32],
     module_coordinate: String,
-    local_types: BTreeMap<&'a str, u32>,
+    local_types: BTreeMap<String, u32>,
 }
 
 impl<'a> FileContainment<'a> {
@@ -345,7 +488,7 @@ impl<'a> FileContainment<'a> {
         label: &'a str,
         path: &'a str,
         project: [u8; 32],
-        declarations: &'a [backend_compile::SourceDeclaration],
+        declarations: &[backend_compile::SourceDeclaration],
     ) -> Self {
         let mut local_types = BTreeMap::new();
         for declaration in declarations {
@@ -353,7 +496,7 @@ impl<'a> FileContainment<'a> {
                 continue;
             }
             local_types
-                .entry(declaration.name())
+                .entry(declaration.name().to_owned())
                 .and_modify(|line: &mut u32| *line = (*line).min(declaration.line()))
                 .or_insert(declaration.line());
         }
@@ -364,6 +507,33 @@ impl<'a> FileContainment<'a> {
             module_coordinate: format!("{label}::{path}"),
             local_types,
         }
+    }
+
+    fn for_file(
+        sources: &IndexedSources,
+        record: &'a super::super::ProductSourceRecord,
+        label: &'a str,
+    ) -> Result<Self, BuiltinModelError> {
+        let file = record.file_fields().ok_or_else(|| {
+            BuiltinModelError("structural source row changed type during admission".to_owned())
+        })?;
+        let mut local_types = BTreeMap::<String, u32>::new();
+        visit_complete_declarations(sources, record, |declaration| {
+            if declares_a_type(declaration.kind()) {
+                local_types
+                    .entry(declaration.name().to_owned())
+                    .and_modify(|line| *line = (*line).min(declaration.line()))
+                    .or_insert(declaration.line());
+            }
+            Ok(())
+        })?;
+        Ok(Self {
+            label,
+            path: file.path,
+            project: file.project,
+            module_coordinate: format!("{label}::{}", file.path),
+            local_types,
+        })
     }
 
     /// Returns the coordinate a declaration's own row is addressed by.
@@ -417,30 +587,28 @@ pub(super) fn projected_source_capacity(
     sources: &IndexedSources,
     complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
 ) -> Result<usize, BuiltinModelError> {
-    let count = sources
-        .files
-        .iter()
-        .try_fold(sources.projects.len(), |count, (_, record)| {
-            let rows = match record.file_fields() {
-                Some(fields)
-                    if semantic_profile_is_complete(
-                        complete,
-                        sources
-                            .projects
-                            .get(&fields.project)
-                            .map(|project| project.package),
-                        fields.path,
-                    )? =>
-                {
-                    0
-                }
-                Some(fields) => fields.declarations.len(),
-                None => 0,
-            };
-            count
-                .checked_add(rows)
-                .ok_or_else(|| BuiltinModelError("workspace view row count overflow".to_owned()))
+    let mut count = sources.projects.len();
+    for (_, record) in &sources.files {
+        let Some(fields) = record.file_fields() else {
+            continue;
+        };
+        if semantic_profile_is_complete(
+            complete,
+            sources
+                .projects
+                .get(&fields.project)
+                .map(|project| project.package),
+            fields.path,
+        )? {
+            continue;
+        }
+        visit_complete_declarations(sources, record, |_| {
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| BuiltinModelError("workspace view row count overflow".to_owned()))?;
+            Ok(())
         })?;
+    }
     if count > MAX_REBUILD_PACKAGES {
         return Err(BuiltinModelError(
             "workspace source declarations exceed the rebuild row bound".to_owned(),
@@ -1578,7 +1746,10 @@ pub(crate) fn structural_reference_facts(
             BuiltinModelError("structural references target has no declaration name".to_owned())
         })?;
     let target_identity = structural_symbol_identity(target_symbol);
-    let root = sources.projects.get(&package.to_bytes()).map(|project| PathBuf::from(&project.label));
+    let root = sources
+        .projects
+        .get(&package.to_bytes())
+        .map(|project| PathBuf::from(&project.label));
     let mut files = BTreeMap::new();
     let mut facts = Vec::new();
     for relation in relations {
@@ -1597,19 +1768,31 @@ pub(crate) fn structural_reference_facts(
         // The place is where the call is in the file; a call the text
         // does not show (only in a comment, or the file changed since) has
         // no place rather than a made-up one.
-        let source = match (site_row.source.captured(), site_row.excerpt.text(), root.as_deref()) {
-            (Some(location), Some(excerpt), Some(root)) => structural_call_span(excerpt, target_name)
-                .and_then(|span| structural_file_span(root, location, excerpt, span, &mut files))
-                .map(|(start, end)| {
-                    Ok::<_, BuiltinModelError>(backend_engine::SemanticSourceSpan {
-                        file: backend_engine::ProductText::new(location.path()).map_err(|error| {
-                            BuiltinModelError(format!("structural references path: {error:?}"))
-                        })?,
-                        start,
-                        end,
+        let source = match (
+            site_row.source.captured(),
+            site_row.excerpt.text(),
+            root.as_deref(),
+        ) {
+            (Some(location), Some(excerpt), Some(root)) => {
+                structural_call_span(excerpt, target_name)
+                    .and_then(|span| {
+                        structural_file_span(root, location, excerpt, span, &mut files)
                     })
-                })
-                .transpose()?,
+                    .map(|(start, end)| {
+                        Ok::<_, BuiltinModelError>(backend_engine::SemanticSourceSpan {
+                            file: backend_engine::ProductText::new(location.path()).map_err(
+                                |error| {
+                                    BuiltinModelError(format!(
+                                        "structural references path: {error:?}"
+                                    ))
+                                },
+                            )?,
+                            start,
+                            end,
+                        })
+                    })
+                    .transpose()?
+            }
             _ => None,
         };
         facts.push(backend_engine::ReferenceFact {
@@ -1666,7 +1849,8 @@ pub(crate) fn structural_call_span(excerpt: &str, callee: &str) -> Option<(usize
             }
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 index += 2;
-                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
+                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                {
                     index += 1;
                 }
                 index = index.saturating_add(2).min(bytes.len());
@@ -1686,8 +1870,16 @@ pub(crate) fn structural_call_span(excerpt: &str, callee: &str) -> Option<(usize
             }
             // A character literal (`'a'`, `'\n'`); a lifetime (`'a`) has no
             // closing quote within two bytes and is read as code.
-            b'\'' if bytes.get(index + 2) == Some(&b'\'') || (bytes.get(index + 1) == Some(&b'\\') && bytes.get(index + 3) == Some(&b'\'')) => {
-                index += if bytes.get(index + 1) == Some(&b'\\') { 4 } else { 3 };
+            b'\''
+                if bytes.get(index + 2) == Some(&b'\'')
+                    || (bytes.get(index + 1) == Some(&b'\\')
+                        && bytes.get(index + 3) == Some(&b'\'')) =>
+            {
+                index += if bytes.get(index + 1) == Some(&b'\\') {
+                    4
+                } else {
+                    3
+                };
             }
             _ if bytes[index..].starts_with(needle)
                 && bytes.get(index + needle.len()) == Some(&b'(')
@@ -1717,20 +1909,30 @@ pub(crate) fn structural_file_span(
         .entry(location.path().to_owned())
         .or_insert_with(|| std::fs::read_to_string(root.join(location.path())).ok())
         .as_deref()?;
-    let line = usize::try_from(location.start_line()).ok()?.checked_sub(1)?;
+    let line = usize::try_from(location.start_line())
+        .ok()?
+        .checked_sub(1)?;
     let line_start = if line == 0 {
         0
     } else {
-        text.match_indices('\n').nth(line - 1).map(|(at, _)| at + 1)?
+        text.match_indices('\n')
+            .nth(line - 1)
+            .map(|(at, _)| at + 1)?
     };
-    let line_text = &text[line_start..text[line_start..].find('\n').map_or(text.len(), |end| line_start + end)];
+    let line_text = &text[line_start
+        ..text[line_start..]
+            .find('\n')
+            .map_or(text.len(), |end| line_start + end)];
     let first_line = excerpt.split('\n').next()?;
     let declaration = line_start + line_text.find(first_line)?;
     let covered = excerpt.get(..span.1)?;
     if text.get(declaration..declaration + covered.len())? != covered {
         return None;
     }
-    Some((u32::try_from(declaration + span.0).ok()?, u32::try_from(declaration + span.1).ok()?))
+    Some((
+        u32::try_from(declaration + span.0).ok()?,
+        u32::try_from(declaration + span.1).ok()?,
+    ))
 }
 
 #[cfg(test)]
@@ -1743,8 +1945,16 @@ mod call_span_tests {
         let excerpt = "fn retain(&mut self) {\n    // as_str(key) was here\n    /* as_str( */\n    let s = \"as_str(\";\n    let c = '(';\n    has_str(x);\n    self.map.retain(|key, value| keep(key.as_str(), value));\n}";
         let (start, end) = structural_call_span(excerpt, "as_str").expect("the call in code");
         assert_eq!(&excerpt[start..end], "as_str");
-        assert!(excerpt[..start].ends_with("key."), "the call, not a comment, a string or has_str: {}", &excerpt[start.saturating_sub(10)..end]);
-        assert_eq!(structural_call_span("fn f() {\n    /// as_str(x)\n    // as_str(y)\n}", "as_str"), None, "only comments: no use");
+        assert!(
+            excerpt[..start].ends_with("key."),
+            "the call, not a comment, a string or has_str: {}",
+            &excerpt[start.saturating_sub(10)..end]
+        );
+        assert_eq!(
+            structural_call_span("fn f() {\n    /// as_str(x)\n    // as_str(y)\n}", "as_str"),
+            None,
+            "only comments: no use"
+        );
     }
 
     #[test]
@@ -1756,12 +1966,26 @@ mod call_span_tests {
         let excerpt = "pub fn retain(&mut self) {\n        self.map.retain(|key, value| keep(key.as_str(), value));\n    }";
         let location = backend_compile::SourceLocation::new("src/map.rs", 5).expect("location");
         let span = structural_call_span(excerpt, "as_str").expect("the call");
-        let (start, end) = structural_file_span(&root, &location, excerpt, span, &mut BTreeMap::new()).expect("placed");
+        let (start, end) =
+            structural_file_span(&root, &location, excerpt, span, &mut BTreeMap::new())
+                .expect("placed");
         let (start, end) = (start as usize, end as usize);
         assert_eq!(&file[start..end], "as_str", "the file's own bytes");
-        assert_eq!(file[..start].matches('\n').count() + 1, 6, "on the call's line, not in the license header");
-        std::fs::write(root.join("src/map.rs"), file.replace("key.as_str()", "key.to_str()")).expect("edit");
-        assert_eq!(structural_file_span(&root, &location, excerpt, span, &mut BTreeMap::new()), None, "a file that no longer holds the indexed text places nothing");
+        assert_eq!(
+            file[..start].matches('\n').count() + 1,
+            6,
+            "on the call's line, not in the license header"
+        );
+        std::fs::write(
+            root.join("src/map.rs"),
+            file.replace("key.as_str()", "key.to_str()"),
+        )
+        .expect("edit");
+        assert_eq!(
+            structural_file_span(&root, &location, excerpt, span, &mut BTreeMap::new()),
+            None,
+            "a file that no longer holds the indexed text places nothing"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

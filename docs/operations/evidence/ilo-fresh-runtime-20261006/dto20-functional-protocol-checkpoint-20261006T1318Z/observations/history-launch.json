@@ -1,0 +1,55 @@
+{
+  "utc": "2026-10-06T13:12:14Z",
+  "runs": [
+    {
+      "case": "cachetools",
+      "pid": 1547542,
+      "argv": [
+        "/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin/python3",
+        "/root/nudox-corpus-20261006/artifacts/fresh-remote-runtime/poll-private-semantic-history.py",
+        "--run",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73",
+        "--manifest",
+        "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+        "--budget-seconds",
+        "180"
+      ],
+      "log": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/runtime-launches/cachetools-history-poll.log"
+    },
+    {
+      "case": "h11",
+      "pid": 1547543,
+      "argv": [
+        "/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin/python3",
+        "/root/nudox-corpus-20261006/artifacts/fresh-remote-runtime/poll-private-semantic-history.py",
+        "--run",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-f443a03b",
+        "--manifest",
+        "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+        "--budget-seconds",
+        "180"
+      ],
+      "log": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/runtime-launches/h11-history-poll.log"
+    },
+    {
+      "case": "decorator",
+      "pid": 1547544,
+      "argv": [
+        "/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin/python3",
+        "/root/nudox-corpus-20261006/artifacts/fresh-remote-runtime/poll-private-semantic-history.py",
+        "--run",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19",
+        "--manifest",
+        "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+        "--budget-seconds",
+        "180"
+      ],
+      "log": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/runtime-launches/decorator-history-poll.log"
+    }
+  ],
+  "memory_available_kib": 52802140,
+  "free_disk_bytes": 50812678144,
+  "observer_sha256": "0510501c3e64644ea703a18ed77d8cac46fb5bcf4f28bb14d55cf1424e341160",
+  "manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "whole_package_passes": 0
+}

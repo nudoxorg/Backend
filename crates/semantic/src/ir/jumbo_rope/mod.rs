@@ -59,6 +59,8 @@ pub enum JumboValueFamily {
     Documentation = 1,
     /// A source provenance value such as a source path.
     SourceProvenance = 2,
+    /// A variable field in a Core declaration row.
+    Core = 3,
 }
 
 impl JumboValueFamily {
@@ -66,6 +68,7 @@ impl JumboValueFamily {
         match code {
             1 => Ok(Self::Documentation),
             2 => Ok(Self::SourceProvenance),
+            3 => Ok(Self::Core),
             _ => Err(JumboRopeError::UnknownFamily(code)),
         }
     }
@@ -79,6 +82,10 @@ pub enum JumboValueEncoding {
     Bytes = 1,
     /// UTF-8 text, validated across the complete ordered leaf closure.
     Utf8 = 2,
+    /// A Core member list: a big-endian count followed by 32-byte identities.
+    CoreMemberIdentityList = 3,
+    /// A Core attribute list: a big-endian count followed by length-prefixed bytes.
+    CoreAttributeList = 4,
 }
 
 impl JumboValueEncoding {
@@ -86,6 +93,8 @@ impl JumboValueEncoding {
         match code {
             1 => Ok(Self::Bytes),
             2 => Ok(Self::Utf8),
+            3 => Ok(Self::CoreMemberIdentityList),
+            4 => Ok(Self::CoreAttributeList),
             _ => Err(JumboRopeError::UnknownEncoding(code)),
         }
     }
@@ -101,7 +110,7 @@ pub struct JumboValueContext {
 }
 
 impl JumboValueContext {
-    /// Creates the identity context for one documentation or source value.
+    /// Creates the identity context for one typed semantic row field.
     #[must_use]
     pub const fn new(
         owner: [u8; 32],

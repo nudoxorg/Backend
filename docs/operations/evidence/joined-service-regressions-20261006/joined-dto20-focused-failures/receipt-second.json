@@ -1,0 +1,51 @@
+{
+  "source": "039c360d286962a6cf19488fb86caabd1d8c93de",
+  "source_after": "039c360d286962a6cf19488fb86caabd1d8c93de",
+  "results": [
+    {
+      "filter": "builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations",
+      "exit": 101,
+      "elapsed": 27.113,
+      "stop": null,
+      "source": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "log": "/Users/mileswirht/Downloads/nudox-active-20261005/typescript-global-probe/.local/joined-dto20-focused-failures/4.log",
+      "sha256": "1791118bc07380312eabbad7c3a8f83fb4284b3061dfd68aeebac299ebaa0a4f"
+    },
+    {
+      "filter": "builtin::ingest::tests::reused_scan_drops_compiler_text_until_a_sibling_edit",
+      "exit": 101,
+      "elapsed": 1.006,
+      "stop": null,
+      "source": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "log": "/Users/mileswirht/Downloads/nudox-active-20261005/typescript-global-probe/.local/joined-dto20-focused-failures/5.log",
+      "sha256": "f8a0feb4bfe719197652dd1e0b6eb6bda5cd15c02eab4a20126851b52bff0941"
+    },
+    {
+      "filter": "builtin::browse::tests::two_real_workspaces_keep_exact_context_authority_with_bounded_lru",
+      "exit": 101,
+      "elapsed": 51.194,
+      "stop": null,
+      "source": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "log": "/Users/mileswirht/Downloads/nudox-active-20261005/typescript-global-probe/.local/joined-dto20-focused-failures/6.log",
+      "sha256": "ecc1fc3245dab23fa22fe9caa35e68aa7ed030b79842c0e5fce6063c65c13b14"
+    },
+    {
+      "filter": "builtin::owner_fairness_tests::queued_daemon_query_and_lease_expiry_progress_under_sustained_remote_admission",
+      "exit": 101,
+      "elapsed": 1.008,
+      "stop": null,
+      "source": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "log": "/Users/mileswirht/Downloads/nudox-active-20261005/typescript-global-probe/.local/joined-dto20-focused-failures/7.log",
+      "sha256": "b82e608bce6a7d4311db260367733f1fe408b6ac574f7d325c6a24dfbe74e230"
+    },
+    {
+      "filter": "builtin::registry::tests::failed_advisory_refresh_cold_reopen_keeps_findings_and_marks_unavailable",
+      "exit": 101,
+      "elapsed": 1.069,
+      "stop": null,
+      "source": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "log": "/Users/mileswirht/Downloads/nudox-active-20261005/typescript-global-probe/.local/joined-dto20-focused-failures/8.log",
+      "sha256": "2b4b83083cc48476667f12472488070b7a2a73e4aa769b4a2713ea3ba461a9c5"
+    }
+  ]
+}

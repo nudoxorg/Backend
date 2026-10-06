@@ -1,0 +1,120 @@
+{
+  "kind": "exact-source focused tests plus incomplete full run",
+  "files": [
+    {
+      "path": "joined-dto20-focused-failures/0.log",
+      "bytes": 820,
+      "sha256": "ed1d2e5b42e759ecbde675b8c4ec494211ca43bc25351d712294947b828d297b"
+    },
+    {
+      "path": "joined-dto20-focused-failures/1.log",
+      "bytes": 838,
+      "sha256": "8813a433a96447247a376092de04f3c06f0c0fe535c5bce26f38ca58955033d0"
+    },
+    {
+      "path": "joined-dto20-focused-failures/2.log",
+      "bytes": 875,
+      "sha256": "ef9f9288081a2540fc7ea032f095fe7448b381330b63bc232e97ef774b15127c"
+    },
+    {
+      "path": "joined-dto20-focused-failures/3.log",
+      "bytes": 672,
+      "sha256": "63aea1eb2c5a8593936e4d80170895ca745aa688bd7f7313182446bdb1d08280"
+    },
+    {
+      "path": "joined-dto20-focused-failures/4.log",
+      "bytes": 11773,
+      "sha256": "1791118bc07380312eabbad7c3a8f83fb4284b3061dfd68aeebac299ebaa0a4f"
+    },
+    {
+      "path": "joined-dto20-focused-failures/5.log",
+      "bytes": 617,
+      "sha256": "f8a0feb4bfe719197652dd1e0b6eb6bda5cd15c02eab4a20126851b52bff0941"
+    },
+    {
+      "path": "joined-dto20-focused-failures/6.log",
+      "bytes": 649,
+      "sha256": "ecc1fc3245dab23fa22fe9caa35e68aa7ed030b79842c0e5fce6063c65c13b14"
+    },
+    {
+      "path": "joined-dto20-focused-failures/7.log",
+      "bytes": 748,
+      "sha256": "b82e608bce6a7d4311db260367733f1fe408b6ac574f7d325c6a24dfbe74e230"
+    },
+    {
+      "path": "joined-dto20-focused-failures/8.log",
+      "bytes": 736,
+      "sha256": "2b4b83083cc48476667f12472488070b7a2a73e4aa769b4a2713ea3ba461a9c5"
+    },
+    {
+      "path": "joined-dto20-focused-failures/receipt-second.json",
+      "bytes": 2486,
+      "sha256": "61f4ad075448a16dc09d181958065501d0f3f6031d4281b091719799c2be08fe"
+    },
+    {
+      "path": "joined-dto20-focused-failures/receipt.json",
+      "bytes": 2037,
+      "sha256": "0ad8df53fb6dfaa93b2c163f024889bdfa311ebce24f0285d67148e2518f5bbb"
+    },
+    {
+      "path": "joined-dto20-root-repairs/attempt02/build-receipt.json",
+      "bytes": 5129,
+      "sha256": "81f9453dd91e4dc2bcf2d18d65eabe7d6473af576fdd657e98b59f9c18dbe84c"
+    },
+    {
+      "path": "joined-dto20-root-repairs/attempt02/build.log",
+      "bytes": 280690,
+      "sha256": "c5c62f34c71f6bee8c9b6d61114272973fea78a24e437bccb95f6e7ccfcc977c"
+    },
+    {
+      "path": "joined-dto20-root-repairs/attempt02/test-0.log",
+      "bytes": 238,
+      "sha256": "a1468a80eb864ce69e1608e5bb88bfdcf21f77246bce4f1d2a1521ed14d44e89"
+    },
+    {
+      "path": "joined-dto20-root-repairs/attempt02/test-1.log",
+      "bytes": 246,
+      "sha256": "14632e3105ae05dc6db94321e53dfa2c1603a3cffb88a12f217f8938454a7d1b"
+    },
+    {
+      "path": "joined-dto20-root-repairs/attempt02/test-2.log",
+      "bytes": 226,
+      "sha256": "11a21b408477c946a0a86dd246c75bbc761da97be45bb68254717324f57a8bb3"
+    },
+    {
+      "path": "joined-dto20-root-repairs/attempt02/test-3.log",
+      "bytes": 211,
+      "sha256": "fc615b98058cc476feb6cd4cd4daf3ae3ea9afaa3fa85de3e579380133a3bbfa"
+    },
+    {
+      "path": "joined-dto20-root-repairs/attempt02/test-4.log",
+      "bytes": 226,
+      "sha256": "04eca1abb6afd74415c0d28475e33e949de1dec9734f64faa4f96fceed734b4b"
+    },
+    {
+      "path": "joined-dto20-root-repairs/attempt02/tests-receipt.json",
+      "bytes": 1639,
+      "sha256": "a8cd942d88aaec75bac95d6dd5b6a7989cb8e0b612cfb45fbb2b7f00c7fa356a"
+    },
+    {
+      "path": "joined-dto20-root-repairs/build-receipt.json",
+      "bytes": 941,
+      "sha256": "f72fd410ec46c038cbaf1d284652c9d5eea3f09fa535efc95269c46fd3665c7a"
+    },
+    {
+      "path": "joined-dto20-root-repairs/build.log",
+      "bytes": 259399,
+      "sha256": "970a1fa77280a56cd8d28046fa3f6ab9ae3ae6dccaa3b471378c1c6c6d00672c"
+    },
+    {
+      "path": "joined-dto20-service-lib-resource-stop.json",
+      "bytes": 401,
+      "sha256": "e7b60cc808a7aa8fc6a3296f6a7faf04510e8dfd2880793d1cf16f9e3c0e65c2"
+    },
+    {
+      "path": "joined-dto20-service-lib.txt",
+      "bytes": 394569,
+      "sha256": "5d7828750979634278b2eb0491994ec100383232f32dbab801701edad7d876a7"
+    }
+  ]
+}

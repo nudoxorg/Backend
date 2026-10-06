@@ -1,0 +1,149 @@
+{
+  "node": {
+    "requested_path": "/opt/homebrew/bin/node",
+    "canonical_path": "/opt/homebrew/Cellar/node/26.8.2/bin/node",
+    "bytes": 50288,
+    "sha256": "f023ca4cc73074018b8085e846c8f46fc175f923d6349708e9af2e3cef76af59",
+    "dylib_loads": "/opt/homebrew/Cellar/node/26.8.2/bin/node:\n\t@rpath/libnode.147.dylib (compatibility version 0.0.0, current version 0.0.0)\n\t/usr/lib/libz.1.dylib (compatibility version 1.0.0, current version 1.2.12)\n\t/opt/homebrew/opt/llhttp/lib/libllhttp.9.4.dylib (compatibility version 9.4.0, current version 9.4.3)\n\t/opt/homebrew/opt/libuv/lib/libuv.1.dylib (compatibility version 1.0.0, current version 1.0.0)\n\t/opt/homebrew/opt/ada-url/lib/libada.4.dylib (compatibility version 4.0.0, current version 4.0.0)\n\t/opt/homebrew/opt/simdjson/lib/libsimdjson.33.dylib (compatibility version 33.0.0, current version 33.0.0)\n\t/opt/homebrew/opt/brotli/lib/libbrotlidec.1.dylib (compatibility version 1.0.0, current version 1.2.0)\n\t/opt/homebrew/opt/brotli/lib/libbrotlienc.1.dylib (compatibility version 1.0.0, current version 1.2.0)\n\t/opt/homebrew/opt/c-ares/lib/libcares.2.dylib (compatibility version 2.0.0, current version 2.19.7)\n\t/opt/homebrew/opt/hdrhistogram_c/lib/libhdr_histogram.6.dylib (compatibility version 6.0.0, current version 6.3.3)\n\t/opt/homebrew/opt/merve/lib/libmerve.1.dylib (compatibility version 1.0.0, current version 1.2.2)\n\t/opt/homebrew/opt/nbytes/lib/libnbytes.dylib (compatibility version 0.0.0, current version 0.0.0)\n\t/opt/homebrew/opt/libnghttp2/lib/libnghttp2.14.dylib (compatibility version 44.0.0, current version 44.5.0)\n\t/opt/homebrew/opt/libnghttp3/lib/libnghttp3.9.dylib (compatibility version 9.0.0, current version 9.9.0)\n\t/opt/homebrew/opt/libngtcp2/lib/libngtcp2.16.dylib (compatibility version 28.0.0, current version 28.0.0)\n\t/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib (compatibility version 9.0.0, current version 9.6.0)\n\t/opt/homebrew/opt/libffi/lib/libffi.8.dylib (compatibility version 14.0.0, current version 14.0.0)\n\t/opt/homebrew/opt/uvwasi/lib/libuvwasi.dylib (compatibility version 0.0.0, current version 0.0.0)\n\t/opt/homebrew/opt/zstd/lib/libzstd.1.dylib (compatibility version 1.0.0, current version 1.5.7)\n\t/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib (compatibility version 3.0.0, current version 3.0.0)\n\t/opt/homebrew/opt/openssl@3/lib/libssl.3.dylib (compatibility version 3.0.0, current version 3.0.0)\n\t/opt/homebrew/opt/icu4c@78/lib/libicui18n.78.dylib (compatibility version 78.0.0, current version 78.3.0)\n\t/opt/homebrew/opt/icu4c@78/lib/libicuuc.78.dylib (compatibility version 78.0.0, current version 78.3.0)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 3423.0.0)\n\t/System/Library/Frameworks/Security.framework/Versions/A/Security (compatibility version 1.0.0, current version 61439.101.1)\n\t/usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 1900.178.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)\n",
+    "direct_file_library_hashes": {
+      "/opt/homebrew/opt/llhttp/lib/libllhttp.9.4.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/llhttp/9.4.3/lib/libllhttp.9.4.3.dylib",
+        "sha256": "4855cee8f28649cddcce46ad963fe83f5708b1e2228b3b25751c1ba44a460d17",
+        "bytes": 77664
+      },
+      "/opt/homebrew/opt/libuv/lib/libuv.1.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/libuv/1.52.1/lib/libuv.1.0.0.dylib",
+        "sha256": "79897d8691289c284587a512e3a42d1725d7072b1304c96efa770e4fad97f7bb",
+        "bytes": 189408
+      },
+      "/opt/homebrew/opt/ada-url/lib/libada.4.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/ada-url/4.0.0/lib/libada.4.0.0.dylib",
+        "sha256": "081337ce8ac457e3bb8ca4753d36c2b302f11196e9440395536998956d216c52",
+        "bytes": 391568
+      },
+      "/opt/homebrew/opt/simdjson/lib/libsimdjson.33.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/simdjson/4.6.11/lib/libsimdjson.33.0.0.dylib",
+        "sha256": "2a8957e7374abf80a57671c124aa08e3b4f7465bceb6fa1b4ed1330e8923189f",
+        "bytes": 95088
+      },
+      "/opt/homebrew/opt/brotli/lib/libbrotlidec.1.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/brotli/1.2.0/lib/libbrotlidec.1.2.0.dylib",
+        "sha256": "574ff610bfd3a23d34a03843a59b9c48d509d4e3336d9fc763ae6b35d17cad3e",
+        "bytes": 70128
+      },
+      "/opt/homebrew/opt/brotli/lib/libbrotlienc.1.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/brotli/1.2.0/lib/libbrotlienc.1.2.0.dylib",
+        "sha256": "9da99c892dbfea4d96eed9fcfab986bc83a47fd74f6bea02e2455b11343170a5",
+        "bytes": 639152
+      },
+      "/opt/homebrew/opt/c-ares/lib/libcares.2.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/c-ares/1.34.8/lib/libcares.2.19.7.dylib",
+        "sha256": "5f268b4b7cbfd8221b516f8dbe05aaacc89ab8c764604f35269e302b904b1163",
+        "bytes": 227136
+      },
+      "/opt/homebrew/opt/hdrhistogram_c/lib/libhdr_histogram.6.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/hdrhistogram_c/0.11.10/lib/libhdr_histogram.6.3.3.dylib",
+        "sha256": "11db880a22aff139d2c66dc2c1aee26cee12fbc98734bf7cbbce06e7f40f77b0",
+        "bytes": 57920
+      },
+      "/opt/homebrew/opt/merve/lib/libmerve.1.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/merve/1.2.2_2/lib/libmerve.1.2.2.dylib",
+        "sha256": "5b7de4336c384269ac82405ad903dc9e78a9e7aff70502a014868240462fc6a0",
+        "bytes": 80176
+      },
+      "/opt/homebrew/opt/nbytes/lib/libnbytes.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/nbytes/0.1.4/lib/libnbytes.dylib",
+        "sha256": "8b0db4ac2be871ec445b1eb38a73eb924f34a8972470af610f79f7bd5984cadd",
+        "bytes": 35136
+      },
+      "/opt/homebrew/opt/libnghttp2/lib/libnghttp2.14.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/libnghttp2/1.70.0/lib/libnghttp2.14.dylib",
+        "sha256": "5df5de1c71a96b5f2b02e10dc95082de0fd0774cc4f7a05b084fbda8bcf3addb",
+        "bytes": 184336
+      },
+      "/opt/homebrew/opt/libnghttp3/lib/libnghttp3.9.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/libnghttp3/1.18.0/lib/libnghttp3.9.9.0.dylib",
+        "sha256": "1d4cb92df671d316dc29b6654aeb7cd3a647dd2d3eed4782600f72301f0c4d8b",
+        "bytes": 183584
+      },
+      "/opt/homebrew/opt/libngtcp2/lib/libngtcp2.16.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/libngtcp2/1.25.0/lib/libngtcp2.16.dylib",
+        "sha256": "9a5cc6ab5144dd521bda8295304d5979cde90d8f00ce676110ff3c4467b82d7a",
+        "bytes": 349184
+      },
+      "/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/sqlite/3.53.4/lib/libsqlite3.3.53.4.dylib",
+        "sha256": "c8d5d0225a3cf6462b0de9c38ea90c23c84a7234076032876783a92c01949629",
+        "bytes": 1276416
+      },
+      "/opt/homebrew/opt/libffi/lib/libffi.8.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/libffi/3.8.0/lib/libffi.8.dylib",
+        "sha256": "55cd97476e05f8bb0f7e560f25361b3419dba5227a52eddab47320ce57feccb6",
+        "bytes": 120576
+      },
+      "/opt/homebrew/opt/uvwasi/lib/libuvwasi.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/uvwasi/0.0.23/lib/libuvwasi.dylib",
+        "sha256": "7662d10427d80edd044e273e2bcf7a1ebe068724d545b27e801a841d669730c8",
+        "bytes": 65616
+      },
+      "/opt/homebrew/opt/zstd/lib/libzstd.1.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/zstd/1.5.7_1/lib/libzstd.1.5.7.dylib",
+        "sha256": "40cde10ac8415f73144109a6e4f80a403ca0a3259e5fd227158277bab146e6d8",
+        "bytes": 635328
+      },
+      "/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/openssl@3/3.6.4/lib/libcrypto.3.dylib",
+        "sha256": "48c160c3aaa46cb69e5874370d820c2bc8be0712f6ee690fa10581ad966474a7",
+        "bytes": 4870816
+      },
+      "/opt/homebrew/opt/openssl@3/lib/libssl.3.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/openssl@3/3.6.4/lib/libssl.3.dylib",
+        "sha256": "a53b324db78c1146ff9ce68700f952e3997f4a1965ee6c6a802f6d3bdcd625ad",
+        "bytes": 888320
+      },
+      "/opt/homebrew/opt/icu4c@78/lib/libicui18n.78.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/icu4c@78/78.3/lib/libicui18n.78.3.dylib",
+        "sha256": "b29beb6db94b7d92222aca40e2fef72fcd78e6861d2565ecd7333121e923770f",
+        "bytes": 3168704
+      },
+      "/opt/homebrew/opt/icu4c@78/lib/libicuuc.78.dylib": {
+        "canonical_path": "/opt/homebrew/Cellar/icu4c@78/78.3/lib/libicuuc.78.3.dylib",
+        "sha256": "6fa74bc0a546cd34cdf733bf9ad8089e1088dba42e3eb8fe0c1c5a53c326af3e",
+        "bytes": 1859408
+      }
+    }
+  },
+  "python": {
+    "requested_path": "/opt/homebrew/bin/python3",
+    "canonical_path": "/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+    "bytes": 34640,
+    "sha256": "d8f1d508de5acfd500f20d1949528375ff4a1f470efb267f00d1770941cdeee3",
+    "dylib_loads": "/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/bin/python3.14:\n\t/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/Python (compatibility version 3.14.0, current version 3.14.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)\n",
+    "direct_file_library_hashes": {
+      "/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/Python": {
+        "canonical_path": "/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/Python",
+        "sha256": "1359b4fae16aa3706ba620b10587e1bb8a088ba704df1ec6dddd12332f962887",
+        "bytes": 5485984
+      }
+    }
+  },
+  "go": {
+    "requested_path": "/opt/homebrew/bin/go",
+    "canonical_path": "/opt/homebrew/Cellar/go/1.27.1/libexec/bin/go",
+    "bytes": 16052994,
+    "sha256": "548608a910c46de32c65a3934f461b1787acf6ddd371044826068d8503b8509b",
+    "dylib_loads": "/opt/homebrew/Cellar/go/1.27.1/libexec/bin/go:\n\t/usr/lib/libSystem.B.dylib (compatibility version 0.0.0, current version 0.0.0)\n\t/usr/lib/libresolv.9.dylib (compatibility version 0.0.0, current version 0.0.0)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 0.0.0, current version 0.0.0)\n\t/System/Library/Frameworks/Security.framework/Versions/A/Security (compatibility version 0.0.0, current version 0.0.0)\n",
+    "direct_file_library_hashes": {}
+  },
+  "go_oracle_directory_source_hashes": {
+    "frontends/go/src/legacy/oracle/authority_witness.rs": "a976ff83e67241d79bf2acbee087fe0a8e66d58710afad56ad319e11dbb4932a",
+    "frontends/go/src/legacy/oracle/cgo_incomplete_test.go": "bca4ba9dec62908da650a605d3b8bcfb0475c489b827d75c4b89c4a9ada07ce3",
+    "frontends/go/src/legacy/oracle/docs.go": "9f3f55bb72b4e42ca3b0a878fcd05e8d4c64838812af56a1491e43a2d3e11873",
+    "frontends/go/src/legacy/oracle/go.mod": "029dba916e52a9159429bd04ccc523e7ac8631602a33d201deb0ee36ac836dc2",
+    "frontends/go/src/legacy/oracle/go.sum": "49797496095cfe88a8a41d2047d311db0bb1d29f34e935be4cb8b3a7af6fcfba",
+    "frontends/go/src/legacy/oracle/image.go": "66ea9e795bda7b10123d8ea6d83ec5b7dc38377953b5af8a09d417b9167dcf9e",
+    "frontends/go/src/legacy/oracle/image_unresolved_test.go": "1a6c5f3b2dbff1660e5b2669807159944b802e309be57ffd22b367c4808fcece",
+    "frontends/go/src/legacy/oracle/main.go": "81befe319b8853169d55b9e5c1839529036bc535a8f4aac446e9a83dd0a76176",
+    "frontends/go/src/legacy/oracle/serialize.go": "2fad4e6fd70a377a3414b5e0a73337f743596a2fc33183b9869ced95a72bd0d5"
+  }
+}

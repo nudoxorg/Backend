@@ -1,0 +1,30 @@
+{
+  "files": [
+    {
+      "bytes": 866,
+      "path": "index.js",
+      "sha256": "cb059342a762b955997bf780f3693add176922727f2fa9f11fcaf1b3fc323239"
+    },
+    {
+      "bytes": 1128,
+      "path": "license",
+      "sha256": "6ee0feb1f6ef996ff5a68600f8cf98909cf412d39ef3cdceaefd87d636fa1b7f"
+    },
+    {
+      "bytes": 511,
+      "path": "package.json",
+      "sha256": "c0002f7d4c7d7e2a885cf0f97226344902417c3a0980f2beca41962d2bc1f6d8"
+    },
+    {
+      "bytes": 917,
+      "path": "readme.md",
+      "sha256": "969286b710026d911ed5e09e5bdca2dbf1c921662defa2ad3a1b3760a0bdb213"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "require-from-string",
+    "version": "2.0.2"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

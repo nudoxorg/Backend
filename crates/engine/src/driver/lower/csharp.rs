@@ -643,7 +643,7 @@ pub(crate) fn collect<'source>(
         };
         if !owner_has_child[coordinate] {
             facts
-                .mark_members_captured(ordinal)
+                .capture_declared_members(ordinal, &[])
                 .map_err(|fault| lane_terminal_ordinal(ordinal, 0, fault))?;
         }
     }

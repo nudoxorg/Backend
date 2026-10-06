@@ -15,9 +15,9 @@ use crate::driver::types::{FactFault, ParentageState, SourceSpanFact};
 /// request-local source-file atom.
 pub(crate) use crate::driver::types::SourceSpanFact as StagedSourceSpan;
 
-/// Whether the authority explicitly enumerated an entity's complete local
-/// member set. The enum prevents root/bound containment from being mistaken
-/// for proof of an empty or complete member list.
+/// Whether the authority enumerated every directly declared member of this
+/// owner. Inherited, effective and runtime structural members are separate
+/// facts; containment alone never proves this inventory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum MemberSetCapture {
     Unavailable,
@@ -30,6 +30,7 @@ pub(super) struct Provenance {
     parentage: Box<[ParentageState]>,
     source_spans: Box<[Option<SourceSpanFact>]>,
     member_sets: Box<[MemberSetCapture]>,
+    declared_members: Box<[Option<Box<[u32]>>]>,
 }
 
 impl Provenance {
@@ -39,6 +40,7 @@ impl Provenance {
             parentage: vec![ParentageState::Unavailable; facts].into_boxed_slice(),
             source_spans: vec![None; facts].into_boxed_slice(),
             member_sets: vec![MemberSetCapture::Unavailable; facts].into_boxed_slice(),
+            declared_members: vec![None; facts].into_boxed_slice(),
         }
     }
 
@@ -56,6 +58,10 @@ impl Provenance {
     /// Member-set authority state aligned to the fact lane.
     pub(super) fn member_sets(&self) -> &[MemberSetCapture] {
         &self.member_sets
+    }
+
+    pub(super) fn declared_members(&self, entity: usize) -> Option<&[u32]> {
+        self.declared_members.get(entity)?.as_deref()
     }
 
     /// Performs the one legal containment transition for an admitted entity.
@@ -187,12 +193,26 @@ impl Provenance {
         }
     }
 
-    /// Marks an authority-complete local member-set observation, including a
-    /// real empty set. The binary capture state is intentionally idempotent.
+    /// Records a proven empty declared inventory. This compatibility entry
+    /// point cannot turn arbitrary bound children into members.
     pub(super) fn mark_members_captured(
         &mut self,
         fact_count: usize,
         entity: u32,
+    ) -> Result<(), FactFault> {
+        self.capture_declared_members(fact_count, entity, &[])
+    }
+
+    /// Retains the producer's complete direct-declaration inventory. A member
+    /// must already have this local owner. That check validates the supplied
+    /// inventory; it never enumerates parentage to invent one. Since each
+    /// member has one owner, retained inventories together are bounded by the
+    /// fact plan. Invalid or conflicting observations leave all state intact.
+    pub(super) fn capture_declared_members(
+        &mut self,
+        fact_count: usize,
+        entity: u32,
+        members: &[u32],
     ) -> Result<(), FactFault> {
         if entity as usize >= fact_count {
             return Err(FactFault::RefTarget {
@@ -201,6 +221,55 @@ impl Provenance {
                 fact_count,
             });
         }
+        for &member in members {
+            if member as usize >= fact_count || member == entity {
+                return Err(FactFault::RefTarget {
+                    lane: backend_semantic::vocabulary::ProjectionFactLane::EntityMembers,
+                    raw: member,
+                    fact_count,
+                });
+            }
+            let requested = ParentageState::Bound {
+                parent: EntityId::new(entity),
+            };
+            let existing = self.parentage[member as usize];
+            if existing != requested {
+                return Err(FactFault::ConflictingParentage {
+                    entity: EntityId::new(member),
+                    existing,
+                    requested,
+                });
+            }
+        }
+        // Native redeclarations may repeat one admitted representative more
+        // often than there are emitted rows. Validate coordinates first, then
+        // allocate only distinct IDs: the set is bounded by the fact plan,
+        // independent of the number of repeated authority observations.
+        let canonical = members
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if let Some(existing) = self.declared_members[entity as usize].as_deref() {
+            if existing == canonical {
+                return Ok(());
+            }
+            let first_difference = existing
+                .iter()
+                .zip(&canonical)
+                .position(|(left, right)| left != right)
+                .unwrap_or(existing.len().min(canonical.len()));
+            return Err(FactFault::ConflictingMemberInventory {
+                entity: EntityId::new(entity),
+                existing_count: existing.len() as u64,
+                requested_count: canonical.len() as u64,
+                first_difference: first_difference as u64,
+                existing_member: existing.get(first_difference).copied(),
+                requested_member: canonical.get(first_difference).copied(),
+            });
+        }
+        self.declared_members[entity as usize] = Some(canonical.into_boxed_slice());
         self.member_sets[entity as usize] = MemberSetCapture::Captured;
         Ok(())
     }

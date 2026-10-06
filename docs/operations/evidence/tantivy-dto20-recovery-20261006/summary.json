@@ -1,0 +1,163 @@
+{
+  "schema": "nudox.dto20-provider-recovery-summary.v1",
+  "source_commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+  "manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "provider_gate_pass": true,
+  "whole_package_runtime_pass": false,
+  "fault_categories": [
+    "selected-stamp-0",
+    "selected-stamp-7",
+    "selected-stamp-17",
+    "unused-stamp-0",
+    "unused-stamp-7",
+    "unused-stamp-17",
+    "stale-selected-index",
+    "corrupt-selected-index",
+    "partial-publication"
+  ],
+  "owner_start_count": 20,
+  "concurrent_read_count": 60,
+  "rows": [
+    {
+      "label": "warm",
+      "ready_utc_delta_seconds": 6.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 689,
+      "whole_runtime_fchmod_calls": 174
+    },
+    {
+      "label": "cold",
+      "ready_utc_delta_seconds": 5.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 639,
+      "whole_runtime_fchmod_calls": 144
+    },
+    {
+      "label": "selected-stamp-0",
+      "ready_utc_delta_seconds": 6.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 620,
+      "whole_runtime_fchmod_calls": 137
+    },
+    {
+      "label": "selected-stamp-0-recovered-cold",
+      "ready_utc_delta_seconds": 6.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 638,
+      "whole_runtime_fchmod_calls": 143
+    },
+    {
+      "label": "selected-stamp-7",
+      "ready_utc_delta_seconds": 5.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 643,
+      "whole_runtime_fchmod_calls": 146
+    },
+    {
+      "label": "selected-stamp-7-recovered-cold",
+      "ready_utc_delta_seconds": 6.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 630,
+      "whole_runtime_fchmod_calls": 142
+    },
+    {
+      "label": "selected-stamp-17",
+      "ready_utc_delta_seconds": 7.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 641,
+      "whole_runtime_fchmod_calls": 145
+    },
+    {
+      "label": "selected-stamp-17-recovered-cold",
+      "ready_utc_delta_seconds": 6.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 616,
+      "whole_runtime_fchmod_calls": 137
+    },
+    {
+      "label": "unused-stamp-0",
+      "ready_utc_delta_seconds": 7.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 642,
+      "whole_runtime_fchmod_calls": 146
+    },
+    {
+      "label": "unused-stamp-0-recovered-cold",
+      "ready_utc_delta_seconds": 8.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 602,
+      "whole_runtime_fchmod_calls": 132
+    },
+    {
+      "label": "unused-stamp-7",
+      "ready_utc_delta_seconds": 5.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 645,
+      "whole_runtime_fchmod_calls": 147
+    },
+    {
+      "label": "unused-stamp-7-recovered-cold",
+      "ready_utc_delta_seconds": 7.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 635,
+      "whole_runtime_fchmod_calls": 143
+    },
+    {
+      "label": "unused-stamp-17",
+      "ready_utc_delta_seconds": 7.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 692,
+      "whole_runtime_fchmod_calls": 161
+    },
+    {
+      "label": "unused-stamp-17-recovered-cold",
+      "ready_utc_delta_seconds": 6.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 629,
+      "whole_runtime_fchmod_calls": 140
+    },
+    {
+      "label": "stale-selected-index",
+      "ready_utc_delta_seconds": 6.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 915,
+      "whole_runtime_fchmod_calls": 233
+    },
+    {
+      "label": "stale-selected-index-recovered-cold",
+      "ready_utc_delta_seconds": 6.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 637,
+      "whole_runtime_fchmod_calls": 144
+    },
+    {
+      "label": "corrupt-selected-index",
+      "ready_utc_delta_seconds": 6.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 808,
+      "whole_runtime_fchmod_calls": 197
+    },
+    {
+      "label": "corrupt-selected-index-recovered-cold",
+      "ready_utc_delta_seconds": 7.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 567,
+      "whole_runtime_fchmod_calls": 121
+    },
+    {
+      "label": "partial-publication",
+      "ready_utc_delta_seconds": 7.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 760,
+      "whole_runtime_fchmod_calls": 181
+    },
+    {
+      "label": "partial-publication-recovered-cold",
+      "ready_utc_delta_seconds": 6.0,
+      "timing_precision": "timestamps rounded to whole UTC seconds; not monotonic stopwatch",
+      "whole_runtime_fsync_calls": 546,
+      "whole_runtime_fchmod_calls": 114
+    }
+  ],
+  "scope": "Selected-root provider faults and inactive-root advisory-maintenance controls are distinct; whole-runtime syscall counts do not establish zero mutable artifact reads."
+}

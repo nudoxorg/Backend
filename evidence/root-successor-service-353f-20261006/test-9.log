@@ -1,0 +1,6 @@
+
+running 1 test
+test service::lease::tests::an_open_answered_with_events_holds_the_lease_at_the_batch_cursor_and_resume_advances_it ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 0.00s
+

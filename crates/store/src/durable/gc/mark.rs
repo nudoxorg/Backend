@@ -31,6 +31,38 @@ impl FileStore {
             let Some(item) = read_queue_item(&paths.queue, writer.state.queue_offset)? else {
                 break;
             };
+            // Direct immutable envelopes share the byte allowance for this
+            // mark step. Leave the next record queued when it fits a fresh
+            // step but not the remaining allowance; a single oversized
+            // envelope still fails admission below before sweep.
+            if processed != 0 {
+                if matches!(
+                    item,
+                    QueueItem::Head { .. }
+                        | QueueItem::Closure(_)
+                        | QueueItem::ManifestPage { .. }
+                        | QueueItem::RemoteClosureIndex(_)
+                        | QueueItem::RemoteManifestPage { .. }
+                ) {
+                    // A manifest page must begin with a fresh byte allowance.
+                    // Earlier direct envelopes can leave too little for even
+                    // its first member, which is a continuation, not a bounds
+                    // failure for the immutable object.
+                    break;
+                }
+                let object = match item {
+                    QueueItem::Object(id) | QueueItem::RelationRefs { object: id, .. } => Some(id),
+                    _ => None,
+                };
+                if let Some(object) = object {
+                    let bytes = std::fs::metadata(self.object_path(object))
+                        .map_err(|error| super::super::map_read_error(&error))?
+                        .len();
+                    if bytes > u64::try_from(credits.bytes).map_err(|_| StoreError::Bounds)? {
+                        break;
+                    }
+                }
+            }
             credits.charge_row()?;
             let is_manifest_page = self.process_mark_item(
                 item,

@@ -1,0 +1,137 @@
+{
+  "schema": "nudox.public-semantic-shapes-validation.v1",
+  "base_commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+  "tested_source_commit": "bc593cb1feab37899ab7498891a2225bfce4d8f3",
+  "tested_source_tree": "34b6296dfbcf39ec14aa9b8da3d1ecfe375531c2",
+  "ordered_source_commits": [
+    "f6a4bf62da847930c0f24f7405ce21eb8b198e2e",
+    "92173f01610e98ff567d18d15cdf1291c5053a3b",
+    "8fe986e73983d1abd40636a304df0d424690700d",
+    "dd52ef695013a185a2a1b74ea09a346cd46a80c0",
+    "c88437f4c4284be9e905135ac1f1026c2a2e7105",
+    "0ef2f886b42c5b0fa9390c37ec2db3ce7dfdfdc5",
+    "8dffe21739bd6afb5095d3a0e75abdf593cb1858",
+    "04d0ee8de55ba23191a0c900710014f1be77822b",
+    "dc9da36f229104096af67580a6ac86e3f1aca47a",
+    "e4b3dbb55f47cb51a9843644a40cf6989bbec565",
+    "bc593cb1feab37899ab7498891a2225bfce4d8f3"
+  ],
+  "checks": [
+    {
+      "log": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/public-shapes-operands-final.log",
+      "sha256": "cad385dc406a21010be588eaaf4aa07f98dc5e612bca80416916addb124026b4",
+      "bytes": 126175,
+      "result": "PASS",
+      "tail": [
+        "warning: `backend-library` (lib test) generated 602 warnings (run `cargo fix --lib -p backend-library --tests` to apply 22 suggestions)",
+        "    Finished `test` profile [optimized + debuginfo] target(s) in 0.57s",
+        "     Running unittests lib.rs (.local/build/mcp/.nudox-cargo/slot-0/debug/deps/backend_library-da8b1426803c57d2)",
+        "",
+        "running 1 test",
+        "test semantic_shape::tests::public_shape_operands_reject_abbreviations_wrong_family_and_unselected_source ... ok",
+        "",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 292 filtered out; finished in 0.01s",
+        ""
+      ]
+    },
+    {
+      "log": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/public-shapes-wire-final.log",
+      "sha256": "0976fb155ba5360103e8dc4016f4a41c0c19970a86dde6b82f1ee3100f0f8c39",
+      "bytes": 126166,
+      "result": "PASS",
+      "tail": [
+        "warning: `backend-library` (lib test) generated 602 warnings (run `cargo fix --lib -p backend-library --tests` to apply 22 suggestions)",
+        "    Finished `test` profile [optimized + debuginfo] target(s) in 0.38s",
+        "     Running unittests lib.rs (.local/build/mcp/.nudox-cargo/slot-0/debug/deps/backend_library-da8b1426803c57d2)",
+        "",
+        "running 1 test",
+        "test wire::tests::semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_id ... ok",
+        "",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 292 filtered out; finished in 0.02s",
+        ""
+      ]
+    },
+    {
+      "log": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/public-shapes-mcp-focused-attempt02.log",
+      "sha256": "350ad8c7e1418cbb26089a51c3c978c4436dd6c1a067575f6d75341f45f8f8fa",
+      "bytes": 175183,
+      "result": "PASS",
+      "tail": [
+        "    Finished `test` profile [optimized + debuginfo] target(s) in 13.34s",
+        "     Running unittests src/lib.rs (.local/build/mcp/.nudox-cargo/slot-0/debug/deps/backend_mcp-7fb724de493c774a)",
+        "",
+        "running 2 tests",
+        "test jsonrpc::tests::semantic_shapes_jsonrpc_refuses_oversized_view_without_dropping_required_facts ... ok",
+        "test jsonrpc::tests::semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full ... ok",
+        "",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 96 filtered out; finished in 0.00s",
+        ""
+      ]
+    },
+    {
+      "log": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/public-shapes-mcp-full-attempt02.log",
+      "sha256": "09bec8c1e0bf09c820be657df1220d0e844c5d69915cf56d90075146e92faa6c",
+      "bytes": 183369,
+      "result": "PASS",
+      "tail": [
+        "test tests::unix_endpoint_path_is_bounded ... ok",
+        "test tests::request_encoding_rejects_a_certificate_for_another_package ... ok",
+        "test http::tests::unsafe_or_oversized_http_token_files_refuse_without_replacing_or_echoing_bytes ... ok",
+        "test tests::unix_transport_rejects_digest_only_identity_success ... ok",
+        "test tests::unix_transport_consumes_producer_certified_success_without_expected_cache ... ok",
+        "test process::tests::stdio_initializes_a_new_workspace_before_any_owner_request ... ok",
+        "",
+        "test result: ok. 98 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s",
+        ""
+      ]
+    },
+    {
+      "log": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/public-shapes-present-full-attempt02.log",
+      "sha256": "7330603d405b3ee299ab12a667d110085fd20eab9bea66026600a0016f4c9f6f",
+      "bytes": 186578,
+      "result": "PASS",
+      "tail": [
+        "test browse_tests::toml_is_here_twice_and_moving_yours_would_not_drop_a_copy ... ok",
+        "test browse_tests::each_role_says_what_it_is_for_and_why_a_dependency_is_in_it ... ok",
+        "test browse_tests::the_cli_prints_the_same_sentences ... ok",
+        "test budget::tests::worst_case_projection_reports_bounded_latency_and_allocations ... ok",
+        "test browse_tests::inactive_rows_never_claim_they_are_other_platforms_and_keep_partial_coverage_visible ... ok",
+        "test browse_tests::trimmed_historical_tree_retains_structural_facts_without_source_receipts ... ok",
+        "",
+        "test result: ok. 92 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s",
+        ""
+      ]
+    },
+    {
+      "log": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/public-shapes-metadata-final.log",
+      "sha256": "105bcc05edab32304047f090fc6df8342b0cb24c04c43aa9fb79a873af3ac08c",
+      "bytes": 341441,
+      "result": "PASS",
+      "tail": [
+        "    |",
+        "help: remove the unnecessary path segments",
+        "    |",
+        "352 -             let admitted = super::reply::view_root_from_wire_with_admission(",
+        "352 +             let admitted = view_root_from_wire_with_admission(",
+        "    |",
+        "",
+        "warning: `backend-library` (lib test) generated 602 warnings (591 duplicates) (run `cargo fix --lib -p backend-library --tests` to apply 11 suggestions)",
+        "    Finished `dev` profile [optimized + debuginfo] target(s) in 16.32s"
+      ]
+    }
+  ],
+  "source_route": "one SurfaceCommand grammar -> Session certificate-bearing direct Command::SemanticShapes -> bounded existing wire export -> one closed ProductSemanticData facet",
+  "new_dto_version": false,
+  "real_owner_public_shape_runtime_proven": false,
+  "whole_package_passes": 0,
+  "preserved_failed_attempts": [
+    "public-shapes-metadata-attempt01.log",
+    "public-shapes-metadata-attempt02.log",
+    "public-shapes-metadata-attempt03.log",
+    "public-shapes-metadata-attempt04.log",
+    "public-shapes-present.log",
+    "public-shapes-mcp-focused.log",
+    "public-shapes-mcp-full.log",
+    "public-shapes-present-full.log"
+  ]
+}

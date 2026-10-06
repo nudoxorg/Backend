@@ -25,7 +25,10 @@ fn cargo_publish_time_requires_exact_valid_utc_calendar() {
         "2024-02-09T23:59:60Z",
         "0000-01-01T00:00:00Z",
     ] {
-        assert!(CargoPublishTime::parse(invalid).is_none(), "accepted {invalid}");
+        assert!(
+            CargoPublishTime::parse(invalid).is_none(),
+            "accepted {invalid}"
+        );
     }
 }
 
@@ -79,8 +82,7 @@ fn recorded_metadata_round_trips_the_canonical_binary_shape() {
         .into_boxed_slice(),
         features: vec![RegistryNativeFeature {
             name: "default".to_owned(),
-            members: vec!["dep:serde".to_owned(), "serde?/alloc".to_owned()]
-                .into_boxed_slice(),
+            members: vec!["dep:serde".to_owned(), "serde?/alloc".to_owned()].into_boxed_slice(),
         }]
         .into_boxed_slice(),
         features2: vec![RegistryNativeFeature {

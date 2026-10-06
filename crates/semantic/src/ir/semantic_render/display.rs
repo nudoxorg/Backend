@@ -15,7 +15,7 @@ use core::{fmt, str};
 
 use crate::ir::{
     AnnotationKind, ArrayShape, BuiltinType, ChannelDirection, ComputedType, ConcreteType,
-    DocFragment, EntityId, Ir, ItemKind, ItemView, LinkKind, LinkTarget, LiteralType,
+    DocFragment, EntityId, Ir, ItemKind, ItemNameView, ItemView, LinkKind, LinkTarget, LiteralType,
     MappedModifier, Mutability, ObjectMember, PropertyKey, TemplatePart, TupleElementKind,
     TypeExpr, TypeId, TypeQuery, VariadicForm, Visibility, WildcardBound,
 };
@@ -131,7 +131,7 @@ impl fmt::Display for SignatureDisplay<'_> {
             ItemKind::Macro => formatter.write_str("macro ")?,
             ItemKind::Namespace => formatter.write_str("namespace ")?,
         }
-        write_atom(formatter, self.item.name())?;
+        write_item_name(formatter, self.item.name())?;
         if let Some(ty) = self.item.semantic_type() {
             match (self.item.kind(), self.ir.ty(ty)) {
                 (
@@ -273,7 +273,7 @@ fn write_concrete_type(
         ConcreteType::Builtin(builtin) => output.write_str(builtin_name(builtin)),
         ConcreteType::Literal(literal) => write_literal(output, ir, literal),
         ConcreteType::Nominal(entity) => match ir.item(entity) {
-            Some(item) => write_atom(output, item.name()),
+            Some(item) => write_item_name(output, item.name()),
             None => output.write_str("?entity"),
         },
         ConcreteType::External(external) => {
@@ -728,7 +728,7 @@ fn write_literal(output: &mut impl fmt::Write, ir: &Ir, literal: LiteralType) ->
 fn write_type_query(output: &mut impl fmt::Write, ir: &Ir, query: TypeQuery) -> fmt::Result {
     match query {
         TypeQuery::Entity(entity) => match ir.item(entity) {
-            Some(item) => write_atom(output, item.name()),
+            Some(item) => write_item_name(output, item.name()),
             None => output.write_str("?entity"),
         },
         TypeQuery::Path(path) => {
@@ -871,7 +871,7 @@ fn write_link_target(output: &mut impl fmt::Write, ir: &Ir, target: LinkTarget) 
         LinkTarget::Local(entity) => match ir.item(entity) {
             Some(item) => {
                 output.write_str(docs_prefix(item.kind()))?;
-                write_atom(output, item.name())?;
+                write_item_name(output, item.name())?;
                 output.write_str(".html")
             }
             None => output.write_str("#dangling"),
@@ -892,7 +892,7 @@ fn write_reexport_target(output: &mut impl fmt::Write, ir: &Ir, item: ItemView<'
     {
         write_reexport_link_target(output, ir, link.target)
     } else {
-        write_atom(output, item.name())
+        write_item_name(output, item.name())
     }
 }
 
@@ -903,7 +903,7 @@ fn write_reexport_link_target(
 ) -> fmt::Result {
     match target {
         LinkTarget::Local(entity) => match ir.item(entity) {
-            Some(item) => write_atom(output, item.name()),
+            Some(item) => write_item_name(output, item.name()),
             None => output.write_str("?dangling"),
         },
         LinkTarget::External(external) => match ir.external(external).and_then(external_path) {
@@ -930,7 +930,7 @@ fn write_embedding_target(
 ) -> fmt::Result {
     match target {
         LinkTarget::Local(entity) => match ir.item(entity) {
-            Some(item) => write_atom(output, item.name()),
+            Some(item) => write_item_name(output, item.name()),
             None => output.write_str("?dangling"),
         },
         LinkTarget::External(external) => match ir.external(external).and_then(external_display) {
@@ -969,6 +969,13 @@ const fn link_kind_name(kind: LinkKind) -> &'static str {
         LinkKind::Reexports => "reexports",
         LinkKind::Inherits => "inherits",
         LinkKind::Documents => "documents",
+    }
+}
+
+fn write_item_name(output: &mut impl fmt::Write, name: ItemNameView<'_>) -> fmt::Result {
+    match name {
+        ItemNameView::Named(bytes) => write_atom(output, bytes),
+        ItemNameView::AnonymousCallable { .. } => output.write_str("<anonymous callable>"),
     }
 }
 

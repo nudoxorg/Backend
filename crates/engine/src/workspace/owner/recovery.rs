@@ -17,7 +17,7 @@ pub(crate) fn write_diagnostic(
     bytes.extend_from_slice(&head.owner_epoch().to_be_bytes());
     bytes.extend_from_slice(&head.root().to_bytes());
     bytes.extend_from_slice(&head.commit().id().to_bytes());
-    bytes.extend_from_slice(head.closure().manifest().id().as_bytes());
+    bytes.extend_from_slice(head.closure().membership_id().as_bytes());
     atomic_write(&directory.join(DIAGNOSTIC_FILE), &bytes, faults)
 }
 
@@ -32,7 +32,7 @@ pub(crate) fn store_head_matches(
     let descriptor = selected.descriptor();
     if descriptor.target() != transition.target().to_bytes()
         || descriptor.target_generation() != sequence
-        || descriptor.closure().as_bytes() != transition.closure().manifest().id().as_bytes()
+        || descriptor.closure().as_bytes() != transition.closure().membership_id().as_bytes()
     {
         return Ok(false);
     }
@@ -41,7 +41,7 @@ pub(crate) fn store_head_matches(
     };
     let root = transition.target().to_bytes();
     if binding.root() != &root
-        || binding.closure().as_bytes() != transition.closure().manifest().id().as_bytes()
+        || binding.closure().as_bytes() != transition.closure().membership_id().as_bytes()
     {
         return Ok(false);
     }

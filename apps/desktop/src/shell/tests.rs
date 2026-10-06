@@ -325,8 +325,8 @@ impl PageReader for Fixture {
     }
 }
 
-/// A mounted Tree with one exact release control. Package data remains the
-/// ordinary fixture; the Tree row is supplied by an independent read slot.
+/// A mounted Tree lowered from a complete immutable Cargo producer capture.
+/// This fixture supplies no indexed dossier or live owner source bytes.
 struct NativeTreeFixture;
 
 impl PageReader for NativeTreeFixture {
@@ -335,87 +335,17 @@ impl PageReader for NativeTreeFixture {
         request: &ReadRequest,
         context: &ReadContext<'_>,
     ) -> Result<PageValue, ReadFailure> {
+        if matches!(request, ReadRequest::Package(_)) {
+            return Err(ReadFailure::Unavailable(crate::core::UnavailableReason::OutOfScope,
+                "the Cargo producer fixture has no indexed semantic dossier".into()));
+        }
         let ReadRequest::Browse(crate::model::browse::BrowseKey::Tree(project)) = request else {
             return Fixture.read(request, context);
         };
-        use backend_library::browse::{
-            LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership, TreeInput,
-            TreeSource, build_tree,
-        };
-        let tree = build_tree(
-            &TreeInput {
-                root: project
-                    .service_coordinate()
-                    .expect("test Tree address")
-                    .to_owned(),
-                source: TreeSource::Lockfile {
-                    reason: "focus fixture".into(),
-                    coverage: LockfileGraphCoverage::Complete,
-                    workspace_membership: LockfileWorkspaceMembership::Unknown,
-                },
-                packages: Vec::new(),
-                edges: Vec::new(),
-                locked_inactive: 0,
-                locked_inactive_coverage: LockedInactiveCoverage::Unavailable,
-            },
-            &|_: &str, _: &str| panic!("empty focus fixture never asks advisories"),
-        );
-        let mut model = crate::runtime::browse_reads::tree_model(&tree);
-        let exact = package();
-        model.links = Arc::from([crate::model::browse::TreeRoleLinks {
-            role: backend_library::browse::RoleId::Formats,
-            rows: Arc::from([crate::model::browse::TreeRowLinks {
-                name: "present".into(),
-                key: "native-row".into(),
-                releases: Arc::from([crate::model::browse::TreeReleaseLink {
-                    version: "1".into(),
-                    key: "native-release".into(),
-                    destination: crate::model::browse::TreeDestination::Open(exact),
-                    source_detail: None,
-                }]),
-            }]),
-        }]);
-        model.prepared = Arc::new(facet::browse::library::Model {
-            name: "native-tree".into(),
-            lede: "One exact release".into(),
-            lede_tip: None,
-            note: None,
-            alerts: vec![],
-            facts: vec![],
-            roles: vec![facet::browse::library::Role {
-                key: "formats".into(),
-                icon: facet::icons::Icon::Split,
-                label: "speaks formats".into(),
-                serving: None,
-                brings: None,
-                rows: vec![facet::browse::library::Row {
-                    key: "native-row".into(),
-                    name: "present".into(),
-                    at_rest: None,
-                    why: "Exact fixture release".into(),
-                    about: None,
-                    releases: vec![facet::browse::library::ReleaseLink {
-                        key: "native-release".into(),
-                        version: "1".into(),
-                        target: Some(facet::browse::library::ReleaseHandle::identified(
-                            0,
-                            0,
-                            0,
-                            "formats",
-                            "native-row",
-                            "native-release",
-                        )),
-                        unavailable: None,
-                        source_detail: None,
-                    }],
-                }],
-            }],
-            inventory: vec![],
-            inventory_index: std::collections::BTreeMap::new(),
-            inventory_note: "".into(),
-            twice_heading: None,
-            twice: vec![],
-        });
+        // A complete immutable Cargo producer fixture establishes exact
+        // source and request identity. Its production lowering supplies the
+        // mounted rows and controls; this is not a live Cargo acceptance test.
+        let (model, _, _) = crate::runtime::store::cargo_context_tests::fixture(project);
         Ok(PageValue::Browse(crate::model::browse::BrowseValue::Tree(
             Arc::new(model),
         )))
@@ -479,6 +409,7 @@ pub(crate) struct Rig {
     /// How long [`Rig::settle`] waits, in real time, for reads that are in
     /// flight (a fake engine answers at once; a real owner takes seconds).
     pub patience: Duration,
+    projection: RigProjection,
 }
 
 /// Opens a real shell window at `route` (after an Orbit start, so the
@@ -529,7 +460,19 @@ fn rig_with_engine_gate_at_root(
     gate: Option<OwnerGate>,
     initial_root: VersionedRoot,
 ) -> Rig {
-    rig_with_engine_gate_at_root_keep(cx, route, width, height, pool, engine, gate, initial_root, None)
+    rig_with_engine_gate_at_root_keep(cx, route, width, height, pool, engine, gate, initial_root, None, RigProjection::Fixture)
+}
+
+#[derive(Clone, Copy)]
+enum RigProjection { Fixture, IndexedOwner }
+
+/// The production graph key/read path, without installing TestProjection.
+/// The caller supplies the actual certified service revision and real lanes.
+pub(crate) fn rig_with_production_owner(cx: &mut TestAppContext, pool: ReadPool,
+    engine: impl EngineClient, gate: OwnerGate, root: VersionedRoot) -> Rig
+{
+    rig_with_engine_gate_at_root_keep(cx, None, 1440.0, 900.0,
+        pool, engine, Some(gate), root, None, RigProjection::IndexedOwner)
 }
 
 /// Mounts a real Reader from an already decoded private cold snapshot.
@@ -542,7 +485,7 @@ pub(crate) fn rig_with_cold_keep(
     rig_with_engine_gate_at_root_keep(
         cx, Some(route), 1440.0, 900.0,
         ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly,
-        Some(gate), VersionedRoot::unserved(), Some(keep),
+        Some(gate), VersionedRoot::unserved(), Some(keep), RigProjection::Fixture,
     )
 }
 
@@ -556,6 +499,7 @@ fn rig_with_engine_gate_at_root_keep(
     gate: Option<OwnerGate>,
     initial_root: VersionedRoot,
     keep: Option<crate::runtime::snapshot::Keep>,
+    projection: RigProjection,
 ) -> Rig {
     let cold = keep.is_some();
     let waiting_for_owner = gate.as_ref().is_some_and(|gate| !matches!(gate.state(), OwnerState::Ready { .. }));
@@ -620,13 +564,16 @@ fn rig_with_engine_gate_at_root_keep(
         graph,
         cx: visual,
         patience: Duration::from_secs(20),
+        projection,
     };
     if waiting_for_owner {
         rig.draw();
     } else {
         rig.settle();
-        let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
-        rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture(root, cx));
+        if matches!(projection, RigProjection::Fixture) {
+            let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+            rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture(root, cx));
+        }
         rig.repaint();
         rig.settle();
     }
@@ -691,7 +638,13 @@ impl Rig {
             }
             // Only the shell asking again is held to the rounds: a read in
             // flight is waiting on real work, which the deadline bounds.
-            if asking {
+            // The production rig crosses actual sockets and owner threads.
+            // A virtual 28 s frame budget cannot time out 80 ms of real I/O.
+            // Keep its real deadline for pending owner work; once no real
+            // work is pending, the ordinary frame watchdog applies again.
+            let actual_io = matches!(self.projection, RigProjection::IndexedOwner)
+                && (reading || root_work);
+            if asking && !actual_io {
                 rounds += 1;
             }
             assert!(
@@ -1015,7 +968,7 @@ fn click_native_tree(rig: &mut Rig, part: &str) {
     let target = ledger
         .targets
         .iter()
-        .find(|target| target.key.contains(part))
+        .find(|target| target.key.ends_with(part))
         .unwrap_or_else(|| panic!("mounted Tree target {part:?} was absent"));
     let at = point(
         px(target.bounds.x + target.bounds.width / 2.0),
@@ -1027,9 +980,23 @@ fn click_native_tree(rig: &mut Rig, part: &str) {
     rig.settle();
 }
 
+fn native_tree_control_keys() -> (String, String) {
+    let project = LocalProjectId::new("/fixture/native-tree").expect("fixture request");
+    let (model, package, _) = crate::runtime::store::cargo_context_tests::fixture(&project);
+    let row = model.links.iter().flat_map(|role| role.rows.iter())
+        .find(|row| row.releases.iter().any(|release|
+            matches!(&release.destination, crate::model::browse::TreeDestination::Open(exact) if exact == &package)))
+        .expect("production exact package row");
+    let release = row.releases.iter().find(|release|
+        matches!(&release.destination, crate::model::browse::TreeDestination::Open(exact) if exact == &package))
+        .expect("production exact release");
+    (format!("{}/details", row.key), release.key.to_string())
+}
+
 fn open_native_tree_release(rig: &mut Rig) {
-    click_native_tree(rig, "native-row/details");
-    click_native_tree(rig, "native-release");
+    let (row, release) = native_tree_control_keys();
+    click_native_tree(rig, &row);
+    click_native_tree(rig, &release);
     assert!(
         matches!(rig.route(), Route::Package(_)),
         "the mounted Tree release opened its package"
@@ -1037,17 +1004,19 @@ fn open_native_tree_release(rig: &mut Rig) {
 }
 
 fn native_tree_return_focused(rig: &mut Rig) -> bool {
+    let (_, release) = native_tree_control_keys();
     crate::shell::anatomy_tests::painted(rig)
         .targets
         .iter()
-        .any(|target| target.key.contains("native-release") && target.state.focused)
+        .any(|target| target.key.ends_with(&release) && target.state.focused)
 }
 
 fn native_tree_release_mounted(rig: &mut Rig) -> bool {
+    let (_, release) = native_tree_control_keys();
     crate::shell::anatomy_tests::painted(rig)
         .targets
         .iter()
-        .any(|target| target.key.contains("native-release"))
+        .any(|target| target.key.ends_with(&release))
 }
 
 #[gpui::test]

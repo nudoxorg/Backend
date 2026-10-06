@@ -1,8 +1,9 @@
 use super::super::{
-    BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
-    BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinValidator,
-    BuiltinWorkspaceRelation, ProductSourceRecord, ingest,
+    BuiltinAuthorityVerifier, BuiltinCaptureChange, BuiltinIntent, BuiltinModel, BuiltinModelError,
+    BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinSourceFactsChange,
+    BuiltinValidator, BuiltinWorkspaceRelation, ProductSourceRecord, ingest,
 };
+use super::index_operation::IndexOperationJournal;
 use backend_engine::application::{
     CaptureWorkspaceIdentityV2, CapturedFullWorkspaceV2, CompilerBalancingRequest,
     CompilerByteCredits, CompilerCpuCredits, CompilerDemand, CompilerInputAdmissionError,
@@ -15,20 +16,27 @@ use backend_engine::application::{
     VerifierAcceptedFullWorkspaceInput, capture_full_workspace_v2_with_prior,
 };
 use backend_engine::builtin::{
-    PartialSemanticCoverage, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
-    SemanticPublicationClaim, SemanticPublicationCoverage, SemanticPublicationSelection,
+    PartialSemanticCoverage, ProductSemanticCaptureOutcome, ProductSemanticCaptureRelation,
+    ProductSemanticPublicationKey, ProductSemanticPublicationRecord, ProductSourceFileFactsRecord,
+    ProductSourceFileFactsRelation, ProductSourceFileFactsUpdate, SemanticPublicationClaim,
+    SemanticPublicationCoverage, SemanticPublicationSelection, SemanticPublicationVersion,
+    SemanticSourceCapture, product_source_file_facts_record_key,
+    product_source_file_facts_relation, product_source_file_facts_row_keys,
+    semantic_capture_relation,
 };
 use backend_extension_turso::SourceObservationReceipt;
 use backend_library::interface::{
     CompilerRuntimeCause, CompilerTerminal, CorrelationId, GenerateTarget, PackageCompileRequest,
     PackageUrl,
 };
-use backend_library::{CargoPackageAliasEvidenceV1, CompileExecutionIntent};
+use backend_library::{
+    CargoPackageAliasEvidenceV1, CompileExecutionIntent, PackageCompilerFailure,
+};
 use backend_semantic::ir::SemanticInputWitness;
 #[cfg(test)]
 use backend_semantic::vocabulary::Language;
 use backend_semantic::vocabulary::LanguageProfile;
-use backend_version::{Coverage, ScopeRoot, WorkspaceRoot};
+use backend_version::{Coverage, Relation as _, ScopeRoot, WorkspaceRoot};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 use std::num::NonZeroU32;
@@ -250,7 +258,8 @@ fn prepare_index_project_at(
         owner_cluster.is_some(),
         Arc::new(AtomicBool::new(false)),
     )?;
-    finish_index_scan(
+    let mut committed_captures = BTreeMap::new();
+    let result = finish_index_scan(
         daemon,
         run_index_scan(work).map_err(IndexScanFailure::into_model_error)?,
         compiler,
@@ -258,7 +267,29 @@ fn prepare_index_project_at(
         owner_cluster,
         pending_stored_acks,
         defer,
-    )
+        None,
+        &mut committed_captures,
+        None,
+    );
+    match result {
+        Err(primary) if !committed_captures.is_empty() => {
+            match commit_pending_capture_failure(
+                daemon,
+                package,
+                label,
+                request_id,
+                &committed_captures,
+                backend_engine::builtin::SemanticUnavailableReason::Rejected,
+                None,
+            ) {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(BuiltinModelError(format!(
+                    "{primary}; additionally, recording the terminal source-capture outcome failed: {cleanup}"
+                ))),
+            }
+        }
+        other => other,
+    }
 }
 
 /// Captures the owner-backed source frontier and workspace root before an
@@ -414,6 +445,9 @@ pub(super) fn finish_index_scan(
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     defer: bool,
+    operation_key: Option<backend_library::IndexOperationKey>,
+    committed_captures: &mut BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    mut index_operations: Option<&mut IndexOperationJournal>,
 ) -> Result<PreparedIndex, BuiltinModelError> {
     let current_root = daemon.engine().daemon().owner().head().root();
     if current_root != result.work.workspace_root {
@@ -428,13 +462,13 @@ pub(super) fn finish_index_scan(
         workspace_snapshot,
     } = result;
     let final_revision_fence = scan.revision_fence.clone();
-    let relation = daemon
-        .engine()
-        .daemon()
-        .owner()
-        .snapshot()
+    let cancellation = work.cancellation.clone();
+    let base_snapshot = daemon.engine().daemon().owner().snapshot();
+    let relation = base_snapshot
         .relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("open product source: {error}")))?;
+    let facts_relation = product_source_file_facts_relation(&base_snapshot)
+        .map_err(|error| BuiltinModelError(format!("open product source facts: {error}")))?;
     let IndexScanWork {
         package,
         label,
@@ -448,9 +482,26 @@ pub(super) fn finish_index_scan(
         reusable,
         ..
     } = work;
-    let source_root = source_root.as_path();
+    let requested_root = source_root.as_path();
     let coordinate = coordinate.as_ref();
     let revision_fence = &scan.revision_fence;
+    if cancellation.load(Ordering::Acquire) {
+        return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
+    }
+    if !ingest::compiler_revision_is_current_with_cancellation(
+        revision_fence,
+        Some(cancellation.as_ref()),
+    )
+    .map_err(BuiltinModelError)?
+    {
+        return Err(BuiltinModelError(
+            "project root or files changed after source admission; retry indexing".to_owned(),
+        ));
+    }
+    // Use the root pinned by the scan for configuration, compiler-input, and
+    // profile reads. Keep the original spelling only for alias-retarget checks
+    // at later admission fences.
+    let source_root = revision_fence.canonical_root();
     let inputs = compiler_input_admissions(source_root, &scan, compiler);
     let semantic_context = SemanticCompilationContext::admit(
         package,
@@ -503,7 +554,7 @@ pub(super) fn finish_index_scan(
             semantic_authority.observe(&key, input_digest, count)?,
         );
     }
-    let file_keys = scan.files.iter().map(|(key, _)| *key).collect::<Vec<_>>();
+    let mut file_keys = scan.files.iter().map(|(key, _)| *key).collect::<Vec<_>>();
     let project_update = ProductSourceRecord::project_with_membership_pages(
         &label,
         scan.source_version,
@@ -511,7 +562,7 @@ pub(super) fn finish_index_scan(
         None,
     )
     .map_err(BuiltinModelError)?;
-    let project = project_update.project_record().clone();
+    let mut project = project_update.project_record().clone();
     let mut changes = Vec::new();
     if before.as_ref() != Some(&project) {
         changes.push(BuiltinSourceChange {
@@ -568,6 +619,13 @@ pub(super) fn finish_index_scan(
             .filter(|key| !selected.contains(key))
             .map(|key| BuiltinSourceChange { key, after: None }),
     );
+    let mut source_facts_changes = prepare_source_facts_changes(
+        &relation,
+        facts_relation.as_ref(),
+        &scan.source_facts,
+        &scan.files,
+        &old_files,
+    )?;
     // Keep these source rows private until every semantic profile has been
     // admitted. The eventual BuiltinIntent carries source and semantic roots
     // in one workspace transition.
@@ -575,7 +633,7 @@ pub(super) fn finish_index_scan(
     // read set, so its source/configuration digest cannot authorize reuse.
     // Every live semantic profile rebuilds until the authority can prove its
     // complete input closure.
-    let (semantic_changes, selected, cargo_alias_observations) = {
+    let (semantic_changes, selected, cargo_alias_observations, capture_changes) = {
         let fresh_profiles = scan
             .compiler_sources
             .iter()
@@ -612,43 +670,133 @@ pub(super) fn finish_index_scan(
             &dirty,
         );
         if dirty.is_empty() {
-            (Vec::new(), Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
         } else {
-            let sources = ingest::admit_compiler_sources(source_root, fresh, reused)
-                .map_err(BuiltinModelError)?;
-            if defer && owner_cluster.is_none() {
-                let prior_file_frontier = CapturedProjectFileFrontier::capture(
-                    project_key,
-                    old_files.len(),
-                    old_files.iter().map(|key| {
-                        reusable
-                            .get(key)
-                            .map(|record| (*key, record))
-                            .ok_or_else(|| {
-                                BuiltinModelError(
-                                    "captured project frontier lost a source file row".to_owned(),
-                                )
-                            })
-                    }),
+            // Admit the exact structural source frontier together with a
+            // per-profile Pending marker before entering any compiler path.
+            // Candidate observations remain private until this one workspace
+            // transition commits; the selected semantic generation remains
+            // the prior coherent claim and is stale against the new source.
+            let (captures, pending_changes, _capture_observations) =
+                prepare_source_capture_changes(
+                    daemon,
+                    package,
+                    &semantic_context,
+                    &dirty,
+                    &observations,
+                    scan.source_version,
+                    operation_key,
                 )?;
+            if !ingest::compiler_revision_is_current_with_cancellation(
+                revision_fence,
+                Some(cancellation.as_ref()),
+            )
+            .map_err(BuiltinModelError)?
+            {
+                return Err(BuiltinModelError(
+                    "compiler source or configuration revision changed before source capture; retry indexing"
+                        .to_owned(),
+                ));
+            }
+            let mut capture_intent = BuiltinIntent::index_with_capture(
+                package,
+                &label,
+                std::mem::take(&mut changes),
+                Vec::new(),
+                pending_changes,
+            )?;
+            if !source_facts_changes.is_empty() {
+                capture_intent =
+                    capture_intent.with_source_facts(std::mem::take(&mut source_facts_changes))?;
+            }
+            let capture_intent = match operation_key {
+                Some(key) => capture_intent.with_operation_key(key)?,
+                None => capture_intent,
+            };
+            let capture_request = super::adapter::prepare_builtin_intent(daemon, &capture_intent)?;
+            let capture_request_identity = capture_request.request_identity();
+            let daemon_for_commit = &mut *daemon;
+            semantic_authority.commit_product_selection_transaction(Vec::new(), move || {
+                super::adapter::commit_prepared_builtin_intent(
+                    daemon_for_commit,
+                    request_id,
+                    capture_request,
+                )
+            })?;
+            *committed_captures = captures.clone();
+            if let (Some(operation_key), Some(index_operations)) =
+                (operation_key, index_operations.as_deref_mut())
+            {
+                let receipt = source_capture_receipt_for_root(
+                    daemon,
+                    &semantic_context.package_reference,
+                    operation_key,
+                    Some(capture_request_identity),
+                )?
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "source capture root does not retain its exact keyed operation marker"
+                            .to_owned(),
+                    )
+                })?;
+                index_operations
+                    .source_captured(operation_key, receipt)
+                    .map_err(|error| {
+                        BuiltinModelError(format!("persist source-capture receipt: {error}"))
+                    })?;
+            }
+
+            // Compilation must use the source rows that actually committed.
+            // Re-read the committed project and file frontier instead of
+            // trusting the private scan image for semantic staging.
+            let (captured_project, captured_file_keys, captured_file_frontier) =
+                current_project_frontier(daemon, project_key)?;
+            project = captured_project.clone();
+            file_keys = captured_file_keys.clone();
+            let before_capture = Some(captured_project.clone());
+
+            let sources = ingest::admit_compiler_sources_for_scan(
+                requested_root,
+                revision_fence,
+                fresh,
+                reused,
+                scan.source_admission_policy,
+                Some(cancellation.as_ref()),
+            )
+            .map_err(BuiltinModelError);
+            let sources = match sources {
+                Ok(sources) => sources,
+                Err(error) => {
+                    let terminal = terminal_capture_changes(
+                        daemon,
+                        &captures,
+                        backend_engine::builtin::SemanticUnavailableReason::Rejected,
+                        None,
+                    )?;
+                    commit_semantic_terminal(daemon, package, &label, request_id, terminal)?;
+                    return Err(error);
+                }
+            };
+            if defer && owner_cluster.is_none() {
                 return prepare_deferred_compile(
                     package,
                     &label,
                     project_key,
-                    project.clone(),
-                    before.clone(),
-                    file_keys,
-                    prior_file_frontier,
-                    changes,
+                    captured_project,
+                    before_capture,
+                    captured_file_keys,
+                    captured_file_frontier,
+                    Vec::new(),
                     &semantic_context,
                     sources,
                     revision_fence.clone(),
                     &observations,
+                    captures,
                     semantic_authority,
                 )
                 .map(PreparedIndex::Compile);
             }
-            compile_semantic_publications(
+            let mut compiled = match compile_semantic_publications(
                 daemon,
                 &semantic_context,
                 sources,
@@ -659,9 +807,46 @@ pub(super) fn finish_index_scan(
                 owner_cluster,
                 pending_stored_acks,
                 execution_intent,
-            )?
+            ) {
+                Ok(result) => result,
+                Err(error) => {
+                    let terminal = terminal_capture_changes(
+                        daemon,
+                        &captures,
+                        backend_engine::builtin::SemanticUnavailableReason::Rejected,
+                        None,
+                    )?;
+                    commit_semantic_terminal(daemon, package, &label, request_id, terminal)?;
+                    return Err(error);
+                }
+            };
+            let completed = completed_capture_changes(
+                daemon,
+                &captures,
+                &compiled.changes,
+                &compiled.admitted,
+            )?;
+            compiled.changes.extend(completed.retained_publications);
+            let selected = compiled
+                .admitted
+                .iter()
+                .map(AdmittedCapturePublication::selected_claim)
+                .collect();
+            (
+                compiled.changes,
+                selected,
+                compiled.cargo_alias_observations,
+                completed.captures,
+            )
         }
     };
+    let committed_relation = daemon
+        .engine()
+        .daemon()
+        .owner()
+        .snapshot()
+        .relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("open selected project source: {error}")))?;
     replace_project_cargo_aliases(
         &mut changes,
         project_key,
@@ -669,21 +854,53 @@ pub(super) fn finish_index_scan(
         file_keys,
         before.as_ref(),
         |key| {
-            relation.lookup(key).map_err(|error| {
+            committed_relation.lookup(key).map_err(|error| {
                 BuiltinModelError(format!("read project membership page: {error}"))
             })
         },
         cargo_alias_observations,
     )?;
-    let intent = if changes.is_empty() && semantic_changes.is_empty() {
+    if cancellation.load(Ordering::Acquire) {
+        return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
+    }
+    if !ingest::compiler_revision_is_current_with_cancellation(
+        revision_fence,
+        Some(cancellation.as_ref()),
+    )
+    .map_err(BuiltinModelError)?
+    {
+        return Err(BuiltinModelError(
+            "project root or files changed before product selection; retry indexing".to_owned(),
+        ));
+    }
+    let intent = if changes.is_empty()
+        && semantic_changes.is_empty()
+        && capture_changes.is_empty()
+        && source_facts_changes.is_empty()
+    {
         None
     } else {
-        Some(BuiltinIntent::index_with_semantics(
-            package,
-            &label,
-            changes,
-            semantic_changes,
-        )?)
+        let intent = if !source_facts_changes.is_empty() {
+            BuiltinIntent::index_with_source_facts(
+                package,
+                &label,
+                changes,
+                semantic_changes,
+                capture_changes,
+                source_facts_changes,
+            )?
+        } else if capture_changes.is_empty() {
+            BuiltinIntent::index_with_semantics(package, &label, changes, semantic_changes)?
+        } else {
+            BuiltinIntent::index_with_capture(
+                package,
+                &label,
+                changes,
+                semantic_changes,
+                capture_changes,
+            )?
+        };
+        Some(intent)
     };
     Ok(PreparedIndex::Ready(PreparedProductSelection {
         intent,
@@ -763,6 +980,699 @@ fn replace_project_cargo_aliases(
             .map(|key| BuiltinSourceChange { key, after: None }),
     );
     Ok(())
+}
+
+pub(in crate::builtin) fn prepare_source_facts_changes(
+    source_relation: &backend_engine::WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    facts_relation: Option<
+        &backend_engine::WorkspaceRelationHandle<ProductSourceFileFactsRelation>,
+    >,
+    updates: &[ProductSourceFileFactsUpdate],
+    selected_files: &[([u8; 32], ProductSourceRecord)],
+    previous_files: &[[u8; 32]],
+) -> Result<Vec<BuiltinSourceFactsChange>, BuiltinModelError> {
+    if selected_files.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+        return Err(BuiltinModelError(
+            "selected source file coordinates must be unique and ordered".to_owned(),
+        ));
+    }
+    let mut afters = BTreeMap::<[u8; 32], Option<ProductSourceFileFactsRecord>>::new();
+    for update in updates {
+        let manifest = ProductSourceFileFactsRecord::Manifest(update.manifest().clone());
+        let manifest_key = update.manifest_key();
+        if product_source_file_facts_record_key(manifest.file_key().unwrap_or([0; 32]), &manifest)
+            .map_err(BuiltinModelError)?
+            != manifest_key
+        {
+            return Err(BuiltinModelError(
+                "source facts manifest key does not match its file".to_owned(),
+            ));
+        }
+        insert_source_facts_after(&mut afters, manifest_key, manifest)?;
+        for (key, record) in update.pages() {
+            if product_source_file_facts_record_key(record.file_key().unwrap_or([0; 32]), record)
+                .map_err(BuiltinModelError)?
+                != *key
+            {
+                return Err(BuiltinModelError(
+                    "source facts page key does not match its row".to_owned(),
+                ));
+            }
+            insert_source_facts_after(&mut afters, *key, record.clone())?;
+        }
+    }
+
+    let mut required_preserved = selected_files
+        .iter()
+        .filter(|(key, row)| {
+            !afters.contains_key(key)
+                && row
+                    .file_fields()
+                    .is_some_and(|file| file.source_identity.is_some())
+        })
+        .count();
+    if let Some(facts_relation) = facts_relation {
+        for file_key in previous_files.iter().copied() {
+            let Some(ProductSourceFileFactsRecord::Manifest(manifest)) =
+                facts_relation.lookup(&file_key).map_err(|error| {
+                    BuiltinModelError(format!("read prior source facts manifest: {error}"))
+                })?
+            else {
+                continue;
+            };
+            let source_record = source_relation
+                .lookup(&file_key)
+                .map_err(|error| {
+                    BuiltinModelError(format!("read prior source row for facts cleanup: {error}"))
+                })?
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "source facts manifest has no matching prior source row".to_owned(),
+                    )
+                })?;
+            let file = source_record.file_fields().ok_or_else(|| {
+                BuiltinModelError("source facts owner is not a source file".to_owned())
+            })?;
+            let retained = selected_files
+                .binary_search_by_key(&file_key, |(key, _)| *key)
+                .ok()
+                .and_then(|index| selected_files.get(index));
+            if !afters.contains_key(&file_key)
+                && retained.is_some_and(|(_, next)| next == &source_record)
+                && file.source_identity.is_some()
+            {
+                if !manifest.matches_file_identity(file) || manifest.file_key() != file_key {
+                    return Err(BuiltinModelError(
+                        "retained source facts do not bind the exact unchanged source row"
+                            .to_owned(),
+                    ));
+                }
+                required_preserved = required_preserved.checked_sub(1).ok_or_else(|| {
+                    BuiltinModelError("duplicate prior source facts owner".to_owned())
+                })?;
+                // No page reads or copies: this immutable selected tree is
+                // retained only for the exact same admitted source row. A
+                // changed, unavailable or deleted file cannot use this path.
+                continue;
+            }
+            let owned_keys = product_source_file_facts_row_keys(file, file_key, manifest, |key| {
+                facts_relation
+                    .lookup(key)
+                    .map_err(|error| error.to_string())
+            })
+            .map_err(|error| {
+                BuiltinModelError(format!("verify prior source facts tree: {error}"))
+            })?;
+            for key in owned_keys {
+                afters.entry(key).or_insert(None);
+            }
+        }
+    }
+
+    if required_preserved != 0 {
+        return Err(BuiltinModelError(
+            "selected unchanged source has no exact complete facts manifest; rescan required"
+                .to_owned(),
+        ));
+    }
+    let mut changes = Vec::with_capacity(afters.len());
+    for (key, after) in afters {
+        let expected = facts_relation
+            .map(|relation| relation.lookup(&key))
+            .transpose()
+            .map_err(|error| BuiltinModelError(format!("read source facts before value: {error}")))?
+            .flatten();
+        if expected != after {
+            changes.push(BuiltinSourceFactsChange {
+                key,
+                expected,
+                after,
+            });
+        }
+    }
+    Ok(changes)
+}
+
+fn insert_source_facts_after(
+    afters: &mut BTreeMap<[u8; 32], Option<ProductSourceFileFactsRecord>>,
+    key: [u8; 32],
+    record: ProductSourceFileFactsRecord,
+) -> Result<(), BuiltinModelError> {
+    if afters
+        .insert(key, Some(record.clone()))
+        .is_some_and(|previous| previous.is_some_and(|previous| previous != record))
+    {
+        return Err(BuiltinModelError(
+            "source facts updates contain a content-key collision".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn prepare_source_capture_changes(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    package: backend_engine::PackageKey,
+    context: &SemanticCompilationContext<'_>,
+    profiles: &BTreeSet<LanguageProfile>,
+    observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
+    source_version: [u8; 32],
+    operation_key: Option<backend_library::IndexOperationKey>,
+) -> Result<
+    (
+        BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+        Vec<BuiltinCaptureChange>,
+        Vec<(ProductSemanticPublicationKey, SourceObservationReceipt)>,
+    ),
+    BuiltinModelError,
+> {
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let relation = snapshot
+        .relation::<BuiltinSemanticRelation>()
+        .map_err(|error| {
+            BuiltinModelError(format!("open semantic source-capture relation: {error}"))
+        })?;
+    let capture_relation = semantic_capture_relation(&snapshot).map_err(|error| {
+        BuiltinModelError(format!("open prior semantic capture relation: {error}"))
+    })?;
+    let mut captures = BTreeMap::new();
+    let mut changes = Vec::with_capacity(profiles.len());
+    let mut receipts = Vec::with_capacity(profiles.len());
+    let operation_key = operation_key.map(|key| key.to_bytes());
+    for profile in profiles {
+        let receipt = observations.get(profile).ok_or_else(|| {
+            BuiltinModelError("semantic profile has no source observation receipt".to_owned())
+        })?;
+        let input_digest = receipt.observation().revision().ok_or_else(|| {
+            BuiltinModelError("semantic source observation has no input digest".to_owned())
+        })?;
+        let source_count = match receipt.observation().value() {
+            backend_extension_turso::SourceObservationValue::KnownCount(count) => *count,
+            _ => {
+                return Err(BuiltinModelError(
+                    "semantic source observation is not a complete profile count".to_owned(),
+                ));
+            }
+        };
+        let coordinate = super::super::compiler_scope::semantic_coordinate(
+            package,
+            *profile,
+            context.coordinate,
+        )?;
+        let key = ProductSemanticPublicationKey::new(
+            context.package_reference.clone(),
+            coordinate,
+            *profile,
+        )
+        .map_err(|error| BuiltinModelError(error.to_owned()))?;
+        let capture = SemanticSourceCapture::new(
+            operation_key,
+            source_version,
+            input_digest,
+            receipt.sequence(),
+            source_count,
+        )
+        .map_err(|error| BuiltinModelError(error.to_owned()))?;
+        let selected = relation.lookup(&key).map_err(|error| {
+            BuiltinModelError(format!("read prior semantic source capture: {error}"))
+        })?;
+        let prior = selected.as_ref().and_then(|record| match record {
+            ProductSemanticPublicationRecord::Published { coverage, claim } => {
+                Some(SemanticPublicationVersion::new(*coverage, *claim))
+            }
+            ProductSemanticPublicationRecord::Unavailable(_) => None,
+        });
+        let expected = capture_relation
+            .as_ref()
+            .map(|relation| relation.lookup(&key))
+            .transpose()
+            .map_err(|error| {
+                BuiltinModelError(format!("read prior semantic capture marker: {error}"))
+            })?
+            .flatten();
+        changes.push(BuiltinCaptureChange {
+            key: key.clone(),
+            expected,
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Pending { prior },
+            compiler_failure: None,
+        });
+        captures.insert(key.clone(), capture);
+        receipts.push((key, receipt.clone()));
+    }
+    Ok((captures, changes, receipts))
+}
+
+/// Reads back exactly the project and file rows selected by the current
+/// workspace root after source capture has committed.
+fn current_project_frontier(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    project_key: [u8; 32],
+) -> Result<
+    (
+        ProductSourceRecord,
+        Vec<[u8; 32]>,
+        CapturedProjectFileFrontier,
+    ),
+    BuiltinModelError,
+> {
+    let relation = daemon
+        .engine()
+        .daemon()
+        .owner()
+        .snapshot()
+        .relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("open committed source frontier: {error}")))?;
+    let project = relation
+        .lookup(&project_key)
+        .map_err(|error| BuiltinModelError(format!("read committed project row: {error}")))?
+        .ok_or_else(|| BuiltinModelError("committed project row is absent".to_owned()))?;
+    let file_keys =
+        super::super::profile::resolve_project_file_keys(project_key, &project, |page_key| {
+            relation.lookup(page_key).map_err(|error| {
+                BuiltinModelError(format!("read committed project membership page: {error}"))
+            })
+        })?;
+    let rows = relation
+        .lookup_many_sorted(&file_keys)
+        .map_err(|error| BuiltinModelError(format!("read committed project files: {error}")))?;
+    let frontier = CapturedProjectFileFrontier::capture(
+        project_key,
+        file_keys.len(),
+        file_keys
+            .iter()
+            .copied()
+            .zip(rows.iter())
+            .map(|(key, record)| {
+                record.as_ref().map(|record| (key, record)).ok_or_else(|| {
+                    BuiltinModelError(
+                        "committed project frontier refers to a missing source file".to_owned(),
+                    )
+                })
+            }),
+    )?;
+    Ok((project, file_keys, frontier))
+}
+
+/// Reconstructs the exact source-capture receipt from the selected workspace
+/// root. Recovery succeeds only when that root itself retains a profile marker
+/// carrying the caller's operation key.
+pub(in crate::builtin) fn source_capture_receipt_for_root(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    package: &backend_engine::PackageReference,
+    operation_key: backend_library::IndexOperationKey,
+    expected_request_identity: Option<[u8; 32]>,
+) -> Result<Option<backend_library::IndexOperationSourceCaptureReceipt>, BuiltinModelError> {
+    let owner = daemon.engine().daemon().owner();
+    let snapshot = owner.snapshot();
+    let Some(relation) = semantic_capture_relation(&snapshot).map_err(|error| {
+        BuiltinModelError(format!("open selected source-capture relation: {error}"))
+    })?
+    else {
+        return Ok(None);
+    };
+    let operation_key = operation_key.to_bytes();
+    let mut profiles = Vec::new();
+    let mut capture_basis = None;
+    let mut after = None;
+    loop {
+        let page = relation
+            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            .map_err(|error| {
+                BuiltinModelError(format!("page selected source-capture relation: {error}"))
+            })?;
+        for (key, record) in page.entries() {
+            if key.package() != package || !key.is_selected() {
+                continue;
+            }
+            if record.operation_key() != Some(&operation_key)
+                || expected_request_identity
+                    .is_some_and(|expected| record.request_identity() != &expected)
+            {
+                continue;
+            }
+            let capture = record.capture();
+            let state = match record.outcome() {
+                ProductSemanticCaptureOutcome::Pending { prior } => {
+                    backend_library::IndexOperationSemanticProfileState::Pending {
+                        prior: prior.map(index_operation_prior_semantic),
+                    }
+                }
+                ProductSemanticCaptureOutcome::Unavailable { reason } => {
+                    backend_library::IndexOperationSemanticProfileState::Unavailable {
+                        reason: index_operation_unavailable_reason(reason),
+                    }
+                }
+                ProductSemanticCaptureOutcome::Failed { prior, reason } => {
+                    backend_library::IndexOperationSemanticProfileState::Failed {
+                        prior: index_operation_prior_semantic(prior),
+                        reason: index_operation_unavailable_reason(reason),
+                    }
+                }
+                ProductSemanticCaptureOutcome::Published { coverage, claim } => {
+                    backend_library::IndexOperationSemanticProfileState::Published {
+                        generation: *claim.binding().identity.as_ref(),
+                        coverage: index_operation_coverage(coverage),
+                    }
+                }
+            };
+            let basis = (
+                *record.source_commit(),
+                *record.source_workspace_root(),
+                record.source_workspace_sequence(),
+                *record.request_identity(),
+            );
+            if capture_basis.is_some_and(|expected| expected != basis) {
+                return Err(BuiltinModelError(
+                    "semantic profile captures do not share one exact source commit".to_owned(),
+                ));
+            }
+            capture_basis = Some(basis);
+            profiles.push(backend_library::IndexOperationSourceProfile {
+                profile: backend_library::SemanticLanguageProfile::new(key.profile()),
+                source_version: *capture.source_version(),
+                input_digest: *capture.input_digest(),
+                observation_sequence: capture.observation_sequence(),
+                source_count: capture.source_count(),
+                state,
+            });
+        }
+        let Some(next) = page.next().cloned() else {
+            break;
+        };
+        after = Some(next);
+    }
+    profiles.sort_by_key(|profile| profile.profile);
+    if profiles.is_empty() {
+        return Ok(None);
+    }
+    let Some((commit_identity, workspace_root, workspace_sequence, _)) = capture_basis else {
+        return Ok(None);
+    };
+    let receipt = backend_library::IndexOperationSourceCaptureReceipt::from_checked_parts(
+        backend_library::IndexOperationKey::from_bytes(operation_key)
+            .map_err(|error| BuiltinModelError(error.to_string()))?,
+        commit_identity,
+        workspace_root,
+        workspace_sequence,
+        profiles.into_boxed_slice(),
+    )
+    .map_err(|error| {
+        BuiltinModelError(format!("admit selected source-capture receipt: {error}"))
+    })?;
+    Ok(Some(receipt))
+}
+
+fn index_operation_prior_semantic(
+    version: SemanticPublicationVersion,
+) -> backend_library::IndexOperationPriorSemantic {
+    backend_library::IndexOperationPriorSemantic {
+        generation: *version.claim().binding().identity.as_ref(),
+        coverage: index_operation_coverage(version.coverage()),
+    }
+}
+
+fn index_operation_coverage(
+    coverage: SemanticPublicationCoverage,
+) -> backend_library::IndexOperationSemanticCoverage {
+    match coverage {
+        SemanticPublicationCoverage::Complete => {
+            backend_library::IndexOperationSemanticCoverage::Complete
+        }
+        SemanticPublicationCoverage::Partial(partial) => {
+            backend_library::IndexOperationSemanticCoverage::Partial {
+                completed: partial.completed().get(),
+                total: partial.total().get(),
+            }
+        }
+    }
+}
+
+fn index_operation_unavailable_reason(
+    reason: backend_engine::builtin::SemanticUnavailableReason,
+) -> backend_library::IndexOperationSemanticUnavailableReason {
+    match reason {
+        backend_engine::builtin::SemanticUnavailableReason::Toolchain => {
+            backend_library::IndexOperationSemanticUnavailableReason::Toolchain
+        }
+        backend_engine::builtin::SemanticUnavailableReason::ProjectAuthority => {
+            backend_library::IndexOperationSemanticUnavailableReason::ProjectAuthority
+        }
+        backend_engine::builtin::SemanticUnavailableReason::Cancelled => {
+            backend_library::IndexOperationSemanticUnavailableReason::Cancelled
+        }
+        backend_engine::builtin::SemanticUnavailableReason::Rejected => {
+            backend_library::IndexOperationSemanticUnavailableReason::Rejected
+        }
+    }
+}
+
+/// Converts every still-Pending capture into an explicit refusal while
+/// retaining its old coherent generation, when one existed.
+fn terminal_capture_changes(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    reason: backend_engine::builtin::SemanticUnavailableReason,
+    compiler_failure: Option<(LanguageProfile, backend_library::PackageCompilerFailure)>,
+) -> Result<Vec<BuiltinCaptureChange>, BuiltinModelError> {
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let relation = semantic_capture_relation(&snapshot)
+        .map_err(|error| BuiltinModelError(format!("open pending semantic captures: {error}")))?
+        .ok_or_else(|| {
+            BuiltinModelError("pending semantic capture relation disappeared".to_owned())
+        })?;
+    let mut changes = Vec::new();
+    let mut failure_profiles = 0usize;
+    for (key, capture) in captures {
+        let current = relation.lookup(&key).map_err(|error| {
+            BuiltinModelError(format!("read pending semantic capture: {error}"))
+        })?;
+        let Some(current) = current else {
+            return Err(BuiltinModelError(
+                "semantic capture disappeared before terminal refusal".to_owned(),
+            ));
+        };
+        let outcome = match current.outcome() {
+            ProductSemanticCaptureOutcome::Pending { prior } if current.capture() == *capture => {
+                match prior {
+                    Some(prior) => ProductSemanticCaptureOutcome::Failed { prior, reason },
+                    None => ProductSemanticCaptureOutcome::Unavailable { reason },
+                }
+            }
+            _ => {
+                return Err(BuiltinModelError(
+                    "semantic capture changed before terminal refusal".to_owned(),
+                ));
+            }
+        };
+        changes.push(BuiltinCaptureChange {
+            key: key.clone(),
+            expected: Some(current),
+            capture: *capture,
+            outcome,
+            compiler_failure: compiler_failure
+                .as_ref()
+                .filter(|(profile, _)| *profile == key.profile())
+                .map(|(_, failure)| {
+                    failure_profiles += 1;
+                    failure.clone()
+                }),
+        });
+    }
+    if compiler_failure.is_some() && failure_profiles != 1 {
+        return Err(BuiltinModelError(
+            "typed compiler refusal did not match exactly one captured profile".to_owned(),
+        ));
+    }
+    Ok(changes)
+}
+
+/// Capture terminal rows and the exact retained semantic after-images needed
+/// to bind them in the same intent. An unchanged after-image is an observation
+/// of admitted publication, not a claim that an ordinary relation row changed.
+struct CompletedCaptureChanges {
+    captures: Vec<BuiltinCaptureChange>,
+    retained_publications: Vec<BuiltinSemanticChange>,
+}
+
+fn completed_capture_changes(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    semantic_changes: &[BuiltinSemanticChange],
+    completions: &[AdmittedCapturePublication],
+) -> Result<CompletedCaptureChanges, BuiltinModelError> {
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let publications = snapshot
+        .relation::<BuiltinSemanticRelation>()
+        .map_err(|error| BuiltinModelError(format!("open completed publications: {error}")))?;
+    let relation = semantic_capture_relation(&snapshot)
+        .map_err(|error| BuiltinModelError(format!("open completed semantic captures: {error}")))?
+        .ok_or_else(|| BuiltinModelError("semantic capture relation disappeared".to_owned()))?;
+    let mut changes = Vec::with_capacity(captures.len());
+    let mut retained_publications = Vec::new();
+    for (key, capture) in captures {
+        let expected = relation
+            .lookup(key)
+            .map_err(|error| {
+                BuiltinModelError(format!("read completed semantic capture: {error}"))
+            })?
+            .ok_or_else(|| {
+                BuiltinModelError("semantic capture disappeared before completion".to_owned())
+            })?;
+        let ProductSemanticCaptureOutcome::Pending { prior } = expected.outcome() else {
+            return Err(BuiltinModelError(
+                "semantic capture is no longer pending at completion".to_owned(),
+            ));
+        };
+        if expected.capture() != *capture {
+            return Err(BuiltinModelError(
+                "semantic capture input changed before completion".to_owned(),
+            ));
+        }
+        let mut admitted = completions
+            .iter()
+            .filter(|completion| completion.key == *key);
+        let completion = admitted.next();
+        if admitted.next().is_some() {
+            return Err(BuiltinModelError(
+                "semantic capture has duplicate admitted profile completions".to_owned(),
+            ));
+        }
+        let mut deltas = semantic_changes.iter().filter(|change| change.key == *key);
+        let delta = deltas.next();
+        if deltas.next().is_some() {
+            return Err(BuiltinModelError(
+                "semantic capture has duplicate selected publication after-images".to_owned(),
+            ));
+        }
+        let delta = match delta {
+            Some(change) if change.after.is_none() => {
+                return Err(BuiltinModelError(
+                    "semantic capture completion cannot delete its selected publication".to_owned(),
+                ));
+            }
+            Some(change) => change.after.clone(),
+            None => None,
+        };
+        let publication = match (delta, completion) {
+            (
+                Some(record @ ProductSemanticPublicationRecord::Published { .. }),
+                Some(completion),
+            ) if record == completion.record() => Some(record),
+            (Some(ProductSemanticPublicationRecord::Published { .. }), _) => {
+                return Err(BuiltinModelError(
+                    "semantic capture publication differs from its admitted completion".to_owned(),
+                ));
+            }
+            (Some(record @ ProductSemanticPublicationRecord::Unavailable(_)), None) => Some(record),
+            (Some(ProductSemanticPublicationRecord::Unavailable(_)), Some(_)) => {
+                return Err(BuiltinModelError(
+                    "semantic capture refusal contradicts its admitted completion".to_owned(),
+                ));
+            }
+            (None, Some(completion)) => {
+                let retained = publications.lookup(key).map_err(|error| {
+                    BuiltinModelError(format!("read retained completed publication: {error}"))
+                })?;
+                if retained != Some(completion.record()) {
+                    return Err(BuiltinModelError(
+                        "retained semantic publication differs from its admitted completion"
+                            .to_owned(),
+                    ));
+                }
+                retained_publications.push(BuiltinSemanticChange {
+                    key: key.clone(),
+                    after: retained.clone(),
+                });
+                retained
+            }
+            (None, None) => None,
+        };
+        let outcome = match publication.as_ref() {
+            Some(ProductSemanticPublicationRecord::Published { coverage, claim }) => {
+                ProductSemanticCaptureOutcome::Published {
+                    coverage: *coverage,
+                    claim: *claim,
+                }
+            }
+            Some(ProductSemanticPublicationRecord::Unavailable(reason)) => match prior {
+                Some(prior) => ProductSemanticCaptureOutcome::Failed {
+                    prior,
+                    reason: *reason,
+                },
+                None => ProductSemanticCaptureOutcome::Unavailable { reason: *reason },
+            },
+            None => {
+                let reason = if capture.source_count() == 0 {
+                    backend_engine::builtin::SemanticUnavailableReason::ProjectAuthority
+                } else {
+                    backend_engine::builtin::SemanticUnavailableReason::Rejected
+                };
+                match prior {
+                    Some(prior) => ProductSemanticCaptureOutcome::Failed { prior, reason },
+                    None => ProductSemanticCaptureOutcome::Unavailable { reason },
+                }
+            }
+        };
+        changes.push(BuiltinCaptureChange {
+            key: key.clone(),
+            expected: Some(expected),
+            capture: *capture,
+            outcome,
+            compiler_failure: None,
+        });
+    }
+    Ok(CompletedCaptureChanges {
+        captures: changes,
+        retained_publications,
+    })
+}
+
+fn commit_semantic_terminal(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    package: backend_engine::PackageKey,
+    label: &str,
+    request_id: u64,
+    capture_changes: Vec<BuiltinCaptureChange>,
+) -> Result<(), BuiltinModelError> {
+    if capture_changes.is_empty() {
+        return Ok(());
+    }
+    let operation_key = capture_changes
+        .iter()
+        .find_map(|change| change.capture.operation_key().copied());
+    if capture_changes.iter().any(|change| {
+        change
+            .capture
+            .operation_key()
+            .is_some_and(|key| Some(*key) != operation_key)
+    }) {
+        return Err(BuiltinModelError(
+            "semantic terminal update spans multiple operation keys".to_owned(),
+        ));
+    }
+    let intent =
+        BuiltinIntent::index_with_capture(package, label, Vec::new(), Vec::new(), capture_changes)?;
+    let intent = match operation_key {
+        Some(bytes) => intent.with_operation_key(
+            backend_library::IndexOperationKey::from_bytes(bytes)
+                .map_err(|error| BuiltinModelError(error.to_string()))?,
+        )?,
+        None => intent,
+    };
+    super::adapter::commit_builtin_intent(daemon, request_id, &intent)
+}
+
+pub(super) fn commit_pending_capture_failure(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    package: backend_engine::PackageKey,
+    label: &str,
+    request_id: u64,
+    captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    reason: backend_engine::builtin::SemanticUnavailableReason,
+    compiler_failure: Option<(LanguageProfile, backend_library::PackageCompilerFailure)>,
+) -> Result<(), BuiltinModelError> {
+    let changes = terminal_capture_changes(daemon, captures, reason, compiler_failure)?;
+    commit_semantic_terminal(daemon, package, label, request_id, changes)
 }
 
 fn staged_cargo_alias_evidence(
@@ -878,8 +1788,9 @@ pub(super) struct DeferredIndex {
     profiles: VecDeque<DeferredProfile>,
     expected_profiles: usize,
     completed_profiles: usize,
+    pub(super) captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     semantic_changes: Vec<BuiltinSemanticChange>,
-    selected: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
+    capture_publications: Vec<AdmittedCapturePublication>,
     cargo_alias_observations: BTreeMap<LanguageProfile, CargoPackageAliasEvidenceV1>,
 }
 
@@ -1167,6 +2078,7 @@ fn prepare_deferred_compile(
     sources: Vec<ingest::CompilerSource>,
     revision_fence: ingest::CompilerRevisionFence,
     observations: &BTreeMap<LanguageProfile, SourceObservationReceipt>,
+    captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
 ) -> Result<DeferredIndex, BuiltinModelError> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
@@ -1278,8 +2190,9 @@ fn prepare_deferred_compile(
         profiles: profiles.into(),
         expected_profiles,
         completed_profiles: 0,
+        captures,
         semantic_changes: Vec::with_capacity(expected_profiles.saturating_mul(2)),
-        selected: Vec::with_capacity(expected_profiles),
+        capture_publications: Vec::with_capacity(expected_profiles),
         cargo_alias_observations: BTreeMap::new(),
     })
 }
@@ -1310,6 +2223,36 @@ pub(super) fn deferred_compile_was_cancelled(
     }
 }
 
+/// A deferred profile refusal with an optional closed compiler summary for
+/// package-fragment terminals.
+#[derive(Debug)]
+pub(super) struct DeferredProfileFailure {
+    pub(super) detail: BuiltinModelError,
+    pub(super) compiler_failure: Option<PackageCompilerFailure>,
+}
+
+impl From<BuiltinModelError> for DeferredProfileFailure {
+    fn from(detail: BuiltinModelError) -> Self {
+        Self {
+            detail,
+            compiler_failure: None,
+        }
+    }
+}
+
+fn typed_package_compiler_failure(
+    compiled: &Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
+) -> Result<Option<PackageCompilerFailure>, BuiltinModelError> {
+    let Err(PackageSemanticRuntimeError::Package(PackageSemanticError::Compile { path, terminal })) =
+        compiled
+    else {
+        return Ok(None);
+    };
+    PackageCompilerFailure::from_package_terminal(path, terminal).map_err(|error| {
+        BuiltinModelError(format!("compiler failure projection was rejected: {error}"))
+    })
+}
+
 /// Admits exactly one profile candidate on the owner loop and then drops its
 /// staged output, releasing the package compiler's bounded output credits.
 /// The serving selector remains untouched until every profile has succeeded.
@@ -1319,12 +2262,13 @@ pub(super) fn finish_deferred_profile(
     job: &mut DeferredIndex,
     profile: DeferredProfileTicket,
     compiled: Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
-) -> Result<(), BuiltinModelError> {
+) -> Result<(), DeferredProfileFailure> {
     if job.completed_profiles >= job.expected_profiles {
         return Err(BuiltinModelError(
             "the deferred compile answered more profiles than requested; prior selected semantic generation was preserved"
                 .to_owned(),
-        ));
+        )
+        .into());
     }
     let relation = daemon
         .engine()
@@ -1333,6 +2277,7 @@ pub(super) fn finish_deferred_profile(
         .snapshot()
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
+    let compiler_failure = typed_package_compiler_failure(&compiled)?;
     let (staged, publication_coverage) =
         match admit_local_compile(compiled, profile.expected_artifacts) {
             Ok(admitted) => admitted,
@@ -1341,7 +2286,10 @@ pub(super) fn finish_deferred_profile(
                     &profile.attempt,
                     backend_extension_turso::CandidateAttemptRetirementReason::Refused,
                 )?;
-                return Err(error);
+                return Err(DeferredProfileFailure {
+                    detail: error,
+                    compiler_failure,
+                });
             }
         };
     let cargo_alias_evidence = match staged_cargo_alias_evidence(
@@ -1356,7 +2304,7 @@ pub(super) fn finish_deferred_profile(
                 &profile.attempt,
                 backend_extension_turso::CandidateAttemptRetirementReason::Refused,
             )?;
-            return Err(error);
+            return Err(error.into());
         }
     };
     // Keep the ticket's exact capability until the publication result is
@@ -1376,10 +2324,10 @@ pub(super) fn finish_deferred_profile(
                 &profile.attempt,
                 backend_extension_turso::CandidateAttemptRetirementReason::Refused,
             )?;
-            return Err(error);
+            return Err(error.into());
         }
     };
-    record_semantic_publication(
+    let completion = record_semantic_publication(
         &relation,
         profile.key.clone(),
         publication_coverage,
@@ -1387,7 +2335,7 @@ pub(super) fn finish_deferred_profile(
         &mut job.semantic_changes,
     )?;
     let selected_profile = profile.profile();
-    job.selected.push((profile.key, claim));
+    job.capture_publications.push(completion);
     if let Some(evidence) = cargo_alias_evidence {
         job.cargo_alias_observations
             .insert(selected_profile, evidence);
@@ -1412,6 +2360,14 @@ pub(super) fn finish_deferred_index(
             .to_owned(),
         ));
     }
+    let completed = completed_capture_changes(
+        daemon,
+        &job.captures,
+        &job.semantic_changes,
+        &job.capture_publications,
+    )?;
+    job.semantic_changes.extend(completed.retained_publications);
+    let capture_changes = completed.captures;
     let owner = daemon.engine().daemon().owner();
     let relation = owner
         .snapshot()
@@ -1474,19 +2430,37 @@ pub(super) fn finish_deferred_index(
             .into_values()
             .collect(),
     )?;
-    let intent = if job.source_changes.is_empty() && job.semantic_changes.is_empty() {
+    let intent = if job.source_changes.is_empty()
+        && job.semantic_changes.is_empty()
+        && capture_changes.is_empty()
+    {
         None
     } else {
-        Some(BuiltinIntent::index_with_semantics(
-            job.package,
-            &job.label,
-            job.source_changes,
-            job.semantic_changes,
-        )?)
+        let intent = if capture_changes.is_empty() {
+            BuiltinIntent::index_with_semantics(
+                job.package,
+                &job.label,
+                job.source_changes,
+                job.semantic_changes,
+            )?
+        } else {
+            BuiltinIntent::index_with_capture(
+                job.package,
+                &job.label,
+                job.source_changes,
+                job.semantic_changes,
+                capture_changes,
+            )?
+        };
+        Some(intent)
     };
     Ok(PreparedProductSelection {
         intent,
-        selected: job.selected,
+        selected: job
+            .capture_publications
+            .iter()
+            .map(AdmittedCapturePublication::selected_claim)
+            .collect(),
         revision_fence: Some(job.revision_fence),
     })
 }
@@ -1719,6 +2693,14 @@ impl<'request> SemanticCompilationContext<'request> {
     }
 }
 
+/// Compilation deltas and the one admitted publication collection from which
+/// terminal capture proof and the serving selector are both derived.
+struct CompiledSemanticPublications {
+    changes: Vec<BuiltinSemanticChange>,
+    admitted: Vec<AdmittedCapturePublication>,
+    cargo_alias_observations: Vec<CargoPackageAliasEvidenceV1>,
+}
+
 fn compile_semantic_publications(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     context: &SemanticCompilationContext<'_>,
@@ -1730,14 +2712,7 @@ fn compile_semantic_publications(
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     execution_intent: CompileExecutionIntent,
-) -> Result<
-    (
-        Vec<BuiltinSemanticChange>,
-        Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
-        Vec<CargoPackageAliasEvidenceV1>,
-    ),
-    BuiltinModelError,
-> {
+) -> Result<CompiledSemanticPublications, BuiltinModelError> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
     let mut source_paths_by_profile = BTreeMap::<LanguageProfile, BTreeSet<String>>::new();
     for source in sources {
@@ -1759,7 +2734,7 @@ fn compile_semantic_publications(
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
     let mut changes = Vec::with_capacity(by_profile.len().saturating_mul(2));
-    let mut selected_claims = Vec::with_capacity(by_profile.len());
+    let mut completions = Vec::with_capacity(by_profile.len());
     let mut cargo_alias_observations = Vec::new();
     for (profile, sources) in by_profile {
         let expected_artifacts = u32::try_from(sources.len())
@@ -2407,20 +3382,24 @@ fn compile_semantic_publications(
             }
             SemanticExecutionRoute::LocalOnly => {}
         }
-        record_semantic_publication(
+        let completion = record_semantic_publication(
             &relation,
             key.clone(),
             publication_coverage,
             claim,
             &mut changes,
         )?;
-        selected_claims.push((key, claim));
+        completions.push(completion);
         if let Some(evidence) = cargo_alias_evidence {
             cargo_alias_observations.push(evidence);
         }
         let _ = selected;
     }
-    Ok((changes, selected_claims, cargo_alias_observations))
+    Ok(CompiledSemanticPublications {
+        changes,
+        admitted: completions,
+        cargo_alias_observations,
+    })
 }
 
 /// Admits one local compile's output: every expected source is accounted
@@ -2496,7 +3475,8 @@ const MAX_LOCAL_COMPILE_CAUSE_MESSAGE_BYTES: usize = 1_024;
 /// The outer wording is a stable product diagnostic. Each distinct typed cause follows it, with
 /// a fixed byte and depth budget so unusually verbose errors cannot grow the reply without bound.
 fn local_compile_error_chain(error: &dyn std::error::Error) -> String {
-    const PREFIX: &str = "local semantic compilation failed; prior selected semantic generation was preserved: ";
+    const PREFIX: &str =
+        "local semantic compilation failed; prior selected semantic generation was preserved: ";
     const CAUSE_PREFIX: &str = "\ncaused by: ";
 
     let first = bounded_error_display(error, MAX_LOCAL_COMPILE_CAUSE_MESSAGE_BYTES);
@@ -2575,7 +3555,8 @@ fn local_compile_error_chain(error: &dyn std::error::Error) -> String {
         let middle = &causes[..causes.len() - 1];
         let deepest_bytes = CAUSE_PREFIX.len() + deepest.len();
         let reserved_tail = deepest_bytes + status_bytes;
-        let omission_marker_bytes = format!("\nintermediate causes omitted: {}", middle.len()).len();
+        let omission_marker_bytes =
+            format!("\nintermediate causes omitted: {}", middle.len()).len();
         let mut used_bytes = base_bytes;
         let mut included = 0;
         for cause in middle {
@@ -2664,8 +3645,7 @@ impl std::fmt::Write for BoundedDiagnosticText {
 mod local_compile_error_chain_tests {
     use super::{
         MAX_LOCAL_COMPILE_CAUSE_MESSAGE_BYTES, MAX_LOCAL_COMPILE_ERROR_BYTES,
-        MAX_LOCAL_COMPILE_ERROR_CAUSES, admit_local_compile,
-        local_compile_error_chain,
+        MAX_LOCAL_COMPILE_ERROR_CAUSES, admit_local_compile, local_compile_error_chain,
     };
     use backend_engine::application::{
         PackageSemanticError, PackageSemanticRuntimeError, StagedSemanticPackage,
@@ -2723,9 +3703,9 @@ mod local_compile_error_chain_tests {
         assert!(detail.contains(
             "caused by: compiler package could not construct a verified complete generation"
         ));
-        assert!(detail.contains(
-            "caused by: stored semantic-image bytes have 2048 bytes, require 4096"
-        ));
+        assert!(
+            detail.contains("caused by: stored semantic-image bytes have 2048 bytes, require 4096")
+        );
         assert!(detail.len() <= MAX_LOCAL_COMPILE_ERROR_BYTES);
     }
 
@@ -2746,9 +3726,7 @@ mod local_compile_error_chain_tests {
         let detail = local_compile_error_chain(&error);
 
         assert!(detail.contains("intermediate causes omitted:"));
-        assert!(detail.contains(
-            "stored semantic-image bytes have 2048 bytes, require 4096"
-        ));
+        assert!(detail.contains("stored semantic-image bytes have 2048 bytes, require 4096"));
         assert!(detail.len() <= MAX_LOCAL_COMPILE_ERROR_BYTES);
         assert!(backend_library::ProductText::new(detail).is_ok());
     }
@@ -2821,10 +3799,7 @@ mod local_compile_error_chain_tests {
 
         let detail = local_compile_error_chain(&error);
 
-        assert!(detail.contains(&format!(
-            "cause {}",
-            MAX_LOCAL_COMPILE_ERROR_CAUSES - 1
-        )));
+        assert!(detail.contains(&format!("cause {}", MAX_LOCAL_COMPILE_ERROR_CAUSES - 1)));
         assert!(detail.contains(&format!(
             "additional causes omitted after depth limit {MAX_LOCAL_COMPILE_ERROR_CAUSES}"
         )));
@@ -2896,15 +3871,43 @@ fn publish_local_compile(
     })
 }
 
-/// The semantic relation changes one selected generation makes: its history
-/// row, and the selection itself when it moved.
+/// A successful compiler admission, retained independently of relation
+/// changes. Its constructor is the publication recorder called only after
+/// the local or remote compiler result has been selected and admitted.
+#[derive(Clone, Debug)]
+struct AdmittedCapturePublication {
+    key: ProductSemanticPublicationKey,
+    coverage: SemanticPublicationCoverage,
+    claim: SemanticPublicationClaim,
+}
+
+impl AdmittedCapturePublication {
+    fn selected_claim(&self) -> (ProductSemanticPublicationKey, SemanticPublicationClaim) {
+        (self.key.clone(), self.claim)
+    }
+
+    fn record(&self) -> ProductSemanticPublicationRecord {
+        ProductSemanticPublicationRecord::Published {
+            coverage: self.coverage,
+            claim: self.claim,
+        }
+    }
+}
+
+/// Records history/selection deltas and returns the admitted completion even
+/// when the same publication is already selected and no delta is needed.
 fn record_semantic_publication(
     relation: &backend_engine::WorkspaceRelationHandle<BuiltinSemanticRelation>,
     key: ProductSemanticPublicationKey,
     publication_coverage: SemanticPublicationCoverage,
     claim: SemanticPublicationClaim,
     changes: &mut Vec<BuiltinSemanticChange>,
-) -> Result<(), BuiltinModelError> {
+) -> Result<AdmittedCapturePublication, BuiltinModelError> {
+    let completion = AdmittedCapturePublication {
+        key: key.clone(),
+        coverage: publication_coverage,
+        claim,
+    };
     {
         let value = ProductSemanticPublicationRecord::Published {
             // Package bytes remain bound by the input witness. A typed
@@ -2938,7 +3941,325 @@ fn record_semantic_publication(
             });
         }
     }
-    Ok(())
+    Ok(completion)
+}
+
+#[cfg(test)]
+mod admitted_capture_publication_tests {
+    use super::*;
+    use backend_engine::publication::binding::{COMPILATION_BINDING_BYTES, CompilationBindingView};
+    use backend_engine::publication::manifest::{
+        CompilationManifestFacts, CompilationManifestFormat,
+    };
+    use backend_store::hydration::VerifiedGenerationFacts;
+    use backend_version::{
+        ContentId, DependencySetDomain, GenerationId, IrManifestDomain, IrManifestEncoding,
+    };
+
+    // These are relation/admission controls, not compiler or product acceptance.
+    fn claim(seed: &[u8]) -> SemanticPublicationClaim {
+        let manifest =
+            backend_version::ArtifactId::<IrManifestEncoding, IrManifestDomain>::from_encoded_bytes(
+                seed,
+            );
+        let generation = VerifiedGenerationFacts {
+            pinned_root: GenerationId::from_canonical_bytes(seed),
+            dep_set: ContentId::<DependencySetDomain>::from_canonical_bytes(
+                b"capture-completion dependencies",
+            ),
+        };
+        let mut bytes = [0_u8; COMPILATION_BINDING_BYTES];
+        let binding =
+            CompilationBindingView::write_into(generation, manifest, &mut bytes).expect("binding");
+        SemanticPublicationClaim::admit(
+            CompilationManifestFacts {
+                identity: manifest,
+                format: CompilationManifestFormat::SemanticV2,
+                fragment_count: 1,
+                byte_length: 1,
+            },
+            *binding,
+        )
+        .expect("structural claim")
+    }
+
+    fn open_daemon(path: &Path) -> crate::builtin::ProductDaemon {
+        let profile = crate::builtin::profile_descriptor(crate::builtin::BuiltinProfile::Product)
+            .expect("profile");
+        let dispatcher = crate::builtin::builtin_dispatcher(
+            Some(crate::builtin::ECHO_AUTHORITY_SECRET),
+            Arc::clone(&profile),
+            60_000,
+        )
+        .expect("dispatcher");
+        crate::Locald::open_with_dispatcher_and_registry(
+            path,
+            BuiltinModel,
+            crate::builtin::genesis().expect("genesis"),
+            dispatcher,
+            backend_engine::DaemonConfig::default(),
+            crate::builtin::product_relation_registry().expect("registry"),
+        )
+        .expect("owner")
+    }
+
+    #[test]
+    fn admitted_capture_publication_survives_an_empty_delta_and_refuses_unproved_reuse() {
+        let temp = tempfile::tempdir().expect("private workspace");
+        let mut daemon = open_daemon(temp.path());
+        let label = "pkg:cargo/admitted-capture-completion@1.0.0";
+        let package = backend_engine::PackageKey::from_value(label);
+        let key = ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::parse(label.to_owned()).expect("reference"),
+            PackageUrl::parse(label).expect("coordinate"),
+            LanguageProfile::Rust(backend_semantic::vocabulary::RustEdition::Rust2024),
+        )
+        .expect("selected key");
+        let original_claim = claim(b"original capture completion");
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let relation = snapshot
+            .relation::<BuiltinSemanticRelation>()
+            .expect("semantic relation");
+        let mut initial_changes = Vec::new();
+        record_semantic_publication(
+            &relation,
+            key.clone(),
+            SemanticPublicationCoverage::Complete,
+            original_claim,
+            &mut initial_changes,
+        )
+        .expect("first admission record");
+        assert_eq!(
+            initial_changes.len(),
+            2,
+            "first publication records history and selection"
+        );
+        let source_version = [0x49; 32];
+        let project =
+            ProductSourceRecord::project(label, source_version, Vec::new()).expect("project");
+        let initial = BuiltinIntent::index_with_semantics(
+            package,
+            label,
+            vec![BuiltinSourceChange {
+                key: package.to_bytes(),
+                after: Some(project),
+            }],
+            initial_changes,
+        )
+        .expect("initial selected relation intent");
+        super::super::adapter::commit_builtin_intent(&mut daemon, 1, &initial)
+            .expect("persist selected relation");
+        let capture = SemanticSourceCapture::new(None, source_version, [0x52; 32], 1, 0)
+            .expect("zero syntax-source capture");
+        let pending = BuiltinIntent::index_with_capture(
+            package,
+            label,
+            Vec::new(),
+            Vec::new(),
+            vec![BuiltinCaptureChange {
+                key: key.clone(),
+                expected: None,
+                capture,
+                outcome: ProductSemanticCaptureOutcome::Pending {
+                    prior: Some(SemanticPublicationVersion::new(
+                        SemanticPublicationCoverage::Complete,
+                        original_claim,
+                    )),
+                },
+                compiler_failure: None,
+            }],
+        )
+        .expect("new pending observation over selected generation");
+        super::super::adapter::commit_builtin_intent(&mut daemon, 2, &pending)
+            .expect("persist pending capture");
+        let captures = BTreeMap::from([(key.clone(), capture)]);
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let relation = snapshot
+            .relation::<BuiltinSemanticRelation>()
+            .expect("selected relation");
+        let before_capture = semantic_capture_relation(&snapshot)
+            .expect("capture relation")
+            .expect("capture rows")
+            .lookup(&key)
+            .expect("pending lookup")
+            .expect("pending row");
+        let unchanged_semantic_root = crate::builtin::view_publish::semantic_root(&snapshot)
+            .expect("selected semantic root");
+        let mut no_delta = Vec::new();
+        let completion = record_semantic_publication(
+            &relation,
+            key.clone(),
+            SemanticPublicationCoverage::Complete,
+            original_claim,
+            &mut no_delta,
+        )
+        .expect("equal publication is still an admitted completion");
+        assert!(
+            no_delta.is_empty(),
+            "the actual recorder suppresses identical history and selection deltas"
+        );
+        let completed =
+            completed_capture_changes(&daemon, &captures, &no_delta, &[completion.clone()])
+                .expect("exact admitted equal-generation completion");
+        assert_eq!(completed.captures.len(), 1);
+        assert_eq!(completed.retained_publications.len(), 1);
+        assert_eq!(
+            completed.retained_publications[0].after,
+            Some(completion.record())
+        );
+        assert_eq!(
+            completed.captures[0].outcome,
+            ProductSemanticCaptureOutcome::Published {
+                coverage: SemanticPublicationCoverage::Complete,
+                claim: original_claim,
+            }
+        );
+        let unproved =
+            completed_capture_changes(&daemon, &captures, &[], &[]).expect("no invented admission");
+        assert!(
+            matches!(
+                unproved.captures[0].outcome,
+                ProductSemanticCaptureOutcome::Failed {
+                    reason: backend_engine::builtin::SemanticUnavailableReason::ProjectAuthority,
+                    ..
+                }
+            ),
+            "an arbitrary retained prior cannot substitute for successful current admission"
+        );
+        let mut wrong_claim = completion.clone();
+        wrong_claim.claim = claim(b"another capture completion");
+        assert!(
+            completed_capture_changes(&daemon, &captures, &[], &[wrong_claim.clone()]).is_err()
+        );
+        let mut wrong_coverage = completion.clone();
+        wrong_coverage.coverage = SemanticPublicationCoverage::Partial(
+            PartialSemanticCoverage::new(
+                NonZeroU32::new(1).expect("completed"),
+                NonZeroU32::new(2).expect("total"),
+            )
+            .expect("partial coverage"),
+        );
+        assert!(completed_capture_changes(&daemon, &captures, &[], &[wrong_coverage]).is_err());
+        let mut wrong_key = completion.clone();
+        wrong_key.key = ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::parse("pkg:cargo/other-completion@1.0.0".to_owned())
+                .expect("other reference"),
+            PackageUrl::parse("pkg:cargo/other-completion@1.0.0").expect("other coordinate"),
+            key.profile(),
+        )
+        .expect("other selected key");
+        let unrelated = completed_capture_changes(&daemon, &captures, &[], &[wrong_key])
+            .expect("unrelated proof proves nothing");
+        assert!(matches!(
+            unrelated.captures[0].outcome,
+            ProductSemanticCaptureOutcome::Failed { .. }
+        ));
+        assert!(
+            completed_capture_changes(
+                &daemon,
+                &captures,
+                &[],
+                &[completion.clone(), completion.clone()]
+            )
+            .is_err()
+        );
+        let contradictory = vec![BuiltinSemanticChange {
+            key: key.clone(),
+            after: Some(ProductSemanticPublicationRecord::Unavailable(
+                backend_engine::builtin::SemanticUnavailableReason::Rejected,
+            )),
+        }];
+        assert!(
+            completed_capture_changes(&daemon, &captures, &contradictory, &[completion.clone()])
+                .is_err()
+        );
+        let deletion = vec![BuiltinSemanticChange {
+            key: key.clone(),
+            after: None,
+        }];
+        for proof in [Vec::new(), vec![completion.clone()]] {
+            assert!(
+                completed_capture_changes(&daemon, &captures, &deletion, &proof).is_err(),
+                "explicit deletion is a contradiction, not an absent publication delta"
+            );
+        }
+        let published_delta = vec![BuiltinSemanticChange {
+            key: key.clone(),
+            after: Some(completion.record()),
+        }];
+        assert!(completed_capture_changes(&daemon, &captures, &published_delta, &[]).is_err());
+        assert!(
+            completed_capture_changes(&daemon, &captures, &published_delta, &[wrong_claim.clone()])
+                .is_err()
+        );
+        let wrong_published_delta = vec![BuiltinSemanticChange {
+            key: key.clone(),
+            after: Some(wrong_claim.record()),
+        }];
+        assert!(
+            completed_capture_changes(
+                &daemon,
+                &captures,
+                &wrong_published_delta,
+                &[completion.clone()]
+            )
+            .is_err()
+        );
+        for duplicate_delta in [
+            vec![published_delta[0].clone(), contradictory[0].clone()],
+            vec![published_delta[0].clone(), published_delta[0].clone()],
+        ] {
+            assert!(
+                completed_capture_changes(
+                    &daemon,
+                    &captures,
+                    &duplicate_delta,
+                    &[completion.clone()]
+                )
+                .is_err(),
+                "duplicate selected keys are refused before any first match can lend authority"
+            );
+        }
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        assert_eq!(
+            semantic_capture_relation(&snapshot)
+                .expect("capture relation")
+                .expect("capture rows")
+                .lookup(&key)
+                .expect("capture after controls"),
+            Some(before_capture),
+            "controls never mutate durable capture state"
+        );
+        let terminal = BuiltinIntent::index_with_capture(
+            package,
+            label,
+            Vec::new(),
+            completed.retained_publications,
+            completed.captures,
+        )
+        .expect("actual admitted terminal update");
+        super::super::adapter::commit_builtin_intent(&mut daemon, 3, &terminal)
+            .expect("persist admitted completion");
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        assert_eq!(
+            crate::builtin::view_publish::semantic_root(&snapshot).expect("terminal semantic root"),
+            unchanged_semantic_root,
+            "the explicit publication observation does not invent an ordinary semantic row change"
+        );
+        assert_eq!(
+            semantic_capture_relation(&snapshot)
+                .expect("terminal relation")
+                .expect("terminal rows")
+                .lookup(&key)
+                .expect("terminal lookup")
+                .expect("terminal row")
+                .outcome(),
+            ProductSemanticCaptureOutcome::Published {
+                coverage: SemanticPublicationCoverage::Complete,
+                claim: original_claim
+            }
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4457,7 +5778,7 @@ fn is_compiler_configuration(path: &str) -> bool {
 
 fn semantic_input_digest(scan: &ingest::IndexSnapshot, profile: LanguageProfile) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend.local-service.semantic-input.v1\0");
+    hasher.update(b"backend.local-service.semantic-input.v2\0");
     hasher.update(&scan.source_version);
     hasher.update(&<[u8; 2]>::from(profile));
     for source in scan
@@ -4468,7 +5789,7 @@ fn semantic_input_digest(scan: &ingest::IndexSnapshot, profile: LanguageProfile)
         let path = source.relative_path.as_bytes();
         hasher.update(&(path.len() as u64).to_le_bytes());
         hasher.update(path);
-        hasher.update(blake3::hash(source.source.as_bytes()).as_bytes());
+        hasher.update(&source.content);
     }
     for source in scan
         .reused_compiler_files
@@ -4671,6 +5992,416 @@ fn selected_project_source_frontier(
     }))
 }
 
+/// Reads one bounded page from the exact selected Project membership. The
+/// relation root, Project version, and cursor positions all come from the same
+/// immutable snapshot; each request reopens only the referenced membership
+/// pages and the returned File rows.
+pub(super) fn package_source_membership_page(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    request: &backend_library::PackageSourceMembershipPageRequestV1,
+) -> Result<backend_library::PackageSourceMembershipPageResultV1, BuiltinModelError> {
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    package_source_membership_page_from_snapshot(&snapshot, request)
+}
+
+pub(in crate::builtin) fn package_source_membership_page_from_snapshot(
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    request: &backend_library::PackageSourceMembershipPageRequestV1,
+) -> Result<backend_library::PackageSourceMembershipPageResultV1, BuiltinModelError> {
+    use backend_engine::ProductProjectFileMembership;
+    use backend_library::{
+        PackageSourceMembershipCursorV1, PackageSourceMembershipExclusionsV1,
+        PackageSourceMembershipFileV1, PackageSourceMembershipLanguageV1,
+        PackageSourceMembershipPageResultV1, PackageSourceMembershipScopeV1,
+        PackageSourceMembershipUnavailableV1,
+    };
+
+    if !request.has_admissible_shape() {
+        return Err(BuiltinModelError(
+            "package source membership request is malformed".to_owned(),
+        ));
+    }
+    let backend_engine::PackageReference::Local(label) = &request.package else {
+        return Err(BuiltinModelError(
+            "source membership requires a local Project package".to_owned(),
+        ));
+    };
+    let package = request.package.clone();
+    let package_key = backend_engine::PackageKey::from_value(label.as_str());
+    let project_key = package_key.to_bytes();
+    let relation = match snapshot.relation::<BuiltinWorkspaceRelation>() {
+        Ok(relation) => relation,
+        Err(_) => {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        }
+    };
+    let source_relation_root = *relation.root().as_bytes();
+    let project_record = match relation.lookup(&project_key) {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            if request.expected_source_relation_root.is_some() || request.cursor.is_some() {
+                return Ok(PackageSourceMembershipPageResultV1::Stale {
+                    package,
+                    current_source_relation_root: Some(source_relation_root),
+                    current_source_version: None,
+                });
+            }
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::ProjectNotSelected,
+            });
+        }
+        Err(_) => {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        }
+    };
+    let Some(project) = project_record.project_fields() else {
+        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+            package,
+            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+        });
+    };
+    if project.label != label.as_str()
+        || project_key != backend_engine::package_key(project.label).to_bytes()
+    {
+        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+            package,
+            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+        });
+    }
+    if request
+        .expected_source_relation_root
+        .is_some_and(|expected| expected != source_relation_root)
+        || request
+            .expected_source_version
+            .is_some_and(|expected| expected != project.source_version)
+    {
+        return Ok(PackageSourceMembershipPageResultV1::Stale {
+            package,
+            current_source_relation_root: Some(source_relation_root),
+            current_source_version: Some(project.source_version),
+        });
+    }
+
+    let selected_file_count = project.files.file_count();
+    let load_membership_page = |page_index: usize,
+                                page_key: &[u8; 32],
+                                page_offsets: &[u32]|
+     -> Result<Vec<[u8; 32]>, String> {
+        let page_record = relation
+            .lookup(page_key)
+            .map_err(|error| format!("read membership page: {error}"))?
+            .ok_or_else(|| "selected Project membership page is missing".to_owned())?;
+        let fields = page_record
+            .membership_page_fields()
+            .ok_or_else(|| "selected membership reference does not name a page".to_owned())?;
+        if fields.project != project_key
+            || fields.files.is_empty()
+            || fields.files.len() > backend_engine::MAX_PROJECT_MEMBERSHIP_PAGE_FILES
+            || fields.files.windows(2).any(|pair| pair[0] >= pair[1])
+            || backend_engine::product_source_membership_page_key(project_key, fields.files)
+                .map_or(true, |expected| expected != *page_key)
+        {
+            return Err("selected Project membership page identity is invalid".to_owned());
+        }
+        let start = *page_offsets
+            .get(page_index)
+            .ok_or_else(|| "selected Project membership prefix offset is missing".to_owned())?
+            as usize;
+        let end = page_offsets
+            .get(page_index + 1)
+            .map_or(selected_file_count, |offset| *offset as usize);
+        if fields.files.len() != end.saturating_sub(start) {
+            return Err("selected Project membership page count is inconsistent".to_owned());
+        }
+        Ok(fields.files.to_vec())
+    };
+
+    let (file_count, inline_files, page_keys, page_offsets) = match project.files {
+        ProductProjectFileMembership::Inline(files) => (files.len(), Some(files), None, None),
+        ProductProjectFileMembership::Paged {
+            file_count,
+            page_keys,
+            page_offsets: Some(offsets),
+        } => (file_count, None, Some(page_keys), Some(offsets)),
+        ProductProjectFileMembership::Paged {
+            page_offsets: None, ..
+        } => {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        }
+    };
+    if file_count > backend_library::MAX_SELECTED_PROJECT_FRONTIER_FILES {
+        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+            package,
+            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+        });
+    }
+
+    let mut start_offset = 0_u32;
+    let mut page_index = 0_usize;
+    let mut membership_offset = 0_usize;
+    let mut active_page = None::<Vec<[u8; 32]>>;
+    let mut previous_file_key = None;
+    if let Some(cursor) = &request.cursor {
+        if cursor.package != package || cursor.project_key != project_key {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        }
+        if cursor.source_relation_root != source_relation_root
+            || cursor.source_version != project.source_version
+        {
+            return Ok(PackageSourceMembershipPageResultV1::Stale {
+                package,
+                current_source_relation_root: Some(source_relation_root),
+                current_source_version: Some(project.source_version),
+            });
+        }
+        let (membership, actual_key) = match (inline_files, page_keys, page_offsets) {
+            (Some(files), None, None) => {
+                let offset = usize::from(cursor.membership_offset);
+                if cursor.membership_page != 0 || files.get(offset).is_none() {
+                    return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                        package,
+                        reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                    });
+                }
+                (offset, files[offset])
+            }
+            (None, Some(pages), Some(offsets)) => {
+                page_index = usize::from(cursor.membership_page);
+                let Some(page_key) = pages.get(page_index) else {
+                    return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                        package,
+                        reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                    });
+                };
+                let ordinal_before_page = offsets[page_index];
+                let Ok(current) = load_membership_page(page_index, page_key, offsets) else {
+                    return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                        package,
+                        reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                    });
+                };
+                let offset = usize::from(cursor.membership_offset);
+                if current.get(offset).is_none()
+                    || current[offset] != cursor.last_file_key
+                    || ordinal_before_page.checked_add(cursor.membership_offset as u32)
+                        != Some(cursor.ordinal)
+                {
+                    return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                        package,
+                        reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                    });
+                }
+                active_page = Some(current.clone());
+                (offset, current[offset])
+            }
+            _ => {
+                return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                    package,
+                    reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                });
+            }
+        };
+        if actual_key != cursor.last_file_key
+            || (inline_files.is_some() && membership as u32 != cursor.ordinal)
+            || cursor.ordinal.saturating_add(1) >= file_count as u32
+        {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        }
+        membership_offset = membership.saturating_add(1);
+        start_offset = cursor.ordinal.saturating_add(1);
+        previous_file_key = Some(cursor.last_file_key);
+    }
+
+    let mut files = Vec::with_capacity(usize::from(request.limit));
+    let mut last_position = None::<(usize, usize, [u8; 32])>;
+    let mut exhausted = false;
+    while files.len() < usize::from(request.limit) {
+        let next = if let Some(inline) = inline_files {
+            let Some(key) = inline.get(membership_offset).copied() else {
+                exhausted = true;
+                break;
+            };
+            let position = membership_offset;
+            membership_offset += 1;
+            (key, 0, position)
+        } else {
+            let pages = page_keys.unwrap_or_default();
+            let mut found = None;
+            loop {
+                if active_page.is_none() {
+                    let Some(page_key) = pages.get(page_index) else {
+                        exhausted = true;
+                        break;
+                    };
+                    let Some(offsets) = page_offsets else {
+                        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                            package,
+                            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                        });
+                    };
+                    let Ok(page) = load_membership_page(page_index, page_key, offsets) else {
+                        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                            package,
+                            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                        });
+                    };
+                    if previous_file_key
+                        .is_some_and(|previous| page.first().is_none_or(|first| previous >= *first))
+                    {
+                        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                            package,
+                            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                        });
+                    }
+                    active_page = Some(page);
+                }
+                let Some(page) = active_page.as_ref() else {
+                    return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                        package,
+                        reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                    });
+                };
+                if let Some(key) = page.get(membership_offset).copied() {
+                    let position = (key, page_index, membership_offset);
+                    membership_offset += 1;
+                    found = Some(position);
+                    break;
+                }
+                active_page = None;
+                membership_offset = 0;
+                page_index = page_index.saturating_add(1);
+            }
+            let Some(found) = found else {
+                break;
+            };
+            found
+        };
+        let (file_key, file_page, file_offset) = next;
+        if previous_file_key.is_some_and(|previous| previous >= file_key)
+            || start_offset >= file_count as u32
+        {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        }
+        let file_record = match relation.lookup(&file_key) {
+            Ok(Some(record)) => record,
+            _ => {
+                return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                    package,
+                    reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                });
+            }
+        };
+        if super::super::profile::validate_project_file(project_key, file_key, &file_record)
+            .is_err()
+        {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        }
+        let Some(source) = file_record.file_fields() else {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        };
+        files.push(PackageSourceMembershipFileV1 {
+            file_key,
+            path: source.path.to_owned(),
+            language: PackageSourceMembershipLanguageV1::from(source.language),
+            content_version: source.content_version,
+            source_identity: source.source_identity.map(|identity| *identity.as_ref()),
+        });
+        previous_file_key = Some(file_key);
+        start_offset += 1;
+        last_position = Some((file_page, file_offset, file_key));
+    }
+
+    let has_more = if exhausted {
+        false
+    } else if let Some(inline) = inline_files {
+        membership_offset < inline.len()
+    } else {
+        let pages = page_keys.unwrap_or_default();
+        active_page
+            .as_ref()
+            .is_some_and(|page| membership_offset < page.len())
+            || page_index.saturating_add(1) < pages.len()
+    };
+    if (!has_more && start_offset != file_count as u32)
+        || (has_more && start_offset >= file_count as u32)
+    {
+        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+            package,
+            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+        });
+    }
+
+    let next = if has_more {
+        let Some((membership_page, membership_offset, last_file_key)) = last_position else {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        };
+        Some(PackageSourceMembershipCursorV1 {
+            schema: backend_library::PACKAGE_SOURCE_MEMBERSHIP_SCHEMA,
+            package: package.clone(),
+            project_key,
+            source_relation_root,
+            source_version: project.source_version,
+            membership_page: u16::try_from(membership_page)
+                .map_err(|_| BuiltinModelError("membership page cursor exceeds u16".to_owned()))?,
+            membership_offset: u16::try_from(membership_offset)
+                .map_err(|_| BuiltinModelError("membership file cursor exceeds u16".to_owned()))?,
+            last_file_key,
+            ordinal: start_offset - 1,
+        })
+    } else {
+        None
+    };
+    Ok(PackageSourceMembershipPageResultV1::Page {
+        package,
+        project_key,
+        source_relation_root,
+        source_version: project.source_version,
+        file_count: u32::try_from(file_count).map_err(|_| {
+            BuiltinModelError("selected project source count exceeds u32".to_owned())
+        })?,
+        start_offset: if request.cursor.is_some() {
+            request
+                .cursor
+                .as_ref()
+                .map_or(0, |cursor| cursor.ordinal + 1)
+        } else {
+            0
+        },
+        scope: PackageSourceMembershipScopeV1::IndexedProjectMembership,
+        exclusions: PackageSourceMembershipExclusionsV1::NotCaptured,
+        files: files.into_boxed_slice(),
+        next,
+    })
+}
+
 pub(super) fn semantic_versions(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     package: &backend_engine::PackageReference,
@@ -4682,6 +6413,8 @@ pub(super) fn semantic_versions(
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic version history: {error}")))?;
+    let capture_relation = semantic_capture_relation(&snapshot)
+        .map_err(|error| BuiltinModelError(format!("open semantic capture history: {error}")))?;
     let mut selected = BTreeMap::<(PackageUrl, LanguageProfile), [u8; 32]>::new();
     let mut unavailable = None;
     let mut generations = Vec::new();
@@ -4708,7 +6441,21 @@ pub(super) fn semantic_versions(
                 // The typed refusal is kept for a package with no published
                 // target at all, below.
                 ProductSemanticPublicationRecord::Unavailable(reason) if key.is_selected() => {
-                    unavailable.get_or_insert(*reason);
+                    let capture_outcome = capture_relation
+                        .as_ref()
+                        .map(|relation| relation.lookup(key))
+                        .transpose()
+                        .map_err(|error| {
+                            BuiltinModelError(format!("read semantic capture outcome: {error}"))
+                        })?
+                        .flatten()
+                        .map(|record| record.outcome());
+                    let reason = match capture_outcome {
+                        Some(ProductSemanticCaptureOutcome::Unavailable { reason })
+                        | Some(ProductSemanticCaptureOutcome::Failed { reason, .. }) => reason,
+                        _ => *reason,
+                    };
+                    unavailable.get_or_insert(reason);
                     continue;
                 }
                 ProductSemanticPublicationRecord::Unavailable(_) => continue,
@@ -4739,16 +6486,24 @@ pub(super) fn semantic_versions(
                     .map_err(|error| {
                         BuiltinModelError(format!("admit selected semantic target: {error}"))
                     })?;
+                    let freshness_key =
+                        super::super::semantic_authority::SelectedSemanticPublicationKey::new(
+                            &selected_key,
+                        )
+                        .map_err(|error| BuiltinModelError(error.to_owned()))?;
+                    let freshness = semantic_authority.freshness(&snapshot, freshness_key, claim)?;
                     generations.push((
                         target,
                         selected_key,
                         claim,
                         semantic_version_record(
-                            key,
-                            coverage,
-                            claim,
-                            false,
-                            semantic_authority.freshness(key, claim),
+                            key, coverage, claim, false,
+                            // Freshness observations are keyed by the live
+                            // selected product, while this history row is
+                            // keyed by its immutable generation. Query the
+                            // selected key so a newly published generation is
+                            // not incorrectly exposed as Unverified.
+                            freshness,
                         ),
                     ));
                 }
@@ -5066,13 +6821,15 @@ mod compiler_input_witness_tests {
         let runtime_no_op =
             ingest::scan_project_for_unproven_authorities(root_text, [31; 32], &reusable)
                 .expect("no-op scan for unproven authorities");
-        assert!(runtime_no_op.compiler_configuration.files.is_empty());
-        assert!(
-            runtime_no_op
-                .compiler_configuration
-                .complete_languages
-                .is_empty()
-        );
+        let runtime_configuration =
+            observe_compiler_configuration(&runtime_no_op.compiler_configuration);
+        for language in [Language::Rust, Language::TypeScript] {
+            assert_eq!(
+                runtime_configuration[&language].digest,
+                first[&language].digest
+            );
+            assert!(runtime_configuration[&language].complete);
+        }
         let live_profiles = runtime_no_op
             .reused_compiler_files
             .iter()
@@ -5184,6 +6941,143 @@ mod compiler_input_witness_tests {
         assert_eq!(
             after_lockfile[&Language::Rust].digest,
             after_package_lock[&Language::Rust].digest
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn configuration_observation_tracks_unproven_runtime_inputs() {
+        let root = scratch_directory();
+        for (path, source) in [
+            ("main.rs", "pub fn fixture() {}\n"),
+            ("app.ts", "export const fixture = 1;\n"),
+            ("app.py", "def fixture():\n    return 1\n"),
+            (
+                "main.go",
+                "package fixture\nfunc Fixture() int { return 1 }\n",
+            ),
+        ] {
+            fs::write(root.join(path), source).expect("write actual language source");
+        }
+        let configurations = [
+            (
+                Language::Rust,
+                "Cargo.toml",
+                "[package]\nname='fixture'\nversion='0.1.0'\n",
+                "[package]\nname='fixture'\nversion='0.2.0'\n",
+            ),
+            (
+                Language::TypeScript,
+                "package.json",
+                "{\"name\":\"fixture\",\"version\":\"0.1.0\"}\n",
+                "{\"name\":\"fixture\",\"version\":\"0.2.0\"}\n",
+            ),
+            (
+                Language::Python,
+                "pyproject.toml",
+                "[project]\nname='fixture'\nversion='0.1.0'\n",
+                "[project]\nname='fixture'\nversion='0.2.0'\n",
+            ),
+            (
+                Language::Go,
+                "go.mod",
+                "module fixture\ngo 1.25\n",
+                "module fixture\ngo 1.26\n",
+            ),
+        ];
+        for (_, path, before, _) in &configurations {
+            fs::write(root.join(path), before).expect("write bounded project configuration");
+        }
+        let root_text = root.to_str().expect("UTF-8 fixture path");
+        let cancellation = AtomicBool::new(false);
+        let baseline = ingest::scan_project_for_unproven_authorities_cancellable(
+            root_text,
+            [74; 32],
+            &BTreeMap::new(),
+            &cancellation,
+        )
+        .expect("same cancellable scan used by run_index_scan");
+        let profiles = ingest::live_compiler_profiles(
+            &root,
+            &baseline.compiler_sources,
+            &baseline.reused_compiler_files,
+        );
+        let reusable = baseline.files.iter().cloned().collect::<BTreeMap<_, _>>();
+        for (language, path, before, after) in &configurations {
+            let profile = *profiles
+                .iter()
+                .find(|profile| profile.language() == *language)
+                .expect("actual source keeps the tested compiler profile live");
+            assert!(
+                baseline
+                    .compiler_configuration
+                    .complete_languages
+                    .contains(language)
+            );
+            fs::write(root.join(path), after).expect("change only project configuration");
+            let changed = ingest::scan_project_for_unproven_authorities_cancellable(
+                root_text,
+                [74; 32],
+                &reusable,
+                &cancellation,
+            )
+            .expect("capture changed runtime configuration");
+            assert_eq!(
+                changed.source_version, baseline.source_version,
+                "syntax source bytes remain unchanged"
+            );
+            assert_ne!(
+                semantic_input_digest(&changed, profile),
+                semantic_input_digest(&baseline, profile),
+                "a changed configuration must change the observed profile input"
+            );
+            let inputs = BTreeMap::from([(
+                profile,
+                CompilerInputAdmission {
+                    lineage: None,
+                    read_set_completeness: ReadSetCompleteness::Unproven,
+                },
+            )]);
+            let live = BTreeSet::from([profile]);
+            assert_eq!(
+                profiles_requiring_compilation(
+                    &live,
+                    &BTreeSet::new(),
+                    &BTreeSet::new(),
+                    &inputs,
+                    &live,
+                ),
+                live,
+                "configuration observation cannot certify an unproven authority or skip compilation"
+            );
+            fs::write(root.join(path), before).expect("restore exact baseline configuration");
+        }
+        let oversized =
+            fs::File::create(root.join("package.json")).expect("open oversized configuration");
+        oversized
+            .set_len(ingest::MAX_COMPILER_CONFIGURATION_FILE_BYTES as u64 + 1)
+            .expect("exceed one bounded configuration input");
+        drop(oversized);
+        let incomplete = ingest::scan_project_for_unproven_authorities_cancellable(
+            root_text,
+            [74; 32],
+            &reusable,
+            &cancellation,
+        )
+        .expect("retain bounded incomplete observation");
+        assert!(
+            !incomplete
+                .compiler_configuration
+                .complete_languages
+                .contains(&Language::TypeScript)
+        );
+        assert!(
+            !incomplete
+                .compiler_configuration
+                .files
+                .iter()
+                .any(|file| file.relative_path == Path::new("package.json")),
+            "an oversized configuration cannot be promoted to a complete observed input"
         );
         let _ = fs::remove_dir_all(root);
     }

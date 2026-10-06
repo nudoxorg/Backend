@@ -3,9 +3,9 @@ use backend_extension_tantivy as lexical;
 use backend_extension_trustfall::{
     SemanticQueryCorpus, SemanticQueryEvidence, SemanticQueryFact, SemanticQueryPresentation,
 };
-use backend_semantic::{Entity, EntityId, Source};
 #[cfg(test)]
 use backend_semantic::ir::SemanticCoreReader;
+use backend_semantic::{Entity, EntityId, Source};
 use backend_version::{CoverageWitness, RelationState};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -28,6 +28,7 @@ pub(crate) struct QualifiedClause {
 pub struct LocalQuery {
     lexical: lexical::Query,
     limit: usize,
+    semantic_limit: usize,
     qualified: Vec<QualifiedClause>,
     /// The words as typed (case kept): what a match is placed by.
     words: Vec<String>,
@@ -65,8 +66,8 @@ impl LocalQuery {
             }
             searchable.push(' ');
         }
-        let terms = lexical::normalize_query_terms(&searchable, limits)
-            .map_err(QueryError::Lexical)?;
+        let terms =
+            lexical::normalize_query_terms(&searchable, limits).map_err(QueryError::Lexical)?;
         if terms.is_empty() {
             return Err(QueryError::EmptyQuery);
         }
@@ -74,6 +75,7 @@ impl LocalQuery {
         Ok(Self {
             lexical,
             limit,
+            semantic_limit: limit,
             qualified,
             words,
         })
@@ -83,6 +85,10 @@ impl LocalQuery {
     #[must_use]
     pub const fn limit(&self) -> usize {
         self.limit
+    }
+
+    pub(crate) const fn semantic_limit(&self) -> usize {
+        self.semantic_limit
     }
 
     pub(crate) const fn lexical(&self) -> &lexical::Query {
@@ -596,7 +602,13 @@ impl LocalAnswer {
         let mut relevance = Vec::new();
         relevance
             .try_reserve_exact(entities.len())
-            .map_err(|_| QueryError::LexicalProvider)?;
+            .map_err(|error| QueryError::LexicalProvider {
+                phase: LexicalPhase::CandidateScores,
+                cause: LexicalFailureCause::Allocation {
+                    requested: entities.len(),
+                    error,
+                },
+            })?;
         for entity in entities {
             if let Some(score) = self.lexical_relevance(*entity) {
                 relevance.push((*entity, score));
@@ -610,10 +622,13 @@ impl LocalAnswer {
                 .corpus
                 .lexical
                 .relevance_for_candidates(self.query.lexical(), &requested)
-                .map_err(|_| QueryError::LexicalProvider)?
+                .map_err(|error| QueryError::provider(LexicalPhase::CandidateScores, error))?
             {
                 let Some(selected) = self.corpus.selected.entity(entity) else {
-                    return Err(QueryError::LexicalProvider);
+                    return Err(QueryError::LexicalProvider {
+                        phase: LexicalPhase::CandidateScores,
+                        cause: LexicalFailureCause::MissingSelectedEntity(entity),
+                    });
                 };
                 let row_id = selected.row.stable_key();
                 if self.query.qualified_clauses().is_empty()
@@ -803,7 +818,7 @@ impl SearchSnapshotOwner {
             }
             Ok(None) => {}
             Err(error) => {
-                if matches!(error, QueryError::LexicalProvider) && self.durable_root.is_none() {
+                if error.permits_ephemeral_revision_rebuild() && self.durable_root.is_none() {
                     self.selected = None;
                 } else {
                     return Err(error);
@@ -969,9 +984,14 @@ impl QueryCoordinator {
             None => lexical::TantivySource::build(&prepared.state, lexical::Limits::default())
                 .map(|source| (source, lexical::DurableProjectionAction::Built)),
         }
-        .map_err(|_| QueryError::LexicalProvider)?;
-        let lexical = lexical::TantivyAdapter::new(source, lexical::Limits::default())
-            .map_err(|_| QueryError::LexicalProvider)?;
+        .map_err(|error| QueryError::provider(LexicalPhase::OpenProjection, error))?;
+        let lexical =
+            lexical::TantivyAdapter::new(source, lexical::Limits::default()).map_err(|error| {
+                QueryError::provider(
+                    LexicalPhase::AdmitAdapter,
+                    lexical::TantivySourceError::Contract(error),
+                )
+            })?;
         Ok((
             Self {
                 corpus: Arc::new(Corpus {
@@ -1037,13 +1057,18 @@ impl QueryCoordinator {
                     root,
                     durable_budget,
                 )
-                .map_err(|_| QueryError::LexicalProvider)?,
+                .map_err(|error| QueryError::provider(LexicalPhase::AdvanceProjection, error))?,
             ),
             _ => None,
         };
         let maintenance = if let Some((source, revision, action)) = durable_publication {
             corpus.lexical = lexical::TantivyAdapter::new(source, lexical::Limits::default())
-                .map_err(|_| QueryError::LexicalProvider)?;
+                .map_err(|error| {
+                    QueryError::provider(
+                        LexicalPhase::AdmitAdapter,
+                        lexical::TantivySourceError::Contract(error),
+                    )
+                })?;
             match (revision, action) {
                 (Some(revision), _) => match revision.kind {
                     lexical::ProjectionKind::Rebound => SnapshotMaintenance::Rebound,
@@ -1058,20 +1083,8 @@ impl QueryCoordinator {
             match corpus
                 .lexical
                 .maintain(&prepared.state, lexical::OverlayLimits::default())
-                .map_err(|error| match error {
-                    lexical::TantivySourceError::Contract(error) => QueryError::Lexical(error),
-                    lexical::TantivySourceError::Backend(_)
-                    | lexical::TantivySourceError::Io(_)
-                    | lexical::TantivySourceError::Corrupt(_)
-                    | lexical::TantivySourceError::BudgetExceeded { .. }
-                    | lexical::TantivySourceError::OrdinalMapCapacityExceeded { .. }
-                    | lexical::TantivySourceError::RankSnapshotBudgetExceeded { .. }
-                    | lexical::TantivySourceError::PostingCoverBudgetExceeded { .. }
-                    | lexical::TantivySourceError::PostingCoverWorkExceeded { .. }
-                    | lexical::TantivySourceError::DurableProjectionImmutable => {
-                        QueryError::LexicalProvider
-                    }
-                })? {
+                .map_err(|error| QueryError::provider(LexicalPhase::MaintainProjection, error))?
+            {
                 lexical::MaintainOutcome::RebuildRequired => return Ok(None),
                 lexical::MaintainOutcome::Applied(revision) => match revision.kind {
                     lexical::ProjectionKind::Rebound => SnapshotMaintenance::Rebound,
@@ -1104,6 +1117,29 @@ impl QueryCoordinator {
                 == semantic_evidence.evidence_digest()
     }
 
+    /// Enumerates the requested rank prefix and one successor, under the
+    /// selected relation and the provider's existing retained-rank budget.
+    pub(crate) fn search_local_page(
+        &self,
+        request: &backend_engine::Query,
+    ) -> Result<LocalAnswer, QueryError> {
+        if request.basis() != self.corpus.view.root() {
+            return Err(QueryError::StaleViewBinding);
+        }
+        let page_rows = usize::from(request.limit().get());
+        let offset = request.cursor().map_or(Ok(0), |cursor| {
+            usize::try_from(cursor.query_offset()).map_err(|_| QueryError::InvalidCursor)
+        })?;
+        let selected_rows =
+            usize::try_from(self.corpus.view.row_count()).map_err(|_| QueryError::InvalidView)?;
+        let mut query = LocalQuery::prefix(request.text(), page_rows)?;
+        query.limit = rank_prefix_limit(offset, page_rows, selected_rows)?;
+        // The semantic candidate window is independent of the requested page
+        // position, so extending a lexical prefix cannot change prior ranks.
+        query.semantic_limit = page_rows;
+        self.search_local(query)
+    }
+
     /// Executes a complete local search before optional provider work.
     ///
     /// # Errors
@@ -1111,24 +1147,33 @@ impl QueryCoordinator {
     /// Returns [`QueryError::LexicalProvider`] if the admitted local Tantivy
     /// projection cannot serve a page.
     pub fn search_local(&self, query: LocalQuery) -> Result<LocalAnswer, QueryError> {
-        let mut top_matches: Vec<(EntityId, lexical::Relevance)> =
-            Vec::with_capacity(query.limit());
+        let mut top_matches: Vec<(EntityId, lexical::Relevance)> = Vec::new();
+        top_matches
+            .try_reserve_exact(query.limit())
+            .map_err(|error| QueryError::LexicalProvider {
+                phase: LexicalPhase::ComposeRows,
+                cause: LexicalFailureCause::Allocation {
+                    requested: query.limit(),
+                    error,
+                },
+            })?;
         let mut seen_hits = 0usize;
         let mut total_matches = 0usize;
-        let mut composition_failed = false;
+        let mut composition_failure = None;
         let words = query.words();
         let exact_lexical_total = self
             .corpus
             .lexical
             .for_each_ranked_hit(query.lexical(), |hit| {
                 let Some(selected) = self.corpus.selected.entity(hit.document) else {
-                    composition_failed = true;
+                    composition_failure
+                        .get_or_insert(LexicalFailureCause::MissingSelectedEntity(hit.document));
                     return;
                 };
                 seen_hits = match seen_hits.checked_add(1) {
                     Some(total) => total,
                     None => {
-                        composition_failed = true;
+                        composition_failure.get_or_insert(LexicalFailureCause::HitCountOverflow);
                         return;
                     }
                 };
@@ -1145,7 +1190,7 @@ impl QueryCoordinator {
                 total_matches = match total_matches.checked_add(1) {
                     Some(total) => total,
                     None => {
-                        composition_failed = true;
+                        composition_failure.get_or_insert(LexicalFailureCause::ResultCountOverflow);
                         return;
                     }
                 };
@@ -1167,22 +1212,40 @@ impl QueryCoordinator {
                     }
                 }
             })
-            .map_err(|_| QueryError::LexicalProvider)?;
-        if composition_failed || exact_lexical_total != seen_hits {
-            return Err(QueryError::LexicalProvider);
+            .map_err(|error| QueryError::provider(LexicalPhase::ScanHits, error))?;
+        if let Some(cause) = composition_failure {
+            return Err(QueryError::LexicalProvider {
+                phase: LexicalPhase::ComposeRows,
+                cause,
+            });
+        }
+        if exact_lexical_total != seen_hits {
+            return Err(QueryError::LexicalProvider {
+                phase: LexicalPhase::ComposeRows,
+                cause: LexicalFailureCause::HitCountMismatch {
+                    provider: exact_lexical_total,
+                    selected: seen_hits,
+                },
+            });
         }
         let mut rows = Vec::with_capacity(top_matches.len());
         for (entity, relevance) in &top_matches {
-            let selected = self
-                .corpus
-                .selected
-                .entity(*entity)
-                .ok_or(QueryError::LexicalProvider)?;
+            let selected =
+                self.corpus
+                    .selected
+                    .entity(*entity)
+                    .ok_or(QueryError::LexicalProvider {
+                        phase: LexicalPhase::ComposeRows,
+                        cause: LexicalFailureCause::MissingSelectedEntity(*entity),
+                    })?;
             let row = self
                 .corpus
                 .view
                 .row(selected.row)
-                .ok_or(QueryError::LexicalProvider)?;
+                .ok_or(QueryError::LexicalProvider {
+                    phase: LexicalPhase::ComposeRows,
+                    cause: LexicalFailureCause::MissingViewRow(selected.row),
+                })?;
             rows.push(RankedRow {
                 row,
                 lexical_relevance: Some(*relevance),
@@ -1724,12 +1787,21 @@ fn semantic_read_identity(view: &ViewRoot, evidence: [u8; 32]) -> Vec<u8> {
 }
 
 /// Query construction or local materialization failure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum QueryError {
     /// Empty text has no meaningful rank.
     EmptyQuery,
     /// Page size is outside the extension bound.
     InvalidLimit,
+    /// A rank continuation cannot address the selected relation.
+    InvalidCursor,
+    /// A requested rank prefix exceeds the existing retained-rank allowance.
+    RankPrefixBudgetExceeded {
+        /// Entries needed for the requested position and lookahead.
+        requested: usize,
+        /// Entries admitted by the retained-rank byte budget.
+        maximum: usize,
+    },
     /// The selected source was not proven complete by its owner.
     IncompleteCoverage,
     /// The selected view was not published against the exact workspace
@@ -1748,7 +1820,139 @@ pub enum QueryError {
     /// Typed lexical admission failed.
     Lexical(lexical::Error),
     /// The concrete Tantivy projection or provider boundary failed.
-    LexicalProvider,
+    LexicalProvider {
+        /// Exact local boundary that refused the selected projection.
+        phase: LexicalPhase,
+        /// Original provider error or exact failed corpus join.
+        cause: LexicalFailureCause,
+    },
+}
+
+pub(super) fn rank_prefix_limit(
+    offset: usize,
+    page_rows: usize,
+    selected_rows: usize,
+) -> Result<usize, QueryError> {
+    if offset > 0 && offset >= selected_rows {
+        return Err(QueryError::InvalidCursor);
+    }
+    let requested = offset
+        .checked_add(page_rows)
+        .and_then(|end| end.checked_add(1))
+        .ok_or(QueryError::InvalidCursor)?
+        .min(selected_rows.max(1));
+    let maximum = lexical::RankSnapshotBudget::default().max_retained_bytes()
+        / size_of::<(EntityId, lexical::Relevance)>();
+    if requested > maximum {
+        return Err(QueryError::RankPrefixBudgetExceeded { requested, maximum });
+    }
+    Ok(requested)
+}
+
+/// Closed local lexical operation where a failure arose.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LexicalPhase {
+    /// Open or construct the selected immutable projection.
+    OpenProjection,
+    /// Admit the concrete adapter against its lexical contract.
+    AdmitAdapter,
+    /// Publish the next durable projection root.
+    AdvanceProjection,
+    /// Revise a resident projection.
+    MaintainProjection,
+    /// Visit exact provider hits.
+    ScanHits,
+    /// Join provider identities to selected canonical rows.
+    ComposeRows,
+    /// Score a bounded semantic candidate collection.
+    CandidateScores,
+}
+
+/// Concrete lexical refusal retained without parsing or replacing its cause.
+#[derive(Debug)]
+pub enum LexicalFailureCause {
+    /// Original Tantivy source, I/O, contract, integrity, or resource failure.
+    Source(lexical::TantivySourceError),
+    /// Candidate score allocation failed.
+    Allocation {
+        /// Number of requested result entries.
+        requested: usize,
+        /// Original allocator refusal.
+        error: std::collections::TryReserveError,
+    },
+    /// A provider hit has no member in the exact selected corpus.
+    MissingSelectedEntity(EntityId),
+    /// A selected corpus member has no canonical row in the selected view.
+    MissingViewRow(RowId),
+    /// Provider and selected traversal cardinalities disagree.
+    HitCountMismatch {
+        /// Exact total reported by the provider traversal.
+        provider: usize,
+        /// Number of hits joined to selected rows.
+        selected: usize,
+    },
+    /// Provider-hit cardinality cannot fit in the counter.
+    HitCountOverflow,
+    /// Qualified-result cardinality cannot fit in the counter.
+    ResultCountOverflow,
+}
+
+impl QueryError {
+    // A resident ephemeral provider failure may require rebuilding the
+    // projection. A rejected contract is terminal, as it was before provider
+    // failures retained their typed causes; rebuilding must not bypass it.
+    fn permits_ephemeral_revision_rebuild(&self) -> bool {
+        matches!(
+            self,
+            Self::LexicalProvider {
+                phase: LexicalPhase::MaintainProjection,
+                cause: LexicalFailureCause::Source(error),
+            } if !matches!(error, lexical::TantivySourceError::Contract(_))
+        )
+    }
+
+    fn provider(phase: LexicalPhase, error: lexical::TantivySourceError) -> Self {
+        Self::LexicalProvider {
+            phase,
+            cause: LexicalFailureCause::Source(error),
+        }
+    }
+}
+
+impl fmt::Display for LexicalFailureCause {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Source(error) => error.fmt(formatter),
+            Self::Allocation { requested, error } => write!(
+                formatter,
+                "candidate score allocation for {requested} entries failed: {error}"
+            ),
+            Self::MissingSelectedEntity(entity) => write!(
+                formatter,
+                "lexical hit {entity:?} has no selected corpus member"
+            ),
+            Self::MissingViewRow(row) => write!(
+                formatter,
+                "selected corpus row {row:?} is absent from the canonical view"
+            ),
+            Self::HitCountMismatch { provider, selected } => write!(
+                formatter,
+                "lexical hit count mismatch: provider {provider}, selected {selected}"
+            ),
+            Self::HitCountOverflow => formatter.write_str("lexical hit count overflow"),
+            Self::ResultCountOverflow => formatter.write_str("lexical result count overflow"),
+        }
+    }
+}
+
+impl std::error::Error for LexicalFailureCause {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Source(error) => Some(error),
+            Self::Allocation { error, .. } => Some(error),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for QueryError {
@@ -1756,6 +1960,11 @@ impl fmt::Display for QueryError {
         match self {
             Self::EmptyQuery => formatter.write_str("query text is empty"),
             Self::InvalidLimit => formatter.write_str("query page limit is invalid"),
+            Self::InvalidCursor => formatter.write_str("search cursor offset is invalid"),
+            Self::RankPrefixBudgetExceeded { requested, maximum } => write!(
+                formatter,
+                "search rank prefix requires {requested} entries; retained-rank budget admits {maximum}"
+            ),
             Self::IncompleteCoverage => formatter.write_str("selected view coverage is incomplete"),
             Self::StaleViewBinding => {
                 formatter.write_str("selected view is bound to another workspace snapshot")
@@ -1769,12 +1978,132 @@ impl fmt::Display for QueryError {
                 formatter.write_str("selected view exceeds the query corpus bound")
             }
             Self::Lexical(error) => write!(formatter, "lexical query failed: {error}"),
-            Self::LexicalProvider => formatter.write_str("Tantivy query provider failed"),
+            Self::LexicalProvider { phase, cause } => write!(
+                formatter,
+                "Tantivy query provider failed during {phase:?}: {cause}"
+            ),
         }
     }
 }
 
-impl std::error::Error for QueryError {}
+impl std::error::Error for QueryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Lexical(error) => Some(error),
+            Self::LexicalProvider { cause, .. } => Some(cause),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod lexical_failure_tests {
+    use super::*;
+
+    #[test]
+    fn ephemeral_revision_recovery_keeps_contract_and_corpus_refusals_terminal() {
+        let rejected = QueryError::provider(
+            LexicalPhase::MaintainProjection,
+            lexical::TantivySourceError::Contract(lexical::Error::StaleRoot),
+        );
+        assert!(!rejected.permits_ephemeral_revision_rebuild());
+        let provider = QueryError::provider(
+            LexicalPhase::MaintainProjection,
+            lexical::TantivySourceError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "resident projection failed",
+            )),
+        );
+        assert!(provider.permits_ephemeral_revision_rebuild());
+        let durable = QueryError::provider(
+            LexicalPhase::AdvanceProjection,
+            lexical::TantivySourceError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "durable publication failed",
+            )),
+        );
+        assert!(!durable.permits_ephemeral_revision_rebuild());
+        let unjoined = QueryError::LexicalProvider {
+            phase: LexicalPhase::ComposeRows,
+            cause: LexicalFailureCause::HitCountMismatch {
+                provider: 1,
+                selected: 0,
+            },
+        };
+        assert!(!unjoined.permits_ephemeral_revision_rebuild());
+    }
+
+    #[test]
+    fn provider_failure_preserves_original_io_and_resource_causes() {
+        let error = QueryError::provider(
+            LexicalPhase::OpenProjection,
+            lexical::TantivySourceError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "projection lease denied",
+            )),
+        );
+        assert!(matches!(
+            &error,
+            QueryError::LexicalProvider {
+                phase: LexicalPhase::OpenProjection,
+                cause: LexicalFailureCause::Source(lexical::TantivySourceError::Io(cause)),
+            } if cause.kind() == std::io::ErrorKind::PermissionDenied
+        ));
+        assert!(error.to_string().contains("projection lease denied"));
+        assert!(std::error::Error::source(&error).is_some());
+        let error = QueryError::provider(
+            LexicalPhase::ScanHits,
+            lexical::TantivySourceError::RankSnapshotBudgetExceeded {
+                budget_bytes: 7,
+                required_bytes: 19,
+            },
+        );
+        assert!(matches!(
+            error,
+            QueryError::LexicalProvider {
+                phase: LexicalPhase::ScanHits,
+                cause: LexicalFailureCause::Source(
+                    lexical::TantivySourceError::RankSnapshotBudgetExceeded {
+                        budget_bytes: 7,
+                        required_bytes: 19
+                    }
+                ),
+            }
+        ));
+    }
+
+    #[test]
+    fn actual_provider_hit_missing_from_selected_corpus_is_not_empty_success() {
+        let (workspace, view) = super::super::tests::selected_view();
+        let capability = view.capability().expect("selected capability");
+        let evidence = super::super::tests::semantic_evidence(workspace, &view);
+        let mut coordinator = QueryCoordinator::new(
+            workspace,
+            view,
+            capability,
+            crate::builtin::admitted_coverage().expect("coverage"),
+            evidence,
+        )
+        .expect("real selected Tantivy projection");
+        // Keep the real provider postings and selected view unchanged, but
+        // inject the exact forbidden join that the old generic error hid.
+        Arc::get_mut(&mut coordinator.corpus)
+            .expect("unshared corpus")
+            .selected
+            .entities = Box::new([]);
+        let error = coordinator
+            .search_local(LocalQuery::prefix("alpha", 5).expect("query"))
+            .err()
+            .expect("unjoined real hit must refuse");
+        assert!(matches!(
+            error,
+            QueryError::LexicalProvider {
+                phase: LexicalPhase::ComposeRows,
+                cause: LexicalFailureCause::MissingSelectedEntity(_),
+            }
+        ));
+    }
+}
 
 /// Times admitting a typed query corpus against reusing the resident one.
 ///

@@ -1,0 +1,50 @@
+{
+  "files": [
+    {
+      "bytes": 1057,
+      "path": "LICENSE",
+      "sha256": "4f8cf48502224399442f7eadd8620d96ef18125f9beb4949c53084ab3b05a4d4"
+    },
+    {
+      "bytes": 7827,
+      "path": "README.md",
+      "sha256": "6ea7c9b30be5599265483e2c467a52fcbb881132cd1a1d89ecbd32ec05bab790"
+    },
+    {
+      "bytes": 374,
+      "path": "lib/index.d.ts",
+      "sha256": "6dfde7923c14468ba97cb1a6673bc58993ba5d95b760713015ea0e2f67bf7ed1"
+    },
+    {
+      "bytes": 414,
+      "path": "lib/index.js",
+      "sha256": "1b7eb32763b8c50454432cd239708b8b644d3035acc11f23282876ef35224d74"
+    },
+    {
+      "bytes": 2648,
+      "path": "lib/internals/querystring.js",
+      "sha256": "508ead48cd16547b101a8744b177549320c7d722abc6fd404fc81c9bf22a4e22"
+    },
+    {
+      "bytes": 3349,
+      "path": "lib/parse.js",
+      "sha256": "ea8baa1d4b5afb151ca379fd1f4126b04c472be0a90fbeaa5cde6dbe36e56f2a"
+    },
+    {
+      "bytes": 1674,
+      "path": "lib/stringify.js",
+      "sha256": "2d721628cde95c0958576ffd8a91e054f4e4d4e04bfa2ece16983f2b19964b11"
+    },
+    {
+      "bytes": 1722,
+      "path": "package.json",
+      "sha256": "59c73b5528880f45dc59746065b35e5b56cefbecbf893bfe607cbf0f96ef89b7"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "fast-querystring",
+    "version": "1.1.2"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

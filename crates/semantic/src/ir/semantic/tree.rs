@@ -8,7 +8,11 @@ use crate::ir::{EntityAuthorityFacts, OccurrenceAuthorityFacts, TypeId};
 #[derive(Clone, Copy)]
 pub struct TreeItemInput<'source> {
     /// Declaration name as borrowed bytes, interned by the admitting builder.
+    /// This is empty only when `anonymous_callable_anchor` is present.
     pub name: &'source [u8],
+    /// Versioned structural anchor bytes for an anonymous callable. These are
+    /// typed name evidence, not a display spelling or a fabricated identifier.
+    pub anonymous_callable_anchor: Option<&'source [u8]>,
     /// Cross-language declaration category for this row.
     pub kind: ItemKind,
     /// Language-independent visibility, including `Unknown` when unavailable.
@@ -95,6 +99,7 @@ impl FrontendTree for BorrowedTree<'_> {
     fn items(&self) -> impl ExactSizeIterator<Item = TreeItemInput<'_>> {
         self.items.iter().map(|item| TreeItemInput {
             name: item.name,
+            anonymous_callable_anchor: item.anonymous_callable_anchor,
             kind: item.kind,
             visibility: item.visibility,
             authority: item.authority,

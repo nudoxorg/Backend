@@ -1,0 +1,6 @@
+
+running 1 test
+test runtime_policy::tests::codec_rejects_missing_unknown_version_and_noncanonical_fields ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 0.00s
+

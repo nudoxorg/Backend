@@ -42,7 +42,7 @@ impl LocalAnswer {
         S: semantic::AnnSource,
         S::Error: fmt::Display,
     {
-        let max_additions = self.query.limit();
+        let max_additions = self.query.semantic_limit();
         self.accelerate_with(
             CompositionPolicy::AugmentCanonical { max_additions },
             acceleration,
@@ -71,10 +71,7 @@ impl LocalAnswer {
         let candidate_entities = result
             .candidates
             .iter()
-            .filter_map(|candidate| {
-                self.candidate_row(candidate.id)
-                    .map(|(entity, _)| entity)
-            })
+            .filter_map(|candidate| self.candidate_row(candidate.id).map(|(entity, _)| entity))
             .collect::<Vec<_>>();
         let Ok(lexical) = self.lexical_relevance_for_candidates(&candidate_entities) else {
             return self.unavailable_semantic(Freshness::Unknown);
@@ -130,7 +127,7 @@ fn refill_limit(answer: &LocalAnswer, policy: CompositionPolicy) -> usize {
         CompositionPolicy::RerankLexical => 0,
         CompositionPolicy::AugmentCanonical { max_additions } => max_additions,
     };
-    let desired = answer.query.limit().saturating_add(additions);
+    let desired = answer.query.semantic_limit().saturating_add(additions);
     desired
         .saturating_mul(4)
         .max(desired)
@@ -158,8 +155,7 @@ fn compose(
     let mut suppressed = 0usize;
     let mut augmented = 0usize;
     for candidate in &result.candidates {
-        let Some((entity, row)) = answer.candidate_row(candidate.id)
-        else {
+        let Some((entity, row)) = answer.candidate_row(candidate.id) else {
             suppressed = suppressed.saturating_add(1);
             continue;
         };

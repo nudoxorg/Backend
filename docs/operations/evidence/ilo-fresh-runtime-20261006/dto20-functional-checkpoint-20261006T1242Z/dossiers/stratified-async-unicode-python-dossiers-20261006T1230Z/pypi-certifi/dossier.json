@@ -1,0 +1,100 @@
+{
+  "schema": "nudox.source-verified-stratified-dossier.v1",
+  "package": {
+    "ecosystem": "pypi",
+    "id": "certifi",
+    "version": "2026.7.22"
+  },
+  "source_root": "/root/nudox-corpus-20261006/artifacts/stratified-async-unicode-python-dossiers-20261006T1230Z/pypi-certifi/source",
+  "source_tree_sha256": "8e2190e165b4d23de5e60e2202ec617d71b5611046abbcf2da9d363e28a928c7",
+  "source_files": 19,
+  "source_bytes": 254424,
+  "inventory_sha256": "f1c8eccf25dc7d7b480fc368273d1fb8a1b03156f58a20aa507768ce920e2c74",
+  "origin_sha256": "82bd217a6a97753c3cde0f8148a952a8bf074370ebd97752aa399f7d3fadf838",
+  "archive_sha256": "741e2c3b351ddf169a738da9f2c048608ff7f2c5cc02f1ebc6b118bb090d5d55",
+  "origin_verified": true,
+  "archives_reused": false,
+  "acquisition_requests": [
+    {
+      "url": "https://pypi.org/pypi/certifi/json",
+      "final_url": "https://pypi.org/pypi/certifi/json",
+      "status": 200,
+      "seconds": 0.05558213300537318,
+      "bytes": 113109,
+      "sha256": "3b94efeb879dddf7172a6ab03cd53b68e76f046c11893249d6c17e99a0293a3c",
+      "utc": "2026-10-06T12:28:42Z"
+    },
+    {
+      "url": "https://files.pythonhosted.org/packages/a3/c2/24167ea9858356b47a87a50d39908bfdb72ceeefe0041586e704e5376b3a/certifi-2026.7.22.tar.gz",
+      "final_url": "https://files.pythonhosted.org/packages/a3/c2/24167ea9858356b47a87a50d39908bfdb72ceeefe0041586e704e5376b3a/certifi-2026.7.22.tar.gz",
+      "status": 200,
+      "seconds": 0.03902908193413168,
+      "bytes": 138112,
+      "sha256": "741e2c3b351ddf169a738da9f2c048608ff7f2c5cc02f1ebc6b118bb090d5d55",
+      "utc": "2026-10-06T12:28:42Z"
+    }
+  ],
+  "resource_before": {
+    "memory_available_kib": 58877800,
+    "free_disk_bytes": 54024507392
+  },
+  "dependency_requirements": {
+    "requires_dist": []
+  },
+  "dependency_closure_installed": false,
+  "source_expectations": [
+    {
+      "name": "where",
+      "path": "certifi/core.py",
+      "line": 21,
+      "end_line": 44,
+      "kind": "FunctionDef",
+      "file_sha256": "5c55f2727746e697f7edac9e17c377d8752e0da7ecca191531b3b80403d61dad",
+      "start_byte": 375,
+      "end_byte": 1718,
+      "declaration_sha256": "df154321a83cc9bca715d71f4200dadf44f2441c2d9bc4952b41e15dada899a3",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "contents",
+      "path": "certifi/core.py",
+      "line": 46,
+      "end_line": 47,
+      "kind": "FunctionDef",
+      "file_sha256": "5c55f2727746e697f7edac9e17c377d8752e0da7ecca191531b3b80403d61dad",
+      "start_byte": 1724,
+      "end_byte": 1829,
+      "declaration_sha256": "3234419abd93cef838e6e38b30881f1ca53e97a348b5e964e4ce53a05e859f62",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "where",
+      "path": "certifi/core.py",
+      "line": 56,
+      "end_line": 80,
+      "kind": "FunctionDef",
+      "file_sha256": "5c55f2727746e697f7edac9e17c377d8752e0da7ecca191531b3b80403d61dad",
+      "start_byte": 1955,
+      "end_byte": 3297,
+      "declaration_sha256": "e0e898e386f55213a5fe06a10ac8034251e245c0c9cb33a63985978b490101ed",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "contents",
+      "path": "certifi/core.py",
+      "line": 82,
+      "end_line": 83,
+      "kind": "FunctionDef",
+      "file_sha256": "5c55f2727746e697f7edac9e17c377d8752e0da7ecca191531b3b80403d61dad",
+      "start_byte": 3303,
+      "end_byte": 3393,
+      "declaration_sha256": "35d1c5a6d15f1fa406453a7a5a380f1fa086a5a04709215dbcb02ea76d23c58a",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    }
+  ],
+  "runtime_acceptance_status": "not_run",
+  "runtime_passes": 0,
+  "package_code_executed": false,
+  "observer_sha256": "a6376b24c31c9a2b12cec4ed9d77a970fd3590e611cb885832ce28542688ef58",
+  "origin_verifier_sha256": "1ef8275b8e6daa9bfe711d05d367316b09635061b4cb9ca147816c6bed3a3039"
+}

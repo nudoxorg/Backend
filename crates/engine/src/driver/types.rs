@@ -4,6 +4,7 @@
 //! Public caller authority plus closed compile terminals and compact output facts.
 
 mod authority;
+pub(crate) use authority::go_authority_projection;
 mod compile;
 mod lowering;
 mod request;
@@ -28,8 +29,8 @@ pub use terminal::{
     NativeDiagnostic, NativeWorkError, NativeWorkPrimary,
 };
 pub use toolchain::{
-    ResolvedToolchain, ResolvedToolchainView, ToolchainResolutionError, ToolchainSelection,
-    ToolchainSelectionFact,
+    NativeInvocation, NativeInvocationError, NativeInvocationFileRole, ResolvedToolchain,
+    ResolvedToolchainView, ToolchainResolutionError, ToolchainSelection, ToolchainSelectionFact,
 };
 
 pub use backend_semantic::ir::SourceIdentity;

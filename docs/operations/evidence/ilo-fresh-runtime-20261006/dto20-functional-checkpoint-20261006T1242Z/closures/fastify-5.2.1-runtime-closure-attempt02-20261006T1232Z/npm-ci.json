@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin/npm",
+    "ci",
+    "--ignore-scripts",
+    "--no-audit",
+    "--no-fund"
+  ],
+  "cwd": "/root/nudox-corpus-20261006/artifacts/fastify-5.2.1-runtime-closure-attempt02-20261006T1232Z/consumer",
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/artifacts/fastify-5.2.1-runtime-closure-attempt02-20261006T1232Z/home",
+    "LANG": "C.UTF-8",
+    "PATH": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin",
+    "npm_config_cache": "/root/nudox-corpus-20261006/artifacts/fastify-5.2.1-runtime-closure-attempt02-20261006T1232Z/npm-cache",
+    "npm_config_registry": "https://registry.npmjs.org/"
+  },
+  "exit": 0,
+  "seconds": 0.5147800999693573
+}

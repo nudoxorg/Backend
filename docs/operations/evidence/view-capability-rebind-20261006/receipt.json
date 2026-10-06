@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "tested_base_commit": "37c210aae4aa675dc16ede98c9b33feb0b01ece4",
+  "tested_source_dirty_sha256": "8e7f706cb8957f172536eb73d7e64769f50adcd251032d5ff10e3c2e47cd6ccb",
+  "log_sha256": "98f206f2260267d31feb52116507e89ccba0a3a6f242dd5cbb75c3959548cb60",
+  "library": {
+    "passed": 286,
+    "failed": 0,
+    "ignored_existing": 1
+  },
+  "source_files": {
+    "crates/library/view/root.rs": "de7870686dc9571c6c00e41beee7e9f88b813327ed234f9f5455ed0f286a44da",
+    "crates/library/view/transition.rs": "4f815cb98a1abc99e4cd9fa850835a6fa085e01e66d88a8f97191d1f95018fb1",
+    "crates/local-service/src/builtin.rs": "12ffba541a5ec9a5c3c6e009f9f50a9fd0bccb7f7e485915c56b902c2d7f5542"
+  },
+  "scope": "Library checked capability-only patch and row-storage retention; service rebind call sites have not yet been compiled or exercised against delivered images. Initial compile errors and initial test evidence-digest mismatch were corrected before this frozen run.",
+  "pending": [
+    "Service integration and same-root journal generation recovery",
+    "Actual unchanged add/search and fresh-BPI9 cold CLI/MCP replay"
+  ]
+}

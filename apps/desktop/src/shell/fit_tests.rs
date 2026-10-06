@@ -355,9 +355,14 @@ fn the_shelf_can_be_opened_with_the_pointer_at_every_width(cx: &mut TestAppConte
             "the opened shelf's row is at {:?} in a {width} px window",
             row.bounds
         );
-        // Put it away again for the next width.
-        rig.cx.simulate_click(point(px(at.x + at.width / 2.0), px(at.y + at.height / 2.0)), Modifiers::default());
+        // Opening can rearrange the native chrome. Close through this frame's
+        // toggle, not the position measured before the drawer was mounted.
+        let close = opened.targets.iter().find(|target| target.key == "tb-shelf")
+            .expect("the open Shelf keeps its native toggle");
+        rig.cx.simulate_click(point(px(close.bounds.x + close.bounds.width / 2.0),
+            px(close.bounds.y + close.bounds.height / 2.0)), Modifiers::default());
         rig.settle();
+        assert!(!words(&painted(&mut rig)), "the native toggle closes the Shelf at {width} px");
     }
 }
 

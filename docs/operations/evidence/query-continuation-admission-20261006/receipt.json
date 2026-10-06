@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "base_commit": "9f44dae6342fb286178178bda5be33ea79d969a4",
+  "frozen_source_dirty_sha256": "b5a1597d38d75ecf1ebfed13e5639163f7e2a0aab999eff8cc4ce266f915530a",
+  "source_changed_during_build": false,
+  "before": {
+    "passed": 0,
+    "failed": 1,
+    "error": "Projection(CursorMismatch) on a genuine successor page"
+  },
+  "after": {
+    "passed": 290,
+    "failed": 0,
+    "ignored_existing": 1,
+    "suite": "complete backend-library lib suite"
+  },
+  "evidence": {
+    "before.txt": "aa351bbcf83f46b90cf14e0464f641e61bb0b0041d9f1210eb655debf09af95e",
+    "after.txt": "4d4b672f8027c2fd8fe526e3de9ed31cddc9ad1a23b6d0d99629706a16d9039d",
+    "guarded-before.json": "a0d396b4d94e24ef57125cac5a1eb7b101b726ba049649f9798c63f5b0dc1d7d",
+    "guarded-after.json": "8be1bf2ef618e43ecff8b89ede81034c7e408b9cdb1325e608bdc9e27385e42b"
+  },
+  "contract": "Producer and shared admission bind closed Names/Search family, exact page credit, text, read manifest tag/canonical bytes, and full owner basis. Incoming cursor proves predecessor at owner query selection; successor root/cursor is independently admitted at client boundary. Intent-only stream sequence may exceed retained view frontier. Shared admission does not claim predecessor-row membership or terminal enumeration from successor rows alone.",
+  "pending": [
+    "Actual matched CLI/MCP replay of retained Nest/Quart/Next failures",
+    "Joined cohort check of compiler setup/generation changes",
+    "New query recipe contract invalidates earlier pagination tokens; next coordinated cohort is DTO20"
+  ]
+}

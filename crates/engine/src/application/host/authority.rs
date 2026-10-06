@@ -12,20 +12,25 @@ use backend_frontend_go::legacy::oracle::GoOracleChildEnvironment;
 use backend_frontend_go::legacy::{GoOracle, GoOracleConfiguration};
 use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
+use backend_frontend_python::legacy::checker::NativePythonProjectAuthority;
 use backend_frontend_rust::legacy::{RustToolchain, SourceByteLimit};
 use backend_frontend_typescript::legacy::Checker as TypeScriptChecker;
 use backend_library::interface::PackageEcosystem;
 use backend_semantic::vocabulary::NativeTool;
 
-use super::paths::canonicalize_existing;
+use super::paths::{TypeScriptHostSelection, canonicalize_existing, create_directory};
 use super::{
-    AUTHORITY_IMAGE_BYTES, LocalCompilerHost, LocalCompilerHostError, LocalHostEnvironment,
-    LocalHostPathRole, LocalHostVariable, PACKAGE_SOURCE_BYTES, nonzero,
+    AUTHORITY_IMAGE_BYTES, LocalCompilerHost, LocalCompilerHostError, LocalHostDirectory,
+    LocalHostEnvironment, LocalHostPathRole, LocalHostVariable, PACKAGE_SOURCE_BYTES, nonzero,
 };
-use crate::application::toolchain_probe::{ToolchainProbeLimits, probe_command};
+use crate::application::toolchain_probe::{
+    ToolchainProbeError, ToolchainProbeLimits, ToolchainProbePrimary, probe_command,
+};
+use crate::application::typescript_host::{TypeScriptProjectHost, is_module_tsc_script};
 use crate::application::{
     LocalRuntimeCSharpAuthority, LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority,
-    LocalRuntimePackageRoot, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
+    LocalRuntimePackageRoot, LocalRuntimePythonCheckerAdmission,
+    LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
     PyreflyToolchainIdentity,
 };
 
@@ -63,11 +68,12 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         &self,
         home: Option<&Path>,
         executables: &NativeExecutables,
+        typescript_host: TypeScriptHostSelection,
         jdk_root: Option<PathBuf>,
         go_module_cache: Option<&Path>,
         native_work_directory: &Path,
         probe_limits: ToolchainProbeLimits,
-    ) -> Result<LocalRuntimePackageAuthority, LocalCompilerHostError> {
+    ) -> Result<(LocalRuntimePackageAuthority, TypeScriptProjectHost), LocalCompilerHostError> {
         let libclang =
             self.file_or_directory(LocalHostVariable::LibclangPath, LocalHostPathRole::Libclang)?;
         let clang = match (executables.clang.as_deref(), libclang.as_deref()) {
@@ -81,13 +87,34 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalHostPathRole::TypeScriptReportProgram,
             ArrayVec::new(),
         )?;
-        let node = self.executable(
-            LocalHostVariable::NudoxTypeScriptNode,
-            LocalHostPathRole::TypeScriptNode,
-            self.auxiliary_candidates(home, "node"),
-        )?;
-        let typescript_module_root =
-            self.typescript_module_root(executables.typescript.as_deref())?;
+        let (node, node_origin) = match typescript_host.node {
+            Some(selection) => (Some(selection.path), Some(selection.origin)),
+            None => (None, None),
+        };
+        let typescript_module_root = typescript_host.module_root;
+        let installed_default_compiler = (!typescript_host.compiler_explicit)
+            .then(|| executables.typescript.clone())
+            .flatten();
+        let explicit_module_root = typescript_host
+            .compiler_explicit
+            .then(|| typescript_module_root.clone())
+            .flatten();
+        let installed_default_module_root = (!typescript_host.compiler_explicit)
+            .then(|| typescript_module_root.clone())
+            .flatten();
+        let typescript_project_host = TypeScriptProjectHost::new_with_node_origin(
+            typescript_host
+                .compiler_explicit
+                .then(|| executables.typescript.clone())
+                .flatten(),
+            node.clone(),
+            node_origin,
+            home.map(Path::to_path_buf),
+            explicit_module_root,
+            typescript_report.clone(),
+            probe_limits,
+        )
+        .with_installed_default(installed_default_compiler, installed_default_module_root);
         let typescript = if executables.typescript.is_some() {
             match (typescript_report, node, typescript_module_root) {
                 (Some(program), _, _) => Some(TypeScriptChecker::default().with_program(program)?),
@@ -102,16 +129,23 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let pyrefly = self.executable(
             LocalHostVariable::NudoxPyrefly,
             LocalHostPathRole::Pyrefly,
-            self.auxiliary_candidates(home, "pyrefly"),
+            ArrayVec::new(),
         )?;
-        let python_toolchain_identity = pyrefly.as_deref().and_then(|executable| {
-            probe_command(NativeTool::Python, executable, &["--version"], probe_limits)
-                .ok()
-                .map(|output| PyreflyToolchainIdentity::from_version_output(&output))
-        });
-        let python = match (executables.python.as_ref(), pyrefly) {
-            (Some(_), Some(executable)) => Some(Pyrefly::from_executable(executable)?),
-            _ => None,
+        let python_checker = match pyrefly.as_deref() {
+            Some(executable) => {
+                match probe_command(NativeTool::Python, executable, &["--version"], probe_limits) {
+                    Ok(output) => LocalRuntimePythonCheckerAdmission::Ready {
+                        adapter: Pyrefly::from_executable(executable.to_path_buf())?,
+                        proof: PyreflyToolchainIdentity::from_version_output(&output),
+                    },
+                    Err(error) => LocalRuntimePythonCheckerAdmission::ProbeFailed {
+                        cause: python_checker_probe_failure(&error),
+                    },
+                }
+            }
+            None => LocalRuntimePythonCheckerAdmission::Native {
+                authority: NativePythonProjectAuthority::admit()?,
+            },
         };
         let rust = match (
             executables.rustc.as_deref(),
@@ -128,13 +162,15 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalHostPathRole::GoOracle,
             ArrayVec::new(),
         )?;
-        let go = match (executables.go.as_deref(), go_module_cache) {
-            (Some(go), Some(module_cache)) => {
+        let go = match executables.go.as_deref() {
+            Some(go) => {
+                let module_cache =
+                    selected_go_module_cache(go_module_cache, native_work_directory)?;
                 let goroot = self.go_root(go, probe_limits)?;
                 let child_environment = GoOracleChildEnvironment::new(
                     go.to_path_buf(),
                     goroot,
-                    module_cache.to_path_buf(),
+                    module_cache,
                     native_work_directory.join("go-oracle-cache"),
                 )?;
                 let configuration = match go_oracle {
@@ -147,7 +183,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                         .with_child_environment(child_environment)?,
                 )
             }
-            _ => None,
+            None => None,
         };
         let java = match (executables.java.as_ref(), jdk_root) {
             (Some(_), Some(root)) => Some(LocalRuntimeJavaAuthority {
@@ -174,17 +210,19 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             }),
             _ => None,
         };
-        Ok(LocalRuntimePackageAuthority {
-            clang,
-            typescript,
-            python,
-            python_toolchain_identity,
-            rust,
-            go,
-            csharp,
-            java,
-            maximum_image_bytes: Some(nonzero(AUTHORITY_IMAGE_BYTES)),
-        })
+        Ok((
+            LocalRuntimePackageAuthority {
+                clang,
+                typescript,
+                python_checker,
+                rust,
+                go,
+                csharp,
+                java,
+                maximum_image_bytes: Some(nonzero(AUTHORITY_IMAGE_BYTES)),
+            },
+            typescript_project_host,
+        ))
     }
 
     fn rust_authority(
@@ -271,6 +309,121 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     }
 }
 
+/// An installed package cache is optional: the vendored oracle itself needs no downloads.
+/// Project dependencies remain subject to the normal captured input admission policy.
+fn selected_go_module_cache(
+    selected: Option<&Path>,
+    native_work_directory: &Path,
+) -> Result<PathBuf, LocalCompilerHostError> {
+    if let Some(selected) = selected {
+        return Ok(selected.to_path_buf());
+    }
+    let private = native_work_directory.join("go-module-cache");
+    create_directory(LocalHostDirectory::GoModuleCache, &private)?;
+    Ok(private)
+}
+
+fn python_checker_probe_failure(
+    error: &ToolchainProbeError,
+) -> LocalRuntimePythonCheckerProbeFailure {
+    match error {
+        ToolchainProbeError::RelativeExecutable { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::RelativeExecutable
+        }
+        ToolchainProbeError::Spawn { .. } => LocalRuntimePythonCheckerProbeFailure::ExecutableStart,
+        ToolchainProbeError::ProbeWorkerSpawn { .. } | ToolchainProbeError::ReaderSpawn { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::WorkerStart
+        }
+        ToolchainProbeError::MissingStream { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::MissingStream
+        }
+        ToolchainProbeError::Wait { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::ProcessObservation
+        }
+        ToolchainProbeError::Cleanup { action, .. } => {
+            LocalRuntimePythonCheckerProbeFailure::Cleanup(*action)
+        }
+        ToolchainProbeError::Stream { .. } | ToolchainProbeError::Streams { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::StreamRead
+        }
+        ToolchainProbeError::Bounded {
+            primary: ToolchainProbePrimary::Cancelled,
+            ..
+        } => LocalRuntimePythonCheckerProbeFailure::Cancelled,
+        ToolchainProbeError::Bounded {
+            primary: ToolchainProbePrimary::Deadline { .. },
+            ..
+        } => LocalRuntimePythonCheckerProbeFailure::TimedOut,
+        ToolchainProbeError::Bounded {
+            primary: ToolchainProbePrimary::OutputLimit { .. },
+            ..
+        } => LocalRuntimePythonCheckerProbeFailure::OutputLimit,
+        ToolchainProbeError::MissingStatus { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::MissingStatus
+        }
+        ToolchainProbeError::Exit { status, .. } => {
+            LocalRuntimePythonCheckerProbeFailure::ProcessExit {
+                code: status.code(),
+            }
+        }
+        ToolchainProbeError::Empty { .. } => LocalRuntimePythonCheckerProbeFailure::EmptyVersion,
+        ToolchainProbeError::Resolution { .. }
+        | ToolchainProbeError::TypeScriptInterpreterUnavailable { .. }
+        | ToolchainProbeError::TypeScriptModuleRootUnavailable { .. }
+        | ToolchainProbeError::TypeScriptModuleEntryMismatch { .. }
+        | ToolchainProbeError::ExecutableWitness { .. }
+        | ToolchainProbeError::ExecutableChanged { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::IdentityResolution
+        }
+    }
+}
+
+#[cfg(test)]
+mod python_checker_probe_tests {
+    use super::*;
+
+    #[test]
+    fn pyrefly_probe_failure_projection_keeps_only_bounded_typed_causes() {
+        let cancelled = ToolchainProbeError::Bounded {
+            tool: NativeTool::Python,
+            primary: ToolchainProbePrimary::Cancelled,
+        };
+        assert_eq!(
+            python_checker_probe_failure(&cancelled),
+            LocalRuntimePythonCheckerProbeFailure::Cancelled,
+        );
+        let timeout = ToolchainProbeError::Bounded {
+            tool: NativeTool::Python,
+            primary: ToolchainProbePrimary::Deadline {
+                timeout: std::time::Duration::from_secs(2),
+            },
+        };
+        assert_eq!(
+            python_checker_probe_failure(&timeout),
+            LocalRuntimePythonCheckerProbeFailure::TimedOut,
+        );
+        let output_limit = ToolchainProbeError::Bounded {
+            tool: NativeTool::Python,
+            primary: ToolchainProbePrimary::OutputLimit {
+                worker: backend_semantic::vocabulary::NativeWorker::StandardOutputReader,
+                observed: 4097,
+                maximum: 4096,
+            },
+        };
+        assert_eq!(
+            python_checker_probe_failure(&output_limit),
+            LocalRuntimePythonCheckerProbeFailure::OutputLimit,
+        );
+        let empty = ToolchainProbeError::Empty {
+            tool: NativeTool::Python,
+        };
+        assert_eq!(
+            python_checker_probe_failure(&empty),
+            LocalRuntimePythonCheckerProbeFailure::EmptyVersion,
+        );
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct NativeExecutables {
     pub(super) rustc: Option<PathBuf>,
@@ -285,10 +438,47 @@ pub(super) struct NativeExecutables {
 }
 
 impl NativeExecutables {
-    pub(super) fn toolchain_rows(&self) -> Box<[LocalRuntimeToolchain]> {
+    pub(super) fn toolchain_rows(
+        &self,
+        typescript_node: Option<&Path>,
+        typescript_module_root: Option<&Path>,
+    ) -> Box<[LocalRuntimeToolchain]> {
         self.toolchain_executables()
             .map(|(tool, executable)| match executable {
-                Some(executable) => LocalRuntimeToolchain::probing(tool, executable.to_path_buf()),
+                Some(executable) => match (tool, typescript_node, typescript_module_root) {
+                    (NativeTool::TypeScriptCompiler, Some(node), Some(module_root))
+                        if is_module_tsc_script(executable, module_root) =>
+                    {
+                        LocalRuntimeToolchain::probing_typescript_script(
+                            executable.to_path_buf(),
+                            node.to_path_buf(),
+                            module_root.to_path_buf(),
+                        )
+                    }
+                    // A PATH-selected executable may be a platform wrapper around the package
+                    // entrypoint (for example, Nix's shell `bin/tsc`). It is still the selected
+                    // compiler command and must be launched by its own shebang, not passed to
+                    // Node as if the wrapper were JavaScript. The project host separately uses
+                    // the exact module-root API through the admitted Node runtime.
+                    (NativeTool::TypeScriptCompiler, Some(_), Some(_)) => {
+                        LocalRuntimeToolchain::probing(tool, executable.to_path_buf())
+                    }
+                    (NativeTool::TypeScriptCompiler, None, _) => LocalRuntimeToolchain::probe_failed(
+                        tool,
+                        crate::application::ToolchainProbeError::TypeScriptInterpreterUnavailable {
+                            compiler: executable.to_path_buf(),
+                        },
+                    ),
+                    (NativeTool::TypeScriptCompiler, Some(_), None) => {
+                        LocalRuntimeToolchain::probe_failed(
+                            tool,
+                            crate::application::ToolchainProbeError::TypeScriptModuleRootUnavailable {
+                                compiler: executable.to_path_buf(),
+                            },
+                        )
+                    }
+                    _ => LocalRuntimeToolchain::probing(tool, executable.to_path_buf()),
+                },
                 None => LocalRuntimeToolchain::unavailable(tool),
             })
             .collect::<Vec<_>>()
@@ -297,15 +487,17 @@ impl NativeExecutables {
 
     pub(super) fn admitted_toolchain_rows(
         &self,
+        typescript_node: Option<&Path>,
+        typescript_module_root: Option<&Path>,
         limits: ToolchainProbeLimits,
     ) -> Box<[LocalRuntimeToolchain]> {
-        self.toolchain_executables()
-            .map(|(tool, executable)| match executable {
-                Some(executable) => {
-                    LocalRuntimeToolchain::probe(tool, executable.to_path_buf(), limits)
-                        .unwrap_or_else(|_| LocalRuntimeToolchain::probe_failed(tool))
-                }
-                None => LocalRuntimeToolchain::unavailable(tool),
+        self.toolchain_rows(typescript_node, typescript_module_root)
+            .into_vec()
+            .into_iter()
+            .map(|row| {
+                let tool = row.tool;
+                row.admit_pending(limits)
+                    .unwrap_or_else(|failure| LocalRuntimeToolchain::probe_failed(tool, failure))
             })
             .collect::<Vec<_>>()
             .into_boxed_slice()
@@ -322,5 +514,225 @@ impl NativeExecutables {
             (NativeTool::CSharpCompiler, self.csharp.as_deref()),
         ]
         .into_iter()
+    }
+}
+
+#[cfg(test)]
+mod invocation_selection_tests {
+    use super::{NativeExecutables, selected_go_module_cache};
+    use crate::application::{
+        LocalRuntimeToolchainState, ToolchainProbeError, ToolchainProbeLimits,
+    };
+    use backend_semantic::vocabulary::NativeTool;
+    use std::{num::NonZeroUsize, path::PathBuf, time::Duration};
+
+    #[test]
+    fn go_without_installed_modules_uses_an_isolated_owner_cache() {
+        let owner = std::env::temp_dir().join(format!(
+            "nudox-go-private-cache-{}-{}",
+            std::process::id(),
+            super::super::NEXT_NATIVE_WORK.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        std::fs::create_dir(&owner).expect("create unique owner");
+        let private = selected_go_module_cache(None, &owner).expect("admit cold cache");
+        assert_eq!(private, owner.join("go-module-cache"));
+        assert!(private.is_dir());
+        assert_eq!(std::fs::read_dir(&private).unwrap().count(), 0);
+
+        let installed = owner.join("installed-modules");
+        std::fs::create_dir(&installed).expect("create selected cache");
+        let other_owner = owner.join("must-not-be-created");
+        assert_eq!(
+            selected_go_module_cache(Some(&installed), &other_owner).unwrap(),
+            installed,
+        );
+        assert!(!other_owner.exists());
+        std::fs::remove_dir_all(owner).expect("remove private test owner");
+    }
+
+    fn only_typescript(typescript: Option<PathBuf>) -> NativeExecutables {
+        NativeExecutables {
+            rustc: None,
+            cargo: None,
+            cargo_home: None,
+            clang: None,
+            python: None,
+            typescript,
+            go: None,
+            java: None,
+            csharp: None,
+        }
+    }
+
+    #[test]
+    fn global_typescript_script_without_node_is_a_typed_refusal() {
+        let compiler = PathBuf::from("/selected/typescript/bin/tsc");
+        let rows = only_typescript(Some(compiler.clone())).toolchain_rows(None, None);
+        let typescript = rows
+            .iter()
+            .find(|row| row.tool == NativeTool::TypeScriptCompiler)
+            .expect("fixed TypeScript row");
+
+        assert_eq!(typescript.state, LocalRuntimeToolchainState::ProbeFailed);
+        assert!(matches!(
+            typescript.probe_failure(),
+            Some(ToolchainProbeError::TypeScriptInterpreterUnavailable {
+                compiler: observed
+            }) if observed == &compiler
+        ));
+    }
+
+    #[test]
+    fn selected_node_keeps_global_typescript_compiler_pending() {
+        let compiler = PathBuf::from("/selected/typescript/bin/tsc");
+        let node = PathBuf::from("/selected/node/bin/node");
+        let module_root = PathBuf::from("/selected/node_modules");
+        let rows =
+            only_typescript(Some(compiler.clone())).toolchain_rows(Some(&node), Some(&module_root));
+        let typescript = rows
+            .iter()
+            .find(|row| row.tool == NativeTool::TypeScriptCompiler)
+            .expect("fixed TypeScript row");
+
+        assert_eq!(typescript.state, LocalRuntimeToolchainState::Probing);
+        assert!(typescript.probe_failure().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_wrapper_is_probed_as_an_executable_not_as_a_typescript_js_script() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "nudox-typescript-wrapper-probe-{}-{}",
+            std::process::id(),
+            super::super::NEXT_NATIVE_WORK.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        let module_root = root.join("lib/node_modules");
+        let package = module_root.join("typescript");
+        let module_entry = package.join("bin/tsc");
+        std::fs::create_dir_all(module_entry.parent().expect("module entry parent"))
+            .expect("create package entry directory");
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"typescript","version":"5.9.3"}"#,
+        )
+        .expect("write selected module metadata");
+        std::fs::write(&module_entry, "require('../lib/tsc.js');\n")
+            .expect("write canonical JavaScript entrypoint");
+
+        let compiler = root.join("bin/tsc");
+        std::fs::create_dir_all(compiler.parent().expect("wrapper parent"))
+            .expect("create wrapper directory");
+        std::fs::write(
+            &compiler,
+            "#!/bin/sh\nif [ \"$1\" = '--version' ]; then printf 'Version 5.9.3\\n'; exit 0; fi\nexit 64\n",
+        )
+        .expect("write host executable wrapper");
+        std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o755))
+            .expect("make wrapper executable");
+
+        let node = root.join("bin/node");
+        std::fs::write(&node, "not used by direct wrapper invocation\n")
+            .expect("write paired Node fixture");
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755))
+            .expect("make paired Node fixture executable");
+        let compiler = std::fs::canonicalize(compiler).expect("canonical wrapper");
+        let module_root = std::fs::canonicalize(module_root).expect("canonical module root");
+        let node = std::fs::canonicalize(node).expect("canonical Node fixture");
+
+        let mut rows = only_typescript(Some(compiler.clone()))
+            .toolchain_rows(Some(&node), Some(&module_root))
+            .into_vec();
+        let pending = rows
+            .iter()
+            .find(|row| row.tool == NativeTool::TypeScriptCompiler)
+            .expect("fixed TypeScript row");
+        assert_eq!(pending.state, LocalRuntimeToolchainState::Probing);
+        let limits = ToolchainProbeLimits::new(
+            Duration::from_secs(2),
+            NonZeroUsize::new(4096).expect("nonzero output bound"),
+        )
+        .expect("valid probe limits");
+        let index = rows
+            .iter()
+            .position(|row| row.tool == NativeTool::TypeScriptCompiler)
+            .expect("TypeScript row index");
+        let admitted = rows
+            .remove(index)
+            .admit_pending(limits)
+            .expect("direct TSC probe");
+        assert_eq!(admitted.state, LocalRuntimeToolchainState::Ready);
+        assert!(admitted.identity.is_some());
+        assert!(admitted.probe_failure().is_none());
+
+        assert!(module_entry.is_file());
+        std::fs::remove_dir_all(root).expect("remove wrapper fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn module_owned_tsc_entry_uses_the_admitted_node_runtime() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "nudox-typescript-module-entry-probe-{}-{}",
+            std::process::id(),
+            super::super::NEXT_NATIVE_WORK.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        let module_root = root.join("node_modules");
+        let package = module_root.join("typescript");
+        let compiler = package.join("bin/tsc");
+        std::fs::create_dir_all(compiler.parent().expect("compiler parent"))
+            .expect("create package compiler directory");
+        std::fs::create_dir_all(package.join("lib")).expect("create compiler module directory");
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"typescript","version":"5.9.3"}"#,
+        )
+        .expect("write selected module metadata");
+        std::fs::write(package.join("lib/tsc.js"), "module.exports = {};\n")
+            .expect("write compiler library fixture");
+        std::fs::write(
+            &compiler,
+            "if [ \"$1\" = '--version' ]; then printf 'Version 5.9.3\\n'; exit 0; fi\nexit 64\n",
+        )
+        .expect("write package JavaScript entrypoint");
+
+        let node = root.join("bin/node");
+        std::fs::create_dir_all(node.parent().expect("node parent"))
+            .expect("create Node fixture directory");
+        std::fs::write(
+            &node,
+            "#!/bin/sh\nif [ \"$1\" = '--version' ]; then printf 'v24.18.0\\n'; exit 0; fi\ncompiler=$1\nshift\nexec /bin/sh \"$compiler\" \"$@\"\n",
+        )
+        .expect("write deterministic Node wrapper");
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755))
+            .expect("make Node fixture executable");
+
+        let compiler = std::fs::canonicalize(compiler).expect("canonical package tsc entry");
+        let module_root = std::fs::canonicalize(module_root).expect("canonical module root");
+        let node = std::fs::canonicalize(node).expect("canonical Node fixture");
+        let mut rows = only_typescript(Some(compiler))
+            .toolchain_rows(Some(&node), Some(&module_root))
+            .into_vec();
+        let limits = ToolchainProbeLimits::new(
+            Duration::from_secs(2),
+            NonZeroUsize::new(4096).expect("nonzero output bound"),
+        )
+        .expect("valid probe limits");
+        let index = rows
+            .iter()
+            .position(|row| row.tool == NativeTool::TypeScriptCompiler)
+            .expect("TypeScript row index");
+        let admitted = rows
+            .remove(index)
+            .admit_pending(limits)
+            .expect("Node TSC probe");
+        assert_eq!(admitted.state, LocalRuntimeToolchainState::Ready);
+        assert!(admitted.identity.is_some());
+        assert!(admitted.probe_failure().is_none());
+
+        std::fs::remove_dir_all(root).expect("remove package fixture");
     }
 }

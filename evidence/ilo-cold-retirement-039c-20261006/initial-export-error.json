@@ -1,0 +1,7 @@
+{
+  "scope": "evidence export only; full original raw failed trace unchanged",
+  "error": "KeyError: paired/cmdline-observer/first-cold-health.strace.client-sent.bin",
+  "cause": "CLI pid lookup initialized only for long traces; short failed trace lacked derived frame export",
+  "repair": "derive CLI pid for every original trace; new packet-v2 preserves initial archive",
+  "initial_archive_sha256": "2657be744b9e7493604eec40831e2be8d4310708934c4fd2e78e0812585b9eda"
+}

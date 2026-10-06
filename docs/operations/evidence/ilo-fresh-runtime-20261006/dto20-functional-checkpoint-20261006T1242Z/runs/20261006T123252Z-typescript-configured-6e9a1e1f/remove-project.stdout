@@ -1,0 +1,1 @@
+{"heading":"remove","records":[{"title":"remove request accepted","operand":"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123252Z-typescript-configured-6e9a1e1f/project","tags":["intent eca174ca","pending","read `backend health` for readiness"]}],"answer":"product","detail":"full","budget":{"bytes":362,"estimatedTokens":91,"bytesPerToken":4}}

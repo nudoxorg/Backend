@@ -242,6 +242,11 @@ enum EnteredAuthority<'source> {
     TypeScript {
         profile: backend_semantic::vocabulary::TypeScriptSource,
         report: Option<&'source backend_frontend_typescript::legacy::Report>,
+        tsz: Option<(
+            &'source backend_frontend_typescript::TszProject,
+            &'source str,
+            &'source backend_frontend_typescript::TszProjectQuerySession<'source>,
+        )>,
     },
     Python {
         profile: backend_semantic::vocabulary::PythonVersion,
@@ -343,6 +348,11 @@ impl LanguageSpec for TypeScriptSpec {
     type Authority<'source> = (
         backend_semantic::vocabulary::TypeScriptSource,
         Option<&'source backend_frontend_typescript::legacy::Report>,
+        Option<(
+            &'source backend_frontend_typescript::TszProject,
+            &'source str,
+            &'source backend_frontend_typescript::TszProjectQuerySession<'source>,
+        )>,
     );
     type Extension = backend_semantic::ir::TypeScriptFacts;
 
@@ -353,6 +363,25 @@ impl LanguageSpec for TypeScriptSpec {
         facts: &mut lower::FactSet<'source>,
     ) -> Result<(), CompileFailure<'diagnostic>> {
         let source = prepared.lease.bytes();
+        if let Some((project, source_path, session)) = authority.2 {
+            return lower::typescript::collect_with_tsz(
+                authority.0,
+                source,
+                project,
+                source_path,
+                session,
+                facts,
+            )
+            .map_err(|cause| {
+                typescript_terminal(
+                    diagnostic_output,
+                    source,
+                    prepared.source,
+                    prepared.recipe,
+                    cause,
+                )
+            });
+        }
         let owned = if authority.1.is_none() {
             Some(
                 backend_frontend_typescript::legacy::Checker::default()
@@ -418,7 +447,7 @@ impl LanguageSpec for PythonSpec {
                             lower::python::PythonCollectError::Authority(cause),
                         )
                     })?;
-                lower::python::collect_with_checker(&module, source, facts, Some(report))
+                lower::python::collect_with_project_checker(&module, source, facts, report)
                     .map_err(|cause| python_terminal(prepared.source, prepared.recipe, cause))
             }
         }
@@ -692,14 +721,28 @@ fn enter_authority<'source, 'diagnostic>(
             Ok(EnteredAuthority::TypeScript {
                 profile,
                 report: None,
+                tsz: None,
             })
         }
         (LanguageProfile::TypeScript(profile), SemanticAuthorityInput::TypeScript { report }) => {
             Ok(EnteredAuthority::TypeScript {
                 profile,
                 report: Some(report),
+                tsz: None,
             })
         }
+        (
+            LanguageProfile::TypeScript(profile),
+            SemanticAuthorityInput::TypeScriptTsz {
+                project,
+                session,
+                source_path,
+            },
+        ) => Ok(EnteredAuthority::TypeScript {
+            profile,
+            report: None,
+            tsz: Some((project, source_path, session)),
+        }),
         (LanguageProfile::Python(profile), SemanticAuthorityInput::None) => {
             Ok(EnteredAuthority::Python {
                 profile,
@@ -780,8 +823,17 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
             project,
             environment,
         } => ClangSpec::collect(&(*profile, *project, *environment), prepared, None, facts)?,
-        EnteredAuthority::TypeScript { profile, report } => {
-            TypeScriptSpec::collect(&(*profile, *report), prepared, diagnostic_output, facts)?;
+        EnteredAuthority::TypeScript {
+            profile,
+            report,
+            tsz,
+        } => {
+            TypeScriptSpec::collect(
+                &(*profile, *report, *tsz),
+                prepared,
+                diagnostic_output,
+                facts,
+            )?;
         }
         EnteredAuthority::Python { profile, report } => {
             PythonSpec::collect(&(*profile, *report), prepared, None, facts)?;
@@ -1481,6 +1533,14 @@ fn typescript_terminal<'diagnostic>(
                 cause,
             },
         },
+        TypeScriptCollectError::TszAuthority(cause) => CompileFailure::Authority {
+            source_identity,
+            recipe,
+            failure: AuthorityFailure::TypeScriptTsz {
+                diagnostic: AuthorityDiagnostic::absent(),
+                cause,
+            },
+        },
         TypeScriptCollectError::Rejected(rejected) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
@@ -1704,26 +1764,26 @@ mod lifecycle_tests {
     #[test]
     fn incomplete_cargo_metadata_keeps_typed_cause_and_safe_policy_diagnostic() {
         use backend_frontend_rust::legacy::{
-            CargoMetadataIncompleteCause, CargoMetadataPreflightError, RustCargoMetadataPolicy,
-            RustAuthorityError,
+            CargoMetadataIncompleteCause, CargoMetadataPreflightError, RustAuthorityError,
+            RustCargoMetadataPolicy,
         };
 
         let source = source();
         let recipe = recipe(source);
         let private_root = std::path::PathBuf::from("/private/work/serde_core");
-        let cause = lower::rust::RustCollectError::Authority(
-            RustAuthorityError::CargoMetadataIncomplete {
+        let cause =
+            lower::rust::RustCollectError::Authority(RustAuthorityError::CargoMetadataIncomplete {
                 root: private_root.clone(),
                 policy: RustCargoMetadataPolicy::Offline,
                 cause: CargoMetadataIncompleteCause::Preflight(
                     CargoMetadataPreflightError::CommandFailed {
                         phase: "metadata full",
                         status: "exit status: 101".to_owned(),
-                        stderr: "no matching package named `quote` found at /private/cache".to_owned(),
+                        stderr: "no matching package named `quote` found at /private/cache"
+                            .to_owned(),
                     },
                 ),
-            },
-        );
+            });
         let mut scratch = [0xa5; MAX_NATIVE_DIAGNOSTIC_BYTES];
         let failure = rust_terminal(source, recipe, Some(&mut scratch), false, cause);
         let CompileFailure::Authority { failure, .. } = failure else {

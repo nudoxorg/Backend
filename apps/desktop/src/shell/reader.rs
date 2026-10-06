@@ -33,7 +33,8 @@
 //! no node (the world), the plate leaves and enters through the right edge.
 
 use super::bodies::{self, Ctx, Lens, Pages};
-use super::focus::Targets;
+use super::focus::{NativeFocusDeparture, Targets};
+use super::keyboard::NativeReturnLease;
 use super::kit::HoverIntent;
 use super::region::{Links, Region, RegionCore, a11y_inert};
 use super::jump::route_symbol;
@@ -383,6 +384,11 @@ fn uncovered(reader: Bounds<Pixels>, plate: Bounds<Pixels>, has_row: bool) -> [B
 
 #[derive(Clone)]
 struct NativeReturn {
+    /// One foreground return request; an old painted callback cannot complete
+    /// a later request even when route, target text, and authority agree.
+    ticket: Rc<()>,
+    input: NativeReturnLease,
+    visit: crate::navigation::presentation::VisitId,
     place: u64,
     route: Route,
     root: crate::core::VersionedRoot,
@@ -417,10 +423,12 @@ struct FindFocusReturn {
 /// The actual mounted Find input, reported by its component after paint.
 #[derive(Clone)]
 struct MountedFindQuery {
+    visit: crate::navigation::presentation::VisitId,
+    state: facet::browse::find::FindState,
     place: u64,
     route: Route,
     root: crate::core::VersionedRoot,
-    focus: FocusHandle,
+    focus: Option<FocusHandle>,
 }
 
 /// The reader region.
@@ -675,8 +683,9 @@ pub(crate) struct Reader {
     pending_page_focus: Option<SettingsReturn>,
     /// Reader focus when Settings covered a painted place.
     settings_departure: Option<SettingsDeparture>,
+    settings_native_origin: Option<SettingsNativeOrigin>,
     /// One return focus attempt after the uncovered page actually registers targets.
-    pending_settings_focus: Option<SettingsReturn>,
+    pending_settings_focus: Option<PendingSettingsReturn>,
     /// A place change seen, waiting for the next render to start it.
     arrival: Option<Arrival>,
     /// The place change in flight.
@@ -740,6 +749,7 @@ impl Reader {
             painted_graph: None,
             pending_page_focus: None,
             settings_departure: None,
+            settings_native_origin: None,
             pending_settings_focus: None,
             // The ring re-wraps as the library grows: a name that moves to
             // another line lands there, never flying across the others.
@@ -812,6 +822,13 @@ impl Reader {
     #[cfg(test)]
     pub(crate) fn graph_entity(&self, cx: &gpui::App) -> Option<Entity<facet::graph::GraphView>> {
         self.map.as_ref().and_then(|map| map.read(cx).graph_entity())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn graph_projection_evidence(&self, cx: &gpui::App)
+        -> Option<(crate::runtime::indexed_world::Key, crate::runtime::indexed_world::Origin)>
+    {
+        self.map.as_ref().and_then(|map| map.read(cx).projection_evidence())
     }
 
     #[cfg(test)]
@@ -1106,17 +1123,79 @@ impl Reader {
         self.targets.focused().is_some_and(|id| self.targets.focus_native(&id, window, cx))
     }
 
-    pub(crate) fn request_native_return(&mut self, route: Route, id: SharedString, cx: &mut Context<Self>) {
+    pub(crate) fn request_native_return(&mut self, route: Route, visit: crate::navigation::presentation::VisitId, id: SharedString, input: NativeReturnLease, cx: &mut Context<Self>) {
         if self.route == route && self.overlay.is_none() {
             if let Some(place) = self.places.last() {
-                let root = self.links.snapshot(cx).key();
+                let snapshot = self.links.snapshot(cx);
+                if place.visit != visit || snapshot.session().reading.current.id != visit { return; }
+                let root = snapshot.key();
                 let store = self.links.store.read(cx);
                 let Some(attachment) = store.current_owner_attachment() else { return };
                 let read_stamp = RouteDependencies::new(&route, None).native_stamp(store, false);
-                self.native_return = Some(NativeReturn { place: place.key, route, root, id, attachment, read_stamp });
+                self.native_return = Some(NativeReturn { ticket: Rc::new(()), input, visit, place: place.key, route, root, id, attachment, read_stamp });
                 cx.notify();
             }
         }
+    }
+
+    /// Complete only after this Reader's actual child has painted. Some
+    /// components register their native targets in RenderOnce, after Reader
+    /// finishes gathering its body; render-time list membership is premature.
+    fn finish_painted_native_return(&mut self, ticket: &Rc<()>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.native_return.clone().filter(|pending| Rc::ptr_eq(&pending.ticket, ticket)) else { return; };
+        let snapshot = self.links.snapshot(cx);
+        let resources_current = {
+            let store = self.links.store.read(cx);
+            store.admits_owner_attachment(&pending.attachment)
+                && pending.read_stamp.as_ref().is_none_or(|stamp|
+                    RouteDependencies::new(&pending.route, None).admits_native_stamp(store, pending.root, stamp))
+        };
+        let input_owned = self.links.shell.upgrade().is_some_and(|shell| {
+            let shell = shell.read(cx);
+            pending.input.current(window.window_handle().window_id(), shell.focus_return_generation(), window.focus_epoch())
+                && shell.allows_reader_native_return(window)
+        });
+        let current = self.places.last();
+        if current.is_none_or(|place| place.key != pending.place || place.visit != pending.visit || place.route != pending.route || place.overlay.is_some())
+            || snapshot.session().reading.current.id != pending.visit
+            || snapshot.route() != &pending.route || snapshot.page_overlay().is_some()
+            || !pending.root.same_authority(snapshot.key()) || !resources_current || !input_owned
+            || super::titlebar::menu_open(window, cx)
+            || self.targets.native_focused(window).is_some_and(|focused| focused != pending.id)
+        {
+            self.native_return = None;
+            return;
+        }
+        if self.painted != Some(pending.place) || !self.native_input_allowed() { return; }
+        let Some(mount) = self.targets.mount_claim(&pending.id) else {
+            self.native_return = None;
+            return;
+        };
+        // A scalar saved selection resolves against the newly painted target;
+        // its real native owner must still be mounted in this exact Window.
+        if !self.targets.admits_mount(&mount, window) {
+            self.native_return = None;
+            return;
+        }
+        if self.targets.focus_native(&pending.id, window, cx) {
+            self.targets.focus(pending.id);
+            self.native_return = None;
+            self.reveal.set(true);
+            cx.notify();
+        } else {
+            self.native_return = None;
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn diagnostic_native_history_return_after_paint(&self) -> bool {
+        self.native_return.as_ref().is_some_and(|pending|
+            self.painted == Some(pending.place) && self.native_motion_settled())
+    }
+
+    #[cfg(test)]
+    pub(super) fn diagnostic_native_history_return_pending(&self) -> bool {
+        self.native_return.is_some()
     }
 
     pub(crate) fn cancel_native_return(&mut self) {
@@ -1125,6 +1204,72 @@ impl Reader {
         self.native_return_interruption = self.native_return_interruption.wrapping_add(1);
         for entry in &self.library_state.entries {
             entry.state.borrow_mut().cancel_return();
+        }
+    }
+
+    /// Region observation can retire the old controls before the Shell sees
+    /// the overlay event. Match its actual displaced native handle against
+    /// that short-lived identity receipt, never against logical selection.
+    pub(super) fn capture_settings_native_origin(&mut self, origin: Option<&FocusHandle>, cx: &mut App) -> bool {
+        let target = origin.and_then(|origin| match &self.settings_departure {
+            Some(departure) => departure.native.target_for(origin),
+            None => self.targets.target_for_native_handle(origin),
+        });
+        let find = self.mounted_find_query.as_ref().filter(|mounted| {
+            mounted.focus.as_ref() == origin && origin.is_some()
+                && self.painted == Some(mounted.place)
+                && mounted.state.focus_handle(cx).as_ref() == origin
+                && mounted.route == *self.links.snapshot(cx).route()
+                && mounted.root.same_authority(self.links.snapshot(cx).key())
+        });
+        let graph = self.map.as_ref().and_then(|map| map.update(cx, |map, cx| map.capture_settings_root(origin, cx)));
+        let receipt = if let Some(target) = target {
+            SettingsNativeOrigin::Target(target)
+        } else if let Some(find) = find {
+            SettingsNativeOrigin::Find(find.focus.clone().expect("matched native query"))
+        } else if let Some(graph) = graph {
+            SettingsNativeOrigin::Graph(graph)
+        } else {
+            SettingsNativeOrigin::Unmatched
+        };
+        // Ask/Add can cover the Settings page itself. Returning to that same
+        // page must not replace its original Reader receipt with the retiring
+        // cover's native editor. A fresh opening starts with Unmatched, so its
+        // actual origin is still captured regardless of subscriber order.
+        if matches!(receipt, SettingsNativeOrigin::Unmatched)
+            && self.settings_departure.as_ref().is_some_and(|departure|
+                !matches!(departure.origin, SettingsNativeOrigin::Unmatched)) {
+            return false;
+        }
+        let reader_origin = !matches!(receipt, SettingsNativeOrigin::Unmatched);
+        if let Some(mounted) = &self.mounted_find_query { mounted.state.suspend(cx); }
+        if let Some(departure) = &mut self.settings_departure {
+            departure.origin = receipt;
+        } else {
+            // Shell and Region are independent subscribers. The receipt is
+            // identical whichever observes the opening event first.
+            self.settings_native_origin = Some(receipt);
+        }
+        reader_origin
+    }
+
+    pub(super) fn arm_settings_focus_return(&mut self, lease: NativeReturnLease, cx: &mut Context<Self>) {
+        if let Some(pending) = &mut self.pending_settings_focus {
+            pending.lease = Some(lease);
+            if let SettingsNativeOrigin::Graph(origin) = &pending.origin {
+                if self.places.last().is_some_and(|place| place.visit == origin.visit)
+                    && pending.focus.has_same_authority(self.links.snapshot(cx).key())
+                    && let Some(map) = &self.map
+                    && map.entity_id() == origin.component
+                {
+                    let origin = origin.clone();
+                    let authority = pending.focus.root.authority();
+                    map.update(cx, |map, cx| { map.arm_settings_root_return(origin, authority, lease, cx); });
+                }
+                self.targets.clear_focus();
+                self.pending_settings_focus = None;
+            }
+            cx.notify();
         }
     }
 
@@ -1174,7 +1319,7 @@ impl Reader {
         let Some(focused) = focused else { return false; };
         let Some(mounted) = self.mounted_find_query.as_ref() else { return false; };
         let Some(place) = self.places.last() else { return false; };
-        if mounted.focus != focused || mounted.place != place.key || mounted.route != place.route
+        if mounted.focus.as_ref() != Some(&focused) || mounted.place != place.key || mounted.route != place.route
             || !mounted.root.same_authority(self.links.snapshot(cx).key())
             || self.painted != Some(place.key) { return false; }
         self.begin_find_focus_return(Some(focused), cx);
@@ -1199,9 +1344,42 @@ impl Reader {
                 && self.painted == Some(place.key)
                 && self.links.snapshot(cx).overlay().is_none()
                 && self.links.snapshot(cx).key().same_authority(source_root)) {
-            self.mounted_find_query = Some(MountedFindQuery {
-                place: place.key, route: place.route.clone(), root: self.links.snapshot(cx).key(), focus: query.clone(),
-            });
+            if let Some(mounted) = &mut self.mounted_find_query
+                && mounted.visit == place.visit
+                && mounted.state.focus_handle(cx).as_ref() == Some(&query)
+            {
+                mounted.place = place.key;
+                mounted.route = place.route.clone();
+                mounted.root = self.links.snapshot(cx).key();
+                mounted.focus = Some(query.clone());
+            }
+        }
+        if let Some(pending) = self.pending_settings_focus.as_ref()
+            && pending.focus.place == source_place
+            && matches!(&pending.origin, SettingsNativeOrigin::Find(focused) if *focused == query)
+        {
+            let current = pending.focus.has_same_authority(source_root)
+                && self.links.snapshot(cx).overlay().is_none()
+                && self.painted == Some(source_place) && self.native_input_allowed()
+                && !super::titlebar::menu_open(window, cx)
+                && self.mounted_find_query.as_ref().is_some_and(|mounted|
+                    mounted.place == source_place && mounted.focus.as_ref() == Some(&query)
+                        && mounted.state.focus_handle(cx).as_ref() == Some(&query));
+            let lease_current = pending.lease.map(|lease| self.links.shell.upgrade().is_some_and(|shell| {
+                let shell = shell.read(cx);
+                lease.current(window.window_handle().window_id(), shell.focus_return_generation(), window.focus_epoch())
+                    && shell.allows_reader_native_return(window)
+            }));
+            if lease_current == Some(false) || !pending.focus.has_same_authority(source_root) {
+                self.pending_settings_focus = None;
+                return ReturnDisposition::Invalid;
+            }
+            if current && lease_current == Some(true) && window.is_focus_handle_mounted(&query) {
+                self.pending_settings_focus = None;
+                window.focus(&query, cx);
+                return ReturnDisposition::Applied;
+            }
+            return ReturnDisposition::Waiting;
         }
         let Some(pending) = self.find_focus_return.clone() else { return ReturnDisposition::Invalid; };
         if pending.place != source_place || &pending.route != source_route
@@ -1612,7 +1790,7 @@ impl Reader {
                     (Some(transit), _) => {
                         let mut carry = transit.carry;
                         carry.retarget(1.0, now);
-                        Transit { verb: Verb::Open, inside: arrival.key, find: None, row_id: None, carry, start: now, fold: None, print_after: PRINT_AFTER, ..transit.clone() }
+                        Transit { verb: Verb::Open, inside: arrival.key, find: None, row_id: None, carry, start: now, fold: None, print_after: if transit.row.is_some() { PRINT_AFTER } else { Duration::ZERO }, ..transit.clone() }
                     }
                     (None, Some(transit)) => Transit { inside: arrival.key, ..transit.clone() },
                     (None, None) => Transit {
@@ -1626,7 +1804,10 @@ impl Reader {
                         start: now,
                         scroll: arrival.scroll,
                         fold: None,
-                        print_after: PRINT_AFTER,
+                        // An edge launch has full height from its first pixel; the plate's
+                        // native mask already admits the ready ink as room is uncovered.
+                        // Only a physical row must first clear the page's top.
+                        print_after: if row.is_some() { PRINT_AFTER } else { Duration::ZERO },
                         gem: None,
                         symbol: None,
                     },
@@ -1720,7 +1901,7 @@ impl Reader {
                     start: now,
                     scroll: Point::default(),
                     fold: None,
-                    print_after: if node.is_some() { UNFOLD_PRINT_AFTER } else { PRINT_AFTER },
+                    print_after: if node.is_some() { UNFOLD_PRINT_AFTER } else { Duration::ZERO },
                     gem,
                     symbol: symbol.filter(|_| node.is_some()),
                 });
@@ -1823,12 +2004,12 @@ impl Reader {
         facet: &facet::Facet,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::Div {
+    ) -> gpui::AnyElement {
         let still = facet::motion::still(cx);
         let body = self.body(place, false, snapshot, layout, facet, edge, None, window, cx);
         drop(still);
         let body = gpui::inert(("leaving-page", place.key), format!("Previous page: {}", place_name(&place.route)), body);
-        div().absolute().top_0().left_0().right_0().bottom_0().child(a11y_inert(masked(
+        let page = div().absolute().top_0().left_0().right_0().bottom_0().child(a11y_inert(masked(
             mask,
             offset(
                 div()
@@ -1842,7 +2023,10 @@ impl Reader {
                     .child(div().relative().w_full().flex().justify_center().child(body)),
             )
             .x(drift),
-        )))
+        )));
+        #[cfg(test)]
+        let page = transit_tests::owned_ink(Some(place.key), page);
+        page.into_any_element()
     }
 
     /// This frame of the change in flight, in window space (and the change
@@ -2078,7 +2262,22 @@ struct Place {
 struct SettingsDeparture {
     route: Route,
     root: crate::core::VersionedRoot,
-    target: Option<SharedString>,
+    origin: SettingsNativeOrigin,
+    native: NativeFocusDeparture,
+}
+
+struct PendingSettingsReturn {
+    focus: SettingsReturn,
+    origin: SettingsNativeOrigin,
+    lease: Option<NativeReturnLease>,
+}
+
+#[derive(Clone)]
+enum SettingsNativeOrigin {
+    Target(SharedString),
+    Find(FocusHandle),
+    Graph(bodies::graph::SettingsGraphOrigin),
+    Unmatched,
 }
 
 struct SettingsReturn {
@@ -2403,6 +2602,15 @@ impl Region for Reader {
         &mut self.core
     }
 
+    fn measure_frame(&mut self, frame: Bounds<Pixels>) {
+        // Both Reveal's ordinary scroll container and its graph container
+        // fill this embedding. Content padding, Ask's reservation and a pin
+        // beside Reader affect its contents or embedding, never this viewport.
+        // Publish before render: a resize must stage the plate against this
+        // frame, rather than the previous Reveal prepaint.
+        self.frame.set(Some(frame));
+    }
+
     fn keys(&self, snapshot: &AppSnapshot) -> Vec<PageKey> {
         reader_keys(snapshot)
     }
@@ -2434,21 +2642,22 @@ impl Region for Reader {
                         .map(|root| SettingsDeparture {
                             route: self.route.clone(),
                             root,
-                            target: self.targets.is_active().then(|| self.targets.focused()).flatten(),
+                            origin: self.settings_native_origin.take().unwrap_or(SettingsNativeOrigin::Unmatched),
+                            native: self.targets.take_native_departure(),
                         });
                 }
                 let departure = if closing_settings { self.settings_departure.take() } else { None };
                 self.arrive(snapshot.route(), overlay, &snapshot.session().reading.current);
                 self.pending_settings_focus = if closing_settings && overlay.is_none() {
-                    Some(SettingsReturn {
+                    let origin = departure.filter(|departure| {
+                        departure.route == *snapshot.route()
+                            && departure.root.same_authority(snapshot.key())
+                    }).map_or(SettingsNativeOrigin::Unmatched, |departure| departure.origin);
+                    Some(PendingSettingsReturn { focus: SettingsReturn {
                         place: self.descents,
                         root: snapshot.key(),
-                        target: departure.filter(|departure| {
-                            departure.route == *snapshot.route()
-                                && departure.root.same_authority(snapshot.key())
-                        })
-                            .and_then(|departure| departure.target),
-                    })
+                        target: None,
+                    }, origin, lease: None })
                 } else {
                     None
                 };
@@ -2598,6 +2807,24 @@ impl Reader {
         };
         let leaves = {
             let symbol_disclosure = route_symbol(&place.route).map(|symbol| self.symbol_disclosure(&symbol)).unwrap_or_default();
+            let find_state = if matches!(place.route, Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome | BrowseRoute::Find(_)))) {
+                // The edit belongs to the visit, independently of producer
+                // replacement. Its mounted/root receipt is refreshed only by
+                // the current frame's callback, so retaining text grants no
+                // old authority permission to return focus or invoke results.
+                if current && self.mounted_find_query.as_ref().is_none_or(|mounted|
+                    mounted.visit != place.visit) {
+                    self.mounted_find_query = Some(MountedFindQuery {
+                        visit: place.visit, state: Default::default(), place: place.key,
+                        route: place.route.clone(), root: snapshot.key(), focus: None,
+                    });
+                }
+                self.mounted_find_query.as_ref().filter(|mounted| mounted.visit == place.visit)
+                    .map(|mounted| mounted.state.clone()).unwrap_or_default()
+            } else {
+                if current && place.overlay.is_none() { self.mounted_find_query = None; }
+                Default::default()
+            };
             let mut ctx = Ctx {
                 reader: cx.weak_entity(),
                 active: current,
@@ -2630,6 +2857,7 @@ impl Reader {
                 symbol_disclosure,
                 package_outline_expanded: self.package_outline_expanded,
                 find_held: self.find_held.clone(),
+                find_state,
                 // A hop forward from another declaration: it is ringed on this page.
                 arrived_from: place.hop
                     .then(|| place.from.as_ref().and_then(|(route, _)| route_symbol(route)))
@@ -2680,7 +2908,14 @@ impl Render for Reader {
         let Some(requested) = self.places.last().cloned() else { return div(); };
         let readiness = RouteDependencies::new(&requested.route, requested.overlay).display_phase(self.links.store.read(cx));
         let waiting = readiness == DestinationState::Pending;
-        let current = requested.clone();
+        // A read has not painted its destination yet. Keep the last actual
+        // departure as the one presentation until the real terminal answer;
+        // its existing motion may finish, but no new empty plate grows.
+        let retained_departure = waiting.then(|| self.arrival.as_ref()).flatten()
+            .and_then(|arrival| self.places.iter().find(|place| place.key == arrival.leaving))
+            .cloned();
+        let retaining_departure = retained_departure.is_some();
+        let current = retained_departure.unwrap_or_else(|| requested.clone());
         if waiting {
             if let Some(target) = self.targets.focused() {
                 self.pending_page_focus = Some(SettingsReturn { place: requested.key, root: snapshot.key(), target: Some(target) });
@@ -2716,9 +2951,13 @@ impl Render for Reader {
         }
         // The place change in flight, this frame (window space).
         let reader = self.frame.get();
-        if !waiting
+        // Arrival is a prepared route-owned change. Its spring starts only
+        // once a real destination can paint; readiness has no wall-clock
+        // timeout and does not request motion frames while it is pending.
+        // Check the frame before consuming it, including after a resize.
+        let can_begin = !waiting;
+        if can_begin && let Some(reader) = reader
             && let Some(arrival) = self.arrival.take()
-            && let Some(reader) = reader
         {
             self.begin(arrival, reader, window, cx);
         }
@@ -2735,7 +2974,9 @@ impl Render for Reader {
             facet::motion::request_frame(window, cx);
         }
         let transit = self.transit.clone().filter(|_| staged.is_some());
-        let keep = |key: u64| key == current.key || key == requested.key || transit.as_ref().is_some_and(|t| t.inside == key || t.outside == key);
+        let keep = |key: u64| key == current.key || key == requested.key
+            || self.arrival.as_ref().is_some_and(|arrival| arrival.leaving == key)
+            || transit.as_ref().is_some_and(|t| t.inside == key || t.outside == key);
         self.places.retain(|place| keep(place.key));
         // The page drawn away from the scroller this frame (the one leaving
         // an Open, the one folding on a Close's or a Fold's plate).
@@ -2795,7 +3036,7 @@ impl Render for Reader {
             // A Fold carries the gem itself; the map's own handoff would
             // draw a second one.
             let source = self.graph_source.take().filter(|_| !transit.as_ref().is_some_and(|t| t.verb == Verb::Fold));
-            map.update(cx, |map, cx| map.show(snapshot.route(), source.as_ref(), window, cx));
+            map.update(cx, |map, cx| map.show(&current.route, source.as_ref(), window, cx));
             self.said = vec!["Graph fixture · pages resolve through your local index".into()];
             self.hero.clear();
             let tint = self.tint_now(cx);
@@ -2811,8 +3052,14 @@ impl Render for Reader {
                 land: Vec::new(),
                 reading: None,
                 scroll_mount: None,
+                native_return: None,
                 child: div().size_full().child(map.clone()).into_any_element(),
             };
+            let framed = if retaining_departure {
+                gpui::inert("pending-map", "Previous graph while the destination opens", framed).into_any_element()
+            } else { framed.into_any_element() };
+            #[cfg(test)]
+            let framed = transit_tests::owned_ink(None, framed);
             let mut root = div().relative().size_full()
                 .text_color(palette.ink1.hsla()).font_family(facet::fonts::family(ty::BODY));
             match (staged, transit.as_ref(), leaving, reader) {
@@ -2849,11 +3096,16 @@ impl Render for Reader {
                 // Record the visible exact Map presentation for this place.
                 // A first immutable scene mount qualifies next frame; an exact
                 // declaration terminal preserves its separate Page/Code lease.
-                self.painted_graph = map.read(cx).mounted_presentation(cx)
+                let presentation = map.read(cx).mounted_presentation(cx);
+                self.painted_graph = presentation
                     .zip(self.links.store.read(cx).current_owner_attachment())
                     .map(|(presentation, owner)| (map.entity_id(), presentation, owner));
-                self.painted = self.painted_graph.as_ref().map(|_| current.key);
-                self.painted_root = self.painted_graph.as_ref().map(|_| snapshot.key());
+                // Local input/cover return belongs to the actual painted
+                // destination, including an immutable retained scene. Only
+                // resource header actions consume painted_graph's owner.
+                self.painted = presentation.map(|_| current.key);
+                self.painted_root = presentation.map(|_| snapshot.key());
+                if retaining_departure { root = root.child(opening_status(palette)); }
                 root
             };
         }
@@ -2874,7 +3126,7 @@ impl Render for Reader {
         // Gather for this exact typed destination even while an owner is
         // starting, failed, or replacing its root. Bodies decide whether a
         // retained value has a valid embedded identity for read-only paint.
-        let body = self.body(&current, true, &snapshot, &layout, &facet, current_edge,
+        let body = self.body(&current, !retaining_departure, &snapshot, &layout, &facet, current_edge,
             None, window, cx);
         self.painted = Some(current.key);
         self.painted_root = Some(snapshot.key());
@@ -2894,45 +3146,35 @@ impl Render for Reader {
             else { self.reveal.set(true); cx.notify(); }
         }
         self.targets.finish_native();
-        if let Some(pending) = self.native_return.clone() {
-            let store = self.links.store.read(cx);
-            let dependencies = RouteDependencies::new(&pending.route, None);
-            let resources_current = store.admits_owner_attachment(&pending.attachment)
-                && pending.read_stamp.as_ref().is_none_or(|stamp| dependencies.admits_native_stamp(store, pending.root, stamp));
-            let input_owned = self.links.shell.upgrade().is_some_and(|shell| shell.read(cx).allows_reader_native_return(window));
-            if pending.place != current.key || pending.route != current.route || !pending.root.same_authority(snapshot.key()) || current.overlay.is_some()
-                || !resources_current || !input_owned || super::titlebar::menu_open(window, cx)
-                || self.targets.native_focused(window).is_some_and(|focused| focused != pending.id)
-            {
-                self.native_return = None;
-            } else if self.painted == Some(current.key)
-                && staged.is_none() && self.transit.is_none() && self.arrival.is_none()
-                && self.targets.focus_native(&pending.id, window, cx)
-            {
-                self.targets.focus(pending.id);
-                self.native_return = None;
-                self.reveal.set(true);
-                cx.notify();
-            }
-        }
-        if let Some(mut pending) = self.pending_settings_focus.take()
-            && pending.place == current.key
+        if let Some(pending) = self.pending_settings_focus.take()
+            && pending.focus.place == current.key
         {
-            if self.painted == Some(current.key) && self.native_input_allowed() {
-                if !pending.has_same_authority(snapshot.key()) { pending.target = None; }
-                if self.targets.is_active() {
-                    if let Some(target) = pending.target {
-                        self.targets.focus(target);
-                        if self.targets.current().is_none() {
-                            self.targets.clear_focus();
-                            self.targets.walk(1);
+            let lease_current = pending.lease.map(|lease| {
+                self.links.shell.upgrade().is_some_and(|shell| {
+                    let shell = shell.read(cx);
+                    lease.current(window.window_handle().window_id(), shell.focus_return_generation(), window.focus_epoch())
+                        && shell.allows_reader_native_return(window)
+                        && !super::titlebar::menu_open(window, cx)
+                })
+            });
+            if lease_current == Some(false) {
+                // A newer input choice wins even if this page is still landing.
+            } else if lease_current == Some(true) && self.painted == Some(current.key) && self.native_input_allowed() {
+                if pending.focus.has_same_authority(snapshot.key()) {
+                    match pending.origin.clone() {
+                        SettingsNativeOrigin::Target(target) if self.targets.is_active() => {
+                            if self.targets.focus_native(&target, window, cx) {
+                                self.targets.focus(target);
+                                self.reveal.set(true);
+                                cx.notify();
+                            }
                         }
-                    } else {
-                        self.targets.walk(1);
-                    }
-                    if self.targets.focused().is_some() {
-                        self.reveal.set(true);
-                        cx.notify();
+                        SettingsNativeOrigin::Find(_) => {
+                            // Its existing after-frame callback registers and
+                            // restores the retained native input after AX paint.
+                            self.pending_settings_focus = Some(pending);
+                        }
+                        _ => { self.pending_page_focus = None; self.targets.clear_focus(); }
                     }
                 }
             } else {
@@ -3008,9 +3250,15 @@ impl Render for Reader {
             reading: (!waiting && self.pending_scroll_restore.is_none() && self.native_input_for(snapshot.route(), snapshot.page_overlay()) && snapshot.page_overlay().is_none())
                 .then(|| (snapshot.session().reading.current.id, snapshot.session().reading.current.presentation.controls().offset, self.links.clone())),
             scroll_mount: Some((Rc::clone(&self.scroll_mounted), current.key)),
+            native_return: self.native_return.as_ref().map(|pending| (cx.weak_entity(), Rc::clone(&pending.ticket))),
             child: scroller.into_any_element(),
         });
-        let scroller = scroller.into_any_element();
+        let scroller = facet::motion::flow::local_paint("reader-flow-paint", scroller);
+        let scroller = if retaining_departure {
+            gpui::inert("pending-reader", "Previous page while the destination opens", scroller).into_any_element()
+        } else { scroller.into_any_element() };
+        #[cfg(test)]
+        let scroller = transit_tests::owned_ink(Some(current.key), scroller).into_any_element();
         let mut root = div().relative().size_full();
         // Where you were: the row a Close came back to, tinted under the page.
         let tint = self.tint_now(cx);
@@ -3056,28 +3304,19 @@ impl Render for Reader {
                 root = root.child(plate_ground(&staged)).child(masked(staged.plate, scroller));
             }
             (Some(staged), Some(transit), Some(leaving)) if staged.verb == Verb::Close => {
-                // The parent is uncovered around the closing plate; the page
-                // it came back from folds on the plate, then the plate shuts.
-                let [above, below] = staged.outside;
-                root = root.child(masked(above, scroller));
-                if below.size.height > Pixels::ZERO && below.size.width > Pixels::ZERO {
-                    let page = self.still_page(&current, self.scroll.offset(), below, None, staged.outside_drift, &snapshot, &layout, &facet, window, cx);
-                    root = root.child(div().id("parent-below").absolute().top_0().left_0().size_full().child(page));
-                }
-                // What the fold has taken from the plate is the parent, not an
-                // empty ground: the page it came back from shows through as the
-                // leaving page folds away, so there is no frame with an empty
-                // reader between the one and the other.
-                let folded = staged.edge.map(|edge| {
-                    let top = edge.y.max(staged.plate.top()).min(staged.plate.bottom());
-                    Bounds::from_corners(point(staged.plate.left(), top), staged.plate.bottom_right())
+                // One live parent layout is uncovered beneath the old page.
+                // Its local Flow draws finish before this later plate overlay;
+                // resize cannot assemble a second, differently sampled parent.
+                root = root.child(scroller);
+                let occupied = staged.edge.map_or(staged.plate, |edge| {
+                    let bottom = edge.y.max(staged.plate.top()).min(staged.plate.bottom());
+                    Bounds::from_corners(staged.plate.origin, point(staged.plate.right(), bottom))
                 });
-                let page = self.still_page(&leaving, transit.scroll, staged.plate, staged.edge, staged.inside_drift, &snapshot, &layout, &facet, window, cx);
-                root = root.child(plate_ground(&staged));
-                if let Some(folded) = folded.filter(|folded| folded.size.height > Pixels::ZERO && folded.size.width > Pixels::ZERO) {
-                    let parent = self.still_page(&current, self.scroll.offset(), folded, None, staged.outside_drift, &snapshot, &layout, &facet, window, cx);
-                    root = root.child(div().id("parent-folded").absolute().top_0().left_0().size_full().child(parent));
+                if occupied.size.height > Pixels::ZERO && occupied.size.width > Pixels::ZERO {
+                    root = root.child(masked(occupied, plate_ground(&staged)));
                 }
+                let page = self.still_page(&leaving, transit.scroll, staged.plate,
+                    staged.edge, staged.inside_drift, &snapshot, &layout, &facet, window, cx);
                 root = root.child(div().id("leaving-plate").absolute().top_0().left_0().size_full().child(page));
             }
             (Some(staged), Some(_), _) if staged.verb == Verb::Unfold => {
@@ -3092,7 +3331,10 @@ impl Render for Reader {
                     } else {
                         staged.outside[0]
                     };
-                    root = root.child(div().id("unfolding-map").absolute().top_0().left_0().size_full().child(a11y_inert(masked(map_mask, div().size_full().child(map.clone())))));
+                    let graph = div().size_full().child(map.clone());
+                    #[cfg(test)]
+                    let graph = transit_tests::owned_ink(None, graph);
+                    root = root.child(div().id("unfolding-map").absolute().top_0().left_0().size_full().child(a11y_inert(masked(map_mask, graph))));
                 }
                 root = root.child(plate_ground(&staged)).child(masked(staged.plate, scroller)).children(gem(&staged));
             }
@@ -3105,11 +3347,19 @@ impl Render for Reader {
         if self.ask_geometry.is_some_and(|ask| ask.preview_left.is_none()) {
             return div().size_full();
         }
+        if retaining_departure { root = root.child(opening_status(palette)); }
         root.child(facet::probe::scroll_probe("reader-scroll", self.scroll.clone()))
             .child(glow)
             .text_color(palette.ink1.hsla())
             .font_family(facet::fonts::family(ty::BODY))
     }
+}
+
+fn opening_status(palette: &facet::Palette) -> gpui::Stateful<gpui::Div> {
+    div().id("reader-opening-status").role(gpui::Role::Status).aria_label("Opening page")
+        .absolute().right(px(16.0)).top(px(12.0)).px(px(12.0)).py(px(6.0))
+        .max_w(px(240.0)).bg(palette.g1.hsla()).text_color(palette.ink2.hsla())
+        .child("Opening page…")
 }
 
 impl Reader {
@@ -3292,13 +3542,14 @@ struct Reveal {
     content_layout: Rc<Cell<Option<gpui::LayoutId>>>,
     targets: Targets,
     scroll: ScrollHandle,
-    /// Where the reader is laid out, in window space, for the next frame's
-    /// plate.
+    /// The current viewport in window space, also measured by Region before
+    /// render. Reveal records the actual scroll viewport before its child.
     frame: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The page's flows, landed when a reflow scrolls to the focus.
     land: Vec<facet::motion::Flow>,
     reading: Option<(crate::navigation::presentation::VisitId, crate::navigation::presentation::ReadingOffset, Links)>,
     scroll_mount: Option<(Rc<Cell<Option<u64>>>, u64)>,
+    native_return: Option<(gpui::WeakEntity<Reader>, Rc<()>)>,
     child: gpui::AnyElement,
 }
 
@@ -3445,6 +3696,13 @@ impl gpui::Element for Reveal {
         cx: &mut gpui::App,
     ) {
         self.child.paint(window, cx);
+        if let Some((reader, ticket)) = &self.native_return {
+            let reader = reader.clone();
+            let ticket = Rc::clone(ticket);
+            window.defer(cx, move |window, cx| {
+                let _ = reader.update(cx, |reader, cx| reader.finish_painted_native_return(&ticket, window, cx));
+            });
+        }
     }
 }
 
@@ -3459,6 +3717,170 @@ mod transit_tests {
     use gpui::{Bounds, PaintedText, Pixels, TestAppContext, point, px, size};
     use std::collections::BTreeSet;
     use std::time::Duration;
+
+    include!("reader/transit_capture_tests.rs");
+
+    /// Actual paint calls, attributed by the mounted child that issued them.
+    /// None denotes Map; Some is the exact page place. No word or geometry
+    /// filter is used, including when a child paints outside its viewport.
+    #[derive(Default)]
+    struct InkTrace(Vec<(Option<u64>, PaintedText)>);
+    impl gpui::Global for InkTrace {}
+
+    pub(super) fn owned_ink(page: Option<u64>, child: impl gpui::IntoElement)
+        -> impl gpui::IntoElement
+    {
+        OwnedInk { page, child: child.into_element() }
+    }
+
+    struct OwnedInk<E> { page: Option<u64>, child: E }
+    impl<E: gpui::Element> gpui::IntoElement for OwnedInk<E> {
+        type Element = Self;
+        fn into_element(self) -> Self { self }
+    }
+    impl<E: gpui::Element> gpui::Element for OwnedInk<E> {
+        type RequestLayoutState = E::RequestLayoutState;
+        type PrepaintState = E::PrepaintState;
+        fn id(&self) -> Option<gpui::ElementId> { self.child.id() }
+        fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+            self.child.source_location()
+        }
+        fn a11y_role(&self) -> Option<gpui::Role> { self.child.a11y_role() }
+        fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+            self.child.write_a11y_info(node);
+        }
+        fn a11y_synthetic_children(&mut self, state: &mut Self::PrepaintState,
+            builder: &mut gpui::A11ySubtreeBuilder) {
+            self.child.a11y_synthetic_children(state, builder);
+        }
+        fn request_layout(&mut self, id: Option<&gpui::GlobalElementId>,
+            inspector: Option<&gpui::InspectorElementId>, window: &mut gpui::Window,
+            cx: &mut gpui::App) -> (gpui::LayoutId, Self::RequestLayoutState) {
+            self.child.request_layout(id, inspector, window, cx)
+        }
+        fn prepaint(&mut self, id: Option<&gpui::GlobalElementId>,
+            inspector: Option<&gpui::InspectorElementId>, bounds: Bounds<Pixels>,
+            state: &mut Self::RequestLayoutState, window: &mut gpui::Window,
+            cx: &mut gpui::App) -> Self::PrepaintState {
+            self.child.prepaint(id, inspector, bounds, state, window, cx)
+        }
+        fn paint(&mut self, id: Option<&gpui::GlobalElementId>,
+            inspector: Option<&gpui::InspectorElementId>, bounds: Bounds<Pixels>,
+            layout: &mut Self::RequestLayoutState, prepaint: &mut Self::PrepaintState,
+            window: &mut gpui::Window, cx: &mut gpui::App) {
+            let first = window.painted_texts().len();
+            self.child.paint(id, inspector, bounds, layout, prepaint, window, cx);
+            if cx.has_global::<InkTrace>() {
+                let trace = cx.global_mut::<InkTrace>();
+                trace.0.extend(window.painted_texts()[first..].iter().cloned()
+                    .map(|text| (self.page, text)));
+            }
+        }
+    }
+
+    struct HeldDestination {
+        gate: crate::runtime::owner::OwnerGate,
+        entered: std::sync::mpsc::Sender<()>,
+    }
+
+    impl crate::runtime::reads::PageReader for HeldDestination {
+        fn read(&mut self, request: &crate::runtime::reads::ReadRequest,
+            context: &crate::runtime::reads::ReadContext<'_>)
+            -> Result<crate::model::pages::PageValue, crate::model::pages::ReadFailure>
+        {
+            if matches!(request, crate::runtime::reads::ReadRequest::Symbol(symbol)
+                if symbol == &crate::shell::tests::symbol("TransitHeldDestination")) {
+                let _ = self.entered.send(());
+                self.gate.wait_cancelled(context.cancel)
+                    .map_err(|_| crate::model::pages::ReadFailure::Cancelled)?;
+            }
+            crate::runtime::reads::PageReader::read(&mut crate::shell::tests::Fixture, request, context)
+        }
+    }
+
+    struct ReleaseDestination(crate::runtime::owner::OwnerGate, crate::core::VersionedRoot);
+    impl Drop for ReleaseDestination {
+        fn drop(&mut self) {
+            self.0.publish(crate::runtime::owner::OwnerState::Ready {
+                key: self.1, mode: crate::model::ServiceMode::Attached,
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn a_pending_destination_retains_its_departure_and_reverses_at_200_percent(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::navigation::Intent;
+        let gate = crate::runtime::owner::OwnerGate::starting();
+        let held = gate.clone();
+        let (entered, received) = std::sync::mpsc::channel();
+        let pool = crate::runtime::reads::ReadPool::start(2, move |_| HeldDestination {
+            gate: held.clone(), entered: entered.clone(),
+        }).expect("real held destination pool");
+        let mut rig = crate::shell::tests::rig_with_reads(cx,
+            Some(crate::shell::tests::page_route("RelationLabel")), 1440.0, 900.0, pool);
+        let key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+        let release = ReleaseDestination(gate, key);
+        let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+        rig.go(Intent::ZoomTo { display, percent: 200 });
+        rig.cx.update(|window, cx| {
+            facet::probe::enable(cx);
+            cx.set_global(gpui::TextTrace);
+            window.set_a11y_forced(true);
+        });
+        rig.graph.root.update(rig.cx, |root, cx| root.queue(
+            Intent::Navigate(crate::shell::tests::page_route("TransitHeldDestination")), cx));
+        let first = shoot(&mut rig, 0, 0);
+        received.recv_timeout(Duration::from_secs(1)).expect("actual destination read entered");
+        assert_eq!(first.p, None, "a genuine pending read has not started an empty plate");
+        assert!(first.plate.is_none(), "the readable departure owns the whole Reader");
+        assert!(reading(&first).any(|text| text.alpha > 0.0 && text.text.as_ref() == "RelationLabel"),
+            "the departure still paints while the read is held: {first:#?}");
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 2);
+        assert!(rig.graph.store.read_with(rig.cx, |store, _| {
+            store.symbol(&crate::shell::tests::symbol("TransitHeldDestination")).loaded_value().is_none()
+        }), "no synthetic loaded value stands in for the held read");
+        let opened = shoot(&mut rig, 112, 112);
+        assert!(opened.p.is_none() && opened.plate.is_none(),
+            "waiting is not an expanding blank animation: {opened:#?}");
+        assert!(reading(&opened).any(|text| text.text.as_ref() == "It names one relation group."),
+            "the actual departure prose remains readable across the unknown read delay");
+        let native = rig.cx.update(|window, _| window.debug_a11y_tree_json().expect("pending native tree"));
+        let tree: serde_json::Value = serde_json::from_str(&native).expect("pending native JSON");
+        let status = tree["nodes"].as_object().expect("native nodes").values()
+            .find(|node| node["aria"]["role"] == "Status" && node["aria"]["label"] == "Opening page")
+            .expect("the pending status is a real named native Status");
+        let width = status["bounds"]["width"].as_f64().expect("native status width");
+        assert!(width > 0.0 && width <= 240.5, "the 200% native status stays bounded: {status}");
+        assert_eq!(rig.cx.update(|window, cx| window.simulate_next_frame(cx)), 0,
+            "awaiting the real read creates no motion wake");
+        rig.cx.simulate_keystrokes("secondary-[");
+        let turned = shoot(&mut rig, 128, 16);
+        assert!(turned.p.is_none() && turned.plate.is_none(),
+            "Back cancels the unpainted prepared visit without a phantom reversing page: {turned:#?}");
+        rig.cx.simulate_resize(size(px(1000.0), px(700.0)));
+        let resized = shoot(&mut rig, 128, 0);
+        let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+        let frame = reader.read_with(rig.cx, |reader, _| reader.frame.get().expect("current measured Reader frame"));
+        let viewport = rig.cx.debug_bounds("reader-scroll").expect("the actual current scroll viewport");
+        assert_eq!(frame, viewport, "the measured embedding and Reveal's scroll viewport agree on the first resized frame");
+        assert!(resized.plate.is_none(), "the cancelled visit cannot return a plate after resize");
+        for text in reading(&resized) {
+            assert!(inside(text.bounds, frame),
+                "200% resize clips actual Reader ink to its native viewport: {text:#?} vs {frame:?}");
+        }
+        let native = rig.cx.update(|window, _| window.debug_a11y_tree_json().expect("resized native tree"));
+        assert!(!native.contains("TransitHeldDestination"),
+            "the departed pending visit contributes no stale native control: {native}");
+        drop(release);
+        rig.settle();
+        assert_eq!(rig.route(), crate::shell::tests::page_route("RelationLabel"),
+            "a late cancelled read cannot replace the newer Back destination");
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
+        assert_eq!(rig.cx.update(|window, cx| window.simulate_next_frame(cx)), 0,
+            "the settled route stops requesting motion frames");
+    }
 
     #[test]
     fn page_code_peel_opens_from_the_measured_line_and_reverses_without_lateral_motion() {
@@ -3489,12 +3911,14 @@ mod transit_tests {
     #[derive(Debug)]
     struct Shot {
         at: u64,
+        reader: Bounds<Pixels>,
         plate: Option<Bounds<Pixels>>,
         gem: Option<Bounds<Pixels>>,
         p: Option<f32>,
         tint: Vec<(String, f32)>,
         targets: Vec<(String, Bounds<Pixels>)>,
         texts: Vec<PaintedText>,
+        ink: Vec<(Option<u64>, PaintedText)>,
     }
 
     /// A place in the reader's list, for the list's own rules.
@@ -3544,7 +3968,10 @@ mod transit_tests {
             rig.cx.executor().advance_clock(Duration::from_millis(ms));
         }
         rig.cx.run_until_parked();
-        let _ = rig.cx.update(|_, cx| facet::probe::take(cx));
+        let _ = rig.cx.update(|_, cx| {
+            cx.set_global(InkTrace::default());
+            facet::probe::take(cx)
+        });
         rig.cx.update(|window, cx| {
             window.simulate_next_frame(cx);
             window.refresh();
@@ -3562,6 +3989,7 @@ mod transit_tests {
         };
         Shot {
             at,
+            reader: rig.shell.read_with(rig.cx, |shell, cx| shell.reader_entity().read(cx).frame.get().expect("Reader viewport")),
             plate,
             gem,
             p: track("reader.carry"),
@@ -3572,6 +4000,7 @@ mod transit_tests {
                 .collect(),
             targets: ledger.targets.iter().map(|target| (target.key.clone(), bounds(&target.bounds))).collect(),
             texts,
+            ink: rig.cx.update(|_, cx| std::mem::take(&mut cx.global_mut::<InkTrace>().0)),
         }
     }
 
@@ -3672,13 +4101,13 @@ mod transit_tests {
             let Some(plate) = shot.plate else { continue };
             assert!(inside(last, plate), "the plate never shrinks: {last:?} then {plate:?} at {} ms", shot.at);
             last = plate;
-            for text in &shot.texts {
+            for text in reading(shot) {
                 let content = text.text.to_string();
                 if old_only.contains(&content) && !crosses(text.bounds, plate) {
                     outside.insert(content.clone());
                 }
                 if new_only.contains(&content) {
-                    assert!(inside(text.bounds, plate), "`{content}` (the new page's) is painted outside the plate at {} ms", shot.at);
+                    assert!(inside(text.bounds, plate), "`{content}` (the new page's) is painted outside the plate at {} ms: {:?} vs {plate:?}, Reader {:?}", shot.at, text.bounds, shot.reader);
                     printed.insert((shot.at, content.clone()));
                 }
                 if crosses(text.bounds, plate) {
@@ -3879,7 +4308,7 @@ mod transit_tests {
     /// The reader's texts in a frame (the shelf and titlebar are not the
     /// reader's).
     fn reading(shot: &Shot) -> impl Iterator<Item = &PaintedText> {
-        shot.texts.iter().filter(|text| text.bounds.origin.x >= px(264.0) && text.bounds.origin.y >= px(50.0))
+        shot.ink.iter().map(|(_, text)| text)
     }
 
     fn near(a: Bounds<Pixels>, b: Bounds<Pixels>, within: f32) -> bool {
@@ -3896,7 +4325,9 @@ mod transit_tests {
     fn a_page_folds_into_its_node_and_the_graph_is_uncovered_around_it(cx: &mut TestAppContext) {
         use crate::navigation::View;
         let mut rig = page_over_graph(cx);
-        let page: BTreeSet<String> = reading(&shoot(&mut rig, 0, 0)).map(|text| text.text.to_string()).collect();
+        let before = shoot(&mut rig, 0, 0);
+        let page = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_entity().read(cx).painted.expect("the page was really painted"));
+        assert!(before.ink.iter().any(|(owner, text)| *owner == Some(page) && text.text.as_ref() == "RelationLabel"));
         let shots = film(&mut rig, set_view(View::Graph), 480);
         rig.settle();
         let node = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_focus_glyph(cx)).expect("the graph focuses the node");
@@ -3909,20 +4340,21 @@ mod transit_tests {
             }
             last = Some(plate);
             let held = shot.p.is_some_and(|p| p >= 0.999);
-            for text in reading(shot) {
-                let content = text.text.to_string();
+            for (owner, text) in &shot.ink {
+                assert!(inside(text.bounds, shot.reader), "native masked owner {owner:?} ink escapes Reader: {text:?}");
                 if held {
-                    assert!(page.contains(&content), "`{content}` (not the page's) is painted while the page folds, at {} ms: {:?}", shot.at, text.bounds);
+                    assert_eq!(*owner, Some(page), "Map paints while the page still folds at {} ms: {text:?}", shot.at);
                     folding += 1;
-                } else {
-                    if !page.contains(&content) {
-                        uncovered.insert(content);
-                    }
+                } else if owner.is_none() {
+                    uncovered.insert(text.text.to_string());
                 }
             }
             if !held {
                 // The page has folded off its plate before the plate moves.
-                let on_plate: Vec<_> = reading(shot).filter(|text| page.contains(&text.text.to_string()) && inside(text.bounds, plate) && plate.size.width < px(1170.0)).map(|text| text.text.to_string()).collect();
+                // Graph has its own same-label RelationLabel. Attribution is
+                // to actual paint calls, so even that label cannot hide stale
+                // page ink anywhere, including outside the shrinking plate.
+                let on_plate: Vec<_> = shot.ink.iter().filter(|(owner, _)| *owner == Some(page)).collect();
                 assert!(on_plate.is_empty(), "the page is still on the moving plate at {} ms: {on_plate:?}", shot.at);
             }
         }

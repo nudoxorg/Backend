@@ -35,6 +35,227 @@ pub(super) fn capability(object: SemanticObject) -> CoverageCapability {
     .expect("coverage evidence")
 }
 
+fn paged_query_fixture(sequence: u64) -> (crate::Library, Vec<RowId>) {
+    let basis = Basis::new(view_state_root(&[]), object_version(b"paged-client-source"));
+    let ids = (0..3)
+        .map(|i| RowId::Symbol(symbol_key(&format!("pkg::Thing{i}"))))
+        .collect::<Vec<_>>();
+    let rows = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| Row::new(*id, basis, format!("Thing{i}")))
+        .collect::<Vec<_>>();
+    let root = ViewRoot::new_checked(
+        view_key(b"paged-client"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        rows,
+        vec![crate::Coverage::Complete],
+        capability(basis.object),
+    )
+    .expect("checked owner view");
+    let library =
+        crate::Library::from_view(root.clone(), Cursor::for_view_root_at(&root, sequence))
+            .expect("owner library");
+    (library, ids)
+}
+
+#[test]
+fn query_continuation_admits_the_successor_page_through_the_client_boundary() {
+    let (library, ids) = paged_query_fixture(0);
+    let limit = QueryLimit::new(1).expect("one row credit");
+    let search = Query::new("Thing", library.revision_root(), limit);
+    let first = library
+        .search_from_ranked_ids(&search, &ids)
+        .expect("first search page");
+    assert_eq!(
+        admit_reply(
+            &CommandDto::new(1, Command::Search(search.clone())),
+            &ReplyDto::new(1, CommandReply::Search(first.clone()))
+        ),
+        Ok(())
+    );
+    let search = search.with_cursor(first.next.expect("preceding page cursor"));
+    let second = library
+        .search_from_ranked_ids(&search, &ids)
+        .expect("second search page");
+    assert_ne!(first.root.root(), second.root.root());
+    assert_eq!(
+        admit_reply(
+            &CommandDto::new(2, Command::Search(search)),
+            &ReplyDto::new(2, CommandReply::Search(second))
+        ),
+        Ok(())
+    );
+
+    let names = NameQuery::new("Thing", library.revision_root(), limit);
+    let first = library.names(&names).expect("first names page");
+    let names = names.with_cursor(first.next.expect("names predecessor"));
+    let second = library.names(&names).expect("second names page");
+    assert_eq!(
+        admit_reply(
+            &CommandDto::new(3, Command::Name(names)),
+            &ReplyDto::new(3, CommandReply::Names(second))
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn query_continuation_preserves_intent_only_stream_progress_and_terminal_pages() {
+    let (library, ids) = paged_query_fixture(5);
+    assert_eq!(library.view().frontier().sequence, 0);
+    assert_eq!(library.cursor().sequence(), 5);
+    let mut query = Query::new(
+        "Thing",
+        library.revision_root(),
+        QueryLimit::new(1).expect("limit"),
+    );
+    for page_index in 0..3 {
+        let snapshot = library
+            .search_from_ranked_ids(&query, &ids)
+            .expect("ranked page");
+        let request = CommandDto::new(page_index, Command::Search(query.clone()));
+        assert_eq!(
+            admit_reply(
+                &request,
+                &ReplyDto::new(page_index, CommandReply::Search(snapshot.clone()))
+            ),
+            Ok(())
+        );
+        if let Some(next) = snapshot.next {
+            assert_eq!(next.sequence(), 5);
+            query = query.with_cursor(next);
+        } else {
+            assert_eq!(page_index, 2);
+        }
+    }
+    let names = NameQuery::new("NoMatches", library.revision_root(), QueryLimit::default());
+    let empty = library.names(&names).expect("empty first page");
+    assert_eq!(empty.root.row_count(), 0);
+    assert_eq!(
+        admit_reply(
+            &CommandDto::new(10, Command::Name(names)),
+            &ReplyDto::new(10, CommandReply::Names(empty))
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn query_continuation_rejects_contract_substitution_and_forged_successors() {
+    let (library, ids) = paged_query_fixture(0);
+    let limit = QueryLimit::new(1).expect("limit");
+    let query = Query::new("Thing", library.revision_root(), limit);
+    let first = library
+        .search_from_ranked_ids(&query, &ids)
+        .expect("first page");
+    let predecessor = first.next.expect("continuation");
+    let continued = query.clone().with_cursor(predecessor);
+    let second = library
+        .search_from_ranked_ids(&continued, &ids)
+        .expect("successor");
+    let reply = ReplyDto::new(1, CommandReply::Search(second.clone()));
+    let empty_manifest = crate::ReadManifest::new(vec![]).expect("empty manifest is explicit");
+    for substituted in [
+        Query::new("thing", library.revision_root(), limit).with_cursor(predecessor),
+        Query::new(
+            "Thing",
+            library.revision_root(),
+            QueryLimit::new(2).expect("different credit"),
+        )
+        .with_cursor(predecessor),
+        query
+            .clone()
+            .with_read_manifest(empty_manifest)
+            .with_cursor(predecessor),
+    ] {
+        assert!(
+            library.search_from_ranked_ids(&substituted, &ids).is_err(),
+            "producer proves predecessor under its exact contract"
+        );
+        assert!(admit_reply(&CommandDto::new(1, Command::Search(substituted)), &reply).is_err());
+    }
+    let names = NameQuery::new("Thing", library.revision_root(), limit).with_cursor(predecessor);
+    assert!(
+        library.names(&names).is_err(),
+        "search cursor cannot become a names cursor"
+    );
+    assert!(
+        admit_reply(
+            &CommandDto::new(1, Command::Name(names)),
+            &ReplyDto::new(1, CommandReply::Names(second.clone()))
+        )
+        .is_err()
+    );
+
+    let mut forged = second.clone();
+    forged.next = Some(forged.next.expect("next").with_query_offset(u64::MAX));
+    assert!(
+        admit_reply(
+            &CommandDto::new(1, Command::Search(continued.clone())),
+            &ReplyDto::new(1, CommandReply::Search(forged))
+        )
+        .is_err()
+    );
+    let mut replay = first.clone();
+    assert!(
+        admit_reply(
+            &CommandDto::new(1, Command::Search(continued.clone())),
+            &ReplyDto::new(1, CommandReply::Search(replay.clone()))
+        )
+        .is_err(),
+        "next offset cannot replay a preceding page"
+    );
+    replay.root = library.view().clone();
+    replay.next = None;
+    assert!(
+        admit_reply(
+            &CommandDto::new(1, Command::Search(continued)),
+            &ReplyDto::new(1, CommandReply::Search(replay))
+        )
+        .is_err(),
+        "owner rows are not a query projection"
+    );
+
+    let bad_predecessor = predecessor.with_query_offset(u64::MAX);
+    assert!(
+        library
+            .search_from_ranked_ids(&query.clone().with_cursor(bad_predecessor), &ids)
+            .is_err()
+    );
+    let zero_page = predecessor.with_query_offset(0);
+    assert!(
+        library
+            .search_from_ranked_ids(&query.clone().with_cursor(zero_page), &ids)
+            .is_err(),
+        "page root cannot masquerade as owner start"
+    );
+    let owner = library.cursor();
+    let start = Cursor::for_view(
+        first.root.recipe(),
+        library.view().version(),
+        Frontier::new(
+            owner.branch(),
+            owner.log(),
+            owner.schema(),
+            owner.root(),
+            owner.sequence(),
+        ),
+    );
+    let query = query.with_cursor(start);
+    let page = library
+        .search_from_ranked_ids(&query, &ids)
+        .expect("exact owner-bound zero-offset start");
+    assert_eq!(
+        admit_reply(
+            &CommandDto::new(1, Command::Search(query)),
+            &ReplyDto::new(1, CommandReply::Search(page))
+        ),
+        Ok(())
+    );
+}
+
 #[test]
 fn semantic_link_target_uses_the_admitted_producer_commitment() {
     let source_root = view_state_root(&[]);
@@ -1085,6 +1306,8 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
         source: crate::SemanticShapeSelection::from_selected(&source)
             .expect("selected source witness"),
         selection_root: [36; 32],
+        semantic_image_bytes: crate::SemanticImagePayloadBytes::new(4096)
+            .expect("fixture aggregate image extent"),
         image: Some(crate::SemanticShapeImageOrigin {
             image: crate::interface::SemanticImageAuthority {
                 identity: image_identity,
@@ -1131,9 +1354,149 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
             schema: WireSchema::SemanticShapeBatch,
             id: encode_id(batch_key.as_bytes()),
         });
-    let command = CommandDto::new(44, Command::SemanticShapes(request));
+    let command = CommandDto::new(44, Command::SemanticShapes(request.clone()));
     let reply = ReplyDto::new(44, CommandReply::SemanticShapes(batch.clone()))
         .with_certificate(valid_certificate);
+    let exported = crate::SemanticShapeExport::from_admitted_reply(&reply, &request)
+        .expect("certificate-admitted shape export");
+    let json = exported.encode_bounded_json().expect("bounded egress");
+    let view: crate::SemanticShapeExport =
+        serde_json::from_slice(&json).expect("egress view roundtrip");
+    assert_eq!(view, exported);
+    let value: serde_json::Value = serde_json::from_slice(&json).expect("egress JSON");
+    assert_eq!(value["schema"], 1);
+    assert_eq!(
+        value["source"]["generation"],
+        serde_json::json!(vec![31u8; 32])
+    );
+    assert_eq!(value["max_nodes"], 4096);
+    // A display packet has no authority certificate, but contradictory source,
+    // image, selector and caller-budget statements must still fail decoding.
+    for (label, pointer, replacement) in [
+        ("caller nodes", "/max_nodes", serde_json::json!(1)),
+        ("caller bytes", "/max_bytes", serde_json::json!(1)),
+        (
+            "source generation",
+            "/source/generation",
+            serde_json::json!(vec![90u8; 32]),
+        ),
+        (
+            "origin root",
+            "/batch/entries/0/origin/selection_root",
+            serde_json::json!(vec![90u8; 32]),
+        ),
+        (
+            "source commitment",
+            "/batch/entries/0/origin/source_commitment",
+            serde_json::json!("00".repeat(32)),
+        ),
+        (
+            "image identity",
+            "/batch/entries/0/origin/image/image_identity",
+            serde_json::json!("91".repeat(32)),
+        ),
+        (
+            "image extent",
+            "/batch/entries/0/origin/image/byte_len",
+            serde_json::json!(4097),
+        ),
+        (
+            "image profile",
+            "/batch/entries/0/origin/image/profile",
+            serde_json::json!([2, 0]),
+        ),
+        (
+            "missing provenance",
+            "/batch/entries/0/origin",
+            serde_json::Value::Null,
+        ),
+        (
+            "missing identity",
+            "/batch/entries/0/identity",
+            serde_json::Value::Null,
+        ),
+        (
+            "zero selector",
+            "/batch/entries/0/symbol/id",
+            serde_json::json!("00".repeat(32)),
+        ),
+        (
+            "malformed basis",
+            "/batch/basis",
+            serde_json::json!("short"),
+        ),
+    ] {
+        let mut malformed = value.clone();
+        *malformed.pointer_mut(pointer).expect("fixture field") = replacement;
+        assert!(
+            serde_json::from_value::<crate::SemanticShapeExport>(malformed).is_err(),
+            "{label}"
+        );
+    }
+    let mut duplicated = value.clone();
+    duplicated["batch"]["entries"]
+        .as_array_mut()
+        .expect("entries")
+        .push(value["batch"]["entries"][0].clone());
+    assert!(serde_json::from_value::<crate::SemanticShapeExport>(duplicated).is_err());
+    let mut roots = value.clone();
+    let mut second = value["batch"]["entries"][0].clone();
+    second["symbol"]["id"] = serde_json::json!("93".repeat(32));
+    second["origin"]["selection_root"] = serde_json::json!(vec![94u8; 32]);
+    let mut distinct_origin = origin.clone();
+    distinct_origin.selection_root = [94; 32];
+    second["origin"]["source_commitment"] = serde_json::json!(encode_id(
+        crate::semantic_shape_source_key(&distinct_origin).as_bytes()
+    ));
+    roots["batch"]["entries"]
+        .as_array_mut()
+        .expect("entries")
+        .push(second);
+    assert!(
+        serde_json::from_value::<crate::SemanticShapeExport>(roots).is_err(),
+        "each valid source commitment cannot conceal conflicting workspace roots"
+    );
+
+    // The view basis and workspace selection root are different identity planes.
+    // A well-formed changed display basis cannot be authenticated by its decoder.
+    let mut display_only = value.clone();
+    display_only["batch"]["basis"] = serde_json::json!("92".repeat(32));
+    assert!(serde_json::from_value::<crate::SemanticShapeExport>(display_only).is_ok());
+    let other_basis_request = crate::SemanticShapeRequest::new(
+        view_state_root(&[("different".to_owned(), "view".to_owned())]),
+        source.clone(),
+        request.symbols().to_vec().into_boxed_slice(),
+        request.budget(),
+    )
+    .expect("different request basis");
+    assert!(crate::SemanticShapeExport::from_admitted_reply(&reply, &other_basis_request).is_err());
+
+    assert_eq!(
+        value["batch"]["entries"][0]["origin"]["selection_root"],
+        serde_json::json!(vec![36u8; 32])
+    );
+    assert!(
+        crate::SemanticShapeExport::from_admitted_reply(
+            &ReplyDto::new(44, CommandReply::SemanticShapes(batch.clone())),
+            &request
+        )
+        .is_err(),
+        "certificate-free typed values must not become exported admitted products"
+    );
+    let mut wrong_origin = batch.clone();
+    wrong_origin.entries[0]
+        .origin
+        .as_mut()
+        .expect("origin")
+        .selection_root = [99; 32];
+    assert!(
+        crate::SemanticShapeExport::from_admitted_reply(
+            &ReplyDto::new(44, CommandReply::SemanticShapes(wrong_origin))
+                .with_certificate(reply.certificate().expect("certificate").clone()),
+            &request
+        )
+        .is_err()
+    );
     let encoded = serde_json::to_vec(&reply).expect("encode complete reply DTO");
     let decoded = crate::decode_reply_body(&encoded).expect("decode complete reply DTO");
     admit_reply(&command, &decoded).expect("admit exact request and reply");

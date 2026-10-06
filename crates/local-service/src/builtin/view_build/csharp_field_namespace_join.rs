@@ -122,6 +122,7 @@ fn project_namespace_field_image(
         };
         items.push(TreeItemInput {
             name: ancestor.name,
+            anonymous_callable_anchor: None,
             kind: ancestor.kind,
             visibility: Visibility::Public,
             authority: authority(parentage),
@@ -144,6 +145,7 @@ fn project_namespace_field_image(
         .unwrap_or(ParentageAuthority::Root);
     items.push(TreeItemInput {
         name: field_name,
+        anonymous_callable_anchor: None,
         kind: ItemKind::Field,
         visibility: Visibility::Public,
         authority: authority(field_parentage),
@@ -159,6 +161,7 @@ fn project_namespace_field_image(
     versions.push(caller_version);
     items.push(TreeItemInput {
         name: caller_name,
+        anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility: Visibility::Public,
         authority: authority(ParentageAuthority::Root),

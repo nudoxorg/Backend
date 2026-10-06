@@ -27,6 +27,29 @@ Launch the native package browser directly from a project:
 cargo run -p backend-desktop
 ```
 
+Headless CLI and MCP runs also need the companion `backend-locald` executable.
+Build the three binaries together so they land beside one another:
+
+```console
+cargo build --locked -p backend-locald -p backend-cli -p backend-mcp
+```
+
+If the daemon is installed elsewhere, set `BACKEND_LOCALD_BIN` to its absolute
+path. Desktop, CLI, MCP, and standalone locald share TypeScript host discovery:
+an installed project-local `node_modules/typescript` takes precedence, with a
+host TypeScript install used when the project has none. Nudox does not run npm
+or pnpm and does not download missing project dependencies. Install the
+project's dependencies yourself, or configure `NUDOX_TSC`,
+`NUDOX_TYPESCRIPT_NODE`, and `NUDOX_TYPESCRIPT_MODULE_ROOT` for a host install.
+`backend-locald` captures those settings and `PATH` at startup; stop and
+restart an already-running daemon after changing them.
+
+For authenticated HTTP MCP, run `backend-mcp --http 127.0.0.1:0`. Set
+`BACKEND_MCP_TOKEN` to supply a credential; otherwise MCP provisions and reuses
+an owner-only `mcp-http-token` file in its workspace state directory. Send that
+file's contents as the HTTP bearer token. The readiness message gives the URL
+and credential source, and never prints the token. Stdio MCP is unchanged.
+
 On macOS, build a normal application bundle with:
 
 ```console
@@ -64,3 +87,6 @@ a small graph fixture or a metadata-only preflight.
 The root pointer advances only after immutable objects and the intent journal
 are durable. Remote workers may accelerate pure recipes, but local durable
 state and result admission remain authoritative.
+
+For the installed `nudox` quick start and Claude Code stdio registration, see
+[CLI and Claude Code onboarding](docs/operations/cli-mcp-onboarding.md).

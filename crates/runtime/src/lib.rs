@@ -477,9 +477,9 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     }
 }
 
-/// Starts a spawned daemon outside the launching Windows console's control
-/// group. Unix has no equivalent setup requirement: its detached child simply
-/// inherits no terminal ownership from the parent process.
+/// Gives a shared owner its own cancellation group. A launching client can
+/// retire its process group without also terminating the workspace owner.
+/// Unix preserves the inherited session; Windows also detaches the console.
 #[cfg(windows)]
 fn detach(command: &mut Command) {
     use std::os::windows::process::CommandExt as _;
@@ -489,7 +489,13 @@ fn detach(command: &mut Command) {
     command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn detach(command: &mut Command) {
+    use std::os::unix::process::CommandExt as _;
+    command.process_group(0);
+}
+
+#[cfg(not(any(unix, windows)))]
 const fn detach(_command: &mut Command) {}
 
 /// Reports that automatic local daemon composition is unavailable on this platform.
@@ -841,6 +847,13 @@ fn locald_executable() -> Result<PathBuf, RuntimeError> {
         return Err(RuntimeError::MissingExecutable(path));
     }
     let current = std::env::current_exe().map_err(RuntimeError::Io)?;
+    locald_sibling(&current)
+}
+
+fn locald_sibling(current: &Path) -> Result<PathBuf, RuntimeError> {
+    // macOS retains the launched symlink in current_exe. The stock installer
+    // names that link `nudox`, while the matched owner remains in the app bundle.
+    let current = fs::canonicalize(current).map_err(RuntimeError::Io)?;
     let sibling = current.with_file_name(format!("backend-locald{}", std::env::consts::EXE_SUFFIX));
     if sibling.is_file() {
         return Ok(sibling);
@@ -1019,7 +1032,7 @@ impl fmt::Display for RuntimeError {
             ),
             Self::MissingExecutable(path) => write!(
                 formatter,
-                "backend-locald was not found at {}; install all backend binaries or set {LOCALD_BIN_ENV}",
+                "backend-locald companion executable was not found at {}; build or install backend-locald beside backend-cli/backend-mcp (cargo build -p backend-locald -p backend-cli -p backend-mcp), or set {LOCALD_BIN_ENV} to its absolute path",
                 path.display()
             ),
             Self::Spawn { executable, source } => {
@@ -1065,6 +1078,157 @@ impl std::error::Error for RuntimeError {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// Runs the actual owner launcher against an explicitly supplied private
+    /// runtime fixture. This is kept out of ordinary unit runs.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires an owned matched runtime fixture and executable"]
+    fn real_private_owner_launch() {
+        let path = |name| PathBuf::from(std::env::var_os(name).expect("explicit private fixture"));
+        let paths = WorkspacePaths::discover(
+            Some(path("BACKEND_RUNTIME_TEST_PROJECT")),
+            Some(path("BACKEND_RUNTIME_TEST_WORKSPACE")),
+            Some(path("BACKEND_RUNTIME_TEST_ENDPOINT")),
+        )
+        .expect("private fixture paths");
+        ensure_locald(&paths).expect("actual owner accepts connections");
+    }
+
+    /// A separate subprocess lets the test cancel a real launching process group
+    /// without signaling the test runner or another test's children.
+    #[cfg(unix)]
+    #[test]
+    fn unix_detached_owner_survives_launcher_group_cancellation() {
+        use rustix::process::{Pid, Signal, getpgid, getsid, kill_process, kill_process_group};
+        use std::os::unix::process::CommandExt as _;
+
+        const ROLE: &str = "BACKEND_RUNTIME_DETACH_TEST_ROLE";
+        const ROOT: &str = "BACKEND_RUNTIME_DETACH_TEST_ROOT";
+        if let Ok(role) = std::env::var(ROLE) {
+            if role == "launcher" {
+                let root = PathBuf::from(std::env::var_os(ROOT).expect("child root"));
+                let mut command = Command::new(std::env::current_exe().expect("test executable"));
+                command
+                    .args([
+                        "--exact",
+                        "tests::unix_detached_owner_survives_launcher_group_cancellation",
+                    ])
+                    .env(ROLE, "owner")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                detach(&mut command);
+                let child = command.spawn().expect("spawn detached owner");
+                fs::write(root.join("owner.pid.pending"), child.id().to_string())
+                    .expect("write owner PID");
+                fs::rename(root.join("owner.pid.pending"), root.join("owner.pid"))
+                    .expect("publish owner PID");
+            }
+            let root = PathBuf::from(std::env::var_os(ROOT).expect("child root"));
+            let mut tick = 0_u64;
+            loop {
+                if role == "owner" {
+                    tick += 1;
+                    fs::write(root.join("owner.alive"), tick.to_string()).expect("owner heartbeat");
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+        let root = test_directory("detach-cancellation");
+        fs::create_dir_all(&root).expect("test root");
+        let mut launcher = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "tests::unix_detached_owner_survives_launcher_group_cancellation",
+            ])
+            .env(ROLE, "launcher")
+            .env(ROOT, &root)
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn isolated launcher");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let owner = loop {
+            if let Ok(value) = fs::read_to_string(root.join("owner.pid")) {
+                break Pid::from_raw(value.parse().expect("owner PID")).expect("nonzero owner PID");
+            }
+            if Instant::now() >= deadline {
+                launcher.kill().expect("retire failed launcher");
+                launcher.wait().expect("reap failed launcher");
+                panic!("launcher did not publish its owner PID");
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        let launcher_pid = Pid::from_raw(launcher.id().cast_signed()).expect("launcher PID");
+        let owner_group = getpgid(Some(owner)).expect("owner group before cancellation");
+        let owner_session = getsid(Some(owner)).expect("owner session before cancellation");
+        let before_cancel = fs::read_to_string(root.join("owner.alive")).unwrap_or_default();
+        kill_process_group(launcher_pid, Signal::TERM).expect("cancel launcher group");
+        launcher.wait().expect("reap canceled launcher");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let survives = loop {
+            if fs::read_to_string(root.join("owner.alive"))
+                .is_ok_and(|value| !value.is_empty() && value != before_cancel)
+            {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        // Cleanup precedes assertions, including the before-fix failure path.
+        let _ = kill_process(owner, Signal::KILL);
+        fs::remove_dir_all(root).expect("remove fixture");
+        assert_eq!(
+            owner_group, owner,
+            "owner must lead its own cancellation group"
+        );
+        assert_eq!(
+            owner_session,
+            getsid(None).expect("parent session"),
+            "Unix group detachment deliberately preserves the session"
+        );
+        assert!(
+            survives,
+            "canceling a launching client must preserve its shared owner"
+        );
+    }
+
+    #[test]
+    fn missing_locald_error_names_the_companion_build_and_override() {
+        let error = RuntimeError::MissingExecutable(PathBuf::from("/build/bin/backend-locald"));
+        let message = error.to_string();
+        assert!(message.contains("backend-locald companion executable"));
+        assert!(message.contains("cargo build -p backend-locald -p backend-cli -p backend-mcp"));
+        assert!(message.contains(LOCALD_BIN_ENV));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn locald_sibling_resolves_installed_cli_symlink_to_matched_bundle() {
+        let root = test_directory("installed-cli-symlink");
+        let bundle = root.join("Applications/Nudox.app/Contents/MacOS");
+        let installed = root.join(".local/bin");
+        fs::create_dir_all(&bundle).expect("bundle directory");
+        fs::create_dir_all(&installed).expect("installation directory");
+        let cli = bundle.join("backend-cli");
+        let owner = bundle.join("backend-locald");
+        fs::write(&cli, b"matched cli").expect("CLI image");
+        fs::write(&owner, b"matched owner").expect("owner image");
+        let link = installed.join("nudox");
+        std::os::unix::fs::symlink(&cli, &link).expect("stock installed CLI link");
+        // A same-directory daemon must not supersede the matched bundle owner.
+        fs::write(installed.join("backend-locald"), b"other owner").expect("other owner image");
+        assert_eq!(
+            locald_sibling(&link).expect("discover matched bundle owner"),
+            fs::canonicalize(&owner).expect("canonical matched owner")
+        );
+        fs::remove_dir_all(root).expect("remove installation fixture");
+    }
 
     #[cfg(unix)]
     #[test]

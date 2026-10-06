@@ -1,0 +1,13 @@
+{
+  "source": "90bc2210dd",
+  "binary_sha256": "06f9e38e311c7b6aa7c8f9c55f6f13e57c18558cf22458ce148d0916487827ae",
+  "argv": [
+    "/Users/mileswirht/Downloads/nudox-active-20261005/typescript-global-probe/.local/build/qa/.nudox-cargo/slot-0/debug/deps/backend_present-d8a53ea50b31efc4",
+    "tests::ranked_search_presentation_agrees_with_successor_pages_without_mutating_the_view",
+    "--exact",
+    "--nocapture"
+  ],
+  "exit": 0,
+  "first_invocation": "Unqualified filter plus --exact ran zero tests; excluded from passes. First build output retained in tool transcript, not claimed as a full raw log.",
+  "qualified_tests": 1
+}

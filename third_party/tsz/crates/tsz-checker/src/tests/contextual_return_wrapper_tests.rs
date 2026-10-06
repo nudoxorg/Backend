@@ -1,0 +1,507 @@
+use crate::test_utils::check_source_diagnostics;
+
+fn diagnostic_messages<'a>(diagnostics: &[&'a crate::diagnostics::Diagnostic]) -> Vec<&'a str> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message_text.as_str())
+        .collect()
+}
+
+#[test]
+fn wrapped_this_return_annotations_contextualize_generic_factories() {
+    // Explicit return annotations like `Wrapper<this>` should remain
+    // polymorphic while checking a return expression. Substituting the annotation
+    // to the concrete currently-constructed subclass too early makes generic
+    // factory calls infer nested wrapper types instead of the annotated `this`.
+    let diags = check_source_diagnostics(
+        r#"
+interface Def { tag?: string }
+
+type TypeAny = Type<any, any, any>;
+type output<T extends TypeAny> = T["_output"];
+type input<T extends TypeAny> = T["_input"];
+
+class Type<Output, D extends Def = Def, Input = Output> {
+    readonly _output!: Output;
+    readonly _input!: Input;
+    readonly _def!: D;
+
+    constructor(def: D) {
+        this._def = def;
+    }
+
+    wrap(): Wrapper<this> {
+        return Wrapper.create(this);
+    }
+
+    and<T extends TypeAny>(incoming: T): Intersection<this, T> {
+        return Intersection.create(this, incoming);
+    }
+}
+
+interface WrapperDef<T extends TypeAny = TypeAny> extends Def {
+    type: T;
+    typeName: "wrapper";
+}
+
+class Wrapper<T extends TypeAny> extends Type<
+    { wrapped: output<T> },
+    WrapperDef<T>,
+    { wrapped: input<T> }
+> {
+    constructor(def: WrapperDef<T>) {
+        super(def);
+    }
+
+    static create<T extends TypeAny>(schema: T): Wrapper<T> {
+        return new Wrapper<T>({ type: schema, typeName: "wrapper" });
+    }
+}
+
+interface IntersectionDef<Left extends TypeAny, Right extends TypeAny> extends Def {
+    left: Left;
+    right: Right;
+    typeName: "intersection";
+}
+
+class Intersection<Left extends TypeAny, Right extends TypeAny> extends Type<
+    output<Left> & output<Right>,
+    IntersectionDef<Left, Right>,
+    input<Left> & input<Right>
+> {
+    constructor(def: IntersectionDef<Left, Right>) {
+        super(def);
+    }
+
+    static create = <Left extends TypeAny, Right extends TypeAny>(
+        left: Left,
+        right: Right
+    ): Intersection<Left, Right> =>
+        new Intersection<Left, Right>({ left, right, typeName: "intersection" });
+}
+
+class Text extends Type<string> {
+    constructor() {
+        super({});
+    }
+}
+
+type UseWrapper = Wrapper<Text>;
+type UseIntersection = Intersection<Text, Text>;
+"#,
+    );
+    let ts2322: Vec<_> = diags
+        .iter()
+        .filter(|diagnostic| diagnostic.code == 2322)
+        .collect();
+    assert_eq!(
+        ts2322.len(),
+        0,
+        "Expected wrapped `this` return annotations to contextualize factory calls, got: {:?}",
+        diagnostic_messages(&ts2322)
+    );
+}
+
+#[test]
+fn generic_wrapper_return_context_preserves_outer_type_params() {
+    let diags = check_source_diagnostics(
+        r#"
+declare function wrap<T extends Function>(value: T): T;
+
+function outer<U>(value: U) {
+    const fnValue: (arg: U, label: string) => void = wrap((arg, label) => {
+        void value;
+        void arg;
+        void label;
+    });
+}
+"#,
+    );
+
+    let ts7006: Vec<_> = diags.iter().filter(|d| d.code == 7006).collect();
+    assert_eq!(
+        ts7006.len(),
+        0,
+        "Expected no TS7006 when return-context inference carries outer type parameters, got: {:?}",
+        ts7006.iter().map(|d| &d.message_text).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn return_context_does_not_unwrap_user_readonly_alias_by_name() {
+    let diags = check_source_diagnostics(
+        r#"
+type Readonly<T> = { value: T };
+declare function make<T>(callback: () => T): Readonly<T>;
+
+const n: number = make(() => "text");
+"#,
+    );
+
+    let ts2322: Vec<_> = diags.iter().filter(|d| d.code == 2322).collect();
+    assert!(
+        !ts2322.is_empty(),
+        "Expected TS2322 because a user-defined Readonly<T> alias is not the lib wrapper, got: {:?}",
+        diagnostic_messages(&ts2322)
+    );
+}
+
+#[test]
+fn return_context_wrapper_detection_uses_identity_helpers() {
+    let source = include_str!("../checkers/call_context.rs");
+
+    assert!(
+        !source.contains(
+            "return_context_application_base_has_name(base, &[\"Readonly\", \"NoInfer\", \"Awaited\"])"
+        ),
+        "return-context wrapper detection must not treat utility wrappers as a name allowlist"
+    );
+}
+
+#[test]
+fn generic_wrapper_recheck_clears_stale_implicit_any_on_callback_body_use() {
+    let diags = check_source_diagnostics(
+        r#"
+declare function wrap<T extends Function>(value: T): T;
+declare class Proxy<T extends object> {
+    constructor(target: T, handler: ProxyHandler<T>);
+}
+interface ProxyHandler<T extends object> {
+    set?: (target: T, property: string | symbol, value: any, receiver: any) => boolean;
+}
+declare namespace Reflect {
+    function set(target: object, property: string | symbol, value: any, receiver: any): boolean;
+}
+
+function outer<U extends object>(value: U) {
+    return new Proxy(value, {
+        set: wrap((target, property, nextValue, receiver) =>
+            Reflect.set(target, property, nextValue, receiver)
+        ),
+    });
+}
+"#,
+    );
+
+    let ts7006: Vec<_> = diags.iter().filter(|d| d.code == 7006).collect();
+    assert_eq!(
+        ts7006.len(),
+        0,
+        "Expected no stale TS7006 after contextual re-check, got: {:?}",
+        ts7006.iter().map(|d| &d.message_text).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn generic_wrapper_with_extra_arguments_preserves_contextual_function_type() {
+    // The minimal Proxy/Reflect ambient declarations below mirror the relevant
+    // shape of lib.es2015.proxy/lib.es2015.reflect — `check_source_diagnostics`
+    // does not load lib, so without these the constructor would resolve to
+    // ERROR and the TS2304-driven argument walk would produce TS7006 for every
+    // callback parameter (which matches tsc's actual behavior, but obscures
+    // the retype-on-contextual-retry behavior this test is locking).
+    let diags = check_source_diagnostics(
+        r#"
+declare interface ProxyHandler<T extends object> {
+    set?: (target: T, property: string | symbol, value: any, receiver: any) => boolean;
+    defineProperty?: (target: T, property: string | symbol, descriptor: any) => boolean;
+    deleteProperty?: (target: T, property: string | symbol) => boolean;
+    setPrototypeOf?: (target: T, proto: any) => boolean;
+}
+declare class Proxy<T extends object> {
+    constructor(target: T, handler: ProxyHandler<T>);
+}
+declare namespace Reflect {
+    function set(target: object, property: string | symbol, value: any, receiver?: any): boolean;
+    function defineProperty(target: object, property: string | symbol, descriptor: any): boolean;
+    function deleteProperty(target: object, property: string | symbol): boolean;
+    function setPrototypeOf(target: object, proto: any): boolean;
+}
+
+declare function deprecate<T extends Function>(
+    fn: T,
+    msg: string,
+    code?: string,
+): T;
+
+function outer<U extends object>(value: U, message: string, code: string) {
+    return new Proxy(value, {
+        set: deprecate(
+            (target, property, nextValue, receiver) =>
+                Reflect.set(target, property, nextValue, receiver),
+            message,
+            code,
+        ),
+        defineProperty: deprecate(
+            (target, property, descriptor) =>
+                Reflect.defineProperty(target, property, descriptor),
+            message,
+            code,
+        ),
+        deleteProperty: deprecate(
+            (target, property) => Reflect.deleteProperty(target, property),
+            message,
+            code,
+        ),
+        setPrototypeOf: deprecate(
+            (target, proto) => Reflect.setPrototypeOf(target, proto),
+            message,
+            code,
+        ),
+    });
+}
+"#,
+    );
+
+    let ts2322: Vec<_> = diags.iter().filter(|d| d.code == 2322).collect();
+    let ts7006: Vec<_> = diags.iter().filter(|d| d.code == 7006).collect();
+    assert_eq!(
+        ts2322.len(),
+        0,
+        "Expected no TS2322 when wrapped callbacks are retyped through return-context invalidation, got: {:?}",
+        ts2322.iter().map(|d| &d.message_text).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        ts7006.len(),
+        0,
+        "Expected no TS7006 in wrapped Proxy handler with extra arguments, got: {:?}",
+        ts7006.iter().map(|d| &d.message_text).collect::<Vec<_>>()
+    );
+}
+
+/// When a generic function's return type is used to infer type parameters
+/// from a contextual type in argument position, the inference should flow
+/// through to callback parameters even when those callbacks are
+/// context-sensitive.
+///
+/// Pattern: `make<T>(fn: (x: T) => void): { value: T }` with contextual
+/// type `{ value: number }`. T should be inferred as `number` from the
+/// return context, and `x` should get type `number`.
+#[test]
+fn return_context_seeds_inference_with_context_sensitive_args() {
+    let diags = check_source_diagnostics(
+        r#"
+declare function make<T>(fn: (x: T) => void): { value: T };
+const r: { value: number } = make((x) => {
+    const y: string = x; // TS2322: number not assignable to string
+});
+"#,
+    );
+
+    let ts2322: Vec<_> = diags.iter().filter(|d| d.code == 2322).collect();
+    assert!(
+        !ts2322.is_empty(),
+        "Expected TS2322 when contextual return type seeds T=number but callback assigns to string"
+    );
+}
+
+/// Same pattern but the contextual type comes from being an argument
+/// to another function, testing the full inference chain.
+#[test]
+fn return_context_seeds_inference_through_argument_position() {
+    let diags = check_source_diagnostics(
+        r#"
+declare function make<T>(fn: (x: T) => void): { value: T };
+declare function consume(box: { value: number }): void;
+consume(make((x) => {
+    const y: string = x; // TS2322: number not assignable to string
+}));
+"#,
+    );
+
+    // Check that no TS7006 (implicit any) is emitted for `x` — it should
+    // be contextually typed as number from the return-context seeding.
+    let ts7006: Vec<_> = diags.iter().filter(|d| d.code == 7006).collect();
+    assert_eq!(
+        ts7006.len(),
+        0,
+        "Expected no TS7006 (implicit any) — x should be contextually typed as number, got: {:?}",
+        ts7006.iter().map(|d| &d.message_text).collect::<Vec<_>>()
+    );
+}
+
+/// Return-context seeding in `compute_contextual_types` should set
+/// `had_return_context_substitution` when the Round 1 substitution
+/// already contains the same value, preventing unnecessary retries
+/// that could clear valid diagnostics.
+#[test]
+fn return_context_substitution_match_suppresses_retry() {
+    let diags = check_source_diagnostics(
+        r#"
+interface Action<T extends string> {
+    (): void;
+    _out?: T;
+}
+declare function assign<T extends string>(
+    fn: (spawn: (actor: T) => void) => {},
+): Action<T>;
+declare function use(b: Action<"hello">): void;
+use(assign((x) => {
+    const y: number = x;
+    return {};
+}));
+"#,
+    );
+
+    let ts7006: Vec<_> = diags.iter().filter(|d| d.code == 7006).collect();
+    assert_eq!(
+        ts7006.len(),
+        0,
+        "Expected no TS7006 — callback parameters should be contextually typed, got: {:?}",
+        ts7006.iter().map(|d| &d.message_text).collect::<Vec<_>>()
+    );
+}
+
+/// Contextual `new`-expression inference must infer a class type parameter that
+/// occurs **only inside a generic method member** of the contextual interface.
+///
+/// `refine` returns `Builder<DB, TB, O>` and is the only place `DB`/`TB` appear
+/// in `Builder`. When `new BuilderImpl(0)` is checked against the contextual
+/// `Builder<DB, TB, O>`, the constraint walker must descend through the generic
+/// `refine` signature (erasing its own `LRE` type parameter, tsc's
+/// `getErasedSignature`) so its return position `Builder<DB, TB, O>` seeds
+/// `DB`/`TB`. Without erasure the generic target method was skipped, leaving
+/// `DB`/`TB` defaulted to `unknown` and producing a false `TS2322`.
+#[test]
+fn contextual_new_infers_type_params_only_present_in_generic_method_member() {
+    let diags = check_source_diagnostics(
+        r#"
+type AnyColumn<DB, TB extends keyof DB> = { [T in TB]: keyof DB[T] }[TB] & string;
+type RefExpr<DB, TB extends keyof DB> = AnyColumn<DB, TB> | ((db: DB) => TB);
+interface Builder<DB, TB extends keyof DB, O> {
+  get expressionType(): O | undefined;
+  get isBuilder(): true;
+  refine<LRE extends RefExpr<DB, TB>>(lhs: LRE): Builder<DB, TB, O>;
+}
+class BuilderImpl<DB, TB extends keyof DB, O> implements Builder<DB, TB, O> {
+  constructor(x: number) {}
+  get expressionType(): O | undefined { return undefined; }
+  get isBuilder(): true { return true; }
+  refine(lhs: RefExpr<DB, TB>): Builder<DB, TB, O> { return new BuilderImpl(0); }
+}
+"#,
+    );
+
+    let ts2322: Vec<_> = diags.iter().filter(|d| d.code == 2322).collect();
+    assert_eq!(
+        ts2322.len(),
+        0,
+        "Expected no TS2322 — DB/TB must be inferred through the generic `refine` member return, got: {:?}",
+        diagnostic_messages(&ts2322)
+    );
+}
+
+/// Same structural defect, renamed binders and a non-mapped constraint, to lock
+/// the fix to the structural rule rather than the original witness names.
+#[test]
+fn contextual_new_infers_method_only_type_params_with_renamed_binders() {
+    let diags = check_source_diagnostics(
+        r#"
+interface Svc<In, Out> {
+  run(x: In): Out;
+  pipe<Z extends keyof Out>(k: Z): Svc<In, Out>;
+}
+class SvcImpl<In, Out> implements Svc<In, Out> {
+  run(x: In): Out { return undefined as any; }
+  pipe(k: keyof Out): Svc<In, Out> { return new SvcImpl(); }
+}
+"#,
+    );
+
+    let ts2322: Vec<_> = diags.iter().filter(|d| d.code == 2322).collect();
+    assert_eq!(
+        ts2322.len(),
+        0,
+        "Expected no TS2322 — In/Out must be inferred through the generic `pipe` member, got: {:?}",
+        diagnostic_messages(&ts2322)
+    );
+}
+
+/// Negative control: erasing generic target method signatures during inference
+/// must not mask a genuine type mismatch. A `Box<string>` assigned where
+/// `Box<number>` is expected must still report `TS2322`.
+#[test]
+fn generic_method_member_inference_still_reports_genuine_mismatch() {
+    let diags = check_source_diagnostics(
+        r#"
+interface Box<T> {
+  get(): T;
+  map<U>(f: (x: T) => U): Box<U>;
+}
+class BoxImpl<T> implements Box<T> {
+  constructor(private v: T) {}
+  get(): T { return this.v; }
+  map<U>(f: (x: T) => U): Box<U> { return new BoxImpl(f(this.v)); }
+}
+const b: Box<number> = new BoxImpl<string>("x");
+"#,
+    );
+
+    let ts2322: Vec<_> = diags.iter().filter(|d| d.code == 2322).collect();
+    assert!(
+        !ts2322.is_empty(),
+        "Expected TS2322 — Box<string> is not assignable to Box<number>"
+    );
+}
+
+/// A generic call whose return type *wraps* a type parameter (`(v: T[]) => T[]`)
+/// in an initializer position must receive the variable's declared type as a
+/// contextual type, so the array-literal argument's element literals are
+/// preserved by downward inference. Previously the contextual type was
+/// suppressed whenever a parameter overlapped a return type parameter — but that
+/// suppression should only apply when the contextual type does not specialize the
+/// wrapped return (`tsc` performs the downward inference here). Binder names are
+/// varied to prove the rule is structural, not name-keyed.
+#[test]
+fn wrapped_type_param_return_preserves_arg_literals_via_contextual_init() {
+    // `Elem[]` return, array-literal argument, declared union-of-literals element.
+    let diags = check_source_diagnostics(
+        r#"
+declare function collect<Elem>(items: Elem[]): Elem[];
+const picked: ("north" | "south")[] = collect(["north", "south"]);
+"#,
+    );
+    let ts2322: Vec<_> = diags.iter().filter(|d| d.code == 2322).collect();
+    assert_eq!(
+        ts2322.len(),
+        0,
+        "Expected no TS2322 — the declared element union should contextually \
+         type the array literal, got: {:?}",
+        diagnostic_messages(&ts2322)
+    );
+
+    // `readonly Elem[]` wrapper and an object-property literal, different binders.
+    let diags = check_source_diagnostics(
+        r#"
+declare function gather<Member>(rows: Member[]): readonly Member[];
+const out: readonly { kind: "a" | "b" }[] = gather([{ kind: "a" }, { kind: "b" }]);
+"#,
+    );
+    let ts2322: Vec<_> = diags.iter().filter(|d| d.code == 2322).collect();
+    assert_eq!(
+        ts2322.len(),
+        0,
+        "Expected no TS2322 — the declared property literal union should \
+         contextually type the object-literal elements, got: {:?}",
+        diagnostic_messages(&ts2322)
+    );
+}
+
+/// Negative control for the wrapped-return contextual rule: when the declared
+/// contextual type genuinely mismatches the inferred result, the assignment must
+/// still report `TS2322`. The relaxed suppression only changes which contextual
+/// type flows in, never whether a real mismatch is reported.
+#[test]
+fn wrapped_type_param_return_still_reports_genuine_mismatch() {
+    let diags = check_source_diagnostics(
+        r#"
+declare function collect<Elem>(items: Elem[]): Elem[];
+const picked: number[] = collect(["north", "south"]);
+"#,
+    );
+    let ts2322: Vec<_> = diags.iter().filter(|d| d.code == 2322).collect();
+    assert!(
+        !ts2322.is_empty(),
+        "Expected TS2322 — string[] is not assignable to number[]"
+    );
+}

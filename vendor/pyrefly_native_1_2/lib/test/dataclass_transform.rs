@@ -1,0 +1,802 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+use pyrefly_python::sys_info::PythonVersion;
+
+use crate::test::util::TestEnv;
+use crate::testcase;
+
+testcase!(
+    test_function_basic,
+    r#"
+from typing import dataclass_transform
+
+@dataclass_transform()
+def create[T](cls: type[T]) -> type[T]: ...
+
+@create
+class C:
+    x: int
+C(x=0)
+C(x="oops")  # E: `Literal['oops']` is not assignable to parameter `x` with type `int`
+    "#,
+);
+
+testcase!(
+    test_field_named_like_builtin,
+    {
+        let mut env = TestEnv::new();
+        env.add(
+            "util.schemaclass",
+            r#"
+from typing import Callable, TypeVar, dataclass_transform
+
+T = TypeVar("T")
+
+@dataclass_transform()
+def schemaclass(
+    c: type[T] | None = None,
+    /,
+    *,
+    frozen: bool = False,
+) -> type[T] | Callable[[type[T]], type[T]]: ...
+"#,
+        );
+        env
+    },
+    r#"
+from __future__ import annotations
+from util.schemaclass import schemaclass
+from typing import Mapping
+
+@schemaclass(frozen=True)
+class C:
+    k: int | None
+    pname: str | None
+    bln: int | None
+    str: str | None
+    i64: int | None
+    dbl: float | None
+    li: str | None
+    _raw_data: Mapping[str, object] | None
+
+C(k=0, pname=None, bln=None, str="", i64=None, dbl=None, li=None, _raw_data=None)
+def f(c: C) -> str | None:
+    return c.str
+    "#,
+);
+
+testcase!(
+    test_class_basic,
+    r#"
+from typing import dataclass_transform
+
+@dataclass_transform()
+class C: ...
+
+class D(C):
+    x: int
+D(x=0)
+D(x="oops")  # E: `Literal['oops']` is not assignable to parameter `x` with type `int`
+    "#,
+);
+
+testcase!(
+    test_class_inheritance,
+    r#"
+from typing import dataclass_transform
+
+@dataclass_transform()
+class C: ...
+
+class D(C):
+    x: int
+class E(D):
+    y: str
+E(x=0, y="")
+    "#,
+);
+
+testcase!(
+    test_metaclass_basic,
+    r#"
+from typing import dataclass_transform
+
+@dataclass_transform()
+class Meta(type): ...
+class C(metaclass=Meta): ...
+
+class D(C):
+    x: int
+D(x=0)
+D(x="oops")  # E: `Literal['oops']` is not assignable to parameter `x` with type `int`
+    "#,
+);
+
+testcase!(
+    test_metaclass_with_fields,
+    r#"
+from typing import dataclass_transform
+
+@dataclass_transform()
+class Meta(type): ...
+
+class C(metaclass=Meta):
+    x: int
+    y: str = ""
+C(x=0)
+C(x=0, y="hello")
+C(x="oops")  # E: `Literal['oops']` is not assignable to parameter `x` with type `int`
+    "#,
+);
+
+testcase!(
+    test_metaclass_inheritance_with_fields,
+    r#"
+from typing import Any, dataclass_transform
+
+@dataclass_transform(kw_only_default=True)
+class Meta(type):
+    def __new__(mcs, name: str, bases: tuple[type, ...], namespace: dict[str, Any], **kwargs: Any) -> Any:
+        return super().__new__(mcs, name, bases, namespace)
+
+class Base(metaclass=Meta):
+    key: str
+    name: str | None = None
+
+class Child(Base):
+    device_class: str | None = None
+    unit: str | None = None
+
+Child(key="temperature", device_class="temperature", name="Sensor")
+Child()  # E: Missing argument `key`
+    "#,
+);
+
+testcase!(
+    test_metaclass_frozen_inheritance,
+    r#"
+from typing import Any, dataclass_transform
+
+@dataclass_transform()
+class Meta(type): ...
+
+class Base(metaclass=Meta):
+    x: int
+
+# A frozen subclass of a non-frozen base is allowed for dataclass_transform classes.
+class FrozenChild(Base, frozen=True):
+    y: str
+
+f = FrozenChild(x=0, y="hello")
+f.y = "world"  # E: frozen dataclass member
+
+# A non-frozen subclass of a frozen class is not allowed.
+class MutableChild(FrozenChild, frozen=False):  # E: Cannot inherit non-frozen dataclass `MutableChild` from frozen dataclass `FrozenChild`
+    z: int
+    "#,
+);
+
+testcase!(
+    test_kw_only_inherited_by_subclass,
+    r#"
+from typing import dataclass_transform
+
+# SQLAlchemy-style: the transform comes from a metaclass, which re-applies the dataclass
+# keywords to every subclass.
+@dataclass_transform()
+class ModelMeta(type): ...
+class ModelBase(metaclass=ModelMeta): ...
+
+# `kw_only=True` on the base configures the whole subtree (facebook/pyrefly#3881), so a field
+# without a default may follow one with a default.
+class Base(ModelBase, kw_only=True): ...
+
+class SomeClass(Base):
+    some_str: str = ""
+    some_number: int
+
+SomeClass(some_str="x", some_number=1)
+# Positional construction is rejected, confirming the fields are actually keyword-only.
+SomeClass("x", some_number=1)  # E: Expected 0 positional arguments, got 1
+    "#,
+);
+
+testcase!(
+    test_kw_only_inherited_through_multiple_levels,
+    r#"
+from typing import dataclass_transform
+
+@dataclass_transform()
+class ModelMeta(type): ...
+class ModelBase(metaclass=ModelMeta): ...
+
+class Base(ModelBase, kw_only=True): ...
+
+# `kw_only` keeps propagating past the first subclass: neither `b` nor `d` triggers a
+# field-ordering error.
+class Mid(Base):
+    a: str = ""
+    b: int
+class Leaf(Mid):
+    c: str = ""
+    d: int
+
+Leaf(a="x", b=1, c="y", d=2)
+    "#,
+);
+
+testcase!(
+    test_kw_only_not_propagated_without_metaclass,
+    r#"
+from typing import dataclass_transform
+
+# A plain `@dataclass_transform` base (not a metaclass) does not re-apply keywords to
+# subclasses, so `kw_only=True` configures `Base` only, not `Sub`.
+@dataclass_transform()
+class ModelBase: ...
+
+class Base(ModelBase, kw_only=True): ...
+
+class Sub(Base):
+    a: str = ""
+    b: int  # E: Dataclass field `b` without a default may not follow dataclass field with a default
+    "#,
+);
+
+testcase!(
+    test_field_ordering_still_errors_without_kw_only,
+    r#"
+from typing import dataclass_transform
+
+@dataclass_transform()
+class ModelMeta(type): ...
+class ModelBase(metaclass=ModelMeta): ...
+
+class Base(ModelBase, kw_only=False): ...
+
+class SomeClass(Base):
+    some_str: str = ""
+    some_number: int  # E: Dataclass field `some_number` without a default may not follow dataclass field with a default
+    "#,
+);
+
+testcase!(
+    test_order_inherited_by_subclass,
+    r#"
+from typing import dataclass_transform
+
+@dataclass_transform()
+class ModelMeta(type): ...
+class ModelBase(metaclass=ModelMeta): ...
+
+# `order=True` on a base propagates to subclasses, so comparison operators are synthesized.
+class Base(ModelBase, order=True): ...
+
+class C(Base):
+    x: int
+
+C(x=1) < C(x=2)
+    "#,
+);
+
+testcase!(
+    test_eq_inherited_by_subclass,
+    r#"
+from typing import dataclass_transform, Hashable
+
+# Start from a hashable base (eq_default=False) so the propagated `eq=True` is observable:
+# it synthesizes `__eq__` and sets `__hash__ = None`, making instances unhashable.
+@dataclass_transform(eq_default=False)
+class ModelMeta(type): ...
+class ModelBase(metaclass=ModelMeta): ...
+
+class EqBase(ModelBase, eq=True): ...
+class Eq(EqBase):
+    x: int
+
+# Control: a subclass that doesn't inherit `eq=True` stays hashable.
+class Plain(ModelBase):
+    y: int
+
+def f(x: Hashable): pass
+f(Plain(y=1))
+f(Eq(x=1))  # E: Argument `Eq` is not assignable to parameter `x` with type `Hashable`
+    "#,
+);
+
+testcase!(
+    test_call_transform,
+    r#"
+from typing import dataclass_transform
+
+@dataclass_transform()
+def build(**kwargs): ...
+
+@build()
+class C:
+    x: int
+C(x=0)
+C(x="oops")  # E: `Literal['oops']` is not assignable to parameter `x` with type `int`
+    "#,
+);
+
+testcase!(
+    test_frozen_default,
+    r#"
+from typing import dataclass_transform, Any
+@dataclass_transform()
+def build_default_mutable(**kwargs) -> Any: ...
+@dataclass_transform(frozen_default=True)
+def build_default_frozen(**kwargs) -> Any: ...
+
+@build_default_mutable()
+class Mutable1:
+    x: int
+@build_default_mutable(frozen=True)
+class Frozen1:
+    x: int
+@build_default_frozen()
+class Frozen2:
+    x: int
+@build_default_frozen(frozen=False)
+class Mutable2:
+    x: int
+
+def f(mut1: Mutable1, mut2: Mutable2, froz1: Frozen1, froz2: Frozen2):
+    mut1.x = 42
+    mut2.x = 42
+    froz1.x = 42  # E: frozen dataclass member
+    froz2.x = 42  # E: frozen dataclass member
+    "#,
+);
+
+testcase!(
+    test_class_keyword,
+    r#"
+from typing import dataclass_transform
+@dataclass_transform()
+class Base: ...
+class Data(Base, frozen=True):
+    x: int
+data = Data(x=0)
+data.x = 42  # E: frozen dataclass member
+    "#,
+);
+
+testcase!(
+    test_field_specifier,
+    r#"
+from typing import dataclass_transform, Any
+def field(**kwargs) -> Any: ...
+@dataclass_transform(field_specifiers=(field,))
+def build(x): ...
+@build
+class C:
+    x: int = field()
+C(x=0)
+C()  # E: Missing argument `x`
+    "#,
+);
+
+testcase!(
+    test_class_field_specifier_required,
+    r#"
+from typing import dataclass_transform, Any
+class CustomField:
+    def __init__(self, **kwargs: Any) -> None: ...
+@dataclass_transform(field_specifiers=(CustomField,))
+def build(x): ...
+@build
+class C:
+    x: int = CustomField()  # E: `CustomField` is not assignable to `int`
+C(x=0)
+C()  # E: Missing argument `x`
+    "#,
+);
+
+testcase!(
+    test_class_field_specifier_optional,
+    r#"
+from typing import dataclass_transform, Any
+class CustomField:
+    def __init__(self, *, default: Any = ..., **kwargs: Any) -> None: ...
+@dataclass_transform(field_specifiers=(CustomField,))
+def build(x): ...
+@build
+class C:
+    x: str = CustomField(default="foo")  # E: `CustomField` is not assignable to `str`
+C(x="bar")
+C()  # OK because `default` gives `x` a default
+    "#,
+);
+
+testcase!(
+    test_class_field_specifier_with_str_mixin,
+    r#"
+from typing import dataclass_transform, Any
+class CustomField(str):
+    def __new__(cls, *, default: Any = ..., **kwargs: Any) -> "CustomField":
+        return super().__new__(cls)
+    def __init__(self, *, default: Any = ..., **kwargs: Any) -> None: ...
+@dataclass_transform(field_specifiers=(CustomField,))
+def build(x): ...
+@build
+class C:
+    x: int = CustomField()  # E: `CustomField` is not assignable to `int`
+    y: str = CustomField(default="foo")  # CustomField is a str, so this is fine
+C(x=0)
+C(x=0, y="bar")
+C()  # E: Missing argument `x`
+    "#,
+);
+
+testcase!(
+    test_factory,
+    r#"
+from typing import dataclass_transform, Any
+def field(**kwargs) -> Any: ...
+@dataclass_transform(field_specifiers=(field,))
+def build(x): ...
+@build
+class C:
+    x: int = field(factory=int)
+C(x=0)
+C()  # OK because `factory` gives `x` a default
+    "#,
+);
+
+testcase!(
+    test_alias,
+    r#"
+from typing import dataclass_transform, Any, assert_type
+def my_field(**kwargs) -> Any: ...
+@dataclass_transform(field_specifiers=(my_field,))
+def build(x): ...
+@build
+class C:
+    x: int = my_field(alias="not_my_x")
+c = C(not_my_x=0)
+assert_type(c.x, int)
+    "#,
+);
+
+testcase!(
+    test_set_init_through_overload,
+    r#"
+from typing import dataclass_transform, overload, Any, Literal
+
+@overload
+def field(name: None = None, init: Literal[False] = False) -> Any: ...
+@overload
+def field(name: str, init: Literal[True] = True) -> Any: ...
+def field(name: str | None = None, init: bool = False) -> Any: ...
+
+@dataclass_transform(field_specifiers=(field,))
+def build(x): ...
+@build
+class C:
+    x: int = field()
+    y: str = field(name='y')
+C(y='hello world')
+    "#,
+);
+
+testcase!(
+    test_field_default,
+    r#"
+from typing import dataclass_transform, Any
+def field(kw_only: bool = True) -> Any: ...
+@dataclass_transform(field_specifiers=(field,))
+def build(x): ...
+@build
+class C:
+    x: int = field()
+C(x=0)
+C(0)  # E: Expected argument `x` to be passed by name
+    "#,
+);
+
+testcase!(
+    test_converter,
+    r#"
+from typing import dataclass_transform, Any
+def my_field(**kwargs) -> Any: ...
+@dataclass_transform(field_specifiers=(my_field,))
+def build(x): ...
+def int_to_str(x: int) -> str:
+    return str(x)
+@build
+class C:
+    x: str = my_field(converter=int_to_str)
+C(x=0)
+C(x="oops")  # E: `Literal['oops']` is not assignable to parameter `x` with type `int`
+    "#,
+);
+
+testcase!(
+    test_set_attr_with_converter,
+    r#"
+from typing import dataclass_transform, Any
+def my_field(**kwargs) -> Any: ...
+@dataclass_transform(field_specifiers=(my_field,))
+def build(x): ...
+def int_to_str(x: int) -> str:
+    return str(x)
+@build
+class C:
+    x: str = my_field(converter=int_to_str)
+c = C(x=0)
+c.x = 42
+c.x = "oops"  # E: `Literal['oops']` is not assignable to attribute `x` with type `int`
+    "#,
+);
+
+testcase!(
+    test_class_converter,
+    r#"
+from typing import dataclass_transform, Any
+def my_field(**kwargs) -> Any: ...
+@dataclass_transform(field_specifiers=(my_field,))
+def build(x): ...
+
+class Converter:
+    def __init__(self, x: int) -> None: ...
+
+@build
+class Data:
+    x: Converter = my_field(converter=Converter)
+Data(x=0)
+Data(x=Converter(0))  # E: `Converter` is not assignable to parameter `x` with type `int`
+    "#,
+);
+
+testcase!(
+    test_overloaded_converter,
+    r#"
+from typing import dataclass_transform, overload, Any
+def my_field(**kwargs) -> Any: ...
+@dataclass_transform(field_specifiers=(my_field,))
+def build(x): ...
+
+class Converter1:
+    @overload
+    def __init__(self, x: int) -> None: ...
+    @overload
+    def __init__(self, x: str) -> None: ...
+    def __init__(self, x): ...
+
+@build
+class Data1:
+    x: Converter1 = my_field(converter=Converter1)
+Data1(x=0)
+Data1(x="")
+Data1(x=Converter1(0))  # E: `Converter1` is not assignable to parameter `x` with type `int | str`
+
+@overload
+def converter2(x: bytes) -> int: ...
+@overload
+def converter2(x: str) -> int: ...
+def converter2(x): return int(x)
+
+@build
+class Data2:
+    x: int = my_field(converter=converter2)
+Data2(x=b"")
+Data2(x="")
+Data2(x=0)  # E: `Literal[0]` is not assignable to parameter `x` with type `bytes | str`
+    "#,
+);
+
+testcase!(
+    test_builtin_class_converter,
+    r#"
+from typing import dataclass_transform, Any
+def my_field(**kwargs) -> Any: ...
+@dataclass_transform(field_specifiers=(my_field,))
+def build(x): ...
+@build
+class Data:
+    x: int = my_field(converter=int)
+
+class NotConvertibleToInt: ...
+
+Data(x="42")
+Data(x=NotConvertibleToInt())  # E: `NotConvertibleToInt` is not assignable to parameter `x`
+    "#,
+);
+
+testcase!(
+    test_existing_init_decorator,
+    r#"
+from typing import dataclass_transform, reveal_type
+@dataclass_transform()
+def build[T](cls: type[T]) -> type[T]: ...
+
+@build
+class A:
+    def __init__(self, x: int) -> None: ...
+    y: str
+# `__init__` is not synthesized when one already exists
+reveal_type(A.__init__)  # E: (self: A, x: int) -> None
+
+class B(A): ...
+# inheriting from `A` still does not synthesize an `__init__`
+reveal_type(B.__init__)  # E: (self: B, x: int) -> None
+
+@build
+class C(A): ...
+# inheriting from `A` and reapplying `@build` synthesizes an `__init__`
+reveal_type(C.__init__)  # E: (self: C, y: str) -> None
+    "#,
+);
+
+testcase!(
+    test_existing_init_base_class,
+    r#"
+from typing import dataclass_transform, reveal_type
+@dataclass_transform()
+class Base:
+    def __init__(self, x: int) -> None: ...
+
+class A(Base): ...
+# __init__ in `Base` is ignored
+reveal_type(A.__init__)  # E: (self: A) -> None
+
+class B(Base):
+    def __init__(self, y: str) -> None: ...
+    z: bool
+# __init__ is not synthesized when one already exists
+reveal_type(B.__init__)  # E: (self: B, y: str) -> None
+
+class C(B): ...
+# inheriting from `B` synthesizes an `__init__`
+reveal_type(C.__init__)  # E: (self: C, z: bool) -> None
+    "#,
+);
+
+fn overloaded_transform_env() -> TestEnv {
+    TestEnv::one_with_path(
+        "foo",
+        "foo.pyi",
+        r#"
+from typing import Any, dataclass_transform, overload
+@overload
+def create() -> Any: ...
+@overload
+@dataclass_transform()
+def create[T](cls: type[T]) -> type[T]: ...
+    "#,
+    )
+}
+
+testcase!(
+    test_overloaded_transform,
+    overloaded_transform_env(),
+    r#"
+import foo
+@foo.create
+class C:
+    x: int
+C(x=0)
+    "#,
+);
+
+testcase!(
+    test_lower_version,
+    TestEnv::new_with_version(PythonVersion::new(3, 10, 0)),
+    r#"
+from typing_extensions import dataclass_transform
+@dataclass_transform()
+def decorate(cls):
+    return cls
+@decorate
+class A:
+    x: int
+A(x=0)
+    "#,
+);
+
+testcase!(
+    test_class_method_field_ignored_by_dataclass,
+    r#"
+from typing import Any, dataclass_transform
+
+@dataclass_transform()
+class ModuleBase: ...
+
+class Module(ModuleBase):
+    @classmethod
+    def foo(cls) -> None:
+        cls.field: Any = None
+
+class SmallModule(Module):
+    x: int
+
+SmallModule(x=1)
+    "#,
+);
+
+testcase!(
+    test_init_subclass_field_ignored_by_dataclass,
+    r#"
+from typing import Any, dataclass_transform
+
+@dataclass_transform()
+class ModuleBase: ...
+
+class Module(ModuleBase):
+    @classmethod
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        cls.field: Any = None
+
+class SmallModule(Module):
+    x: int
+
+SmallModule(x=1)
+    "#,
+);
+
+testcase!(
+    test_classmethod_shadowing_base_annotation_ignored,
+    r#"
+from typing import Any, dataclass_transform, reveal_type
+
+@dataclass_transform()
+class ModuleBase:
+    field: Any | None
+
+class Module(ModuleBase):
+  @classmethod
+  def foo(cls) -> None:
+    cls.field: Any = None
+
+reveal_type(Module.__init__)  # E: revealed type: (self: Module) -> None
+Module()
+    "#,
+);
+
+testcase!(
+    test_method_shadowing_base_annotation_ignored,
+    r#"
+from typing import Any, dataclass_transform, reveal_type
+
+@dataclass_transform()
+class ModuleBase:
+    field: Any | None
+
+class Module(ModuleBase):
+  def foo(self) -> None:
+    self.field: Any = None
+
+reveal_type(Module.__init__)  # E: revealed type: (self: Module) -> None
+Module()
+    "#,
+);
+
+testcase!(
+    test_property_override_field,
+    r#"
+from typing import dataclass_transform
+
+@dataclass_transform()
+class Base: ...
+
+class A(Base):
+    foo: int
+
+class B(A):
+    @property
+    def foo(self) -> int:  # E: Class member `B.foo` overrides parent class `A` in an inconsistent manner
+        return 1
+# `foo` keeps `A`'s required `int` field rather than the property's type.
+B(foo=5)
+B(foo="x")  # E: `Literal['x']` is not assignable to parameter `foo` with type `int`
+B()  # E: Missing argument `foo`
+    "#,
+);

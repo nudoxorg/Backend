@@ -6,15 +6,28 @@
 //! engine while each capability boundary has a focused implementation module.
 
 mod authority;
+mod file_facts_relation;
 mod manifest;
 mod output;
 mod profile;
 mod relation;
+mod semantic_capture_relation;
 mod semantic_relation;
 
 pub use authority::WorkspaceViewProducerAdmission;
 pub use authority::coverage_from_admitted_authority;
 pub(crate) use authority::{authorized_coverage, complete_coverage};
+pub use file_facts_relation::{
+    ProductSourceFactsDeclarationRef, ProductSourceFactsDirectory, ProductSourceFactsDirectoryRef,
+    ProductSourceFactsPage, ProductSourceFactsPageRef, ProductSourceFactsPageView,
+    ProductSourceFileFactsAdmission, ProductSourceFileFactsInline, ProductSourceFileFactsLookup,
+    ProductSourceFileFactsManifest, ProductSourceFileFactsPaged, ProductSourceFileFactsRecord,
+    ProductSourceFileFactsRelation, ProductSourceFileFactsRootSchema, ProductSourceFileFactsStatus,
+    ProductSourceFileFactsUpdate, admit_product_source_file_facts, build_product_source_file_facts,
+    product_source_facts_page_key, product_source_file_facts_record_key,
+    product_source_file_facts_relation, product_source_file_facts_root_object,
+    product_source_file_facts_row_keys,
+};
 pub use manifest::{
     ProductClosureManifestClaim, admit_product_closure_manifest, execution_input_basis,
     execution_input_basis_from_source, execution_input_manifest,
@@ -39,13 +52,19 @@ pub use profile::{
     execution_manifest, execution_resources, profile_descriptor, profile_ids, profile_output_len,
 };
 pub use relation::{
-    BuiltinInputSchema, Container, DeclarationKind, DeclarationRetention, ProductFileRef,
-    ProductInput, ProductProjectFileMembership, ProductProjectMembership, ProductProjectRef,
-    ProductSourceDeltaFacts, ProductSourceMembershipPageRef, ProductSourceProjectUpdate,
-    ProductSourceRecord, ProductSourceRelation, ProductSourceRetentionFacts, ProductSourceSnapshot,
+    BuiltinInputSchema, Container, DeclarationKind, DeclarationRetention,
+    MAX_PROJECT_MEMBERSHIP_PAGE_FILES, ProductFileRef, ProductInput, ProductProjectFileMembership,
+    ProductProjectMembership, ProductProjectRef, ProductSourceDeltaFacts,
+    ProductSourceMembershipPageRef, ProductSourceProjectUpdate, ProductSourceRecord,
+    ProductSourceRelation, ProductSourceRetentionFacts, ProductSourceSnapshot,
     ProductSourceTransition, RetainedDeclarations, SourceDeclaration, SourceLanguage,
     SourceLocation, SourceUnavailableReason, legacy_product_source_file_key,
     product_source_file_key, product_source_membership_page_key,
+};
+pub use semantic_capture_relation::{
+    ProductSemanticCaptureOutcome, ProductSemanticCaptureRecord, ProductSemanticCaptureRelation,
+    ProductSemanticCaptureRootSchema, semantic_capture_relation, semantic_capture_root_from_object,
+    semantic_capture_root_object, semantic_capture_root_pointer_key,
 };
 pub use semantic_relation::{
     ActivatedSemanticPublication, PartialSemanticCoverage, ProductSemanticPublicationKey,
@@ -53,7 +72,8 @@ pub use semantic_relation::{
     ProductSemanticPublicationSnapshot, SemanticActivationError, SemanticPublicationClaim,
     SemanticPublicationCoverage, SemanticPublicationInput, SemanticPublicationRetentionFacts,
     SemanticPublicationSelection, SemanticPublicationSelectionError,
-    SemanticPublicationTargetError, SemanticUnavailableReason,
+    SemanticPublicationTargetError, SemanticPublicationVersion, SemanticSourceCapture,
+    SemanticUnavailableReason,
 };
 
 /// Builds a checked Product-shaped source fixture for compatibility adapters.

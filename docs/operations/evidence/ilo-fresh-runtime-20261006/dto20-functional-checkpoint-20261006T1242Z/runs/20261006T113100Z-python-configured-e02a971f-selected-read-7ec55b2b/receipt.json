@@ -1,0 +1,358 @@
+{
+  "schema": "nudox.private-functional-surface-read.v1",
+  "original_run": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f",
+  "original_state_mutated": false,
+  "original_source_mutated": false,
+  "root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b",
+  "candidate_manifest": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "candidate_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "source_tree_sha256": "38ddfb8572a3761e03ce028c8f8ff4756613275b516789cd7dbd9093365b790f",
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/home",
+    "XDG_CONFIG_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/home/.config",
+    "XDG_DATA_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/home/.local/share",
+    "XDG_STATE_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/home/.local/state",
+    "TMPDIR": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/tmp",
+    "PATH": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin:/nix/store/1xklj6dmgcpgz60c9w2ynaq7ynzfsrrq-go-1.26.4/share/go/bin:/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin:/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin:/root/nudox-corpus-20261006/corpora/next-react-alias-fixture/node_modules/typescript/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "USER": "root",
+    "LOGNAME": "root",
+    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "{\"version\":1,\"paths\":[{\"variable\":\"NUDOX_PYTHON\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,57,114,48,50,121,107,120,57,121,51,53,108,102,52,103,107,54,103,99,51,48,103,110,97,103,49,121,56,110,99,112,55,45,112,121,116,104,111,110,51,45,51,46,49,51,46,49,53,47,98,105,110,47,112,121,116,104,111,110,51,46,49,51]}},{\"variable\":\"NUDOX_TSC\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115,47,116,121,112,101,115,99,114,105,112,116,47,98,105,110,47,116,115,99]}},{\"variable\":\"NUDOX_GO\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111,47,98,105,110,47,103,111]}},{\"variable\":\"NUDOX_TYPESCRIPT_NODE\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,48,110,98,112,48,51,48,51,56,115,51,51,99,107,55,49,50,121,120,57,50,49,57,103,99,106,51,97,50,115,113,109,45,110,111,100,101,106,115,45,115,108,105,109,45,50,52,46,49,56,46,48,47,98,105,110,47,110,111,100,101]}},{\"variable\":\"NUDOX_TYPESCRIPT_MODULE_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115]}},{\"variable\":\"NUDOX_PYREFLY\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,113,100,120,122,120,107,119,104,49,51,98,103,118,53,48,48,54,54,102,107,50,107,97,51,112,49,122,112,110,106,97,112,45,112,121,114,101,102,108,121,45,49,46,50,46,48,45,100,101,118,46,49,47,98,105,110,47,112,121,114,101,102,108,121]}},{\"variable\":\"NUDOX_GO_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111]}}]}",
+    "BACKEND_LOCALD_BIN": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/disabled-auto-owner"
+  },
+  "observer_sha256": "491f4ab662812bb98a2c29af31382c34e9b7ab189645b56f408aad63070250f2",
+  "helper_sha256": "a67e5523d7ad5748999b9903f1bbf2ec01ddade8191d5d3b945e71810132944f",
+  "resource_before": {
+    "memory_available_kib": 54270852,
+    "disk_free_bytes": 57068462080
+  },
+  "commands": [
+    {
+      "label": "initial-health",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project",
+        "--endpoint",
+        "/tmp/nudox-read-05bc79f292dc4e9eb6.sock",
+        "--passive",
+        "health"
+      ],
+      "exit": 0,
+      "seconds": 0.09928676497656852,
+      "stdout_bytes": 805,
+      "stdout_sha256": "c7dfb32f7fad8e508109c83e24f7a651fe64334080a63e3afdb28a644fdfc5d7",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "cli-search",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project",
+        "--endpoint",
+        "/tmp/nudox-read-05bc79f292dc4e9eb6.sock",
+        "search",
+        "Command",
+        "--limit",
+        "10"
+      ],
+      "exit": 0,
+      "seconds": 1.4756595710059628,
+      "stdout_bytes": 10373,
+      "stdout_sha256": "2853ecee2825001d5acac2edd7e415a7295a68370b142818a7dceef3a10f3635",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "mcp-search",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project",
+        "--endpoint",
+        "/tmp/nudox-read-05bc79f292dc4e9eb6.sock"
+      ],
+      "exit": 0,
+      "seconds": 0.014285718905739486,
+      "stdout_bytes": 19497,
+      "stdout_sha256": "2e881d3edeac2600673c1e4ecb3abca51744891cb9b73fcfdeaf68b539e04c9e",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "cli-selected-source",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project",
+        "--endpoint",
+        "/tmp/nudox-read-05bc79f292dc4e9eb6.sock",
+        "source",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project::semantic::27211b2fcfd96116cbf6ddcd71b6174fdc32043174d2a02141e9a8387c4107eb::Command"
+      ],
+      "exit": 0,
+      "seconds": 0.01212560897693038,
+      "stdout_bytes": 30710,
+      "stdout_sha256": "f02c7c9f43369659d77b1838550f0f278c607d30f83f38ab803eb9aad1ce7745",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "mcp-selected-source",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project",
+        "--endpoint",
+        "/tmp/nudox-read-05bc79f292dc4e9eb6.sock"
+      ],
+      "exit": 0,
+      "seconds": 0.011768211959861219,
+      "stdout_bytes": 43565,
+      "stdout_sha256": "d6404ea81a2b80ca45aea87932ded5309051642205175946fdbc0a6537440666",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "cli-selected-show",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project",
+        "--endpoint",
+        "/tmp/nudox-read-05bc79f292dc4e9eb6.sock",
+        "show",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project::semantic::27211b2fcfd96116cbf6ddcd71b6174fdc32043174d2a02141e9a8387c4107eb::Command"
+      ],
+      "exit": 0,
+      "seconds": 0.2970656779361889,
+      "stdout_bytes": 32042,
+      "stdout_sha256": "8014d54588ed1f44e1520f9cfea6652425bba1e918b34eabd9a9f5515045533d",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "mcp-selected-document",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project",
+        "--endpoint",
+        "/tmp/nudox-read-05bc79f292dc4e9eb6.sock"
+      ],
+      "exit": 0,
+      "seconds": 0.29846971202641726,
+      "stdout_bytes": 45385,
+      "stdout_sha256": "20c1a9c5a21acadb77a6732c6c208fb6b120e2b15ec870ab29893b1a8580aa1e",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "cli-selected-references",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project",
+        "--endpoint",
+        "/tmp/nudox-read-05bc79f292dc4e9eb6.sock",
+        "references",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project::semantic::27211b2fcfd96116cbf6ddcd71b6174fdc32043174d2a02141e9a8387c4107eb::Command"
+      ],
+      "exit": 0,
+      "seconds": 0.2369956560432911,
+      "stdout_bytes": 328,
+      "stdout_sha256": "ccf9b97a0e4408f2a9160915921afefebda3ab5881a855fca3d6c36413ba66b5",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "mcp-selected-references",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project",
+        "--endpoint",
+        "/tmp/nudox-read-05bc79f292dc4e9eb6.sock"
+      ],
+      "exit": 0,
+      "seconds": 0.23682678095065057,
+      "stdout_bytes": 2133,
+      "stdout_sha256": "b898e18bc54767a519b4371593cd5d21a45ba6ff63927c4bb30af241a530001c",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "cli-selected-graph",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project",
+        "--endpoint",
+        "/tmp/nudox-read-05bc79f292dc4e9eb6.sock",
+        "graph",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project::semantic::27211b2fcfd96116cbf6ddcd71b6174fdc32043174d2a02141e9a8387c4107eb::Command"
+      ],
+      "exit": 0,
+      "seconds": 0.25213080702815205,
+      "stdout_bytes": 6378,
+      "stdout_sha256": "6d3459acf8fb7c49a6b7ac874ae65d8e3e2e1560fe5e5fb004555a2792126d2e",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "mcp-selected-graph",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project",
+        "--endpoint",
+        "/tmp/nudox-read-05bc79f292dc4e9eb6.sock"
+      ],
+      "exit": 0,
+      "seconds": 0.24662185704801232,
+      "stdout_bytes": 12745,
+      "stdout_sha256": "2579f7089d786927139c7fe7d5f9c2c5035aa4a17e320b0cfb52b98fbd009282",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "final-health",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f/project",
+        "--endpoint",
+        "/tmp/nudox-read-05bc79f292dc4e9eb6.sock",
+        "--passive",
+        "health"
+      ],
+      "exit": 0,
+      "seconds": 0.08870741294231266,
+      "stdout_bytes": 805,
+      "stdout_sha256": "c7dfb32f7fad8e508109c83e24f7a651fe64334080a63e3afdb28a644fdfc5d7",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "owners": [
+    {
+      "label": "initial-clone-read",
+      "pid": 1030423,
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f-selected-read-7ec55b2b/state",
+        "--endpoint",
+        "/tmp/nudox-read-05bc79f292dc4e9eb6.sock",
+        "--idle-timeout-ms",
+        "0"
+      ],
+      "live_readiness_seconds": 6.569562925025821,
+      "retirement": {
+        "run": "initial-clone-read",
+        "binary_sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "exit_code": -15,
+        "stdout": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "readers_complete": true
+      }
+    }
+  ],
+  "whole_package_pass": false,
+  "source_presentations": [
+    {
+      "route": "source",
+      "exact_cli_mcp_parity": true
+    },
+    {
+      "route": "document",
+      "exact_cli_mcp_parity": true
+    },
+    {
+      "route": "references",
+      "exact_cli_mcp_parity": true
+    },
+    {
+      "route": "graph",
+      "exact_cli_mcp_parity": true
+    }
+  ]
+}

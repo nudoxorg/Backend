@@ -1,0 +1,54 @@
+{
+  "refused-capture-reconcile-direct-controls/receipt.json": {
+    "bytes": 2342,
+    "sha256": "2ca6eb193d9c27fcc343d27a9adc15b76b2b2e7848fa0ab92d08054d4b8f5839"
+  },
+  "refused-capture-reconcile-direct-controls/search_selection_refuses_a_view_from_the_previous_workspace_frontier.txt": {
+    "bytes": 116,
+    "sha256": "b0ad4d80d297aeedfce9efe8a33133dcab7e69725158a50eabd0429d4f3ac265"
+  },
+  "refused-capture-reconcile-direct-controls/source_capture_terminalization_failure_keeps_primary_typed_refusal.txt": {
+    "bytes": 229,
+    "sha256": "cecfea950b702d33d258944985fce23e3e578f30f328a2eb0230ba2fe1985938"
+  },
+  "refused-capture-reconcile-direct-controls/stale_view_negative_actual.txt": {
+    "bytes": 219,
+    "sha256": "5c37211abf3cd25da2308d7bdf80dc8a7eca91356dcfb2ad0a31d94e3cf502f3"
+  },
+  "refused-capture-reconcile-test-inflight/cargo.log": {
+    "bytes": 281356,
+    "sha256": "e6077db5dbe1b90187bcf9804042be5c681a8b6d0ca8348e05f29e52c8ca265d"
+  },
+  "refused-capture-reconcile-test-inflight/disk-guard.jsonl": {
+    "bytes": 6617,
+    "sha256": "e5e5e69731269d6364adc40c56f453323e74d18bb3ee38caaf602f062d624424"
+  },
+  "refused-capture-reconcile-test-inflight/receipt.json": {
+    "bytes": 825,
+    "sha256": "0291000bf87c13fac66a5093d769774e2db3f364bd942ea181886e7a5ebc420b"
+  },
+  "refused-capture-reconcile-test-retry/cargo.log": {
+    "bytes": 261397,
+    "sha256": "759f88cc3727181391a69d52151810c964a8d92fe394a985b1b1d5bc395b502b"
+  },
+  "refused-capture-reconcile-test-retry/disk-guard.jsonl": {
+    "bytes": 9184,
+    "sha256": "7d147016f29e74a0388c0854c9a21749e91b759b51b2d8c05303f15d1655e912"
+  },
+  "refused-capture-reconcile-test-retry/receipt.json": {
+    "bytes": 827,
+    "sha256": "2881c4a45de991d7c5383ddd2dc8ed5ae06c33f5f4ac27ccc5fd7f1d0f7d50b7"
+  },
+  "test-capture-reconcile-inflight.py": {
+    "bytes": 2125,
+    "sha256": "54ba3c3d8fea7d7a718669771e5c456c4ab34e4432f14afc82d1ad00b63499b2"
+  },
+  "test-capture-reconcile-retry.py": {
+    "bytes": 2122,
+    "sha256": "272fc666ead0df7049c5adc03381b8609ee7904c6699f7664a4e547bb2123af2"
+  },
+  "verified-source.patch": {
+    "bytes": 3769,
+    "sha256": "bb2883801de62210fbf803d1226c4584476db0cc04c1fc2de7bd06980c070c6a"
+  }
+}

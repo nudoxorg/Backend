@@ -20,6 +20,86 @@ fn basis() -> backend_library::Basis {
 }
 
 #[test]
+fn ranked_search_presentation_agrees_with_successor_pages_without_mutating_the_view() {
+    use backend_library::{Cursor, Frontier, Library, Query, QueryLimit, Row, ViewRoot, view_key};
+
+    let basis = basis();
+    let root = ViewRoot::new_incomplete(
+        view_key(b"ranked-presentation-control"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        ["controller", "external", "service"]
+            .into_iter()
+            .map(|label| Row::new(RowId::Symbol(symbol_key(label)), basis, label))
+            .collect(),
+        vec![Coverage::Unavailable {
+            lane: Lane::Exact,
+            reason: Reason::NoIndex,
+        }],
+    )
+    .expect("incomplete presentation fixture never claims compiler authority");
+    let canonical_ids = root.rows().iter().map(|row| row.id).collect::<Vec<_>>();
+    let ranked_ids = canonical_ids.iter().copied().rev().collect::<Vec<_>>();
+    let expected = ranked_ids
+        .iter()
+        .map(|id| root.row(*id).expect("selected row").label.clone())
+        .collect::<Vec<_>>();
+    let library = Library::from_view(root.clone(), Cursor::for_view_root(&root))
+        .expect("actual immutable library");
+    let full = library
+        .search_from_ranked_ids(
+            &Query::new("service", root.root(), QueryLimit::new(10).expect("credit")),
+            &ranked_ids,
+        )
+        .expect("actual owner ranked page");
+    let coordinates = |list: &RecordList| {
+        list.records()
+            .iter()
+            .map(|record| record.identity().coordinate().as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(coordinates(&record_list("service", &full)), expected);
+
+    let mut query = Query::new("service", root.root(), QueryLimit::new(1).expect("credit"));
+    let mut paged = Vec::new();
+    for _ in 0..ranked_ids.len() {
+        let page = library
+            .search_from_ranked_ids(&query, &ranked_ids)
+            .expect("actual successor page");
+        paged.extend(coordinates(&record_list("service", &page)));
+        if let Some(cursor) = page.next {
+            query = query.with_cursor(cursor);
+        } else {
+            break;
+        }
+    }
+    assert_eq!(paged, expected, "page credit cannot change relevance order");
+    assert_eq!(
+        library
+            .view()
+            .rows()
+            .iter()
+            .map(|row| row.id)
+            .collect::<Vec<_>>(),
+        canonical_ids,
+        "presentation must preserve canonical relation and cursor proofs"
+    );
+    assert_eq!(
+        coordinates(&record_list_from_rows(
+            "names",
+            root.rows(),
+            root.coverage(),
+            false
+        )),
+        root.rows()
+            .iter()
+            .map(|row| row.label.clone())
+            .collect::<Vec<_>>(),
+        "unscored names and graph rows retain their original order"
+    );
+}
+
+#[test]
 fn declaration_coordinates_round_trip_exactly() {
     let identity = Identity::parse(DECLARATION);
     assert_eq!(identity.coordinate().as_str(), DECLARATION);
@@ -198,6 +278,62 @@ fn key_tags_are_eight_hex_and_never_parsed_back() {
 }
 
 #[test]
+fn selected_symbol_operand_uses_retained_row_bytes_and_preserves_key_families() {
+    let key = symbol_key("selected-row-not-the-coordinate-image-key");
+    let label = format!("/abs/p::semantic::{}::ferris", "ab".repeat(32));
+    let row = backend_library::Row::new(RowId::Symbol(key), basis(), label);
+    let record = Record::from_row(&row);
+    let answer = Answer::Records(Box::new(RecordList::new(
+        "ferris",
+        CoverageLine::new(&[], Some(1)),
+        vec![record],
+    )));
+    for detail in [Detail::Summary, Detail::Full] {
+        let encoded = encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+            .expect("bounded actual row projection");
+        let value: serde_json::Value = serde_json::from_slice(&encoded.bytes).expect("JSON");
+        let identity = &value["records"][0]["identity"];
+        assert_eq!(
+            identity["key"],
+            IdentityKey::Symbol(key).tag().expect("tag").to_string()
+        );
+        assert_eq!(
+            identity["semantic_data"],
+            serde_json::json!({
+                "kind":"selected-symbol-id", "value":key.as_bytes(),
+            })
+        );
+        assert_ne!(
+            identity["semantic_data"]["value"],
+            serde_json::json!(vec![0xabu8; 32])
+        );
+        let decoded: IdentitySemanticData =
+            serde_json::from_value(identity["semantic_data"].clone())
+                .expect("closed retained selector");
+        let IdentitySemanticData::SelectedSymbolId(id) = decoded;
+        assert_eq!(id.bytes(), key.as_bytes());
+    }
+    for key in [
+        IdentityKey::Package(package_key(PROJECT)),
+        IdentityKey::Absent,
+    ] {
+        let identity = IdentityDto::new(&Identity::parse_with_key(DECLARATION, key));
+        assert!(
+            identity.semantic_data.is_none(),
+            "other planes are not shape selectors"
+        );
+    }
+    for bad in [
+        serde_json::json!({"kind":"package-id","value":vec![6u8;32]}),
+        serde_json::json!({"kind":"selected-symbol-id","value":vec![6u8;4]}),
+        serde_json::json!({"kind":"selected-symbol-id","value":vec![0u8;32]}),
+        serde_json::json!({"kind":"selected-symbol-id","value":key.as_bytes(),"extra":true}),
+    ] {
+        assert!(serde_json::from_value::<IdentitySemanticData>(bad).is_err());
+    }
+}
+
+#[test]
 fn an_unavailable_lane_never_reads_like_an_empty_success() {
     let complete = CoverageLine::new(&[Coverage::Complete], Some(12));
     assert_eq!(
@@ -296,36 +432,23 @@ fn a_fault_names_its_operand_its_cause_and_its_next_step() {
 }
 
 #[test]
-fn a_refusal_a_peer_flattened_into_a_message_is_still_a_typed_refusal() {
-    // A producer on the pre-typed reply schema sends only the failure's own
-    // text, and the shared client can only call that a protocol failure. Left
-    // alone, a mistyped coordinate reaches a reader as "a frame, DTO, or
-    // identity proof failed admission" — a sentence about wire proofs, in
-    // answer to a question about a name.
+fn a_display_string_never_becomes_an_admitted_command_failure() {
     let operand = Operand::Coordinate(Coordinate::new(DECLARATION));
-    let flattened = backend_client::ClientError::Protocol(
+    for message in [
         backend_library::CommandFailure::NotFound.to_string(),
-    );
-    let fault = Fault::from_client_error(&flattened, operand.clone());
-    assert_eq!(fault.slug(), FaultSlug::NotFound);
-    assert_eq!(fault.cause().slug(), CauseSlug::Absent);
-    assert_eq!(fault.operand().render(), DECLARATION);
-
-    let invalid = backend_client::ClientError::Protocol(
         backend_library::CommandFailure::InvalidQuery("limit is out of range".to_owned())
             .to_string(),
-    );
-    let fault = Fault::from_client_error(&invalid, operand.clone());
-    assert_eq!(fault.slug(), FaultSlug::InvalidQuery);
-    assert_eq!(fault.cause().sentence(), "limit is out of range");
-
-    // A message this model does not recognise stays a protocol failure: a
-    // surface must not guess a class it was not told.
-    let unknown =
-        backend_client::ClientError::Protocol("the frame length prefix was truncated".to_owned());
-    let fault = Fault::from_client_error(&unknown, operand);
-    assert_eq!(fault.slug(), FaultSlug::Protocol);
-    assert!(fault.cause().sentence().contains("truncated"));
+        "the frame length prefix was truncated".to_owned(),
+    ] {
+        let fault = Fault::from_client_error(
+            &backend_client::ClientError::Protocol(message),
+            operand.clone(),
+        );
+        assert_eq!(fault.slug(), FaultSlug::Protocol);
+        assert_eq!(fault.cause().slug(), CauseSlug::Unproven);
+        assert_eq!(fault.operand().render(), DECLARATION);
+        assert!(fault.compiler_failure().is_none());
+    }
 }
 
 #[test]
@@ -848,6 +971,165 @@ fn every_registry_row_has_exactly_one_grammar() {
 }
 
 #[test]
+fn semantic_shapes_cli_and_mcp_grammar_preserve_exact_selected_operands_and_egress() {
+    let encoded = include_str!("../library/fixtures/semantic-shape-read.json");
+    let value: serde_json::Value = serde_json::from_str(encoded).expect("operands");
+    let grammar = grammar_for("semantic-shapes").expect("public shape grammar");
+    assert_eq!(grammar.tool(), "backend.semantic_shapes");
+    let mut cli = Invocation::new(grammar);
+    cli.push(encoded);
+    let mcp = Invocation::from_json(
+        grammar,
+        serde_json::json!({"request":value})
+            .as_object()
+            .expect("object"),
+    )
+    .expect("MCP operands");
+    let cli = lower(&cli, PROJECT).expect("CLI lowering");
+    let mcp = lower(&mcp, PROJECT).expect("MCP lowering");
+    let (Request::Surface(command), Request::Surface(other)) = (cli, mcp) else {
+        panic!("shared surface requests")
+    };
+    assert_eq!(command, other);
+    let Request::Surface(command) = Request::Surface(command) else {
+        panic!("shared SurfaceCommand required")
+    };
+    let backend_library::SurfaceCommand::SemanticShapes { request } = *command else {
+        panic!("shape command")
+    };
+    assert_eq!(request.symbols(), &[[6; 32]]);
+    let versions = product_view(&backend_library::SurfaceReply::SemanticVersions(Box::new(
+        [request.source().clone()],
+    )));
+    let versions_dto = crate::dto::ProductDto::new(&versions);
+    let crate::ProductSemanticData::Versions(selections) =
+        versions_dto.semantic_data.expect("typed source operands")
+    else {
+        panic!("version facet")
+    };
+    assert_eq!(selections.as_ref(), &[request.source().clone()]);
+    let mut from_named = value.clone();
+    from_named["source"] = serde_json::to_value(&selections[0]).expect("source operand");
+    let roundtrip: backend_library::SemanticShapeReadRequest =
+        serde_json::from_value(from_named).expect("named versions to shapes");
+    assert_eq!(roundtrip, request);
+    let export: backend_library::SemanticShapeExport = serde_json::from_str(include_str!(
+        "../library/fixtures/semantic-shape-egress-view.json"
+    ))
+    .expect("untrusted egress fixture");
+    let view = product_view(&backend_library::SurfaceReply::SemanticShapes(
+        export.clone(),
+    ));
+    let dto = crate::dto::ProductDto::new(&view);
+    assert_eq!(
+        dto.semantic_data,
+        Some(crate::ProductSemanticData::Shapes(export))
+    );
+    assert_eq!(dto.heading, "semantic-shapes");
+    assert!(
+        dto.records.is_empty(),
+        "no shape inference from declarations"
+    );
+}
+
+#[test]
+fn captured_semver_history_fits_once_and_preserves_the_complete_source_operand() {
+    // Actual successful public egress from the stopped configured Semver
+    // owner, not a fabricated wire certificate or a compiler-authority fixture.
+    let packet: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/semantic-versions-semver-public.json"
+    ))
+    .expect("captured complete public packet");
+    let reply: backend_library::SurfaceReply = serde_json::from_value(packet["surface"].clone())
+        .expect("complete source SurfaceReply, without removing any DTO fields");
+    assert_eq!(
+        serde_json::to_value(&reply).expect("source DTO"),
+        packet["surface"]
+    );
+    let backend_library::SurfaceReply::SemanticVersions(records) = &reply else {
+        panic!("captured semantic versions")
+    };
+    let source = &packet["surface"]["data"][0];
+    assert_eq!(
+        serde_json::to_vec(source).expect("source bytes").len(),
+        32_645
+    );
+    assert_eq!(
+        serde_json::to_vec(&source["history_status"])
+            .expect("history bytes")
+            .len(),
+        31_131
+    );
+    assert_eq!(
+        source["history_status"]["proof"]["images"]
+            .as_array()
+            .expect("catalog")
+            .len(),
+        42
+    );
+    let view = product_view(&reply);
+    let answer = Answer::Product(Box::new(view.clone()));
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let payload = encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+            .expect("one exact Semver catalog fits the unchanged budget");
+        assert_eq!(payload.budget.bytes, payload.bytes.len());
+        let value: serde_json::Value =
+            serde_json::from_slice(&payload.bytes).expect("product JSON");
+        assert_eq!(value["semantic_data"]["kind"], "versions");
+        assert_eq!(value["semantic_data"]["value"], packet["surface"]["data"]);
+        assert!(
+            value["records"][0]["history_status"]["proof"]
+                .get("images")
+                .is_none()
+        );
+        assert_eq!(
+            value["records"][0]["history_status"]["proof"]["reference_tip"],
+            source["history_status"]["proof"]["reference_tip"]
+        );
+        let decoded: ProductDto = serde_json::from_value(value.clone()).expect("typed product DTO");
+        assert_eq!(
+            decoded.semantic_data,
+            Some(ProductSemanticData::Versions(records.clone()))
+        );
+
+        // Copy the exact operand returned by the named surface into the shared
+        // shape grammar. This proves operand transport, not shape authority.
+        let mut operands: serde_json::Value =
+            serde_json::from_str(include_str!("../library/fixtures/semantic-shape-read.json"))
+                .expect("complete request grammar fixture");
+        operands["source"] = value["semantic_data"]["value"][0].clone();
+        let request: backend_library::SemanticShapeReadRequest = serde_json::from_value(operands)
+            .expect("exact published source remains a usable operand");
+        assert_eq!(request.source(), &records[0]);
+        assert_eq!(
+            serde_json::to_value(request.source()).expect("shape source DTO"),
+            *source
+        );
+
+        // Reproduce the old duplication at the display seam. It is the same
+        // complete source proof twice, not a larger or truncated fixture.
+        let mut duplicated = value;
+        duplicated["records"][0]["history_status"] = source["history_status"].clone();
+        assert!(encode_value(&duplicated, DEFAULT_RESPONSE_BUDGET_BYTES).is_err());
+    }
+
+    // A repeated captured display packet is only a budget control. It does not
+    // assert that an owner published two copies of the same selected version.
+    let oversized = Answer::Product(Box::new(product_view(
+        &backend_library::SurfaceReply::SemanticVersions(
+            vec![records[0].clone(), records[0].clone()].into_boxed_slice(),
+        ),
+    )));
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let error = encode_answer(&oversized, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+            .expect_err("complete exact operands that exceed the budget remain refused");
+        assert!(error.bytes > DEFAULT_RESPONSE_BUDGET_BYTES);
+        assert_eq!(error.budget, DEFAULT_RESPONSE_BUDGET_BYTES);
+        assert_eq!(oversized_fault(error).cause().slug(), CauseSlug::Oversized);
+    }
+}
+
+#[test]
 fn every_registry_row_is_reachable_by_both_a_cli_spelling_and_a_tool_name() {
     // The two surfaces address the same rows through different vocabularies.
     // Neither vocabulary is maintained by hand, and this is what says so: a row
@@ -998,9 +1280,10 @@ fn a_references_reply_renders_sites_with_their_provenance() {
     assert!(tags.contains(&"calls".to_owned()), "tags are {tags:?}");
     assert!(tags.contains(&"compiler".to_owned()), "tags are {tags:?}");
     assert!(
-        tags.iter().any(|tag| tag == "src/main.rs:40-46"),
+        tags.iter().any(|tag| tag == "src/main.rs [bytes40..46)"),
         "the source span must survive rendering, tags are {tags:?}"
     );
+    assert!(!tags.iter().any(|tag| tag == "src/main.rs:40-46"));
 }
 
 #[test]
@@ -1056,6 +1339,29 @@ fn mcp_add_without_execution_intent_lowers_to_interactive_default() {
         lower(&invocation, "/unused").expect("lower Add"),
         Request::Index(path) if path == PROJECT
     ));
+}
+
+#[test]
+fn outline_current_directory_uses_the_same_active_project_for_cli_and_mcp() {
+    let grammar = grammar_for("outline").expect("outline grammar");
+    for path in [".", "./", ".//"] {
+        let mut cli = Invocation::new(grammar);
+        cli.push(path);
+        let arguments = serde_json::json!({"path": path});
+        let mcp = Invocation::from_json(grammar, arguments.as_object().expect("object"))
+            .expect("outline invocation");
+        for invocation in [cli, mcp] {
+            assert!(
+                matches!(lower(&invocation, PROJECT).expect("active outline"), Request::Outline(root) if root == PROJECT)
+            );
+        }
+    }
+    let arguments = serde_json::json!({"path": "/abs/other-project"});
+    let invocation = Invocation::from_json(grammar, arguments.as_object().expect("object"))
+        .expect("other outline");
+    assert!(
+        matches!(lower(&invocation, PROJECT).expect("other root preserved"), Request::Outline(root) if root == "/abs/other-project")
+    );
 }
 
 #[test]

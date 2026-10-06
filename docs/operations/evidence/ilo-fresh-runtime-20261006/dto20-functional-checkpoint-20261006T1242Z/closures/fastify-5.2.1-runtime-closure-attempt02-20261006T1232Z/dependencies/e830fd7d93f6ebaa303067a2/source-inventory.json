@@ -1,0 +1,70 @@
+{
+  "files": [
+    {
+      "bytes": 630,
+      "path": ".eslintrc.yml",
+      "sha256": "b1ea981e2461f053646b08a616efcaba0d3b278b223957e9eb931bcbc3971ccc"
+    },
+    {
+      "bytes": 57,
+      "path": ".github/FUNDING.yml",
+      "sha256": "83e77adf3dbe6261917b160553f75cbb96de8e99c3259f4f1de85e1c6e4bd156"
+    },
+    {
+      "bytes": 582,
+      "path": ".github/workflows/build.yml",
+      "sha256": "f0f23bb3b380800e214b19abfd69c1b093131bb030c056fabdd9cddec7e785c5"
+    },
+    {
+      "bytes": 678,
+      "path": ".github/workflows/publish.yml",
+      "sha256": "56cbec53748d486f04b5c37bec8ea5e5588e02fb2882db8ce36c6e9689bfd2fc"
+    },
+    {
+      "bytes": 1074,
+      "path": "LICENSE",
+      "sha256": "7bf9b2de73a6b356761c948d0e9eeb4be6c1270bd04c79cd489c1e400ffdfc1a"
+    },
+    {
+      "bytes": 3350,
+      "path": "README.md",
+      "sha256": "e6137660d373bc510f4d41789d7fea74e0ed9f94c99d4892dee22292ac2a39a7"
+    },
+    {
+      "bytes": 740,
+      "path": "index.d.ts",
+      "sha256": "a76003875cf31f09428a535df140f122f580b5bf811f996273d5aa2733feeadd"
+    },
+    {
+      "bytes": 2428,
+      "path": "index.js",
+      "sha256": "024191b747afac01b28ff11d744e9f82720bbad5f716163ba5c962eb62aa2350"
+    },
+    {
+      "bytes": 1004,
+      "path": "package.json",
+      "sha256": "156fb24af02845c190701360d06dfda35ef04282e34a734289ea9535ad9819ae"
+    },
+    {
+      "bytes": 91,
+      "path": "spec/.eslintrc.yml",
+      "sha256": "8df0cb64273b71c11db4f99be49c92e6f80f10a13de4599743e4372c8a0be82c"
+    },
+    {
+      "bytes": 5544,
+      "path": "spec/fixtures/schema.js",
+      "sha256": "0262591e321bc88b22dc33ec78bcded5ab664e2fce2c10b9e0c35d3eb6030d27"
+    },
+    {
+      "bytes": 6042,
+      "path": "spec/index.spec.js",
+      "sha256": "40e6986bda700387e2d397971087a3977d6801bf954591505229691a267c5f69"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "json-schema-traverse",
+    "version": "1.0.0"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

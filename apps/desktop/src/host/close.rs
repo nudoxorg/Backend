@@ -465,6 +465,7 @@ impl Render for CloseView {
 
         let mut panel = div()
             .id("close-panel")
+            .debug_selector(|| "close-panel".into())
             .w(width)
             .max_h(height)
             .min_w_0()
@@ -533,7 +534,6 @@ impl Render for CloseView {
                         .id("graceful-close")
                         .role(gpui::Role::Dialog)
                         .aria_label("Save before closing")
-                        .focus_trap("graceful-close", &focus)
                         .on_key_down(move |event, _, cx| {
                             if event.keystroke.key == "escape" {
                                 let _ = escape.update(cx, |close, cx| {
@@ -549,7 +549,9 @@ impl Render for CloseView {
                         .items_center()
                         .justify_center()
                         .bg(palette.g1.hsla())
-                        .child(panel),
+                        // The full scrim names the native modal dialog; Tab
+                        // cycles only the controls in its decision panel.
+                        .child(panel.focus_trap("graceful-close-trap", &focus)),
                 )
             })
     }

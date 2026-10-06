@@ -111,7 +111,7 @@ fn serve_one_frame(
 ) -> Option<Vec<u8>> {
     let (reply_sender, reply_receiver) = mpsc::sync_channel(1);
     let correlation = crate::service::RequestCorrelation::from_payload(&payload);
-    let response_waiter = super::ResponseWaiter::default();
+    let response_waiter = super::ResponseWaiter::for_stream(stream).ok()?;
     let inbound = Inbound {
         payload,
         reply: reply_sender,
@@ -164,10 +164,9 @@ enum OwnerReplyWait {
 }
 
 /// Waits for the one response without extending its deadline on each poll.
-/// Read-side EOF is intentionally not consulted: a client may half-close its
-/// write side after sending a request and still be waiting for the reply.
-/// Prompt full-peer-abandonment detection is deferred until a portable,
-/// nonblocking, sole-reader-safe probe is available.
+/// Read-side EOF is not abandonment: a client may half-close its write side
+/// after sending a request and still wait for the reply. The waiter probes
+/// only response-write readiness without consuming any request bytes.
 fn wait_for_owner_reply(
     receiver: &mpsc::Receiver<Result<Vec<u8>, ProtocolError>>,
     stop: &AtomicBool,
@@ -176,6 +175,9 @@ fn wait_for_owner_reply(
 ) -> OwnerReplyWait {
     let started = Instant::now();
     loop {
+        if waiter.is_abandoned() {
+            return OwnerReplyWait::Disconnected;
+        }
         match receiver.try_recv() {
             Ok(reply) => return OwnerReplyWait::Reply(reply),
             Err(mpsc::TryRecvError::Disconnected) => {

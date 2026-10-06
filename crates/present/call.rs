@@ -197,6 +197,8 @@ fn take_json(
             ArgumentKind::IndexJobTicket
                 | ArgumentKind::CargoPackageReadmeOrigin
                 | ArgumentKind::CargoPackageSourceRequest
+                | ArgumentKind::PackageSourceMembershipRequest
+                | ArgumentKind::SemanticShapeRequest
         ) && scalar.is_object()
         {
             serde_json::to_string(&scalar).ok()
@@ -243,6 +245,13 @@ pub const DEFAULT_LIMIT: u16 = 25;
 /// One typed request, and the extra probes its rendering needs.
 #[derive(Clone, Debug)]
 pub enum Request {
+    /// Resume one Search/Resolve request through the shared portable proof path.
+    ResumeQuery {
+        /// Exact query request whose family/text/credit must remain unchanged.
+        query: Box<Request>,
+        /// Untrusted portable continuation exported by the shared client.
+        cursor: String,
+    },
     /// Every project on the shelf, with readiness.
     Shelf,
     /// The engine's whole state, rolled up.
@@ -289,6 +298,20 @@ pub enum Request {
     Surface(Box<SurfaceCommand>),
 }
 
+fn query_cursor(invocation: &Invocation, query: Request) -> Result<Request, Fault> {
+    match invocation.option("cursor") {
+        Some(cursor) if !cursor.is_empty() => Ok(Request::ResumeQuery {
+            query: Box::new(query),
+            cursor: cursor.to_owned(),
+        }),
+        Some(_) => Err(Fault::usage(
+            "cursor",
+            "continuation must be a non-empty opaque token",
+        )),
+        None => Ok(query),
+    }
+}
+
 /// Lowers one invocation into a typed request.
 ///
 /// # Errors
@@ -330,15 +353,32 @@ pub fn lower(invocation: &Invocation, project: &str) -> Result<Request, Fault> {
             coordinate: invocation.require(0)?.to_owned(),
             incoming: false,
         }),
-        CommandId::Search => Ok(Request::Search {
-            text: invocation.require(0)?.to_owned(),
-            limit: limit(invocation)?,
-        }),
-        CommandId::Resolve | CommandId::Name => Ok(Request::Resolve {
-            text: invocation.require(0)?.to_owned(),
-            limit: limit(invocation)?,
-        }),
-        CommandId::Outline => Ok(Request::Outline(path_or(invocation, project))),
+        CommandId::Search => query_cursor(
+            invocation,
+            Request::Search {
+                text: invocation.require(0)?.to_owned(),
+                limit: limit(invocation)?,
+            },
+        ),
+        CommandId::Resolve | CommandId::Name => query_cursor(
+            invocation,
+            Request::Resolve {
+                text: invocation.require(0)?.to_owned(),
+                limit: limit(invocation)?,
+            },
+        ),
+        CommandId::Outline => {
+            let path = path_or(invocation, project);
+            let path = if Path::new(&path)
+                .components()
+                .all(|component| matches!(component, std::path::Component::CurDir))
+            {
+                project.to_owned()
+            } else {
+                path
+            };
+            Ok(Request::Outline(path))
+        }
         CommandId::ProjectTree => {
             let root = path_or(invocation, project);
             let root = ProductText::new(root.as_str())
@@ -707,6 +747,30 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
         CommandId::SemanticVersions => SurfaceCommand::SemanticVersions {
             package: package(invocation, 0)?,
         },
+        CommandId::SemanticShapes => {
+            let request = serde_json::from_str::<backend_library::SemanticShapeReadRequest>(
+                invocation.require(0)?,
+            )
+            .map_err(|error| {
+                Fault::usage(
+                    "request",
+                    format!("use exact selected shape operands: {error}"),
+                )
+            })?;
+            SurfaceCommand::SemanticShapes { request }
+        }
+        CommandId::PackageSourceMembership => {
+            let request = serde_json::from_str::<
+                backend_library::PackageSourceMembershipPageRequestV1,
+            >(invocation.require(0)?)
+            .map_err(|error| {
+                Fault::usage(
+                    "request",
+                    format!("use the exact package source-membership page request: {error}"),
+                )
+            })?;
+            SurfaceCommand::PackageSourceMembership { request }
+        }
         CommandId::SelectSemanticVersion => select_semantic_version(invocation)?,
         CommandId::PackageProfile => SurfaceCommand::PackageProfile {
             package: package(invocation, 0)?,

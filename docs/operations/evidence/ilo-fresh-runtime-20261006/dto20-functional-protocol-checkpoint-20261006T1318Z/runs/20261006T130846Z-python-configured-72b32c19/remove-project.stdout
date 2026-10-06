@@ -1,0 +1,1 @@
+{"heading":"remove","records":[{"title":"remove request accepted","operand":"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project","tags":["intent 28f0f4b9","pending","read `backend health` for readiness"]}],"answer":"product","detail":"full","budget":{"bytes":358,"estimatedTokens":90,"bytesPerToken":4}}

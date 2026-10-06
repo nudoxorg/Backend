@@ -1,0 +1,140 @@
+reference	commit	canonical_6ac9_ancestor	candidate_983_ancestor	author_date	subject
+0068ab3f1d	0068ab3f1d6742b54d8d54f3c00106cc40e7aaf3	true	true	2026-09-21T18:20:24Z	fix(discovery): reopen literal generated directories
+017f3432cc	017f3432cc78d6c9c424c37ace8bc3d7a2dfe5f2	true	true	2026-09-26T21:57:08Z	Follow a TypeScript const or let value to the binding that declares it.
+07b4e56040	07b4e5604041ff327782431492c1a93c66a32052	true	true	2026-04-28T20:21:58-04:00	Ported to the NEW!!!!!!!!!!!!! IR
+0ec8560374	0ec8560374a4d3077b424dae56b1ce865e028c22	true	true	2026-06-28T14:23:55-04:00	compiler removal idk
+0ee002b15d	0ee002b15d7d54b17c51623a164ca4dc60678d0e	false	true	2026-10-06T05:51:21Z	Admit source facts in product workspace stores
+0f3bd291e1	0f3bd291e18c5983d121647d4fc805e31ee7822f	true	true	2026-09-30T04:34:47Z	Persist root-bound local search projections
+109335c5d31bb43be91a5774bf916440c60e9909	109335c5d31bb43be91a5774bf916440c60e9909	false	false	2026-10-06T06:21:16Z	Keep inventory hashes in the documented sorted-key domain
+1121d895d7	1121d895d733e7dd9a6daac8665a20850a5d0875	false	false	2026-10-06T06:14:55Z	Bind operation preparation to the final intent identity
+11f4642773	11f4642773b7b0ebdcf6f9ca56939712ba0f725d	false	true	2026-10-06T03:17:27Z	Preserve shared faults across remaining MCP client adapters
+12e08b0618	12e08b06183270bbc3876ffddd137b3b3eb04ffd	true	true	2026-09-03T22:37:47Z	fix(typescript): make checker type tree total
+16073f5f1c	16073f5f1c91fc65ffaaa8fc95c11d6646cd471f	true	true	2026-02-16T09:09:45-05:00	monorepo
+1a101e7d74	1a101e7d74a2a8ebc40c31017741f74624c5950c	true	true	2026-09-29T20:22:07Z	Bind Go corpus authority input to source path
+1ec859f8ae	1ec859f8aef06507efb72f021de334df466adfd2	true	true	2026-07-17T12:35:17-04:00	feat(ir-vcs): efficient historical replay via pijul channels — no eager snapshots
+1f907dab0b	1f907dab0b936615c52ecf3b299c9d6d25bf295e	true	true	2026-09-26T16:30:15Z	perf(search): keep Tantivy postings across a view change
+20ff419932	20ff41993229887ddefd5cd06302a0df3597b62b	true	true	2026-09-04T05:40:16Z	fix(typescript): preserve checker mapped modifiers and remaps
+21184ead26	21184ead26bf84f9893170dedb9200c6841e85ac	true	true	2026-09-27T08:13:03Z	Look up view rows by label without cloning every row body.
+217efa7091	217efa7091cc473fc5cf151f4eccbce6c159913b	true	true	2026-10-04T16:10:14Z	checkpoint: preserve integration work at 20261004T161009Z
+221c5a2eee	221c5a2eeec8230b24e45195e5fdf76d06a0e69f	true	true	2026-09-30T07:00:42Z	Preserve package source paths in TypeScript authority
+23530d79be	23530d79befd76cebeff20e0f9ece125beba27f1	true	true	2026-08-04T21:48:08-07:00	checkpoint
+23d69ed9b9	23d69ed9b9a56a7fafc3ab704a561099c91f8ad8	true	true	2026-09-26T17:08:24Z	Follow a TypeScript enum member to the file that declares it.
+2456420a7c	2456420a7c3a1871b960793a3f18765fc2bc934c	true	true	2026-08-30T10:47:53-07:00	feat(index): add real Tantivy projection adapter
+24b2c189d8	24b2c189d8217add882d9bb7d6e566be689e41b0	true	true	2026-07-25T19:08:52-04:00	feat(ir-vcs): richer body-similarity signal + tests
+255b2f1d40	255b2f1d4010c804b17dff51e5f9938e23a1b983	true	true	2026-05-05T15:03:45-04:00	Improve TypeScript declaration graph indexing
+25fb84dce9	25fb84dce931067bdc6f92395e366e7b609e9881	true	true	2026-03-05T19:10:54-05:00	Scaffolding for commit resolution
+281ec66868	281ec66868f7128b463eafc4660c40319fc54eb2	true	true	2026-09-28T22:25:47Z	checkpoint(index): integrate compiler fabric, IR residency, and live backup
+2c0b26f864	2c0b26f864c9def0acd97a10add4f765d762ce8d	true	true	2026-09-02T23:11:35Z	feat(python): land pyrefly type-authority lane, compound lowering, and capability evidence
+2eb82ec045	2eb82ec045d7e95610fd11f774d4d222e069d0f0	true	true	2026-06-10T00:08:30-04:00	Add persistence tests, standalone Tantivy text search, and fix test fixtures
+2f82d74b49	2f82d74b49cfebdf1b56ac538af580987c8695a7	true	true	2026-09-02T19:29:53Z	checkpoint
+334cae3161	334cae316142691638f3b6d8e2614f9da578fdd1	true	true	2026-05-01T13:38:31-04:00	DRASTICALLY expanded the capabilities of the ts_parser
+335e3732a	335e3732ae13784bafc7f5cc4729dc056b9a995b	false	false	2026-08-31T15:52:00-07:00	refactor: complete four-boundary workspace migration
+346a2c0d1a	346a2c0d1acd1040f5e3f6a73bbc7d4cd8a96e02	true	true	2026-05-01T13:38:42-04:00	Expanded the capabilites of the TS registry/frontend
+37de8eaac4	37de8eaac42870baf74825debbdd8d15d685a5e1	true	true	2026-08-09T09:14:09-07:00	yooooooooo
+3a1a2740f6	3a1a2740f6345d1e9ac31bb6b6be71505d7ebe53	false	true	2026-10-06T01:39:51Z	Admit bounded TypeScript project resolver and bundled Node
+3cab4b4adc	3cab4b4adc8b87cc116e842baa9f5d4b087547d0	false	false	2026-10-05T19:24:07Z	feat(typescript): add native TSZ project authority
+4298579e04	4298579e045e1ccb26fa62d2564341e476501981	true	true	2026-09-14T00:38:43Z	cutover(w7): fold compiler-language-* into frontends/* as legacy modules
+451180e5cf	451180e5cff214aa5b4c3b0071b196c95ae14dfa	true	true	2026-07-26T23:35:16-07:00	refactor(ir-vcs): delete the dead NdIrSym V1 blob format (-2,022 LOC)
+45e81dfd96	45e81dfd96e55a7721f8a093a16a4e266d8dacea	true	true	2026-01-29T19:26:31-05:00	terminusdb
+4a19390b78	4a19390b78a1d95762ff7a2611c6ed01a0ccc0e9	true	true	2026-07-26T23:07:55-07:00	feat(nudox-producer-typescript): adopt new IR features + restore the tsz tier
+4cbce8ad98	4cbce8ad9863a205d173516ce7fe5bb717f77312	false	true	2026-10-06T04:01:47Z	Retain lexical provider phases and exact corpus failures
+4ddb4771a9	4ddb4771a963e4a3716865e096caa15a09c0edcc	true	true	2026-01-11T21:47:33-05:00	first commit
+4f0fdba059	4f0fdba0591d43d17491182498801d7914599cfb	false	true	2026-10-06T04:09:33Z	Unify standalone TypeScript host discovery
+4faee5661c	4faee5661c491ceeef1bbe34ab5c71436b101e02	true	true	2026-09-28T16:21:56Z	checkpoint(index): versioned compiler and index fabric cutover
+51312dcf1b	51312dcf1bdf1550dc6fc1e95e5de07c2f533cdb	true	true	2026-09-01T21:31:26-07:00	feat(compiler-frontends): recover typed language authorities
+53888897b4	53888897b4ff6330b83a2ef2bc40205aa0220b02	true	true	2026-10-05T10:51:51-04:00	TypeScript is now indexable
+545bb1ffd0	545bb1ffd0dd3b02145c79a91e9fc056f7ab54dc	true	true	2026-03-05T19:24:54-05:00	Rustdoc now running from the right place
+5478ae398f	5478ae398f02f988f2f439cf358ab9ec38550d53	false	true	2026-10-06T03:01:54Z	Preserve shared typed faults through MCP surface errors
+56e35d8188	56e35d818834f27a2f2cab3b8d25ff80ca25ba9f	true	true	2026-09-20T17:20:05Z	fix(cutover): restore complete v2 source graph
+59c06a1711	59c06a1711b2f2d060a167bd6bd8680ba4dc11a3	true	true	2026-07-27T14:08:58-07:00	refactor(ir-vcs,driver): cut the last two consumers onto nudox-ir
+5e4c857490	5e4c85749087da482be446eeff7e9afa504b8237	false	false	2026-09-28T17:34:03-04:00	fleet(perf#2): batch the Python pyrefly authority across a package scan — 989ms -> 495ms (3-file package wall, min-of-20 paired hyperfine; checker spawns 5 -> 2; 6-module authority wire 3.33s -> 448ms, -87%)
+5ef23738df	5ef23738dfa770dd15f84dafabf9d7360385d612	true	true	2026-07-18T21:45:36-04:00	feat(registry): search engine v3 — ranking overhaul, tantivy schema v3, structured queries
+60c57e14a7	60c57e14a7557b6b2669cb367523e7f8488fe486	false	true	2026-10-06T04:36:21Z	Preserve terminal lexical contracts during ephemeral revision recovery
+60efe7f258	60efe7f2583f8be216401e6c5d28c0e41562b9b3	false	true	2026-10-06T00:08:47Z	Embed TypeScript checker driver for installed runs
+628a6698ca	628a6698ca3cdda8c952120cc75f6b1f325daa0b	true	true	2026-08-31T15:52:00-07:00	refactor: complete four-boundary workspace migration
+645cfc322f	645cfc322fe0b7324d374306726d0fae537d8b67	true	true	2026-06-14T15:57:01-04:00	feat: wire POST /symbol-search into the compiler and add integration tests
+66bba166e3	66bba166e352b3b1dff6220a92ad83c58bfd130a	false	false	2026-09-28T14:54:34-04:00	fleet(perf#1): batch the Go authority helper across a package scan — 15100ms -> 915ms (22-file package authority phase, -94%)
+6922d9226f	6922d9226feeca6a697543d0593afa686a311e4a	true	true	2026-04-28T21:02:20-04:00	Migrated TS parser
+6ac9f5438b375f3dfc8985cc867046dbcf993abd	6ac9f5438b375f3dfc8985cc867046dbcf993abd	true	true	2026-10-05T19:36:35Z	Record current live corpus results and unclosed production gates
+6c98128cc5c09be49e011482495e3a845a94f659	6c98128cc5c09be49e011482495e3a845a94f659	false	true	2026-10-05T21:51:51-04:00	Merge pull request 'Keep GUI publication observation responsive and retained source identities safe' (#20) from codex/gui-publication-recovery-20261005 into canonical
+6e46f27c76	6e46f27c76d09c50376e0586d3d501b5bb0dcca1	false	false	2026-09-02T19:29:53Z	checkpoint
+712e27a99c	712e27a99cda591939c401ecc05dadc59e780443	true	true	2026-05-06T17:56:06-04:00	Fix repo-backed TypeScript entry fallback
+736eccd304	736eccd304a7422002d8cb86c672cce4c545da8d	true	true	2026-10-05T18:52:40Z	Fix admitted graph paging and verify durable cache control entries
+737b6d3264	737b6d326461d831e75ca4af01ac02d329630ac9	false	false	2026-10-05T19:23:05Z	Bind configured Go authority images to a complete versioned producer proof
+754fdf78bf	754fdf78bfa09efcc37283d65b9a5634350702b8	true	true	2026-01-29T12:26:51-05:00	Added Core Structs, Traits, and Types that outline this architecture
+756c3786e4	756c3786e422393f9b2633aa780367ec3de8116a	true	true	2026-04-28T20:21:42-04:00	ignoring TS for now
+771583f538	771583f538f875b08fabee7fd1e294d1805ded5e	true	true	2026-07-18T15:34:38-04:00	feat(nudox-ir-vcs): continuity oracle, F1 encoding, substitution, ASCII surface, blob/checkout/checkpoint evolution
+788701f23a	788701f23ac89ccd8943cfd2fe71f17f7e8314fc	false	false	2026-10-06T06:26:19Z	Map resolved TypeScript options into TSZ checker
+7966f1cf99	7966f1cf992e99713842ed793dc2ffc4eb496936	true	true	2026-07-17T15:12:51-04:00	feat(ir-vcs): demand-based checkpoint serving + repo/seal size tests
+7a28943ada	7a28943ada1cab1653b145aabedecf315dd429ce	true	true	2026-05-01T12:59:08-04:00	Full gitoxide setup (AT ALL COSTS)
+815b957793	815b957793926065cf95e1217338e3bf54c4f333	true	true	2026-09-02T23:16:36Z	feat(go): admit v4 authority images through the shared semantic lane
+823e61c983	823e61c983ffa4405cdd0e2f0ee2b3f4ec602a81	false	false	2026-10-06T00:50:44Z	Require Go closure proof for semantic authority
+830dba968d	830dba968dca4bd7776799af3b24d5fbd53c0a0d	true	true	2026-01-26T21:51:24-05:00	Schema adaptation from Rust Struct into TerminusDB RDF more compliance ish
+84a43fb380	84a43fb380e2375bbabb3bba063e3f63c78904e3	true	true	2026-09-26T08:28:02Z	Record a cross-file method call from the checker.
+870afdf390	870afdf390916c3777de5f498b700d4da285c47c	true	true	2026-09-03T07:27:11Z	feat(typescript): add package-root checker staging
+880cd0077e	880cd0077e0409cf3da75f0883218fd1c7c375b9	true	true	2026-01-11T21:48:23-05:00	Updates and fixes
+88bd8e4b44	88bd8e4b44f7bacb000bafdb5ca18605a0c70566	true	true	2026-09-03T04:41:32Z	feat(typescript): make the checker authority first-class at the public boundary
+8a2f733802	8a2f73380231fa5ac99f578ead7bb76133fc9cbe	true	true	2026-09-29T19:35:02Z	feat(desktop, index): a clean install indexes the project's dependencies, and a Finder launch finds your Rust (F-Data 1)
+8a393a356a	8a393a356a115d437bf79405377f6aa0552cbc57	true	true	2026-03-05T19:57:46-05:00	COMPLETE rev walk implementation
+8e131123e2	8e131123e2cccebea711877f99616d875829c71c	true	true	2026-05-05T11:47:10-04:00	Persist package registry and harden repo caches
+9032c31801	9032c3180105fcad52451afb25454804c1dcc9ac	true	true	2026-09-30T05:33:01Z	Persist Tantivy ordinal identity maps
+930aa72f97	930aa72f97b78f067971617adb935280a9107a77	true	true	2026-09-19T19:27:58Z	feat: complete versioned engine v2 cutover
+93f5447e3b	93f5447e3b1eb1db3f539bf7907923bc93b0f161	false	false	2026-10-05T19:23:05Z	Bind configured Go authority images to a complete versioned producer proof
+95f5370344	95f537034421a1258b0bdd445094a2724c2405ae	true	true	2026-07-17T11:18:26-04:00	perf(ir-vcs): borrow-based seal + O(delta) write/output, IO-speed serve
+975c91551a	975c91551ab818f444688509558320dfd39d1530	true	true	2026-09-30T10:52:33Z	Bind revised postings by changed Tantivy segments
+983fa8cd5c	983fa8cd5c6ca30d2777a256eb214f5991c466cb	false	true	2026-10-06T05:53:03Z	Fix product registry helper paths
+983fa8cd5c6ca30d2777a256eb214f5991c466cb	983fa8cd5c6ca30d2777a256eb214f5991c466cb	false	true	2026-10-06T05:53:03Z	Fix product registry helper paths
+994d75a833	994d75a8331f9a3d3df470edf20a0c5ced856d35	true	true	2026-05-06T17:41:41-04:00	Fix old TypeScript repo entry point fallback
+9dc3d3a942	9dc3d3a94248799b9db61cc54ef13a837ec7ccf5	true	true	2026-09-23T06:19:41Z	fix(engine,go): scope production's Go authority image to the owning package
+9fbfccf2ac	9fbfccf2accdc2287e29c598a3c25e38e6ca5eef	true	true	2026-09-30T06:56:52Z	Retain pinned Tantivy roots outside LRU slots
+a0039b43f8	a0039b43f808924d070c3d0de6490f50270adf0f	true	true	2026-09-30T10:20:50Z	Bind durable query rows to selected source state
+a0228fbb6b	a0228fbb6b39700576e614df1a3d6b45fafe59b1	true	true	2026-08-28T12:09:10-07:00	feat(languages/python): resolve semantic references
+a19e626288	a19e626288ac039498c924e18428d10fdfdab94e	true	true	2026-09-04T03:54:25Z	refactor(driver): retain checker causes and type coordinates
+a1c18b21d0	a1c18b21d0cf6b66dd8b54bf624a8da9233d0151	true	true	2026-07-17T14:46:14-04:00	feat(ir-vcs): unified git-like reference model — branches, tags, versions, changes
+a410f9a07f	a410f9a07fe4aa067b7f79ee9a6818d31b44dfb6	true	true	2026-06-28T11:13:39-04:00	perf(phase 4/5/7): search subsystem — tantivy writer actor, SIMD scoring, im session graph
+acbca4b44f	acbca4b44f68401b062a851c0fc485e1d9d8eb23	true	true	2026-03-05T18:46:42-05:00	Added a new versioned stage
+afc055fa39	afc055fa3936b9da9581d9b0c065b29c721dfe52	true	true	2026-07-12T04:00:02-04:00	feat(ts): in-process tsz checker oracle, replacing external tsgo
+b2335daf48	b2335daf483b89ecd052a06b3dc7c5f673214f81	true	true	2026-09-30T12:12:58Z	Validate exact cold Tantivy posting coverage
+b369d323a9	b369d323a9f99b7658d75327aa9b3b901e0e3d1c	true	true	2026-07-25T18:28:23-04:00	feat(ir-vcs): wire the body plane into the continuity matcher (B2)
+b3b457cba9	b3b457cba96f37a243028c3cf180fcf8fd1a5f2e	true	true	2026-07-12T04:24:13-04:00	refactor(tsz-oracle): enrich IR by querying the tsz checker directly
+b474bb3537	b474bb35374d71dca160968eba5ec49da4af71fe	true	true	2026-07-12T03:45:45-04:00	vendor(tsz): replace crates.io 0.1.9 with git-monorepo @ main (dff7690)
+b62e7fb002	b62e7fb002d22b41fd08f7c110a3c9d11adc00b5	true	true	2026-09-05T02:11:23Z	feat(languages): bind explicit authority executables
+b922f74637	b922f746379c5dec79154bdb1b0e5ef72ac8ec12	true	true	2026-09-30T05:07:44Z	Harden durable query projection retention
+b95e983a32	b95e983a32f9a7c7f3e4aae0638922e41ecc227c	true	true	2026-07-25T19:08:52-04:00	fix(ir-vcs): σ-aware finish() deletion + body materialization deferral
+bcee44c456	bcee44c456df8a45ade6bbce2f6ce8a9a971a454	true	true	2026-03-06T18:10:29-05:00	Lib/cli separation
+bd65ee0c01	bd65ee0c01c9252fa7f95363ea855ee03d87cb1e	true	true	2026-07-18T21:46:40-04:00	feat(vendor): libpijul F1 fork — field-aware pairing for NdIrF1 blobs
+c1a150f166	c1a150f1666146a5ec04ea5e4577b61e69cb9ba4	true	true	2026-09-21T18:06:18Z	fix(discovery): unify ignore-aware source selection
+c37daab79c	c37daab79c0bb55803c9031b677e7972bc0126a3	true	true	2026-09-14T06:05:41Z	cutover(b2a): fold compiler publication/driver/application into backend-engine
+c3e2b29137	c3e2b29137e3157705547a87e8a4a9165d8ce92e	true	true	2026-08-28T12:09:11-07:00	feat(ir-vcs): round-trip foreign reference metadata
+c4fd275d8b	c4fd275d8b60b539ea2d840795d5f175529df0cb	false	true	2026-10-05T23:59:21Z	Add paged complete source-file facts relation
+c91c654aca	c91c654aca86aec73736ba5de5e5bc0b6260c3fe	true	true	2026-07-17T11:02:52-04:00	feat(ir-vcs): IR-native VCS with libpijul as the change engine
+ca0635f0cd	ca0635f0cd59b451ad4f9d3c11a624874d808635	true	true	2026-10-02T04:00:27-04:00	Publish tantivy projection directories through one retry-aware seam
+cb2ca51019	cb2ca51019f29362911f398e6a75b891c7cd744f	true	true	2026-09-26T13:42:12Z	Follow a TypeScript property read to the field it names.
+cc0ab47d61	cc0ab47d6196756bde3beaf4475b0b95651bc8a0	true	true	2026-05-05T11:59:42-04:00	Use stable repo cache paths for packages
+d042ae5780	d042ae578074c92605d3693c6286067dd6c97e49	true	true	2026-09-25T23:15:17Z	refactor(local-service): split the product command pipeline
+d10dd4d83a	d10dd4d83ab37a0920b31599f951f29e622114e4	true	true	2026-09-21T08:34:14Z	Bound CLI and MCP typed projections
+d52033b1b	d52033b1b00f4be36d3bf82c0ab09d9317241f13	true	true	2026-09-25T23:07:53Z	refactor(local-service): split typed view projection
+d742d15f26	d742d15f269aaeb07f8abe9d524329be2617c52b	true	true	2026-09-30T05:58:59Z	Preserve and classify durable Tantivy roots safely
+d75e293645	d75e29364591841484435e37f89ec663a5a3dab9	true	true	2026-09-03T22:21:00Z	feat(typescript): preserve computed type structure
+d762d003ee	d762d003ee22bbd6ca4b1b890017b712b61f905f	true	true	2026-07-09T04:34:01-04:00	remove old compiler language backends
+da162b0954	da162b095411c37e23f83c7db4bf575729e02f93	true	true	2026-09-05T04:24:05Z	feat(typescript): bind checker module authority explicitly
+dd7591ea8c	dd7591ea8c7145e00ef9d6d3f20721c4b9bd255e	true	true	2026-09-30T06:00:41Z	Add typed durable search cache budgets
+e1d2368357	e1d2368357d98b46d568b76cddba011f665faded	true	true	2026-08-28T12:09:10-07:00	feat(languages/typescript): emit resolved type references
+e2997ad011	e2997ad0112cf34768304e16836c9bbffc924372	false	true	2026-10-05T19:05:50Z	Admit project-local TypeScript toolchains
+e2c49256ca	e2c49256ca563b0edb444b0480646a6ae52f6503	true	true	2026-09-30T12:33:05Z	Bound cold posting-cover validation work
+e3ca561b9f	e3ca561b9fab21de2ef608fc33be3348c9da96b5	true	true	2026-08-03T22:39:03-07:00	save
+e4d55551dc	e4d55551dc09fbb5caae20587226cd7700a1a111	true	true	2026-01-29T19:24:53-05:00	removed
+e4f7702f3f	e4f7702f3f44c03c15cdabf4e55481224236a50b	true	true	2026-04-30T20:26:42-04:00	Migrated the ts and rust parsers
+e5b1e02868	e5b1e02868633419dc53360c1845edee9b010c0e	false	false	2026-10-06T02:56:02Z	Add shared full-context TSZ checker session
+e5d5d3e0e6	e5d5d3e0e6fab6560b2655f5789f7bd3b2526268	true	true	2026-09-13T19:16:45Z	work
+e6379c3948	e6379c39485c235466c9a509d242270fde1c6d2e	true	true	2026-07-12T03:35:36-04:00	feat(third-party): vendor tsz-core 0.1.9 crate set + smoke test
+e69a21ede5	e69a21ede570fdbf84ecca967981b44440bc3a0d	true	true	2026-03-05T17:33:51-05:00	oooh typed IR
+e80892bc00	e80892bc00b57ad05b2fe170fb9b2ef35098713c	true	true	2026-07-11T21:54:51-04:00	feat(third-party): vendor OXC crate set for TypeScript producer (Phase 0)
+e812201fd7	e812201fd777e3e5fd7699b0bffe8a64dca73ce9	true	true	2026-09-13T15:41:15Z	yum
+ebd9c14c08	ebd9c14c0889695b57f0b5c688d3a80cd0f94559	true	true	2026-07-12T04:08:03-04:00	fix(ts/tsz): rewrite emitted-dir package.json entry ext to .d.ts + enrichment test
+ebe8aae5d2	ebe8aae5d2f0a956ab4f975aa0b652cd21ce057e	false	true	2026-10-05T20:43:04Z	Discover finite Node runtime for project TypeScript
+f0a563dc7e	f0a563dc7e51265be67084e0f45ae79f71761abe	false	true	2026-10-06T00:56:26Z	Integrate complete source facts with source capture
+f3dc01e76d	f3dc01e76d97b1c3c44bdd67c1e84191cf0802ab	true	true	2026-09-01T21:50:03-07:00	refactor(typescript): retain OXC syntax authority
+f916d172bc	f916d172bcc41c4f070658d427a6794199fed4ef	true	true	2026-03-05T21:06:43-05:00	Versioned pipeline full support
+fc9089c7cd	fc9089c7cd520da26e4b19a46b8e6c7c4f83e66f	true	true	2026-09-30T08:37:32Z	Prevent in-place mutation of durable Tantivy roots
+fd52d9f4ec	fd52d9f4ec68d48686b68593d1558c8864f3095c	true	true	2026-04-20T16:12:53-04:00	typescript support

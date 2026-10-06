@@ -24,14 +24,10 @@ struct RetiredLayoutEvidence {
 }
 
 fn probe_retired_layout(workspace: &std::path::Path) -> Result<RetiredLayoutEvidence, String> {
-    use super::profile::{BuiltinSemanticRelation, BuiltinWorkspaceRelation, RetiredSourceProbe};
-    use backend_engine::{RelationAdmissionRegistry, WorkspaceOwner};
+    use super::profile::{BuiltinWorkspaceRelation, RetiredSourceProbe};
+    use backend_engine::WorkspaceOwner;
 
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| format!("register source relation: {error:?}"))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| format!("register semantic relation: {error:?}"))?;
+    let registry = super::product_relation_registry().map_err(|error| error.to_string())?;
     let owner = WorkspaceOwner::open_with_registry(
         workspace,
         RetiredSourceProbe::new(workspace),
@@ -81,11 +77,32 @@ pub(super) fn owner_open_refusal(
 pub(super) struct EmbeddedCompilerEnvironment {
     pub(super) data_root: PathBuf,
     pub(super) compiler_environment: Option<ClosedLocalHostEnvironmentSnapshot>,
+    /// Captured once while locald composes its compiler owner. The selected runtime is pinned
+    /// before the daemon starts serving requests; subsequent clients cannot refresh this PATH.
+    pub(super) search_path: Option<OsString>,
 }
 
 impl LocalHostEnvironment for EmbeddedCompilerEnvironment {
     fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
         self.value_with(variable, |variable| ProcessHostEnvironment.value(variable))
+    }
+
+    fn search_path(&self) -> Option<OsString> {
+        self.search_path.clone()
+    }
+
+    fn go_module_cache(&self) -> Option<OsString> {
+        self.compiler_environment
+            .is_none()
+            .then(|| ProcessHostEnvironment.go_module_cache())
+            .flatten()
+    }
+
+    fn go_path(&self) -> Option<OsString> {
+        self.compiler_environment
+            .is_none()
+            .then(|| ProcessHostEnvironment.go_path())
+            .flatten()
     }
 }
 
@@ -183,17 +200,13 @@ pub fn write_state_from_another_build(
     authority_secret: &std::path::Path,
 ) -> Result<(), String> {
     use super::BuiltinIntent;
-    use super::profile::{BuiltinSemanticRelation, BuiltinSourceChange, BuiltinWorkspaceRelation};
-    use backend_engine::{ProductSourceRecord, RelationAdmissionRegistry, WorkspaceOwner};
+    use super::profile::BuiltinSourceChange;
+    use backend_engine::{ProductSourceRecord, WorkspaceOwner};
     use backend_engine::{SourceLanguage, package_key};
 
     let _credential = backend_engine::read_authority_secret(authority_secret)
         .map_err(|error| error.to_string())?;
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| format!("register source relation: {error:?}"))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| format!("register semantic relation: {error:?}"))?;
+    let registry = super::product_relation_registry().map_err(|error| error.to_string())?;
     let mut owner = WorkspaceOwner::open_with_registry(
         workspace,
         RetiredFixtureWriter,
@@ -302,6 +315,7 @@ mod tests {
             projects: BTreeMap::new(),
             files,
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         }
     }
 
@@ -347,6 +361,7 @@ mod tests {
                 )])
                 .expect("valid closed compiler environment"),
             ),
+            search_path: Some(OsString::from("/captured/compiler/bin")),
         };
 
         assert_eq!(
@@ -357,6 +372,11 @@ mod tests {
             environment.value(LocalHostVariable::NudoxDataRoot),
             Some(OsString::from("/workspace/compiler")),
             "the compiler root stays the workspace's"
+        );
+        assert_eq!(
+            environment.search_path(),
+            Some(OsString::from("/captured/compiler/bin")),
+            "the service receives the process search path captured at startup for TypeScript host discovery",
         );
         let mut consulted_ambient = false;
         assert_eq!(
@@ -378,6 +398,7 @@ mod tests {
         let environment = EmbeddedCompilerEnvironment {
             data_root: PathBuf::from("/workspace/compiler"),
             compiler_environment: None,
+            search_path: None,
         };
         assert_eq!(
             environment.value_with(LocalHostVariable::Home, |_| {

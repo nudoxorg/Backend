@@ -75,6 +75,7 @@ fn status_enum_image() -> Result<Vec<u8>, String> {
     let items = [
         TreeItemInput {
             name: b"demo",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Module,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -88,6 +89,7 @@ fn status_enum_image() -> Result<Vec<u8>, String> {
         },
         TreeItemInput {
             name: ENUM_NAMESPACE.as_bytes(),
+            anonymous_callable_anchor: None,
             kind: ItemKind::Enum,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Bound(versions[0].identity())),
@@ -101,6 +103,7 @@ fn status_enum_image() -> Result<Vec<u8>, String> {
         },
         TreeItemInput {
             name: b"Active",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Variant,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Bound(versions[1].identity())),
@@ -151,6 +154,7 @@ fn drive_enum_read_image(foreign_read: NamespaceValueFixture) -> Result<Vec<u8>,
     };
     let items = [TreeItemInput {
         name: b"Drive",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility: Visibility::Public,
         authority: authority(ParentageAuthority::Root),

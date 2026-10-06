@@ -391,9 +391,52 @@ impl FileStore {
         &self,
         closure: &WorkspaceClosure,
     ) -> Result<ClosureId, StoreError> {
-        let manifest = closure.manifest();
+        let manifest = closure.control_manifest();
         manifest.admit_objects_with_registry(&self.relation_registry)?;
-        self.write_closure_after_admission(manifest, closure.selected_roots())
+        self.write_closure_after_admission(manifest, closure.selected_roots())?;
+        self.validate_workspace_membership(closure)?;
+        Ok(closure.membership_id())
+    }
+
+    /// Installs an admitted immutable frontier without selecting a workspace.
+    /// Ordinary GC may reclaim it after the caller drops its membership pin.
+    pub fn stage_workspace_frontier(&self, closure: &WorkspaceClosure) -> Result<(), StoreError> {
+        if !closure.is_root_only() {
+            return Err(StoreError::Corrupt);
+        }
+        closure
+            .control_manifest()
+            .admit_objects_with_registry(&self.relation_registry)?;
+        self.write_closure_after_admission(closure.control_manifest(), closure.selected_roots())?;
+        Ok(())
+    }
+
+    pub(super) fn validate_workspace_membership(
+        &self,
+        closure: &WorkspaceClosure,
+    ) -> Result<(), StoreError> {
+        let Some(membership) = closure.stored_membership() else {
+            return Ok(());
+        };
+        let index = self.open_closure(closure.membership_id())?;
+        if index.object_count() != membership.object_count() {
+            return Err(StoreError::Corrupt);
+        }
+        for object in closure.control_manifest().objects() {
+            if !index.contains_object_id(object.id())? {
+                return Err(StoreError::Corrupt);
+            }
+        }
+        // A descriptor and an earlier receipt are not proof that the member
+        // files still exist. Verify each current envelope by streaming, with
+        // no complete object vector, before preparing or selecting HEAD.
+        closure.visit_ids(|id| {
+            if !index.contains_object_id(id)? {
+                return Err(StoreError::Corrupt);
+            }
+            self.verify_closure_member_limited(id, None).map(|_| ())
+        })?;
+        membership.validate_physical_allocation_in(self)
     }
 
     /// Reads and admits a complete immutable closure manifest.

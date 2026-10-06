@@ -11,10 +11,30 @@ use std::sync::Arc;
 
 type TestFile = ([u8; 32], String, [u8; 32]);
 
-struct TempWorkspace(tempfile::TempDir);
+#[test]
+fn product_store_registry_admits_every_persisted_product_relation() {
+    let registry = super::super::product_relation_registry().expect("product relation registry");
+    for schema in [
+        backend_version::SchemaIdentity::of_relation::<BuiltinWorkspaceRelation>(),
+        backend_version::SchemaIdentity::of_relation::<BuiltinSemanticRelation>(),
+        backend_version::SchemaIdentity::of_relation::<
+            backend_engine::builtin::ProductSemanticCaptureRelation,
+        >(),
+        backend_version::SchemaIdentity::of_relation::<
+            backend_engine::builtin::ProductSourceFileFactsRelation,
+        >(),
+    ] {
+        assert!(
+            registry.contains_schema(schema),
+            "missing product relation {schema:?}"
+        );
+    }
+}
+
+pub(super) struct TempWorkspace(pub(super) tempfile::TempDir);
 
 impl TempWorkspace {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let directory = tempfile::Builder::new()
             .prefix("nudox-membership-owner-")
             .tempdir()
@@ -23,7 +43,7 @@ impl TempWorkspace {
     }
 }
 
-fn open_daemon(workspace: &Path) -> super::super::ProductDaemon {
+pub(super) fn open_daemon(workspace: &Path) -> super::super::ProductDaemon {
     let profile = profile_descriptor(BuiltinProfile::Product).expect("product profile");
     let dispatcher = super::super::builtin_dispatcher(
         Some(super::super::ECHO_AUTHORITY_SECRET),
@@ -31,11 +51,7 @@ fn open_daemon(workspace: &Path) -> super::super::ProductDaemon {
         60_000,
     )
     .expect("test dispatcher");
-    let registry = backend_engine::RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .expect("workspace relation registry")
-        .with_relation::<BuiltinSemanticRelation>()
-        .expect("semantic relation registry");
+    let registry = super::super::product_relation_registry().expect("product relation registry");
     crate::Locald::open_with_dispatcher_and_registry(
         workspace,
         BuiltinModel,
@@ -45,6 +61,42 @@ fn open_daemon(workspace: &Path) -> super::super::ProductDaemon {
         registry,
     )
     .expect("open product daemon")
+}
+
+fn commit_without_capture_upgrade(
+    daemon: &mut super::super::ProductDaemon,
+    request_id: u64,
+    intent: &BuiltinIntent,
+) -> Result<(), BuiltinModelError> {
+    let request = BuiltinModel.request_id(intent);
+    let expected = daemon.engine().daemon().owner().head().expectation();
+    let receiver = daemon
+        .client()
+        .request(
+            request_id,
+            crate::Request::Commit {
+                request,
+                expected,
+                intent: intent.clone(),
+            },
+        )
+        .map_err(|error| BuiltinModelError(format!("queue legacy capture intent: {error:?}")))?;
+    if !daemon.serve_one() {
+        return Err(BuiltinModelError(
+            "legacy capture intent owner did not make progress".to_owned(),
+        ));
+    }
+    match crate::service::wait_for_daemon_reply(daemon, &receiver)
+        .map_err(|error| BuiltinModelError(error.to_string()))?
+    {
+        backend_engine::DaemonReply::Commit(Ok(_)) => Ok(()),
+        backend_engine::DaemonReply::Commit(Err(error)) => {
+            Err(BuiltinModelError(error.to_string()))
+        }
+        _ => Err(BuiltinModelError(
+            "legacy capture intent was sent to the wrong owner lane".to_owned(),
+        )),
+    }
 }
 
 fn file_frontier(count: usize, package: backend_engine::PackageKey) -> Vec<TestFile> {
@@ -589,6 +641,798 @@ fn raw_psrd_page(files: &[[u8; 32]]) -> Vec<u8> {
         bytes.extend_from_slice(key);
     }
     bytes
+}
+
+#[test]
+fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
+    use backend_engine::builtin::{
+        ProductSemanticCaptureOutcome, ProductSemanticCaptureRecord, ProductSemanticPublicationKey,
+        ProductSourceFileFactsAdmission, ProductSourceFileFactsRecord, ProductSourceSnapshot,
+        SemanticSourceCapture, build_product_source_file_facts, semantic_capture_relation,
+    };
+    use backend_library::interface::{CompilerFragmentFailure, SourceAuthority};
+    use backend_semantic::ir::{BuildError, EntityId};
+    use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, TypeScriptSource};
+    use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain};
+
+    let temp = TempWorkspace::new();
+    let label = "pkg:npm/paged-panels@1.0.0";
+    let package = backend_engine::PackageKey::from_value(label);
+    let path = "src/Panels.tsx";
+    let frontend = backend_frontend_typescript::syntax_frontend().expect("TypeScript frontend");
+    let mut source = String::new();
+    for index in 0..900 {
+        source.push_str(&format!(
+            "/** Catalog panel {index}; retained prose. */\n\
+             export function Panel_{index:04}({{ title }}: {{ title: string }}) {{\n\
+               return <article data-panel=\"{index}\">{{title}}</article>;\n\
+             }}\n"
+        ));
+    }
+    let analysis = frontend
+        .analyze(Path::new(path), source.as_bytes())
+        .expect("actual TSX source analysis");
+    let declarations = analysis.declarations().to_vec();
+    let expected_declaration_count = declarations.len();
+    assert_eq!(
+        declarations
+            .iter()
+            .filter(|declaration| declaration.kind() == backend_compile::DeclarationKind::Function)
+            .count(),
+        900,
+        "the producer emits all 900 actual panel functions"
+    );
+    let source_identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
+    let content_version = *source_identity.as_ref();
+    let analysis_version = [0x61; 32];
+    let project_key = package.to_bytes();
+    let file_key = backend_engine::product_source_file_key(project_key, path);
+    // Exact retained msgspec cold-failure row shape: PSR8 Unavailable(Unparsed),
+    // zero content, no source identity or declarations. These Clang files are
+    // not TSX compiler inputs and make no complete-extraction claim.
+    let unavailable_paths = ["src/msgspec/_core.c", "src/msgspec/itoa.h"];
+    let unavailable_rows = unavailable_paths.map(|unavailable_path| {
+        (
+            backend_engine::product_source_file_key(project_key, unavailable_path),
+            backend_engine::ProductSourceRecord::file_unavailable(
+                project_key,
+                unavailable_path,
+                SourceLanguage::Clang,
+                analysis_version,
+                backend_library::SourceUnavailableReason::Unparsed,
+            )
+            .expect("typed unavailable source row"),
+        )
+    });
+    let mut frontier = vec![(file_key, path.to_owned(), content_version)];
+    frontier.extend(unavailable_rows.iter().map(|(key, row)| {
+        (
+            *key,
+            row.file_fields().expect("unavailable file").path.to_owned(),
+            [0; 32],
+        )
+    }));
+    frontier.sort_by_key(|(key, _, _)| *key);
+    let source_version = source_version(&frontier);
+    let project_record = BuiltinPackageRecord::project(
+        label,
+        source_version,
+        frontier.iter().map(|(key, _, _)| *key).collect::<Vec<_>>(),
+    )
+    .expect("complete source frontier including unavailable files");
+    let file_record = backend_engine::ProductSourceRecord::identified_file_within_row_capacity(
+        project_key,
+        path,
+        SourceLanguage::TypeScript,
+        content_version,
+        analysis_version,
+        declarations.clone(),
+        source_identity,
+    )
+    .expect("bounded compact file row with exact source identity");
+    assert!(
+        !file_record
+            .file_fields()
+            .expect("compact file fields")
+            .retention
+            .is_complete(),
+        "900 source declarations overflow the compact summary and need complete facts pages"
+    );
+    let facts = build_product_source_file_facts(
+        project_key,
+        path,
+        SourceLanguage::TypeScript,
+        content_version,
+        analysis_version,
+        source_identity,
+        &declarations,
+    )
+    .expect("complete paged declaration facts");
+    assert_eq!(facts.declaration_count(), expected_declaration_count);
+    assert!(
+        facts
+            .pages()
+            .iter()
+            .any(|(_, row)| { matches!(row, ProductSourceFileFactsRecord::Page(_)) })
+    );
+
+    let recipe_identity =
+        ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"fixture TSX recipe");
+    let attempt = backend_library::interface::CompilerAttempt {
+        source: SourceAuthority {
+            identity: source_identity,
+            byte_len: u32::try_from(source.len()).expect("bounded TSX source length"),
+        },
+        recipe: recipe_identity,
+    };
+    let compile_failure = CompilerFragmentFailure::build(BuildError::InvalidOccurrenceSpan {
+        owner: EntityId::new(7),
+        start: 18,
+        end: 24,
+    });
+    let failure = backend_library::PackageCompilerFailure::from_fragment_failure(
+        path,
+        attempt,
+        &compile_failure,
+    )
+    .expect("typed package compiler refusal bound to exact source");
+
+    let package_reference =
+        backend_engine::PackageReference::parse(label.to_owned()).expect("package reference");
+    let coordinate = PackageUrl::parse(label.to_owned()).expect("npm coordinate");
+    let capture_key = ProductSemanticPublicationKey::new(
+        package_reference,
+        coordinate,
+        LanguageProfile::TypeScript(TypeScriptSource::Tsx),
+    )
+    .expect("TSX compiler profile key");
+    let capture =
+        SemanticSourceCapture::new(None, source_version, [0x85; 32], 1, 1).expect("source capture");
+
+    let mut source_facts_changes = vec![BuiltinSourceFactsChange {
+        key: facts.manifest_key(),
+        expected: None,
+        after: Some(ProductSourceFileFactsRecord::Manifest(
+            facts.manifest().clone(),
+        )),
+    }];
+    source_facts_changes.extend(
+        facts
+            .pages()
+            .iter()
+            .map(|(key, row)| BuiltinSourceFactsChange {
+                key: *key,
+                expected: None,
+                after: Some(row.clone()),
+            }),
+    );
+    let intent = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        vec![
+            BuiltinSourceChange {
+                key: project_key,
+                after: Some(project_record),
+            },
+            BuiltinSourceChange {
+                key: file_key,
+                after: Some(file_record),
+            },
+            BuiltinSourceChange {
+                key: unavailable_rows[0].0,
+                after: Some(unavailable_rows[0].1.clone()),
+            },
+            BuiltinSourceChange {
+                key: unavailable_rows[1].0,
+                after: Some(unavailable_rows[1].1.clone()),
+            },
+        ],
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            key: capture_key.clone(),
+            expected: None,
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Pending { prior: None },
+            compiler_failure: None,
+        }],
+    )
+    .expect("source plus pending capture intent")
+    .with_source_facts(source_facts_changes.clone())
+    .expect("atomic complete facts update");
+
+    let mut daemon = open_daemon(temp.0.path());
+    let unbound_intent = intent.clone();
+    let initial_basis = capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
+        .expect("exact selected genesis basis");
+    let intent = intent
+        .with_capture_basis(initial_basis)
+        .expect("bind source-first capture to exact selected genesis closure");
+    assert_eq!(intent.encode()[4], 9, "capture intent uses BPI9");
+    let roundtrip = BuiltinIntent::decode(&intent.encode()).expect("BPI9 roundtrip");
+    assert_eq!(roundtrip.capture_basis(), Some(initial_basis));
+    assert_eq!(roundtrip.encode()[4], 9);
+    let recomposed = roundtrip
+        .with_source_facts(source_facts_changes.clone())
+        .expect("source-facts composition preserves authenticated basis");
+    assert_eq!(recomposed.encode()[4], 9);
+    assert_eq!(recomposed.capture_basis(), Some(initial_basis));
+    let prepared = super::super::commands::prepare_builtin_intent(&daemon, &unbound_intent)
+        .expect("bind request identity to the exact prepared BPI9 source intent");
+    let prepared_request_identity = prepared.request_identity();
+    assert_ne!(
+        prepared_request_identity,
+        backend_engine::WorkspaceModel::request_id(&BuiltinModel, &unbound_intent),
+        "adding the capture basis changes the canonical request identity"
+    );
+    super::super::commands::commit_prepared_builtin_intent(&mut daemon, 1, prepared)
+        .expect("atomically commit structural source facts and pending capture");
+    let source_capture_root = daemon.engine().daemon().owner().head().root();
+    let pending_capture = semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+        .expect("pending semantic capture relation")
+        .expect("pending capture relation exists")
+        .lookup(&capture_key)
+        .expect("read pending source capture")
+        .expect("pending source capture persisted");
+    assert_eq!(
+        pending_capture.outcome(),
+        ProductSemanticCaptureOutcome::Pending { prior: None }
+    );
+    assert_eq!(
+        pending_capture.request_identity(),
+        &prepared_request_identity,
+        "the durable capture marker binds the exact committed BPI9 request identity"
+    );
+    let source_capture_sequence = pending_capture.source_workspace_sequence();
+    let basis_before_unrelated =
+        capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
+            .expect("exact selected basis before unrelated capture");
+    let unrelated_label = "pkg:npm/intervening-project@1.0.0";
+    let unrelated_package = backend_engine::PackageKey::from_value(unrelated_label);
+    let unrelated_reference = backend_engine::PackageReference::parse(unrelated_label.to_owned())
+        .expect("independent capture package reference");
+    let unrelated_coordinate =
+        PackageUrl::parse(unrelated_label.to_owned()).expect("independent capture coordinate");
+    let unrelated_capture_key = ProductSemanticPublicationKey::new(
+        unrelated_reference,
+        unrelated_coordinate,
+        LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+    )
+    .expect("independent TypeScript capture key");
+    let unrelated_capture = SemanticSourceCapture::new(None, [0xB3; 32], [0xB4; 32], 1, 1)
+        .expect("independent source capture marker");
+    let unrelated_intent = BuiltinIntent::index_with_capture(
+        unrelated_package,
+        unrelated_label,
+        Vec::new(),
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            key: unrelated_capture_key.clone(),
+            expected: None,
+            capture: unrelated_capture,
+            outcome: ProductSemanticCaptureOutcome::Pending { prior: None },
+            compiler_failure: None,
+        }],
+    )
+    .expect("independent product transition");
+    super::super::commands::commit_builtin_intent(&mut daemon, 2, &unrelated_intent)
+        .expect("commit unrelated product change while capture is pending");
+    assert_eq!(
+        daemon.engine().daemon().owner().head().root(),
+        source_capture_root,
+        "the capture-only transition preserves the workspace manifest root"
+    );
+    let basis_after_unrelated =
+        capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
+            .expect("exact selected basis after unrelated capture");
+    assert_ne!(
+        basis_before_unrelated.capture_root(),
+        basis_after_unrelated.capture_root(),
+        "the unrelated capture changes the selected capture relation root"
+    );
+    assert_eq!(
+        basis_before_unrelated.workspace_root(),
+        basis_after_unrelated.workspace_root(),
+        "capture-only commits preserve the workspace manifest root"
+    );
+    assert_ne!(
+        basis_before_unrelated.workspace_sequence(),
+        basis_after_unrelated.workspace_sequence(),
+        "capture-only commits still advance the selected sequence"
+    );
+    daemon
+        .engine()
+        .daemon()
+        .owner()
+        .snapshot()
+        .with_persisted_transition(|persisted, _| {
+            assert!(
+                persisted
+                    .delta_header()
+                    .expect("capture-only delta header")
+                    .relations()
+                    .is_empty(),
+                "the regression has no source or semantic relation delta to count"
+            );
+            let actual = super::admit_persisted_intent(persisted.closure_manifest().objects())
+                .expect("selected capture-only intent");
+            assert!(actual.changes().is_empty());
+            assert!(actual.semantic_changes().is_empty());
+            assert!(actual.source_facts_changes().is_empty());
+            assert_eq!(actual.capture_changes().len(), 1);
+            assert_eq!(actual.capture_basis(), Some(basis_before_unrelated));
+        })
+        .expect("inspect the exact selected capture-only transition");
+    drop(daemon);
+    let mut daemon = open_daemon(temp.0.path());
+    assert_eq!(
+        capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
+            .expect("cold Pending capture-only basis"),
+        basis_after_unrelated,
+        "cold admission preserves the exact auxiliary-only publication, not just its unchanged manifest root"
+    );
+    assert_eq!(
+        semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+            .expect("cold capture relation")
+            .expect("selected capture root")
+            .lookup(&capture_key)
+            .expect("cold pending source receipt"),
+        Some(pending_capture.clone()),
+        "cold Pending admission keeps the exact source receipt for the later compiler refusal"
+    );
+    let legacy_v6 = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        Vec::new(),
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            key: capture_key.clone(),
+            expected: Some(pending_capture.clone()),
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Unavailable {
+                reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+            },
+            compiler_failure: None,
+        }],
+    )
+    .expect("decodeable legacy BPI6 capture intent");
+    let selected_fact = source_facts_changes
+        .first()
+        .expect("the selected source facts intent contains a row");
+    let legacy_v7_source_facts = vec![BuiltinSourceFactsChange {
+        key: selected_fact.key,
+        expected: selected_fact.after.clone(),
+        after: None,
+    }];
+    let legacy_v7 = legacy_v6
+        .clone()
+        .with_source_facts(legacy_v7_source_facts)
+        .expect("decodeable legacy BPI7 capture intent");
+    let legacy_v8 = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        Vec::new(),
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            key: capture_key.clone(),
+            expected: Some(pending_capture.clone()),
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Unavailable {
+                reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+            },
+            compiler_failure: Some(failure.clone()),
+        }],
+    )
+    .expect("decodeable legacy BPI8 typed capture refusal");
+    let before_legacy = daemon.engine().daemon().owner().head().root();
+    for (offset, (version, legacy_intent)) in [(6, legacy_v6), (7, legacy_v7), (8, legacy_v8)]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(legacy_intent.encode()[4], version);
+        let request_id = 3 + u64::try_from(offset).expect("legacy request offset");
+        let legacy_error = commit_without_capture_upgrade(&mut daemon, request_id, &legacy_intent)
+            .expect_err("legacy capture cannot publish without an authenticated base closure");
+        assert!(
+            legacy_error.to_string().contains(&format!("BPI{version}"))
+                && legacy_error.to_string().contains("BPI9 is required"),
+            "legacy capture refusal states the compatibility boundary: {legacy_error}"
+        );
+    }
+    assert_eq!(
+        daemon.engine().daemon().owner().head().root(),
+        before_legacy
+    );
+    assert_eq!(
+        semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+            .expect("selected legacy refusal base relation")
+            .expect("selected capture relation")
+            .lookup(&capture_key)
+            .expect("selected legacy refusal base receipt"),
+        Some(pending_capture.clone()),
+        "legacy refusal preserves the selected source receipt"
+    );
+    let forged_before = ProductSemanticCaptureRecord::new(
+        pending_capture.operation_key().copied(),
+        [0xFE; 32],
+        pending_capture.capture(),
+        *pending_capture.base_workspace_root(),
+        pending_capture.base_workspace_sequence(),
+        *pending_capture.source_workspace_root(),
+        pending_capture.source_workspace_sequence(),
+        *pending_capture.source_commit(),
+        pending_capture.outcome(),
+    )
+    .expect("well-formed but nonmatching pending receipt");
+    let forged_intent = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        Vec::new(),
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            key: capture_key.clone(),
+            expected: Some(forged_before),
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Unavailable {
+                reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+            },
+            compiler_failure: None,
+        }],
+    )
+    .expect("forged before receipt intent")
+    .with_capture_basis(basis_before_unrelated)
+    .expect("substitute a valid earlier selected capture root");
+    let before_forged = daemon.engine().daemon().owner().head().root();
+    let forged_error =
+        super::super::commands::commit_builtin_intent(&mut daemon, 6, &forged_intent)
+            .expect_err("a forged expected receipt cannot replace the selected Pending row");
+    assert!(
+        forged_error.to_string().contains("before-state basis"),
+        "valid but stale basis is refused by the live selected-before check: {forged_error}"
+    );
+    assert_eq!(
+        daemon.engine().daemon().owner().head().root(),
+        before_forged,
+        "refusal leaves the selected capture root unchanged"
+    );
+    let terminal_intent = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        Vec::new(),
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            key: capture_key.clone(),
+            expected: Some(pending_capture.clone()),
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Unavailable {
+                reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+            },
+            compiler_failure: Some(failure.clone()),
+        }],
+    )
+    .expect("typed terminal semantic refusal intent");
+    let stale_snapshot = daemon.engine().daemon().owner().snapshot();
+    super::super::commands::commit_builtin_intent(&mut daemon, 7, &terminal_intent)
+        .expect("commit terminal typed refusal against its exact pending capture");
+    assert!(
+        stale_snapshot.selected_base_publication().is_err(),
+        "a snapshot that is no longer selected cannot resolve the current base publication"
+    );
+    assert!(
+        stale_snapshot.with_persisted_transition(|_, _| ()).is_err(),
+        "a stale snapshot cannot lend a persisted transition with the current store"
+    );
+    assert_eq!(
+        daemon.engine().daemon().owner().head().root(),
+        source_capture_root,
+        "the refused-compiler terminal changes only capture state and preserves both workspace relation roots"
+    );
+    let terminal_snapshot = daemon.engine().daemon().owner().snapshot();
+    terminal_snapshot
+        .with_persisted_transition(|persisted, _| {
+            assert!(
+                persisted
+                    .delta_header()
+                    .expect("terminal capture delta header")
+                    .relations()
+                    .is_empty(),
+                "cold refusal recovery cannot rely on any ordinary relation delta"
+            );
+            let actual = super::admit_persisted_intent(persisted.closure_manifest().objects())
+                .expect("selected typed compiler refusal intent");
+            assert_eq!(actual.capture_changes().len(), 1);
+            assert_eq!(
+                actual.capture_changes()[0].compiler_failure.as_ref(),
+                Some(&failure)
+            );
+            assert_eq!(actual.capture_basis(), Some(basis_after_unrelated));
+        })
+        .expect("inspect the selected refused capture-only publication");
+    let selected_base = terminal_snapshot
+        .selected_base_publication()
+        .expect("resolve exact selected base publication")
+        .expect("terminal capture has a durable base publication")
+        .descriptor();
+    assert_eq!(
+        selected_base.target(),
+        basis_after_unrelated.workspace_root(),
+        "the authenticated descriptor binds the basis workspace root"
+    );
+    assert_eq!(
+        selected_base.target_generation(),
+        basis_after_unrelated.workspace_sequence(),
+        "the authenticated descriptor binds the basis sequence"
+    );
+    assert_eq!(
+        *selected_base.closure().as_bytes(),
+        basis_after_unrelated.closure_id(),
+        "the journal selects the actual current base closure"
+    );
+    let hybrid_basis = BuiltinCaptureBasis::new(
+        basis_after_unrelated.workspace_root(),
+        basis_after_unrelated.workspace_sequence(),
+        basis_before_unrelated.closure_id(),
+        basis_before_unrelated.capture_root(),
+    )
+    .expect("well-shaped hybrid basis with current root/sequence and old closure");
+    let hybrid_error =
+        super::validate_capture_basis_closure_id(hybrid_basis, selected_base.closure())
+            .expect_err("a valid alternate old closure is not the selected base descriptor");
+    assert!(
+        hybrid_error
+            .to_string()
+            .contains("authenticated selected base descriptor"),
+        "same-manifest/current-sequence basis rejects an old authenticated closure: {hybrid_error}"
+    );
+    let selected_root = daemon.engine().daemon().owner().head().root();
+    let base_source = stale_snapshot
+        .relation::<BuiltinWorkspaceRelation>()
+        .expect("open exact pre-terminal source relation");
+    let target_source = terminal_snapshot
+        .relation::<BuiltinWorkspaceRelation>()
+        .expect("open selected terminal source relation");
+    let base_semantic = stale_snapshot
+        .relation::<BuiltinSemanticRelation>()
+        .expect("open exact pre-terminal semantic relation");
+    let target_semantic = terminal_snapshot
+        .relation::<BuiltinSemanticRelation>()
+        .expect("open selected terminal semantic relation");
+    let persisted_hybrid_error = terminal_snapshot
+        .with_persisted_transition(|persisted, store| {
+            let selected = store
+                .head()
+                .expect("read actual persisted selected head")
+                .expect("actual persisted selected head exists");
+            let persisted_objects = store
+                .read_workspace_root_closure(selected.descriptor().closure())
+                .expect("read exact selected persisted closure");
+            let actual_intent =
+                super::admit_persisted_intent(persisted.closure_manifest().objects())
+                    .expect("decode the intent from the actual selected transition");
+            assert_eq!(
+                actual_intent.capture_basis(),
+                Some(basis_after_unrelated),
+                "the selected transition carries its actual authenticated predecessor"
+            );
+            assert_eq!(BuiltinModel.request_id(&actual_intent), persisted.request());
+            let old_capture = persisted
+                .relation::<ProductSemanticCaptureRelation>(
+                    store,
+                    basis_before_unrelated
+                        .capture_root()
+                        .expect("earlier capture root is present"),
+                )
+                .expect("open the valid earlier capture relation root");
+            assert_eq!(
+                old_capture
+                    .lookup(&capture_key)
+                    .expect("read expected row from earlier capture root"),
+                Some(pending_capture.clone()),
+                "the expected pending receipt is valid in the substituted earlier root"
+            );
+            let forged_intent = terminal_intent
+                .clone()
+                .with_capture_basis(hybrid_basis)
+                .expect("construct the same-manifest/current-sequence hybrid BPI9 intent");
+            super::validate_persisted_capture_changes(
+                persisted,
+                store,
+                &forged_intent,
+                &base_source,
+                &target_source,
+                &base_semantic,
+                &target_semantic,
+                terminal_snapshot.sequence(),
+                terminal_snapshot.commit().id().as_bytes(),
+                persisted_objects.objects(),
+            )
+            .expect_err("top-level persisted admission rejects the hybrid basis")
+        })
+        .expect("pair the actual persisted transition with its selected store");
+    assert!(
+        persisted_hybrid_error
+            .to_string()
+            .contains("authenticated selected base descriptor"),
+        "top-level cold admission rejects the earlier valid closure: {persisted_hybrid_error}"
+    );
+    assert_eq!(
+        daemon.engine().daemon().owner().head().root(),
+        selected_root,
+        "persisted hybrid validation is read-only and leaves the selected head unchanged"
+    );
+    drop(daemon);
+
+    let daemon = open_daemon(temp.0.path());
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    assert_eq!(
+        daemon.engine().daemon().owner().head().root(),
+        selected_root
+    );
+    let source_snapshot =
+        ProductSourceSnapshot::from_workspace(&snapshot).expect("cold selected source closure");
+    let indexed_sources =
+        super::super::read_indexed_sources(&snapshot).expect("cold selected indexed sources");
+    super::super::view_build::project_structural_plan(&indexed_sources)
+        .expect("actual cold structural projection admits typed unavailable files");
+    let source_relation = source_snapshot.relation();
+    for (key, expected) in &unavailable_rows {
+        let selected = source_snapshot
+            .relation()
+            .lookup(key)
+            .expect("cold unavailable lookup")
+            .expect("unavailable row selected");
+        assert_eq!(&selected, expected);
+        assert!(
+            !selected
+                .file_fields()
+                .expect("file")
+                .retention
+                .is_complete()
+        );
+        match source_snapshot
+            .admit_complete_file_facts(&selected)
+            .expect("unavailable is admissible, not corrupt")
+            .expect("typed extraction status")
+        {
+            ProductSourceFileFactsAdmission::Unavailable(reason) => {
+                assert_eq!(reason, backend_library::SourceUnavailableReason::Unparsed)
+            }
+            _ => panic!("unavailable source was promoted to complete facts"),
+        }
+        for retention in [
+            backend_engine::builtin::DeclarationRetention::NamesOnly,
+            backend_engine::builtin::DeclarationRetention::ExcerptsElided,
+            backend_engine::builtin::DeclarationRetention::Truncated(
+                backend_engine::builtin::RetainedDeclarations::new(1, 2).expect("counts"),
+            ),
+        ] {
+            let mut compacted = selected.clone();
+            let backend_engine::ProductSourceRecord::File {
+                retention: actual, ..
+            } = &mut compacted
+            else {
+                panic!("selected source file")
+            };
+            *actual = retention;
+            assert!(
+                source_snapshot
+                    .admit_complete_file_facts(&compacted)
+                    .is_err(),
+                "cold compact row without complete facts remains refused"
+            );
+        }
+        let mut contradictory = selected.clone();
+        let backend_engine::ProductSourceRecord::File {
+            content_version, ..
+        } = &mut contradictory
+        else {
+            panic!("selected source file")
+        };
+        *content_version = [1; 32];
+        assert!(
+            source_snapshot
+                .admit_complete_file_facts(&contradictory)
+                .is_err(),
+            "Unavailable cannot assert retained source content"
+        );
+    }
+    let source_row = source_relation
+        .lookup(&file_key)
+        .expect("cold source file lookup")
+        .expect("cold source file row remains selected");
+    let mut admitted = match source_snapshot
+        .admit_complete_file_facts(&source_row)
+        .expect("cold manifest and every page validate against exact source")
+        .expect("overflow source row requires its complete facts manifest")
+    {
+        ProductSourceFileFactsAdmission::PagedVerified(paged) => paged,
+        ProductSourceFileFactsAdmission::Unavailable(_) => {
+            panic!("complete fixture was unavailable")
+        }
+        ProductSourceFileFactsAdmission::InlineComplete(_) => {
+            panic!("900 declarations must remain page bounded")
+        }
+    };
+    assert_eq!(
+        usize::try_from(admitted.declaration_count()).expect("bounded declaration count"),
+        expected_declaration_count
+    );
+    let mut visited = 0usize;
+    let mut complete_panel_facts = 0usize;
+    admitted
+        .visit_pages(|page| {
+            for index in 0..page.len() {
+                let admitted = page
+                    .declaration(index)
+                    .ok_or_else(|| "cold admitted declaration".to_owned())?;
+                let declaration = admitted.to_owned()?;
+                let expected = declarations
+                    .get(visited)
+                    .ok_or_else(|| "cold source facts exceeded syntax producer output".to_owned())?;
+                if &declaration != expected {
+                    return Err(format!(
+                        "cold source facts differ from SyntaxFrontend output at ordinal {visited}: {} {:?}",
+                        expected.name(),
+                        expected.kind()
+                    ));
+                }
+                visited += 1;
+                if expected.kind() == backend_compile::DeclarationKind::Function
+                    && (expected.documentation().is_empty()
+                        || expected.source_excerpt().text().is_none())
+                {
+                    return Err(format!(
+                        "cold function fact lost prose or excerpt for {}",
+                        expected.name()
+                    ));
+                }
+                if declaration.kind() == backend_compile::DeclarationKind::Function {
+                    complete_panel_facts += 1;
+                }
+            }
+            Ok(())
+        })
+        .expect("cold bounded page visitation");
+    assert_eq!(visited, expected_declaration_count);
+    assert_eq!(complete_panel_facts, 900);
+
+    let captures = semantic_capture_relation(&snapshot)
+        .expect("cold semantic capture relation")
+        .expect("terminal capture relation exists");
+    let terminal = captures
+        .lookup(&capture_key)
+        .expect("cold typed semantic terminal lookup")
+        .expect("semantic refusal retained");
+    assert_eq!(
+        terminal.outcome(),
+        ProductSemanticCaptureOutcome::Unavailable {
+            reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+        }
+    );
+    assert_eq!(terminal.compiler_failure(), Some(&failure));
+    assert_eq!(
+        terminal.source_workspace_root(),
+        source_capture_root.as_bytes()
+    );
+    assert_eq!(
+        terminal.source_workspace_sequence(),
+        source_capture_sequence,
+        "terminal capture preserves the original source receipt across unrelated commits"
+    );
+    assert_eq!(failure.source_identity(), source_identity);
+    assert_eq!(failure.relative_path(), path);
+    assert_eq!(
+        failure.source_byte_len(),
+        u32::try_from(source.len()).expect("bounded TSX source length")
+    );
+    assert_eq!(failure.recipe_identity(), Some(recipe_identity));
+    assert_eq!(
+        captures
+            .lookup(&unrelated_capture_key)
+            .expect("cold unrelated capture lookup")
+            .expect("unrelated Pending capture remains selected")
+            .outcome(),
+        ProductSemanticCaptureOutcome::Pending { prior: None }
+    );
 }
 
 fn psrd_decodes(bytes: &[u8]) -> bool {

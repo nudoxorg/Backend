@@ -1,0 +1,32 @@
+
+running 1 test
+test builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations ... 
+thread 'builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations' (15270707) panicked at crates/local-service/src/builtin/generation_residence.rs:891:9:
+all isolated compiler-backed fixture pairs failed:
+/nix/store/yn81qpksaxk576qb807fsck5ch7zmj6c-clang-wrapper-21.1.8/bin/clang + /nix/store/wrz4cazjhkpkjdcms0wxilaid0vzp5gg-clang-21.1.8-lib/lib:
+
+running 1 test
+test builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations ... FAILED
+
+failures:
+
+failures:
+    builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 1.86s
+
+
+thread 'builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations' (15270709) panicked at crates/local-service/src/builtin/generation_residence.rs:1950:33:
+generation B marker commits after generation A CAS: BuiltinModelError("workspace marker writer passed the V3 fence before its branch CAS")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 1.87s
+

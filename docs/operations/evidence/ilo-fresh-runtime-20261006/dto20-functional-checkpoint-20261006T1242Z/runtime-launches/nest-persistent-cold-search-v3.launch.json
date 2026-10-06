@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin/python3",
+    "/root/nudox-corpus-20261006/artifacts/fresh-remote-runtime/read-private-functional-surfaces-v3.py",
+    "--observer",
+    "/root/nudox-corpus-20261006/artifacts/report7/observer-163f022c2/run-real-workspace-index-acceptance.py",
+    "--run",
+    "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca",
+    "--mode",
+    "cold-search",
+    "--query",
+    "getHello"
+  ],
+  "pid": 1034786,
+  "utc": "2026-10-06T12:04:35Z",
+  "helper_sha256": "769107616b70af94c1efbe931bb8f20b303a043d3553d2bf2981763844acc263",
+  "memory_available_kib": 60323000,
+  "disk_free_bytes": 56425160704,
+  "mcp_process_retained_across_daemon_restart": true,
+  "whole_package_pass": false
+}

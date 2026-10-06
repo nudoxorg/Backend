@@ -1,0 +1,30 @@
+{
+  "source_revision": "d67f12d89cde4fc191e64e1b34d95cd8cc700a6d",
+  "source_tree": "3028e6cdca01d87f8e382740045a2e6832dcd38a",
+  "argv": [
+    "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/cargo-wrapped",
+    "test",
+    "--locked",
+    "--offline",
+    "-p",
+    "backend-local-service",
+    "--lib",
+    "admitted_capture_publication_tests",
+    "--",
+    "--nocapture"
+  ],
+  "exit": 0,
+  "seconds": 5.146,
+  "source_unchanged": true,
+  "guard_stop": null,
+  "first": {
+    "free_bytes": 21076037632,
+    "allocated_bytes": 14875430912
+  },
+  "last": {
+    "elapsed": 0.001,
+    "free_bytes": 21076041728,
+    "allocated_bytes": 14875430912
+  },
+  "log": "/tmp/sol-ingest-admitted-aggregate-d67f12-20261006.log"
+}

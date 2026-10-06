@@ -8,18 +8,24 @@ use super::{
     AUTHORITY_VALUE, Arc, AuthorityVersionSchema, Blake3AuthorityVerifier, Budget, Commit,
     CommitProvenance, CompleteSemanticCoverage, CompositeAdmissionValidator, DependencyManifest,
     DispatchError, Dispatcher, ECHO_AUTHORITY_SECRET, LazyClosureUpdate, ObjectClosure, ObjectKey,
-    ObjectVersion, OutputVersion, PreparedTransition, RelationAdmissionRegistry,
-    RelationTransition, RemoteAuthorityPolicy, ResourceVector, Scheduler, Schema,
-    SemanticCoverageAdmissionError, SemanticCoverageBinding, TransactionId, TypedObject,
-    UntrustedSemanticCoverageClaim, WorkspaceClosure, WorkspaceDelta, WorkspaceManifest,
-    WorkspaceModel, WorkspaceSnapshot, admit_manifest, fmt, transition_closure_lazy,
-    workspace_manifest_from_root,
+    ObjectVersion, OutputVersion, PreparedTransition, RelationTransition, RemoteAuthorityPolicy,
+    ResourceVector, Scheduler, Schema, SemanticCoverageAdmissionError, SemanticCoverageBinding,
+    TransactionId, TypedObject, UntrustedSemanticCoverageClaim, WorkspaceClosure, WorkspaceDelta,
+    WorkspaceManifest, WorkspaceModel, WorkspaceSnapshot, admit_manifest, fmt,
+    transition_closure_lazy, workspace_manifest_from_root,
 };
 #[cfg(test)]
 use backend_engine::builtin::SemanticPublicationClaim;
 use backend_engine::builtin::{
-    ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
-    ProductSemanticPublicationRelation,
+    ProductSemanticCaptureOutcome, ProductSemanticCaptureRecord, ProductSemanticCaptureRelation,
+    ProductSemanticCaptureRootSchema, ProductSemanticPublicationKey,
+    ProductSemanticPublicationRecord, ProductSemanticPublicationRelation,
+    ProductSourceFileFactsRecord, ProductSourceFileFactsRelation, ProductSourceFileFactsRootSchema,
+    SemanticPublicationVersion, SemanticSourceCapture, admit_product_source_file_facts,
+    product_source_file_facts_record_key, product_source_file_facts_relation,
+    product_source_file_facts_root_object, semantic_capture_relation,
+    semantic_capture_root_from_object, semantic_capture_root_object,
+    semantic_capture_root_pointer_key,
 };
 use backend_engine::{
     CanonicalRelation, LazyPreparedUpdate, Relation, SemanticCoverageValidator, TransitionWork,
@@ -448,8 +454,12 @@ pub struct BuiltinIntent {
     pub(super) label: String,
     changes: Box<[BuiltinSourceChange]>,
     semantic_changes: Box<[BuiltinSemanticChange]>,
+    capture_changes: Box<[BuiltinCaptureChange]>,
+    source_facts_changes: Box<[BuiltinSourceFactsChange]>,
     semantic_selection: Option<BuiltinSemanticSelectionIntent>,
     operation_key: Option<[u8; 32]>,
+    capture_basis: Option<BuiltinCaptureBasis>,
+    staged: Option<Arc<super::staged_transport::StagedIntent>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -462,6 +472,111 @@ pub(super) struct BuiltinSourceChange {
 pub(super) struct BuiltinSemanticChange {
     pub(super) key: ProductSemanticPublicationKey,
     pub(super) after: Option<ProductSemanticPublicationRecord>,
+}
+
+/// Exact before-state and requested capture outcome for one profile marker.
+/// The target workspace root and commit are filled by the model only after it
+/// has derived the immutable source transition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct BuiltinCaptureChange {
+    pub(super) key: ProductSemanticPublicationKey,
+    pub(super) expected: Option<ProductSemanticCaptureRecord>,
+    pub(super) capture: SemanticSourceCapture,
+    pub(super) outcome: ProductSemanticCaptureOutcome,
+    /// Optional closed compiler fault explaining a terminal unavailable result.
+    pub(super) compiler_failure: Option<backend_library::PackageCompilerFailure>,
+}
+
+/// Exact selected workspace and capture relation used to interpret every
+/// before-row in one capture-changing intent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct BuiltinCaptureBasis {
+    workspace_root: [u8; 32],
+    workspace_sequence: u64,
+    closure_id: [u8; 32],
+    capture_root: Option<[u8; 32]>,
+}
+
+impl BuiltinCaptureBasis {
+    pub(super) fn new(
+        workspace_root: [u8; 32],
+        workspace_sequence: u64,
+        closure_id: [u8; 32],
+        capture_root: Option<[u8; 32]>,
+    ) -> Result<Self, BuiltinModelError> {
+        if workspace_root.iter().all(|byte| *byte == 0)
+            || workspace_sequence == u64::MAX
+            || closure_id.iter().all(|byte| *byte == 0)
+            || capture_root.is_some_and(|root| root.iter().all(|byte| *byte == 0))
+        {
+            return Err(BuiltinModelError(
+                "semantic capture selected before-state basis is invalid".to_owned(),
+            ));
+        }
+        Ok(Self {
+            workspace_root,
+            workspace_sequence,
+            closure_id,
+            capture_root,
+        })
+    }
+
+    pub(super) const fn capture_root(self) -> Option<[u8; 32]> {
+        self.capture_root
+    }
+
+    pub(super) const fn workspace_root(self) -> [u8; 32] {
+        self.workspace_root
+    }
+
+    pub(super) const fn workspace_sequence(self) -> u64 {
+        self.workspace_sequence
+    }
+
+    pub(super) const fn closure_id(self) -> [u8; 32] {
+        self.closure_id
+    }
+}
+
+pub(super) fn capture_basis_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+) -> Result<BuiltinCaptureBasis, BuiltinModelError> {
+    let capture_root = semantic_capture_relation(snapshot)
+        .map_err(|error| {
+            BuiltinModelError(format!("read selected capture basis relation: {error}"))
+        })?
+        .map(|relation| *relation.root().as_bytes());
+    BuiltinCaptureBasis::new(
+        *snapshot.root().as_bytes(),
+        snapshot.sequence(),
+        *snapshot.closure().binding().closure().as_bytes(),
+        capture_root,
+    )
+}
+
+fn validate_capture_basis_against_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    basis: BuiltinCaptureBasis,
+    selected_capture_root: Option<[u8; 32]>,
+) -> Result<(), BuiltinModelError> {
+    if basis.workspace_root != *snapshot.root().as_bytes()
+        || basis.workspace_sequence != snapshot.sequence()
+        || basis.closure_id != *snapshot.closure().binding().closure().as_bytes()
+        || basis.capture_root != selected_capture_root
+    {
+        return Err(BuiltinModelError(
+            "capture before-state basis does not match the selected workspace closure".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// Exact before/after evidence for one complete source-facts relation row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct BuiltinSourceFactsChange {
+    pub(super) key: [u8; 32],
+    pub(super) expected: Option<ProductSourceFileFactsRecord>,
+    pub(super) after: Option<ProductSourceFileFactsRecord>,
 }
 
 /// Exact before/after evidence for changing the selected compiler generation.
@@ -489,6 +604,15 @@ pub(super) enum BuiltinIntentOperation {
 impl BuiltinIntent {
     const VERSION: u8 = 4;
     const KEYED_VERSION: u8 = 5;
+    const CAPTURE_VERSION: u8 = 6;
+    const FACTS_VERSION: u8 = 7;
+    const TYPED_FAILURE_VERSION: u8 = 8;
+    /// First format that binds capture before-rows to the authenticated base
+    /// publication closure. Older capture intents remain decodable for
+    /// diagnostics, but cannot be newly published or cold-replayed because
+    /// their self-contained before-root receipt does not identify the selected
+    /// base descriptor.
+    const CAPTURE_BASIS_VERSION: u8 = 9;
     const ADD: u8 = 1;
     const REMOVE: u8 = 2;
     const INDEX: u8 = 3;
@@ -630,6 +754,97 @@ impl BuiltinIntent {
         )
     }
 
+    pub(super) fn index_with_capture(
+        package: backend_engine::PackageKey,
+        label: impl Into<String>,
+        changes: Vec<BuiltinSourceChange>,
+        semantic_changes: Vec<BuiltinSemanticChange>,
+        capture_changes: Vec<BuiltinCaptureChange>,
+    ) -> Result<Self, BuiltinModelError> {
+        let version = if capture_changes
+            .iter()
+            .any(|change| change.compiler_failure.is_some())
+        {
+            Self::TYPED_FAILURE_VERSION
+        } else {
+            Self::CAPTURE_VERSION
+        };
+        Self::new_with_version(
+            version,
+            BuiltinIntentOperation::Index,
+            package,
+            label,
+            changes,
+            semantic_changes,
+            None,
+            None,
+            None,
+            capture_changes,
+            Vec::new(),
+        )
+    }
+
+    pub(super) fn with_source_facts(
+        self,
+        source_facts_changes: Vec<BuiltinSourceFactsChange>,
+    ) -> Result<Self, BuiltinModelError> {
+        let version = if self
+            .capture_changes
+            .iter()
+            .any(|change| change.compiler_failure.is_some())
+        {
+            Self::TYPED_FAILURE_VERSION
+        } else {
+            Self::FACTS_VERSION
+        }
+        .max(self.encoding_version);
+        let capture_basis = self.capture_basis;
+        Self::new_with_version(
+            version,
+            self.operation,
+            self.package,
+            self.label,
+            self.changes.into_vec(),
+            self.semantic_changes.into_vec(),
+            self.semantic_selection,
+            self.operation_key,
+            capture_basis,
+            self.capture_changes.into_vec(),
+            source_facts_changes,
+        )
+    }
+
+    pub(super) fn index_with_source_facts(
+        package: backend_engine::PackageKey,
+        label: impl Into<String>,
+        changes: Vec<BuiltinSourceChange>,
+        semantic_changes: Vec<BuiltinSemanticChange>,
+        capture_changes: Vec<BuiltinCaptureChange>,
+        source_facts_changes: Vec<BuiltinSourceFactsChange>,
+    ) -> Result<Self, BuiltinModelError> {
+        let version = if capture_changes
+            .iter()
+            .any(|change| change.compiler_failure.is_some())
+        {
+            Self::TYPED_FAILURE_VERSION
+        } else {
+            Self::FACTS_VERSION
+        };
+        Self::new_with_version(
+            version,
+            BuiltinIntentOperation::Index,
+            package,
+            label,
+            changes,
+            semantic_changes,
+            None,
+            None,
+            None,
+            capture_changes,
+            source_facts_changes,
+        )
+    }
+
     pub(super) fn select_semantic_generation(
         package: backend_engine::PackageKey,
         label: impl Into<String>,
@@ -674,6 +889,9 @@ impl BuiltinIntent {
             semantic_changes,
             semantic_selection,
             None,
+            None,
+            Vec::new(),
+            Vec::new(),
         )
     }
 
@@ -686,14 +904,32 @@ impl BuiltinIntent {
         mut semantic_changes: Vec<BuiltinSemanticChange>,
         semantic_selection: Option<BuiltinSemanticSelectionIntent>,
         operation_key: Option<[u8; 32]>,
+        capture_basis: Option<BuiltinCaptureBasis>,
+        mut capture_changes: Vec<BuiltinCaptureChange>,
+        mut source_facts_changes: Vec<BuiltinSourceFactsChange>,
     ) -> Result<Self, BuiltinModelError> {
-        if !matches!(encoding_version, 3 | Self::VERSION | Self::KEYED_VERSION)
-            || (encoding_version < Self::VERSION
-                && (matches!(operation, BuiltinIntentOperation::SelectSemanticGeneration)
-                    || semantic_selection.is_some()))
+        if !matches!(
+            encoding_version,
+            3 | Self::VERSION
+                | Self::KEYED_VERSION
+                | Self::CAPTURE_VERSION
+                | Self::FACTS_VERSION
+                | Self::TYPED_FAILURE_VERSION
+                | Self::CAPTURE_BASIS_VERSION
+        ) || (encoding_version < Self::VERSION
+            && (matches!(operation, BuiltinIntentOperation::SelectSemanticGeneration)
+                || semantic_selection.is_some()))
             || (encoding_version == Self::KEYED_VERSION
                 && operation_key.is_none_or(|key| key.iter().all(|byte| *byte == 0)))
-            || (encoding_version != Self::KEYED_VERSION && operation_key.is_some())
+            || (encoding_version != Self::KEYED_VERSION
+                && encoding_version != Self::CAPTURE_VERSION
+                && encoding_version != Self::FACTS_VERSION
+                && encoding_version != Self::TYPED_FAILURE_VERSION
+                && encoding_version != Self::CAPTURE_BASIS_VERSION
+                && operation_key.is_some())
+            || (encoding_version == Self::CAPTURE_BASIS_VERSION
+                && (capture_changes.is_empty() || capture_basis.is_none()))
+            || (encoding_version < Self::CAPTURE_BASIS_VERSION && capture_basis.is_some())
         {
             return Err(BuiltinModelError(
                 "unsupported builtin intent encoding version".to_owned(),
@@ -737,7 +973,63 @@ impl BuiltinIntent {
                 })?;
             }
         }
-        if (changes.is_empty() && semantic_changes.is_empty())
+        capture_changes.sort_by(|left, right| left.key.cmp(&right.key));
+        if capture_changes.len() > backend_engine::application::MAX_MANIFEST_ENTRIES
+            || (encoding_version == Self::CAPTURE_VERSION && capture_changes.is_empty())
+            || capture_changes
+                .windows(2)
+                .any(|window| window[0].key >= window[1].key)
+            || capture_changes.iter().any(|change| {
+                !change.key.is_selected()
+                    || change.key.package_key() != package
+                    || (change.compiler_failure.is_some()
+                        && (encoding_version < Self::TYPED_FAILURE_VERSION
+                            || !matches!(
+                                change.outcome,
+                                ProductSemanticCaptureOutcome::Unavailable { .. }
+                                    | ProductSemanticCaptureOutcome::Failed { .. }
+                            )))
+                    || change.capture.operation_key().is_some_and(|key| {
+                        key.iter().all(|byte| *byte == 0)
+                            || operation_key.is_some_and(|bound| &bound != key)
+                    })
+            })
+        {
+            return Err(BuiltinModelError(
+                "semantic capture intent is unordered, oversized, or crosses its package boundary"
+                    .to_owned(),
+            ));
+        }
+        source_facts_changes.sort_by_key(|change| change.key);
+        if source_facts_changes.len() > BuiltinPackageRecord::MAX_PROJECT_FILES.saturating_mul(300)
+            || (encoding_version == Self::FACTS_VERSION && source_facts_changes.is_empty())
+            || (encoding_version < Self::FACTS_VERSION && !source_facts_changes.is_empty())
+            || source_facts_changes
+                .windows(2)
+                .any(|window| window[0].key >= window[1].key)
+            || source_facts_changes.iter().any(|change| {
+                change.expected == change.after
+                    || [change.expected.as_ref(), change.after.as_ref()]
+                        .into_iter()
+                        .flatten()
+                        .any(|record| {
+                            let Some(owner) = record.file_key() else {
+                                return true;
+                            };
+                            product_source_file_facts_record_key(owner, record)
+                                .map_or(true, |canonical| canonical != change.key)
+                        })
+            })
+        {
+            return Err(BuiltinModelError(
+                "source-facts intent is unordered, oversized, or contains an invalid owner"
+                    .to_owned(),
+            ));
+        }
+        if (changes.is_empty()
+            && semantic_changes.is_empty()
+            && capture_changes.is_empty()
+            && source_facts_changes.is_empty())
             || semantic_changes.len() > backend_engine::application::MAX_MANIFEST_ENTRIES
             || semantic_changes
                 .windows(2)
@@ -770,8 +1062,12 @@ impl BuiltinIntent {
             label,
             changes: changes.into_boxed_slice(),
             semantic_changes: semantic_changes.into_boxed_slice(),
+            capture_changes: capture_changes.into_boxed_slice(),
+            source_facts_changes: source_facts_changes.into_boxed_slice(),
             semantic_selection,
             operation_key,
+            capture_basis,
+            staged: None,
         })
     }
 
@@ -781,11 +1077,19 @@ impl BuiltinIntent {
         mut self,
         operation_key: backend_library::IndexOperationKey,
     ) -> Result<Self, BuiltinModelError> {
-        self.encoding_version = Self::KEYED_VERSION;
+        if self.encoding_version < Self::CAPTURE_VERSION {
+            self.encoding_version = Self::KEYED_VERSION;
+        }
         self.operation_key = Some(operation_key.to_bytes());
         if self
             .operation_key
             .is_none_or(|key| key.iter().all(|byte| *byte == 0))
+            || self.capture_changes.iter().any(|change| {
+                change
+                    .capture
+                    .operation_key()
+                    .is_some_and(|key| key != &operation_key.to_bytes())
+            })
         {
             return Err(BuiltinModelError(
                 "keyed builtin intent has invalid operation identity".to_owned(),
@@ -794,17 +1098,87 @@ impl BuiltinIntent {
         Ok(self)
     }
 
+    pub(super) fn with_capture_changes(
+        self,
+        capture_changes: Vec<BuiltinCaptureChange>,
+    ) -> Result<Self, BuiltinModelError> {
+        let minimum_version = if capture_changes
+            .iter()
+            .any(|change| change.compiler_failure.is_some())
+        {
+            Self::TYPED_FAILURE_VERSION
+        } else {
+            Self::CAPTURE_VERSION
+        };
+        Self::new_with_version(
+            self.encoding_version.max(minimum_version),
+            self.operation,
+            self.package,
+            self.label,
+            self.changes.into_vec(),
+            self.semantic_changes.into_vec(),
+            self.semantic_selection,
+            self.operation_key,
+            self.capture_basis,
+            capture_changes,
+            self.source_facts_changes.into_vec(),
+        )
+    }
+
+    pub(super) fn with_capture_basis(
+        self,
+        basis: BuiltinCaptureBasis,
+    ) -> Result<Self, BuiltinModelError> {
+        if self.capture_changes.is_empty() {
+            return Err(BuiltinModelError(
+                "selected capture basis requires capture changes".to_owned(),
+            ));
+        }
+        Self::new_with_version(
+            Self::CAPTURE_BASIS_VERSION,
+            self.operation,
+            self.package,
+            self.label,
+            self.changes.into_vec(),
+            self.semantic_changes.into_vec(),
+            self.semantic_selection,
+            self.operation_key,
+            Some(basis),
+            self.capture_changes.into_vec(),
+            self.source_facts_changes.into_vec(),
+        )
+    }
+
+    pub(super) fn capture_basis(&self) -> Option<BuiltinCaptureBasis> {
+        self.capture_basis
+    }
+
+    pub(super) fn has_capture_changes(&self) -> bool {
+        !self.capture_changes.is_empty()
+    }
+
     pub(super) fn encode(&self) -> Vec<u8> {
+        if let Some(staged) = &self.staged {
+            return staged.encode();
+        }
         self.encode_canonical()
     }
 
     fn encode_canonical(&self) -> Vec<u8> {
+        self.staging_parts().0
+    }
+
+    pub(super) fn staging_parts(&self) -> (Vec<u8>, usize) {
         let label = self.label.as_bytes();
         let mut bytes = Vec::with_capacity(46 + label.len());
         bytes.extend_from_slice(match self.encoding_version {
             3 => b"BPI3",
             4 => b"BPI4",
-            _ => b"BPI5",
+            5 => b"BPI5",
+            6 => b"BPI6",
+            7 => b"BPI7",
+            8 => b"BPI8",
+            _ => b"BPI9",
         });
         bytes.push(self.encoding_version);
         bytes.push(match self.operation {
@@ -833,6 +1207,7 @@ impl BuiltinIntent {
                 None => bytes.push(0),
             }
         }
+        let source_end = bytes.len();
         let semantic_count = u32::try_from(self.semantic_changes.len()).unwrap_or(u32::MAX);
         bytes.extend_from_slice(&semantic_count.to_be_bytes());
         for change in &self.semantic_changes {
@@ -872,8 +1247,73 @@ impl BuiltinIntent {
                     .operation_key
                     .expect("keyed intents are validated at construction"),
             );
+        } else if self.encoding_version >= Self::CAPTURE_VERSION {
+            match self.operation_key {
+                Some(key) => {
+                    bytes.push(1);
+                    bytes.extend_from_slice(&key);
+                }
+                None => bytes.push(0),
+            }
+            bytes.extend_from_slice(
+                &u32::try_from(self.capture_changes.len())
+                    .unwrap_or(u32::MAX)
+                    .to_be_bytes(),
+            );
+            for change in &self.capture_changes {
+                encode_semantic_key(&change.key, &mut bytes);
+                encode_optional_capture_record(change.expected.as_ref(), &mut bytes);
+                encode_source_capture(change.capture, &mut bytes);
+                encode_capture_outcome(change.outcome, &mut bytes);
+                if self.encoding_version >= Self::TYPED_FAILURE_VERSION {
+                    encode_optional_compiler_failure(change.compiler_failure.as_ref(), &mut bytes);
+                }
+            }
+            if self.encoding_version >= Self::CAPTURE_BASIS_VERSION {
+                let basis = self
+                    .capture_basis
+                    .expect("capture-basis intents are validated at construction");
+                bytes.extend_from_slice(&basis.workspace_root);
+                bytes.extend_from_slice(&basis.workspace_sequence.to_be_bytes());
+                bytes.extend_from_slice(&basis.closure_id);
+                match basis.capture_root {
+                    Some(root) => {
+                        bytes.push(1);
+                        bytes.extend_from_slice(&root);
+                    }
+                    None => bytes.push(0),
+                }
+            }
+            if self.encoding_version >= Self::FACTS_VERSION {
+                bytes.extend_from_slice(
+                    &u32::try_from(self.source_facts_changes.len())
+                        .unwrap_or(u32::MAX)
+                        .to_be_bytes(),
+                );
+                for change in &self.source_facts_changes {
+                    bytes.extend_from_slice(&change.key);
+                    encode_optional_source_facts_record(change.expected.as_ref(), &mut bytes);
+                    encode_optional_source_facts_record(change.after.as_ref(), &mut bytes);
+                }
+            }
         }
-        bytes
+        (bytes, source_end)
+    }
+
+    pub(super) fn staged(&self) -> Option<&Arc<super::staged_transport::StagedIntent>> {
+        self.staged.as_ref()
+    }
+
+    pub(super) fn set_staged(
+        &mut self,
+        staged: Arc<super::staged_transport::StagedIntent>,
+        clear_payload: bool,
+    ) {
+        self.staged = Some(staged);
+        if clear_payload {
+            self.changes = Box::new([]);
+            self.source_facts_changes = Box::new([]);
+        }
     }
 
     fn canonical_bytes(&self) -> Vec<u8> {
@@ -889,8 +1329,11 @@ impl BuiltinIntent {
         let semantic_changes = decoder.semantic_changes()?;
         let semantic_selection = decoder.semantic_selection()?;
         let operation_key = decoder.operation_key()?;
+        let capture_changes = decoder.capture_changes()?;
+        let capture_basis = decoder.capture_basis()?;
+        let source_facts_changes = decoder.source_facts_changes()?;
         decoder.finish()?;
-        Self::new_with_version(
+        let mut intent = Self::new_with_version(
             encoding_version,
             operation,
             package,
@@ -899,7 +1342,16 @@ impl BuiltinIntent {
             semantic_changes,
             semantic_selection,
             operation_key,
-        )
+            capture_basis,
+            capture_changes,
+            source_facts_changes,
+        )?;
+        if encoding_version < Self::CAPTURE_VERSION && !intent.capture_changes.is_empty() {
+            return Err(BuiltinModelError(
+                "capture markers require the v6 intent encoding".to_owned(),
+            ));
+        }
+        Ok(intent)
     }
 
     pub(super) fn record(&self) -> Result<BuiltinPackageRecord, BuiltinModelError> {
@@ -916,6 +1368,14 @@ impl BuiltinIntent {
 
     pub(super) fn semantic_changes(&self) -> &[BuiltinSemanticChange] {
         &self.semantic_changes
+    }
+
+    pub(super) fn capture_changes(&self) -> &[BuiltinCaptureChange] {
+        &self.capture_changes
+    }
+
+    pub(super) fn source_facts_changes(&self) -> &[BuiltinSourceFactsChange] {
+        &self.source_facts_changes
     }
 
     fn admit_semantic_selection_against(
@@ -1023,6 +1483,126 @@ fn encode_optional_semantic_record(
     }
 }
 
+fn encode_optional_capture_record(
+    record: Option<&ProductSemanticCaptureRecord>,
+    output: &mut Vec<u8>,
+) {
+    match record {
+        None => output.push(0),
+        Some(record) => {
+            output.push(1);
+            let mut encoded = Vec::new();
+            ProductSemanticCaptureRelation::encode_value(record, &mut encoded);
+            output.extend_from_slice(
+                &u32::try_from(encoded.len())
+                    .unwrap_or(u32::MAX)
+                    .to_be_bytes(),
+            );
+            output.extend_from_slice(&encoded);
+        }
+    }
+}
+
+fn encode_optional_source_facts_record(
+    record: Option<&ProductSourceFileFactsRecord>,
+    output: &mut Vec<u8>,
+) {
+    match record {
+        None => output.push(0),
+        Some(record) => {
+            output.push(1);
+            let mut encoded = Vec::new();
+            ProductSourceFileFactsRelation::encode_value(record, &mut encoded);
+            output.extend_from_slice(
+                &u32::try_from(encoded.len())
+                    .unwrap_or(u32::MAX)
+                    .to_be_bytes(),
+            );
+            output.extend_from_slice(&encoded);
+        }
+    }
+}
+
+fn encode_source_capture(capture: SemanticSourceCapture, output: &mut Vec<u8>) {
+    match capture.operation_key() {
+        None => output.push(0),
+        Some(key) => {
+            output.push(1);
+            output.extend_from_slice(key);
+        }
+    }
+    output.extend_from_slice(capture.source_version());
+    output.extend_from_slice(capture.input_digest());
+    output.extend_from_slice(&capture.observation_sequence().to_be_bytes());
+    output.extend_from_slice(&capture.source_count().to_be_bytes());
+}
+
+fn encode_capture_outcome(outcome: ProductSemanticCaptureOutcome, output: &mut Vec<u8>) {
+    match outcome {
+        ProductSemanticCaptureOutcome::Pending { prior } => {
+            output.push(1);
+            encode_optional_prior(prior, output);
+        }
+        ProductSemanticCaptureOutcome::Unavailable { reason } => {
+            output.push(2);
+            output.push(reason as u8);
+        }
+        ProductSemanticCaptureOutcome::Failed { prior, reason } => {
+            output.push(3);
+            encode_prior(prior, output);
+            output.push(reason as u8);
+        }
+        ProductSemanticCaptureOutcome::Published { coverage, claim } => {
+            output.push(4);
+            encode_semantic_record(
+                &ProductSemanticPublicationRecord::Published { coverage, claim },
+                output,
+            );
+        }
+    }
+}
+
+fn encode_optional_compiler_failure(
+    failure: Option<&backend_library::PackageCompilerFailure>,
+    output: &mut Vec<u8>,
+) {
+    match failure {
+        None => output.push(0),
+        Some(failure) => {
+            if let Ok(bytes) = failure.encode_bounded_json() {
+                output.push(1);
+                output.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+                output.extend_from_slice(&bytes);
+            } else {
+                // Construction admits only bounded, serde-safe closed DTOs.
+                // This sentinel is rejected by the decoder if that invariant
+                // is ever broken, rather than encoding a partial refusal.
+                output.push(u8::MAX);
+            }
+        }
+    }
+}
+
+fn encode_optional_prior(prior: Option<SemanticPublicationVersion>, output: &mut Vec<u8>) {
+    match prior {
+        None => output.push(0),
+        Some(prior) => {
+            output.push(1);
+            encode_prior(prior, output);
+        }
+    }
+}
+
+fn encode_prior(prior: SemanticPublicationVersion, output: &mut Vec<u8>) {
+    encode_semantic_record(
+        &ProductSemanticPublicationRecord::Published {
+            coverage: prior.coverage(),
+            claim: prior.claim(),
+        },
+        output,
+    );
+}
+
 /// A version-pinned package URL already selects a compiler family. Adding it
 /// without a checked source/project authority records that exact semantic
 /// terminal instead of manufacturing declarations from package metadata.
@@ -1091,7 +1671,13 @@ fn added_package_semantic_terminal(
 
 impl backend_engine::queue::QueueSized for BuiltinIntent {
     fn queue_bytes(&self) -> usize {
-        self.encode().len()
+        if self.staged.is_some() {
+            self.encode()
+                .len()
+                .saturating_add(self.staging_parts().0.len())
+        } else {
+            self.encode().len()
+        }
     }
 }
 
@@ -1110,7 +1696,13 @@ impl<'a> IntentDecoder<'a> {
         if bytes.len() < 50
             || !matches!(
                 (bytes.get(..4), version),
-                (Some(b"BPI3"), 3) | (Some(b"BPI4"), 4) | (Some(b"BPI5"), 5)
+                (Some(b"BPI3"), 3)
+                    | (Some(b"BPI4"), 4)
+                    | (Some(b"BPI5"), 5)
+                    | (Some(b"BPI6"), 6)
+                    | (Some(b"BPI7"), 7)
+                    | (Some(b"BPI8"), 8)
+                    | (Some(b"BPI9"), 9)
             )
         {
             return Err(BuiltinModelError(
@@ -1275,8 +1867,266 @@ impl<'a> IntentDecoder<'a> {
                 }
                 Ok(Some(key))
             }
+            Some(0) if self.version >= BuiltinIntent::CAPTURE_VERSION => Ok(None),
             _ => Err(BuiltinModelError(
                 "malformed index operation key marker".to_owned(),
+            )),
+        }
+    }
+
+    fn capture_changes(&mut self) -> Result<Vec<BuiltinCaptureChange>, BuiltinModelError> {
+        if self.version < BuiltinIntent::CAPTURE_VERSION {
+            return Ok(Vec::new());
+        }
+        let count = self.read_u32()? as usize;
+        if (count == 0 && self.version == BuiltinIntent::CAPTURE_VERSION)
+            || count > backend_engine::application::MAX_MANIFEST_ENTRIES
+        {
+            return Err(BuiltinModelError(
+                "malformed semantic capture change count".to_owned(),
+            ));
+        }
+        (0..count).map(|_| self.capture_change()).collect()
+    }
+
+    fn capture_basis(&mut self) -> Result<Option<BuiltinCaptureBasis>, BuiltinModelError> {
+        if self.version < BuiltinIntent::CAPTURE_BASIS_VERSION {
+            return Ok(None);
+        }
+        let workspace_root = self
+            .take(32)?
+            .try_into()
+            .map_err(|_| BuiltinModelError("malformed capture basis workspace root".to_owned()))?;
+        let workspace_sequence = u64::from_be_bytes(
+            self.take(8)?
+                .try_into()
+                .map_err(|_| BuiltinModelError("malformed capture basis sequence".to_owned()))?,
+        );
+        let closure_id = self
+            .take(32)?
+            .try_into()
+            .map_err(|_| BuiltinModelError("malformed capture basis closure".to_owned()))?;
+        let capture_root = match self.take(1)?.first().copied() {
+            Some(0) => None,
+            Some(1) => Some(self.take(32)?.try_into().map_err(|_| {
+                BuiltinModelError("malformed capture basis relation root".to_owned())
+            })?),
+            _ => {
+                return Err(BuiltinModelError(
+                    "malformed capture basis relation root marker".to_owned(),
+                ));
+            }
+        };
+        BuiltinCaptureBasis::new(workspace_root, workspace_sequence, closure_id, capture_root)
+            .map(Some)
+    }
+
+    fn source_facts_changes(&mut self) -> Result<Vec<BuiltinSourceFactsChange>, BuiltinModelError> {
+        if self.version < BuiltinIntent::FACTS_VERSION {
+            return Ok(Vec::new());
+        }
+        let count = self.read_u32()? as usize;
+        let maximum = BuiltinPackageRecord::MAX_PROJECT_FILES.saturating_mul(300);
+        let minimum_bytes_per_change = 34usize;
+        if (count == 0 && self.version == BuiltinIntent::FACTS_VERSION)
+            || count > maximum
+            || count > self.bytes.len().saturating_sub(self.at) / minimum_bytes_per_change
+        {
+            return Err(BuiltinModelError(
+                "malformed source-facts change count".to_owned(),
+            ));
+        }
+        (0..count).map(|_| self.source_facts_change()).collect()
+    }
+
+    fn source_facts_change(&mut self) -> Result<BuiltinSourceFactsChange, BuiltinModelError> {
+        let key = self
+            .take(32)?
+            .try_into()
+            .map_err(|_| BuiltinModelError("malformed source-facts key".to_owned()))?;
+        let expected = self.optional_source_facts_record()?;
+        let after = self.optional_source_facts_record()?;
+        Ok(BuiltinSourceFactsChange {
+            key,
+            expected,
+            after,
+        })
+    }
+
+    fn optional_source_facts_record(
+        &mut self,
+    ) -> Result<Option<ProductSourceFileFactsRecord>, BuiltinModelError> {
+        match self.take(1)?.first().copied() {
+            Some(0) => Ok(None),
+            Some(1) => {
+                let length = self.read_u32()? as usize;
+                ProductSourceFileFactsRelation::decode_value(self.take(length)?)
+                    .map(Some)
+                    .map_err(|_| BuiltinModelError("malformed source-facts record".to_owned()))
+            }
+            _ => Err(BuiltinModelError(
+                "malformed source-facts record tag".to_owned(),
+            )),
+        }
+    }
+
+    fn capture_change(&mut self) -> Result<BuiltinCaptureChange, BuiltinModelError> {
+        let key = self.semantic_key()?;
+        let expected = match self.take(1)?.first().copied() {
+            Some(0) => None,
+            Some(1) => {
+                let length = self.read_u32()? as usize;
+                Some(
+                    ProductSemanticCaptureRelation::decode_value(self.take(length)?).map_err(
+                        |_| BuiltinModelError("malformed semantic capture record".to_owned()),
+                    )?,
+                )
+            }
+            _ => {
+                return Err(BuiltinModelError(
+                    "malformed semantic capture before tag".to_owned(),
+                ));
+            }
+        };
+        let capture = self.source_capture()?;
+        let outcome = self.capture_outcome()?;
+        let compiler_failure = if self.version >= BuiltinIntent::TYPED_FAILURE_VERSION {
+            self.optional_compiler_failure()?
+        } else {
+            None
+        };
+        Ok(BuiltinCaptureChange {
+            key,
+            expected,
+            capture,
+            outcome,
+            compiler_failure,
+        })
+    }
+
+    fn optional_compiler_failure(
+        &mut self,
+    ) -> Result<Option<backend_library::PackageCompilerFailure>, BuiltinModelError> {
+        match self.take(1)?.first().copied() {
+            Some(0) => Ok(None),
+            Some(1) => {
+                let length = self.read_u32()? as usize;
+                if length == 0
+                    || length > backend_library::PackageCompilerFailure::MAX_ENCODED_BYTES
+                {
+                    return Err(BuiltinModelError(
+                        "malformed typed compiler-failure length".to_owned(),
+                    ));
+                }
+                let bytes = self.take(length)?;
+                let failure = backend_library::PackageCompilerFailure::decode_bounded_json(bytes)
+                    .map_err(|_| {
+                    BuiltinModelError("malformed typed compiler-failure payload".to_owned())
+                })?;
+                let canonical = failure.encode_bounded_json().map_err(|_| {
+                    BuiltinModelError("could not re-encode typed compiler failure".to_owned())
+                })?;
+                if canonical.as_slice() != bytes {
+                    return Err(BuiltinModelError(
+                        "noncanonical typed compiler-failure payload".to_owned(),
+                    ));
+                }
+                Ok(Some(failure))
+            }
+            _ => Err(BuiltinModelError(
+                "malformed typed compiler-failure tag".to_owned(),
+            )),
+        }
+    }
+
+    fn source_capture(&mut self) -> Result<SemanticSourceCapture, BuiltinModelError> {
+        let operation_key =
+            match self.take(1)?.first().copied() {
+                Some(0) => None,
+                Some(1) => Some(self.take(32)?.try_into().map_err(|_| {
+                    BuiltinModelError("malformed semantic operation key".to_owned())
+                })?),
+                _ => {
+                    return Err(BuiltinModelError(
+                        "malformed semantic operation key tag".to_owned(),
+                    ));
+                }
+            };
+        let source_version = self
+            .take(32)?
+            .try_into()
+            .map_err(|_| BuiltinModelError("malformed semantic source version".to_owned()))?;
+        let input_digest = self
+            .take(32)?
+            .try_into()
+            .map_err(|_| BuiltinModelError("malformed semantic input digest".to_owned()))?;
+        let observation_sequence = self.read_u64()?;
+        let source_count = self.read_u64()?;
+        SemanticSourceCapture::new(
+            operation_key,
+            source_version,
+            input_digest,
+            observation_sequence,
+            source_count,
+        )
+        .map_err(|error| BuiltinModelError(error.to_owned()))
+    }
+
+    fn capture_outcome(&mut self) -> Result<ProductSemanticCaptureOutcome, BuiltinModelError> {
+        match self.take(1)?.first().copied() {
+            Some(1) => Ok(ProductSemanticCaptureOutcome::Pending {
+                prior: self.optional_prior()?,
+            }),
+            Some(2) => Ok(ProductSemanticCaptureOutcome::Unavailable {
+                reason: self.unavailable_reason()?,
+            }),
+            Some(3) => Ok(ProductSemanticCaptureOutcome::Failed {
+                prior: self.prior()?,
+                reason: self.unavailable_reason()?,
+            }),
+            Some(4) => match self.semantic_record()? {
+                ProductSemanticPublicationRecord::Published { coverage, claim } => {
+                    Ok(ProductSemanticCaptureOutcome::Published { coverage, claim })
+                }
+                ProductSemanticPublicationRecord::Unavailable(_) => Err(BuiltinModelError(
+                    "malformed published semantic capture outcome".to_owned(),
+                )),
+            },
+            _ => Err(BuiltinModelError(
+                "malformed semantic capture outcome".to_owned(),
+            )),
+        }
+    }
+
+    fn optional_prior(&mut self) -> Result<Option<SemanticPublicationVersion>, BuiltinModelError> {
+        match self.take(1)?.first().copied() {
+            Some(0) => Ok(None),
+            Some(1) => self.prior().map(Some),
+            _ => Err(BuiltinModelError("malformed semantic prior tag".to_owned())),
+        }
+    }
+
+    fn prior(&mut self) -> Result<SemanticPublicationVersion, BuiltinModelError> {
+        match self.semantic_record()? {
+            ProductSemanticPublicationRecord::Published { coverage, claim } => {
+                Ok(SemanticPublicationVersion::new(coverage, claim))
+            }
+            ProductSemanticPublicationRecord::Unavailable(_) => Err(BuiltinModelError(
+                "semantic prior does not contain a published generation".to_owned(),
+            )),
+        }
+    }
+
+    fn unavailable_reason(
+        &mut self,
+    ) -> Result<backend_engine::builtin::SemanticUnavailableReason, BuiltinModelError> {
+        match self.take(1)?.first().copied() {
+            Some(1) => Ok(backend_engine::builtin::SemanticUnavailableReason::Toolchain),
+            Some(2) => Ok(backend_engine::builtin::SemanticUnavailableReason::ProjectAuthority),
+            Some(3) => Ok(backend_engine::builtin::SemanticUnavailableReason::Cancelled),
+            Some(4) => Ok(backend_engine::builtin::SemanticUnavailableReason::Rejected),
+            _ => Err(BuiltinModelError(
+                "malformed semantic unavailable reason".to_owned(),
             )),
         }
     }
@@ -1311,6 +2161,14 @@ impl<'a> IntentDecoder<'a> {
             .try_into()
             .map_err(|_| BuiltinModelError("malformed product source length".to_owned()))?;
         Ok(u32::from_be_bytes(value))
+    }
+
+    fn read_u64(&mut self) -> Result<u64, BuiltinModelError> {
+        let value = self
+            .take(8)?
+            .try_into()
+            .map_err(|_| BuiltinModelError("malformed semantic source count".to_owned()))?;
+        Ok(u64::from_be_bytes(value))
     }
 
     fn take(&mut self, length: usize) -> Result<&'a [u8], BuiltinModelError> {
@@ -1358,6 +2216,9 @@ impl WorkspaceModel for BuiltinModel {
     type Error = BuiltinModelError;
 
     fn request_id(&self, intent: &Self::Intent) -> [u8; 32] {
+        if let Some(staged) = intent.staged() {
+            return staged.request();
+        }
         let bytes = intent.canonical_bytes();
         ObjectVersion::<BuiltinIntentSchema>::from_value(&bytes).to_bytes()
     }
@@ -1368,6 +2229,15 @@ impl WorkspaceModel for BuiltinModel {
         intent: &Self::Intent,
         transaction: TransactionId,
     ) -> Result<PreparedTransition, Self::Error> {
+        let hydrated;
+        let intent = if let Some(staged) = intent.staged() {
+            let mut decoded = staged.hydrate(Some(base))?;
+            decoded.set_staged(Arc::clone(staged), false);
+            hydrated = decoded;
+            &hydrated
+        } else {
+            intent
+        };
         let relation = base
             .relation::<BuiltinWorkspaceRelation>()
             .map_err(|error| BuiltinModelError(format!("open product source: {error}")))?;
@@ -1408,13 +2278,13 @@ pub(super) fn prepare_transition_with_source_update(
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
     intent.admit_semantic_selection_against(&semantic)?;
     let semantic_update = prepare_semantic_update(&semantic, intent.semantic_changes())?;
-    let source_changed = update.delta().changes().next().is_some();
-    let semantic_changed = semantic_update.delta().changes().next().is_some();
-    let changed_items = update
-        .delta()
-        .changes()
-        .count()
-        .saturating_add(semantic_update.delta().changes().count());
+    let source_facts_update = prepare_source_facts_relation_update(base, intent)?;
+    let source_change_count = update.delta().changes().count();
+    let semantic_change_count = semantic_update.delta().changes().count();
+    let source_changed = source_change_count != 0;
+    let semantic_changed = semantic_change_count != 0;
+    let changed_items =
+        checked_product_change_count(source_change_count, semantic_change_count, intent)?;
     if changed_items == 0 {
         return Err(BuiltinModelError(
             "product source intent is a no-op".to_owned(),
@@ -1430,6 +2300,7 @@ pub(super) fn prepare_transition_with_source_update(
     let target_manifest =
         workspace_manifest_from_root(&update.target_root(), &semantic_update.target_root())?;
     let target_root = update.target().root();
+    let target_workspace_root = target_manifest.root();
     let semantic_target_root = semantic_update.target().root();
     let request = BuiltinModel.request_id(intent);
     let changed_nodes = update.changed_nodes().to_vec();
@@ -1460,6 +2331,15 @@ pub(super) fn prepare_transition_with_source_update(
     );
     let commit = backend_engine::commit_checked(&target_manifest, Vec::new(), provenance)
         .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let capture_update = prepare_capture_relation_update(
+        base,
+        intent,
+        target_workspace_root,
+        base.sequence(),
+        request,
+        *commit.id().as_bytes(),
+        &semantic,
+    )?;
     let closure = transition_closure_lazy(
         base.closure(),
         &target_manifest,
@@ -1472,13 +2352,13 @@ pub(super) fn prepare_transition_with_source_update(
             semantic_root: semantic_target_root,
             transaction,
             intent,
+            capture_objects: &capture_update.node_objects,
+            capture_pointer: capture_update.pointer.as_ref(),
+            source_facts_objects: &source_facts_update.node_objects,
+            source_facts_pointer: source_facts_update.pointer.as_ref(),
         },
     )?;
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?;
+    let registry = super::product_relation_registry()?;
     let intent_bytes = intent.encode();
     let intent_key = ObjectKey::<BuiltinIntentSchema>::from_value(&intent_bytes);
     let intent_object = TypedObject::from_value(&intent_key, &intent_bytes);
@@ -1491,10 +2371,494 @@ pub(super) fn prepare_transition_with_source_update(
         &registry,
     )
     .map_err(|error| BuiltinModelError(format!("construct prepared transition: {error}")))?;
-    transition
+    let transition = if let Some(pointer) = capture_update.pointer {
+        let root = capture_update
+            .node_objects
+            .iter()
+            .find(|object| pointer.bytes() == object.version())
+            .cloned();
+        let transition = transition
+            .replace_object_family([pointer], &registry)
+            .map_err(|error| BuiltinModelError(format!("select semantic capture root: {error}")))?;
+        if let Some(root) = root {
+            transition
+                .replace_object_family([root], &registry)
+                .map_err(|e| BuiltinModelError(format!("replace selected capture root: {e}")))?
+        } else {
+            transition
+        }
+    } else {
+        transition
+    };
+    let transition = if let Some(pointer) = source_facts_update.pointer {
+        let root = source_facts_update
+            .node_objects
+            .iter()
+            .find(|object| pointer.bytes() == object.version())
+            .cloned();
+        let transition = transition
+            .replace_object_family([pointer], &registry)
+            .map_err(|error| BuiltinModelError(format!("select source facts root: {error}")))?;
+        if let Some(root) = root {
+            transition
+                .replace_object_family([root], &registry)
+                .map_err(|e| BuiltinModelError(format!("replace selected facts root: {e}")))?
+        } else {
+            transition
+        }
+    } else {
+        transition
+    };
+    let transition = transition
         .replace_object_family([intent_object], &registry)
-        .map(|transition| transition.with_work(work))
-        .map_err(|error| BuiltinModelError(format!("retain current intent: {error}")))
+        .map_err(|error| BuiltinModelError(format!("retain current intent: {error}")))?;
+    let transition = if let Some(staged) = intent.staged() {
+        let membership = staged
+            .membership
+            .with_control_frontier(transition.closure())
+            .map_err(|error| {
+                BuiltinModelError(format!("compose staged workspace evidence: {error:?}"))
+            })?;
+        staged.validate_membership_union(&membership, transition.closure().control_manifest())?;
+        transition
+            .with_stored_membership(membership)
+            .map_err(|error| {
+                BuiltinModelError(format!("bind staged workspace evidence: {error}"))
+            })?
+    } else {
+        transition
+    };
+    Ok(transition.with_work(work))
+}
+
+struct PreparedCaptureRelationUpdate {
+    node_objects: Vec<TypedObject>,
+    pointer: Option<TypedObject>,
+}
+
+struct PreparedSourceFactsRelationUpdate {
+    node_objects: Vec<TypedObject>,
+    pointer: Option<TypedObject>,
+}
+
+fn checked_product_change_count(
+    source_changes: usize,
+    semantic_changes: usize,
+    intent: &BuiltinIntent,
+) -> Result<usize, BuiltinModelError> {
+    [
+        source_changes,
+        semantic_changes,
+        intent.source_facts_changes().len(),
+        intent.capture_changes().len(),
+    ]
+    .into_iter()
+    .try_fold(0_usize, usize::checked_add)
+    .ok_or_else(|| BuiltinModelError("product transition change count overflow".to_owned()))
+}
+
+fn prepare_source_facts_relation_update(
+    base: &WorkspaceSnapshot,
+    intent: &BuiltinIntent,
+) -> Result<PreparedSourceFactsRelationUpdate, BuiltinModelError> {
+    if intent.source_facts_changes().is_empty() {
+        return Ok(PreparedSourceFactsRelationUpdate {
+            node_objects: Vec::new(),
+            pointer: None,
+        });
+    }
+    let selected = product_source_file_facts_relation(base).map_err(|error| {
+        BuiltinModelError(format!("open selected source facts relation: {error}"))
+    })?;
+    let changes = intent
+        .source_facts_changes()
+        .iter()
+        .map(|change| TreeChange {
+            key: change.key,
+            after: change.after.clone(),
+        })
+        .collect::<Vec<_>>();
+    if let Some(relation) = selected {
+        for change in intent.source_facts_changes() {
+            let current = relation.lookup(&change.key).map_err(|error| {
+                BuiltinModelError(format!("read current source facts row: {error}"))
+            })?;
+            if current != change.expected {
+                return Err(BuiltinModelError(
+                    "source facts base does not match its persisted before value".to_owned(),
+                ));
+            }
+        }
+        let update = relation
+            .prepare_update(&changes)
+            .map_err(|error| BuiltinModelError(format!("prepare source facts delta: {error}")))?;
+        let node_objects = update
+            .changed_nodes()
+            .iter()
+            .map(|node| {
+                TypedObject::from_state_root(node.commitment(), node).map_err(|error| {
+                    BuiltinModelError(format!("retain source facts node: {error:?}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(PreparedSourceFactsRelationUpdate {
+            node_objects,
+            pointer: Some(product_source_file_facts_root_object(
+                update.target().root(),
+            )),
+        })
+    } else {
+        if intent
+            .source_facts_changes()
+            .iter()
+            .any(|change| change.expected.is_some() || change.after.is_none())
+        {
+            return Err(BuiltinModelError(
+                "source facts relation disappeared before its expected row".to_owned(),
+            ));
+        }
+        let entries: Vec<([u8; 32], ProductSourceFileFactsRecord)> = intent
+            .source_facts_changes()
+            .iter()
+            .filter_map(|change| change.after.clone().map(|record| (change.key, record)))
+            .collect();
+        let state = backend_engine::RelationState::<ProductSourceFileFactsRelation>::from_entries(
+            entries,
+            super::admitted_coverage()?,
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("build initial source facts relation: {error}"))
+        })?;
+        let mut closure = state.node_closure();
+        let mut node_objects = Vec::new();
+        while let Some(node) = closure.try_next().map_err(|error| {
+            BuiltinModelError(format!("traverse initial source facts nodes: {error:?}"))
+        })? {
+            node_objects.push(
+                TypedObject::from_state_root(node.state_root(), node.canonical()).map_err(
+                    |error| {
+                        BuiltinModelError(format!("retain initial source facts node: {error:?}"))
+                    },
+                )?,
+            );
+        }
+        Ok(PreparedSourceFactsRelationUpdate {
+            node_objects,
+            pointer: Some(product_source_file_facts_root_object(state.root())),
+        })
+    }
+}
+
+fn prepare_capture_relation_update(
+    base: &WorkspaceSnapshot,
+    intent: &BuiltinIntent,
+    target_root: backend_engine::WorkspaceRoot,
+    base_sequence: u64,
+    request_identity: [u8; 32],
+    source_commit: [u8; 32],
+    semantic: &WorkspaceRelationHandle<BuiltinSemanticRelation>,
+) -> Result<PreparedCaptureRelationUpdate, BuiltinModelError> {
+    if intent.capture_changes().is_empty() {
+        return Ok(PreparedCaptureRelationUpdate {
+            node_objects: Vec::new(),
+            pointer: None,
+        });
+    }
+    let selected_capture_relation = semantic_capture_relation(base)
+        .map_err(|error| BuiltinModelError(format!("open semantic capture relation: {error}")))?;
+    let selected_capture_root = selected_capture_relation
+        .as_ref()
+        .map(|relation| *relation.root().as_bytes());
+    let basis = intent.capture_basis().ok_or_else(|| {
+        BuiltinModelError(format!(
+            "capture intent BPI{} predates authenticated base-closure binding; BPI9 is required for publication",
+            intent.encoding_version
+        ))
+    })?;
+    validate_capture_basis_against_snapshot(base, basis, selected_capture_root)?;
+    let source_relation = if intent
+        .capture_changes()
+        .iter()
+        .any(|change| change.compiler_failure.is_some())
+    {
+        Some(
+            base.relation::<BuiltinWorkspaceRelation>()
+                .map_err(|error| {
+                    BuiltinModelError(format!("open source rows for compiler refusal: {error}"))
+                })?,
+        )
+    } else {
+        None
+    };
+    let mut capture_changes = Vec::with_capacity(intent.capture_changes().len());
+    let mut capture_entries = Vec::with_capacity(intent.capture_changes().len());
+    for change in intent.capture_changes() {
+        if let Some(failure) = &change.compiler_failure {
+            let project = change.key.package_key().to_bytes();
+            let file_key =
+                backend_engine::product_source_file_key(project, failure.relative_path());
+            let selected_source_relation = source_relation.as_ref().ok_or_else(|| {
+                BuiltinModelError("compiler failure has no selected source relation".to_owned())
+            })?;
+            let row = selected_source_relation
+                .lookup(&file_key)
+                .map_err(|error| {
+                    BuiltinModelError(format!("read source row for compiler refusal: {error}"))
+                })?
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "typed compiler refusal names a source path outside the captured project"
+                            .to_owned(),
+                    )
+                })?;
+            validate_compiler_failure_source(&change.key, failure, &row)?;
+        }
+        let current = selected_capture_relation
+            .as_ref()
+            .map(|relation| relation.lookup(&change.key))
+            .transpose()
+            .map_err(|error| BuiltinModelError(format!("read current semantic capture: {error}")))?
+            .flatten();
+        if current != change.expected {
+            return Err(BuiltinModelError(
+                "semantic capture base does not match its persisted before value".to_owned(),
+            ));
+        }
+        let selected_prior = selected_semantic_prior(semantic, &change.key)?;
+        let after = next_capture_record(
+            current.as_ref(),
+            change,
+            selected_prior,
+            request_identity,
+            *base.root().as_bytes(),
+            base_sequence,
+            *target_root.as_bytes(),
+            source_commit,
+        )?;
+        if let ProductSemanticCaptureOutcome::Published { coverage, claim } = after.outcome() {
+            let selected = intent
+                .semantic_changes()
+                .iter()
+                .find(|semantic_change| semantic_change.key == change.key)
+                .and_then(|semantic_change| semantic_change.after.as_ref());
+            if !selected.is_some_and(|record| {
+                matches!(record, ProductSemanticPublicationRecord::Published {
+                    coverage: selected_coverage,
+                    claim: selected_claim,
+                } if *selected_coverage == coverage && *selected_claim == claim)
+            }) {
+                return Err(BuiltinModelError(
+                    "published semantic capture lacks its exact selected generation change"
+                        .to_owned(),
+                ));
+            }
+        }
+        capture_entries.push((change.key.clone(), after.clone()));
+        capture_changes.push(TreeChange {
+            key: change.key.clone(),
+            after: Some(after),
+        });
+    }
+    if let Some(relation) = selected_capture_relation {
+        let update = relation.prepare_update(&capture_changes).map_err(|error| {
+            BuiltinModelError(format!("prepare semantic capture delta: {error}"))
+        })?;
+        let node_objects = update
+            .changed_nodes()
+            .iter()
+            .map(|node| {
+                TypedObject::from_state_root(node.commitment(), node).map_err(|error| {
+                    BuiltinModelError(format!("retain semantic capture node: {error:?}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let pointer = semantic_capture_root_object(update.target().root());
+        Ok(PreparedCaptureRelationUpdate {
+            node_objects,
+            pointer: Some(pointer),
+        })
+    } else {
+        if intent
+            .capture_changes()
+            .iter()
+            .any(|change| change.expected.is_some())
+        {
+            return Err(BuiltinModelError(
+                "semantic capture pointer disappeared before its expected row".to_owned(),
+            ));
+        }
+        let state = backend_engine::RelationState::<ProductSemanticCaptureRelation>::from_entries(
+            capture_entries,
+            super::admitted_coverage()?,
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("build initial semantic capture relation: {error}"))
+        })?;
+        let mut closure = state.node_closure();
+        let mut node_objects = Vec::new();
+        while let Some(node) = closure.try_next().map_err(|error| {
+            BuiltinModelError(format!(
+                "traverse initial semantic capture nodes: {error:?}"
+            ))
+        })? {
+            node_objects.push(
+                TypedObject::from_state_root(node.state_root(), node.canonical()).map_err(
+                    |error| {
+                        BuiltinModelError(format!(
+                            "retain initial semantic capture node: {error:?}"
+                        ))
+                    },
+                )?,
+            );
+        }
+        Ok(PreparedCaptureRelationUpdate {
+            node_objects,
+            pointer: Some(semantic_capture_root_object(state.root())),
+        })
+    }
+}
+
+fn selected_semantic_prior(
+    semantic: &WorkspaceRelationHandle<BuiltinSemanticRelation>,
+    key: &ProductSemanticPublicationKey,
+) -> Result<Option<SemanticPublicationVersion>, BuiltinModelError> {
+    let selected = semantic
+        .lookup(key)
+        .map_err(|error| BuiltinModelError(format!("read captured semantic selection: {error}")))?;
+    Ok(selected.as_ref().and_then(|record| match record {
+        ProductSemanticPublicationRecord::Published { coverage, claim } => {
+            Some(SemanticPublicationVersion::new(*coverage, *claim))
+        }
+        ProductSemanticPublicationRecord::Unavailable(_) => None,
+    }))
+}
+
+/// Applies the same capture state machine while preparing a live transition
+/// and while re-admitting its persisted receipt. Persisted admission supplies
+/// the intent's exact `expected` value as `current`, then compares this result
+/// with the row reached through the authenticated target pointer.
+fn next_capture_record(
+    current: Option<&ProductSemanticCaptureRecord>,
+    change: &BuiltinCaptureChange,
+    selected_prior: Option<SemanticPublicationVersion>,
+    request_identity: [u8; 32],
+    base_workspace_root: [u8; 32],
+    base_workspace_sequence: u64,
+    source_workspace_root: [u8; 32],
+    source_commit: [u8; 32],
+) -> Result<ProductSemanticCaptureRecord, BuiltinModelError> {
+    match (current, change.outcome) {
+        (None, ProductSemanticCaptureOutcome::Pending { prior })
+        | (Some(_), ProductSemanticCaptureOutcome::Pending { prior }) => {
+            if current.is_some_and(|current| {
+                matches!(
+                    current.outcome(),
+                    ProductSemanticCaptureOutcome::Pending { .. }
+                )
+            }) {
+                return Err(BuiltinModelError(
+                    "semantic capture refresh cannot replace an in-flight source marker".to_owned(),
+                ));
+            }
+            if selected_prior != prior {
+                return Err(BuiltinModelError(
+                    "semantic capture prior does not match the selected coherent generation"
+                        .to_owned(),
+                ));
+            }
+            let source_workspace_sequence =
+                base_workspace_sequence.checked_add(1).ok_or_else(|| {
+                    BuiltinModelError("semantic capture workspace sequence overflow".to_owned())
+                })?;
+            ProductSemanticCaptureRecord::new_with_compiler_failure(
+                change.capture.operation_key().copied(),
+                request_identity,
+                change.capture,
+                base_workspace_root,
+                base_workspace_sequence,
+                source_workspace_root,
+                source_workspace_sequence,
+                source_commit,
+                change.outcome,
+                change.compiler_failure.clone(),
+            )
+            .map_err(|error| BuiltinModelError(error.to_owned()))
+        }
+        (Some(current), outcome) => {
+            let ProductSemanticCaptureOutcome::Pending {
+                prior: pending_prior,
+            } = current.outcome()
+            else {
+                return Err(BuiltinModelError(
+                    "semantic capture terminal has no pending source marker".to_owned(),
+                ));
+            };
+            if current.capture() != change.capture {
+                return Err(BuiltinModelError(
+                    "semantic capture terminal does not match its exact pending source marker"
+                        .to_owned(),
+                ));
+            }
+            match outcome {
+                ProductSemanticCaptureOutcome::Unavailable { .. } if pending_prior.is_some() => {
+                    return Err(BuiltinModelError(
+                        "unavailable semantic capture would discard its prior generation"
+                            .to_owned(),
+                    ));
+                }
+                ProductSemanticCaptureOutcome::Failed { prior, .. }
+                    if Some(prior) != pending_prior =>
+                {
+                    return Err(BuiltinModelError(
+                        "failed semantic capture changed its prior generation".to_owned(),
+                    ));
+                }
+                ProductSemanticCaptureOutcome::Pending { .. } => {
+                    return Err(BuiltinModelError(
+                        "semantic capture refresh cannot replace an in-flight source marker"
+                            .to_owned(),
+                    ));
+                }
+                ProductSemanticCaptureOutcome::Unavailable { .. }
+                | ProductSemanticCaptureOutcome::Failed { .. }
+                | ProductSemanticCaptureOutcome::Published { .. } => {}
+            }
+            let terminal = current
+                .with_outcome(outcome)
+                .map_err(|error| BuiltinModelError(error.to_owned()))?;
+            match &change.compiler_failure {
+                Some(failure) => terminal
+                    .with_compiler_failure(failure.clone())
+                    .map_err(|error| BuiltinModelError(error.to_owned())),
+                None => Ok(terminal),
+            }
+        }
+        (None, _) => Err(BuiltinModelError(
+            "semantic capture terminal has no exact pending source marker".to_owned(),
+        )),
+    }
+}
+
+fn validate_compiler_failure_source(
+    key: &ProductSemanticPublicationKey,
+    failure: &backend_library::PackageCompilerFailure,
+    row: &BuiltinPackageRecord,
+) -> Result<(), BuiltinModelError> {
+    let fields = row.file_fields().ok_or_else(|| {
+        BuiltinModelError(
+            "typed compiler refusal path resolves to a non-file source row".to_owned(),
+        )
+    })?;
+    let package = key.package_key().to_bytes();
+    if fields.project != package
+        || fields.path != failure.relative_path()
+        || fields.source_identity != Some(failure.source_identity())
+    {
+        return Err(BuiltinModelError(
+            "typed compiler refusal source identity does not match captured source".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1613,7 +2977,7 @@ fn admit_persisted_transition_with_layout(
     store: &backend_engine::FileStore,
     layout: SourceFileKeyLayout,
 ) -> Result<PreparedTransition, BuiltinModelError> {
-    let persisted_intent = admit_persisted_intent(persisted.closure_manifest().objects())?;
+    let persisted_intent = admit_persisted_intent_with_store(persisted, store)?;
     if layout == SourceFileKeyLayout::Retired
         && BuiltinModel.request_id(&persisted_intent) != persisted.request()
     {
@@ -1676,6 +3040,47 @@ fn admit_persisted_intent(objects: &[TypedObject]) -> Result<BuiltinIntent, Buil
         ));
     }
     Ok(persisted_intent)
+}
+
+fn admit_persisted_intent_with_store(
+    persisted: &backend_engine::PersistedTransition,
+    store: &backend_engine::FileStore,
+) -> Result<BuiltinIntent, BuiltinModelError> {
+    let objects = persisted.closure_manifest().objects();
+    let schema = backend_version::SchemaIdentity::new(
+        BuiltinIntentSchema::DOMAIN,
+        BuiltinIntentSchema::TYPE,
+        BuiltinIntentSchema::VERSION,
+    );
+    let mut intents = objects.iter().filter(|object| object.schema() == schema);
+    let object = intents.next().ok_or_else(|| {
+        BuiltinModelError("persisted builtin transition has no intent".to_owned())
+    })?;
+    if intents.next().is_some() {
+        return Err(BuiltinModelError(
+            "persisted transition has multiple intents".to_owned(),
+        ));
+    }
+    if !object.bytes().starts_with(b"BPS1") {
+        return admit_persisted_intent(objects);
+    }
+    let closure = persisted.membership_id().ok_or_else(|| {
+        BuiltinModelError("staged pointer has no authenticated selected membership".to_owned())
+    })?;
+    let staged = super::staged_transport::StagedIntent::decode(object.bytes(), store, closure)?;
+    let mut intent = staged.hydrate(None)?;
+    if BuiltinModel.request_id(&intent) != persisted.request() {
+        return Err(BuiltinModelError(
+            "staged persisted request differs from exact source/facts bytes".to_owned(),
+        ));
+    }
+    intent.set_staged(staged, false);
+    if intent.encode() != object.bytes() {
+        return Err(BuiltinModelError(
+            "noncanonical staged intent pointer".to_owned(),
+        ));
+    }
+    Ok(intent)
 }
 
 #[expect(
@@ -1755,13 +3160,15 @@ fn admit_persisted_relations(
     )?;
     let semantic_update =
         prepare_semantic_update(&base_semantic, persisted_intent.semantic_changes())?;
-    let source_changed = update.delta().changes().next().is_some();
-    let semantic_changed = semantic_update.delta().changes().next().is_some();
-    let changed_items = update
-        .delta()
-        .changes()
-        .count()
-        .saturating_add(semantic_update.delta().changes().count());
+    let source_change_count = update.delta().changes().count();
+    let semantic_change_count = semantic_update.delta().changes().count();
+    let source_changed = source_change_count != 0;
+    let semantic_changed = semantic_change_count != 0;
+    let changed_items = checked_product_change_count(
+        source_change_count,
+        semantic_change_count,
+        &persisted_intent,
+    )?;
     if changed_items == 0 {
         return Err(BuiltinModelError(
             "persisted product transition is a no-op".to_owned(),
@@ -1831,11 +3238,7 @@ fn admit_persisted_relations(
         .map_err(|error| BuiltinModelError(format!("admit persisted commit: {error}")))?;
     let checked_delta = delta.clone().into_checked();
     let checked_commit = commit.clone().into_checked();
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?;
+    let registry = super::product_relation_registry()?;
     // Reopen the exact authenticated closure selected by the physical HEAD.
     // The compact transition envelope intentionally contains only recovery
     // pointers, so rebuilding a new manifest from that subset would produce a
@@ -1853,14 +3256,116 @@ fn admit_persisted_relations(
     // tree needed an internal node: a one-leaf project reopened, and a real
     // crate did not. Read it with the reader that matches the writer.
     let closure_id = selected.descriptor().closure();
-    let persisted_objects = store
-        .read_workspace_root_closure(closure_id)
-        .map_err(|error| {
-            BuiltinModelError(format!(
-                "read selected workspace closure {}: {error:?}",
-                backend_engine::encode_id(closure_id.as_bytes())
-            ))
-        })?;
+    let persisted_objects =
+        if let Some(staged) = persisted_intent.staged() {
+            if staged.membership.id() != closure_id {
+                return Err(BuiltinModelError(
+                    "staged membership differs from selected HEAD".to_owned(),
+                ));
+            }
+            let mut objects = persisted.closure_manifest().objects().to_vec();
+            for object in [
+                base_tree.root_object(),
+                target_tree.root_object(),
+                base_semantic.root_object(),
+                target_semantic.root_object(),
+            ] {
+                let object = object
+                    .map_err(|e| BuiltinModelError(format!("reopen checked control root: {e}")))?;
+                if staged
+                    .membership
+                    .contains(object.id())
+                    .map_err(|e| BuiltinModelError(format!("probe selected control root: {e:?}")))?
+                {
+                    objects.push(object);
+                }
+            }
+            for pointer in persisted.closure_manifest().objects() {
+                let capture_schema = backend_version::SchemaIdentity::new(
+                    ProductSemanticCaptureRootSchema::DOMAIN,
+                    ProductSemanticCaptureRootSchema::TYPE,
+                    ProductSemanticCaptureRootSchema::VERSION,
+                );
+                let facts_schema = backend_version::SchemaIdentity::new(
+                    ProductSourceFileFactsRootSchema::DOMAIN,
+                    ProductSourceFileFactsRootSchema::TYPE,
+                    ProductSourceFileFactsRootSchema::VERSION,
+                );
+                if pointer.schema() != capture_schema && pointer.schema() != facts_schema {
+                    continue;
+                }
+                let root = pointer.bytes().try_into().map_err(|_| {
+                    BuiltinModelError("malformed selected auxiliary root pointer".to_owned())
+                })?;
+                let object = if pointer.schema() == capture_schema {
+                    persisted
+                        .relation::<ProductSemanticCaptureRelation>(store, root)
+                        .and_then(|tree| tree.root_object())
+                } else {
+                    persisted
+                        .relation::<ProductSourceFileFactsRelation>(store, root)
+                        .and_then(|tree| tree.root_object())
+                }
+                .map_err(|e| {
+                    BuiltinModelError(format!("reopen checked auxiliary control root: {e}"))
+                })?;
+                if !staged.membership.contains(object.id()).map_err(|e| {
+                    BuiltinModelError(format!("prove auxiliary root membership: {e:?}"))
+                })? {
+                    return Err(BuiltinModelError(
+                        "selected auxiliary root is outside staged membership".to_owned(),
+                    ));
+                }
+                objects.push(object);
+            }
+            objects.sort_by_key(|object| (object.schema(), *object.key(), *object.version()));
+            objects.dedup_by_key(|object| object.id());
+            if objects.len() > 128 {
+                return Err(BuiltinModelError(
+                    "selected control frontier exceeds 128 objects".to_owned(),
+                ));
+            }
+            backend_store::ClosureManifest::new_root_only_with_registry(objects, &registry)
+                .map_err(|e| BuiltinModelError(format!("admit stored control frontier: {e:?}")))?
+        } else {
+            store
+                .read_workspace_root_closure(closure_id)
+                .map_err(|e| BuiltinModelError(format!("read legacy selected closure: {e:?}")))?
+        };
+    if let Some(staged) = persisted_intent.staged() {
+        validate_persisted_stage_basis(
+            staged,
+            persisted,
+            store,
+            &base_manifest,
+            selected.descriptor().target_generation(),
+        )?;
+    }
+    validate_persisted_capture_changes(
+        persisted,
+        store,
+        &persisted_intent,
+        &base_tree,
+        &target_tree,
+        &base_semantic,
+        &target_semantic,
+        selected.descriptor().target_generation(),
+        commit.id().as_bytes(),
+        persisted_objects.objects(),
+    )?;
+    validate_persisted_source_facts(
+        persisted,
+        store,
+        &persisted_intent,
+        &target_tree,
+        persisted_objects.objects(),
+    )?;
+    let physical_roots = persisted_objects
+        .objects()
+        .iter()
+        .filter(|object| registry.contains_schema(object.schema()))
+        .cloned()
+        .collect::<Vec<_>>();
     let closure = WorkspaceClosure::from_checked_transition_root_only_with_registry(
         &manifest,
         &checked_delta,
@@ -1868,7 +3373,16 @@ fn admit_persisted_relations(
         persisted_objects,
         &registry,
     )
+    .and_then(|closure| closure.with_checked_relation_frontier(physical_roots, &registry))
     .map_err(|error| BuiltinModelError(format!("admit persisted closure: {error:?}")))?;
+    let closure = if let Some(staged) = persisted_intent.staged() {
+        staged.validate_control_union(closure.control_manifest())?;
+        closure
+            .with_stored_membership(staged.membership.clone())
+            .map_err(|e| BuiltinModelError(format!("bind selected stored membership: {e:?}")))?
+    } else {
+        closure
+    };
     if layout == SourceFileKeyLayout::Retired {
         super::read_indexed_relation(&base_tree, layout)?;
         let sources = super::read_indexed_relation(&target_tree, layout)?;
@@ -1894,6 +3408,444 @@ fn admit_persisted_relations(
         .replace_object_family([intent_object], &registry)
         .map(|transition| transition.with_work(work))
         .map_err(|error| BuiltinModelError(format!("retain persisted intent: {error}")))
+}
+
+fn validate_persisted_stage_basis(
+    staged: &super::staged_transport::StagedIntent,
+    persisted: &backend_engine::PersistedTransition,
+    store: &backend_engine::FileStore,
+    base: &WorkspaceManifest,
+    target_sequence: u64,
+) -> Result<(), BuiltinModelError> {
+    let basis = staged.basis;
+    if basis.workspace_root != *base.root().as_bytes()
+        || basis.workspace_sequence.checked_add(1) != Some(target_sequence)
+        || basis.source_capture != persisted.request()
+        || TransactionId::derive(
+            basis.owner_epoch,
+            base.root(),
+            basis.source_capture,
+            target_sequence,
+        ) != persisted.transaction()
+    {
+        return Err(BuiltinModelError(
+            "persisted staged intent substituted its owner/workspace/command fence".to_owned(),
+        ));
+    }
+    let selected = store
+        .head()
+        .map_err(|e| BuiltinModelError(format!("read staged selected HEAD: {e:?}")))?
+        .ok_or_else(|| BuiltinModelError("staged selected HEAD is absent".to_owned()))?;
+    let predecessor = store
+        .workspace_base_publication(selected.descriptor().target(), target_sequence)
+        .map_err(|e| {
+            BuiltinModelError(format!("resolve staged authenticated predecessor: {e:?}"))
+        })?;
+    let binding = if let Some(predecessor) = predecessor {
+        let descriptor = predecessor.descriptor();
+        if descriptor.target() != basis.workspace_root
+            || descriptor.target_generation() != basis.workspace_sequence
+        {
+            return Err(BuiltinModelError(
+                "staged predecessor does not match exact base".to_owned(),
+            ));
+        }
+        descriptor.workspace().ok_or_else(|| {
+            BuiltinModelError("staged predecessor has no workspace binding".to_owned())
+        })?
+    } else {
+        let genesis = super::genesis()?;
+        if basis.workspace_sequence != 0 || genesis.root() != base.root() {
+            return Err(BuiltinModelError(
+                "staged base is neither authenticated predecessor nor genesis".to_owned(),
+            ));
+        }
+        genesis.closure().binding()
+    };
+    if binding.closure().as_bytes() != &basis.closure_id || binding.proof() != &basis.owner_fence {
+        return Err(BuiltinModelError(
+            "staged basis substituted authenticated base closure".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_persisted_source_facts(
+    persisted: &backend_engine::PersistedTransition,
+    store: &backend_engine::FileStore,
+    intent: &BuiltinIntent,
+    source: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    closure_objects: &[TypedObject],
+) -> Result<(), BuiltinModelError> {
+    if intent.source_facts_changes().is_empty() {
+        return Ok(());
+    }
+    let pointer_schema = backend_version::SchemaIdentity::new(
+        ProductSourceFileFactsRootSchema::DOMAIN,
+        ProductSourceFileFactsRootSchema::TYPE,
+        ProductSourceFileFactsRootSchema::VERSION,
+    );
+    let pointer_key = ObjectKey::<ProductSourceFileFactsRootSchema>::from_value(&[0x46; 32]);
+    let pointer = closure_objects
+        .iter()
+        .find(|object| object.schema() == pointer_schema && object.key() == pointer_key.as_bytes())
+        .ok_or_else(|| {
+            BuiltinModelError("persisted source facts update has no target root pointer".to_owned())
+        })?;
+    let root: [u8; 32] = pointer
+        .bytes()
+        .try_into()
+        .map_err(|_| BuiltinModelError("malformed persisted source facts root".to_owned()))?;
+    let target = persisted
+        .relation::<ProductSourceFileFactsRelation>(store, root)
+        .map_err(|error| {
+            BuiltinModelError(format!("open persisted target source facts: {error}"))
+        })?;
+    for change in intent.source_facts_changes() {
+        let after = target.lookup(&change.key).map_err(|error| {
+            BuiltinModelError(format!("read persisted target source facts: {error}"))
+        })?;
+        if after != change.after {
+            return Err(BuiltinModelError(
+                "persisted source facts root does not match its exact intent rows".to_owned(),
+            ));
+        }
+        if let Some(ProductSourceFileFactsRecord::Manifest(manifest)) = &after {
+            let source_record = source
+                .lookup(&change.key)
+                .map_err(|error| {
+                    BuiltinModelError(format!("read persisted target source row: {error}"))
+                })?
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "persisted source facts manifest has no source row".to_owned(),
+                    )
+                })?;
+            let file = source_record.file_fields().ok_or_else(|| {
+                BuiltinModelError("persisted source facts owner is not a file".to_owned())
+            })?;
+            admit_product_source_file_facts(file, change.key, manifest.clone(), |key| {
+                target.lookup(key).map_err(|error| error.to_string())
+            })
+            .map_err(|error| {
+                BuiltinModelError(format!("admit persisted complete source facts: {error}"))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn selected_capture_root_from_objects(
+    objects: &[TypedObject],
+) -> Result<Option<[u8; 32]>, BuiltinModelError> {
+    let schema = backend_version::SchemaIdentity::new(
+        ProductSemanticCaptureRootSchema::DOMAIN,
+        ProductSemanticCaptureRootSchema::TYPE,
+        ProductSemanticCaptureRootSchema::VERSION,
+    );
+    let mut pointers = objects.iter().filter(|object| object.schema() == schema);
+    let Some(pointer) = pointers.next() else {
+        return Ok(None);
+    };
+    if pointers.next().is_some() {
+        return Err(BuiltinModelError(
+            "selected capture base closure has multiple root pointers".to_owned(),
+        ));
+    }
+    semantic_capture_root_from_object(pointer)
+        .map(Some)
+        .map_err(|error| BuiltinModelError(error.to_owned()))
+}
+
+pub(super) fn validate_capture_basis_closure_id(
+    basis: BuiltinCaptureBasis,
+    selected_closure_id: backend_store::ClosureId,
+) -> Result<(), BuiltinModelError> {
+    if basis.closure_id != *selected_closure_id.as_bytes() {
+        return Err(BuiltinModelError(
+            "capture basis closure differs from the authenticated selected base descriptor"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_persisted_capture_changes(
+    persisted: &backend_engine::PersistedTransition,
+    store: &backend_engine::FileStore,
+    intent: &BuiltinIntent,
+    base_source: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    target_source: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    base_semantic: &WorkspaceRelationHandle<BuiltinSemanticRelation>,
+    target_semantic: &WorkspaceRelationHandle<BuiltinSemanticRelation>,
+    target_sequence: u64,
+    target_commit: &[u8; 32],
+    closure_objects: &[TypedObject],
+) -> Result<(), BuiltinModelError> {
+    if intent.capture_changes().is_empty() {
+        return Ok(());
+    }
+    let pointer_schema = backend_version::SchemaIdentity::new(
+        ProductSemanticCaptureRootSchema::DOMAIN,
+        ProductSemanticCaptureRootSchema::TYPE,
+        ProductSemanticCaptureRootSchema::VERSION,
+    );
+    let pointer_key = semantic_capture_root_pointer_key();
+    let mut pointers = closure_objects
+        .iter()
+        .filter(|object| object.schema() == pointer_schema);
+    let pointer = pointers.next().ok_or_else(|| {
+        BuiltinModelError("persisted capture update has no target root pointer".to_owned())
+    })?;
+    if pointers.next().is_some() || pointer.key() != pointer_key.as_bytes() {
+        return Err(BuiltinModelError(
+            "persisted capture target has an ambiguous or noncanonical root pointer".to_owned(),
+        ));
+    }
+    let capture_root: [u8; 32] = pointer
+        .bytes()
+        .try_into()
+        .map_err(|_| BuiltinModelError("malformed persisted capture root".to_owned()))?;
+    let target_capture = persisted
+        .relation::<ProductSemanticCaptureRelation>(store, capture_root)
+        .map_err(|error| {
+            BuiltinModelError(format!("open persisted target semantic capture: {error}"))
+        })?;
+    let base_manifest =
+        workspace_manifest_from_root(&base_source.root_handle(), &base_semantic.root_handle())?;
+    let target_manifest =
+        workspace_manifest_from_root(&target_source.root_handle(), &target_semantic.root_handle())?;
+    let base_sequence = target_sequence.checked_sub(1).ok_or_else(|| {
+        BuiltinModelError("persisted capture target sequence has no base".to_owned())
+    })?;
+    let basis = intent.capture_basis().ok_or_else(|| {
+        BuiltinModelError(format!(
+            "persisted capture intent BPI{} predates authenticated base-closure binding; BPI9 is required for cold replay",
+            intent.encoding_version
+        ))
+    })?;
+    if basis.workspace_root != *base_manifest.root().as_bytes()
+        || basis.workspace_sequence != base_sequence
+    {
+        return Err(BuiltinModelError(
+            "persisted capture basis does not match the checked base manifest and sequence"
+                .to_owned(),
+        ));
+    }
+    let selected_base_publication = store
+        .workspace_base_publication(*target_manifest.root().as_bytes(), target_sequence)
+        .map_err(|error| {
+            BuiltinModelError(format!(
+                "resolve authenticated persisted capture target base: {error:?}"
+            ))
+        })?;
+    let selected_base_closure_id = if base_sequence == 0 {
+        if selected_base_publication.is_some() {
+            return Err(BuiltinModelError(
+                "genesis capture base unexpectedly has a prior publication".to_owned(),
+            ));
+        }
+        let genesis = super::genesis()?;
+        if *genesis.root().as_bytes() != basis.workspace_root {
+            return Err(BuiltinModelError(
+                "persisted capture base does not match the checked genesis workspace".to_owned(),
+            ));
+        }
+        *genesis.closure().binding().closure().as_bytes()
+    } else {
+        let descriptor = selected_base_publication
+            .ok_or_else(|| {
+                BuiltinModelError(
+                    "persisted capture base publication is absent from the selected journal"
+                        .to_owned(),
+                )
+            })?
+            .descriptor();
+        if descriptor.target() != basis.workspace_root
+            || descriptor.target_generation() != basis.workspace_sequence
+        {
+            return Err(BuiltinModelError(
+                "persisted capture basis does not match its authenticated selected base descriptor"
+                    .to_owned(),
+            ));
+        }
+        *descriptor.closure().as_bytes()
+    };
+    validate_capture_basis_closure_id(
+        basis,
+        backend_store::ClosureId::from_bytes(selected_base_closure_id),
+    )?;
+    let base_closure = if base_sequence == 0 {
+        super::genesis()?.closure().control_manifest().clone()
+    } else {
+        let predecessor = selected_base_publication
+            .ok_or_else(|| BuiltinModelError("capture base publication disappeared".to_owned()))?;
+        backend_engine::workspace::recovery::control_frontier(store, &predecessor.descriptor())
+            .map_err(|e| BuiltinModelError(format!("read bounded capture base controls: {e}")))?
+    };
+    let base_membership = store
+        .open_closure(backend_store::ClosureId::from_bytes(
+            selected_base_closure_id,
+        ))
+        .map_err(|e| BuiltinModelError(format!("open capture base membership: {e:?}")))?;
+    let base_roots = [base_source.root_object(), base_semantic.root_object()]
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| BuiltinModelError(format!("admit capture base relation roots: {e}")))?;
+    for relation in base_manifest.relations() {
+        let relation_root = relation.root();
+        if !base_roots.iter().any(|object| {
+            object.schema() == relation.schema()
+                && object.version() == &relation_root
+                && base_membership
+                    .contains_object_id(object.id())
+                    .unwrap_or(false)
+        }) {
+            return Err(BuiltinModelError(
+                "persisted capture base closure does not bind the checked workspace relations"
+                    .to_owned(),
+            ));
+        }
+    }
+    let selected_base_capture_root = selected_capture_root_from_objects(base_closure.objects())?;
+    if selected_base_capture_root != basis.capture_root {
+        return Err(BuiltinModelError(
+            "persisted capture basis substituted a different selected before root".to_owned(),
+        ));
+    }
+    let base_capture = selected_base_capture_root
+        .map(|root| persisted.relation::<ProductSemanticCaptureRelation>(store, root))
+        .transpose()
+        .map_err(|error| {
+            BuiltinModelError(format!(
+                "open selected persisted base semantic capture: {error}"
+            ))
+        })?;
+    for change in intent.capture_changes() {
+        if !matches!(
+            change.outcome,
+            ProductSemanticCaptureOutcome::Pending { .. }
+        ) && let Some(expected) = &change.expected
+        {
+            if !matches!(
+                expected.outcome(),
+                ProductSemanticCaptureOutcome::Pending { .. }
+            ) || expected.capture() != change.capture
+                || expected.source_workspace_sequence() > base_sequence
+            {
+                return Err(BuiltinModelError(
+                    "persisted semantic terminal is future-dated or does not match its before receipt"
+                        .to_owned(),
+                ));
+            }
+        }
+        let before = base_capture
+            .as_ref()
+            .map(|relation| relation.lookup(&change.key))
+            .transpose()
+            .map_err(|error| {
+                BuiltinModelError(format!("read persisted before semantic capture: {error}"))
+            })?
+            .flatten();
+        if before != change.expected {
+            return Err(BuiltinModelError(
+                "persisted capture before receipt does not match its authenticated base root"
+                    .to_owned(),
+            ));
+        }
+        let selected_prior = selected_semantic_prior(base_semantic, &change.key)?;
+        let after = next_capture_record(
+            change.expected.as_ref(),
+            change,
+            selected_prior,
+            persisted.request(),
+            *base_manifest.root().as_bytes(),
+            base_sequence,
+            *target_manifest.root().as_bytes(),
+            *target_commit,
+        )?;
+        let actual = target_capture
+            .lookup(&change.key)
+            .map_err(|error| {
+                BuiltinModelError(format!("read persisted target semantic capture: {error}"))
+            })?
+            .ok_or_else(|| {
+                BuiltinModelError("persisted capture root omits its exact intent row".to_owned())
+            })?;
+        if actual != after {
+            return Err(BuiltinModelError(
+                "persisted capture root does not match its exact before receipt and terminal"
+                    .to_owned(),
+            ));
+        }
+        if after.source_workspace_sequence() > target_sequence {
+            return Err(BuiltinModelError(
+                "persisted capture refers to a future source workspace sequence".to_owned(),
+            ));
+        }
+        if let Some(failure) = &change.compiler_failure {
+            let project = change.key.package_key().to_bytes();
+            let file_key =
+                backend_engine::product_source_file_key(project, failure.relative_path());
+            let row = target_source
+                .lookup(&file_key)
+                .map_err(|error| {
+                    BuiltinModelError(format!("read terminal capture source row: {error}"))
+                })?
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "typed compiler refusal names a source path outside the captured project"
+                            .to_owned(),
+                    )
+                })?;
+            validate_compiler_failure_source(&change.key, failure, &row)?;
+        }
+        let selected_target_prior = selected_semantic_prior(target_semantic, &change.key)?;
+        match change.outcome {
+            ProductSemanticCaptureOutcome::Pending { prior }
+                if selected_prior != prior || selected_target_prior != prior =>
+            {
+                return Err(BuiltinModelError(
+                    "persisted pending capture does not match the selected semantic prior"
+                        .to_owned(),
+                ));
+            }
+            ProductSemanticCaptureOutcome::Unavailable { .. }
+                if selected_target_prior.is_some() =>
+            {
+                return Err(BuiltinModelError(
+                    "unavailable capture changed a coherent semantic selection".to_owned(),
+                ));
+            }
+            ProductSemanticCaptureOutcome::Failed { prior, .. }
+                if selected_target_prior != Some(prior) =>
+            {
+                return Err(BuiltinModelError(
+                    "failed capture did not retain its exact semantic prior".to_owned(),
+                ));
+            }
+            ProductSemanticCaptureOutcome::Published { coverage, claim } => {
+                let selected = target_semantic.lookup(&change.key).map_err(|error| {
+                    BuiltinModelError(format!("read published capture selection: {error}"))
+                })?;
+                if !selected.is_some_and(|record| {
+                    matches!(record, ProductSemanticPublicationRecord::Published {
+                        coverage: selected_coverage,
+                        claim: selected_claim,
+                    } if selected_coverage == coverage && selected_claim == claim)
+                }) {
+                    return Err(BuiltinModelError(
+                        "published capture does not match the selected semantic generation"
+                            .to_owned(),
+                    ));
+                }
+            }
+            ProductSemanticCaptureOutcome::Pending { .. }
+            | ProductSemanticCaptureOutcome::Unavailable { .. }
+            | ProductSemanticCaptureOutcome::Failed { .. } => {}
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -2153,6 +4105,31 @@ mod persisted_intent_tests {
         .expect("file intent")
     }
 
+    fn typed_compiler_failure() -> backend_library::PackageCompilerFailure {
+        use backend_library::interface::{CompilerFragmentFailure, SourceAuthority};
+        use backend_semantic::ir::{BuildError, EntityId};
+        use backend_version::{CompileRecipeDomain, SourceFactDomain};
+
+        let attempt = backend_library::interface::CompilerAttempt {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"source bytes"),
+                byte_len: 12,
+            },
+            recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"recipe bytes"),
+        };
+        let failure = CompilerFragmentFailure::build(BuildError::InvalidOccurrenceSpan {
+            owner: EntityId::new(7),
+            start: 18,
+            end: 24,
+        });
+        backend_library::PackageCompilerFailure::from_fragment_failure(
+            "src/lib.rs",
+            attempt,
+            &failure,
+        )
+        .expect("bounded package compiler failure")
+    }
+
     #[test]
     fn keyed_index_intents_round_trip_and_have_distinct_workspace_request_identities() {
         let intent = file_intent(vec![declaration(backend_compile::Container::Module)]);
@@ -2179,6 +4156,52 @@ mod persisted_intent_tests {
             BuiltinModel.request_id(&second),
             "caller key must be bound into the exact workspace request identity",
         );
+    }
+
+    #[test]
+    fn typed_compiler_refusal_intent_round_trips_canonically() {
+        let label = "pkg:cargo/persisted-selection@1.0.0";
+        let package = backend_engine::PackageKey::from_value(label);
+        let package_reference = backend_engine::PackageReference::parse(label.to_owned())
+            .expect("compiler refusal package reference");
+        let coordinate = backend_semantic::vocabulary::PackageUrl::parse(label.to_owned())
+            .expect("compiler refusal coordinate");
+        let key = ProductSemanticPublicationKey::new(
+            package_reference,
+            coordinate,
+            backend_semantic::vocabulary::LanguageProfile::Rust(
+                backend_semantic::vocabulary::RustEdition::Rust2024,
+            ),
+        )
+        .expect("compiler refusal key");
+        let capture =
+            SemanticSourceCapture::new(None, [5; 32], [6; 32], 1, 1).expect("source capture");
+        let intent = BuiltinIntent::index_with_capture(
+            package,
+            label,
+            Vec::new(),
+            Vec::new(),
+            vec![BuiltinCaptureChange {
+                key,
+                expected: None,
+                capture,
+                outcome: ProductSemanticCaptureOutcome::Unavailable {
+                    reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+                },
+                compiler_failure: Some(typed_compiler_failure()),
+            }],
+        )
+        .expect("typed refusal intent");
+        let encoded = intent.encode();
+        assert!(encoded.starts_with(b"BPI8"));
+        assert_eq!(
+            BuiltinIntent::decode(&encoded).expect("decode BPI8"),
+            intent
+        );
+
+        let mut noncanonical = encoded;
+        *noncanonical.last_mut().expect("failure json byte") ^= 1;
+        assert!(BuiltinIntent::decode(&noncanonical).is_err());
     }
 
     fn declaration(container: backend_compile::Container) -> backend_compile::SourceDeclaration {
@@ -2383,3 +4406,7 @@ mod persisted_intent_tests {
 #[cfg(test)]
 #[path = "profile_membership_tests.rs"]
 mod membership_tests;
+
+#[cfg(test)]
+#[path = "profile_source_facts_tests.rs"]
+mod source_facts_tests;

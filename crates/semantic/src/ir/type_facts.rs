@@ -104,6 +104,16 @@ pub enum TypeFactFault {
         /// Number of entity rows available for this image.
         entity_count: u32,
     },
+    /// A `TypeOf` row names an entity outside the image's exact entity table.
+    #[error("type fact {ordinal} queries entity {target} outside {entity_count}")]
+    TypeQueryTargetOutOfRange {
+        /// Coordinate of the `TypeOf` record containing the target.
+        ordinal: u32,
+        /// Exact entity coordinate encoded by the query.
+        target: u32,
+        /// Number of entity rows available for this image.
+        entity_count: u32,
+    },
     /// The record's tag-specific payload or child layout violates the semantic type grammar.
     #[error("type fact {ordinal} is invalid: {fault:?}")]
     Record {
@@ -304,6 +314,13 @@ impl<'bytes> TypeFactLane<'bytes> {
                 .record
                 .validate(length)
                 .map_err(|fault| TypeFactFault::Record { ordinal, fault })?;
+            if input.record.tag == SemanticTypeTag::TypeOf && input.record.payload0 >= entity_count {
+                return Err(TypeFactFault::TypeQueryTargetOutOfRange {
+                    ordinal,
+                    target: input.record.payload0,
+                    entity_count,
+                });
+            }
             for position in 0..length {
                 let child = &children[usize::try_from(start + position).unwrap_or(usize::MAX)];
                 input
@@ -653,6 +670,13 @@ pub(crate) fn validate_payload(
         record
             .validate(record.children.length)
             .map_err(|fault| TypeFactFault::Record { ordinal, fault })?;
+        if record.tag == SemanticTypeTag::TypeOf && record.payload0 >= entity_count {
+            return Err(TypeFactFault::TypeQueryTargetOutOfRange {
+                ordinal,
+                target: record.payload0,
+                entity_count,
+            });
+        }
         for position in 0..record.children.length {
             let child_index = record.children.start + position;
             if child_index < cursor_index {

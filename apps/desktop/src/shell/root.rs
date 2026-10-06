@@ -202,6 +202,9 @@ pub struct Shell {
     painted_native_input: Option<PageInputScope>,
     /// Changes on every user input to cancel a deferred focus return.
     transient_generation: Option<u64>,
+    /// One transition-time permission for Graph's first paint. Rendering
+    /// cannot recreate it after a later native focus or input choice.
+    graph_arrival_focus: Option<super::keyboard::NativeReturnLease>,
     /// The shelf's width the person has dragged it to, at 100 % text.
     shelf_width: Pixels,
     /// The shell's layout modes (the shelf beside the page, a spine, or a
@@ -372,6 +375,7 @@ impl Shell {
             local_native_input: gpui::NativeActivationScope::new(cx.entity_id(), Some(0)),
             painted_native_input: None,
             transient_generation: Some(0),
+            graph_arrival_focus: None,
             shelf_width: geo::SHELF,
             modes: Modes::new(),
             zone: Zone::Reader,
@@ -395,6 +399,7 @@ impl Shell {
         };
         shell.apply_facet(cx);
         shell.focus.focus(window, cx);
+        shell.arm_graph_arrival_focus(window, cx);
         shell
     }
 
@@ -553,7 +558,41 @@ impl Shell {
     }
 
     pub(crate) fn allows_reader_native_return(&self, window: &Window) -> bool {
-        self.zone == Zone::Reader && !self.ask_open && self.focus.is_focused(window)
+        window.is_window_active() && self.zone == Zone::Reader && !self.ask_open && self.focus.is_focused(window)
+    }
+
+    fn arm_graph_arrival_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.graph_arrival_focus = None;
+        let snapshot = self.links.snapshot(cx);
+        if !window.is_window_active() || !super::bodies::graph::is_graph(snapshot.route())
+            || snapshot.overlay().is_some() || super::titlebar::menu_open(window, cx) { return; }
+        // The old page may retire before Graph exists. Give the requested
+        // visit a stable receiver now, then freeze permission before another
+        // ordinary native event can occur ahead of its first paint.
+        self.set_zone(Zone::Reader, cx);
+        self.focus.focus(window, cx);
+        self.graph_arrival_focus = super::keyboard::NativeReturnLease::new(
+            window.window_handle().window_id(), self.transient_generation, window.focus_epoch(),
+        );
+    }
+
+    pub(crate) fn take_graph_arrival_focus(&mut self, route: &Route, window: &Window, cx: &App) -> Option<super::keyboard::NativeReturnLease> {
+        let snapshot = self.links.snapshot(cx);
+        if snapshot.route() != route || snapshot.overlay().is_some() { return None; }
+        let lease = self.graph_arrival_focus.take()?;
+        (window.is_window_active() && lease.current(
+            window.window_handle().window_id(), self.transient_generation, window.focus_epoch(),
+        )).then_some(lease)
+    }
+
+    pub(crate) fn park_retired_reader_focus(&mut self, origin: &FocusHandle, window: &mut Window, cx: &mut Context<Self>) -> Option<super::keyboard::NativeReturnLease> {
+        if !window.is_window_active() || window.focused(cx).as_ref() != Some(origin)
+            || self.ask_open || self.shelf_over_open || !self.background_input_allowed()
+            || self.links.snapshot(cx).page_overlay().is_some() || super::titlebar::menu_open(window, cx)
+            || !window.is_focus_handle_mounted(&self.focus) { return None; }
+        self.set_zone(Zone::Reader, cx);
+        self.focus.focus(window, cx);
+        super::keyboard::NativeReturnLease::new(window.window_handle().window_id(), self.transient_generation, window.focus_epoch())
     }
 
     /// How many descents the reader played and which way the last went.
@@ -584,6 +623,12 @@ impl Shell {
         self.hints.as_ref()?.mode.visible()
             .find(|(hint, _)| hint.target.id == id)
             .map(|(hint, _)| hint.code.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hinted_target_for(&self, id: &str) -> Option<Hinted> {
+        self.hints.as_ref()?.mode.visible().find(|(hint, _)| hint.target.id == id)
+            .map(|(hint, _)| hint.clone())
     }
 
     /// What the shell's own chrome is doing, in words: the keyboard's zone
@@ -743,6 +788,9 @@ impl Shell {
                         .update(cx, |reader, _| reader.cancel_native_return());
                 }
                 self.sync_overlay(window, cx);
+                // Dismissing a cover is not new Graph navigation. Its
+                // actual origin receipt separately admits any native return.
+                self.graph_arrival_focus = None;
             }
             StoreEvent::Snapshot(Branch::Route) => {
                 self.advance_transient_generation();
@@ -774,12 +822,21 @@ impl Shell {
                 // arrival, including this one still landing from the same
                 // event, so the restore is deferred past it rather than
                 // raced against it.
-                let reader_targets = self.reader.read(cx).targets.clone();
-                if let Some(id) = reader_targets.left_by(&route) {
+                // The restored typed visit is the history authority. Reader
+                // observation can run before or after this subscriber, so its
+                // previous target registry cannot decide a returned selection.
+                if let Some(crate::navigation::presentation::ReadingFocus::Reader(key)) =
+                    snapshot.session().reading.current.presentation.controls().focus.as_ref()
+                    && let Some(input) = super::keyboard::NativeReturnLease::new(
+                        window.window_handle().window_id(), self.transient_generation, window.focus_epoch(),
+                    )
+                {
+                    let id: SharedString = key.as_str().to_owned().into();
+                    let visit = snapshot.session().reading.current.id;
                     let reader = self.reader.clone();
                     cx.defer(move |cx| {
                         reader.update(cx, |reader, cx| {
-                            reader.request_native_return(route, id, cx);
+                            reader.request_native_return(route, visit, id, input, cx);
                         });
                     });
                 }
@@ -795,6 +852,7 @@ impl Shell {
                     cx.notify();
                 }
                 self.sync_overlay(window, cx);
+                self.arm_graph_arrival_focus(window, cx);
             }
             StoreEvent::Resource(key) => {
                 // The open card reads the store each frame: redraw it.
@@ -804,6 +862,7 @@ impl Shell {
             }
             StoreEvent::Snapshot(Branch::Root) => cx.notify(),
             StoreEvent::Snapshot(_) => {}
+            StoreEvent::PackagesPublished(_) => {}
         }
     }
 
@@ -864,10 +923,15 @@ impl Shell {
         let previous_overlay = std::mem::replace(&mut self.observed_overlay, snapshot.overlay());
         let entering_settings = !matches!(previous_overlay, Some(Overlay::Settings(_)))
             && matches!(snapshot.overlay(), Some(Overlay::Settings(_)));
+        let leaving_settings = matches!(previous_overlay, Some(Overlay::Settings(_)))
+            && snapshot.overlay().is_none();
         // Capture before Ask, Add, or Settings changes native focus. This is
         // still the old view's return origin, even if its handle has left the
         // rendered tree by the time the new view finishes painting.
         let origin = window.focused(cx);
+        if entering_settings && self.reader.update(cx, |reader, cx| reader.capture_settings_native_origin(origin.as_ref(), cx)) {
+            self.set_zone(Zone::Reader, cx);
+        }
         let wants_ask = snapshot.overlay() == Some(Overlay::CommandPalette);
         let opening = wants_ask && !self.ask_open;
         let fresh_ask = opening && self.ask_return.is_none();
@@ -933,6 +997,27 @@ impl Shell {
                 if self.links.snapshot(cx).overlay().is_none() && self.background_input_allowed() {
                     self.focus.focus(window, cx);
                 }
+            }
+        }
+        if leaving_settings && window.is_window_active() && !super::titlebar::menu_open(window, cx) {
+            // The selected radio/editor belongs to the retired Settings page.
+            // Keep global dispatch reachable while the destination mounts.
+            self.keyboard_claim = None;
+            self.keyboard_claim_scheduled = false;
+            self.focus.focus(window, cx);
+            if let Some(lease) = super::keyboard::NativeReturnLease::new(
+                window.window_handle().window_id(), self.transient_generation, window.focus_epoch(),
+            ) {
+                let reader = self.reader.clone();
+                let shell = cx.weak_entity();
+                let generation = self.transient_generation;
+                // Both Region and Shell subscribe to the same store. Arm only
+                // after every subscriber has observed this uncovered place.
+                cx.defer(move |cx| {
+                    if shell.upgrade().is_some_and(|shell| shell.read(cx).focus_return_generation() == generation) {
+                        reader.update(cx, |reader, cx| reader.arm_settings_focus_return(lease, cx));
+                    }
+                });
             }
         }
         cx.notify();
@@ -1338,6 +1423,20 @@ impl Shell {
     }
 
     /// Tab: the next zone takes the keyboard.
+    fn graph_component_tab(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // Graph has already walked its own mounted native region before
+        // propagating this component action. Its real edge belongs to the
+        // existing Shell zone walk, rather than CE's whole-window fallback.
+        if super::bodies::graph::is_graph(self.links.snapshot(cx).route())
+            && self.reader.read(cx).adopt_mounted_native_focus(window, cx).is_some()
+        {
+            self.with_background_input(|shell| shell.cycle_zone(forward, window, cx));
+        } else {
+            cx.propagate();
+        }
+    }
+
+    /// Tab: the next zone takes the keyboard.
     pub fn cycle_zone(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.pending_transient_return = None;
         if self.shelf_over_open {
@@ -1458,22 +1557,23 @@ impl Shell {
             return;
         };
         let zone = self.zone;
-        let frame = self.hinted_targets(zone, cx).hint_frame();
+        let Some(mount) = self.hinted_targets(zone, cx).mount_claim(&target.id) else { return; };
+        let Some(input) = self.target_input_claim(window) else { return; };
         let scope = self.target_scope(cx);
         let shell = cx.weak_entity();
         window.defer(cx, move |window, app| {
             let Some(shell) = shell.upgrade() else { return; };
-            if !shell.read(app).target_claim_current(zone, frame, &target.id, &scope, true, app)
+            if !shell.read(app).target_claim_current(zone, &mount, &scope, &input, true, window, app)
                 || !target.action.admits(app) { return; }
             let Some(anchor) = ({
                 let shell = shell.read(app);
-                shell.target_claim_current(zone, frame, &target.id, &scope, true, app)
+                shell.target_claim_current(zone, &mount, &scope, &input, true, window, app)
                     .then(|| shell.hinted_targets(zone, app).focused_bounds()).flatten()
             }) else { return; };
             let store = shell.read(app).links.store.clone();
             store.update(app, |store, cx| store.ensure(key.clone(), cx));
             let armed = shell.update(app, |shell, cx| {
-                if !shell.target_claim_current(zone, frame, &target.id, &scope, true, cx) { return false; }
+                if !shell.target_claim_current(zone, &mount, &scope, &input, true, window, cx) { return false; }
                 shell.peeking = Some(key.clone());
                 cx.notify();
                 true
@@ -1516,18 +1616,19 @@ impl Shell {
             return;
         };
         let zone = self.zone;
-        let frame = self.hinted_targets(zone, cx).hint_frame();
+        let Some(mount) = self.hinted_targets(zone, cx).mount_claim(&target.id) else { return; };
+        let Some(input) = self.target_input_claim(window) else { return; };
         let scope = self.target_scope(cx);
         let fallback_input = self.page_input_scope(cx);
         let shell = cx.weak_entity();
         let links = self.links.clone();
-        window.defer(cx, move |_, app| {
+        window.defer(cx, move |window, app| {
             let Some(shell) = shell.upgrade() else { return; };
             if !shell.read(app).mode_input_allowed(app)
-                || !shell.read(app).target_claim_current(zone, frame, &target.id, &scope, true, app)
+                || !shell.read(app).target_claim_current(zone, &mount, &scope, &input, true, window, app)
                 || !target.action.admits(app) { return; }
             if !shell.read(app).mode_input_allowed(app)
-                || !shell.read(app).target_claim_current(zone, frame, &target.id, &scope, true, app) { return; }
+                || !shell.read(app).target_claim_current(zone, &mount, &scope, &input, true, window, app) { return; }
             // S on an unrelated focused control may still mean this page's
             // own declaration. That fallback is a producer action, so it
             // cannot borrow the control's potentially local admission.
@@ -1650,8 +1751,10 @@ impl Shell {
         let scope = self.target_scope(cx);
         let mut placed = Vec::new();
         let mut add = |zone: Zone, targets: &super::focus::Targets| {
-            let frame = targets.hint_frame();
-            placed.extend(targets.placed().into_iter().map(|(target, bounds)| (zone, frame, target, bounds)));
+            placed.extend(targets.placed().into_iter().filter_map(|(target, bounds)| {
+                let mount = targets.mount_claim(&target.id)?;
+                Some((zone, mount, target, bounds))
+            }));
         };
         add(Zone::Titlebar, &self.titlebar.read(cx).targets);
         if self.frame.is_some_and(|frame| frame.shelf == ShelfMode::Shelf) {
@@ -1710,26 +1813,35 @@ impl Shell {
         }
     }
 
-    fn target_claim_current(&self, zone: Zone, frame: u64, id: &str, scope: &HintScope, must_be_focused: bool, cx: &App) -> bool {
-        if !self.target_structure_current(scope, cx) { return false; }
+    fn target_input_claim(&self, window: &Window) -> Option<super::keyboard::NativeReturnLease> {
+        super::keyboard::NativeReturnLease::new(
+            window.window_handle().window_id(), self.transient_generation, window.focus_epoch(),
+        )
+    }
+
+    fn target_claim_current(&self, zone: Zone, claim: &super::focus::TargetMountClaim, scope: &HintScope, input: &super::keyboard::NativeReturnLease, must_be_focused: bool, window: &Window, cx: &App) -> bool {
+        if !input.current(window.window_handle().window_id(), self.transient_generation, window.focus_epoch())
+            || !window.is_focus_handle_mounted(&self.focus)
+            || !self.target_structure_current(scope, cx) { return false; }
         let targets = self.hinted_targets(zone, cx);
-        targets.admits_hint(id, frame)
-            && (!must_be_focused || (self.zone == zone && targets.focused().as_deref() == Some(id)))
+        targets.admits_mount(claim, window)
+            && (!must_be_focused || (self.zone == zone && targets.focused().as_deref() == Some(claim.id())))
     }
 
     fn activate_hint(&mut self, choice: Hinted, scope: &HintScope, window: &mut Window, cx: &mut Context<Self>) {
         let shell = cx.weak_entity();
         let scope = scope.clone();
+        let Some(input) = self.target_input_claim(window) else { return; };
         window.defer(cx, move |window, app| {
             let Some(shell) = shell.upgrade() else { return; };
             if !shell.read(app).hint_scope_current(&scope, app)
-                || !shell.read(app).target_claim_current(choice.zone, choice.frame, &choice.target.id, &scope, false, app)
+                || !shell.read(app).target_claim_current(choice.zone, &choice.mount, &scope, &input, false, window, app)
                 || !choice.target.action.admits(app) { return; }
             // Admission may itself update Reader state. Recheck the exact
-            // structural visit and mounted target frame before native focus.
+            // structural visit and continuously mounted control before native focus.
             let focused = shell.update(app, |shell, cx| {
                 if !shell.hint_scope_current(&scope, cx)
-                    || !shell.target_claim_current(choice.zone, choice.frame, &choice.target.id, &scope, false, cx) { return false; }
+                    || !shell.target_claim_current(choice.zone, &choice.mount, &scope, &input, false, window, cx) { return false; }
                 let targets = shell.hinted_targets(choice.zone, cx);
                 shell.set_zone(choice.zone, cx);
                 targets.focus(choice.target.id.clone());
@@ -2586,6 +2698,8 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::ToggleShelf, window, cx| shell.with_background_input(|shell| shell.toggle_shelf(window, cx))))
             .on_action(cx.listener(|shell, _: &keys::NextZone, window, cx| shell.with_background_input(|shell| shell.cycle_zone(true, window, cx))))
             .on_action(cx.listener(|shell, _: &keys::PrevZone, window, cx| shell.with_background_input(|shell| shell.cycle_zone(false, window, cx))))
+            .on_action(cx.listener(|shell, _: &gpui_component::Tab, window, cx| shell.graph_component_tab(true, window, cx)))
+            .on_action(cx.listener(|shell, _: &gpui_component::TabPrev, window, cx| shell.graph_component_tab(false, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::AskNext, window, cx| shell.ask_tab(false, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::AskPrev, window, cx| shell.ask_tab(true, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::FolioNext, window, cx| shell.with_background_input(|shell| shell.folio_tab(false, window, cx))))
@@ -2939,6 +3053,25 @@ mod deferred_target_admission_tests {
     use crate::runtime::reads::ReadPool;
     use gpui::AppContext as _;
 
+    fn open_mounted_fixture_module(rig: &mut super::super::tests::Rig) {
+        rig.cx.update(|window, _| window.set_a11y_forced(true));
+        rig.repaint();
+        // The overview starts with its real modules folded. Open the actual
+        // painted module through the physical Shell walk before looking for
+        // declaration cards; no logical registration can stand in for paint.
+        for _ in 0..32 {
+            if rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).focused())
+                .as_deref() == Some("pkg-module-glyph") { break; }
+            rig.keys("j");
+        }
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        assert_eq!(targets.focused().as_deref(), Some("pkg-module-glyph"));
+        let mount = targets.mount_claim("pkg-module-glyph").expect("actual painted module");
+        assert!(rig.cx.update(|window, _| targets.admits_mount(&mount, window)));
+        rig.keys("enter");
+        rig.repaint();
+    }
+
     fn mounted_declaration_handoff(cx: &mut gpui::TestAppContext, source_key: bool) {
         let route = Route::Package(crate::navigation::PackageRoute {
             cargo: None,
@@ -2950,12 +3083,15 @@ mod deferred_target_admission_tests {
         });
         let mut rig = super::super::tests::rig(cx, Some(route.clone()), 1440.0, 900.0);
         rig.settle();
+        open_mounted_fixture_module(&mut rig);
         let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader.read(cx).targets.clone());
         let frame = targets.hint_frame();
         let target = targets.placed().into_iter()
             .find(|(target, _)| target.peek.is_some() && target.source.is_some())
             .map(|(target, _)| target)
             .expect("mounted declaration supports both Space and S");
+        let mount = targets.mount_claim(&target.id).expect("actual painted declaration");
+        assert!(rig.cx.update(|window, _| targets.admits_mount(&mount, window)));
         targets.focus(target.id.clone());
         assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Reader);
         let shell = rig.shell.clone();
@@ -3017,11 +3153,14 @@ mod deferred_target_admission_tests {
             super::super::tests::RootOnly, Some(gate.clone()),
         );
         rig.settle();
+        open_mounted_fixture_module(&mut rig);
         let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader.read(cx).targets.clone());
         let selected = targets.placed().into_iter()
             .find(|(target, _)| target.peek.is_some() && target.source.is_some())
             .map(|(target, _)| target.id)
             .expect("mounted declaration supports both Space and S");
+        let mount = targets.mount_claim(&selected).expect("actual painted declaration");
+        assert!(rig.cx.update(|window, _| targets.admits_mount(&mount, window)));
         targets.focus(selected.clone());
         let before_focus = rig.cx.update(|window, cx| window.focused(cx));
         gate.publish(OwnerState::Starting);
@@ -3909,4 +4048,115 @@ mod responsive_shelf_scene_tests {
         }
     }
 
+}
+
+#[cfg(test)]
+mod native_hint_receipt_tests {
+    use super::*;
+    use crate::model::pages::{Known, PageValue, SourceOrigin, SourceText};
+    use crate::navigation::OrbitRoute;
+    use gpui::AppContext as _;
+
+    fn source_hint(cx: &mut gpui::TestAppContext) -> (super::super::tests::Rig, Hinted, HintScope) {
+        let mut rig = super::super::tests::rig(cx,
+            Some(super::super::tests::view_route("RelationLabel", View::Code)), 1440.0, 900.0);
+        rig.keys("f");
+        let (choice, scope) = rig.shell.read_with(rig.cx, |shell, _| {
+            let choice = shell.hinted_target_for("source-copy-excerpt").expect("original mounted source hint");
+            let scope = shell.hints.as_ref().expect("actual hint session").scope.clone();
+            (choice, scope)
+        });
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        assert!(rig.cx.update(|window, _| targets.admits_mount(&choice.mount, window)));
+        assert!(rig.cx.update(|_, cx| choice.target.action.admits(cx)), "positive original resource receipt");
+        (rig, choice, scope)
+    }
+
+    #[gpui::test]
+    fn same_key_same_label_model_replacement_cannot_rebind_an_original_hint_action(cx: &mut gpui::TestAppContext) {
+        let (mut rig, choice, scope) = source_hint(cx);
+        let symbol = route_symbol(&rig.route()).expect("source route declaration");
+        rig.graph.store.update(rig.cx, |store, _| {
+            let mut source = store.source(&symbol).loaded_value().cloned().expect("current immutable source fixture");
+            source.text = Known::Known(SourceText::new(Arc::from(
+                "// replaced\npub enum RelationLabel {\n    Replacement,\n}\n// changed\n"),
+                137, SourceOrigin::LocalFile, true).expect("valid replacement source"));
+            crate::runtime::store::cargo_context_tests::force_land(store, &PageKey::Source(symbol), PageValue::Source(source));
+        });
+        let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+        reader.update(rig.cx, |_, cx| cx.notify());
+        rig.repaint();
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        assert!(targets.mount_claim("source-copy-excerpt").is_some(), "same current copy control actually repainted");
+        assert!(!rig.cx.update(|_, cx| choice.target.action.admits(cx)),
+            "the original immutable source receipt refuses replacement even when visible key/label agree");
+        rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("replacement-hint-sentinel".into()));
+        let focused = rig.cx.update(|window, cx| window.focused(cx));
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, app| shell.update(app, |shell, cx| shell.activate_hint(choice, &scope, window, cx)));
+        rig.settle();
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
+        assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("replacement-hint-sentinel"));
+    }
+
+    #[gpui::test]
+    fn a_later_native_focus_intent_wins_over_a_deferred_hint_on_the_same_painted_visit(cx: &mut gpui::TestAppContext) {
+        let (mut rig, choice, scope) = source_hint(cx);
+        rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("later-input-hint-sentinel".into()));
+        let shell = rig.shell.clone();
+        let original = choice.clone();
+        rig.cx.update(|window, app| {
+            let later = shell.clone();
+            window.defer(app, move |window, app| {
+                later.update(app, |shell, cx| shell.take_zone(Zone::Titlebar, window, cx));
+                let targets = later.read(app).reader.read(app).targets.clone();
+                assert!(targets.admits_mount(&original.mount, window), "the same physical source control is still mounted");
+                assert!(original.target.action.admits(app), "its original source authority is still current");
+            });
+            shell.update(app, |shell, cx| shell.activate_hint(choice, &scope, window, cx));
+        });
+        rig.settle();
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Titlebar);
+        assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("later-input-hint-sentinel"));
+    }
+
+    #[gpui::test]
+    fn same_route_after_navigation_has_a_new_visit_and_cannot_reuse_an_original_hint(cx: &mut gpui::TestAppContext) {
+        let (mut rig, choice, scope) = source_hint(cx);
+        let route = rig.route();
+        rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
+        rig.go(Intent::Navigate(route.clone()));
+        assert_ne!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id), scope.visit);
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        assert!(targets.mount_claim("source-copy-excerpt").is_some());
+        assert!(!rig.cx.update(|window, _| targets.admits_mount(&choice.mount, window)));
+        rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("new-visit-hint-sentinel".into()));
+        let focused = rig.cx.update(|window, cx| window.focused(cx));
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, app| shell.update(app, |shell, cx| shell.activate_hint(choice, &scope, window, cx)));
+        rig.settle();
+        assert_eq!(rig.route(), route);
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
+        assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("new-visit-hint-sentinel"));
+    }
+
+    #[gpui::test]
+    fn returning_from_a_cover_cannot_reuse_a_departed_hint(cx: &mut gpui::TestAppContext) {
+        let (mut rig, choice, scope) = source_hint(cx);
+        let route = rig.route();
+        rig.go(Intent::OpenSettings(SettingsPage::Appearance));
+        rig.go(Intent::DismissOverlay);
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        assert!(targets.mount_claim("source-copy-excerpt").is_some(), "the destination's fresh source control painted");
+        assert!(!rig.cx.update(|window, _| targets.admits_mount(&choice.mount, window)),
+            "same route/key after a painted Settings cover is a new mount");
+        rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("remount-hint-sentinel".into()));
+        let focused = rig.cx.update(|window, cx| window.focused(cx));
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, app| shell.update(app, |shell, cx| shell.activate_hint(choice, &scope, window, cx)));
+        rig.settle();
+        assert_eq!(rig.route(), route);
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
+        assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("remount-hint-sentinel"));
+    }
 }

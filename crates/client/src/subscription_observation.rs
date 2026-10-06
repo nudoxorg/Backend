@@ -188,7 +188,7 @@ pub enum PublicationExchangeError {
     },
     /// A complete response or local proof failed publication admission.
     Invalid(ClientError),
-    /// Cancellation arrived between complete frames.
+    /// Cancellation arrived between I/O attempts, possibly inside a frame.
     Cancelled,
     /// The fixed publication budget expired during local validation/work.
     BudgetExpired(PublicationExchangeBudget),
@@ -742,8 +742,9 @@ impl LocalSubscriptionTransport {
     }
 
     /// Terminal best-effort release without opening a replacement socket.
-    /// Read and write each have a 50ms socket timeout; this does not promise
-    /// preemption of native syscalls, scheduling, or decoding.
+    /// Any abandoned response drain and this Cancel share one real 50ms
+    /// deadline. Per-attempt timeouts use the remaining allowance; this does
+    /// not promise preemption of native syscalls, scheduling, or decoding.
     /// # Errors
     /// Returns an I/O or protocol error when this exact socket cannot release
     /// the lease; the caller must not assume successful producer cleanup.
@@ -2287,8 +2288,12 @@ mod tests {
             .expect("bind authenticated local endpoint");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
             .expect("restrict authenticated local endpoint");
+        let (authenticated, may_close) = std::sync::mpsc::channel();
         let owner = std::thread::spawn(move || {
             let (first, _) = listener.accept().expect("accept original connection");
+            // The tested closure is before reset Ack, not before the original
+            // socket has supplied its same-user authentication proof.
+            may_close.recv_timeout(Duration::from_secs(3)).expect("original peer authenticated");
             drop(first);
             let (mut replacement, _) = listener.accept().expect("accept replacement connection");
             replacement
@@ -2318,6 +2323,7 @@ mod tests {
             Duration::from_millis(200),
         )
         .expect("connect and authenticate local producer");
+        authenticated.send(()).expect("release original authenticated connection");
         let mut state = lease_on(&transport, lease, Arc::clone(&initial), previous);
         let original_connection = transport.connection();
         transport.exhaust_connection_budget_for_test();

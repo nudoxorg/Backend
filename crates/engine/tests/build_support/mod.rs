@@ -16,21 +16,23 @@ use std::{
 };
 
 use backend_engine::driver::CompiledFragment;
-use backend_semantic::ir::{
-    Atom, AtomInput, EntityRecord, FragmentView, PreparedFragment, SourceIdentity, TypeNode,
+use backend_engine::index_build::{
+    BuildAdmissionError, BuildDerivationError, BuildError, EntityFact, EntityProjection,
+    IndexBuildScratch, PreparedIndex, build,
 };
 use backend_engine::publication::{
     OpenPublicationScratch, OpenedCompilation, OpenedFragment, OpenedFragmentCursor,
     PublicationScratch, PublishControl, open_published, publish_compiled,
 };
-use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
-use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
-use backend_engine::index_build::{
-    BuildAdmissionError, BuildDerivationError, BuildError, EntityFact, EntityProjection,
-    IndexBuildScratch, PreparedIndex, build,
-};
 use backend_semantic::index_core::{ExactRow, ExactSegmentError, LexicalRow, LexicalSegmentError};
+use backend_semantic::ir::{
+    Atom, AtomInput, EntityRecord, FragmentView, PreparedFragment, SourceIdentity, TypeNode,
+};
+use backend_semantic::vocabulary::{
+    CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage,
+};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 pub(crate) const CAPACITY: usize = 4;
@@ -175,6 +177,10 @@ pub(crate) enum BuildTerminal {
     TypeAddressSpace,
     #[error("validated entity name atom was absent from collected atoms")]
     MissingAtom,
+    #[error("legacy projection received an anonymous callable entity")]
+    UnexpectedAnonymousEntity,
+    #[error("validated entity carried an invalid anonymous callable anchor")]
+    InvalidAnonymousCallableAnchor,
     #[error("validated entity type node was absent from collected types")]
     MissingTypeNode,
     #[error("{plane:?} core rejected canonical rows as {fault:?}")]
@@ -233,6 +239,12 @@ impl From<BuildDerivationError> for BuildTerminal {
             BuildDerivationError::AtomAddressSpace { .. } => Self::AtomAddressSpace,
             BuildDerivationError::TypeAddressSpace { .. } => Self::TypeAddressSpace,
             BuildDerivationError::MissingAtom { .. } => Self::MissingAtom,
+            BuildDerivationError::UnexpectedAnonymousEntity { .. } => {
+                Self::UnexpectedAnonymousEntity
+            }
+            BuildDerivationError::InvalidAnonymousCallableAnchor { .. } => {
+                Self::InvalidAnonymousCallableAnchor
+            }
             BuildDerivationError::MissingTypeNode { .. } => Self::MissingTypeNode,
         }
     }

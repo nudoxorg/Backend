@@ -69,7 +69,14 @@ pub(crate) const fn estimate_tokens(bytes: usize) -> usize {
 pub(crate) fn name_digest(ir: &Ir) -> String {
     let mut lines = Vec::new();
     for item in ir.items() {
-        let name = String::from_utf8_lossy(item.name()).into_owned();
+        let name = match item.name() {
+            backend_semantic::ir::ItemNameView::Named(bytes) => {
+                String::from_utf8_lossy(bytes).into_owned()
+            }
+            backend_semantic::ir::ItemNameView::AnonymousCallable { .. } => {
+                "<anonymous callable>".to_owned()
+            }
+        };
         lines.push(format!("{:?}\t{name}", item.kind()));
     }
     lines.sort();

@@ -1,0 +1,30 @@
+{
+  "schema": "nudox.preserved-focused-validation-failures.v1",
+  "attempts": [
+    {
+      "path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/source-unavailable-d52ca3573-check.log",
+      "bytes": 379477,
+      "sha256": "23c2c8d32b688cfa6ae03095e5ea19d7ae13109fd679b10a4a69da7efcdc7496",
+      "classification": "fixture type qualification metadata error"
+    },
+    {
+      "path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/source-unavailable-control-ba1ad081f.log",
+      "bytes": 278394,
+      "sha256": "ae1e669e12cf19e442529ce97467cf85804434e211547f6aea9a1462b50d7674",
+      "classification": "new fixture empty source-facts intent; rejected before cold admission"
+    },
+    {
+      "path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/source-unavailable-control-39a756cfd.log",
+      "bytes": 56,
+      "sha256": "1dd312127201618be21ee48d65843eee7edfc361f6752a958ad05800616c7137",
+      "classification": "observer relative runner path missing; no Cargo"
+    },
+    {
+      "path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/source-unavailable-control-39a756cfd-attempt02.log",
+      "bytes": 278065,
+      "sha256": "3320af450b97e7365bbc31ef4a4521f54964ff83abbef39d3d68f1abc5ce549d",
+      "classification": "new legacy-helper control cold Store(Corrupt); cause unclassified and not claimed repaired"
+    }
+  ],
+  "note": "Cold product proof is the authenticated BPI9 capture test. The separate legacy-helper Store(Corrupt) result remains an unresolved observation."
+}

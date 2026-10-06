@@ -1,0 +1,215 @@
+{
+  "files": [
+    {
+      "bytes": 1090,
+      "path": "LICENSE",
+      "sha256": "a6db8096b2707bc0102d256917d4d33f298ba36d8c3f25de067a2b5bb379db27"
+    },
+    {
+      "bytes": 455,
+      "path": "README.md",
+      "sha256": "c8cced6ec588c55b07e35733258cb7d6b63e3426ee7490aa9267aab4bda0fb20"
+    },
+    {
+      "bytes": 1065,
+      "path": "agent.d.ts",
+      "sha256": "4893a895ea92c85345017a04ed427cbd6a1710453338df26881a6019432febdd"
+    },
+    {
+      "bytes": 1455,
+      "path": "api.d.ts",
+      "sha256": "0db18c6e78ea846316c012478888f33c11ffadab9efd1cc8bcc12daded7a60b6"
+    },
+    {
+      "bytes": 961,
+      "path": "balanced-pool.d.ts",
+      "sha256": "ba7bc87d01492633cb5a0e5da8a4a42a1c86270e7b3d2dea5d156828a84e4882"
+    },
+    {
+      "bytes": 1251,
+      "path": "cache.d.ts",
+      "sha256": "c46e079fe54c76f95c67fb89081b3e399da2c7d109e7dca8e4b58d83e332e605"
+    },
+    {
+      "bytes": 4964,
+      "path": "client.d.ts",
+      "sha256": "1d6e127068ea8e104a912e42fc0a110e2aa5a66a356a917a163e8cf9a65e4a75"
+    },
+    {
+      "bytes": 1029,
+      "path": "connector.d.ts",
+      "sha256": "c6fd2c5a395f2432786c9cb8deb870b9b0e8ff7e22c029954fabdd692bff6195"
+    },
+    {
+      "bytes": 561,
+      "path": "content-type.d.ts",
+      "sha256": "2e85db9e6fd73cfa3d7f28e0ab6b55417ea18931423bd47b409a96e4a169e8e6"
+    },
+    {
+      "bytes": 635,
+      "path": "cookies.d.ts",
+      "sha256": "89167d696a849fce5ca508032aabfe901c0868f833a8625d5a9c6e861ef935d2"
+    },
+    {
+      "bytes": 1579,
+      "path": "diagnostics-channel.d.ts",
+      "sha256": "4732aec92b20fb28c5fe9ad99521fb59974289ed1e45aecb282616202184064f"
+    },
+    {
+      "bytes": 14222,
+      "path": "dispatcher.d.ts",
+      "sha256": "7f182617db458e98fc18dfb272d40aa2fff3a353c44a89b2c0ccb3937709bfb5"
+    },
+    {
+      "bytes": 675,
+      "path": "env-http-proxy-agent.d.ts",
+      "sha256": "24c6a117721e606c9984335f71711877293a9651e44f59f3d21c1ea0856f9cc9"
+    },
+    {
+      "bytes": 4280,
+      "path": "errors.d.ts",
+      "sha256": "5ded6427296cdf3b9542de4471d2aa8d3983671d4cac0f4bf9c637208d1ced43"
+    },
+    {
+      "bytes": 1648,
+      "path": "eventsource.d.ts",
+      "sha256": "8bd86b8e8f6a6aa6c49b71e14c4ffe1211a0e97c80f08d2c8cc98838006e4b88"
+    },
+    {
+      "bytes": 5575,
+      "path": "fetch.d.ts",
+      "sha256": "c464d66b20788266e5353b48dc4aa6bc0dc4a707276df1e7152ab0c9ae21fad8"
+    },
+    {
+      "bytes": 1707,
+      "path": "file.d.ts",
+      "sha256": "25c8056edf4314820382a5fdb4bb7816999acdcb929c8f75e3f39473b87e85bc"
+    },
+    {
+      "bytes": 1433,
+      "path": "filereader.d.ts",
+      "sha256": "317e63deeb21ac07f3992f5b50cdca8338f10acd4fbb7257ebf56735bf52ab00"
+    },
+    {
+      "bytes": 4998,
+      "path": "formdata.d.ts",
+      "sha256": "78d0d27c130d35c60b5e5566c9f1e5be77caf39804636bc1a40133919a949f21"
+    },
+    {
+      "bytes": 276,
+      "path": "global-dispatcher.d.ts",
+      "sha256": "cadc8aced301244057c4e7e73fbcae534b0f5b12a37b150d80e5a45aa4bebcbd"
+    },
+    {
+      "bytes": 175,
+      "path": "global-origin.d.ts",
+      "sha256": "385aab901643aa54e1c36f5ef3107913b10d1b5bb8cbcd933d4263b80a0d7f20"
+    },
+    {
+      "bytes": 447,
+      "path": "handlers.d.ts",
+      "sha256": "11396ed8a44c02ab9798b7dca436009f866e8dae3c9c25e8c1fbc396880bf1bb"
+    },
+    {
+      "bytes": 133,
+      "path": "header.d.ts",
+      "sha256": "5929864ce17fba74232584d90cb721a89b7ad277220627cc97054ba15a98ea8f"
+    },
+    {
+      "bytes": 3387,
+      "path": "index.d.ts",
+      "sha256": "bf67d53d168abc1298888693338cb82854bdb2e69ef83f8a0092093c2d562107"
+    },
+    {
+      "bytes": 922,
+      "path": "interceptors.d.ts",
+      "sha256": "e61be3f894b41b7baa1fbd6a66893f2579bfad01d208b4ff61daef21493ef0a8"
+    },
+    {
+      "bytes": 2535,
+      "path": "mock-agent.d.ts",
+      "sha256": "13f6f39e12b1518c6650bbb220c8985999020fe0f21d818e28f512b7771d00f9"
+    },
+    {
+      "bytes": 1002,
+      "path": "mock-client.d.ts",
+      "sha256": "9b5369969f6e7175740bf51223112ff209f94ba43ecd3bb09eefff9fd675624a"
+    },
+    {
+      "bytes": 338,
+      "path": "mock-errors.d.ts",
+      "sha256": "24515859bc0b836719105bb6cc3d68255042a9f02a6022b3187948b204946bd2"
+    },
+    {
+      "bytes": 3902,
+      "path": "mock-interceptor.d.ts",
+      "sha256": "c21dc52e277bcfc75fac0436ccb75c204f9e1b3fa5e12729670910639f27343e"
+    },
+    {
+      "bytes": 974,
+      "path": "mock-pool.d.ts",
+      "sha256": "4fe9e626e7164748e8769bbf74b538e09607f07ed17c2f20af8d680ee49fc1da"
+    },
+    {
+      "bytes": 1193,
+      "path": "package.json",
+      "sha256": "11f873b423b96a5ad444a099685ca6b9de1379dcd83fd8d368e757ddb53658e4"
+    },
+    {
+      "bytes": 691,
+      "path": "patch.d.ts",
+      "sha256": "615ba88d0128ed16bf83ef8ccbb6aff05c3ee2db1cc0f89ab50a4939bfc1943f"
+    },
+    {
+      "bytes": 669,
+      "path": "pool-stats.d.ts",
+      "sha256": "9670d44354bab9d9982eca21945686b5c24a3f893db73c0dae0fd74217a4c219"
+    },
+    {
+      "bytes": 1336,
+      "path": "pool.d.ts",
+      "sha256": "0b8a9268adaf4da35e7fa830c8981cfa22adbbe5b3f6f5ab91f6658899e657a7"
+    },
+    {
+      "bytes": 780,
+      "path": "proxy-agent.d.ts",
+      "sha256": "ea0148f897b45a76544ae179784c95af1bd6721b8610af9ffa467a518a086a43"
+    },
+    {
+      "bytes": 1738,
+      "path": "readable.d.ts",
+      "sha256": "763fe0f42b3d79b440a9b6e51e9ba3f3f91352469c1e4b3b67bfa4ff6352f3f4"
+    },
+    {
+      "bytes": 232,
+      "path": "retry-agent.d.ts",
+      "sha256": "405822be75ad3e4d162e07439bac80c6bcc6dbae1929e179cf467ec0b9ee4e2e"
+    },
+    {
+      "bytes": 2983,
+      "path": "retry-handler.d.ts",
+      "sha256": "dd3273ead9fbde62a72949c97dbec2247ea08e0c6952e701a483d74ef92d6a17"
+    },
+    {
+      "bytes": 623,
+      "path": "util.d.ts",
+      "sha256": "bd0532fd6556073727d28da0edfd1736417a3f9f394877b6d5ef6ad88fba1d1a"
+    },
+    {
+      "bytes": 5921,
+      "path": "webidl.d.ts",
+      "sha256": "99c42860a78963ee66048ef3536dbd9eb59858e6a06f2feba845105ed411e658"
+    },
+    {
+      "bytes": 3840,
+      "path": "websocket.d.ts",
+      "sha256": "a4d551dbf8746780194d550c88f26cf937caf8d56f102969a110cfaed4b06656"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "undici-types",
+    "version": "6.21.0"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

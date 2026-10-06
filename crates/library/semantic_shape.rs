@@ -36,6 +36,9 @@ pub const SEMANTIC_SHAPE_CARRIER_IDENTITY_BYTES: usize = 192;
 /// limit keeps even the densest product shape below serde_json's built-in
 /// nesting limit of 128 before the typed admission walk runs.
 pub const MAX_SEMANTIC_SHAPE_DEPTH: usize = 22;
+/// Maximum admitted aggregate payload size for one selected semantic image set.
+/// This matches the owner-side generation residence bound.
+pub const MAX_SEMANTIC_SHAPE_IMAGE_BYTES: u32 = 128 * 1024 * 1024;
 
 /// Product admission failures for the semantic-shape boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -132,6 +135,94 @@ impl SemanticShapeBudget {
     #[must_use]
     pub const fn max_bytes(self) -> u32 {
         self.max_bytes
+    }
+}
+
+/// Public read operands; they are selectors, not admitted compiler facts.
+/// Full selected SymbolKey bytes are required, never a display abbreviation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    try_from = "SemanticShapeReadRequestWire",
+    into = "SemanticShapeReadRequestWire"
+)]
+pub struct SemanticShapeReadRequest {
+    source: SemanticVersionRecord,
+    symbols: Box<[[u8; 32]]>,
+    max_nodes: u16,
+    max_bytes: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticShapeReadRequestWire {
+    source: SemanticVersionRecord,
+    symbols: Box<[[u8; 32]]>,
+    max_nodes: u16,
+    max_bytes: u32,
+}
+
+impl SemanticShapeReadRequest {
+    /// Checks selection, distinct full keys, and fixed caller budget bounds.
+    pub fn new(
+        source: SemanticVersionRecord,
+        symbols: Box<[[u8; 32]]>,
+        max_nodes: u16,
+        max_bytes: u32,
+    ) -> Result<Self, SemanticShapeError> {
+        SemanticShapeSelection::from_selected(&source)?;
+        SemanticShapeBudget::new(max_nodes, max_bytes)?;
+        if symbols.is_empty() || symbols.len() > MAX_SEMANTIC_SHAPE_BATCH {
+            return Err(SemanticShapeError::BatchBound);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for key in &symbols {
+            if *key == [0; 32] || !seen.insert(*key) {
+                return Err(SemanticShapeError::DuplicateSymbol);
+            }
+        }
+        Ok(Self {
+            source,
+            symbols,
+            max_nodes,
+            max_bytes,
+        })
+    }
+
+    /// Exact selected generation supplied by the caller.
+    #[must_use]
+    pub const fn source(&self) -> &SemanticVersionRecord {
+        &self.source
+    }
+    /// Full selected symbol key bytes in requested order.
+    #[must_use]
+    pub fn symbols(&self) -> &[[u8; 32]] {
+        &self.symbols
+    }
+    /// Checked caller limits; deserialization applies the same admission.
+    pub fn budget(&self) -> Result<SemanticShapeBudget, SemanticShapeError> {
+        SemanticShapeBudget::new(self.max_nodes, self.max_bytes)
+    }
+}
+
+impl TryFrom<SemanticShapeReadRequestWire> for SemanticShapeReadRequest {
+    type Error = SemanticShapeError;
+    fn try_from(value: SemanticShapeReadRequestWire) -> Result<Self, Self::Error> {
+        Self::new(
+            value.source,
+            value.symbols,
+            value.max_nodes,
+            value.max_bytes,
+        )
+    }
+}
+impl From<SemanticShapeReadRequest> for SemanticShapeReadRequestWire {
+    fn from(value: SemanticShapeReadRequest) -> Self {
+        Self {
+            source: value.source,
+            symbols: value.symbols,
+            max_nodes: value.max_nodes,
+            max_bytes: value.max_bytes,
+        }
     }
 }
 
@@ -248,6 +339,30 @@ pub struct SemanticShapeImageOrigin {
     pub image: crate::interface::SemanticImageAuthority,
     /// Exact compiler profile admitted for this selected image.
     pub profile: LanguageProfile,
+}
+
+/// Checked aggregate byte extent of the selected generation's semantic images.
+///
+/// This is distinct from `SemanticVersionRecord::semantic_bytes`, which
+/// records the encoded manifest length. Image lengths must only be compared to
+/// this payload extent, never to the manifest's encoded size.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticImagePayloadBytes(u32);
+
+impl SemanticImagePayloadBytes {
+    /// Admits a nonempty payload extent within the selected-generation limit.
+    pub fn new(byte_length: u32) -> Result<Self, SemanticShapeError> {
+        if byte_length == 0 || byte_length > MAX_SEMANTIC_SHAPE_IMAGE_BYTES {
+            return Err(SemanticShapeError::InvalidOrigin);
+        }
+        Ok(Self(byte_length))
+    }
+
+    /// Exact aggregate selected-image payload bytes.
+    #[must_use]
+    pub const fn byte_length(self) -> u32 {
+        self.0
+    }
 }
 
 /// Selected semantic generation fields that the service rechecks against its durable relation.
@@ -370,6 +485,9 @@ pub struct SemanticShapeSourceOrigin {
     /// projection; this is an optimistic before/after check, not an atomic
     /// cross-index proof or a request-side expected-root comparison.
     pub selection_root: [u8; 32],
+    /// Aggregate byte extent from the selected generation's checked image
+    /// inventory, distinct from the encoded compiler manifest length.
+    pub semantic_image_bytes: SemanticImagePayloadBytes,
     /// Exact image containing a known declaration or shape fact. `None`
     /// denotes closure-level unavailability without falsely attributing it
     /// to the first image in a multi-image generation.
@@ -429,6 +547,8 @@ pub enum SemanticTypeUnavailable {
 pub enum SemanticShapeUnavailable {
     /// An exact referenced entity or atom is missing from the validated image.
     MissingImageFact,
+    /// The producer did not prove a complete directly declared member inventory.
+    MemberInventoryNotCaptured,
     /// The selected semantic publication did not cover its declared scope completely.
     PartialPublication,
     /// The selected target has no published semantic image.
@@ -686,13 +806,72 @@ pub struct SemanticCallableShape {
     pub unsafe_: bool,
 }
 
+/// One owned, validated structural anchor for an anonymous callable member.
+/// The encoding is semantic identity data, never source identifier text.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SemanticAnonymousCallableAnchor(Box<[u8]>);
+
+impl SemanticAnonymousCallableAnchor {
+    /// Copies a bounded encoded anchor after validating its semantic grammar.
+    pub fn new(encoded: &[u8]) -> Result<Self, SemanticShapeError> {
+        if encoded.len() > backend_semantic::ir::MAX_ANONYMOUS_CALLABLE_ANCHOR_BYTES
+            || backend_semantic::ir::AnonymousCallableAnchorView::try_from_encoded(encoded)
+                .is_none()
+        {
+            return Err(SemanticShapeError::InvalidShape);
+        }
+        Ok(Self(encoded.into()))
+    }
+
+    /// Returns the exact versioned anchor bytes.
+    #[must_use]
+    pub fn encoded_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    fn validate(&self) -> Result<(), SemanticShapeError> {
+        if self.0.len() > backend_semantic::ir::MAX_ANONYMOUS_CALLABLE_ANCHOR_BYTES
+            || backend_semantic::ir::AnonymousCallableAnchorView::try_from_encoded(&self.0)
+                .is_none()
+        {
+            return Err(SemanticShapeError::InvalidShape);
+        }
+        Ok(())
+    }
+}
+
+/// Typed member name that keeps structural anonymous identity out of source text.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum SemanticShapeMemberName {
+    /// Exact UTF-8 spelling written by the source declaration.
+    Named(SourceAtomText),
+    /// Exact structural identity for a source-anonymous callable declaration.
+    AnonymousCallable(SemanticAnonymousCallableAnchor),
+}
+
+impl SemanticShapeMemberName {
+    pub(crate) fn validate(&self) -> Result<(), SemanticShapeError> {
+        match self {
+            Self::Named(_) => Ok(()),
+            Self::AnonymousCallable(anchor) => anchor.validate(),
+        }
+    }
+}
+
 /// Member row retained on a record, object, enum, or module shape.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SemanticShapeMember {
     /// Exact compiler declaration family and variant.
     pub identity: SemanticDeclarationIdentity,
-    /// Exact compiler-owned member name.
-    pub name: SourceAtomText,
+    /// Exact source name or explicitly typed anonymous callable anchor.
+    pub name: SemanticShapeMemberName,
     /// Closed member-kind discriminant.
     pub kind: ItemKind,
     /// Member type fact; absence remains explicit.
@@ -706,7 +885,9 @@ pub struct SemanticShapeMember {
 pub enum SemanticDeclarationShape {
     /// Ordered callable contract.
     Callable(SemanticCallableShape),
-    /// Ordered record/object members.
+    /// Complete directly declared member inventory. Inherited, effective and
+    /// runtime structural members are separate type or language facts. A
+    /// producer without a complete inventory returns typed unavailability.
     Aggregate(Box<[SemanticShapeMember]>),
     /// Type alias, field, property, or other directly typed declaration.
     Typed(SemanticTypeFact),
@@ -933,7 +1114,8 @@ impl SemanticShapeBatch {
                     match (&origin.image, &entry.fact, entry.identity) {
                         (Some(image), _, Some(_))
                             if image.image.byte_len > 0
-                                && image.image.byte_len <= origin.source.semantic_bytes
+                                && image.image.byte_len
+                                    <= origin.semantic_image_bytes.byte_length()
                                 && image.profile == expected_profile => {}
                         (None, SemanticShapeFact::Unavailable(_), None) => {}
                         _ => return Err(SemanticShapeError::InvalidOrigin),
@@ -1042,7 +1224,17 @@ impl SemanticShapeWalker {
                     SemanticDeclarationShape::Aggregate(members) => {
                         for member in members.iter() {
                             self.node(160)?;
-                            self.text(&member.name)?;
+                            member.name.validate()?;
+                            match &member.name {
+                                SemanticShapeMemberName::Named(text) => self.text(text)?,
+                                SemanticShapeMemberName::AnonymousCallable(anchor) => self.bytes(
+                                    anchor
+                                        .encoded_bytes()
+                                        .len()
+                                        .saturating_mul(6)
+                                        .saturating_add(16),
+                                )?,
+                            }
                             self.language(&member.language, 0)?;
                             self.fact(&member.ty, 0)?;
                         }
@@ -1404,23 +1596,45 @@ fn admit_minimum_budget(
 /// History publication status is a separate derived sidecar observation: this
 /// contract neither echoes it as authority nor triggers history work to validate it.
 pub fn semantic_shape_source_preimage(origin: &SemanticShapeSourceOrigin) -> Vec<u8> {
+    semantic_shape_source_preimage_parts(
+        &origin.source,
+        &origin.selection_root,
+        origin.semantic_image_bytes.byte_length(),
+        origin.image.map(|image| {
+            (
+                *image.image.identity.as_ref(),
+                image.image.byte_len,
+                crate::SemanticLanguageProfile::new(image.profile),
+            )
+        }),
+    )
+}
+
+// Encoding-only helper for display consistency. Raw image digest bytes here do
+// not create compiler authority, ArtifactIds, SymbolKeys, or product facts.
+pub(crate) fn semantic_shape_source_preimage_parts(
+    source: &SemanticShapeSelection,
+    selection_root: &[u8; 32],
+    semantic_image_bytes: u32,
+    image: Option<([u8; 32], u32, crate::SemanticLanguageProfile)>,
+) -> Vec<u8> {
     fn append(bytes: &mut Vec<u8>, value: &[u8]) {
         bytes.extend_from_slice(&(value.len() as u64).to_be_bytes());
         bytes.extend_from_slice(value);
     }
 
-    let mut bytes = b"SEMANTIC-SHAPE-SOURCE\0v3".to_vec();
-    append(&mut bytes, origin.source.package.as_str().as_bytes());
-    append(&mut bytes, origin.source.coordinate.as_str().as_bytes());
-    append(&mut bytes, &origin.source.profile.to_bytes());
-    append(&mut bytes, &origin.source.generation.to_bytes());
-    append(&mut bytes, &origin.source.generation_root);
-    append(&mut bytes, &origin.source.dependency_set);
-    append(&mut bytes, &origin.source.manifest);
-    bytes.extend_from_slice(&origin.source.artifacts.to_be_bytes());
-    bytes.extend_from_slice(&origin.source.semantic_bytes.to_be_bytes());
+    let mut bytes = b"SEMANTIC-SHAPE-SOURCE\0v4".to_vec();
+    append(&mut bytes, source.package.as_str().as_bytes());
+    append(&mut bytes, source.coordinate.as_str().as_bytes());
+    append(&mut bytes, &source.profile.to_bytes());
+    append(&mut bytes, &source.generation.to_bytes());
+    append(&mut bytes, &source.generation_root);
+    append(&mut bytes, &source.dependency_set);
+    append(&mut bytes, &source.manifest);
+    bytes.extend_from_slice(&source.artifacts.to_be_bytes());
+    bytes.extend_from_slice(&source.semantic_bytes.to_be_bytes());
     bytes.extend_from_slice(&[1, 1]);
-    match origin.source.freshness {
+    match source.freshness {
         crate::SemanticVersionFreshness::Current { input_digest } => {
             bytes.push(0);
             append(&mut bytes, &input_digest);
@@ -1435,15 +1649,13 @@ pub fn semantic_shape_source_preimage(origin: &SemanticShapeSourceOrigin) -> Vec
         }
         crate::SemanticVersionFreshness::Unverified => bytes.push(2),
     }
-    append(&mut bytes, &origin.selection_root);
-    if let Some(image) = origin.image {
+    append(&mut bytes, selection_root);
+    bytes.extend_from_slice(&semantic_image_bytes.to_be_bytes());
+    if let Some((identity, byte_len, profile)) = image {
         bytes.push(1);
-        append(&mut bytes, image.image.identity.as_ref());
-        bytes.extend_from_slice(&image.image.byte_len.to_be_bytes());
-        append(
-            &mut bytes,
-            &crate::SemanticLanguageProfile::new(image.profile).to_bytes(),
-        );
+        append(&mut bytes, &identity);
+        bytes.extend_from_slice(&byte_len.to_be_bytes());
+        append(&mut bytes, &profile.to_bytes());
     } else {
         bytes.push(0);
     }
@@ -1496,6 +1708,47 @@ mod tests {
         .expect("hard maxima are admitted caller limits")
     }
 
+    #[test]
+    fn public_shape_operands_reject_abbreviations_wrong_family_and_unselected_source() {
+        let value: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/semantic-shape-read.json"))
+                .expect("public request fixture");
+        let admitted: SemanticShapeReadRequest =
+            serde_json::from_value(value.clone()).expect("closed operands");
+        assert_eq!(admitted.symbols(), &[[6; 32]]);
+        for changed in [
+            serde_json::json!({"source": value["source"], "symbols": ["06060606"], "max_nodes": 4096, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "symbols": [{"kind":"canonical","id":"06".repeat(32)}], "max_nodes": 4096, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "symbols": [], "max_nodes": 4096, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "symbols": vec![[6u8;32];33], "max_nodes": 4096, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "symbols": vec![[6u8;32];2], "max_nodes": 4096, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "symbols": vec![[6u8;32]], "max_nodes": 4097, "max_bytes": 49152}),
+        ] {
+            assert!(serde_json::from_value::<SemanticShapeReadRequest>(changed).is_err());
+        }
+        for field in ["complete", "selected"] {
+            let mut changed = value.clone();
+            changed["source"][field] = serde_json::json!(false);
+            assert!(serde_json::from_value::<SemanticShapeReadRequest>(changed).is_err());
+        }
+    }
+
+    #[test]
+    fn selected_image_payload_extent_has_a_closed_nonzero_bound() {
+        assert_eq!(
+            SemanticImagePayloadBytes::new(0),
+            Err(SemanticShapeError::InvalidOrigin)
+        );
+        assert_eq!(
+            SemanticImagePayloadBytes::new(MAX_SEMANTIC_SHAPE_IMAGE_BYTES),
+            Ok(SemanticImagePayloadBytes(MAX_SEMANTIC_SHAPE_IMAGE_BYTES))
+        );
+        assert_eq!(
+            SemanticImagePayloadBytes::new(MAX_SEMANTIC_SHAPE_IMAGE_BYTES + 1),
+            Err(SemanticShapeError::InvalidOrigin)
+        );
+    }
+
     fn request(names: &[&str]) -> SemanticShapeRequest {
         request_in_profile(names, LanguageProfile::Rust(RustEdition::Rust2021))
     }
@@ -1535,6 +1788,8 @@ mod tests {
             origin: Some(SemanticShapeSourceOrigin {
                 source: SemanticShapeSelection::from_selected(&source).expect("selected source"),
                 selection_root: [7; 32],
+                semantic_image_bytes: SemanticImagePayloadBytes::new(11)
+                    .expect("fixture image extent"),
                 image: Some(
                     SemanticShapeImageOrigin {
                         image:
@@ -1555,9 +1810,7 @@ mod tests {
                 shape: SemanticDeclarationShape::Typed(SemanticTypeFact::Known(
                     SemanticTypeExpr::Builtin(backend_semantic::ir::BuiltinType::Never),
                 )),
-                language: SemanticShapeLanguageFacts::CommonOnly {
-                    profile,
-                },
+                language: SemanticShapeLanguageFacts::CommonOnly { profile },
             },
         }
     }
@@ -1570,6 +1823,57 @@ mod tests {
             entries: vec![entry(&request, 0), entry(&request, 1)].into_boxed_slice(),
         };
         assert_eq!(batch.admit_against(&request), Ok(()));
+
+        // The manifest header is smaller than an image payload here. The
+        // image must be checked against its same-unit selected payload extent,
+        // not the encoded manifest length carried by the source record.
+        let mut small_manifest_source = request.source().clone();
+        small_manifest_source.semantic_bytes = 1;
+        let small_manifest_request = SemanticShapeRequest::new(
+            crate::view_state_root(&[]),
+            small_manifest_source,
+            request.symbols().to_vec().into_boxed_slice(),
+            request.budget(),
+        )
+        .expect("admit smaller manifest extent");
+        let small_manifest_batch = SemanticShapeBatch {
+            basis: small_manifest_request.basis(),
+            entries: vec![
+                entry(&small_manifest_request, 0),
+                entry(&small_manifest_request, 1),
+            ]
+            .into_boxed_slice(),
+        };
+        assert_eq!(
+            small_manifest_batch.admit_against(&small_manifest_request),
+            Ok(())
+        );
+
+        let mut too_small_payload = batch.clone();
+        let original_origin = too_small_payload.entries[0]
+            .origin
+            .as_ref()
+            .expect("fixture source witness");
+        let original_source_key = semantic_shape_source_key(original_origin);
+        too_small_payload.entries[0]
+            .origin
+            .as_mut()
+            .expect("fixture source witness")
+            .semantic_image_bytes =
+            SemanticImagePayloadBytes::new(10).expect("nonempty fixture payload extent");
+        let changed_origin = too_small_payload.entries[0]
+            .origin
+            .as_ref()
+            .expect("fixture source witness");
+        assert_ne!(
+            semantic_shape_source_key(changed_origin),
+            original_source_key,
+            "the source commitment must bind aggregate payload extent"
+        );
+        assert_eq!(
+            too_small_payload.admit_against(&request),
+            Err(SemanticShapeError::InvalidOrigin)
+        );
 
         let mut wrong_root = batch.clone();
         wrong_root.basis =
@@ -1926,16 +2230,18 @@ mod tests {
         };
         let mut within_budget = batch.clone();
         let SemanticShapeFact::Available {
-            language: SemanticShapeLanguageFacts::Partial {
-                facts: SemanticShapeLanguageFact::Java { annotations, .. },
-                ..
-            },
+            language:
+                SemanticShapeLanguageFacts::Partial {
+                    facts: SemanticShapeLanguageFact::Java { annotations, .. },
+                    ..
+                },
             ..
-        } = &mut within_budget.entries[0].fact else {
+        } = &mut within_budget.entries[0].fact
+        else {
             panic!("fixture has Java language facts");
         };
-        *annotations = vec![SourceAtomText::new("A").expect("exact annotation text")]
-            .into_boxed_slice();
+        *annotations =
+            vec![SourceAtomText::new("A").expect("exact annotation text")].into_boxed_slice();
         assert_eq!(within_budget.admit_against(&request), Ok(()));
         assert_eq!(
             batch.admit_against(&request),
@@ -1962,6 +2268,74 @@ mod tests {
             entries: vec![entry].into_boxed_slice(),
         };
         assert_eq!(batch.admission_summary().map(|_| ()), Ok(()));
+    }
+
+    #[test]
+    fn aggregate_member_name_keeps_anonymous_anchor_typed_and_validated() {
+        let encoded = [b'N', b'A', b'C', 2, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0];
+        let name = SemanticShapeMemberName::AnonymousCallable(
+            SemanticAnonymousCallableAnchor::new(&encoded)
+                .expect("valid bounded anonymous-callable anchor"),
+        );
+        let wire = serde_json::to_vec(&name).expect("tagged member-name wire value");
+        assert!(
+            serde_json::from_slice::<SemanticShapeMemberName>(&wire)
+                .expect("member-name wire value round-trips")
+                == name
+        );
+
+        let member = SemanticShapeMember {
+            identity: SemanticDeclarationIdentity {
+                family: [41; 16],
+                variant: [42; 16],
+            },
+            name,
+            kind: backend_semantic::ir::ItemKind::Function,
+            ty: SemanticTypeFact::Unavailable(SemanticTypeUnavailable::MissingTypeCoordinate),
+            language: SemanticShapeLanguageFacts::CommonOnly {
+                profile: LanguageProfile::Rust(RustEdition::Rust2021),
+            },
+        };
+        let fact = SemanticShapeFact::Available {
+            shape: SemanticDeclarationShape::Aggregate(vec![member].into_boxed_slice()),
+            language: SemanticShapeLanguageFacts::CommonOnly {
+                profile: LanguageProfile::Rust(RustEdition::Rust2021),
+            },
+        };
+        let mut walker = SemanticShapeWalker::default();
+        walker
+            .shape_fact(&fact, 0)
+            .expect("valid anonymous member passes product admission");
+
+        let invalid = SemanticShapeFact::Available {
+            shape: SemanticDeclarationShape::Aggregate(
+                vec![SemanticShapeMember {
+                    identity: SemanticDeclarationIdentity {
+                        family: [43; 16],
+                        variant: [44; 16],
+                    },
+                    name: SemanticShapeMemberName::AnonymousCallable(
+                        SemanticAnonymousCallableAnchor(vec![0].into_boxed_slice()),
+                    ),
+                    kind: backend_semantic::ir::ItemKind::Function,
+                    ty: SemanticTypeFact::Unavailable(
+                        SemanticTypeUnavailable::MissingTypeCoordinate,
+                    ),
+                    language: SemanticShapeLanguageFacts::CommonOnly {
+                        profile: LanguageProfile::Rust(RustEdition::Rust2021),
+                    },
+                }]
+                .into_boxed_slice(),
+            ),
+            language: SemanticShapeLanguageFacts::CommonOnly {
+                profile: LanguageProfile::Rust(RustEdition::Rust2021),
+            },
+        };
+        let mut invalid_walker = SemanticShapeWalker::default();
+        assert_eq!(
+            invalid_walker.shape_fact(&invalid, 0),
+            Err(SemanticShapeError::InvalidShape),
+        );
     }
 
     #[test]

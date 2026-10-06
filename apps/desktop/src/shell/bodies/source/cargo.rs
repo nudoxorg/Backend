@@ -310,9 +310,11 @@ fn code(
     let first = range.first;
     let last = range.last;
     let (draft_owner, draft) = DraftOwner::from_ctx(Route::CargoSource(route.clone()), ctx, cx);
+    let mounted_owner = draft_owner.clone();
     let pager = window.use_keyed_state(pager_key, cx, move |window, cx| {
         Pager::new(memory, first, last, recall, reveal, row_id, draft_owner, draft, window, cx)
     });
+    pager.update(cx, |pager, _| pager.draft_owner = mounted_owner);
     *pager.read(cx).admission.borrow_mut() = Some(Rc::clone(source_guard));
     let cursor = paging
         .borrow()
@@ -353,7 +355,7 @@ fn code(
     }
     let mut column = div().flex().flex_col().gap(measure.space(Space::Base));
     column = column.child(pager_controls(
-        "top", &pager, cursor, &page, source, source_guard, ctx, cx,
+        "top", &pager, cursor, &page, source, source_guard, source_guard, ctx, cx,
     ));
     if cursor.line > range.first || cursor.byte > 0 {
         column = column.child(quiet(
@@ -487,7 +489,7 @@ fn code(
             palette,
         ));
         column = column.child(pager_controls(
-            "bottom", &pager, cursor, &page, source, source_guard, ctx, cx,
+            "bottom", &pager, cursor, &page, source, source_guard, source_guard, ctx, cx,
         ));
     }
     column.into_any_element()

@@ -193,6 +193,12 @@ pub enum ProjectionSemanticTypeTag {
     ArrayIncomplete,
     /// C-family qualified type.
     CQualified,
+    /// TypeScript's unevaluated `keyof` operator.
+    KeyOf,
+    /// TypeScript's unevaluated indexed-access operator.
+    IndexedAccess,
+    /// TypeScript's exact entity-targeted `typeof` query.
+    TypeOf,
 }
 
 /// Closed type-record cell used by the portable admission snapshot.
@@ -381,6 +387,26 @@ pub struct ProjectionSpan {
     pub end: u32,
 }
 
+/// Closed reason an anonymous callable anchor could not be admitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectionAnonymousCallableAnchorFault {
+    /// The source-structural route is malformed or unsupported.
+    InvalidRoute,
+    /// The bounded structural encoding could not be measured or written.
+    Encoding,
+    /// The exact native project/source witness is unavailable.
+    SourceIdentityUnavailable,
+}
+
+/// Bounded resource whose anonymous callable anchor pool reached its limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectionAnonymousCallableAnchorPool {
+    /// Maximum number of exact callable instances retained.
+    Entries,
+    /// Maximum encoded anchor bytes retained.
+    Bytes,
+}
+
 /// Closed, value-only mirror of the driver's fact-admission rejection.
 ///
 /// Native `usize` operands widen to `u64`, preserving their exact value while
@@ -390,6 +416,22 @@ pub struct ProjectionSpan {
 pub enum ProjectionAdmissionFault {
     /// An emitted declaration name was empty.
     EmptyName,
+    /// A typed anonymous callable name was malformed or lacked exact source identity.
+    AnonymousCallableAnchor {
+        /// Closed anchor-construction failure.
+        cause: ProjectionAnonymousCallableAnchorFault,
+    },
+    /// The bounded typed anchor storage reached its entry or byte limit.
+    AnonymousCallableAnchorPoolCapacity {
+        /// Bounded pool resource that was exhausted.
+        pool: ProjectionAnonymousCallableAnchorPool,
+        /// Existing retained entries or bytes.
+        used: u64,
+        /// Additional entries or bytes required.
+        requested: u64,
+        /// Maximum entries or bytes admitted.
+        capacity: u64,
+    },
     /// The bounded fact lane was full.
     Capacity,
     /// The fact's product-child lane was full.
@@ -464,6 +506,30 @@ pub enum ProjectionAdmissionFault {
     TypeRowCapacity,
     /// Computed type-row lane was full.
     ComputedRowCapacity,
+    /// Native type recursion exceeded the projector's explicit depth bound.
+    TypeProjectionDepthLimit {
+        /// Depth observed at the rejected type node.
+        depth: u64,
+        /// Maximum admitted projection depth.
+        maximum: u64,
+    },
+    /// Native type interning graph revisited a node already on the active path.
+    TypeProjectionCycle {
+        /// Exact interned type handle that closes the cycle.
+        type_id: u32,
+    },
+    /// Native checker exposed a recursive back-reference that cannot be represented as a local row.
+    TypeProjectionRecursiveReference {
+        /// De Bruijn-style number of enclosing recursive scopes to reference.
+        distance: u32,
+    },
+    /// A non-associative native type constructor exceeds the row child bound.
+    TypeProjectionWidth {
+        /// Exact number of children required by the source constructor.
+        actual: u64,
+        /// Maximum children admitted for one row.
+        maximum: u64,
+    },
     /// Occurrence owner was outside the pushed prefix.
     OccurrenceOwner {
         /// Zero-based emitted fact ordinal claimed as the occurrence owner.
@@ -534,5 +600,20 @@ pub enum ProjectionAdmissionFault {
         existing: ProjectionParentageState,
         /// Parentage state reported by the later authority pass.
         requested: ProjectionParentageState,
+    },
+    /// Conflicting complete direct-declaration inventories; operands name the first difference.
+    ConflictingMemberInventory {
+        /// Owner whose complete inventories disagree.
+        entity: u32,
+        /// Length of the retained canonical inventory.
+        existing_count: u64,
+        /// Length of the rejected canonical inventory.
+        requested_count: u64,
+        /// First differing canonical ordinal position.
+        first_difference: u64,
+        /// Retained member at that position, absent at the end of the run.
+        existing_member: Option<u32>,
+        /// Rejected member at that position, absent at the end of the run.
+        requested_member: Option<u32>,
     },
 }

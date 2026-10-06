@@ -16,6 +16,8 @@ serde_json.workspace = true
 allocation-counter.workspace = true
 backend-advisory = { path = "../advisory" }
 backend-library = { path = "../library", features = ["test-support"] }
+backend-semantic = { path = "../semantic" }
+backend-version = { path = "../version" }
 
 [lints]
 workspace = true

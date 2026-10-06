@@ -15,6 +15,9 @@ pub(crate) const SCHEMA_LEGACY: u16 = 1;
 pub(crate) const SCHEMA_CARRIER_ROLES: u16 = 2;
 /// Schema 3 adds exact owner/role/slot carrier bindings beside the role union.
 pub(crate) const SCHEMA_CARRIER_BINDINGS: u16 = 3;
+/// Schema 4 adds a tagged declaration-name cell for source-backed anonymous
+/// callable anchors while retaining the schema-3 directory layout.
+pub(crate) const SCHEMA_TYPED_NAMES: u16 = 4;
 /// The first 176 bytes are the same explicitly documented image
 /// authority/provenance cells as the subordinate core grammar.  The full
 /// directory begins immediately afterwards with its independent count.
@@ -172,6 +175,7 @@ impl FullDirectoryKind {
             SCHEMA_LEGACY => Some(&Self::ALL),
             SCHEMA_CARRIER_ROLES => Some(&Self::ALL_WITH_CARRIER_ROLES),
             SCHEMA_CARRIER_BINDINGS => Some(&Self::ALL_WITH_CARRIER_BINDINGS),
+            SCHEMA_TYPED_NAMES => Some(&Self::ALL_WITH_CARRIER_BINDINGS),
             _ => None,
         }
     }
@@ -181,6 +185,7 @@ impl FullDirectoryKind {
             SCHEMA_LEGACY => Some(26),
             SCHEMA_CARRIER_ROLES => Some(27),
             SCHEMA_CARRIER_BINDINGS => Some(29),
+            SCHEMA_TYPED_NAMES => Some(29),
             _ => None,
         }
     }

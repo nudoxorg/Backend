@@ -1,16 +1,37 @@
 //! Typed commands and results owned by the durable product service.
 
+use crate::interface::{
+    CompilerAttempt, CompilerFragmentFailure, CompilerFragmentFaultFacts,
+    CompilerFragmentFaultKind, CompilerToolFailure, CompilerToolIssue, CompilerToolRequirement,
+    MAX_COMPILER_FRAGMENT_DETAIL_BYTES,
+};
 use crate::{
     CommandId, DependencyFacts, ForgeCoordinate, ForgeObjectId, ForgeRevision,
     PackageDependencyRecord, RegistryForgeAssociation, RegistryNativeMetadata,
 };
 use backend_advisory::{AdvisoryPackageDto, OverrideEvidence};
 pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
-use serde::{Deserialize, Serialize};
+use backend_version::{CompileRecipeDomain, ContentId, Domain, HASH_BYTES, SourceFactDomain};
+use serde::{
+    Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::SerializeStruct,
+};
 use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::num::NonZeroU64;
 use std::{fmt, str::FromStr};
+
+#[path = "surface/package_compiler_failure.rs"]
+mod package_compiler_failure;
+pub use package_compiler_failure::{
+    AuthorityClassFact, AuthorityPhaseFact, CompilerAuthorityDiagnosticFacts, CompilerLanguageFact,
+    CompilerNativeToolFact, CompilerStageFact, PackageAnonymousCallableAnchorFaultFacts,
+    PackageAnonymousCallableAnchorPoolFact, PackageCompilerFailureCause,
+    PackageCompilerFailurePhase, PackageCompilerFragmentFaultFacts, PackageForeignKeyFaultFacts,
+    PackageLanguageProjectionFault, PackageLineageFaultFacts, PackageLoweringFaultFacts,
+    PackageParentageFact, PackageProjectionAdmissionFaultFacts,
+    PackageProjectionConstructorFaultFacts, PackageProjectionSemanticTypeFaultFacts,
+    PackageTypeCellFact, PackageTypeScriptProjectionFaultFacts, PackageTypeTagFact,
+};
 
 /// Largest user-authored operand retained by the product service.
 pub const MAX_PRODUCT_TEXT_BYTES: usize = 4096;
@@ -429,7 +450,8 @@ pub struct SemanticVersionRecord {
     pub manifest: [u8; 32],
     /// Number of semantic image artifacts in the manifest.
     pub artifacts: u32,
-    /// Canonical semantic image bytes covered by the manifest.
+    /// Encoded canonical compiler-manifest bytes committed by this generation.
+    /// This is not the aggregate payload extent of the semantic images.
     pub semantic_bytes: u32,
     /// Whether the compiler authority covered the complete declared scope.
     pub complete: bool,
@@ -520,27 +542,80 @@ pub enum SemanticHistoryInputReplayStatus {
     Unproven,
 }
 
-/// Bounded public summary of the successful typed V3 branch publication.
+/// One image and its independently admitted V3 history commit inside a
+/// complete package publication.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticHistoryImagePublicationProof {
+    /// Full-image identity bound to this catalog member.
+    pub image: SemanticHistoryImageIdentity,
+    /// Immutable V3 history commit for this image.
+    pub history_commit: [u8; 32],
+    /// First-parent lineage recorded by this admitted commit (at most 2).
+    pub parent_commits: Box<[[u8; 32]]>,
+}
+
+/// Bounded public proof of an atomic complete-package V3 publication.
 ///
-/// It contains the exact owner selection, native image, ref CAS result, and
-/// parent lineage needed to investigate a published generation. The input
-/// field deliberately states `Unproven`; this summary does not recreate the
-/// compiler's source read frontier.
+/// Every selected catalog image is listed in canonical order with its own
+/// independently admitted history commit. The package identity commits the
+/// exact ordered set; the public reference CAS occurs only after all listed
+/// members have been verified. The input field deliberately states
+/// `Unproven`; this summary does not recreate compiler source-read authority.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticHistoryPublicationProof {
     /// Exact committed product selection used by the publication fence.
     pub selection: SemanticHistorySelectionStamp,
-    /// Full-image identity bound to that selection.
-    pub image: SemanticHistoryImageIdentity,
-    /// Branch tip at the successful CAS or validated ancestry read.
+    /// Package name used by the native semantic target.
+    pub target_package: String,
+    /// Exact source/version coordinate used by the native semantic target.
+    pub target_coordinate: String,
+    /// Deterministic digest of the complete ordered image set and selection.
+    pub package_identity: [u8; 32],
+    /// Every full-image identity and V3 commit, in catalog order.
+    pub images: Box<[SemanticHistoryImagePublicationProof]>,
+    /// Public branch tip at the single successful package CAS.
     pub reference_tip: [u8; 32],
-    /// Commit proven reachable from `reference_tip`; equals the status commit.
+    /// Final package commit proven reachable from `reference_tip`.
     pub reachable_commit: [u8; 32],
-    /// First-parent lineage recorded by the admitted history commit (at most 2).
-    pub parent_commits: Box<[[u8; 32]]>,
-    /// Exact persisted input authority level.
+    /// Exact persisted input authority level for every listed member.
     pub input_replay_status: SemanticHistoryInputReplayStatus,
+}
+
+impl SemanticHistoryPublicationProof {
+    /// Recomputes the package-set identity from public proof fields. The
+    /// selected catalog root commits each complete manifest, including its
+    /// input claim and compiler recipe; the ordered images bind their exact
+    /// native bytes to those manifest entries.
+    #[must_use]
+    pub fn recompute_package_identity(&self) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"backend.replication.selected-native-history-package.v1\0");
+        for field in [
+            self.target_package.as_bytes(),
+            self.target_coordinate.as_bytes(),
+        ] {
+            hasher.update(&(field.len() as u64).to_le_bytes());
+            hasher.update(field);
+        }
+        hasher.update(&self.selection.profile.to_bytes());
+        hasher.update(&self.selection.namespace);
+        hasher.update(&self.selection.profile.to_bytes());
+        hasher.update(&self.selection.source_coordinate);
+        hasher.update(&self.selection.selection_revision.to_le_bytes());
+        hasher.update(&self.selection.selected_root);
+        hasher.update(&self.selection.closure_id);
+        hasher.update(&self.selection.catalog_root);
+        hasher.update(&(self.images.len() as u64).to_le_bytes());
+        for image in self.images.iter() {
+            hasher.update(&image.image.artifact_ordinal.to_le_bytes());
+            hasher.update(&image.image.semantic_generation);
+            hasher.update(&image.image.manifest_root);
+            hasher.update(&image.image.image_identity);
+        }
+        *hasher.finalize().as_bytes()
+    }
 }
 
 /// Typed status for derived native-image history publication.
@@ -655,7 +730,22 @@ impl SemanticVersionRecord {
         } = &self.history_status
             && (reference != "selected-native-v3"
                 || proof.reachable_commit != *commit
-                || proof.parent_commits.len() > 2
+                || proof.reference_tip != proof.reachable_commit
+                || proof.images.is_empty()
+                || proof.target_package.is_empty()
+                || proof.target_package.len() > MAX_PRODUCT_TEXT_BYTES
+                || proof.target_coordinate.is_empty()
+                || proof.target_coordinate.len() > MAX_PRODUCT_TEXT_BYTES
+                || proof.package_identity != proof.recompute_package_identity()
+                || usize::try_from(self.artifacts).ok() != Some(proof.images.len())
+                || proof.images.iter().enumerate().any(|(ordinal, image)| {
+                    usize::try_from(image.image.artifact_ordinal).ok() != Some(ordinal)
+                        || image.parent_commits.len() > 1
+                        || (ordinal > 0
+                            && image.parent_commits.as_ref()
+                                != [proof.images[ordinal - 1].history_commit])
+                })
+                || proof.images.last().map(|image| image.history_commit) != Some(*commit)
                 || proof.selection.profile != self.profile)
         {
             return Err(ProductAdmissionError::SemanticVersionShape);
@@ -1001,6 +1091,231 @@ impl IndexOperationPublicationReceipt {
     }
 }
 
+/// Coverage of one exact generation carried by a source-capture receipt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "coverage", content = "detail", rename_all = "kebab-case")]
+pub enum IndexOperationSemanticCoverage {
+    /// Every member of the declared semantic scope was covered.
+    Complete,
+    /// A checked portion of the declared scope was covered.
+    Partial {
+        /// Number of units the generation completed.
+        completed: u32,
+        /// Total units in the declared semantic scope.
+        total: u32,
+    },
+}
+
+/// Coherent old generation retained while a new source capture is pending or
+/// failed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexOperationPriorSemantic {
+    /// Exact generation identity.
+    #[serde(with = "hex_32")]
+    pub generation: [u8; 32],
+    /// Coverage written with the same generation.
+    pub coverage: IndexOperationSemanticCoverage,
+}
+
+/// Typed reason a source-captured semantic profile did not publish.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IndexOperationSemanticUnavailableReason {
+    /// The selected compiler or oracle was absent.
+    Toolchain,
+    /// Required project/package authority was absent.
+    ProjectAuthority,
+    /// The refresh was cancelled.
+    Cancelled,
+    /// Source or compiler admission refused the refresh.
+    Rejected,
+}
+
+/// Independent semantic outcome for one captured profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "detail", rename_all = "kebab-case")]
+pub enum IndexOperationSemanticProfileState {
+    /// Semantic work has not reached a terminal result for this capture.
+    Pending {
+        /// Previous coherent generation retained as stale evidence, if any.
+        prior: Option<IndexOperationPriorSemantic>,
+    },
+    /// No coherent semantic generation was selected.
+    Unavailable {
+        /// Typed reason the profile has no selected generation.
+        reason: IndexOperationSemanticUnavailableReason,
+    },
+    /// Refresh failed while preserving the prior generation as stale evidence.
+    Failed {
+        /// Previous coherent generation retained as stale evidence.
+        prior: IndexOperationPriorSemantic,
+        /// Typed reason the refresh failed.
+        reason: IndexOperationSemanticUnavailableReason,
+    },
+    /// A generation was selected for this source capture.
+    Published {
+        /// Exact selected semantic generation.
+        #[serde(with = "hex_32")]
+        generation: [u8; 32],
+        /// Coverage selected with the generation.
+        coverage: IndexOperationSemanticCoverage,
+    },
+}
+
+/// Exact source and compiler-observation facts for one closed profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexOperationSourceProfile {
+    /// Closed compiler profile identity.
+    pub profile: SemanticLanguageProfile,
+    /// Product source frontier compiled for this profile.
+    #[serde(with = "hex_32")]
+    pub source_version: [u8; 32],
+    /// Exact compiler input digest named by the authority observation.
+    #[serde(with = "hex_32")]
+    pub input_digest: [u8; 32],
+    /// Exact durable authority observation sequence.
+    pub observation_sequence: u64,
+    /// Number of files in this profile's source frontier.
+    pub source_count: u64,
+    /// Typed state of the semantic refresh.
+    pub state: IndexOperationSemanticProfileState,
+}
+
+/// Durable receipt for structural source admission, independent of semantic
+/// publication and its later outcome.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexOperationSourceCaptureReceipt {
+    /// Caller-owned operation identity bound into the source workspace intent.
+    pub operation_key: IndexOperationKey,
+    /// Exact selected source-capture commit identity.
+    #[serde(with = "hex_32")]
+    pub commit_identity: [u8; 32],
+    /// Workspace root containing the structural source rows and capture marker.
+    #[serde(with = "hex_32")]
+    pub workspace_root: [u8; 32],
+    /// Workspace sequence that selected the source capture.
+    pub workspace_sequence: u64,
+    /// Closed profiles, sorted by their canonical encoded identity.
+    pub profiles: Box<[IndexOperationSourceProfile]>,
+}
+
+impl IndexOperationSourceCaptureReceipt {
+    /// Admits a source receipt copied from the selected owner root.
+    ///
+    /// # Errors
+    /// Rejects a mismatched key, reserved root identity, invalid sequence,
+    /// empty/oversized profile list, duplicate profile, or malformed state.
+    pub fn from_checked_parts(
+        operation_key: IndexOperationKey,
+        commit_identity: [u8; 32],
+        workspace_root: [u8; 32],
+        workspace_sequence: u64,
+        profiles: Box<[IndexOperationSourceProfile]>,
+    ) -> Result<Self, ProductAdmissionError> {
+        if [commit_identity, workspace_root]
+            .iter()
+            .any(|identity| identity.iter().all(|byte| *byte == 0))
+            || workspace_sequence == 0
+            || profiles.is_empty()
+            || profiles.len() > 16
+            || profiles
+                .windows(2)
+                .any(|window| window[0].profile >= window[1].profile)
+            || profiles.iter().any(|profile| {
+                profile.source_version.iter().all(|byte| *byte == 0)
+                    || profile.input_digest.iter().all(|byte| *byte == 0)
+                    || profile.observation_sequence == 0
+                    || !valid_index_operation_profile_state(profile.state)
+            })
+        {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+        Ok(Self {
+            operation_key,
+            commit_identity,
+            workspace_root,
+            workspace_sequence,
+            profiles,
+        })
+    }
+
+    /// Returns the key bound by this structural root marker.
+    #[must_use]
+    pub const fn operation_key(&self) -> IndexOperationKey {
+        self.operation_key
+    }
+
+    /// Returns the exact checked source-capture commit identity.
+    #[must_use]
+    pub const fn commit_identity(&self) -> &[u8; 32] {
+        &self.commit_identity
+    }
+
+    /// Returns the workspace root containing the structural source rows.
+    #[must_use]
+    pub const fn workspace_root(&self) -> &[u8; 32] {
+        &self.workspace_root
+    }
+
+    /// Returns the sequence that selected the source-capture root.
+    #[must_use]
+    pub const fn workspace_sequence(&self) -> u64 {
+        self.workspace_sequence
+    }
+
+    /// Returns the exact per-profile capture and semantic states.
+    #[must_use]
+    pub fn profiles(&self) -> &[IndexOperationSourceProfile] {
+        &self.profiles
+    }
+
+    fn admit(&self, operation_key: IndexOperationKey) -> Result<(), ProductAdmissionError> {
+        if self.operation_key != operation_key {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+        Self::from_checked_parts(
+            self.operation_key,
+            self.commit_identity,
+            self.workspace_root,
+            self.workspace_sequence,
+            self.profiles.clone(),
+        )
+        .map(|_| ())
+    }
+}
+
+fn valid_index_operation_profile_state(state: IndexOperationSemanticProfileState) -> bool {
+    let valid_prior = |prior: IndexOperationPriorSemantic| {
+        prior.generation.iter().any(|byte| *byte != 0)
+            && match prior.coverage {
+                IndexOperationSemanticCoverage::Complete => true,
+                IndexOperationSemanticCoverage::Partial { completed, total } => {
+                    completed > 0 && total > completed
+                }
+            }
+    };
+    match state {
+        IndexOperationSemanticProfileState::Pending { prior } => prior.is_none_or(valid_prior),
+        IndexOperationSemanticProfileState::Unavailable { .. } => true,
+        IndexOperationSemanticProfileState::Failed { prior, .. } => valid_prior(prior),
+        IndexOperationSemanticProfileState::Published {
+            generation,
+            coverage,
+        } => {
+            generation.iter().any(|byte| *byte != 0)
+                && match coverage {
+                    IndexOperationSemanticCoverage::Complete => true,
+                    IndexOperationSemanticCoverage::Partial { completed, total } => {
+                        completed > 0 && total > completed
+                    }
+                }
+        }
+    }
+}
+
 /// Durable state retained for one caller-owned index operation key.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", content = "detail", rename_all = "kebab-case")]
@@ -1022,6 +1337,10 @@ pub enum IndexOperationState {
         reason: IndexOperationFailureReason,
         /// Bounded explanatory detail.
         detail: ProductText,
+        /// Exact typed compiler refusal, when compilation produced one. Absence
+        /// does not establish that compilation was attempted or succeeded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compiler_failure: Option<PackageCompilerFailure>,
     },
     /// The retained evidence cannot prove whether the exact publication completed.
     Unresolved {
@@ -1053,6 +1372,9 @@ pub enum IndexOperationUnresolvedReason {
     /// The owner restarted after recording the expected commit but before it
     /// could prove the resulting view publication.
     RestartedDuringPublication,
+    /// Structural source capture committed, but the owner restarted before
+    /// the semantic worker delivered a terminal result.
+    SemanticWorkInterruptedAfterCapture,
     /// The selected workspace is neither the recorded base nor the exact
     /// request identity recorded before commit.
     WorkspaceEvidenceMismatch,
@@ -1077,6 +1399,9 @@ pub struct IndexOperationStatus {
     pub execution_intent: crate::CompileExecutionIntent,
     /// Current or terminal evidence for this operation.
     pub state: IndexOperationState,
+    /// Structural source receipt with separate per-profile semantic results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_capture: Option<IndexOperationSourceCaptureReceipt>,
 }
 
 impl IndexOperationStatus {
@@ -1095,7 +1420,18 @@ impl IndexOperationStatus {
             package,
             execution_intent,
             state,
+            source_capture: None,
         }
+    }
+
+    /// Adds the exact source capture independently of the operation outcome.
+    #[must_use]
+    pub fn with_source_capture(
+        mut self,
+        source_capture: Option<IndexOperationSourceCaptureReceipt>,
+    ) -> Self {
+        self.source_capture = source_capture;
+        self
     }
 }
 
@@ -1127,6 +1463,41 @@ impl IndexOperationObservation {
             Self::Unknown { .. } => Ok(()),
             Self::OutsideReceiptWindow { .. } => Ok(()),
             Self::Known(status) => {
+                if let Some(source_capture) = &status.source_capture {
+                    source_capture.admit(status.operation_key)?;
+                    let any_pending = source_capture.profiles().iter().any(|profile| {
+                        matches!(
+                            profile.state,
+                            IndexOperationSemanticProfileState::Pending { .. }
+                        )
+                    });
+                    let any_published = source_capture.profiles().iter().any(|profile| {
+                        matches!(
+                            profile.state,
+                            IndexOperationSemanticProfileState::Published { .. }
+                        )
+                    });
+                    match &status.state {
+                        IndexOperationState::Published(_) if any_pending => {
+                            return Err(ProductAdmissionError::IndexOperationShape);
+                        }
+                        IndexOperationState::Failed { .. } if any_pending || any_published => {
+                            return Err(ProductAdmissionError::IndexOperationShape);
+                        }
+                        _ => {}
+                    }
+                }
+                if let IndexOperationState::Failed {
+                    reason,
+                    compiler_failure: Some(failure),
+                    ..
+                } = &status.state
+                {
+                    if *reason != IndexOperationFailureReason::Refused {
+                        return Err(ProductAdmissionError::IndexOperationShape);
+                    }
+                    failure.encode_bounded_json()?;
+                }
                 match &status.state {
                     IndexOperationState::Active { ticket, .. }
                         if ticket.package() != &status.package =>
@@ -1299,18 +1670,927 @@ pub struct IndexJobTerminal {
     pub outcome: IndexJobOutcome,
 }
 
+/// Compact, identity-bound refusal emitted for one concrete package source
+/// member whose compact semantic fragment could not be built, written, or
+/// independently reopened.
+///
+/// The original compiler authority remains the source and recipe identity;
+/// `detail` is a bounded explanation only. The phase is derived from the
+/// closed `kind` family and is repeated on the wire for direct presentation,
+/// where deserialization verifies that the two agree.
+#[derive(Clone)]
+pub struct PackageCompilerFailure {
+    relative_path: ProductText,
+    source_identity: ContentId<SourceFactDomain>,
+    source_byte_len: u32,
+    recipe_identity: Option<ContentId<CompileRecipeDomain>>,
+    cause: PackageCompilerFailureCause,
+    detail: String,
+    detail_truncated: bool,
+    /// Native diagnostic prefix retained for in-process local debugging only.
+    /// This field is intentionally omitted by the manual wire serializer.
+    local_diagnostic: Option<Box<[u8]>>,
+}
+
+impl fmt::Debug for PackageCompilerFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PackageCompilerFailure")
+            .field("relative_path", &self.relative_path)
+            .field("source_identity", &self.source_identity)
+            .field("source_byte_len", &self.source_byte_len)
+            .field("recipe_identity", &self.recipe_identity)
+            .field("cause", &self.cause)
+            .field("detail", &self.detail)
+            .field("detail_truncated", &self.detail_truncated)
+            .field(
+                "local_diagnostic_retained_bytes",
+                &self.local_diagnostic.as_ref().map(|bytes| bytes.len()),
+            )
+            .finish()
+    }
+}
+
+impl PartialEq for PackageCompilerFailure {
+    fn eq(&self, other: &Self) -> bool {
+        self.relative_path == other.relative_path
+            && self.source_identity == other.source_identity
+            && self.source_byte_len == other.source_byte_len
+            && self.recipe_identity == other.recipe_identity
+            && self.cause == other.cause
+            && self.detail == other.detail
+            && self.detail_truncated == other.detail_truncated
+    }
+}
+
+impl Eq for PackageCompilerFailure {}
+
+impl PackageCompilerFailure {
+    /// Maximum serialized JSON representation, including worst-case path and
+    /// detail escaping.
+    pub const MAX_ENCODED_BYTES: usize = 8 * 1024;
+    /// Maximum accepted package-relative member path in this refusal summary.
+    pub const MAX_RELATIVE_PATH_BYTES: usize = 3_072;
+
+    /// Builds a bounded summary from the exact package member and retained
+    /// attempt authorities at the compiler terminal boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductAdmissionError::PackageCompilerFailureShape`] when
+    /// the package path is not canonical or a projected fact violates its
+    /// fixed bound.
+    pub fn from_fragment_failure(
+        relative_path: &str,
+        attempt: CompilerAttempt,
+        failure: &CompilerFragmentFailure,
+    ) -> Result<Self, ProductAdmissionError> {
+        let relative_path = package_relative_source_path(relative_path)?;
+        let fragment = PackageCompilerFragmentFaultFacts::new(failure.kind(), failure.facts())?;
+        let cause = PackageCompilerFailureCause::Fragment(fragment);
+        let (detail, detail_truncated) = detail_for_package_cause(&cause);
+        let summary = Self {
+            relative_path,
+            source_identity: attempt.source.identity,
+            source_byte_len: attempt.source.byte_len,
+            recipe_identity: Some(attempt.recipe),
+            cause,
+            detail,
+            detail_truncated,
+            local_diagnostic: None,
+        };
+        summary.validate()?;
+        Ok(summary)
+    }
+
+    /// Projects a package member's exact compiler terminal into a bounded
+    /// structured refusal. Pre-recipe setup failures retain their source
+    /// identity and truthfully omit a recipe that was never established.
+    pub fn from_package_terminal(
+        relative_path: &str,
+        terminal: &crate::interface::CompilerTerminal,
+    ) -> Result<Option<Self>, ProductAdmissionError> {
+        let Some((recipe_identity, cause)) =
+            package_compiler_failure::package_failure_from_terminal(terminal)?
+        else {
+            return Ok(None);
+        };
+        let source = match terminal {
+            crate::interface::CompilerTerminal::Toolchain { source, .. }
+            | crate::interface::CompilerTerminal::ToolingUnavailable { source, .. }
+            | crate::interface::CompilerTerminal::RequiredTool { source, .. } => *source,
+            crate::interface::CompilerTerminal::Compile { attempted, .. } => attempted.source,
+            _ => return Ok(None),
+        };
+        let relative_path = package_relative_source_path(relative_path)?;
+        let (detail, detail_truncated) = detail_for_package_cause(&cause);
+        let local_diagnostic = match terminal {
+            crate::interface::CompilerTerminal::Compile {
+                cause:
+                    crate::interface::CompilerCause::Authority {
+                        diagnostic: Some(diagnostic),
+                        ..
+                    },
+                ..
+            } => Some(Box::<[u8]>::from(
+                diagnostic.retained_bytes_for_local_debug(),
+            )),
+            _ => None,
+        };
+        let summary = Self {
+            relative_path,
+            source_identity: source.identity,
+            source_byte_len: source.byte_len,
+            recipe_identity,
+            cause,
+            detail,
+            detail_truncated,
+            local_diagnostic,
+        };
+        summary.validate()?;
+        Ok(Some(summary))
+    }
+
+    /// Package-relative source member that reached the compiler terminal.
+    #[must_use]
+    pub fn relative_path(&self) -> &str {
+        self.relative_path.as_str()
+    }
+
+    /// Exact compiler input content identity, retaining the SourceFact domain.
+    #[must_use]
+    pub const fn source_identity(&self) -> ContentId<SourceFactDomain> {
+        self.source_identity
+    }
+
+    /// Exact byte extent bound into the failed compiler attempt.
+    #[must_use]
+    pub const fn source_byte_len(&self) -> u32 {
+        self.source_byte_len
+    }
+
+    /// Exact recipe identity attempted for this source member.
+    #[must_use]
+    pub const fn recipe_identity(&self) -> Option<ContentId<CompileRecipeDomain>> {
+        self.recipe_identity
+    }
+
+    /// Closed preparation, write, or validation phase derived from `kind`.
+    #[must_use]
+    pub const fn phase(&self) -> PackageCompilerFailurePhase {
+        self.cause.phase()
+    }
+
+    /// Specific closed semantic/IR error variant.
+    #[must_use]
+    pub const fn cause(&self) -> &PackageCompilerFailureCause {
+        &self.cause
+    }
+
+    /// Structured bounded cause retained for CLI, MCP, and operation receipts.
+    #[must_use]
+    pub const fn facts(&self) -> &PackageCompilerFailureCause {
+        &self.cause
+    }
+
+    /// Returns the retained native diagnostic prefix for local debugging only.
+    ///
+    /// This accessor never participates in serialization. Callers must keep the
+    /// returned bytes on the local diagnostic path and use [`Self::facts`] for
+    /// CLI, MCP, receipts, and other public product surfaces. Deserialized
+    /// summaries return `None`, because raw compiler output is intentionally not
+    /// persisted on the wire.
+    #[must_use]
+    pub fn retained_diagnostic_for_local_debug(&self) -> Option<&[u8]> {
+        self.local_diagnostic.as_deref()
+    }
+
+    /// Stable specific variant tag, including its phase family.
+    #[must_use]
+    pub const fn kind_tag(&self) -> &'static str {
+        self.cause.kind_tag()
+    }
+
+    /// Native executable selected by the compiler registry for setup failures.
+    #[must_use]
+    pub const fn required_native_tool(&self) -> Option<CompilerNativeToolFact> {
+        self.cause.required_native_tool()
+    }
+
+    /// Configured executable family when a selected-tool mismatch occurred.
+    #[must_use]
+    pub const fn configured_native_tool(&self) -> Option<CompilerNativeToolFact> {
+        self.cause.configured_native_tool()
+    }
+
+    /// Whether the selected tool must be configured before retrying.
+    #[must_use]
+    pub const fn requires_tool_configuration(&self) -> bool {
+        self.cause.requires_tool_configuration()
+    }
+
+    /// Exact auxiliary or native tool requirement that prevented setup.
+    #[must_use]
+    pub const fn required_tool_issue(&self) -> Option<crate::interface::CompilerToolIssue> {
+        self.cause.required_tool_issue()
+    }
+
+    /// Exact environment variable to set or repair before retrying, when known.
+    #[must_use]
+    pub const fn required_configuration_variable(&self) -> Option<&'static str> {
+        self.cause.required_configuration_variable()
+    }
+
+    /// Sanitized human explanation, capped at 384 UTF-8 bytes.
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+
+    /// Whether the human explanation was shortened or unavailable.
+    #[must_use]
+    pub const fn detail_truncated(&self) -> bool {
+        self.detail_truncated
+    }
+
+    /// Conservative encoded-size admission bound for capture and reply owners.
+    #[must_use]
+    pub const fn encoded_size_bound(&self) -> usize {
+        Self::MAX_ENCODED_BYTES
+    }
+
+    /// Encodes this summary as canonical bounded JSON for operation receipts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an admission error when the DTO is inconsistent, JSON
+    /// serialization fails, or the encoded value exceeds the fixed cap.
+    pub fn encode_bounded_json(&self) -> Result<Vec<u8>, ProductAdmissionError> {
+        self.validate()?;
+        let encoded = serde_json::to_vec(self)
+            .map_err(|_| ProductAdmissionError::PackageCompilerFailureShape)?;
+        if encoded.len() > Self::MAX_ENCODED_BYTES {
+            return Err(ProductAdmissionError::PackageCompilerFailureShape);
+        }
+        Ok(encoded)
+    }
+
+    /// Decodes a bounded receipt payload and revalidates every closed field.
+    ///
+    /// # Errors
+    ///
+    /// Returns an admission error for oversized, malformed, unknown-field, or
+    /// internally inconsistent input.
+    pub fn decode_bounded_json(bytes: &[u8]) -> Result<Self, ProductAdmissionError> {
+        if bytes.len() > Self::MAX_ENCODED_BYTES {
+            return Err(ProductAdmissionError::PackageCompilerFailureShape);
+        }
+        serde_json::from_slice(bytes)
+            .map_err(|_| ProductAdmissionError::PackageCompilerFailureShape)
+    }
+
+    fn validate(&self) -> Result<(), ProductAdmissionError> {
+        if !is_canonical_package_relative_source_path(self.relative_path.as_str())
+            || self.detail.len() > MAX_COMPILER_FRAGMENT_DETAIL_BYTES
+            || self.detail.chars().any(char::is_control)
+            || self
+                .detail
+                .chars()
+                .any(|character| matches!(character, '"' | '\\'))
+            || (self.detail.is_empty() && !self.detail_truncated)
+            || !package_cause_is_valid(&self.cause)
+            || (self.recipe_identity.is_none()
+                != matches!(
+                    &self.cause,
+                    PackageCompilerFailureCause::Toolchain { .. }
+                        | PackageCompilerFailureCause::ToolingUnavailable { .. }
+                        | PackageCompilerFailureCause::RequiredTool { .. }
+                ))
+        {
+            return Err(ProductAdmissionError::PackageCompilerFailureShape);
+        }
+        Ok(())
+    }
+}
+
+fn compiler_fault_facts_match_kind(
+    kind: CompilerFragmentFaultKind,
+    facts: CompilerFragmentFaultFacts,
+) -> bool {
+    use crate::interface::{
+        BuildFaultKind as B, CompilerFragmentNestedFaultKind as N, PrepareFaultKind as P,
+        ValidateFaultKind as V, WriteFaultKind as W,
+    };
+    use CompilerFragmentFaultFacts as F;
+    match kind {
+        CompilerFragmentFaultKind::Build(B::InvalidTreeEntity) => {
+            matches!(facts, F::TreeEntity { .. })
+        }
+        CompilerFragmentFaultKind::Build(B::Dangling) => matches!(facts, F::Dangling { .. }),
+        CompilerFragmentFaultKind::Build(B::InvalidOccurrenceSpan) => {
+            matches!(facts, F::OccurrenceSpan { .. })
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierRoleCount) => {
+            nested_fault_is(facts, N::SignatureCarrierRoleCount)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierRoleKind) => {
+            nested_fault_is(facts, N::SignatureCarrierRoleKind)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierRoleOwnerKind) => {
+            nested_fault_is(facts, N::SignatureCarrierRoleOwnerKind)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingOwnerSet) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingOwnerSet)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingSignature) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingSignature)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingCounts) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingCounts)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingEdgeRole) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingEdgeRole)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingTargetCount) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingTargetCount)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingTargetKind) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingTargetKind)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingType) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingType)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingEdgeMismatch) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingEdgeMismatch)
+        }
+        CompilerFragmentFaultKind::Build(
+            B::AnonymousCallableName
+            | B::TypedDeclarationKey
+            | B::AnonymousCallableSourceUnavailable
+            | B::AnonymousCallableAnchorInvalid
+            | B::AnonymousCallableSourceCoordinate
+            | B::AnonymousCallableInstance
+            | B::Capacity
+            | B::RecursiveType
+            | B::CallableElement
+            | B::MissingTypedVariadicParameter
+            | B::EmptyQualifiedPath
+            | B::TypeParameterRequirements
+            | B::EmptyCxxQualification
+            | B::IllegalCQualifierTarget
+            | B::IllegalCxxMemberPointerOwner
+            | B::InvalidDocumentationUtf8
+            | B::SignatureCarrierRoleAlreadyCaptured
+            | B::SignatureCarrierBindingsAlreadyCaptured
+            | B::ParentCycle
+            | B::DeclarationKey
+            | B::ScopedDeclarationPreimage
+            | B::ForeignKeyPreimage
+            | B::DuplicateDeclarationIdentity
+            | B::TreeVersionCount
+            | B::AuthorityRowCount
+            | B::OccurrenceAuthorityRowCount
+            | B::AuthorityFacts
+            | B::OccurrenceAuthorityFacts
+            | B::ImageProvenanceLineage
+            | B::ImageProvenanceScope
+            | B::ImageProvenanceScopePreimage
+            | B::ImageProvenanceRecipe
+            | B::ImageProvenanceRebind
+            | B::LanguageExtension
+            | B::LanguageProfileMismatch
+            | B::LanguageProfileRebind,
+        ) => matches!(facts, F::None),
+        CompilerFragmentFaultKind::Prepare(P::Count) => matches!(facts, F::Count { .. }),
+        CompilerFragmentFaultKind::Prepare(P::AtomBytePoolOverflow) => {
+            matches!(
+                facts,
+                F::RecordCoordinate {
+                    lane: crate::interface::CompilerFragmentRecordLane::Atom,
+                    ..
+                }
+            )
+        }
+        CompilerFragmentFaultKind::Prepare(P::LayoutOverflow) => {
+            matches!(facts, F::LayoutOverflow { .. })
+        }
+        CompilerFragmentFaultKind::Prepare(P::NativeCount) => {
+            matches!(facts, F::NativeCount { .. })
+        }
+        CompilerFragmentFaultKind::Prepare(P::OutputLength) => {
+            matches!(facts, F::OutputLength { .. })
+        }
+        CompilerFragmentFaultKind::Prepare(P::Entity) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::EntityTypeReference,
+                N::EntityNameReference,
+                N::EntityKindTag,
+                N::EntityReservedBits,
+            ],
+        ),
+        CompilerFragmentFaultKind::Prepare(P::TypeNode) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::TypeNodeReservedBytes,
+                N::TypeNodeTag,
+                N::TypeNodePrimitive,
+                N::TypeNodeEdge,
+            ],
+        ),
+        CompilerFragmentFaultKind::Prepare(P::SemanticData) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::CanonicalDataCount,
+                N::CanonicalDataNativeCount,
+                N::CanonicalDataNativeWork,
+                N::CanonicalDataCanonicalCountOverflow,
+                N::CanonicalDataCanonicalCountMismatch,
+                N::CanonicalDataScratch,
+                N::CanonicalDataOutputTooSmall,
+                N::CanonicalDataProductHead,
+                N::CanonicalDataProductList,
+                N::CanonicalDataConstructorCount,
+                N::CanonicalDataConstructorTag,
+                N::CanonicalDataConstructorReservedPayload,
+                N::CanonicalDataConstructorArityOverflow,
+                N::CanonicalDataConstructorArity,
+                N::CanonicalDataProductChildRole,
+                N::CanonicalDataListExtent,
+                N::CanonicalDataNativeExtent,
+                N::CanonicalDataProductChild,
+                N::CanonicalDataOutputLength,
+                N::CanonicalDataCanonicalListExtent,
+                N::CanonicalDataCanonicalAtom,
+                N::CanonicalDataCanonicalProduct,
+                N::CanonicalDataCanonicalList,
+                N::CanonicalDataRefinementBound,
+                N::CanonicalDataInternTableFull,
+                N::CanonicalDataInternEntry,
+                N::CanonicalDataResourceCounterOverflow,
+                N::CanonicalDataBudgetAdmission,
+                N::CanonicalDataBudgetExceeded,
+            ],
+        ),
+        CompilerFragmentFaultKind::Prepare(P::SemanticDataOverflow) => {
+            matches!(facts, F::SemanticDataOverflow { .. })
+        }
+        CompilerFragmentFaultKind::Prepare(P::SemanticEntityRoots) => {
+            matches!(facts, F::SemanticEntityRoots { .. })
+        }
+        CompilerFragmentFaultKind::Prepare(P::SemanticAtomLength) => {
+            matches!(facts, F::AtomLength { .. })
+        }
+        CompilerFragmentFaultKind::Prepare(P::OccurrenceLane) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::OccurrenceOwner,
+                N::OccurrenceLocalTarget,
+                N::OccurrenceTargetTag,
+                N::OccurrenceOriginTag,
+                N::OccurrenceReferenceKind,
+                N::OccurrenceConfidence,
+                N::OccurrenceSpan,
+                N::OccurrenceKindCell,
+                N::OccurrenceEmptyPath,
+                N::OccurrenceTruncated,
+                N::OccurrenceTrailingBytes,
+                N::OccurrenceLegacyStableTarget,
+                N::OccurrenceAuthorityDomain,
+                N::OccurrenceAuthorityWidth,
+            ],
+        ),
+        CompilerFragmentFaultKind::Prepare(
+            P::TypeFacts | P::Documentation | P::ExtensionPools | P::ExtensionPoolsMismatch,
+        ) => matches!(facts, F::None),
+        CompilerFragmentFaultKind::Write(W::OutputTooSmall) => {
+            matches!(facts, F::OutputTooSmall { .. })
+        }
+        CompilerFragmentFaultKind::Write(W::AtomLength | W::SemanticAtomLength) => {
+            matches!(facts, F::AtomLength { .. })
+        }
+        CompilerFragmentFaultKind::Write(W::AtomExtent) => {
+            matches!(facts, F::AtomCoordinate { .. })
+        }
+        CompilerFragmentFaultKind::Write(W::ExtensionSection) => matches!(facts, F::None),
+        CompilerFragmentFaultKind::Validate(V::Entity) => {
+            nested_fault_is(facts, N::EntityTypeReference)
+        }
+        CompilerFragmentFaultKind::Validate(V::EntityRecord) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::EntityTypeReference,
+                N::EntityNameReference,
+                N::EntityKindTag,
+                N::EntityReservedBits,
+            ],
+        ),
+        CompilerFragmentFaultKind::Validate(V::Atom) => {
+            nested_fault_is_one_of(facts, &[N::AtomRange, N::AtomEmpty])
+        }
+        CompilerFragmentFaultKind::Validate(V::TypeNode) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::TypeNodeReservedBytes,
+                N::TypeNodeTag,
+                N::TypeNodePrimitive,
+                N::TypeNodeEdge,
+            ],
+        ),
+        CompilerFragmentFaultKind::Validate(V::SemanticData) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::SemanticDataHeader,
+                N::SemanticDataAtomLength,
+                N::SemanticDataProductHead,
+                N::SemanticDataProductList,
+                N::SemanticDataConstructorCount,
+                N::SemanticDataEntityRootCount,
+                N::SemanticDataEntityRoot,
+                N::SemanticDataConstructorTag,
+                N::SemanticDataConstructorReservedPayload,
+                N::SemanticDataConstructorArityOverflow,
+                N::SemanticDataConstructorArity,
+                N::SemanticDataListExtent,
+                N::SemanticDataChildRoleCode,
+                N::SemanticDataChildRole,
+                N::SemanticDataChildTag,
+                N::SemanticDataLocalChild,
+                N::SemanticDataLocalReserved,
+                N::SemanticDataExternalAuthority,
+                N::SemanticDataTrailing,
+            ],
+        ),
+        CompilerFragmentFaultKind::Validate(V::Occurrences) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::OccurrenceOwner,
+                N::OccurrenceLocalTarget,
+                N::OccurrenceTargetTag,
+                N::OccurrenceOriginTag,
+                N::OccurrenceReferenceKind,
+                N::OccurrenceConfidence,
+                N::OccurrenceSpan,
+                N::OccurrenceKindCell,
+                N::OccurrenceEmptyPath,
+                N::OccurrenceTruncated,
+                N::OccurrenceTrailingBytes,
+                N::OccurrenceLegacyStableTarget,
+                N::OccurrenceAuthorityDomain,
+                N::OccurrenceAuthorityWidth,
+            ],
+        ),
+        CompilerFragmentFaultKind::Validate(V::TruncatedHeader) => {
+            nested_fault_is(facts, N::ValidateTruncatedHeader)
+        }
+        CompilerFragmentFaultKind::Validate(V::Magic) => nested_fault_is(facts, N::ValidateMagic),
+        CompilerFragmentFaultKind::Validate(V::Schema) => nested_fault_is(facts, N::ValidateSchema),
+        CompilerFragmentFaultKind::Validate(V::DeclaredLength) => {
+            nested_fault_is(facts, N::ValidateDeclaredLength)
+        }
+        CompilerFragmentFaultKind::Validate(V::Extent) => nested_fault_is(facts, N::ValidateExtent),
+        CompilerFragmentFaultKind::Validate(V::WireWidth) => {
+            nested_fault_is(facts, N::ValidateWireWidth)
+        }
+        CompilerFragmentFaultKind::Validate(
+            V::ExtensionPoolPair
+            | V::Documentation
+            | V::ExtensionPools
+            | V::LanguageExtensions
+            | V::Directory
+            | V::MissingSection
+            | V::SourceIdentity
+            | V::RecipeFact
+            | V::TypeFacts,
+        ) => matches!(facts, F::None),
+    }
+}
+
+fn nested_fault_is(
+    facts: CompilerFragmentFaultFacts,
+    expected: crate::interface::CompilerFragmentNestedFaultKind,
+) -> bool {
+    matches!(facts, CompilerFragmentFaultFacts::Nested { fault } if fault.kind() == expected)
+}
+
+fn nested_fault_is_one_of(
+    facts: CompilerFragmentFaultFacts,
+    expected: &[crate::interface::CompilerFragmentNestedFaultKind],
+) -> bool {
+    matches!(facts, CompilerFragmentFaultFacts::Nested { fault } if expected.contains(&fault.kind()))
+}
+
+fn package_relative_source_path(value: &str) -> Result<ProductText, ProductAdmissionError> {
+    if value.trim() != value || !is_canonical_package_relative_source_path(value) {
+        return Err(ProductAdmissionError::PackageCompilerFailureShape);
+    }
+    ProductText::new(value.to_owned())
+        .map_err(|_| ProductAdmissionError::PackageCompilerFailureShape)
+}
+
+fn sanitize_package_compiler_detail(value: &str, source_truncated: bool) -> (String, bool) {
+    let mut retained = String::new();
+    if retained
+        .try_reserve_exact(MAX_COMPILER_FRAGMENT_DETAIL_BYTES)
+        .is_err()
+    {
+        return (retained, true);
+    }
+    let mut truncated = source_truncated;
+    for character in value.chars() {
+        let character = if character.is_control() || matches!(character, '"' | '\\') {
+            ' '
+        } else {
+            character
+        };
+        if retained.len().saturating_add(character.len_utf8()) > MAX_COMPILER_FRAGMENT_DETAIL_BYTES
+        {
+            truncated = true;
+            break;
+        }
+        retained.push(character);
+    }
+    (retained, truncated)
+}
+
+fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, bool) {
+    if let PackageCompilerFailureCause::Authority {
+        diagnostic:
+            Some(CompilerAuthorityDiagnosticFacts {
+                python_failure: Some(failure),
+                ..
+            }),
+        ..
+    } = cause
+    {
+        return sanitize_package_compiler_detail(failure.detail(), false);
+    }
+    let prefix = match cause {
+        PackageCompilerFailureCause::Fragment(_) => "compact fragment fault",
+        PackageCompilerFailureCause::Toolchain {
+            selected,
+            configured: None,
+            ..
+        } => {
+            let text = format!(
+                "{} is selected but is not configured; set {} or configure the project-local tool at {}",
+                selected.executable(),
+                selected.configuration_variable(),
+                selected
+                    .project_local_path()
+                    .unwrap_or("a valid executable path")
+            );
+            return sanitize_package_compiler_detail(&text, false);
+        }
+        PackageCompilerFailureCause::Toolchain {
+            selected,
+            configured: Some(configured),
+            ..
+        } => {
+            let text = format!(
+                "{} is required but {} is configured; set {} to the selected tool path",
+                selected.executable(),
+                configured.executable(),
+                selected.configuration_variable()
+            );
+            return sanitize_package_compiler_detail(&text, false);
+        }
+        PackageCompilerFailureCause::ToolingUnavailable { tool, .. } => {
+            let local_path = tool
+                .project_local_path()
+                .unwrap_or("a valid executable path");
+            let text = format!(
+                "{} is unavailable; configure {} with a valid tool path, for example {}",
+                tool.executable(),
+                tool.configuration_variable(),
+                local_path,
+            );
+            return sanitize_package_compiler_detail(&text, false);
+        }
+        PackageCompilerFailureCause::RequiredTool { issue, .. } => {
+            let (requirement, action) = match (issue.requirement, issue.failure) {
+                (CompilerToolRequirement::PythonChecker, CompilerToolFailure::Missing) => (
+                    "pyrefly is required for Python semantic checking",
+                    "set NUDOX_PYREFLY to its absolute executable path",
+                ),
+                (CompilerToolRequirement::PythonChecker, CompilerToolFailure::ProbeFailed) => (
+                    "the configured pyrefly checker failed its bounded --version probe",
+                    "verify the NUDOX_PYREFLY executable and retry",
+                ),
+                (CompilerToolRequirement::Native(_), CompilerToolFailure::Missing) => (
+                    "a required compiler executable is not configured",
+                    "set the exact NUDOX compiler variable to its absolute executable path",
+                ),
+                (CompilerToolRequirement::Native(_), CompilerToolFailure::ProbeFailed) => (
+                    "the configured compiler executable failed its bounded --version probe",
+                    "verify the selected executable and retry",
+                ),
+            };
+            let text = format!("{requirement}; {action}");
+            return sanitize_package_compiler_detail(&text, false);
+        }
+        PackageCompilerFailureCause::Lowering(_) => "lowering fault",
+        PackageCompilerFailureCause::Authority { phase, .. } => match phase {
+            AuthorityPhaseFact::Open => "open authority fault",
+            AuthorityPhaseFact::Parse => "parse authority fault",
+            AuthorityPhaseFact::Resolve => "resolve authority fault",
+            AuthorityPhaseFact::TypeCheck => "type check authority fault",
+            AuthorityPhaseFact::Project => "project authority fault",
+        },
+    };
+    let tag = cause.kind_tag().replace('_', " ");
+    let text = format!("{prefix}: {tag}");
+    sanitize_package_compiler_detail(&text, false)
+}
+
+fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
+    match cause {
+        PackageCompilerFailureCause::Fragment(fault) => {
+            compiler_fault_facts_match_kind(fault.kind(), fault.facts())
+        }
+        PackageCompilerFailureCause::Toolchain {
+            selected,
+            configured,
+            ..
+        } => configured.is_none_or(|configured| *selected != configured),
+        PackageCompilerFailureCause::ToolingUnavailable { .. }
+        | PackageCompilerFailureCause::RequiredTool { .. }
+        | PackageCompilerFailureCause::Lowering(_)
+        | PackageCompilerFailureCause::Authority { .. } => true,
+    }
+}
+
+fn is_canonical_package_relative_source_path(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= PackageCompilerFailure::MAX_RELATIVE_PATH_BYTES
+        && !value.starts_with('/')
+        && !value.contains('\\')
+        && !value.chars().any(char::is_control)
+        && value
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageCompilerFailureWire {
+    relative_path: String,
+    source_identity: String,
+    source_byte_len: u32,
+    recipe_identity: Option<String>,
+    phase: PackageCompilerFailurePhase,
+    kind_tag: String,
+    cause: PackageCompilerFailureCause,
+    detail: String,
+    detail_truncated: bool,
+}
+
+struct ContentIdDisplay<'a, DomainTag>(&'a ContentId<DomainTag>);
+
+impl<DomainTag: Domain> Serialize for ContentIdDisplay<'_, DomainTag> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self.0)
+    }
+}
+
+impl Serialize for PackageCompilerFailure {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("PackageCompilerFailure", 9)?;
+        state.serialize_field("relative_path", &self.relative_path)?;
+        state.serialize_field("source_identity", &ContentIdDisplay(&self.source_identity))?;
+        state.serialize_field("source_byte_len", &self.source_byte_len)?;
+        state.serialize_field(
+            "recipe_identity",
+            &self.recipe_identity.as_ref().map(ContentIdDisplay),
+        )?;
+        state.serialize_field("phase", &self.phase())?;
+        state.serialize_field("kind_tag", self.kind_tag())?;
+        state.serialize_field("cause", &self.cause)?;
+        state.serialize_field("detail", &self.detail)?;
+        state.serialize_field("detail_truncated", &self.detail_truncated)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for PackageCompilerFailure {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = PackageCompilerFailureWire::deserialize(deserializer)?;
+        let relative_path =
+            package_relative_source_path(&wire.relative_path).map_err(D::Error::custom)?;
+        let source_identity = parse_content_identity::<SourceFactDomain>(&wire.source_identity)
+            .map_err(D::Error::custom)?;
+        let recipe_identity = wire
+            .recipe_identity
+            .as_deref()
+            .map(parse_content_identity::<CompileRecipeDomain>)
+            .transpose()
+            .map_err(D::Error::custom)?;
+        let summary = Self {
+            relative_path,
+            source_identity,
+            source_byte_len: wire.source_byte_len,
+            recipe_identity,
+            cause: wire.cause,
+            detail: wire.detail,
+            detail_truncated: wire.detail_truncated,
+            local_diagnostic: None,
+        };
+        summary.validate().map_err(D::Error::custom)?;
+        if wire.phase != summary.phase() || wire.kind_tag != summary.kind_tag() {
+            return Err(D::Error::custom(
+                ProductAdmissionError::PackageCompilerFailureShape,
+            ));
+        }
+        if summary.recipe_identity.is_none()
+            != matches!(
+                &summary.cause,
+                PackageCompilerFailureCause::Toolchain { .. }
+                    | PackageCompilerFailureCause::ToolingUnavailable { .. }
+                    | PackageCompilerFailureCause::RequiredTool { .. }
+            )
+        {
+            return Err(D::Error::custom(
+                ProductAdmissionError::PackageCompilerFailureShape,
+            ));
+        }
+        Ok(summary)
+    }
+}
+
+fn parse_content_identity<DomainTag: Domain>(
+    value: &str,
+) -> Result<ContentId<DomainTag>, &'static str> {
+    let encoded = value
+        .strip_prefix("content:")
+        .ok_or("content identity prefix is invalid")?;
+    if encoded.len() != HASH_BYTES * 2 {
+        return Err("content identity width is invalid");
+    }
+    let mut bytes = [0; HASH_BYTES];
+    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+        let high = lower_hex_nibble(pair[0]).ok_or("content identity is not lowercase hex")?;
+        let low = lower_hex_nibble(pair[1]).ok_or("content identity is not lowercase hex")?;
+        bytes[index] = (high << 4) | low;
+    }
+    ContentId::<DomainTag>::try_from(bytes).map_err(|_| "content identity domain is invalid")
+}
+
+fn lower_hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
+    }
+}
+
 /// Terminal effect of one index job.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", content = "detail", rename_all = "kebab-case")]
+#[serde(
+    tag = "state",
+    content = "detail",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
 pub enum IndexJobOutcome {
     /// Semantic admission and the owner publication completed.
     Published,
     /// The candidate was refused and did not replace the prior publication.
     Refused(ProductText),
+    /// A package compiler refusal with a typed, source-bound cause.
+    RefusedWithCompilerFailure {
+        /// Human-readable refusal retained for older surface presenters.
+        detail: ProductText,
+        /// Exact package member, compiler authority, and closed compact-fragment cause.
+        failure: PackageCompilerFailure,
+    },
     /// The requested cancellation was observed before publication completed.
     Cancelled,
     /// The owner could not establish a terminal publication result.
     Failed(ProductText),
+}
+
+impl IndexJobOutcome {
+    fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if let Self::RefusedWithCompilerFailure { failure, .. } = self {
+            failure.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl IndexJobTerminal {
+    fn admit(&self) -> Result<(), ProductAdmissionError> {
+        self.outcome.admit()
+    }
+}
+
+impl IndexStartResult {
+    fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if let Self::Terminal(terminal) = self {
+            terminal.admit()?;
+        }
+        Ok(())
+    }
 }
 
 /// Immediate result of a cancellation request.
@@ -1337,10 +2617,11 @@ pub struct IndexCancelReceipt {
 
 impl IndexCancelReceipt {
     fn admit(&self) -> Result<(), ProductAdmissionError> {
-        if let IndexCancelStatus::Terminal(terminal) = &self.status
-            && terminal.ticket != self.ticket
-        {
-            return Err(ProductAdmissionError::IndexCancelTicketMismatch);
+        if let IndexCancelStatus::Terminal(terminal) = &self.status {
+            if terminal.ticket != self.ticket {
+                return Err(ProductAdmissionError::IndexCancelTicketMismatch);
+            }
+            terminal.admit()?;
         }
         Ok(())
     }
@@ -1489,7 +2770,8 @@ impl IndexJobObservation {
     fn admit(&self) -> Result<(), ProductAdmissionError> {
         match self {
             Self::Pending(page) => page.admit(),
-            Self::Terminal(_) | Self::Unknown { .. } => Ok(()),
+            Self::Terminal(terminal) => terminal.admit(),
+            Self::Unknown { .. } => Ok(()),
         }
     }
 }
@@ -1582,6 +2864,16 @@ pub enum SurfaceCommand {
     SemanticVersions {
         /// Exact product package reference.
         package: PackageReference,
+    },
+    /// Read compiler-owned member/type shapes for exact selected keys.
+    SemanticShapes {
+        /// Source selection and bounded full-key operands.
+        request: crate::SemanticShapeReadRequest,
+    },
+    /// Read one snapshot-bound page of exact selected local Project File rows.
+    PackageSourceMembership {
+        /// Exact package, expected selected root, and optional continuation.
+        request: crate::PackageSourceMembershipPageRequestV1,
     },
     /// Select one exact retained compiler generation for product projection.
     SelectSemanticVersion {
@@ -1765,6 +3057,8 @@ impl SurfaceCommand {
             Self::IndexSearch { .. } => CommandId::IndexSearch,
             Self::PackageVersions { .. } => CommandId::PackageVersions,
             Self::SemanticVersions { .. } => CommandId::SemanticVersions,
+            Self::SemanticShapes { .. } => CommandId::SemanticShapes,
+            Self::PackageSourceMembership { .. } => CommandId::PackageSourceMembership,
             Self::SelectSemanticVersion { .. } => CommandId::SelectSemanticVersion,
             Self::PackageProfile { .. } => CommandId::PackageProfile,
             Self::Subscribe { .. } => CommandId::Subscribe,
@@ -1827,6 +3121,9 @@ impl SurfaceCommand {
             }
             Self::CargoPackageSourceInventory { request } if !request.has_admissible_shape() => {
                 Err(ProductAdmissionError::CargoSourceShape)
+            }
+            Self::PackageSourceMembership { request } if !request.has_admissible_shape() => {
+                Err(ProductAdmissionError::PackageSourceMembershipShape)
             }
             Self::CargoPackageReadme { request } if !request.has_admissible_shape() => {
                 Err(ProductAdmissionError::CargoSourceShape)
@@ -2368,6 +3665,33 @@ pub struct RegistryDiscoveryCandidate {
     /// Optional source-attributed advisory, download, and yank facts.
     #[serde(default)]
     pub metadata: RegistryDiscoveryMetadata,
+}
+
+/// Exact registry metadata lookup, without acquisition or compiler authority.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum RegistryPackageDiscoveryObservation {
+    /// Source-attributed claims for the requested immutable release.
+    Observed {
+        /// Separate claims from each source; these are never acquired records.
+        candidates: Box<[RegistryDiscoveryCandidate]>,
+    },
+    /// A validated complete package document did not contain this release.
+    Missing {
+        /// Exact metadata endpoint identity.
+        source: [u8; 32],
+        /// Digest of the response establishing absence.
+        proof: [u8; 32],
+        /// Time of this negative observation.
+        observed_at_millis: u64,
+    },
+    /// The configured metadata authority could not establish an answer.
+    Unavailable {
+        /// Endpoint identity, when a compatible authority was configured.
+        source: Option<[u8; 32]>,
+        /// Bounded explanation; absence must never be inferred from this state.
+        reason: ProductText,
+    },
 }
 
 impl RegistryDiscoveryCandidate {
@@ -3042,6 +4366,13 @@ pub enum SurfaceReply {
     Explored(Box<[RegistryPackageRecord]>),
     /// Exact package records.
     Package(Box<[RegistryPackageRecord]>),
+    /// Exact source metadata, kept separate from acquired package authority.
+    PackageDiscovery {
+        /// Exact version-pinned package requested by the caller.
+        package: PackageCoordinate,
+        /// Positive, negative, or unavailable metadata evidence.
+        observation: RegistryPackageDiscoveryObservation,
+    },
     /// Exact package records from registry and forge authorities, kept apart.
     PackageDetails {
         /// Acquired registry facts matching the requested PURL.
@@ -3072,6 +4403,10 @@ pub enum SurfaceReply {
     PackageVersions(Box<[RegistryPackageRecord]>),
     /// Immutable compiler generations for one exact package.
     SemanticVersions(Box<[SemanticVersionRecord]>),
+    /// Egress view exported after direct shape certificate admission.
+    SemanticShapes(crate::SemanticShapeExport),
+    /// One bounded page of exact selected Project source membership.
+    PackageSourceMembershipPage(crate::PackageSourceMembershipPageResultV1),
     /// Immediate status returned after an index start request.
     IndexStarted(IndexStartResult),
     /// Immediate status for a start or replay using a durable operation key.
@@ -3148,6 +4483,7 @@ impl SurfaceReply {
             Self::Diff(_) => CommandId::Diff,
             Self::Explored(_) => CommandId::Explore,
             Self::Package(_) => CommandId::Package,
+            Self::PackageDiscovery { .. } => CommandId::Package,
             Self::PackageDetails { .. } => CommandId::Package,
             Self::ForgePackageAdded(_) => CommandId::ForgeAdd,
             Self::ForgePackageReferenced(_) => CommandId::ForgeReference,
@@ -3160,6 +4496,8 @@ impl SurfaceReply {
             Self::IndexSearchPage(_) => CommandId::IndexSearch,
             Self::PackageVersions(_) => CommandId::PackageVersions,
             Self::SemanticVersions(_) => CommandId::SemanticVersions,
+            Self::SemanticShapes(_) => CommandId::SemanticShapes,
+            Self::PackageSourceMembershipPage(_) => CommandId::PackageSourceMembership,
             Self::IndexStarted(_) => CommandId::IndexStart,
             Self::IndexOperationStarted(_) => CommandId::IndexStart,
             Self::IndexOperationStatus(_) => CommandId::IndexProgress,
@@ -3229,6 +4567,10 @@ impl SurfaceReply {
             | Self::Dependents(RegistryMetadata::Partial { value: v, .. })
             | Self::Owner(RegistryMetadata::Partial { value: v, .. }) => v.len(),
             Self::IndexSearchWithDiscovery(hits) => hits.len(),
+            Self::PackageDiscovery { observation, .. } => match observation {
+                RegistryPackageDiscoveryObservation::Observed { candidates } => candidates.len(),
+                _ => 1,
+            },
             Self::PackageDetails { registry, forge } => registry.len().saturating_add(forge.len()),
             Self::IndexSearchPage(page) => page.hits.len(),
             Self::Dependencies(DependencyFacts::Known(v)) => v.len(),
@@ -3260,6 +4602,22 @@ impl SurfaceReply {
                 }
                 records.len()
             }
+            Self::SemanticShapes(export) => {
+                export
+                    .encode_bounded_json()
+                    .map_err(|_| ProductAdmissionError::SemanticVersionShape)?;
+                export.entry_count()
+            }
+            Self::PackageSourceMembershipPage(result) => {
+                if !result.has_admissible_shape() {
+                    return Err(ProductAdmissionError::PackageSourceMembershipShape);
+                }
+                match result {
+                    crate::PackageSourceMembershipPageResultV1::Page { files, .. } => files.len(),
+                    crate::PackageSourceMembershipPageResultV1::Stale { .. }
+                    | crate::PackageSourceMembershipPageResultV1::Unavailable { .. } => 1,
+                }
+            }
             Self::SemanticVersionSelected(record) => {
                 record.admit()?;
                 if !record.selected {
@@ -3267,7 +4625,14 @@ impl SurfaceReply {
                 }
                 1
             }
-            Self::IndexStarted(_) | Self::IndexTerminal(_) => 1,
+            Self::IndexStarted(result) => {
+                result.admit()?;
+                1
+            }
+            Self::IndexTerminal(terminal) => {
+                terminal.admit()?;
+                1
+            }
             Self::IndexOperationStarted(observation) | Self::IndexOperationStatus(observation) => {
                 observation.admit()?;
                 1
@@ -3334,6 +4699,24 @@ impl SurfaceReply {
                             RegistrySearchHit::ForgeDiscovered(candidate) => candidate.admit()?,
                             RegistrySearchHit::ForgeSourcePin(candidate) => candidate.admit()?,
                             RegistrySearchHit::PackageGroup(group) => group.admit()?,
+                        }
+                    }
+                }
+                Self::PackageDiscovery {
+                    package,
+                    observation,
+                } => {
+                    if let RegistryPackageDiscoveryObservation::Observed { candidates } =
+                        observation
+                    {
+                        if candidates.is_empty() {
+                            return Err(ProductAdmissionError::RegistryAuthority);
+                        }
+                        for candidate in candidates {
+                            candidate.admit()?;
+                            if &candidate.coordinate != package {
+                                return Err(ProductAdmissionError::RegistryAuthority);
+                            }
                         }
                     }
                 }
@@ -3444,6 +4827,12 @@ impl SurfaceReply {
             }),
             Self::IndexSearchPage(page) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(page).map_or(0, |bytes| bytes.len())),
+            Self::PackageDiscovery {
+                package,
+                observation,
+            } => fixed_record_bound()
+                .saturating_add(package.as_str().len())
+                .saturating_add(serialized_json_size(observation)),
             Self::ForgePackageAdded(record) | Self::ForgePackageReferenced(record) => {
                 fixed_record_bound()
                     .saturating_add(serde_json::to_vec(record).map_or(0, |bytes| bytes.len()))
@@ -3469,6 +4858,12 @@ impl SurfaceReply {
                 .saturating_add(record.coordinate.as_str().len())
                 .saturating_add(serialized_json_size(&record.history_status))
                 .saturating_add(serialized_json_size(&record.selected_source_frontier)),
+            Self::SemanticShapes(export) => export
+                .encode_bounded_json()
+                .map_or(usize::MAX, |bytes| bytes.len()),
+            Self::PackageSourceMembershipPage(result) => {
+                serde_json::to_vec(result).map_or(0, |bytes| bytes.len())
+            }
             Self::IndexStarted(result) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(result).map_or(0, |bytes| bytes.len())),
             Self::IndexOperationStarted(observation) | Self::IndexOperationStatus(observation) => {
@@ -3768,6 +5163,8 @@ pub enum ProductAdmissionError {
     PackageGraphPage,
     /// Cargo source package or relative file authority is malformed.
     CargoSourceShape,
+    /// Selected Project source-membership request or page is malformed.
+    PackageSourceMembershipShape,
     /// An index progress page contains mismatched tickets or invalid sequence/profile facts.
     IndexProgressShape,
     /// An index cancellation terminal receipt belongs to a different ticket.
@@ -3776,6 +5173,8 @@ pub enum ProductAdmissionError {
     IndexOperationKey,
     /// A durable operation receipt contradicts its package, revision, or publication evidence.
     IndexOperationShape,
+    /// A package compiler refusal summary is malformed, unbounded, or internally inconsistent.
+    PackageCompilerFailureShape,
 }
 impl core::fmt::Display for ProductAdmissionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -3812,6 +5211,9 @@ impl core::fmt::Display for ProductAdmissionError {
             }
             Self::PackageGraphPage => "package graph request or page is invalid",
             Self::CargoSourceShape => "Cargo source authority or relative file path is invalid",
+            Self::PackageSourceMembershipShape => {
+                "selected Project source membership is malformed or outside its bound"
+            }
             Self::IndexProgressShape => {
                 "index progress page has inconsistent sequence or profile facts"
             }
@@ -3820,6 +5222,9 @@ impl core::fmt::Display for ProductAdmissionError {
             }
             Self::IndexOperationKey => "index operation key is malformed or reserved",
             Self::IndexOperationShape => "index operation status has inconsistent evidence",
+            Self::PackageCompilerFailureShape => {
+                "package compiler failure summary is malformed or inconsistent"
+            }
         })
     }
 }
@@ -3827,6 +5232,540 @@ impl core::fmt::Display for ProductAdmissionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn compiler_failure(path: &str) -> PackageCompilerFailure {
+        use crate::interface::{CompilerFragmentFailure, SourceAuthority};
+        use backend_semantic::ir::{BuildError, EntityId};
+
+        let attempt = CompilerAttempt {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"source bytes"),
+                byte_len: 12,
+            },
+            recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"recipe bytes"),
+        };
+        let failure = CompilerFragmentFailure::build(BuildError::InvalidOccurrenceSpan {
+            owner: EntityId::new(7),
+            start: 18,
+            end: 24,
+        });
+        PackageCompilerFailure::from_fragment_failure(path, attempt, &failure)
+            .expect("a bounded package compiler failure")
+    }
+
+    #[test]
+    fn package_compiler_failure_json_keeps_path_authorities_and_specific_facts() {
+        let failure = compiler_failure("src/recovery.ts");
+        let encoded = serde_json::to_vec(&failure).expect("encode compiler failure");
+        let decoded: PackageCompilerFailure =
+            serde_json::from_slice(&encoded).expect("decode compiler failure");
+        assert_eq!(decoded, failure);
+        assert_eq!(decoded.relative_path(), "src/recovery.ts");
+        assert_eq!(decoded.source_byte_len(), 12);
+        assert_eq!(decoded.kind_tag(), "build_invalid_occurrence_span");
+        assert_eq!(decoded.phase(), PackageCompilerFailurePhase::Prepare);
+        assert!(decoded.detail().contains("occurrence span"));
+
+        let command_failure = crate::CommandFailure::CompilerRefused {
+            detail: "local compiler rejected src/recovery.ts".to_owned(),
+            failure: failure.clone(),
+        };
+        let displayed = command_failure.to_string();
+        assert!(displayed.contains("src/recovery.ts"));
+        assert!(displayed.contains("build_invalid_occurrence_span"));
+        assert!(displayed.contains("occurrence span"));
+        assert!(!displayed.contains("facts="));
+
+        let underscored_path = compiler_failure("src/foo_bar.ts");
+        assert_eq!(underscored_path.relative_path(), "src/foo_bar.ts");
+        assert!(
+            crate::CommandFailure::CompilerRefused {
+                detail: "compiler refused source member".to_owned(),
+                failure: underscored_path,
+            }
+            .to_string()
+            .contains("src/foo_bar.ts")
+        );
+
+        let json: serde_json::Value = serde_json::from_slice(&encoded).expect("JSON object");
+        assert_eq!(json["cause"]["family"], "fragment");
+        assert_eq!(json["cause"]["fault"]["kind"]["family"], "build");
+        assert_eq!(
+            json["cause"]["fault"]["kind"]["kind"],
+            "invalid_occurrence_span"
+        );
+        assert_eq!(json["cause"]["fault"]["facts"]["kind"], "occurrence_span");
+        assert_eq!(json["cause"]["fault"]["facts"]["owner"], 7);
+        assert_eq!(json["cause"]["fault"]["facts"]["start"], 18);
+        assert_eq!(json["cause"]["fault"]["facts"]["end"], 24);
+        assert!(
+            json["recipe_identity"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("content:"))
+        );
+        assert_eq!(json["phase"], "prepare");
+        assert!(encoded.len() <= PackageCompilerFailure::MAX_ENCODED_BYTES);
+        assert_eq!(
+            failure.encoded_size_bound(),
+            PackageCompilerFailure::MAX_ENCODED_BYTES
+        );
+
+        let outcome = IndexJobOutcome::RefusedWithCompilerFailure {
+            detail: ProductText::new("local compiler refused src/recovery.ts")
+                .expect("bounded refusal text"),
+            failure: failure.clone(),
+        };
+        let outcome_json = serde_json::to_value(&outcome).expect("index outcome JSON");
+        assert_eq!(outcome_json["state"], "refused-with-compiler-failure");
+        let decoded_outcome = serde_json::from_value::<IndexJobOutcome>(outcome_json.clone())
+            .expect("decode typed compiler-refusal outcome");
+        assert_eq!(decoded_outcome, outcome);
+        let mut unknown = outcome_json;
+        unknown["detail"]["extra"] = serde_json::json!("unknown future member");
+        assert!(serde_json::from_value::<IndexJobOutcome>(unknown).is_err());
+    }
+
+    #[test]
+    fn package_compiler_failure_rejects_inconsistent_and_unbounded_wire_data() {
+        let failure = compiler_failure("src/recovery.ts");
+        let original = serde_json::to_value(&failure).expect("encode compiler failure");
+
+        for (field, value) in [
+            ("phase", serde_json::json!("write")),
+            ("kind_tag", serde_json::json!("prepare_count")),
+            ("relative_path", serde_json::json!("../recovery.ts")),
+        ] {
+            let mut malformed = original.clone();
+            malformed[field] = value;
+            assert!(
+                serde_json::from_value::<PackageCompilerFailure>(malformed).is_err(),
+                "accepted malformed `{field}`"
+            );
+        }
+
+        let mut malformed_facts = original.clone();
+        malformed_facts["cause"]["fault"]["facts"]["kind"] = serde_json::json!("tree_entity");
+        assert!(serde_json::from_value::<PackageCompilerFailure>(malformed_facts).is_err());
+
+        let mut mismatched_fragment = original.clone();
+        mismatched_fragment["cause"]["fault"]["kind"]["kind"] = serde_json::json!("dangling");
+        assert!(
+            serde_json::from_value::<PackageCompilerFailure>(mismatched_fragment.clone()).is_err()
+        );
+        assert!(
+            serde_json::from_value::<PackageCompilerFailureCause>(
+                mismatched_fragment["cause"].clone()
+            )
+            .is_err()
+        );
+
+        let mut unknown = original;
+        unknown["arbitrary_output"] = serde_json::json!("private marker");
+        assert!(serde_json::from_value::<PackageCompilerFailure>(unknown).is_err());
+    }
+
+    #[test]
+    fn package_compiler_failure_worst_case_escaped_path_fits_capture_bound() {
+        // Quotes are legal filesystem path bytes and are worst-case JSON escapes
+        // among the admitted characters (control bytes and backslashes are banned).
+        let path = "\"".repeat(PackageCompilerFailure::MAX_RELATIVE_PATH_BYTES);
+        let failure = compiler_failure(&path);
+        let encoded = failure
+            .encode_bounded_json()
+            .expect("encode worst-case escaped path");
+        assert!(encoded.len() <= PackageCompilerFailure::MAX_ENCODED_BYTES);
+        assert_eq!(
+            PackageCompilerFailure::decode_bounded_json(&encoded),
+            Ok(failure)
+        );
+        let mixed_path = format!("{}{}", "\"".repeat(512), "雪".repeat(682));
+        let mixed = compiler_failure(&mixed_path);
+        let mixed_encoded = mixed
+            .encode_bounded_json()
+            .expect("mixed unicode and escaped path");
+        assert!(mixed_encoded.len() <= PackageCompilerFailure::MAX_ENCODED_BYTES);
+    }
+
+    #[test]
+    fn package_setup_failure_names_the_selected_tool_without_inventing_a_recipe() {
+        use crate::interface::CompilerTerminal;
+        use backend_semantic::vocabulary::{Language, NativeTool, Stage};
+
+        let source = crate::interface::SourceAuthority {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"typescript bytes"),
+            byte_len: 16,
+        };
+        let terminal = CompilerTerminal::Toolchain {
+            source,
+            language: Language::TypeScript,
+            stage: Stage::LowerIr,
+            selected: NativeTool::TypeScriptCompiler,
+            configured: None,
+        };
+        let failure = PackageCompilerFailure::from_package_terminal("src/index.ts", &terminal)
+            .expect("valid package summary")
+            .expect("toolchain terminal is projected");
+
+        assert_eq!(failure.recipe_identity(), None);
+        assert_eq!(failure.phase(), PackageCompilerFailurePhase::Setup);
+        assert_eq!(failure.kind_tag(), "toolchain_configuration_mismatch");
+        assert_eq!(
+            failure.required_native_tool(),
+            Some(CompilerNativeToolFact::TypeScriptCompiler)
+        );
+        assert_eq!(failure.configured_native_tool(), None);
+        assert!(failure.requires_tool_configuration());
+        assert!(failure.detail().contains("NUDOX_TSC"));
+        assert!(failure.detail().contains("node_modules/.bin/tsc"));
+
+        let encoded = failure.encode_bounded_json().expect("encode setup failure");
+        let json: serde_json::Value = serde_json::from_slice(&encoded).expect("setup JSON");
+        assert_eq!(json["cause"]["family"], "toolchain");
+        assert_eq!(json["cause"]["fault"]["selected"], "type_script_compiler");
+        assert_eq!(
+            json["cause"]["fault"]["configured"],
+            serde_json::Value::Null
+        );
+        assert_eq!(json["recipe_identity"], serde_json::Value::Null);
+        assert!(PackageCompilerFailure::decode_bounded_json(&encoded).is_ok());
+
+        let unavailable = CompilerTerminal::ToolingUnavailable {
+            source,
+            language: Language::Python,
+            stage: Stage::Parse,
+            tool: NativeTool::Python,
+        };
+        let unavailable = PackageCompilerFailure::from_package_terminal(
+            "tests/testserver/__init__.py",
+            &unavailable,
+        )
+        .expect("valid unavailable-tool summary")
+        .expect("unavailable terminal is projected");
+        assert_eq!(unavailable.recipe_identity(), None);
+        assert_eq!(unavailable.kind_tag(), "tooling_unavailable");
+        assert_eq!(
+            unavailable.required_native_tool(),
+            Some(CompilerNativeToolFact::Python)
+        );
+        assert!(unavailable.detail().contains("NUDOX_PYTHON"));
+        assert!(unavailable.detail().contains(".venv/bin/python"));
+    }
+
+    #[test]
+    fn package_required_python_checker_failure_is_typed_and_actionable() {
+        use crate::interface::{
+            CompilerTerminal, CompilerToolFailure, CompilerToolIssue, CompilerToolRequirement,
+            SourceAuthority,
+        };
+        use backend_semantic::vocabulary::{Language, Stage};
+
+        let source_bytes = b"from quart import Quart";
+        let source = SourceAuthority {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source_bytes),
+            byte_len: u32::try_from(source_bytes.len()).expect("source length"),
+        };
+
+        for (failure_kind, expected_tag, expected_failure) in [
+            (
+                CompilerToolFailure::Missing,
+                "required_tool_missing",
+                "missing",
+            ),
+            (
+                CompilerToolFailure::ProbeFailed,
+                "required_tool_probe_failed",
+                "probe_failed",
+            ),
+        ] {
+            let terminal = CompilerTerminal::RequiredTool {
+                source,
+                language: Language::Python,
+                stage: Stage::LowerIr,
+                issue: CompilerToolIssue {
+                    requirement: CompilerToolRequirement::PythonChecker,
+                    failure: failure_kind,
+                },
+            };
+            let failure =
+                PackageCompilerFailure::from_package_terminal("src/quart/__init__.py", &terminal)
+                    .expect("valid setup summary")
+                    .expect("required checker failure is projected");
+
+            assert_eq!(failure.source_identity(), source.identity);
+            assert_eq!(failure.source_byte_len(), source.byte_len);
+            assert_eq!(failure.recipe_identity(), None);
+            assert_eq!(failure.phase(), PackageCompilerFailurePhase::Setup);
+            assert_eq!(failure.kind_tag(), expected_tag);
+            assert_eq!(
+                failure.required_tool_issue(),
+                Some(CompilerToolIssue {
+                    requirement: CompilerToolRequirement::PythonChecker,
+                    failure: failure_kind,
+                })
+            );
+            assert_eq!(
+                failure.required_configuration_variable(),
+                Some("NUDOX_PYREFLY")
+            );
+            assert!(failure.requires_tool_configuration());
+            assert!(failure.detail().contains("NUDOX_PYREFLY"));
+
+            let encoded = failure.encode_bounded_json().expect("bounded failure JSON");
+            let json: serde_json::Value =
+                serde_json::from_slice(&encoded).expect("typed failure object");
+            assert_eq!(json["phase"], "setup");
+            assert_eq!(json["kind_tag"], expected_tag);
+            assert_eq!(json["cause"]["family"], "required_tool");
+            assert_eq!(
+                json["cause"]["fault"]["issue"]["requirement"],
+                "python_checker"
+            );
+            assert_eq!(json["cause"]["fault"]["issue"]["failure"], expected_failure);
+            assert_eq!(
+                PackageCompilerFailure::decode_bounded_json(&encoded),
+                Ok(failure.clone())
+            );
+
+            let outcome = IndexJobOutcome::RefusedWithCompilerFailure {
+                detail: ProductText::new(failure.detail()).expect("bounded setup detail"),
+                failure: failure.clone(),
+            };
+            let outcome_json = serde_json::to_value(&outcome).expect("full operation DTO");
+            assert_eq!(outcome_json["state"], "refused-with-compiler-failure");
+            assert_eq!(
+                outcome_json["detail"]["failure"]["cause"]["fault"]["issue"]["requirement"],
+                "python_checker"
+            );
+            let displayed = crate::CommandFailure::CompilerRefused {
+                detail: failure.detail().to_owned(),
+                failure,
+            }
+            .to_string();
+            assert!(displayed.contains("NUDOX_PYREFLY"));
+        }
+    }
+
+    #[test]
+    fn package_lowering_failure_keeps_nested_source_recovery_reasons_distinct() {
+        use crate::interface::{
+            CompilerAttempt, CompilerCause, CompilerTerminal, LoweringCause, SourceAuthority,
+        };
+        use backend_semantic::vocabulary::{
+            LoweringUnsupported, ProjectionAdmissionFault, ProjectionSemanticTypeFault,
+            ProjectionSemanticTypeTag, ProjectionTypeCell,
+        };
+
+        let attempt = CompilerAttempt {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                    b"typescript recovery source",
+                ),
+                byte_len: 27,
+            },
+            recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(
+                b"typescript recovery recipe",
+            ),
+        };
+        let angular = CompilerTerminal::Compile {
+            attempted: attempt,
+            cause: CompilerCause::Lowering(LoweringCause::new(LoweringUnsupported::FactRejected {
+                fact: 14,
+                name_len: 8,
+                cause: ProjectionAdmissionFault::TypeChild {
+                    position: 2,
+                    cause: ProjectionSemanticTypeFault::ChildNameRequired {
+                        tag: ProjectionSemanticTypeTag::AnonymousRecord,
+                        position: 2,
+                    },
+                },
+            })),
+        };
+        let zod = CompilerTerminal::Compile {
+            attempted: attempt,
+            cause: CompilerCause::Lowering(LoweringCause::new(LoweringUnsupported::FactRejected {
+                fact: 6,
+                name_len: 11,
+                cause: ProjectionAdmissionFault::TypeRecord {
+                    cause: ProjectionSemanticTypeFault::MissingCell {
+                        tag: ProjectionSemanticTypeTag::Mapped,
+                        cell: ProjectionTypeCell::Text,
+                    },
+                },
+            })),
+        };
+        let angular = PackageCompilerFailure::from_package_terminal("src/angular.ts", &angular)
+            .expect("angular summary")
+            .expect("angular fault projected");
+        let zod = PackageCompilerFailure::from_package_terminal("src/zod.ts", &zod)
+            .expect("zod summary")
+            .expect("zod fault projected");
+        assert_ne!(angular.kind_tag(), zod.kind_tag());
+        assert_eq!(
+            angular.kind_tag(),
+            "lowering_projection_type_child_child_name_required"
+        );
+        assert_eq!(
+            zod.kind_tag(),
+            "lowering_projection_type_record_missing_cell"
+        );
+        assert_eq!(angular.phase(), PackageCompilerFailurePhase::Lowering);
+
+        let angular_json: serde_json::Value = serde_json::from_slice(
+            &angular
+                .encode_bounded_json()
+                .expect("encode angular refusal"),
+        )
+        .expect("angular JSON");
+        assert_eq!(
+            angular_json["cause"]["fault"]["cause"]["fault"],
+            "type_child"
+        );
+        assert_eq!(angular_json["cause"]["fault"]["cause"]["position"], 2);
+        assert_eq!(
+            angular_json["cause"]["fault"]["cause"]["cause"]["fault"],
+            "child_name_required"
+        );
+        assert_eq!(
+            angular_json["cause"]["fault"]["cause"]["cause"]["tag"],
+            "anonymous_record"
+        );
+        assert_eq!(
+            angular_json["cause"]["fault"]["cause"]["cause"]["position"],
+            2
+        );
+
+        let zod_json: serde_json::Value =
+            serde_json::from_slice(&zod.encode_bounded_json().expect("encode zod refusal"))
+                .expect("zod JSON");
+        assert_eq!(zod_json["cause"]["fault"]["cause"]["fault"], "type_record");
+        assert_eq!(
+            zod_json["cause"]["fault"]["cause"]["cause"]["fault"],
+            "missing_cell"
+        );
+        assert_eq!(
+            zod_json["cause"]["fault"]["cause"]["cause"]["tag"],
+            "mapped"
+        );
+        assert_eq!(zod_json["cause"]["fault"]["cause"]["cause"]["cell"], "text");
+    }
+
+    #[test]
+    fn package_authority_summary_never_copies_native_output() {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
+            CompilerDiagnostic, CompilerTerminal, SourceAuthority,
+        };
+
+        let attempt = CompilerAttempt {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"authority source"),
+                byte_len: 16,
+            },
+            recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"authority recipe"),
+        };
+        let diagnostic = CompilerDiagnostic::from_native(b"PRIVATE-RAW-COMPILER-OUTPUT", 27, false)
+            .expect("retained diagnostic");
+        let terminal = CompilerTerminal::Compile {
+            attempted: attempt,
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::TypeCheck,
+                class: AuthorityDiagnosticClass::Type,
+                diagnostic: Some(diagnostic),
+            },
+        };
+        let failure = PackageCompilerFailure::from_package_terminal("src/authority.ts", &terminal)
+            .expect("authority summary")
+            .expect("authority fault projected");
+        let encoded = failure
+            .encode_bounded_json()
+            .expect("bounded authority JSON");
+        assert!(!String::from_utf8_lossy(&encoded).contains("PRIVATE-RAW-COMPILER-OUTPUT"));
+        assert!(failure.detail().contains("type check"));
+        assert!(failure.detail().contains("type"));
+        let json: serde_json::Value = serde_json::from_slice(&encoded).expect("authority JSON");
+        assert_eq!(json["cause"]["fault"]["phase"], "type_check");
+        assert_eq!(json["cause"]["fault"]["class"], "type");
+        assert_eq!(json["cause"]["fault"]["diagnostic"]["observed_bytes"], 27);
+        assert!(json["cause"]["fault"]["diagnostic"].get("bytes").is_none());
+        assert_eq!(
+            failure.retained_diagnostic_for_local_debug(),
+            Some(b"PRIVATE-RAW-COMPILER-OUTPUT".as_slice())
+        );
+        assert!(
+            PackageCompilerFailure::decode_bounded_json(&encoded)
+                .expect("wire refusal decodes")
+                .retained_diagnostic_for_local_debug()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn python_authority_failure_retains_closed_cause_and_local_only_diagnostic() {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
+            CompilerDiagnostic, CompilerTerminal, PythonAuthorityFailureKind, SourceAuthority,
+        };
+
+        let attempt = CompilerAttempt {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                    b"python package module.py",
+                ),
+                byte_len: 29,
+            },
+            recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(
+                b"python requests checker recipe",
+            ),
+        };
+        let native_primary = b"private checker identity details: digest=secret";
+        let diagnostic =
+            CompilerDiagnostic::from_native(native_primary, native_primary.len(), false)
+                .expect("bounded primary diagnostic")
+                .with_python_failure(PythonAuthorityFailureKind::ProducerIdentityMismatch);
+        let terminal = CompilerTerminal::Compile {
+            attempted: attempt,
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::TypeCheck,
+                class: AuthorityDiagnosticClass::Type,
+                diagnostic: Some(diagnostic),
+            },
+        };
+        let failure =
+            PackageCompilerFailure::from_package_terminal("src/package/module.py", &terminal)
+                .expect("Python failure projection")
+                .expect("authority terminal projects");
+
+        assert_eq!(failure.kind_tag(), "python_producer_identity_mismatch");
+        assert!(
+            failure
+                .detail()
+                .contains("did not match the admitted native producer")
+        );
+        assert_eq!(
+            failure.retained_diagnostic_for_local_debug(),
+            Some(native_primary.as_slice())
+        );
+
+        let encoded = failure
+            .encode_bounded_json()
+            .expect("bounded typed refusal");
+        assert!(!format!("{failure:?}").contains("digest=secret"));
+        assert!(!String::from_utf8_lossy(&encoded).contains("digest=secret"));
+        let json: serde_json::Value = serde_json::from_slice(&encoded).expect("failure JSON");
+        assert_eq!(json["kind_tag"], "python_producer_identity_mismatch");
+        assert_eq!(
+            json["cause"]["fault"]["diagnostic"]["python_failure"],
+            "producer_identity_mismatch"
+        );
+        assert_eq!(json["relative_path"], "src/package/module.py");
+        assert!(json["cause"]["fault"]["diagnostic"].get("bytes").is_none());
+
+        let reopened =
+            PackageCompilerFailure::decode_bounded_json(&encoded).expect("typed failure reopens");
+        assert_eq!(reopened, failure);
+        assert_eq!(reopened.kind_tag(), failure.kind_tag());
+        assert!(reopened.retained_diagnostic_for_local_debug().is_none());
+    }
 
     #[test]
     fn package_reference_kind_preserves_explicit_local_identity() {
@@ -4195,6 +6134,7 @@ mod tests {
             ),
             package: PackageReference::parse("/workspace/demo").expect("package"),
             execution_intent: crate::CompileExecutionIntent::Interactive,
+            source_capture: None,
             state: IndexOperationState::Published(receipt),
         };
         let observation = IndexOperationObservation::Known(status);
@@ -4249,6 +6189,48 @@ mod tests {
     }
 
     #[test]
+    fn durable_compiler_refusal_requires_closed_refusal_state_on_wire() {
+        let key = IndexOperationKey::from_bytes([0x47; 32]).expect("operation key");
+        let failure = compiler_failure("src/recovery.ts");
+        let observation = |reason| {
+            IndexOperationObservation::Known(IndexOperationStatus::new(
+                key,
+                PackageReference::parse("/workspace/demo").expect("package"),
+                crate::CompileExecutionIntent::Interactive,
+                IndexOperationState::Failed {
+                    reason,
+                    detail: ProductText::from_static("short human explanation"),
+                    compiler_failure: Some(failure.clone()),
+                },
+            ))
+        };
+        let command = crate::CommandDto::new(
+            53,
+            crate::Command::Surface(SurfaceCommand::IndexOperationStatus { operation_key: key }),
+        );
+        let reply = crate::ReplyDto::new(
+            53,
+            crate::CommandReply::Surface(SurfaceReply::IndexOperationStatus(observation(
+                IndexOperationFailureReason::Refused,
+            ))),
+        );
+        let encoded = serde_json::to_vec(&reply).expect("bounded typed status wire");
+        let decoded = crate::decode_reply_body(&encoded).expect("decode typed status");
+        crate::admit_reply(&command, &decoded).expect("admit typed refusal route");
+        assert_eq!(decoded, reply);
+        for reason in [
+            IndexOperationFailureReason::WorkerFailed,
+            IndexOperationFailureReason::Cancelled,
+        ] {
+            let reply = SurfaceReply::IndexOperationStatus(observation(reason));
+            assert_eq!(
+                reply.admit(CommandId::IndexProgress),
+                Err(ProductAdmissionError::IndexOperationShape)
+            );
+        }
+    }
+
+    #[test]
     fn operation_receipt_rejects_unbound_root_or_unbounded_cursor() {
         let view = operation_receipt_view();
         let cursor = crate::Cursor::for_view_root(&view);
@@ -4277,6 +6259,51 @@ mod tests {
     }
 
     #[test]
+    fn operation_status_does_not_treat_source_capture_as_semantic_publication() {
+        let key = IndexOperationKey::from_bytes([0x19; 32]).expect("operation key");
+        let package = PackageReference::parse("/workspace/demo").expect("package");
+        let profile = IndexOperationSourceProfile {
+            profile: SemanticLanguageProfile::from_name("rust").expect("Rust profile"),
+            source_version: [5; 32],
+            input_digest: [6; 32],
+            observation_sequence: 7,
+            source_count: 1,
+            state: IndexOperationSemanticProfileState::Pending { prior: None },
+        };
+        let capture = IndexOperationSourceCaptureReceipt::from_checked_parts(
+            key,
+            [2; 32],
+            [3; 32],
+            8,
+            vec![profile].into_boxed_slice(),
+        )
+        .expect("checked structural receipt");
+        let view = operation_receipt_view();
+        let publication = IndexOperationPublicationReceipt::from_published_view(
+            Some([1; 32]),
+            [2; 32],
+            [3; 32],
+            9,
+            &view,
+            crate::Cursor::for_view_root(&view),
+        )
+        .expect("checked publication receipt");
+        let status = IndexOperationStatus::new(
+            key,
+            package,
+            crate::CompileExecutionIntent::Interactive,
+            IndexOperationState::Published(publication),
+        )
+        .with_source_capture(Some(capture));
+        let reply = SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status));
+        assert_eq!(
+            reply.admit(CommandId::IndexProgress),
+            Err(ProductAdmissionError::IndexOperationShape),
+            "a semantic terminal cannot carry a source profile that is still pending"
+        );
+    }
+
+    #[test]
     fn operation_receipt_admission_rejects_malformed_embedded_cursor_identities() {
         let key = IndexOperationKey::from_bytes([0x0a; 32]).expect("operation key");
         let package = PackageReference::parse("/workspace/demo").expect("package");
@@ -4298,6 +6325,7 @@ mod tests {
             ),
             package,
             execution_intent: crate::CompileExecutionIntent::Interactive,
+            source_capture: None,
             state: IndexOperationState::Published(receipt.clone()),
         };
 

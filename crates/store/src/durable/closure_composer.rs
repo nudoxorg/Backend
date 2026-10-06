@@ -277,6 +277,49 @@ impl FileStore {
         changes: &[ClosureMembershipChange],
         budget: ClosureCompositionBudget,
     ) -> Result<PinnedStoredClosureReceipt, StoreError> {
+        self.compose_closure_index_inner(base, changes, budget, false, None)
+    }
+
+    /// Composes root-only workspace membership. Relation child nodes remain
+    /// authenticated in the durable relation CAS and need not be index members.
+    /// The complete-closure composer retains its stricter child-membership gate.
+    pub fn compose_workspace_closure_index(
+        &self,
+        base: Option<ArtifactClosureClaim>,
+        changes: &[ClosureMembershipChange],
+        budget: ClosureCompositionBudget,
+    ) -> Result<PinnedStoredClosureReceipt, StoreError> {
+        self.compose_closure_index_inner(base, changes, budget, true, None)
+    }
+
+    /// Streams and re-admits exact workspace membership after a cold reopen.
+    pub fn compose_workspace_closure_index_cancellable(
+        &self,
+        base: Option<ArtifactClosureClaim>,
+        changes: &[ClosureMembershipChange],
+        budget: ClosureCompositionBudget,
+        cancellation: &std::sync::atomic::AtomicBool,
+    ) -> Result<PinnedStoredClosureReceipt, StoreError> {
+        self.compose_closure_index_inner(base, changes, budget, true, Some(cancellation))
+    }
+
+    /// Streams and re-admits exact workspace membership after a cold reopen.
+    pub fn reopen_pinned_workspace_closure(
+        &self,
+        claim: ArtifactClosureClaim,
+        budget: ClosureCompositionBudget,
+    ) -> Result<PinnedStoredClosureReceipt, StoreError> {
+        self.compose_workspace_closure_index(Some(claim), &[], budget)
+    }
+
+    fn compose_closure_index_inner(
+        &self,
+        base: Option<ArtifactClosureClaim>,
+        changes: &[ClosureMembershipChange],
+        budget: ClosureCompositionBudget,
+        root_only: bool,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<PinnedStoredClosureReceipt, StoreError> {
         let budget = budget.validate(changes.len())?;
         let gc_pin = self.acquire_gc_pin()?;
 
@@ -402,7 +445,14 @@ impl FileStore {
         if update.target().node().row_count() != expected_count {
             return Err(StoreError::Corrupt);
         }
-        let facts = verify_target_members(self, base_index.as_ref(), &ordered, budget)?;
+        let facts = verify_target_members(
+            self,
+            base_index.as_ref(),
+            &ordered,
+            budget,
+            root_only,
+            cancellation,
+        )?;
         if facts.object_count != expected_count {
             return Err(StoreError::Corrupt);
         }
@@ -493,6 +543,8 @@ fn verify_target_members(
     base: Option<&DurableManifest>,
     changes: &[ClosureMembershipChange],
     budget: ClosureCompositionBudget,
+    root_only: bool,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<VerificationFacts, StoreError> {
     let mut facts = VerificationFacts::default();
     // A persisted base closure was admitted when it was written, and the caller
@@ -501,11 +553,20 @@ fn verify_target_members(
     // verify only the new envelopes; the checked base root supplies the exact
     // unchanged member count. Removals still require the full walk below,
     // because a retained relation may refer to a removed child.
-    if changes.iter().all(|change| change.is_addition()) {
+    if !root_only && changes.iter().all(|change| change.is_addition()) {
         facts.object_count = base.map_or(0, DurableManifest::object_count);
         for change in changes {
             if let ClosureMembershipChange::Add(id) = change {
-                verify_target_member(store, base, changes, *id, budget, &mut facts)?;
+                verify_target_member(
+                    store,
+                    base,
+                    changes,
+                    *id,
+                    budget,
+                    root_only,
+                    cancellation,
+                    &mut facts,
+                )?;
             }
         }
         return Ok(facts);
@@ -532,7 +593,16 @@ fn verify_target_members(
                     },
                     Err(_) => {}
                 }
-                verify_target_member(store, Some(base), changes, *id, budget, &mut facts)?;
+                verify_target_member(
+                    store,
+                    Some(base),
+                    changes,
+                    *id,
+                    budget,
+                    root_only,
+                    cancellation,
+                    &mut facts,
+                )?;
             }
             match page.next() {
                 Some(next) => after = Some(next),
@@ -545,7 +615,16 @@ fn verify_target_members(
     }
     for change in changes {
         if let ClosureMembershipChange::Add(id) = change {
-            verify_target_member(store, base, changes, *id, budget, &mut facts)?;
+            verify_target_member(
+                store,
+                base,
+                changes,
+                *id,
+                budget,
+                root_only,
+                cancellation,
+                &mut facts,
+            )?;
         }
     }
     Ok(facts)
@@ -557,8 +636,15 @@ fn verify_target_member(
     changes: &[ClosureMembershipChange],
     id: ObjectId,
     budget: ClosureCompositionBudget,
+    root_only: bool,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
     facts: &mut VerificationFacts,
 ) -> Result<(), StoreError> {
+    if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+        return Err(StoreError::Io(
+            "workspace membership admission cancelled".to_owned(),
+        ));
+    }
     let remaining_bytes = budget
         .max_verified_payload_bytes
         .checked_sub(facts.payload_bytes)
@@ -592,7 +678,13 @@ fn verify_target_member(
     for child_version in references.children {
         let child = store.read_relation_ref(schema, &child_version)?;
         if !target_contains(base, changes, child)? {
-            return Err(StoreError::Corrupt);
+            if !root_only {
+                return Err(StoreError::Corrupt);
+            }
+            let (checked_child, _) = store.verify_closure_member_limited(child, None)?;
+            if checked_child.schema() != schema || checked_child.version() != &child_version {
+                return Err(StoreError::Corrupt);
+            }
         }
     }
     for target in references.values {
@@ -1085,6 +1177,124 @@ mod tests {
                 .expect("selected object survives")
         );
         assert!(test.store.read_closure_index(closure).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn physical_allocation_charges_immutable_index_files_across_cold_handles() {
+        let test = TestStore::new();
+        let item = object(&vec![0x5a; 64 * 1024]);
+        test.store.write_object(&item).unwrap();
+        let unlimited = crate::PhysicalAllocationBudget::new(u64::MAX, 4096);
+        let objects_only = unlimited.admit(&test.store).unwrap();
+        let receipt = compose(
+            &test.store,
+            None,
+            &[ClosureMembershipChange::add(item.id())],
+        );
+        let with_index = unlimited.admit(&test.store).unwrap();
+        assert!(
+            with_index > objects_only,
+            "index nodes and descriptor allocate real filesystem blocks"
+        );
+        drop(receipt);
+        let cold = FileStore::open(&test.path, 1024 * 1024).unwrap();
+        assert_eq!(unlimited.admit(&cold).unwrap(), with_index);
+        assert!(
+            crate::PhysicalAllocationBudget::new(with_index, 4096)
+                .admit(&cold)
+                .is_ok()
+        );
+        assert!(matches!(
+            crate::PhysicalAllocationBudget::new(with_index - 1, 4096).admit(&cold),
+            Err(StoreError::Bounds)
+        ));
+        cold.write_object(&item).unwrap();
+        assert_eq!(
+            unlimited.admit(&cold).unwrap(),
+            with_index,
+            "same immutable bytes do not allocate another payload"
+        );
+        assert!(matches!(
+            crate::PhysicalAllocationBudget::new(u64::MAX, 1).admit(&cold),
+            Err(StoreError::Bounds)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_membership_clones_retain_old_roots_while_orphans_are_collected() {
+        let test = TestStore::new();
+        let retained = object(b"retained old snapshot member");
+        let abandoned = object(b"unselected interrupted admission");
+        test.store.write_object(&retained).unwrap();
+        test.store.write_object(&abandoned).unwrap();
+        let receipt = compose(
+            &test.store,
+            None,
+            &[ClosureMembershipChange::add(retained.id())],
+        );
+        let membership =
+            crate::DurableClosureManifest::from_pinned(&test.store, receipt, budget()).unwrap();
+        let old_snapshot = membership.clone();
+        drop(membership);
+        // A separately opened collector must discover the held lease. No
+        // global admission lock may prevent reclaiming unrelated objects.
+        let collector = FileStore::open(&test.path, 1024 * 1024).unwrap();
+        collector
+            .collect_garbage(&GcRoots::new(), GcLimits::default())
+            .unwrap();
+        assert!(collector.contains_object(retained.id()).unwrap());
+        assert!(!collector.contains_object(abandoned.id()).unwrap());
+        assert!(old_snapshot.get(retained.id()).unwrap().is_some());
+        drop(old_snapshot);
+        collector
+            .collect_garbage(&GcRoots::new(), GcLimits::default())
+            .unwrap();
+        assert!(!collector.contains_object(retained.id()).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_membership_visit_observes_cancellation_between_members() {
+        let test = TestStore::new();
+        let objects = [
+            object(b"cancel first"),
+            object(b"cancel second"),
+            object(b"cancel third"),
+        ];
+        let mut changes = objects
+            .iter()
+            .map(|item| {
+                test.store.write_object(item).unwrap();
+                ClosureMembershipChange::add(item.id())
+            })
+            .collect::<Vec<_>>();
+        changes.sort_by_key(|change| change.object_id());
+        let receipt = compose(&test.store, None, &changes);
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let membership = crate::DurableClosureManifest::from_pinned(&test.store, receipt, budget())
+            .unwrap()
+            .with_cancellation(Arc::clone(&flag));
+        let mut visits = 0;
+        assert!(
+            membership
+                .visit_ids(|_| {
+                    visits += 1;
+                    flag.store(true, Ordering::Release);
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert_eq!(visits, 1);
+        flag.store(false, Ordering::Release);
+        membership
+            .visit_ids(|_| {
+                visits += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(visits, 4);
     }
 
     #[test]

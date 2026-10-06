@@ -1,0 +1,105 @@
+{
+  "files": [
+    {
+      "bytes": 274,
+      "path": ".github/dependabot.yml",
+      "sha256": "60ffc0c7159ff6af5e36ad3ecc56fe63782e4defaabafa94a13df7150d9a84c6"
+    },
+    {
+      "bytes": 1102,
+      "path": ".github/workflows/ci.yml",
+      "sha256": "6bd836321ceeac9f5ff79f0f11c041ff6e0151355469b3a32fc3f3331e1c37cb"
+    },
+    {
+      "bytes": 1498,
+      "path": ".github/workflows/publish-release.yml",
+      "sha256": "736c22c41d2d6badabb74b8352f2af6f970415fa3167be8d8e15ce591d670e86"
+    },
+    {
+      "bytes": 1076,
+      "path": "LICENSE",
+      "sha256": "58d4023bfbed5fb530c5bb8d44641299eac62c850267415ec939cc42dea87e4f"
+    },
+    {
+      "bytes": 11764,
+      "path": "README.md",
+      "sha256": "2d73cc0866eb7488b3f75f3583c84f4caa9930f51a0f36aaa45b0bc4812d2e08"
+    },
+    {
+      "bytes": 4102,
+      "path": "benchmarks/basic.js",
+      "sha256": "65cadf7f4fe2823b07fbfdb99cb6ee68e2dc260c69692ea82ea269ee505b80ac"
+    },
+    {
+      "bytes": 42,
+      "path": "eslint.config.js",
+      "sha256": "32f627a403b3046a1ca8568c1798f91f085820e9e794dd62d5301505944471aa"
+    },
+    {
+      "bytes": 2488,
+      "path": "index.d.ts",
+      "sha256": "3d6f809ee5136bb935ecd8a6070eaa3dd55dafe6cc793c21955fc7980edc7bcb"
+    },
+    {
+      "bytes": 15129,
+      "path": "index.js",
+      "sha256": "7bbac5aa6535a2a9fb4e0169b35a26faf81895fded30bfc7aab864a55d33939c"
+    },
+    {
+      "bytes": 914,
+      "path": "index.test-d.ts",
+      "sha256": "8510ce6ea62ddb210f9ecde986bdc1ed522aa983a49113bc1236e7371df02c24"
+    },
+    {
+      "bytes": 959,
+      "path": "package.json",
+      "sha256": "65c7d0c0ccc98f05bfe3be4a220463ceaf718467d348133db07d04ec80ab093c"
+    },
+    {
+      "bytes": 752,
+      "path": "scripts/sync-version.mjs",
+      "sha256": "d76e342fc000d4dc34840d715e9ed826c6cf6fbc406d42e06485e62fc9d7b015"
+    },
+    {
+      "bytes": 6396,
+      "path": "test/actual-redact-comparison.test.js",
+      "sha256": "4e8b9a2727cbf1c230eb35770395963a95855ec5d432abdb75add62aafe5e596"
+    },
+    {
+      "bytes": 22041,
+      "path": "test/index.test.js",
+      "sha256": "d455b9ae9247d121b68f37f0472a210b8d9d71851213553826bf01d08f8a15dd"
+    },
+    {
+      "bytes": 10921,
+      "path": "test/integration.test.js",
+      "sha256": "86c52a46065ab8a498185a3106d057e68b9c3133b29546ca1dd72da7ab5390fe"
+    },
+    {
+      "bytes": 7691,
+      "path": "test/multiple-wildcards.test.js",
+      "sha256": "9e790613719f50138ffe2bec5e30fa6a37e377026deb862a7b6a8b1154df900b"
+    },
+    {
+      "bytes": 6299,
+      "path": "test/prototype-pollution.test.js",
+      "sha256": "6b0bec94cd27521858691dbf7d156c1638db5130c2563f30dab6fdaa4a714393"
+    },
+    {
+      "bytes": 3494,
+      "path": "test/selective-clone.test.js",
+      "sha256": "429eecfc2be7195e4052a168a2ea314362edc3c2fa6025937e44f4f2aa7ce16b"
+    },
+    {
+      "bytes": 409,
+      "path": "tsconfig.json",
+      "sha256": "243ba8d2728c501f7281e48bd94fa011b0f4796381d5544238ab5b6c22ce8e70"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "@pinojs/redact",
+    "version": "0.4.0"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

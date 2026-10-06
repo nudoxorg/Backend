@@ -63,12 +63,21 @@ pub(super) struct RecoveredView {
     pub(super) base_sequence: u64,
 }
 
+/// Exact authority generation for a durable snapshot and its compact suffix.
+/// Capture-only owner commits can retain the workspace root while changing
+/// the admitted producer context and evidence. Both identities bind the base.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct JournalGeneration {
+    workspace_root: WorkspaceRoot,
+    capability: Option<[u8; 32]>,
+}
+
 /// Product view journal with bounded append and snapshot compaction.
 #[derive(Debug)]
 pub(super) struct ViewJournal {
     path: PathBuf,
     faults: Arc<Faults>,
-    workspace: Cell<Option<[u8; 32]>>,
+    generation: Cell<Option<JournalGeneration>>,
 }
 
 impl ViewJournal {
@@ -84,15 +93,16 @@ impl ViewJournal {
         Ok(Self {
             path,
             faults,
-            workspace: Cell::new(None),
+            generation: Cell::new(None),
         })
     }
 
     fn load_scoped(
         &self,
         capability: &CoverageCapability,
-        expected_workspace: [u8; 32],
+        expected_workspace: WorkspaceRoot,
     ) -> Result<Option<RecoveredView>, String> {
+        self.generation.set(None);
         let live = capability_fingerprint(capability);
         // Every snapshot restarts the chain and a frame for another workspace
         // root empties it, so only the last snapshot and the events after it
@@ -115,7 +125,7 @@ impl ViewJournal {
         let mut events = Vec::new();
         for (kind, payload) in suffix {
             let envelope = decode_envelope(&payload)?;
-            if expected_workspace != envelope.workspace_root {
+            if expected_workspace.to_bytes() != envelope.workspace_root {
                 // A valid snapshot for an older selected workspace carries a
                 // deliberately different producer capability. Ignore that
                 // cache generation before decoding its certificate and wait
@@ -131,7 +141,6 @@ impl ViewJournal {
                 apply_event(&mut state, envelope, &mut events)?;
             }
         }
-        self.workspace.set(Some(expected_workspace));
         let Scoped::Accepted {
             root: view, cursor, ..
         } = state
@@ -144,6 +153,10 @@ impl ViewJournal {
                 u64::try_from(events.len()).map_err(|_| "view event count overflow".to_owned())?,
             )
             .ok_or_else(|| "view journal event sequence underflow".to_owned())?;
+        self.generation.set(Some(JournalGeneration {
+            workspace_root: expected_workspace,
+            capability: Some(live),
+        }));
         Ok(Some(RecoveredView {
             view,
             cursor,
@@ -164,7 +177,7 @@ impl ViewJournal {
         workspace_root: WorkspaceRoot,
         capability: &CoverageCapability,
     ) -> Result<Option<RecoveredView>, String> {
-        self.load_scoped(capability, workspace_root.to_bytes())
+        self.load_scoped(capability, workspace_root)
     }
 
     /// How this journal shows that another build wrote it, when one did.
@@ -529,14 +542,16 @@ impl ViewPersistence for ViewJournal {
         cursor: Cursor,
         event: Option<&CursorEvent>,
     ) -> Result<(), String> {
-        let workspace = workspace_root.to_bytes();
-        if self.workspace.get() != Some(workspace) {
-            // A workspace HEAD change starts a new independently recoverable
-            // view generation. An event is relative to the prior in-memory
-            // view, whose snapshot is certified for another workspace root;
-            // retain the checked target as the first snapshot for this root.
+        let generation = JournalGeneration {
+            workspace_root,
+            capability: view.capability().as_ref().map(capability_fingerprint),
+        };
+        if self.generation.get() != Some(generation) {
+            // Compact events inherit the admitted authority of their base.
+            // A new root or capability requires a full recovery snapshot,
+            // including capture-only commits that retain the manifest root.
             self.persist_snapshot(workspace_root, cursor, view)?;
-            self.workspace.set(Some(workspace));
+            self.generation.set(Some(generation));
             return Ok(());
         }
         let result = match event {
@@ -561,7 +576,7 @@ impl ViewPersistence for ViewJournal {
             }
         };
         if result.is_ok() {
-            self.workspace.set(Some(workspace));
+            self.generation.set(Some(generation));
         }
         result
     }
@@ -809,6 +824,14 @@ fn apply_event(
     };
     if *workspace_root != envelope.workspace_root {
         return Err("view journal workspace head changed within a suffix".to_owned());
+    }
+    if envelope.capability
+        != current_root
+            .capability()
+            .as_ref()
+            .map(capability_fingerprint)
+    {
+        return Err("view journal capability changed within a suffix".to_owned());
     }
     let event_bytes = envelope
         .event

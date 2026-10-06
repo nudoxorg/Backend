@@ -1,0 +1,88 @@
+{
+  "schema": "nudox.source-verified-stratified-dossier.v1",
+  "package": {
+    "ecosystem": "pypi",
+    "id": "decorator",
+    "version": "5.3.1"
+  },
+  "source_root": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-decorator/source",
+  "source_tree_sha256": "616fd848818bf981ed2ddaf62c459347b658b43ce6669e8e38822df03e108abb",
+  "source_files": 21,
+  "source_bytes": 182507,
+  "inventory_sha256": "1b23728d9f3949370d2d521d4f2a8cd4b472a4aa131653019f9655643239474d",
+  "origin_sha256": "d11eb0acf0eedfb46e7b71f201e1ce9a4cac26a01c0166c29e5af15283cd03d8",
+  "archive_sha256": "4cbcdd55a6efadb9dbea26b858f4fb3264567b52d69ca0d25b721b553f60ea82",
+  "origin_verified": true,
+  "archives_reused": false,
+  "acquisition_requests": [
+    {
+      "url": "https://pypi.org/pypi/decorator/json",
+      "final_url": "https://pypi.org/pypi/decorator/json",
+      "status": 200,
+      "seconds": 0.04793480003718287,
+      "bytes": 60750,
+      "sha256": "4ba19daa19ed34454d70151ac56a34572a17c9b0de28cccf0b7c0fa2975c5c68",
+      "utc": "2026-10-06T13:07:33Z"
+    },
+    {
+      "url": "https://files.pythonhosted.org/packages/60/8b/32f9823da46cde7df2087faa08cd98d01b908f8dcab982cdba9c84e85355/decorator-5.3.1.tar.gz",
+      "final_url": "https://files.pythonhosted.org/packages/60/8b/32f9823da46cde7df2087faa08cd98d01b908f8dcab982cdba9c84e85355/decorator-5.3.1.tar.gz",
+      "status": 200,
+      "seconds": 0.0341805019415915,
+      "bytes": 58084,
+      "sha256": "4cbcdd55a6efadb9dbea26b858f4fb3264567b52d69ca0d25b721b553f60ea82",
+      "utc": "2026-10-06T13:07:33Z"
+    }
+  ],
+  "resource_before": {
+    "memory_available_kib": 47914492,
+    "free_disk_bytes": 53987397632
+  },
+  "dependency_requirements": {
+    "requires_dist": []
+  },
+  "dependency_closure_installed": false,
+  "source_expectations": [
+    {
+      "name": "FunctionMaker",
+      "path": "src/decorator/__init__.py",
+      "line": 62,
+      "end_line": 210,
+      "kind": "ClassDef",
+      "file_sha256": "47c88707c658cb85d377454fa9254c38b441ee476e5308332a469e2ed2439983",
+      "start_byte": 2281,
+      "end_byte": 8555,
+      "declaration_sha256": "135e9bf9426f0ec256e5903a81829b4d7c5c345339a9757f912fc0cd3e56f71f",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "decorate",
+      "path": "src/decorator/__init__.py",
+      "line": 222,
+      "end_line": 278,
+      "kind": "FunctionDef",
+      "file_sha256": "47c88707c658cb85d377454fa9254c38b441ee476e5308332a469e2ed2439983",
+      "start_byte": 8783,
+      "end_byte": 10764,
+      "declaration_sha256": "2521d9c3dfebcbc86aeec4cb1e555ffd028e92ed6500dd1230a06a29ef2d0b1d",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "decorator",
+      "path": "src/decorator/__init__.py",
+      "line": 296,
+      "end_line": 323,
+      "kind": "FunctionDef",
+      "file_sha256": "47c88707c658cb85d377454fa9254c38b441ee476e5308332a469e2ed2439983",
+      "start_byte": 11280,
+      "end_byte": 12456,
+      "declaration_sha256": "0bf9c098c35d666fdb6948ff4c19e956c8adc48c961ba966f6623b04dbcc27eb",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    }
+  ],
+  "runtime_acceptance_status": "not_run",
+  "runtime_passes": 0,
+  "package_code_executed": false,
+  "observer_sha256": "d0b89b4bdef9e21f04810f2b42cdf88dedb4d833c85e613138803615d2ed0ffb",
+  "origin_verifier_sha256": "1ef8275b8e6daa9bfe711d05d367316b09635061b4cb9ca147816c6bed3a3039"
+}

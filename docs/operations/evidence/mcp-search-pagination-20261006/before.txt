@@ -1,0 +1,18 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 29m 07s
+     Running unittests src/lib.rs (.local/build/qa/.nudox-cargo/slot-0/debug/deps/backend_local_service-1bcd4b2c9ddd98cd)
+
+running 1 test
+
+thread 'builtin::query::tests::one_result_search_page_keeps_a_continuation_when_more_local_matches_exist' (12850028) panicked at crates/local-service/src/query/tests.rs:357:5:
+a one-row page over two real matches must advertise its continuation
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test builtin::query::tests::one_result_search_page_keeps_a_continuation_when_more_local_matches_exist ... FAILED
+
+failures:
+
+failures:
+    builtin::query::tests::one_result_search_page_keeps_a_continuation_when_more_local_matches_exist
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 994 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p backend-local-service --lib`

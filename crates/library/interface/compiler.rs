@@ -19,8 +19,22 @@ use backend_version::{
     IrFragmentEncoding, IrManifestDomain, IrManifestEncoding, IrSemanticImageDomain,
     IrSemanticImageEncoding, SourceFactDomain,
 };
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use crate::interface::{PackageCompilePhase, PackageCompileRequest, PackageSourceCause};
+
+#[path = "compiler_fragment.rs"]
+mod compiler_fragment;
+pub use compiler_fragment::{
+    AtomFaultFacts, BoundedCompilerFragmentDetail, BuildFaultKind, CanonicalDataFaultFacts,
+    CompilerFragmentDataLane, CompilerFragmentDataResource, CompilerFragmentFailure,
+    CompilerFragmentFault, CompilerFragmentFaultFacts, CompilerFragmentFaultFamily,
+    CompilerFragmentFaultKind, CompilerFragmentFaultPhase, CompilerFragmentLayoutStep,
+    CompilerFragmentNestedFaultKind, CompilerFragmentRecordLane, CompilerFragmentSemanticSpace,
+    EntityRecordFaultFacts, MAX_COMPILER_FRAGMENT_DETAIL_BYTES, NestedCompilerFaultFacts,
+    OccurrenceFaultFacts, PrepareFaultKind, SemanticDataFaultFacts, SignatureCarrierFaultFacts,
+    TypeNodeFaultFacts, ValidateFaultKind, ValidationFaultFacts, WriteFaultKind,
+};
 
 /// Typed source authority copied from a validated compiler result without importing its format.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -29,6 +43,125 @@ pub struct SourceAuthority {
     pub identity: ContentId<SourceFactDomain>,
     /// Exact input byte length bound into the compact IR fragment.
     pub byte_len: u32,
+}
+
+/// One exact executable requirement for a compiler capability.
+///
+/// Native registry tools and auxiliary semantic checkers share this vocabulary,
+/// while retaining distinct identities (`python` is not `pyrefly`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerToolRequirement {
+    /// Registry-selected native compiler or interpreter.
+    Native(NativeTool),
+    /// The Pyrefly semantic checker required alongside the Python interpreter.
+    PythonChecker,
+}
+
+impl CompilerToolRequirement {
+    /// Executable name used in setup guidance.
+    #[must_use]
+    pub const fn executable(self) -> &'static str {
+        match self {
+            Self::Native(NativeTool::Rustc) => "rustc",
+            Self::Native(NativeTool::Clang) => "clang",
+            Self::Native(NativeTool::Python) => "python3",
+            Self::Native(NativeTool::TypeScriptCompiler) => "tsc",
+            Self::Native(NativeTool::GoCompiler) => "go",
+            Self::Native(NativeTool::JavaCompiler) => "javac",
+            Self::Native(NativeTool::CSharpCompiler) => "dotnet",
+            Self::PythonChecker => "pyrefly",
+        }
+    }
+
+    /// Exact local-host variable required to select this executable.
+    #[must_use]
+    pub const fn configuration_variable(self) -> &'static str {
+        match self {
+            Self::Native(NativeTool::Rustc) => "NUDOX_RUSTC",
+            Self::Native(NativeTool::Clang) => "NUDOX_CLANG",
+            Self::Native(NativeTool::Python) => "NUDOX_PYTHON",
+            Self::Native(NativeTool::TypeScriptCompiler) => "NUDOX_TSC",
+            Self::Native(NativeTool::GoCompiler) => "NUDOX_GO",
+            Self::Native(NativeTool::JavaCompiler) => "NUDOX_JAVAC",
+            Self::Native(NativeTool::CSharpCompiler) => "NUDOX_DOTNET",
+            Self::PythonChecker => "NUDOX_PYREFLY",
+        }
+    }
+
+    /// Stable string representation for checked failure DTOs and wire terminals.
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Native(NativeTool::Rustc) => "rustc",
+            Self::Native(NativeTool::Clang) => "clang",
+            Self::Native(NativeTool::Python) => "python",
+            Self::Native(NativeTool::TypeScriptCompiler) => "typescript_compiler",
+            Self::Native(NativeTool::GoCompiler) => "go_compiler",
+            Self::Native(NativeTool::JavaCompiler) => "java_compiler",
+            Self::Native(NativeTool::CSharpCompiler) => "csharp_compiler",
+            Self::PythonChecker => "python_checker",
+        }
+    }
+}
+
+impl Serialize for CompilerToolRequirement {
+    fn serialize<Output: Serializer>(
+        &self,
+        serializer: Output,
+    ) -> Result<Output::Ok, Output::Error> {
+        serializer.serialize_str(self.wire_name())
+    }
+}
+
+impl<'de> Deserialize<'de> for CompilerToolRequirement {
+    fn deserialize<Input: Deserializer<'de>>(deserializer: Input) -> Result<Self, Input::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "rustc" => Ok(Self::Native(NativeTool::Rustc)),
+            "clang" => Ok(Self::Native(NativeTool::Clang)),
+            "python" => Ok(Self::Native(NativeTool::Python)),
+            "typescript_compiler" => Ok(Self::Native(NativeTool::TypeScriptCompiler)),
+            "go_compiler" => Ok(Self::Native(NativeTool::GoCompiler)),
+            "java_compiler" => Ok(Self::Native(NativeTool::JavaCompiler)),
+            "csharp_compiler" => Ok(Self::Native(NativeTool::CSharpCompiler)),
+            "python_checker" => Ok(Self::PythonChecker),
+            other => Err(Input::Error::custom(format!(
+                "unknown compiler tool requirement `{other}`"
+            ))),
+        }
+    }
+}
+
+/// Why an exact compiler tool requirement is not admitted.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompilerToolFailure {
+    /// The owner has no explicit selection for the required executable.
+    Missing,
+    /// The selected executable failed its bounded version probe.
+    ProbeFailed,
+}
+
+/// Exact tool requirement and setup failure carried through capability and refusal surfaces.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompilerToolIssue {
+    /// Exact executable required by this language capability.
+    pub requirement: CompilerToolRequirement,
+    /// Exact setup condition preventing admission.
+    pub failure: CompilerToolFailure,
+}
+
+impl CompilerToolIssue {
+    /// Exact configuration variable that selects the required executable.
+    #[must_use]
+    pub const fn configuration_variable(self) -> &'static str {
+        self.requirement.configuration_variable()
+    }
+
+    /// Exact executable name associated with this requirement.
+    #[must_use]
+    pub const fn executable(self) -> &'static str {
+        self.requirement.executable()
+    }
 }
 
 /// Typed verified-generation authority copied without importing the hydration planner.
@@ -508,6 +641,17 @@ pub enum CompilerTerminal {
         /// Native tool whose absence is explicit rather than an ambient lookup failure.
         tool: NativeTool,
     },
+    /// An exact native or auxiliary tool requirement is missing or failed admission.
+    RequiredTool {
+        /// Identity and byte length of the exact source under evaluation.
+        source: SourceAuthority,
+        /// Requested closed language family.
+        language: Language,
+        /// Requested closed compiler stage.
+        stage: Stage,
+        /// Exact tool requirement and bounded admission failure.
+        issue: CompilerToolIssue,
+    },
     /// Cancellation won before an IR fragment could become visible.
     Cancelled {
         /// Exact source and canonical recipe identity under evaluation.
@@ -577,6 +721,12 @@ pub enum CompilerCause {
     Lowering(LoweringCause),
     /// Compact IR construction, output writing, or self-validation failed.
     Fragment(FragmentCause),
+    /// A concrete typed semantic/IR error from compact-fragment construction.
+    ///
+    /// `Fragment` remains for older callers that only have a phase. Compiler
+    /// driver failures use this variant so source errors and their operands
+    /// remain inspectable through library and transport boundaries.
+    FragmentFailure(CompilerFragmentFailure),
 }
 
 /// One cold owner for a lowering terminal whose largest language projection
@@ -859,8 +1009,131 @@ pub struct CompilerDiagnosticFacts {
     pub observed: usize,
     /// Whether native output exceeded the retained diagnostic or native-stream bound.
     pub truncated: bool,
+    /// Closed Python checker failure family, when package authority retained one.
+    ///
+    /// This marker carries no native text or path. Package refusal projection may
+    /// expose it as a stable cause tag while the bounded diagnostic bytes remain
+    /// available only through the local-debug accessor.
+    pub python_failure: Option<PythonAuthorityFailureKind>,
     /// Zero-filled storage whose prefix through `byte_len` is the exact diagnostic prefix.
     pub bytes: [u8; MAX_NATIVE_DIAGNOSTIC_BYTES],
+}
+
+/// Closed, non-sensitive Python checker failure family retained alongside its
+/// bounded diagnostic. The family is useful for durable refusal triage without
+/// copying native stderr, absolute paths, or free-form solver text onto product
+/// surfaces.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PythonAuthorityFailureKind {
+    /// Native Python project State panicked before producing an admitted report.
+    ProjectPanic,
+    /// Caller cancellation interrupted the project checker.
+    Cancelled,
+    /// Project checker deadline expired.
+    Deadline,
+    /// One captured source module failed syntax admission.
+    SyntaxRejected,
+    /// Checker required dependency bytes absent from the captured input root.
+    DependencyOutsideCapture,
+    /// Native checker identity differed from the admitted toolchain producer.
+    ProducerIdentityMismatch,
+    /// An internal import resolved to a source candidate beyond captured membership.
+    IncompleteSourceFrontier,
+    /// Checker type was outside the supported semantic projection.
+    TypeProjectionUnsupported,
+    /// Native project report did not join to the captured source facts.
+    ProjectReportMismatch,
+    /// Checker and captured source digests disagreed.
+    SourceDigestMismatch,
+    /// Selected project root failed canonical directory admission.
+    InvalidPackageRoot,
+    /// Checker executable could not be spawned.
+    CheckerSpawnFailed,
+    /// Checker process pipe or reader I/O failed.
+    CheckerIoFailed,
+    /// Bounded checker stream worker panicked.
+    CheckerWorkerPanic,
+    /// Checker exited without a successful report.
+    CheckerExited,
+    /// Checker output did not satisfy its bounded protocol.
+    CheckerProtocolInvalid,
+    /// Checker exceeded the admitted output bound.
+    CheckerOutputLimit,
+    /// Checker exceeded its process timeout.
+    CheckerTimeout,
+    /// Private checker workspace filesystem operation failed.
+    WorkspaceIoFailed,
+    /// Checker returned a span outside the exact selected source bytes.
+    InvalidFactSpan,
+}
+
+impl PythonAuthorityFailureKind {
+    /// Stable cause tag used by closed package compiler failures.
+    #[must_use]
+    pub const fn kind_tag(self) -> &'static str {
+        match self {
+            Self::ProjectPanic => "python_project_panic",
+            Self::Cancelled => "python_cancelled",
+            Self::Deadline => "python_deadline",
+            Self::SyntaxRejected => "python_syntax_rejected",
+            Self::DependencyOutsideCapture => "python_dependency_outside_capture",
+            Self::ProducerIdentityMismatch => "python_producer_identity_mismatch",
+            Self::IncompleteSourceFrontier => "python_incomplete_source_frontier",
+            Self::TypeProjectionUnsupported => "python_type_projection_unsupported",
+            Self::ProjectReportMismatch => "python_project_report_mismatch",
+            Self::SourceDigestMismatch => "python_source_digest_mismatch",
+            Self::InvalidPackageRoot => "python_invalid_package_root",
+            Self::CheckerSpawnFailed => "python_checker_spawn_failed",
+            Self::CheckerIoFailed => "python_checker_io_failed",
+            Self::CheckerWorkerPanic => "python_checker_worker_panic",
+            Self::CheckerExited => "python_checker_exited",
+            Self::CheckerProtocolInvalid => "python_checker_protocol_invalid",
+            Self::CheckerOutputLimit => "python_checker_output_limit",
+            Self::CheckerTimeout => "python_checker_timeout",
+            Self::WorkspaceIoFailed => "python_workspace_io_failed",
+            Self::InvalidFactSpan => "python_invalid_fact_span",
+        }
+    }
+
+    /// Bounded, path-free explanation appropriate for CLI/MCP failure detail.
+    #[must_use]
+    pub const fn detail(self) -> &'static str {
+        match self {
+            Self::ProjectPanic => "Python project checker failed internally",
+            Self::Cancelled => "Python project checking was cancelled",
+            Self::Deadline => "Python project checking exceeded its deadline",
+            Self::SyntaxRejected => "Python source was rejected during project syntax checking",
+            Self::DependencyOutsideCapture => {
+                "Python checking required dependency source outside the captured project"
+            }
+            Self::ProducerIdentityMismatch => {
+                "Python checker identity did not match the admitted native producer"
+            }
+            Self::IncompleteSourceFrontier => {
+                "Python imports require source files outside the captured project frontier"
+            }
+            Self::TypeProjectionUnsupported => {
+                "Python checker produced a type outside the supported semantic projection"
+            }
+            Self::ProjectReportMismatch => {
+                "Python checker report did not match the captured source project"
+            }
+            Self::SourceDigestMismatch => {
+                "Python checker read different source bytes than the captured package"
+            }
+            Self::InvalidPackageRoot => "Python checker package root was invalid",
+            Self::CheckerSpawnFailed => "Python checker process could not be started",
+            Self::CheckerIoFailed => "Python checker process I/O failed",
+            Self::CheckerWorkerPanic => "Python checker stream worker failed internally",
+            Self::CheckerExited => "Python checker exited without a usable project result",
+            Self::CheckerProtocolInvalid => "Python checker returned an invalid project response",
+            Self::CheckerOutputLimit => "Python checker exceeded its bounded output limit",
+            Self::CheckerTimeout => "Python checker exceeded its process deadline",
+            Self::WorkspaceIoFailed => "Python checker workspace I/O failed",
+            Self::InvalidFactSpan => "Python checker returned a source span outside captured bytes",
+        }
+    }
 }
 
 impl Deref for CompilerDiagnostic {
@@ -893,7 +1166,23 @@ impl CompilerDiagnostic {
             byte_len: retained,
             observed,
             truncated: truncated || retained != bytes.len(),
+            python_failure: None,
             bytes: output,
         })))
+    }
+
+    /// Adds a closed Python checker failure family without altering the retained
+    /// diagnostic bytes or their exact observed extent.
+    #[must_use]
+    pub fn with_python_failure(mut self, failure: PythonAuthorityFailureKind) -> Self {
+        self.0.python_failure = Some(failure);
+        self
+    }
+
+    /// Exact bounded diagnostic prefix, for local debugging only. Product and
+    /// wire projections must use closed facts and must never serialize this slice.
+    #[must_use]
+    pub fn retained_bytes_for_local_debug(&self) -> &[u8] {
+        self.0.bytes.get(..self.0.byte_len).unwrap_or_default()
     }
 }

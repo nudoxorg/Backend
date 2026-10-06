@@ -1,0 +1,15 @@
+770419 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-sealed.log>, "\nrunning 1 test\n", 16) = 16
+770420 write(3</tmp/backend-sealed-read-770419-0/nodes/read.ref>, "descriptor fixture", 18) = 18
+770420 write(2</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-sealed.log>, "SEALED_READ_BEGIN\n", 18) = 18
+770420 write(2</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-sealed.log>, "SEALED_READ_END\n", 16) = 16
+770420 +++ exited with 0 +++
+770419 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-sealed.log>, "test durable::artifact_fs::imp::"..., 100) = 100
+770419 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-sealed.log>, "ok", 2) = 2
+770419 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-sealed.log>, "\n", 1) = 1
+770419 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-sealed.log>, "\n", 1) = 1
+770419 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-sealed.log>, "test result: ", 13) = 13
+770419 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-sealed.log>, "ok", 2) = 2
+770419 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-sealed.log>, ". 1 passed; 0 failed; 0 ignored;"..., 61) = 61
+770419 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-sealed.log>, "; finished in 0.01s", 19) = 19
+770419 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-sealed.log>, "\n\n", 2) = 2
+770419 +++ exited with 0 +++

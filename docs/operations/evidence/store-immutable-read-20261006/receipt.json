@@ -1,0 +1,49 @@
+{
+  "base_commit": "3a3f283316",
+  "scope": "Unix immutable artifact read only; publication durable seal unchanged",
+  "before": {
+    "passed": 1,
+    "failed": 2,
+    "failure": "Repeated chmod/fsync on sealed read changes same inode ctime"
+  },
+  "after_store_lib": {
+    "passed": 268,
+    "failed": 0
+  },
+  "after_final_focused": {
+    "passed": 4,
+    "failed": 0,
+    "concurrent_reopened_owned_and_pinned_reads": 160
+  },
+  "source_file_sha256": "40a2e0c22534b1569ca8cf0b9bbd01d5fe11e4d2b459c44340a14a302d2c6d10",
+  "logs": {
+    "after-store-lib.log": "5251e645d7769584704c1d4e79fa51edbcd5afb3c72902e1645f83280b165e23",
+    "after-focused.log": "af10d301675c6021476667628eb0cfb5dbbdfb7e6d7d81cbd725cbcec33626de",
+    "before-focused.log": "503ac3f03cf9c1250ac6d3a451b1d718dc28c05097bd330453b4c053fb236adb"
+  },
+  "matched_runtime_after_not_yet_tested": true,
+  "linux_syscall_gate_pending": false,
+  "linux": {
+    "source_tree": "292f12b34ae2452b5913624a48e824aeaecbf817",
+    "source_commit": "234bfdef27e04d4ee6d74e55913c189cba19e952",
+    "source_path": "/root/nudox-corpus-20261006/sol-store-immutable-read-exact",
+    "guarded_cargo": "/nix/store/n4b80fmlzlmxx0584y7acwcnikk4k071-nudox-luna-tools-shell/bin/cargo",
+    "build_command": "cargo test --release --locked --offline -p backend-store --lib immutable_read_tests -- --nocapture",
+    "build_jobs": 2,
+    "tests_passed": 4,
+    "sealed_read_mutating_syscalls": 0,
+    "legacy_five_modes_sealing_syscalls": {
+      "fchmod": 5,
+      "fsync": 5,
+      "fdatasync": 0
+    },
+    "test_binary_sha256": "eb2430e1e63bca6ba1615091c7d0f9dcd6c77501ac845330adcc1b1927c52aff",
+    "raw": {
+      "sol-store-read-linux-sealed.log": "8e48556521908a60615e4cfe9bca70c4b248fc148a32e24f2d60b87736472633",
+      "sol-store-read-linux-focused.log": "087b2134e11ea2610ed1af92a573f6a62153f0ea846a9533351973d0b395130f",
+      "sol-store-read-linux-legacy.strace": "081b0ce6c9bf57478224cdd1a425f82a8b598e4d1ef710574f833a0be2d1b0f9",
+      "sol-store-read-linux-sealed.strace": "e4427bff746e6555b7f3f586cc033eda127ff41db88f8ee358cbf512292e5168",
+      "sol-store-read-linux-legacy.log": "cf811b4a8ce2f5e99d05d6771aa60d8ee57c471a10e5b373afb78e2b51dbc242"
+    }
+  }
+}

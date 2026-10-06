@@ -14,19 +14,20 @@ use backend_engine::application::LocalCompilerClient;
 use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticPublicationCoverage};
 use backend_library::{
     CommandFailure, CommandReply, SemanticArrayShape, SemanticCallableCarrierBindings,
-    SemanticCallableShape, SemanticDeclarationShape, SemanticLiteral, SemanticObjectMember,
-    SemanticPropertyKey, SemanticShapeBatch, SemanticShapeEntry, SemanticShapeFact,
-    SemanticShapeImageOrigin, SemanticShapeLanguageFact, SemanticShapeLanguageFacts,
-    SemanticShapeMember, SemanticShapeRequest, SemanticShapeSelection, SemanticShapeSourceOrigin,
-    SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr, SemanticTypeFact,
-    SemanticTypeUnavailable, SymbolAddress,
+    SemanticCallableShape, SemanticDeclarationShape, SemanticImagePayloadBytes, SemanticLiteral,
+    SemanticObjectMember, SemanticPropertyKey, SemanticShapeBatch, SemanticShapeEntry,
+    SemanticShapeFact, SemanticShapeImageOrigin, SemanticShapeLanguageFact,
+    SemanticShapeLanguageFacts, SemanticShapeMember, SemanticShapeMemberName, SemanticShapeRequest,
+    SemanticShapeSelection, SemanticShapeSourceOrigin, SemanticShapeUnavailable,
+    SemanticTypeElement, SemanticTypeExpr, SemanticTypeFact, SemanticTypeUnavailable,
+    SymbolAddress,
 };
 use backend_semantic::ir::{
     ArrayShape, ConcreteType, DeclarationIdentity, ExternalTarget, ExternalTargetIdentity,
-    FunctionVariadicForm, ItemKind, LanguageProfile, LiteralType, ObjectMember, PropertyKey,
-    SemanticCoreReader, SemanticImageView, SemanticReader, SignatureCarrierBindingRole,
-    SignatureCarrierBindingsObservation, SignatureCarrierRole, SignatureCarrierRoleObservation,
-    TupleElementKind, TypeExpr, TypeId,
+    FunctionVariadicForm, ItemKind, ItemName, LanguageProfile, LiteralType, ObjectMember,
+    PropertyKey, SemanticCoreReader, SemanticImageView, SemanticReader,
+    SignatureCarrierBindingRole, SignatureCarrierBindingsObservation, SignatureCarrierRole,
+    SignatureCarrierRoleObservation, TupleElementKind, TypeExpr, TypeId,
 };
 use std::collections::BTreeSet;
 
@@ -237,28 +238,30 @@ pub(super) fn execute_semantic_shapes(
                 "semantic shape source is not a complete publication".to_owned(),
             ));
         };
-        let binding = claim.binding();
-        let manifest = claim.manifest();
-        let exact = request.source().generation.to_bytes() == *binding.identity.as_ref()
-            && request.source().generation_root == *binding.generation.pinned_root.as_ref()
-            && request.source().dependency_set == *binding.generation.dep_set.as_ref()
-            && request.source().manifest == *manifest.identity.as_ref()
-            && request.source().artifacts == manifest.fragment_count
-            && request.source().semantic_bytes == manifest.byte_length
-            && request.source().package == *key.package()
-            && request.source().coordinate.as_str() == key.coordinate().as_str()
-            && request.source().profile.profile().ok() == Some(key.profile());
-        if !exact {
-            return Err(BuiltinModelError(
-                "semantic shape source differs from the selected publication".to_owned(),
-            ));
-        }
         selected = Some((key.clone(), *claim));
         Ok(())
     })?;
     let Some((key, claim)) = selected else {
         return Ok(CommandReply::Failed(CommandFailure::NotFound));
     };
+    let binding = claim.binding();
+    let manifest = claim.manifest();
+    let exact = request.source().generation.to_bytes() == *binding.identity.as_ref()
+        && request.source().generation_root == *binding.generation.pinned_root.as_ref()
+        && request.source().dependency_set == *binding.generation.dep_set.as_ref()
+        && request.source().manifest == *manifest.identity.as_ref()
+        && request.source().artifacts == manifest.fragment_count
+        && request.source().semantic_bytes == manifest.byte_length
+        && request.source().package == *key.package()
+        && request.source().coordinate.as_str() == key.coordinate().as_str()
+        && request.source().profile.profile().ok() == Some(key.profile());
+    if !exact {
+        return Ok(CommandReply::Failed(CommandFailure::InvalidQuery(
+            "semantic shape source differs from the selected publication".to_owned(),
+        )));
+    }
+    let freshness_key = super::super::semantic_authority::SelectedSemanticPublicationKey::new(&key)
+        .map_err(|error| BuiltinModelError(error.to_owned()))?;
     // Freshness is a current source-input observation, not part of the
     // immutable generation binding. Recompute it from this exact selected
     // key/claim read from the same immutable snapshot, while the owner handles
@@ -266,7 +269,7 @@ pub(super) fn execute_semantic_shapes(
     // observation. History status is
     // intentionally outside this shape authority: it is an asynchronous,
     // derived sidecar and is neither echoed nor triggered by a shape read.
-    if semantic_authority.freshness(&key, claim) != request.source().freshness {
+    if semantic_authority.freshness(&snapshot, freshness_key, claim)? != request.source().freshness {
         return Ok(CommandReply::Failed(CommandFailure::InvalidQuery(
             "semantic shape source freshness changed after selection".to_owned(),
         )));
@@ -293,6 +296,27 @@ pub(super) fn execute_semantic_shapes(
     }
 
     let activated = activate_semantic_publication(compiler, &key, claim, generations, image_rows)?;
+    if u32::try_from(activated.images().len()).ok() != Some(request.source().artifacts) {
+        return Err(BuiltinModelError(
+            "selected semantic image count differs from its checked manifest".to_owned(),
+        ));
+    }
+    let selected_image_bytes = activated
+        .images()
+        .iter()
+        .try_fold(0_u32, |total, image| {
+            if image.authority.byte_len == 0 {
+                return None;
+            }
+            total.checked_add(image.authority.byte_len)
+        })
+        .ok_or_else(|| {
+            BuiltinModelError(
+                "selected semantic image payload extent is empty or overflowed".to_owned(),
+            )
+        })?;
+    let semantic_image_bytes = SemanticImagePayloadBytes::new(selected_image_bytes)
+        .map_err(|error| BuiltinModelError(format!("admit selected image extent: {error}")))?;
     let selection_root = *snapshot.root().as_bytes();
     let selected_source = SemanticShapeSelection::from_selected(request.source())
         .map_err(|error| BuiltinModelError(format!("selected shape source admission: {error}")))?;
@@ -401,6 +425,7 @@ pub(super) fn execute_semantic_shapes(
             let origin = SemanticShapeSourceOrigin {
                 source: selected_source.clone(),
                 selection_root,
+                semantic_image_bytes,
                 image: Some(SemanticShapeImageOrigin {
                     image: image_snapshot.authority,
                     profile,
@@ -417,6 +442,7 @@ pub(super) fn execute_semantic_shapes(
             let fallback_origin = Some(SemanticShapeSourceOrigin {
                 source: selected_source.clone(),
                 selection_root,
+                semantic_image_bytes,
                 image: None,
             });
             entries.push(SemanticShapeEntry {
@@ -441,7 +467,9 @@ pub(super) fn execute_semantic_shapes(
             "workspace selection changed during semantic shape projection".to_owned(),
         )));
     }
-    if semantic_authority.freshness(&key, claim) != request.source().freshness {
+    if semantic_authority.freshness(&final_snapshot, freshness_key, claim)?
+        != request.source().freshness
+    {
         return Ok(CommandReply::Failed(CommandFailure::InvalidQuery(
             "semantic shape source freshness changed during projection".to_owned(),
         )));
@@ -541,6 +569,9 @@ fn project_declaration(
                             | ItemKind::Namespace
                     ) =>
             {
+                if entity.authority.members != backend_semantic::ir::FactAvailability::Captured {
+                    return Err(SemanticShapeUnavailable::MemberInventoryNotCaptured);
+                }
                 SemanticDeclarationShape::Aggregate(project_members(
                     image,
                     entity.members,
@@ -717,8 +748,19 @@ fn project_members(
         let Some(member) = image.entity(member_id) else {
             return Err(SemanticShapeUnavailable::MissingImageFact);
         };
-        let name = atom_text(image, member.name, meter)?;
-        // `atom_text` already charged the member spelling.
+        let name = match member.name {
+            ItemName::Named(atom) => SemanticShapeMemberName::Named(atom_text(image, atom, meter)?),
+            ItemName::AnonymousCallable(atom) => {
+                let encoded = image
+                    .atom(atom)
+                    .ok_or(SemanticShapeUnavailable::MissingImageFact)?;
+                meter.bytes(encoded.len().saturating_mul(6).saturating_add(16))?;
+                SemanticShapeMemberName::AnonymousCallable(
+                    backend_library::SemanticAnonymousCallableAnchor::new(encoded)
+                        .map_err(|_| SemanticShapeUnavailable::MissingImageFact)?,
+                )
+            }
+        };
         meter.node(160)?;
         meter.node(64)?;
         let language =
@@ -1468,20 +1510,251 @@ fn identity_from_compiler(
 mod tests {
     use super::{
         ItemKind, ProjectionMeter, SemanticCallableCarrierBindings, SemanticDeclarationShape,
-        SemanticTypeExpr, atom_text, python_language_facts,
+        SemanticShapeMemberName, SemanticTypeExpr, atom_text, python_language_facts,
     };
     use backend_semantic::{
         ir::{
-            AtomListId, BorrowedTree, ConcreteType, Confidence, CorePayloadHash,
-            DeclarationFamilyId, EntityAuthorityFacts, EntityId, EntityVersion, FactAvailability,
-            FunctionVariadicForm, IrBuilder, LiteralType, ObjectMember, ParentageAuthority,
-            PropertyKey, PythonFacts, PythonParameterKind, SemanticImageView, SemanticReader,
-            SignatureCarrierOwnerInput, TreeItemInput, TypeExpr, VariantFingerprint, Visibility,
-            encode_full_semantic_image, full_semantic_image_len,
+            AnonymousCallableAnchor, AnonymousCallableFamilyMultiplicity, AtomListId, BorrowedTree,
+            CallableAnchorStep, CallableChildRole, CallableParentShape, ConcreteType, Confidence,
+            CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityId, EntityVersion,
+            FactAvailability, FunctionVariadicForm, IrBuilder, LiteralType, ObjectMember,
+            ParentageAuthority, PropertyKey, PythonFacts, PythonParameterKind, SemanticImageView,
+            SemanticReader, SignatureCarrierOwnerInput, TreeEntityId, TreeItemInput, TypeExpr,
+            VariantFingerprint, Visibility, encode_full_semantic_image, full_semantic_image_len,
         },
         vocabulary::{LanguageProfile, PythonVersion, RustEdition},
     };
     use std::collections::BTreeSet;
+
+    #[test]
+    fn declared_member_inventory_reader_distinguishes_captured_empty_from_unavailable() {
+        let mut builder = IrBuilder::new();
+        let item = TreeItemInput {
+            name: b"empty",
+            anonymous_callable_anchor: None,
+            kind: ItemKind::Record,
+            visibility: Visibility::Unknown,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Root,
+                members: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        };
+        let versions = [31, 32].map(|byte| EntityVersion {
+            family: DeclarationFamilyId::from_raw([byte; 16]),
+            variant: VariantFingerprint::from_raw([byte; 16]),
+            core_payload: CorePayloadHash::from_raw([byte; 16]),
+        });
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &[
+                    item,
+                    TreeItemInput {
+                        name: b"unproven",
+                        anonymous_callable_anchor: None,
+                        authority: EntityAuthorityFacts {
+                            members: FactAvailability::Unavailable,
+                            ..item.authority
+                        },
+                        ..item
+                    },
+                ],
+                links: &[],
+            })
+            .expect("both authority states are valid");
+        let ir = builder.finish().expect("authority image finalizes");
+        let mut bytes = vec![0; full_semantic_image_len(&ir).expect("bounded image")];
+        encode_full_semantic_image(&ir, &mut bytes).expect("authority facts encode");
+        let image = SemanticImageView::reopen(&bytes).expect("authority facts survive reopen");
+        let basis = backend_engine::Basis::new(
+            backend_engine::view_state_root(&[]),
+            backend_engine::object_version(b"member-authority"),
+        );
+        let frontier =
+            backend_engine::Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0);
+        let view = backend_engine::ViewRoot::new_incomplete(
+            backend_engine::view_key(b"member-authority"),
+            basis,
+            frontier,
+            vec![],
+            vec![],
+        )
+        .expect("coherent projection view");
+        let mut meter = ProjectionMeter {
+            nodes: 0,
+            bytes: 0,
+            max_nodes: backend_library::MAX_SEMANTIC_SHAPE_NODES,
+            max_bytes: backend_library::MAX_SEMANTIC_SHAPE_BYTES,
+            proof_symbols: BTreeSet::new(),
+            proof_packages: BTreeSet::new(),
+            omitted_proof_symbols: BTreeSet::new(),
+        };
+        let package = backend_engine::package_key("member-authority");
+        let project = |id, meter: &mut ProjectionMeter| {
+            super::project_declaration(
+                &image,
+                image.entity(EntityId::new(id)).expect("owner"),
+                package,
+                &view,
+                LanguageProfile::Rust(RustEdition::Rust2021),
+                meter,
+            )
+        };
+        assert!(
+            matches!(project(0, &mut meter), backend_library::SemanticShapeFact::Available {
+            shape: SemanticDeclarationShape::Aggregate(members), .. } if members.is_empty())
+        );
+        assert_eq!(
+            project(1, &mut meter),
+            backend_library::SemanticShapeFact::Unavailable(
+                backend_library::SemanticShapeUnavailable::MemberInventoryNotCaptured
+            )
+        );
+    }
+
+    #[test]
+    fn aggregate_members_keep_anonymous_callable_anchors_typed() {
+        let route = [CallableAnchorStep {
+            child_role: CallableChildRole::CallArgument,
+            parent: CallableParentShape::Call,
+        }];
+        let mut encoded_anchor = [0; 32];
+        let anchor_length = AnonymousCallableAnchor { steps: &route }
+            .write_storage(
+                AnonymousCallableFamilyMultiplicity::Unique,
+                &mut encoded_anchor,
+            )
+            .expect("bounded anonymous callable anchor");
+        let anchor = &encoded_anchor[..anchor_length];
+        let members = [TreeEntityId::new(1), TreeEntityId::new(2)];
+        let versions = [31, 32, 33].map(|byte| EntityVersion {
+            family: DeclarationFamilyId::from_raw([byte; 16]),
+            variant: VariantFingerprint::from_raw([byte + 1; 16]),
+            core_payload: CorePayloadHash::from_raw([byte + 2; 16]),
+        });
+        let parent_identity = versions[0].identity();
+        let mut builder = IrBuilder::new();
+        let items = [
+            TreeItemInput {
+                name: b"module",
+                anonymous_callable_anchor: None,
+                kind: ItemKind::Module,
+                visibility: Visibility::Private,
+                authority: EntityAuthorityFacts {
+                    parentage: ParentageAuthority::Root,
+                    members: FactAvailability::Captured,
+                    ..EntityAuthorityFacts::default()
+                },
+                parent: None,
+                semantic_type: None,
+                members: &members,
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"",
+                anonymous_callable_anchor: Some(anchor),
+                kind: ItemKind::Function,
+                visibility: Visibility::Private,
+                authority: EntityAuthorityFacts {
+                    parentage: ParentageAuthority::Bound(parent_identity),
+                    ..EntityAuthorityFacts::default()
+                },
+                parent: Some(TreeEntityId::new(0)),
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"sourceNamed",
+                anonymous_callable_anchor: None,
+                kind: ItemKind::Function,
+                visibility: Visibility::Private,
+                authority: EntityAuthorityFacts {
+                    parentage: ParentageAuthority::Bound(parent_identity),
+                    ..EntityAuthorityFacts::default()
+                },
+                parent: Some(TreeEntityId::new(0)),
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+        ];
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &[],
+            })
+            .expect("typed anonymous member enters image");
+        let ir = builder.finish().expect("anonymous-member image completes");
+        let mut image_bytes = vec![0; full_semantic_image_len(&ir).expect("image is bounded")];
+        encode_full_semantic_image(&ir, &mut image_bytes).expect("image encodes");
+        let image = SemanticImageView::reopen(&image_bytes).expect("image reopens");
+        let basis = backend_engine::Basis::new(
+            backend_engine::view_state_root(&[]),
+            backend_engine::object_version(b"anonymous-shape-member"),
+        );
+        let frontier =
+            backend_engine::Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0);
+        let view = backend_engine::ViewRoot::new_incomplete(
+            backend_engine::view_key(b"anonymous-shape-member"),
+            basis,
+            frontier,
+            vec![],
+            vec![],
+        )
+        .expect("coherent projection view");
+        let mut meter = ProjectionMeter {
+            nodes: 0,
+            bytes: 0,
+            max_nodes: backend_library::MAX_SEMANTIC_SHAPE_NODES,
+            max_bytes: backend_library::MAX_SEMANTIC_SHAPE_BYTES,
+            proof_symbols: BTreeSet::new(),
+            proof_packages: BTreeSet::new(),
+            omitted_proof_symbols: BTreeSet::new(),
+        };
+        let fact = super::project_declaration(
+            &image,
+            image.entity(EntityId::new(0)).expect("aggregate owner"),
+            backend_engine::package_key("anonymous-shape-member"),
+            &view,
+            LanguageProfile::Rust(RustEdition::Rust2021),
+            &mut meter,
+        );
+        let backend_library::SemanticShapeFact::Available {
+            shape: SemanticDeclarationShape::Aggregate(members),
+            ..
+        } = fact
+        else {
+            panic!("complete module member inventory projects");
+        };
+        assert_eq!(members.len(), 2);
+        let SemanticShapeMemberName::AnonymousCallable(projected) = &members[0].name else {
+            panic!("anonymous callable identity must remain a typed anchor");
+        };
+        assert_eq!(projected.encoded_bytes(), anchor);
+        let SemanticShapeMemberName::Named(named) = &members[1].name else {
+            panic!("source-written member keeps its named spelling");
+        };
+        assert_eq!(named.as_str(), "sourceNamed");
+    }
 
     #[test]
     fn python_parameter_convention_is_not_projected_from_a_function_row() {
@@ -1542,11 +1815,13 @@ mod tests {
         };
         let item = TreeItemInput {
             name: b"zero",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Private,
             authority: EntityAuthorityFacts {
                 parentage: ParentageAuthority::Root,
                 semantic_type: FactAvailability::Captured,
+                visibility: FactAvailability::Captured,
                 ..EntityAuthorityFacts::default()
             },
             parent: None,
@@ -1564,6 +1839,7 @@ mod tests {
                     item,
                     TreeItemInput {
                         name: b"unavailable",
+                        anonymous_callable_anchor: None,
                         ..item
                     },
                 ],
@@ -1733,11 +2009,13 @@ mod tests {
         };
         let item = TreeItemInput {
             name: b"shape",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Record,
             visibility: Visibility::Private,
             authority: EntityAuthorityFacts {
                 parentage: ParentageAuthority::Root,
                 semantic_type: FactAvailability::Captured,
+                visibility: FactAvailability::Captured,
                 ..EntityAuthorityFacts::default()
             },
             parent: None,

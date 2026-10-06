@@ -25,11 +25,10 @@ use backend_library::{
     ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector,
     RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness,
     RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem, RegistryFactAvailability,
-    RegistryMetadata, RegistryNativeMetadata,
-    RegistryPackageRecord, RegistryPackageSearchGroup, RegistryReleaseMatchScope,
-    RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit, RegistrySearchRelease,
-    ReleaseRecord, Row, SemanticVersionRecord, SubscriptionRecord, TreeNodeRecord, TreeOpener,
-    TreeSubject, command_spec,
+    RegistryMetadata, RegistryNativeMetadata, RegistryPackageRecord, RegistryPackageSearchGroup,
+    RegistryReleaseMatchScope, RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit,
+    RegistrySearchRelease, ReleaseRecord, Row, SemanticVersionRecord, SubscriptionRecord,
+    TreeNodeRecord, TreeOpener, TreeSubject, command_spec,
 };
 use backend_platform::durable;
 use base64::Engine as _;
@@ -383,15 +382,11 @@ impl ProductState {
                     PackageReference::Local(_) => Vec::new(),
                 };
                 if forge_details.is_empty() {
-                    (
-                        SurfaceReply::Package(package_page(
-                            view,
-                            catalog,
-                            catalog_index,
-                            &package,
-                        )?),
-                        false,
-                    )
+                    let reply = match package_page(view, catalog, catalog_index, &package) {
+                        Ok(rows) => SurfaceReply::Package(rows),
+                        Err(error) => discovered_package(discovery, &package)?.ok_or(error)?,
+                    };
+                    (reply, false)
                 } else {
                     let registry = packages(catalog, catalog_index, &package)?;
                     (
@@ -424,7 +419,8 @@ impl ProductState {
                 ),
                 false,
             ),
-            SurfaceCommand::SemanticVersions { .. }
+            SurfaceCommand::SemanticShapes { .. }
+            | SurfaceCommand::SemanticVersions { .. }
             | SurfaceCommand::SelectSemanticVersion { .. } => {
                 return Err(
                     "semantic version history requires compiler publication authority".to_owned(),
@@ -533,6 +529,7 @@ impl ProductState {
             ),
             // The command adapter answers these before product state is asked.
             SurfaceCommand::ProjectTree { .. }
+            | SurfaceCommand::PackageSourceMembership { .. }
             | SurfaceCommand::CargoPackageSourceFile { .. }
             | SurfaceCommand::CargoPackageSourceInventory { .. }
             | SurfaceCommand::CargoPackageReadme { .. }
@@ -2144,6 +2141,92 @@ fn index_search_with_discovery(
         .into_boxed_slice())
 }
 
+fn discovered_package(
+    discovery: Option<&DiscoveryStore>,
+    package: &PackageReference,
+) -> Result<Option<SurfaceReply>, String> {
+    let PackageReference::Purl(coordinate) = package else {
+        return Ok(None);
+    };
+    let Some(discovery) = discovery else {
+        return Ok(None);
+    };
+    let now = discovery_now();
+    let mut candidates = Vec::new();
+    for (source, fact) in discovery
+        .facts()
+        .filter(|(_, fact)| &fact.coordinate == coordinate)
+    {
+        let observed_at = fact.observed_at.as_unix_millis();
+        let valid_until = observed_at.saturating_add(DISCOVERY_FRESHNESS_MILLIS);
+        let historical = discovery.is_historical(*source);
+        let freshness = if discovery.is_unavailable(*source) {
+            RegistryDiscoveryFreshness::Unavailable {
+                observed_at_millis: observed_at,
+                historical,
+            }
+        } else if historical {
+            RegistryDiscoveryFreshness::Historical {
+                observed_at_millis: observed_at,
+            }
+        } else if now > valid_until {
+            RegistryDiscoveryFreshness::Expired {
+                observed_at_millis: observed_at,
+                valid_until_millis: valid_until,
+            }
+        } else {
+            RegistryDiscoveryFreshness::Current {
+                observed_at_millis: observed_at,
+                valid_until_millis: valid_until,
+            }
+        };
+        let standing = match fact.standing {
+            backend_engine::registry::DiscoveryStanding::Published => {
+                RegistryDiscoveryStanding::Published
+            }
+            backend_engine::registry::DiscoveryStanding::Yanked => {
+                RegistryDiscoveryStanding::Yanked
+            }
+            backend_engine::registry::DiscoveryStanding::Withdrawn => {
+                RegistryDiscoveryStanding::Withdrawn
+            }
+            backend_engine::registry::DiscoveryStanding::RecipeAvailable => {
+                RegistryDiscoveryStanding::RecipeAvailable
+            }
+        };
+        let completeness = match discovery.completeness(*source) {
+            Some(backend_engine::registry::DiscoveryCompleteness::CompleteThroughCursor) => {
+                RegistryDiscoveryCompleteness::CompleteThroughCursor
+            }
+            Some(backend_engine::registry::DiscoveryCompleteness::Windowed) => {
+                RegistryDiscoveryCompleteness::Windowed
+            }
+            Some(backend_engine::registry::DiscoveryCompleteness::Unsupported) => {
+                RegistryDiscoveryCompleteness::Unsupported
+            }
+            _ => RegistryDiscoveryCompleteness::Incomplete,
+        };
+        candidates.push(RegistryDiscoveryCandidate {
+            source: source.id(),
+            coordinate: coordinate.clone(),
+            standing,
+            completeness,
+            caught_up: discovery.is_caught_up(*source),
+            freshness,
+            proof: fact.proof,
+            metadata: registry_discovery_metadata(&fact.metadata)?,
+        });
+    }
+    Ok(
+        (!candidates.is_empty()).then(|| SurfaceReply::PackageDiscovery {
+            package: coordinate.clone(),
+            observation: backend_library::RegistryPackageDiscoveryObservation::Observed {
+                candidates: candidates.into_boxed_slice(),
+            },
+        }),
+    )
+}
+
 fn registry_discovery_metadata(
     metadata: &backend_engine::registry::DiscoveryMetadata,
 ) -> Result<backend_library::RegistryDiscoveryMetadata, String> {
@@ -3515,8 +3598,7 @@ mod tests {
     use super::*;
     use backend_engine::registry::{
         DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryFact, DiscoveryObservedAt,
-        DiscoverySourceEvent, DiscoveryStanding, RegistryEndpoint,
-        discovery_source_identity,
+        DiscoverySourceEvent, DiscoveryStanding, RegistryEndpoint, discovery_source_identity,
     };
     use backend_engine::{
         AdvisoryPackageDto, DependencyAuthority, DependencyEvidence, DependencyFacts,

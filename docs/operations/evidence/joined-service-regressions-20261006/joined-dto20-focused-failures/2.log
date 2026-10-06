@@ -1,0 +1,18 @@
+
+running 1 test
+
+thread 'builtin::projection::tests::shape_row_certificate_carries_only_direct_shape_and_package_identities' (14895596) panicked at crates/local-service/src/builtin/projection.rs:1417:9:
+assertion failed: certificate.claims.iter().any(|claim|
+        matches!(claim, WireClaim::RowIdentity { schema, id, .. } if *schema
+            == backend_engine::WireSchema::Symbol && id ==
+            &backend_engine::encode_id(child.as_bytes())))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test builtin::projection::tests::shape_row_certificate_carries_only_direct_shape_and_package_identities ... FAILED
+
+failures:
+
+failures:
+    builtin::projection::tests::shape_row_certificate_carries_only_direct_shape_and_package_identities
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 0.03s
+

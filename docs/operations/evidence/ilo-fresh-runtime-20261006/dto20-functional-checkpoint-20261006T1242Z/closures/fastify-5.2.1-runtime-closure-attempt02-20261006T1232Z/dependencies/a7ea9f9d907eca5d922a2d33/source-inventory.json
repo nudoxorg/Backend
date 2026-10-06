@@ -1,0 +1,80 @@
+{
+  "files": [
+    {
+      "bytes": 765,
+      "path": "LICENSE",
+      "sha256": "c3367f6d01a79d368fc4fbb41b3615fcd92f243d6597ab96742f6f976f9325af"
+    },
+    {
+      "bytes": 8215,
+      "path": "README.md",
+      "sha256": "e79633b399f78c1c83389a3e13e9d5b1af0745c9d68c95a7e7f7db3ad11b40a0"
+    },
+    {
+      "bytes": 455,
+      "path": "SECURITY.md",
+      "sha256": "d0614fe0e0f9034c8a695ffffe13a4cd606473173e4cf7a4d030dd980fe40748"
+    },
+    {
+      "bytes": 1195,
+      "path": "bench.js",
+      "sha256": "0e5d43863154edd92c136e8054c503782b49779130baa3dd59840ec42959bb56"
+    },
+    {
+      "bytes": 244,
+      "path": "eslint.config.js",
+      "sha256": "c398a15fc5c23b40cafc7a139729e5d9a5fe034730fc3dc1a3ca513f5c878847"
+    },
+    {
+      "bytes": 238,
+      "path": "example.js",
+      "sha256": "417b88a3f41af145d6e77abb198eac1db57f71b652e141821c96c0bbf479981d"
+    },
+    {
+      "bytes": 199,
+      "path": "example.mjs",
+      "sha256": "ebd9dba0fe50321d19f9ffe9f06ce1e6340609917bc8baec8d54296770548235"
+    },
+    {
+      "bytes": 3709,
+      "path": "index.d.ts",
+      "sha256": "2a22f10d9b16c9ba87b175cabc20876e70784bfd13fbbc537f02437237f93ac5"
+    },
+    {
+      "bytes": 1318,
+      "path": "package.json",
+      "sha256": "0e01425632d69b4e148bcde6edcfddce0f39889cb4ea70a4d52bbf622b44e553"
+    },
+    {
+      "bytes": 7103,
+      "path": "queue.js",
+      "sha256": "64156ae837cb4436a992d6c24fa2ff58357d2308754c86c80f139da392b01682"
+    },
+    {
+      "bytes": 1462,
+      "path": "test/example.ts",
+      "sha256": "26441ad872f5788bdf8bf92b8b209045b01640a1c2d978e0fe909c6a8343c1e4"
+    },
+    {
+      "bytes": 7844,
+      "path": "test/promise.js",
+      "sha256": "1a1d6ad32aa0664db25e8bf52afb75e5d10f8d714351e00a2c196d46295c1950"
+    },
+    {
+      "bytes": 17668,
+      "path": "test/test.js",
+      "sha256": "7425250f97f2ad5f392795611164f04bebc52c41ed50a17383a4726bc3ed98ec"
+    },
+    {
+      "bytes": 154,
+      "path": "test/tsconfig.json",
+      "sha256": "6eae7b2d775f4b7d1989382f2e1aaab5024db8d64d1feddabef9acfa8581082f"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "fastq",
+    "version": "1.20.3"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

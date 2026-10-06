@@ -7,7 +7,9 @@ use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, ExactRow, ExactSegment, LexicalOrderKey, LexicalRow,
     LexicalScore, LexicalSegment,
 };
-use backend_semantic::ir::{SemanticCoreReader, SemanticReader};
+use backend_semantic::ir::{
+    AnonymousCallableAnchorView, ItemName, ItemNameView, SemanticCoreReader, SemanticReader,
+};
 
 use super::{
     BuildAdmissionError, BuildDerivationError, BuildError, BuildRegion, DerivationResult,
@@ -75,7 +77,11 @@ pub fn build_semantic<'opened: 'output, 'semantic: 'output, 'output>(
     } = scratch;
     let entities = selected_region(entities, required.entities, BuildRegion::Entities)?;
     let exact_rows = selected_region(exact_rows, required.entities, BuildRegion::ExactRows)?;
-    let lexical_rows = selected_region(lexical_rows, required.entities, BuildRegion::LexicalRows)?;
+    let lexical_rows = selected_region(
+        lexical_rows,
+        required.lexical_rows,
+        BuildRegion::LexicalRows,
+    )?;
     let image = artifact
         .fragment
         .facts
@@ -96,13 +102,17 @@ pub fn build_semantic<'opened: 'output, 'semantic: 'output, 'output>(
     let exact =
         ExactSegment::new(exact_rows.into_shared()).map_err(|cause| BuildError::Exact { cause })?;
 
+    let lexical_entities = entities
+        .iter()
+        .filter_map(|entity| entity.name.named_bytes().map(|name| (entity, name)))
+        .collect::<Vec<_>>();
     let mut lexical_rows = initialize(
         BuildRegion::LexicalRows,
         lexical_rows,
-        entities.iter(),
-        |entity| {
+        lexical_entities.into_iter(),
+        |(entity, name)| {
             Ok(LexicalRow::new(
-                entity.name,
+                name,
                 EntityDocumentId {
                     artifact: EntityArtifactIdentity::Semantic(image.identity),
                     entity: entity.entity,
@@ -133,12 +143,28 @@ fn derive_semantic_entities<'opened: 'output, 'semantic: 'output, 'output>(
         output,
         artifact.semantic_image.canonical_entities(),
         |entity| {
-            let name = artifact.semantic_image.atom(entity.name).ok_or(
-                BuildDerivationError::MissingAtom {
-                    entity: entity.id,
-                    name: entity.name,
-                },
-            )?;
+            let name = match entity.name {
+                ItemName::Named(atom) => {
+                    ItemNameView::Named(artifact.semantic_image.atom(atom).ok_or(
+                        BuildDerivationError::MissingAtom {
+                            entity: entity.id,
+                            name: atom,
+                        },
+                    )?)
+                }
+                ItemName::AnonymousCallable(atom) => {
+                    let bytes = artifact.semantic_image.atom(atom).ok_or(
+                        BuildDerivationError::MissingAtom {
+                            entity: entity.id,
+                            name: atom,
+                        },
+                    )?;
+                    let anchor = AnonymousCallableAnchorView::try_from_encoded(bytes).ok_or(
+                        BuildDerivationError::InvalidAnonymousCallableAnchor { entity: entity.id },
+                    )?;
+                    ItemNameView::AnonymousCallable { anchor }
+                }
+            };
             let semantic_type = match entity.semantic_type {
                 Some(coordinate) => {
                     let ty = artifact.semantic_image.ty(coordinate).ok_or(
@@ -177,12 +203,17 @@ fn derive_semantic_entities<'opened: 'output, 'semantic: 'output, 'output>(
 #[derive(Clone, Copy)]
 struct SemanticRequired {
     entities: usize,
+    lexical_rows: usize,
 }
 
 impl SemanticRequired {
     fn from_artifact(artifact: &OpenedSemanticArtifact<'_, '_>) -> Self {
+        let entities = artifact.semantic_image.canonical_entities();
         Self {
-            entities: artifact.semantic_image.canonical_entities().len(),
+            entities: entities.len(),
+            lexical_rows: entities
+                .filter(|entity| matches!(entity.name, ItemName::Named(_)))
+                .count(),
         }
     }
 
@@ -193,15 +224,19 @@ impl SemanticRequired {
                 observed: self.entities,
             });
         }
-        for (region, available) in [
-            (BuildRegion::Entities, capacity.entities),
-            (BuildRegion::ExactRows, capacity.exact_rows),
-            (BuildRegion::LexicalRows, capacity.lexical_rows),
+        for (region, required, available) in [
+            (BuildRegion::Entities, self.entities, capacity.entities),
+            (BuildRegion::ExactRows, self.entities, capacity.exact_rows),
+            (
+                BuildRegion::LexicalRows,
+                self.lexical_rows,
+                capacity.lexical_rows,
+            ),
         ] {
-            if available < self.entities {
+            if available < required {
                 return Err(BuildAdmissionError::OutputTooSmall {
                     region,
-                    required: self.entities,
+                    required,
                     available,
                 });
             }

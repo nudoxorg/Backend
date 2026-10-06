@@ -1,0 +1,40 @@
+{
+  "files": [
+    {
+      "bytes": 1175,
+      "path": "LICENSE",
+      "sha256": "c02110eedc16c7114f1a9bdc026c65626ce1d9c7e27fd51a8e0feee8a48a6858"
+    },
+    {
+      "bytes": 12265,
+      "path": "README.md",
+      "sha256": "1133024120710bfe1d61b2c9e4814a33357c42379db25b9d5184874a2e1bcdf1"
+    },
+    {
+      "bytes": 7053,
+      "path": "dist/index.d.ts",
+      "sha256": "79c164aa4f8a8418df7717206ea52508f72743224a6b9c705f10724c6dbb5548"
+    },
+    {
+      "bytes": 12004,
+      "path": "dist/index.js",
+      "sha256": "b67c70355a2b0dbd2e78b479b94107f34d5340e54f1479dc0974224a2a5d69dd"
+    },
+    {
+      "bytes": 26947,
+      "path": "dist/index.js.map",
+      "sha256": "11847da8ee1c239d51acf28b5133469ec7ad5cf5ad6764e285070ac101f5244b"
+    },
+    {
+      "bytes": 1095,
+      "path": "package.json",
+      "sha256": "e13337a4eb106b201e0502361f3214af9cc22ae88b2bfac2368996bb949a102f"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "cookie",
+    "version": "1.1.1"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

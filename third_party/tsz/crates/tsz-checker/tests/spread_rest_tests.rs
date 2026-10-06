@@ -1,0 +1,1774 @@
+//! Tests for spread and rest operator type checking
+
+use tsz_checker::test_utils::{
+    check_source_codes_with_parse_health, check_source_diagnostics,
+    diagnostic_code_message_refs as diagnostic_code_messages,
+    diagnostic_code_message_refs_with_code as diagnostic_code_messages_with_code, diagnostic_count,
+    diagnostic_count_where, diagnostic_messages_with_code, diagnostics_where,
+    diagnostics_with_code, has_diagnostic_where,
+};
+
+#[test]
+fn test_array_spread_with_tuple() {
+    let source = r#"
+type Tuple = [string, number];
+const t: Tuple = ["hello", 42];
+const arr = [...t];  // Should be (string | number)[]
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // Should NOT emit TS2322 or TS2488
+    let errors = diagnostic_count_where(&diagnostics, |code| matches!(code, 2322 | 2488));
+    assert_eq!(
+        errors, 0,
+        "Expected no errors for array spread with tuple, got {errors}"
+    );
+}
+
+#[test]
+fn test_array_spread_with_array() {
+    let source = r"
+const nums = [1, 2, 3];
+const arr = [...nums];  // Should be number[]
+";
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // Should NOT emit TS2322 or TS2488
+    let errors = diagnostic_count_where(&diagnostics, |code| matches!(code, 2322 | 2488));
+    assert_eq!(
+        errors, 0,
+        "Expected no errors for array spread with array, got {errors}"
+    );
+}
+
+#[test]
+fn test_array_spread_with_non_iterable_emits_ts2488() {
+    let source = r"
+const num = 42;
+const arr = [...num];  // Should emit TS2488
+";
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // Should emit TS2488
+    let ts2488_count = diagnostic_count(&diagnostics, 2488);
+    assert!(
+        ts2488_count >= 1,
+        "Expected at least 1 TS2488 error for non-iterable spread, got {ts2488_count}"
+    );
+}
+
+#[test]
+fn test_tuple_context_with_spread() {
+    let source = r#"
+type Tuple = [string, number, boolean];
+const t: Tuple = ["hello", ...[1, 2], true];  // Error: can't spread number[] into tuple position
+"#;
+
+    let _diagnostics = check_source_diagnostics(source);
+    // This is a complex case - spread in tuple context
+    // The behavior depends on implementation
+}
+
+#[test]
+fn test_spread_variadic_tuple_preserves_rest_in_tuple_context() {
+    // Regression: spliceTuples.ts. When spreading a tuple with a trailing rest
+    // element (e.g. `[string, boolean, ...boolean[]]`) into another tuple
+    // position, the rest must be preserved as a rest element of the result —
+    // not collapsed into a single fixed `boolean[]` element. Collapsing
+    // (1) garbles diagnostic display and (2) makes the result fail to assign
+    // to a target tuple whose own rest accepts the source's variadic tail.
+    let source = r#"
+declare const sbb_: [string, boolean, ...boolean[]];
+let k4: [number, string, ...boolean[]] = [1, ...sbb_];
+let k5: [number, string, boolean, ...boolean[]] = [1, ...sbb_];
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+    let ts2322_count = diagnostic_count(&diagnostics, 2322);
+    assert_eq!(
+        ts2322_count, 0,
+        "Expected no TS2322 — spreading [string, boolean, ...boolean[]] should preserve the rest \
+         and assign cleanly to a target whose rest is `...boolean[]`, got {ts2322_count} TS2322 errors. \
+         Diagnostics: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn test_spread_variadic_tuple_too_few_required_still_errors() {
+    // Sister-case to the above: when the target tuple needs MORE required
+    // elements than the source can statically supply, TS2322 must still fire.
+    // `sbb_` has only one required boolean before `...boolean[]`, so assigning
+    // to a target needing two required booleans is a real error.
+    let source = r#"
+declare const sbb_: [string, boolean, ...boolean[]];
+let k6: [number, string, boolean, boolean, ...boolean[]] = [1, ...sbb_];
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+    let ts2322_count = diagnostic_count(&diagnostics, 2322);
+    assert!(
+        ts2322_count >= 1,
+        "Expected at least one TS2322 — source [string, boolean, ...boolean[]] cannot satisfy \
+         a target with two required booleans, got {ts2322_count}. Diagnostics: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn test_object_spread() {
+    let source = r"
+const obj1 = { a: 1, b: 2 };
+const obj2 = { c: 3 };
+const merged = { ...obj1, ...obj2 };  // Should be { a: number, b: number, c: number }
+";
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // Should NOT emit TS2322
+    let ts2322_count = diagnostic_count(&diagnostics, 2322);
+    assert_eq!(
+        ts2322_count, 0,
+        "Expected no TS2322 error for object spread, got {ts2322_count}"
+    );
+}
+
+#[test]
+fn object_spread_preserves_symbol_index_signature() {
+    let source = r#"
+declare const sym: symbol;
+declare const source: { [key: symbol]: boolean };
+
+const spread = { ...source };
+const keyed: boolean = spread[sym];
+const key: keyof typeof spread = sym;
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+    let relevant: Vec<_> =
+        diagnostics_where(&diagnostics, |code| matches!(code, 2322 | 2538 | 7053));
+    assert!(
+        relevant.is_empty(),
+        "Expected object spread to preserve symbol index signature, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn object_spread_keeps_string_and_symbol_indexes_separate() {
+    let source = r#"
+declare const sym: symbol;
+declare const source: {
+  [key: string]: number;
+  [key: symbol]: boolean;
+};
+
+const spread = { ...source };
+const named: number = spread["name"];
+const keyed: boolean = spread[sym];
+const wrongString: boolean = spread["name"];
+const wrongSymbol: number = spread[sym];
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+    let relevant: Vec<_> = diagnostics_where(&diagnostics, |code| matches!(code, 2538 | 7053));
+    assert!(
+        relevant.is_empty(),
+        "Expected object spread to preserve separate string and symbol index signatures, got {diagnostics:?}"
+    );
+    assert_eq!(
+        diagnostic_count(&diagnostics, 2322),
+        2,
+        "Expected exactly two TS2322s for the intentionally swapped string/symbol assignments, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn object_spread_with_explicit_property_drops_symbol_index_signature() {
+    let source = r#"
+declare const sym: symbol;
+declare const source: { [key: symbol]: boolean };
+
+const spread = { ...source, named: 1 };
+const keyed: boolean = spread[sym];
+const key: keyof typeof spread = sym;
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+    let missing_index_diagnostics =
+        diagnostics_where(&diagnostics, |code| matches!(code, 2538 | 7053));
+    assert!(
+        !missing_index_diagnostics.is_empty(),
+        "Expected explicit property after spread to drop the symbol index signature, got {diagnostics:?}"
+    );
+    assert!(
+        diagnostic_count(&diagnostics, 2322) >= 1,
+        "Expected keyof assignment to reject `symbol` after explicit property drops the symbol index signature, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn nested_object_spread_destructuring_ts2339_preserves_tsc_display_order() {
+    let source = r"
+const { c, d, e, f, g } = {
+  ...{
+    ...{
+      ...{
+        c: 0,
+      },
+      d: 0
+    },
+    e: 0
+  },
+  f: 0
+};
+";
+
+    let diagnostics = check_source_diagnostics(source);
+    let ts2339 = diagnostics_with_code(&diagnostics, 2339)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("Expected TS2339 for missing g, got {diagnostics:#?}"));
+
+    // tsc 7.0.2 oracle: nested inline spreads flatten in SOURCE order —
+    // '{ c: number; d: number; e: number; f: number; }' (each spread batch
+    // interleaves by declaration position; the old reversed expectation was
+    // an artifact of the descending SPREAD_DISPLAY_ORDER_OFFSET scheme).
+    assert!(
+        ts2339.message_text.contains(
+            "Property 'g' does not exist on type '{ c: number; d: number; e: number; f: number; }'."
+        ),
+        "Expected nested spread receiver display to match tsc order, got: {}",
+        ts2339.message_text
+    );
+}
+
+#[test]
+fn test_rest_parameter() {
+    let source = r"
+function sum(...nums: number[]) {
+    return nums.reduce((a, b) => a + b, 0);
+}
+sum(1, 2, 3);
+";
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // Should NOT emit TS2322
+    let ts2322_count = diagnostic_count(&diagnostics, 2322);
+    assert_eq!(
+        ts2322_count, 0,
+        "Expected no TS2322 error for rest parameter, got {ts2322_count}"
+    );
+}
+
+#[test]
+fn test_rest_parameter_with_wrong_types_emits_ts2345() {
+    let source = r#"
+function sum(...nums: number[]) {
+    return nums.reduce((a, b) => a + b, 0);
+}
+sum(1, "two", 3);  // Should emit TS2345
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // Should emit TS2345 for string argument (TS2345 is for function arguments, TS2322 is for assignments)
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert!(
+        ts2345_count >= 1,
+        "Expected at least 1 TS2345 error for wrong type in rest parameter, got {ts2345_count}"
+    );
+}
+
+#[test]
+fn test_tuple_union_rest_accepts_matching_tuple_spreads() {
+    let source = r#"
+declare let f1: (x: string, ...args: [string] | [number, boolean]) => void;
+declare const t1: [string] | [number, boolean];
+declare const t2: readonly [string] | [number, boolean];
+declare const t3: [string] | readonly [number, boolean];
+declare const t4: readonly [string] | readonly [number, boolean];
+
+f1("foo", ...t1);
+f1("foo", ...t2);
+f1("foo", ...t3);
+f1("foo", ...t4);
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert_eq!(
+        ts2345_count, 0,
+        "Expected tuple-union rest spreads to be accepted, got diagnostics: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn test_tuple_union_rest_rejects_aggregate_rest_arguments() {
+    let source = r#"
+declare let f1: (x: string, ...args: [string] | [number, boolean]) => void;
+
+f1("foo", 10);
+f1("foo");
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert_eq!(
+        ts2345_count, 2,
+        "Expected aggregate rest argument mismatches for tuple-union rest, got diagnostics: {diagnostics:#?}"
+    );
+    assert!(
+        has_diagnostic_where(&diagnostics, |d| {
+            d.code == 2345 && d.message_text.contains("[10]")
+        }),
+        "Expected literal tuple display for aggregate rest mismatch, got diagnostics: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn test_array_like_rest_rejects_aggregate_rest_arguments() {
+    let source = r#"
+interface Array<E> {
+    length: number;
+    [n: number]: E;
+}
+
+interface CoolArray<E> extends Array<E> {
+    hello: number;
+}
+
+function bar<T extends any[]>(...args: T): T {
+    return args;
+}
+
+let b = bar<CoolArray<number>>(10, 20);
+
+declare function baz<T>(...args: CoolArray<T>): void;
+
+baz();
+baz(1);
+baz(1, 2);
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+    assert!(
+        has_diagnostic_where(&diagnostics, |d| {
+            d.code == 2345
+                && d.message_text.contains("[10, 20]")
+                && d.message_text.contains("CoolArray<number>")
+        }),
+        "Expected aggregate TS2345 for explicit CoolArray rest type argument, got diagnostics: {diagnostics:#?}"
+    );
+    assert!(
+        has_diagnostic_where(&diagnostics, |d| {
+            d.code == 2345
+                && d.message_text.contains("[]")
+                && d.message_text.contains("CoolArray<never>")
+        }),
+        "Expected empty aggregate rest mismatch to infer CoolArray<never>, got diagnostics: {diagnostics:#?}"
+    );
+    assert!(
+        has_diagnostic_where(&diagnostics, |d| {
+            d.code == 2345
+                && d.message_text.contains("[number]")
+                && d.message_text.contains("CoolArray<unknown>")
+        }),
+        "Expected direct scalar aggregate rest mismatch to widen to [number] vs CoolArray<unknown>, got diagnostics: {diagnostics:#?}"
+    );
+    assert!(
+        has_diagnostic_where(&diagnostics, |d| {
+            d.code == 2345
+                && d.message_text.contains("[number, number]")
+                && d.message_text.contains("CoolArray<unknown>")
+        }),
+        "Expected multi-arg aggregate rest mismatch to widen to [number, number] vs CoolArray<unknown>, got diagnostics: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn test_generic_spread_rest_does_not_report_tuple_tail_mismatch() {
+    let source = r#"
+declare function f10<T extends unknown[]>(...args: T): T;
+declare function f11<T extends (string | number | boolean)[]>(...args: T): T;
+
+function g10<U extends string[], V extends [number, number]>(u: U, v: V) {
+    f10(...u);
+    f10(...u, ...v);
+}
+
+function g11<U extends string[], V extends [number, number]>(u: U, v: V) {
+    f11(...u);
+    f11(...u, ...v);
+}
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert_eq!(
+        ts2345_count, 0,
+        "Expected generic spread arguments to remain assignable to inferred generic rest tuples, got diagnostics: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn generic_rest_tuple_inference_satisfies_array_constraint() {
+    let source = r#"
+export {}
+export interface Option<T> {
+    zip1<O extends Array<Option<any>>>(...others: O): Option<[T, ...UnzipOptionArray1<O>]>;
+    zip2<O extends Array<Option<any>>>(...others: O): Option<[T, ...UnzipOptionArray2<O>]>;
+    zip3<O extends Array<Option<any>>>(...others: O): Option<[T, ...UnzipOptionArray3<O>]>;
+}
+
+type UnzipOption<T> = T extends Option<infer V> ? V : never;
+type UnzipOptionArray1<T> = { [k in keyof T]: T[k] extends Option<any> ? UnzipOption<T[k]> : never };
+type UnzipOptionArray2<T> = { [k in keyof T]: UnzipOption<T[k]> };
+type UnzipOptionArray3<T> = { [k in keyof T]: T[k] extends Option<infer V> ? V : never };
+
+declare const opt1: Option<number>;
+declare const opt2: Option<string>;
+declare const opt3: Option<boolean>;
+
+const zipped1 = opt1.zip1(opt2, opt3);
+const zipped2 = opt1.zip2(opt2, opt3);
+const zipped3 = opt1.zip3(opt2, opt3);
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345: Vec<_> = diagnostics_with_code(&diagnostics, 2345);
+    assert!(
+        ts2345.is_empty(),
+        "Expected inferred rest tuples to satisfy Array<Option<any>> constraints, got diagnostics: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn test_tuple_union_rest_method_overloads_cover_variants() {
+    let source = r#"
+declare class MySettable implements Settable {
+    set(option: { [key: string]: unknown }): void;
+    set(name: string, value: unknown): void;
+}
+
+interface Settable {
+    set(...args: [option: { [key: string]: unknown }] | [name: string, value: unknown] | [name: string]): void;
+}
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+    let ts2416_count = diagnostic_count(&diagnostics, 2416);
+    assert_eq!(
+        ts2416_count, 0,
+        "Expected method overloads to satisfy tuple-union rest surface without TS2416, got diagnostics: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn test_array_destructuring_with_rest() {
+    let source = r"
+const arr = [1, 2, 3, 4, 5];
+const [first, second, ...rest] = arr;
+// first: number, second: number, rest: number[]
+";
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // Should NOT emit TS2322
+    let ts2322_count = diagnostic_count(&diagnostics, 2322);
+    assert_eq!(
+        ts2322_count, 0,
+        "Expected no TS2322 error for array destructuring with rest, got {ts2322_count}"
+    );
+}
+
+#[test]
+fn test_tuple_destructuring_with_rest() {
+    let source = r#"
+type Tuple = [string, number, boolean, ...string[]];
+const t: Tuple = ["hello", 42, true, "a", "b"];
+const [s, n, ...rest] = t;
+// s: string, n: number, rest: (boolean | string)[]
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // Should NOT emit TS2322
+    let ts2322_count = diagnostic_count(&diagnostics, 2322);
+    assert_eq!(
+        ts2322_count, 0,
+        "Expected no TS2322 error for tuple destructuring with rest, got {ts2322_count}"
+    );
+}
+
+#[test]
+fn test_discriminated_tuple_rest_destructuring_no_false_ts2345() {
+    let source = r"
+type Expression = BooleanLogicExpression | 'true' | 'false';
+type BooleanLogicExpression = ['and', ...Expression[]] | ['not', Expression];
+
+function evaluate(expression: Expression): boolean {
+  if (Array.isArray(expression)) {
+    const [operator, ...operands] = expression;
+    switch (operator) {
+      case 'and': {
+        return operands.every((child) => evaluate(child));
+      }
+      case 'not': {
+        return !evaluate(operands[0]);
+      }
+      default: {
+        throw new Error(`${operator} is not a supported operator`);
+      }
+    }
+  } else {
+    return expression === 'true';
+  }
+}
+";
+
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert_eq!(
+        ts2345_count,
+        0,
+        "Expected no TS2345 from discriminated tuple rest destructuring, got {} errors: {:?}",
+        ts2345_count,
+        diagnostic_messages_with_code(&diagnostics, 2345)
+    );
+}
+
+#[test]
+fn test_tuple_assignment_destructuring_no_false_ts2322() {
+    // Tuple assignment destructuring should not produce false TS2322 errors.
+    // tsc checks each element individually, not the whole tuple against an inferred array type.
+    let source = r#"
+type Robot = [number, string, string];
+var robotA: Robot = [1, "mower", "mowing"];
+let nameA: string;
+let numberB: number;
+[, nameA] = robotA;
+[numberB] = robotA;
+[numberB, nameA] = robotA;
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+
+    let ts2322_count = diagnostic_count(&diagnostics, 2322);
+    assert_eq!(
+        ts2322_count,
+        0,
+        "Expected no TS2322 for tuple assignment destructuring, got {} errors: {:?}",
+        ts2322_count,
+        diagnostic_messages_with_code(&diagnostics, 2322)
+    );
+}
+
+#[test]
+fn test_spread_in_function_call() {
+    let source = r"
+function add(a: number, b: number, c: number) {
+    return a + b + c;
+}
+const args = [1, 2, 3];
+add(...args);  // Should work
+";
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // Should NOT emit TS2322
+    let ts2322_count = diagnostic_count(&diagnostics, 2322);
+    assert_eq!(
+        ts2322_count, 0,
+        "Expected no TS2322 error for spread in function call, got {ts2322_count}"
+    );
+}
+
+#[test]
+fn test_spread_in_function_call_with_wrong_types() {
+    let source = r#"
+function add(a: number, b: number, c: number) {
+    return a + b + c;
+}
+const args = [1, "two", 3];
+add(...args);  // Should emit TS2345
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // TypeScript emits TS2556 for this case: "A spread argument must either have a tuple type or be passed to a rest parameter."
+    // The spread array has type (string | number)[] which is not a tuple type.
+    let ts2556_count = diagnostic_count(&diagnostics, 2556);
+    assert!(
+        ts2556_count >= 1,
+        "Expected at least 1 TS2556 error for spread of non-tuple array, got {ts2556_count}"
+    );
+}
+
+#[test]
+fn test_non_tuple_spread_into_optional_tail_does_not_emit_ts2556() {
+    let source = r#"
+declare function all(a?: number, b?: number): void;
+declare function prefix(s: string, a?: number, b?: number): void;
+declare function rest(s: string, a?: number, b?: number, ...rest: number[]): void;
+
+declare const ns: number[];
+declare const mixed: (number | string)[];
+
+all(...ns);
+all(...mixed);
+prefix("a", ...ns);
+prefix("b", ...mixed);
+rest("d", ...ns);
+rest("e", ...mixed);
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+
+    let ts2556_count = diagnostic_count(&diagnostics, 2556);
+    assert_eq!(
+        ts2556_count,
+        0,
+        "Expected no TS2556 when non-tuple spreads only cover optional/rest parameters, got diagnostics: {:?}",
+        diagnostic_code_messages_with_code(&diagnostics, 2556)
+    );
+
+    let optional_tail_messages: Vec<&str> = diagnostic_messages_with_code(&diagnostics, 2345)
+        .into_iter()
+        .filter(|msg| msg.contains("string | number"))
+        .collect();
+    // tsc displays the declared parameter type (without `| undefined`) for
+    // optional params in error messages.  Verify we match that behavior.
+    assert!(
+        optional_tail_messages
+            .iter()
+            .all(|msg| msg.contains("parameter of type 'number'")
+                || msg.contains("parameter of type 'number | undefined'")),
+        "Expected spread mismatches into optional tail params to mention `number`, got: {optional_tail_messages:?}"
+    );
+}
+
+#[test]
+fn test_spread_tuple_in_function_call() {
+    let source = r#"
+function greet(name: string, age: number, active: boolean) {
+    console.log(name, age, active);
+}
+type Tuple = [string, number, boolean];
+const args: Tuple = ["Alice", 30, true];
+greet(...args);  // Should work
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // Should NOT emit TS2322
+    let ts2322_count = diagnostic_count(&diagnostics, 2322);
+    assert_eq!(
+        ts2322_count, 0,
+        "Expected no TS2322 error for spread tuple in function call, got {ts2322_count}"
+    );
+}
+
+#[test]
+fn test_spread_tuple_in_function_call_with_wrong_types() {
+    let source = r#"
+function greet(name: string, age: number, active: boolean) {
+    console.log(name, age, active);
+}
+type Tuple = [string, boolean, number];  // Wrong order
+const args: Tuple = ["Alice", true, 30];
+greet(...args);  // Should emit TS2345
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // Should emit TS2345 (for function arguments) - boolean is not assignable to number
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert!(
+        ts2345_count >= 1,
+        "Expected at least 1 TS2345 error for spread tuple with wrong types, got {ts2345_count}"
+    );
+}
+
+#[test]
+fn test_object_spread_with_contextual_type() {
+    let source = r#"
+interface Person {
+    name: string;
+    age: number;
+}
+const partial = { name: "Alice" };
+const person: Person = { ...partial, age: 30 };
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // Should NOT emit TS2322
+    let ts2322_count = diagnostic_count(&diagnostics, 2322);
+    assert_eq!(
+        ts2322_count, 0,
+        "Expected no TS2322 error for object spread with contextual type, got {ts2322_count}"
+    );
+}
+
+#[test]
+fn test_object_spread_from_any_preserves_any_type() {
+    let source = r#"
+interface Target {
+    x: number;
+    y: string;
+}
+declare const source: any;
+const value: Target = { x: 1, ...source };
+const inferred = { x: 1, ...source };
+const x: string = inferred.x;
+const y: number = inferred.y;
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+    let relevant: Vec<_> =
+        diagnostics_where(&diagnostics, |code| matches!(code, 2322 | 2339 | 2741));
+    assert!(
+        relevant.is_empty(),
+        "Object spread from any should preserve any-ness, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn test_object_spread_from_this_any_options_has_no_false_missing_or_overwrite() {
+    let source = r#"
+interface Target {
+    x: number;
+    y: string;
+}
+function build(this: any): Target {
+    return { x: 1, ...this.options.foo };
+}
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+    let relevant: Vec<_> = diagnostics_where(&diagnostics, |code| matches!(code, 2741 | 2783));
+    assert!(
+        relevant.is_empty(),
+        "Object spread from this:any options should not emit TS2741/TS2783, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn test_nested_array_spread() {
+    let source = r"
+const arr1 = [1, 2];
+const arr2 = [3, 4];
+const combined = [...arr1, ...arr2];  // Should be number[]
+";
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // Should NOT emit TS2322
+    let ts2322_count = diagnostic_count(&diagnostics, 2322);
+    assert_eq!(
+        ts2322_count, 0,
+        "Expected no TS2322 error for nested array spread, got {ts2322_count}"
+    );
+}
+
+#[test]
+fn test_rest_with_type_annotation() {
+    let source = r#"
+function logAll(...messages: string[]) {
+    messages.forEach(m => console.log(m));
+}
+logAll("hello", "world");
+logAll("hello", 42);  // Should emit TS2345
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // Should emit TS2345 for number argument (TS2345 is for function arguments)
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert!(
+        ts2345_count >= 1,
+        "Expected at least 1 TS2345 error for wrong type in rest parameter with annotation, got {ts2345_count}"
+    );
+}
+
+#[test]
+fn test_array_literal_with_spread_and_contextual_type() {
+    let source = r#"
+type Tuple = [number, string];
+const createTuple = (): Tuple => [42, "hello"];
+const t: Tuple = [1, "test", ...createTuple()];
+"#;
+
+    let _diagnostics = check_source_diagnostics(source);
+    // This is a complex case - spread in tuple context
+    // The behavior depends on implementation
+}
+
+#[test]
+fn test_this_in_class_getter_no_false_ts2683() {
+    let source = r"
+// @strict: true
+class Foo {
+    x = 5;
+    get bar() {
+        return this.x;
+    }
+    set baz(v: number) {
+        this.x = v;
+    }
+    method() {
+        return this.x;
+    }
+}
+";
+    let diagnostics = check_source_diagnostics(source);
+    let ts2683_count = diagnostic_count(&diagnostics, 2683);
+    assert_eq!(
+        ts2683_count, 0,
+        "Expected no TS2683 for `this` in class getter/setter/method, got {ts2683_count}"
+    );
+}
+
+#[test]
+fn test_this_in_object_literal_getter_no_false_ts2683() {
+    let source = r"
+// @strict: true
+var obj = {
+    get foo() {
+        var _this = this;
+        return _this;
+    },
+    bar() {
+        return this;
+    }
+};
+";
+    let diagnostics = check_source_diagnostics(source);
+    let ts2683_count = diagnostic_count(&diagnostics, 2683);
+    assert_eq!(
+        ts2683_count, 0,
+        "Expected no TS2683 for `this` in object literal getter/method, got {ts2683_count}"
+    );
+}
+
+#[test]
+fn test_this_in_object_literal_func_expr_no_false_ts2683() {
+    let source = r"
+// @noImplicitThis: true
+var obj = {
+    x: 5,
+    func: function() {
+        return this.x;
+    }
+};
+";
+    let diagnostics = check_source_diagnostics(source);
+    let ts2683_count = diagnostic_count(&diagnostics, 2683);
+    assert_eq!(
+        ts2683_count, 0,
+        "Expected no TS2683 for `this` in object literal function expression, got {ts2683_count}"
+    );
+}
+
+#[test]
+fn test_spread_string() {
+    let source = r#"
+const str = "hello";
+const chars = [...str];  // Should be string[]
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+
+    // Should NOT emit TS2488 (string is iterable)
+    let ts2488_count = diagnostic_count(&diagnostics, 2488);
+    assert_eq!(
+        ts2488_count, 0,
+        "Expected no TS2488 error for string spread, got {ts2488_count}"
+    );
+}
+
+#[test]
+fn test_object_rest_not_last_emits_ts2462() {
+    // TypeScript emits TS2462 for object rest patterns where the rest is
+    // not the last element, just like it does for array patterns.
+    //
+    // TS2462 is a grammar check emitted while parsing the binding pattern
+    // (`report_rest_element_not_last`), so it lives on the parser side of the
+    // parse-health split rather than in the type-checker's output.
+    let source = r#"
+var { ...rest, x } = { x: 1 };
+"#;
+
+    let codes = check_source_codes_with_parse_health(source);
+
+    assert!(
+        codes.contains(&2462),
+        "Expected TS2462 for object rest that is not last, got {codes:?}"
+    );
+}
+
+#[test]
+fn test_array_rest_not_last_still_reports_ts2462() {
+    let source = r#"
+var [...rest, x] = [1, 2, 3];
+"#;
+
+    let codes = check_source_codes_with_parse_health(source);
+
+    assert!(
+        codes.contains(&2462),
+        "Expected TS2462 for array rest that is not last, got {codes:?}"
+    );
+}
+
+#[test]
+fn test_object_rest_with_type_parameter_constraint_no_false_ts2783() {
+    // When a generic function destructures `{ a, ...rest } = obj` where `obj: T extends { a, b }`,
+    // the rest type should omit `a` using the constraint's shape.
+    // Previously, `omit_properties_from_type` returned T unchanged because
+    // `object_shape(TypeParameter)` is None, causing false TS2783.
+    let source = r#"
+function f<T extends { a: string, b: string }>(obj: T) {
+    const { a, ...rest } = obj;
+    return rest;
+}
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2783_count = diagnostic_count(&diagnostics, 2783);
+    assert_eq!(
+        ts2783_count,
+        0,
+        "Expected no TS2783 for object rest with type parameter constraint, got {ts2783_count}. Diagnostics: {:?}",
+        diagnostic_code_messages(&diagnostics)
+    );
+}
+
+#[test]
+fn test_object_rest_with_concrete_type_still_works() {
+    // Sanity check: object rest with concrete types should continue working.
+    let source = r#"
+interface Obj { a: string; b: number; c: boolean }
+function f(obj: Obj) {
+    const { a, ...rest } = obj;
+    const x: { b: number; c: boolean } = rest;
+}
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2322_count = diagnostic_count(&diagnostics, 2322);
+    assert_eq!(
+        ts2322_count, 0,
+        "Expected no TS2322 for object rest with concrete type, got {ts2322_count}"
+    );
+}
+
+#[test]
+fn test_object_rest_preserves_string_index_signature() {
+    let source = r#"
+interface Bag {
+    keep: number;
+    label: string;
+    [key: string]: string | number;
+}
+declare const bag: Bag;
+const { keep, ...rest } = bag;
+const value: string | number = rest["dynamic"];
+const wrong: boolean = rest["dynamic"];
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    assert!(
+        has_diagnostic_where(&diagnostics, |d| {
+            d.code == 2322
+                && d.message_text.contains("string | number")
+                && d.message_text.contains("boolean")
+        }),
+        "Expected object-rest copy to preserve the string index signature, got diagnostics: {:?}",
+        diagnostic_code_messages(&diagnostics)
+    );
+}
+
+#[test]
+fn test_generic_rest_spread_preserves_type_parameter() {
+    // When a generic function destructures `{ a, ...rest } = obj` where `obj: T`,
+    // and returns `{ ...rest, b: a }`, the return type must preserve T's identity
+    // so that when the function is called with a concrete type, the return type
+    // is properly instantiated. Without this, rest resolves to {} and the return
+    // type becomes { b: string } regardless of T, causing false TS2741.
+    let source = r#"
+function test<T extends { a: string }>(obj: T) {
+    let { a, ...rest } = obj;
+    return { ...rest, b: a };
+}
+let o1 = { a: 'hello', x: 42 };
+let o2: { b: string, x: number } = test(o1);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2741_count = diagnostic_count(&diagnostics, 2741);
+    assert_eq!(
+        ts2741_count,
+        0,
+        "Expected no TS2741 for generic rest spread return, got diagnostics: {:?}",
+        diagnostic_code_messages(&diagnostics)
+    );
+}
+
+#[test]
+fn test_generic_rest_spread_with_multiple_properties() {
+    // Variant with multiple destructured properties and multiple extra properties.
+    let source = r#"
+function pick<T extends { x: number, y: number }>(obj: T) {
+    let { x, y, ...rest } = obj;
+    return { ...rest, sum: x + y };
+}
+let input = { x: 1, y: 2, z: 'hello', w: true };
+let output: { sum: number, z: string, w: boolean } = pick(input);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let error_count = diagnostic_count_where(&diagnostics, |code| matches!(code, 2741 | 2322));
+    assert_eq!(
+        error_count, 0,
+        "Expected no TS2741/TS2322 for generic rest spread with multiple properties"
+    );
+}
+
+#[test]
+fn test_generic_rest_destructuring_named_property_type() {
+    // Destructuring a named property from a generic parameter should resolve
+    // to the constraint's property type.
+    let source = r#"
+function getName<T extends { name: string }>(obj: T): string {
+    let { name } = obj;
+    return name;
+}
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2322_count = diagnostic_count(&diagnostics, 2322);
+    assert_eq!(
+        ts2322_count, 0,
+        "Expected no TS2322: destructured named property should have constraint type"
+    );
+}
+
+#[test]
+fn test_generic_rest_spread_still_catches_real_errors() {
+    // Real type errors should still be caught even with generic rest/spread.
+    let source = r#"
+function test<T extends { a: string }>(obj: T) {
+    let { a, ...rest } = obj;
+    return { ...rest, b: a };
+}
+let o1 = { a: 'hello', x: 42 };
+let o2: { b: number } = test(o1);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    // b is string, not number — should have an error
+    let has_type_error =
+        diagnostic_count_where(&diagnostics, |code| matches!(code, 2322 | 2741)) > 0;
+    assert!(
+        has_type_error,
+        "Expected a type error when assigning {{ b: string }} to {{ b: number }}"
+    );
+}
+
+#[test]
+fn test_generic_rest_respread_before_explicit_property_no_false_ts2783() {
+    // Regression: when destructuring a generic parameter with rest, the rest
+    // type should reflect that the destructured siblings are excluded. Spreading
+    // `rest` AFTER an explicit property with a sibling name should not trigger
+    // TS2783, because the excluded property cannot appear in `rest`.
+    //
+    // Before the fix, `rest` was approximated as `T` itself, so the spread's
+    // known-property analysis (derived from T's constraint) would claim `a` is
+    // required — producing a false TS2783 on the earlier `a: 'hello'`.
+    // After the fix, `rest` is `Omit<T, 'a'>`, which evaluates to a set of
+    // properties that excludes 'a'.
+    //
+    // The fix depends on the `Omit` lib alias, so this test inlines a minimal
+    // `Omit` declaration (rather than loading lib.es5) to remain an independent
+    // unit test of the binding-rest computation.
+    let source = r#"
+type Omit<T, K extends keyof any> = Pick<T, Exclude<keyof T, K>>;
+type Pick<T, K extends keyof T> = { [P in K]: T[P] };
+type Exclude<T, U> = T extends U ? never : T;
+
+function test<T extends { a: string, b: string }>(obj: T): T {
+    let { a, ...rest } = obj;
+    return { a: 'hello', ...rest } as T;
+}
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2783_count = diagnostic_count(&diagnostics, 2783);
+    assert_eq!(
+        ts2783_count,
+        0,
+        "Expected no TS2783 for generic rest re-spread; got: {:?}",
+        diagnostic_code_messages(&diagnostics)
+    );
+}
+
+#[test]
+fn test_object_rest_excludes_private_class_members() {
+    let source = r#"
+class C {
+    #prop = 1;
+    static #propStatic = 1;
+
+    method(other: C) {
+        const { ...rest } = other;
+        rest.#prop;
+
+        const { ...sRest } = C;
+        sRest.#propStatic;
+    }
+}
+"#;
+
+    let diagnostics = check_source_diagnostics(source);
+    let ts2339: Vec<_> = diagnostics_with_code(&diagnostics, 2339);
+    assert_eq!(
+        ts2339.len(),
+        2,
+        "Expected private members to be absent from object rest results, got diagnostics: {diagnostics:?}"
+    );
+    assert!(
+        ts2339.iter().any(|d| d
+            .message_text
+            .contains("Property '#prop' does not exist on type '{}'.")),
+        "Expected instance rest object to erase private members, got diagnostics: {diagnostics:?}"
+    );
+    assert!(
+        ts2339.iter().any(|d| {
+            d.message_text
+                .contains("Property '#propStatic' does not exist on type '{ prototype: C; }'.")
+                || d.message_text
+                    .contains("Property '#propStatic' does not exist on type 'C'.")
+        }),
+        "Expected static rest object to erase private members, got diagnostics: {diagnostics:?}"
+    );
+}
+
+// TS2556: rest parameter position-aware spread checking
+
+#[test]
+fn test_array_spread_at_non_rest_position_emits_ts2556() {
+    // Spread covers non-rest param `a` → TS2556
+    let source = r#"
+declare function withRest(a: any, ...args: any[]): void;
+declare var n: number[];
+withRest(...n);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2556_count = diagnostic_count(&diagnostics, 2556);
+    assert!(
+        ts2556_count >= 1,
+        "Expected TS2556 for non-tuple spread at non-rest position, got {ts2556_count}"
+    );
+}
+
+#[test]
+fn test_array_spread_at_rest_position_no_ts2556() {
+    // Spread covers only rest param `...args` → no TS2556
+    let source = r#"
+declare function withRest(a: any, ...args: any[]): void;
+declare var n: number[];
+withRest('a', ...n);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2556_count = diagnostic_count(&diagnostics, 2556);
+    assert_eq!(
+        ts2556_count, 0,
+        "Expected no TS2556 when spread is at rest position, got {ts2556_count}"
+    );
+}
+
+#[test]
+fn test_array_spread_to_function_without_rest_emits_ts2556() {
+    // Function has no rest param → TS2556
+    let source = r#"
+declare function noRest(a: number, b: number): void;
+declare var n: number[];
+noRest(...n);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2556_count = diagnostic_count(&diagnostics, 2556);
+    assert!(
+        ts2556_count >= 1,
+        "Expected TS2556 for spread to function without rest param, got {ts2556_count}"
+    );
+}
+
+#[test]
+fn test_tuple_spread_at_non_rest_position_no_ts2556() {
+    // Tuple spread has known length → no TS2556 even at non-rest position
+    let source = r#"
+declare function withRest(a: any, ...args: any[]): void;
+declare var t: [number];
+withRest(...t);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2556_count = diagnostic_count(&diagnostics, 2556);
+    assert_eq!(
+        ts2556_count, 0,
+        "Expected no TS2556 for tuple spread (known length), got {ts2556_count}"
+    );
+}
+
+// ── Generic IndexAccess callable: no false TS2556 (inferTypes1 parity) ──
+
+#[test]
+fn test_no_ts2556_for_generic_index_access_call_with_spread() {
+    // When the callable type is a generic IndexAccess (e.g., T[K]), the rest
+    // parameter nature cannot be determined statically. tsc does NOT emit
+    // TS2556 in this case.
+    let source = r#"
+function invoker<K extends string | number | symbol, A extends any[]>(key: K, ...args: A) {
+    return <T extends Record<K, (...args: A) => any>>(obj: T): ReturnType<T[K]> => obj[key](...args)
+}
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2556_count = diagnostic_count(&diagnostics, 2556);
+    assert_eq!(
+        ts2556_count, 0,
+        "Expected no TS2556 for spread into generic IndexAccess callable, got {ts2556_count}. Diagnostics: {diagnostics:?}"
+    );
+}
+
+// ── Mapped tuple rest parameters: evaluate_rest_param_type fix ──
+// When a rest parameter has an Application/Mapped type (e.g., TupleMapper<[string, number]>),
+// param_type_for_arg_index must evaluate it to its concrete form before extracting per-element
+// types. Without this, each argument is checked against the whole unevaluated type, producing
+// false TS2345 errors.
+
+#[test]
+fn test_mapped_tuple_rest_param_no_false_ts2345() {
+    // Core case: Application type `TupleMapper<[string, number]>` as rest param
+    // must be evaluated to a concrete tuple before element extraction.
+    let source = r#"
+type TupleMapper<T extends unknown[]> = { [K in keyof T]: T[K] };
+declare function mapped<T extends unknown[]>(...args: TupleMapper<T>): void;
+mapped("hello", 42);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert_eq!(
+        ts2345_count, 0,
+        "Mapped tuple rest param should not produce false TS2345, got {ts2345_count}. Diagnostics: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn test_mapped_tuple_rest_param_with_return_type() {
+    // Same pattern but with a return type (inferRestArgumentsMappedTuple conformance test).
+    let source = r#"
+type TupleMapper<T extends unknown[]> = { [K in keyof T]: T[K] };
+declare function mapTuple<T extends unknown[]>(...args: TupleMapper<T>): T;
+const result = mapTuple("hello", 42);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert_eq!(
+        ts2345_count, 0,
+        "Generic mapped tuple inference should not produce false TS2345, got {ts2345_count}. Diagnostics: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn test_plain_tuple_rest_param_still_catches_mismatch() {
+    // Ensure the fix doesn't break normal tuple rest param type checking.
+    let source = r#"
+declare function f(...args: [string, number]): void;
+f(42, "hello");
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert!(
+        ts2345_count >= 1,
+        "Plain tuple rest param should still reject mismatched args, got {ts2345_count} TS2345 errors"
+    );
+}
+
+// ── Variadic tuple spread: no false TS2345 for rest elements ──
+// When spreading a variadic tuple (e.g., [number, string, ...boolean[]]) into a function
+// that expects a matching rest parameter, the rest element's array type (boolean[])
+// must be decomposed to its element type (boolean) rather than pushed as a whole array.
+
+#[test]
+fn test_variadic_tuple_spread_no_false_ts2345() {
+    // Spreading a variadic tuple into a function with a matching variadic rest parameter
+    // should produce zero errors.
+    let source = r#"
+declare const t1: [number, string, ...boolean[]];
+declare let f10: (...x: [number, string, ...boolean[]]) => void;
+f10(...t1);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert_eq!(
+        ts2345_count,
+        0,
+        "Variadic tuple spread should not produce false TS2345, got {ts2345_count}. Diagnostics: {:?}",
+        diagnostic_messages_with_code(&diagnostics, 2345)
+    );
+}
+
+#[test]
+fn test_variadic_tuple_partial_spread_no_false_ts2345() {
+    // Spreading only the rest portion of a variadic tuple alongside fixed args.
+    let source = r#"
+declare const t2: [string, ...boolean[]];
+declare const t3: [...boolean[]];
+declare let f10: (...x: [number, string, ...boolean[]]) => void;
+f10(42, ...t2);
+f10(42, "hello", ...t3);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert_eq!(
+        ts2345_count,
+        0,
+        "Partial variadic tuple spread should not produce false TS2345, got {ts2345_count}. Diagnostics: {:?}",
+        diagnostic_messages_with_code(&diagnostics, 2345)
+    );
+}
+
+#[test]
+fn test_variadic_tuple_spread_with_trailing_args() {
+    // Spreading an empty tuple followed by more arguments should work.
+    let source = r#"
+declare const t4: [];
+declare let f10: (...x: [number, string, ...boolean[]]) => void;
+f10(42, "hello", true, ...t4);
+f10(42, "hello", true, ...t4, false);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert_eq!(
+        ts2345_count,
+        0,
+        "Empty tuple spread with trailing args should not produce false TS2345, got {ts2345_count}. Diagnostics: {:?}",
+        diagnostic_messages_with_code(&diagnostics, 2345)
+    );
+}
+
+#[test]
+fn generic_variadic_spread_with_fixed_suffix_uses_aggregate_rest_check() {
+    let source = r#"
+declare function pack<T extends unknown[]>(x: number, ...args: [...T, number]): T;
+function outer<U extends unknown[]>(items: U) {
+    pack(1, ...items, "middle", 2);
+}
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert_eq!(
+        ts2345_count,
+        0,
+        "generic variadic spread with fixed suffix should not check the middle argument against the suffix slot: {:?}",
+        diagnostic_messages_with_code(&diagnostics, 2345)
+    );
+}
+
+#[test]
+fn variadic_rest_callback_spread_middle_uses_aggregate_rest_check() {
+    let source = r#"
+function pipe<T extends readonly unknown[]>(...args: [...T, (...values: T) => void]) {}
+declare const values: string[];
+
+pipe("foo", 123, true, (...x) => {
+    x;
+});
+pipe(...values, (...x) => {
+    x;
+});
+pipe(1, ...values, 2, (...x) => {
+    x;
+});
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert_eq!(
+        ts2345_count,
+        0,
+        "variadic rest callback calls should validate fixed suffixes and let the variadic middle absorb positional values: {:?}",
+        diagnostic_messages_with_code(&diagnostics, 2345)
+    );
+}
+
+fn assert_no_ts2345_for_generic_rest_call(source: &str) {
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert_eq!(
+        ts2345_count,
+        0,
+        "Generic rest parameter calls should compare each argument against its positional tuple element, got TS2345 diagnostics: {:?}",
+        diagnostic_messages_with_code(&diagnostics, 2345)
+    );
+}
+
+#[test]
+fn test_generic_rest_parameter_call_with_plain_literals() {
+    assert_no_ts2345_for_generic_rest_call(
+        r#"
+declare function f10<T extends unknown[]>(...args: T): T;
+const x10 = f10(42, "hello", true);
+"#,
+    );
+}
+
+#[test]
+fn test_generic_rest_parameter_call_with_tuple_spread() {
+    assert_no_ts2345_for_generic_rest_call(
+        r#"
+declare function f10<T extends unknown[]>(...args: T): T;
+declare const t2: [string, boolean];
+const x15 = f10(42, ...t2);
+"#,
+    );
+}
+
+#[test]
+fn test_generic_rest_parameter_call_with_trailing_spread() {
+    assert_no_ts2345_for_generic_rest_call(
+        r#"
+declare function f10<T extends unknown[]>(...args: T): T;
+declare const t1: [boolean];
+const x16 = f10(42, "hello", ...t1);
+"#,
+    );
+}
+
+#[test]
+fn test_variadic_tuple_spread_wrong_rest_type_still_errors() {
+    // Spreading a variadic tuple whose rest element type doesn't match should still error.
+    let source = r#"
+declare const bad: [number, string, ...number[]];
+declare let f10: (...x: [number, string, ...boolean[]]) => void;
+f10(...bad);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert!(
+        ts2345_count >= 1,
+        "Mismatched variadic rest type should produce TS2345, got {ts2345_count}"
+    );
+}
+
+/// Test: spreading a tuple with optional element produces TS2345 when the
+/// optional element's `T | undefined` is not assignable to the parameter type.
+/// Fixes callWithSpread5.ts: `fn(...nnnu, x)` where nnnu = [number, number, number?].
+#[test]
+fn test_optional_tuple_spread_emits_ts2345() {
+    let source = r"
+declare const nnnu: [number, number, number?];
+declare const x: number;
+declare function fn(a: number, b: number, bb: number, ...c: number[]): number;
+fn(...nnnu, x);
+";
+    let diagnostics = check_source_diagnostics(source);
+    let ts2345_count = diagnostic_count(&diagnostics, 2345);
+    assert!(
+        ts2345_count >= 1,
+        "Optional tuple element spread should emit TS2345 for number | undefined vs number, got {ts2345_count}"
+    );
+}
+
+/// Test: spreading a fixed-length tuple into a non-rest function emits TS2554
+/// when the expanded argument count exceeds the expected parameter count.
+/// Fixes callWithSpread3.ts: `fs2('a', ...s2)` where s2 = [string, string].
+#[test]
+fn test_tuple_spread_too_many_args_emits_ts2554() {
+    let source = r#"
+declare const s2: [string, string];
+declare function fs2(a: string, b: string): void;
+fs2("a", ...s2);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2554_count = diagnostic_count(&diagnostics, 2554);
+    assert!(
+        ts2554_count >= 1,
+        "Tuple spread with too many args should emit TS2554, got {ts2554_count}"
+    );
+}
+
+/// Test: valid tuple spread that exactly fills parameters should not error.
+#[test]
+fn test_tuple_spread_exact_args_no_error() {
+    let source = r#"
+declare const s2: [string, string];
+declare function fs2(a: string, b: string): void;
+fs2(...s2);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let error_count =
+        diagnostic_count_where(&diagnostics, |code| matches!(code, 2554 | 2556 | 2345));
+    assert_eq!(
+        error_count, 0,
+        "Exact tuple spread should not error, got {error_count}"
+    );
+}
+
+/// Test: non-tuple array spread emits TS2556 only once per call, not once
+/// per spread. Fixes callWithSpread3.ts: `fs2_(...s_, ...s_)`.
+#[test]
+fn test_non_tuple_spread_emits_ts2556_only_once() {
+    let source = r#"
+declare const s_: string[];
+declare function fs2_(a: string, b: string, ...c: string[]): void;
+fs2_(...s_, ...s_);
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts2556_count = diagnostic_count(&diagnostics, 2556);
+    assert_eq!(
+        ts2556_count, 1,
+        "Non-tuple spread should emit exactly 1 TS2556 per call, got {ts2556_count}"
+    );
+}
+
+// =============================================================================
+// TS1265 / TS1266: Tuple Element Ordering Tests
+// =============================================================================
+
+/// TS1265: A rest element cannot follow another rest element (concrete arrays).
+#[test]
+fn test_ts1265_rest_after_rest_concrete_arrays() {
+    let source = r#"
+type T1 = [...string[], ...number[]];
+type T2 = [...Array<string>, ...number[]];
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts1265_count = diagnostic_count(&diagnostics, 1265);
+    assert_eq!(
+        ts1265_count, 2,
+        "Expected 2 TS1265 errors for rest after rest with concrete arrays, got {ts1265_count}"
+    );
+}
+
+#[test]
+fn test_ts1265_rest_after_rest_array_type_references() {
+    let source = r#"
+type T1 = [...string[], ...number[]];
+type T2 = [...string[], ...Array<number>];
+type T3 = [...Array<string>, ...number[]];
+type T4 = [...Array<string>, ...Array<number>];
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts1265_count = diagnostic_count(&diagnostics, 1265);
+    assert_eq!(
+        ts1265_count, 4,
+        "Expected TS1265 for every concrete rest after rest, got {ts1265_count}: {diagnostics:?}"
+    );
+}
+
+/// TS1265 should NOT fire for variadic type parameter spreads like [...T, ...U, ...V].
+#[test]
+fn test_ts1265_not_emitted_for_variadic_type_param_spreads() {
+    let source = r#"
+type Tup3<T extends unknown[], U extends unknown[], V extends unknown[]> = [...T, ...U, ...V];
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts1265_count = diagnostic_count(&diagnostics, 1265);
+    assert_eq!(
+        ts1265_count, 0,
+        "TS1265 should NOT fire for variadic type param spreads [...T, ...U, ...V], got {ts1265_count}"
+    );
+}
+
+/// TS1266: An optional element cannot follow a rest element.
+#[test]
+fn test_ts1266_optional_after_rest() {
+    let source = r#"
+type T1 = [number, ...string[], boolean?];
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts1266_count = diagnostic_count(&diagnostics, 1266);
+    assert_eq!(
+        ts1266_count, 1,
+        "Expected 1 TS1266 error for optional after rest, got {ts1266_count}"
+    );
+}
+
+/// Mixed rest and optional violations.
+#[test]
+fn test_ts1265_and_ts1266_together() {
+    let source = r#"
+type T1 = [number, ...string[], ...boolean[]];
+type T2 = [number, ...string[], boolean?];
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts1265_count = diagnostic_count(&diagnostics, 1265);
+    let ts1266_count = diagnostic_count(&diagnostics, 1266);
+    assert_eq!(ts1265_count, 1, "Expected 1 TS1265, got {ts1265_count}");
+    assert_eq!(ts1266_count, 1, "Expected 1 TS1266, got {ts1266_count}");
+}
+
+/// Spreading fixed-length literal tuples (`...[1, 2]`) is valid at any position.
+/// Each spread inlines its elements, so there is no "rest after rest" violation.
+/// Regression test for issue #5807.
+#[test]
+fn test_ts1265_not_emitted_for_fixed_length_tuple_spreads() {
+    let source = r#"
+type Spread = [...[1, 2], ...[3, 4]];
+const sp: Spread = [1, 2, 3, 4];
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    assert_eq!(
+        diagnostics,
+        Vec::new(),
+        "Fixed-length literal tuple spreads should not produce diagnostics"
+    );
+}
+
+/// Readonly wrappers should not make fixed-length tuple spreads look variadic.
+#[test]
+fn test_ts1265_not_emitted_for_readonly_fixed_length_tuple_spreads() {
+    let source = r#"
+type Spread = [...readonly [1, 2], ...[3, 4]];
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    assert_eq!(
+        diagnostics,
+        Vec::new(),
+        "Readonly fixed-length tuple spreads should not produce diagnostics"
+    );
+}
+
+/// Spreading more than two fixed-length tuples is also valid.
+#[test]
+fn test_ts1265_not_emitted_for_multiple_fixed_length_tuple_spreads() {
+    let source = r#"
+type Triple = [...[1, 2], ...[3, 4], ...[5, 6]];
+"#;
+    let diagnostics = check_source_diagnostics(source);
+    let ts1265_count = diagnostic_count(&diagnostics, 1265);
+    assert_eq!(
+        ts1265_count, 0,
+        "TS1265 must not fire for three fixed-length tuple spreads, got {ts1265_count}: {diagnostics:?}"
+    );
+}
+
+// =============================================================================
+// Spreading an open-ended (variadic) tuple into a generic rest-tuple parameter
+// must preserve the trailing `...E[]` rest in the inferred type parameter,
+// rather than materializing it into a single fixed element. Regression for the
+// "variadic tuple arity inference drops trailing rest under nested spreads"
+// family: `f(1, ...t)` where `t: [string, ...boolean[]]` and the signature is
+// `(...args: [first: number, ...T])` must infer `T = [string, ...boolean[]]`
+// (open-ended), matching tsc, not `T = [string, boolean]`.
+//
+// The inferred type is surfaced by assigning the call result to the impossible
+// literal type `0`, whose TS2322 message renders the full inferred tuple.
+
+fn inferred_rest_tuple_message(source: &str) -> String {
+    let diagnostics = check_source_diagnostics(source);
+    let ts2322 = diagnostics_with_code(&diagnostics, 2322);
+    assert!(
+        !ts2322.is_empty(),
+        "expected a TS2322 surfacing the inferred type, got: {:?}",
+        diagnostic_code_messages(&diagnostics)
+    );
+    // No spurious argument errors should appear for a valid call.
+    let spurious = diagnostic_count_where(&diagnostics, |code| matches!(code, 2345 | 2554 | 2556));
+    assert_eq!(
+        spurious,
+        0,
+        "no TS2345/TS2554/TS2556 expected for a valid variadic spread call, got: {:?}",
+        diagnostic_code_messages(&diagnostics)
+    );
+    ts2322
+        .iter()
+        .map(|d| d.message_text.clone())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn spread_open_tuple_after_fixed_arg_preserves_trailing_rest() {
+    // `(...args: [first: number, ...T])`, call `f(1, ...arr)` with
+    // `arr: [string, ...boolean[]]` -> T = [string, ...boolean[]].
+    let message = inferred_rest_tuple_message(
+        r#"
+declare function f<T extends unknown[]>(...args: [first: number, ...T]): T;
+const arr: [string, ...boolean[]] = ["x", true, false];
+const result = f(1, ...arr);
+const probe: 0 = result;
+"#,
+    );
+    assert!(
+        message.contains("[string, ...boolean[]]"),
+        "trailing rest must be preserved as [string, ...boolean[]], got: {message}"
+    );
+}
+
+#[test]
+fn spread_open_tuple_then_fixed_arg_into_leading_rest_preserves_rest() {
+    // `(...args: [...T, last: string])`, call `f(...arr, "x")` with
+    // `arr: [number, ...boolean[]]` -> T = [number, ...boolean[]].
+    let message = inferred_rest_tuple_message(
+        r#"
+declare function f<Elems extends unknown[]>(...args: [...Elems, last: string]): Elems;
+const arr: [number, ...boolean[]] = [1, true];
+const result = f(...arr, "x");
+const probe: 0 = result;
+"#,
+    );
+    assert!(
+        message.contains("[number, ...boolean[]]"),
+        "trailing rest must be preserved as [number, ...boolean[]], got: {message}"
+    );
+}
+
+#[test]
+fn spread_open_tuple_between_fixed_args_preserves_rest() {
+    // `(...args: [first: string, ...T, last: boolean])`, call
+    // `f("h", ...arr, true)` with `arr: [number, ...string[]]`
+    // -> T = [number, ...string[]].
+    let message = inferred_rest_tuple_message(
+        r#"
+declare function f<Mid extends unknown[]>(...args: [first: string, ...Mid, last: boolean]): Mid;
+const arr: [number, ...string[]] = [1, "a", "b"];
+const result = f("h", ...arr, true);
+const probe: 0 = result;
+"#,
+    );
+    assert!(
+        message.contains("[number, ...string[]]"),
+        "trailing rest must be preserved as [number, ...string[]], got: {message}"
+    );
+}
+
+#[test]
+fn spread_open_tuple_into_bare_rest_type_param_preserves_rest() {
+    // `(...args: T)`, call `f(...arr)` with `arr: [string, ...boolean[]]`
+    // -> T = [string, ...boolean[]] (the whole open tuple, no fixed prefix).
+    let message = inferred_rest_tuple_message(
+        r#"
+declare function f<Args extends unknown[]>(...args: Args): Args;
+const arr: [string, ...boolean[]] = ["x", true];
+const result = f(...arr);
+const probe: 0 = result;
+"#,
+    );
+    assert!(
+        message.contains("[string, ...boolean[]]"),
+        "open tuple spread into bare rest type param must stay [string, ...boolean[]], got: {message}"
+    );
+}
+
+#[test]
+fn spread_fully_fixed_tuple_still_materializes_elements() {
+    // Adjacent positive/fallback case: a fully fixed tuple spread keeps the
+    // existing positional expansion (no open-ended rest to preserve).
+    let message = inferred_rest_tuple_message(
+        r#"
+declare function f<T extends unknown[]>(...args: [first: number, ...T]): T;
+const arr: [string, boolean] = ["x", true];
+const result = f(1, ...arr);
+const probe: 0 = result;
+"#,
+    );
+    assert!(
+        message.contains("[string, boolean]"),
+        "fully fixed tuple spread should infer the fixed tuple, got: {message}"
+    );
+}

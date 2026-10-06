@@ -1,0 +1,80 @@
+{
+  "files": [
+    {
+      "bytes": 80,
+      "path": ".gitattributes",
+      "sha256": "e173bffc6cde613d3e6d06e49f2b1d05385cb02aa68c4931656b5b051ab649dd"
+    },
+    {
+      "bytes": 274,
+      "path": ".github/dependabot.yml",
+      "sha256": "60ffc0c7159ff6af5e36ad3ecc56fe63782e4defaabafa94a13df7150d9a84c6"
+    },
+    {
+      "bytes": 651,
+      "path": ".github/workflows/ci.yml",
+      "sha256": "882f35c116127bf285bd4e02b5b087bc82fe28df0b0c331cdce967dd8efd829b"
+    },
+    {
+      "bytes": 293,
+      "path": ".github/workflows/lock-threads.yml",
+      "sha256": "618dc46b9d589d991d97f4c9dd8b24c4f21edae32cdfd6c1ddc299dcab3d21d7"
+    },
+    {
+      "bytes": 1123,
+      "path": "LICENSE",
+      "sha256": "3871c31d0cc373951d836b8bb97275a2227f8af7464df7c51bc3f98769b87653"
+    },
+    {
+      "bytes": 1849,
+      "path": "README.md",
+      "sha256": "6e2da157a57a79a68b7cafb50d9db40d1785828a4c4680cc43e584c7b6024fd5"
+    },
+    {
+      "bytes": 1289,
+      "path": "bin/safe-regex2.js",
+      "sha256": "7db17c490b9b9209db3bb3505b49ad6d1dcee4c21270c92edc573b72602de4c4"
+    },
+    {
+      "bytes": 135,
+      "path": "eslint.config.js",
+      "sha256": "52e3a2601a98f23c954d664ab8de95fddb390789f8b067815e484b010d3da2d0"
+    },
+    {
+      "bytes": 113,
+      "path": "example/safe.js",
+      "sha256": "1014de98ee258adca6fcdc36a66ec47e4cf9a9f66826e47665714caefea17216"
+    },
+    {
+      "bytes": 1856,
+      "path": "index.js",
+      "sha256": "77dcc11aa175b599357e79ce14513a333265c70cb81ae680a33cfb3b080920ef"
+    },
+    {
+      "bytes": 1745,
+      "path": "package.json",
+      "sha256": "094d70f42d75e995e38b70d55d42fbde0074bac995feaf67de4b02877d6a3d0a"
+    },
+    {
+      "bytes": 1310,
+      "path": "test/regex.test.js",
+      "sha256": "de33a86fe1cdeca3e144794a4a88ac3f6f2c184cfb3031975512d8262f910742"
+    },
+    {
+      "bytes": 289,
+      "path": "types/index.d.ts",
+      "sha256": "a5f28b8fb0835b8ef6a3ab394d6b67247b5a022495390ae26997dd415a6c3d14"
+    },
+    {
+      "bytes": 499,
+      "path": "types/index.test-d.ts",
+      "sha256": "dee6e5693449cdcd87de184db4d48a737f1e76cffad5d366f897206097336363"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "safe-regex2",
+    "version": "5.1.1"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

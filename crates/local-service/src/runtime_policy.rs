@@ -4,6 +4,7 @@
 //! It never carries registry endpoints, source paths, credentials, or compiler
 //! locations.
 
+use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 
@@ -196,7 +197,45 @@ impl<'de> Deserialize<'de> for RequiredOptionalU64 {
     where
         D: Deserializer<'de>,
     {
-        Option::<u64>::deserialize(deserializer).map(Self)
+        deserializer.deserialize_any(RequiredOptionalU64Visitor)
+    }
+}
+
+struct RequiredOptionalU64Visitor;
+
+impl<'de> Visitor<'de> for RequiredOptionalU64Visitor {
+    type Value = RequiredOptionalU64;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("null or an unsigned integer")
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(RequiredOptionalU64(None))
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(RequiredOptionalU64(None))
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        u64::deserialize(deserializer).map(|value| RequiredOptionalU64(Some(value)))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(RequiredOptionalU64(Some(value)))
     }
 }
 

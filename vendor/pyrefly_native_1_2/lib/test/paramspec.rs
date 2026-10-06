@@ -1,0 +1,922 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+//! Many of these tests come from <https://typing.readthedocs.io/en/latest/spec/generics.html#paramspec>.
+
+use crate::test::util::TestEnv;
+use crate::testcase;
+
+testcase!(
+    test_callable_param_spec,
+    r#"
+from typing import Callable, ParamSpec
+P = ParamSpec("P")
+def test(f: Callable[P, None]) -> Callable[P, None]:
+    def inner(*args: P.args, **kwargs: P.kwargs) -> None:
+        f(*args, **kwargs)
+    return inner
+"#,
+);
+
+testcase!(
+    test_param_spec_solve,
+    r#"
+from typing import Callable, ParamSpec, Concatenate, assert_type
+def f1[**P](x: Callable[P, int]) -> Callable[P, int]: ...
+def f2[**P](x: Callable[Concatenate[int, P], int]) -> Callable[P, int]: ...
+def f3[**P](x: Callable[P, int]) -> Callable[Concatenate[int, P], int]: ...
+def f4[**P](x: Callable[Concatenate[int, P], int]) -> Callable[Concatenate[str, P], int]: ...
+
+def test(x1: Callable[[int, str], int], x2: Callable[..., int]):
+    assert_type(f1(x1), Callable[[int, str], int])
+    assert_type(f1(x2), Callable[..., int])
+
+    assert_type(f2(x1), Callable[[str], int])
+    assert_type(f2(x2), Callable[..., int])
+
+    assert_type(f3(x1), Callable[[int, int, str], int])
+    assert_type(f3(x2), Callable[Concatenate[int, ...], int])
+
+    assert_type(f4(x1), Callable[[str, str], int])
+    assert_type(f4(x2), Callable[Concatenate[str, ...], int])
+"#,
+);
+
+testcase!(
+    test_paramspec_middleware_kwargs_mismatch,
+    r#"
+from typing import Protocol, Any
+
+class ASGIApp:
+    pass
+
+class _MiddlewareFactory[**P](Protocol):
+    def __call__(self, app: ASGIApp, /, *args: P.args, **kwargs: P.kwargs) -> Any: ...
+
+class FastAPI:
+    def add_middleware[**P](
+        self,
+        middleware_class: _MiddlewareFactory[P],
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> None:
+        pass
+
+class CORSMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        pass
+
+def use_middleware() -> None:
+    app = FastAPI()
+    app.add_middleware(
+        CORSMiddleware,
+        x="",  # E: Unexpected keyword argument `x`
+    )
+"#,
+);
+
+testcase!(
+    test_param_spec_invariance,
+    r#"
+from typing import Callable, reveal_type
+def identity[**P, R](x: Callable[P, R]) -> Callable[P, R]:
+  return x
+def test(f1: Callable[[int], None] | Callable[[str], None]):
+  f3 = identity(f1)  # E: Argument `((int) -> None) | ((str) -> None)` is not assignable to parameter `x` with type `(int) -> None` in function `identity`
+"#,
+);
+
+testcase!(
+    test_function_concatenate,
+    r#"
+from typing import Callable, ParamSpec, Concatenate
+P = ParamSpec("P")
+def f(t: Callable[Concatenate[int, P], int]):
+    pass
+"#,
+);
+
+testcase!(
+    test_simple_paramspec,
+    r#"
+from typing import Callable, ParamSpec, assert_type, reveal_type
+
+P = ParamSpec("P")
+
+def changes_return_type_to_str(x: Callable[P, int]) -> Callable[P, str]: ...
+
+def returns_int(a: str, b: bool) -> int: ...
+
+f = changes_return_type_to_str(returns_int)
+reveal_type(f)  # E: revealed type: (a: str, b: bool) -> str
+
+f("A", True)
+f(a="A", b=True)
+f("A", "A")  # E: Argument `Literal['A']` is not assignable to parameter `b` with type `bool`
+assert_type(f("A", True), str)
+"#,
+);
+
+testcase!(
+    test_paramspec_in_right_place,
+    r#"
+from typing import Callable, Concatenate, ParamSpec
+
+P = ParamSpec("P")
+
+def foo(x: P) -> P: ...                           # E: `ParamSpec` is not allowed in this context # E: `ParamSpec` is not allowed in this context
+def foo(x: Concatenate[int, P]) -> int: ...       # E: `Concatenate[int, P]` is not allowed in this context
+def foo(x: Callable[Concatenate[P, P], int]) -> int: ...  # E: `ParamSpec` is not allowed in this context
+def foo(x: list[P]) -> None: ...                  # E: `ParamSpec` cannot be used for type parameter
+def foo(x: Callable[[int, str], P]) -> None: ...  # E: `ParamSpec` is not allowed in this context
+def foo(x: Callable[[P, str], int]) -> None: ...  # E: `ParamSpec` is not allowed in this context
+"#,
+);
+
+testcase!(
+    test_paramspec_generic,
+    r#"
+from typing import Callable, Concatenate, ParamSpec, Generic, TypeVar
+
+T = TypeVar("T")
+P = ParamSpec("P")
+P_2 = ParamSpec("P_2")
+
+class X(Generic[T, P]):
+  f: Callable[P, int]
+  x: T
+
+def f1(x: X[int, P_2]) -> str: ...                    # Accepted
+def f2(x: X[int, Concatenate[int, P_2]]) -> str: ...  # Accepted
+def f3(x: X[int, [int, bool]]) -> str: ...            # Accepted
+def f4(x: X[int, ...]) -> str: ...                    # Accepted
+def f5(x: X[int, int]) -> str: ...                    # E: Expected a valid ParamSpec expression
+
+class X2[T, **P]:
+  f: Callable[P, int]
+  x: T
+
+def f6(x: X2[int, [int, bool]]) -> str: ...           # Accepted
+"#,
+);
+
+testcase!(
+    test_paramspec_omit_brackets,
+    r#"
+from typing import Callable, Generic, ParamSpec
+
+P = ParamSpec("P")
+
+class Z(Generic[P]):
+  f: Callable[P, int]
+
+def f(x: Z[[int, str, bool]]) -> str: ...
+def f(x: Z[int, str, bool]) -> str: ...
+"#,
+);
+
+testcase!(
+    test_paramspec_repeated,
+    r#"
+from typing import Callable, ParamSpec, reveal_type
+
+P = ParamSpec("P")
+
+def foo(x: Callable[P, int], y: Callable[P, int]) -> Callable[P, bool]: ...
+
+def x_y(x: int, y: str) -> int: ...
+def y_x(y: int, x: str) -> int: ...
+
+reveal_type(foo(x_y, x_y)) # E: revealed type: (x: int, y: str) -> bool
+               # Should return (x: int, y: str) -> bool
+               # (a callable with two positional-or-keyword parameters)
+
+foo(x_y, y_x) # E: Argument `(y: int, x: str) -> int` is not assignable to parameter `y` with type `(x: int, y: str) -> int`
+               # Could return (a: int, b: str, /) -> bool
+               # (a callable with two positional-only parameters)
+               # This works because both callables have types that are
+               # behavioral subtypes of Callable[[int, str], int].
+               # Could also fail, which is what we do.
+
+def keyword_only_x(*, x: int) -> int: ...
+def keyword_only_y(*, y: int) -> int: ...
+foo(keyword_only_x, keyword_only_y) # Rejected # E: Argument `(*, y: int) -> int` is not assignable to parameter `y` with type `(*, x: int) -> int`
+"#,
+);
+
+testcase!(
+    test_paramspec_constructor,
+    r#"
+from typing import TypeVar, Generic, Callable, ParamSpec, reveal_type
+
+P = ParamSpec("P")
+U = TypeVar("U")
+
+class Y(Generic[U, P]):
+  f: Callable[P, str]
+  prop: U
+
+  def __init__(self, f: Callable[P, str], prop: U) -> None:
+    self.f = f
+    self.prop = prop
+
+def a(q: int) -> str: ...
+
+reveal_type(Y(a, 1))   # E: revealed type: Y[int, [q: int]]
+reveal_type(Y(a, 1).f) # E: revealed type: (q: int) -> str
+"#,
+);
+
+// We have different formatting to what the spec suggests, but the same answers.
+testcase!(
+    test_simple_concatenate,
+    r#"
+from typing import Callable, Concatenate, ParamSpec, reveal_type
+
+P = ParamSpec("P")
+
+def bar(x: int, *args: bool) -> int: ...
+def add(x: Callable[P, int]) -> Callable[Concatenate[str, P], bool]: ...
+reveal_type(add(bar))       # Should return (a: str, /, x: int, *args: bool) -> bool # E: revealed type: (str, x: int, *args: bool) -> bool
+
+def remove(x: Callable[Concatenate[int, P], int]) -> Callable[P, bool]: ...
+reveal_type(remove(bar))    # E: revealed type: (*args: bool) -> bool
+
+def transform(
+  x: Callable[Concatenate[int, P], int]
+) -> Callable[Concatenate[str, P], bool]: ...
+reveal_type(transform(bar)) # Should return (a: str, /, *args: bool) -> bool # E: revealed type: (str, *args: bool) -> bool
+"#,
+);
+
+testcase!(
+    test_paramspec_component_usage,
+    r#"
+from typing import Callable, ParamSpec
+
+P = ParamSpec("P")
+
+def puts_p_into_scope(f: Callable[P, int]) -> None:
+  def inner(*args: P.args, **kwargs: P.kwargs) -> None: pass     # Accepted
+  def mixed_up(*args: P.kwargs, **kwargs: P.args) -> None: pass  # E: `ParamSpec` **kwargs is only allowed in a **kwargs annotation # E: `ParamSpec` *args is only allowed in an *args annotation
+  def misplaced(x: P.args) -> None: pass                         # E: `ParamSpec` *args is only allowed in an *args annotation
+
+def out_of_scope(*args: P.args, **kwargs: P.kwargs) -> None: # E: Expected a type form, got instance of `ParamSpecArgs` # E: Expected a type form, got instance of `ParamSpecKwargs`
+  pass
+"#,
+);
+
+testcase!(
+    test_paramspec_together,
+    r#"
+from typing import Callable, ParamSpec
+
+P = ParamSpec("P")
+
+def puts_p_into_scope(f: Callable[P, int]) -> None:
+  stored_args: P.args                           # E: `ParamSpec` *args is only allowed in an *args annotation
+  stored_kwargs: P.kwargs                       # E: `ParamSpec` **kwargs is only allowed in a **kwargs annotation
+  def just_args(*args: P.args) -> None:         # E: `ParamSpec` *args and **kwargs must be used together
+    pass
+  def just_kwargs(**kwargs: P.kwargs) -> None:  # E: `ParamSpec` *args and **kwargs must be used together
+    pass
+"#,
+);
+
+testcase!(
+    test_paramspec_decorator,
+    r#"
+from typing import Callable, ParamSpec, assert_type, Any
+
+P = ParamSpec("P")
+
+def decorator(f: Callable[P, int]) -> Callable[P, None]:
+  def foo(*args: P.args, **kwargs: P.kwargs) -> None:
+    assert_type(f(*args, **kwargs), int)    # Accepted, should resolve to int
+    f(*kwargs, **args)    # Rejected # E: Expected *-unpacked P.args and **-unpacked P.kwargs
+    f(1, *args, **kwargs) # Rejected # E: Expected 0 positional arguments, got 1
+
+  # Allow tuple[Any, ...] to match P.args, and dict[str, Any] to match P.kwargs
+  def bar(t1: tuple[Any, ...], t2: tuple[object, ...], d1: dict[str, Any], d2: dict[str, object]) -> None:
+    f(*t1, **d1) # OK
+    f(*t2, **d2) # # E: Expected *-unpacked P.args and **-unpacked P.kwargs
+  return foo              # Accepted
+"#,
+);
+
+testcase!(
+    test_paramspec_args_kwargs_subscriptable,
+    r#"
+from typing import Callable, ParamSpec, TypeVar, assert_type
+
+FP = ParamSpec('FP')
+FR = TypeVar('FR')
+
+def decorate(f: Callable[FP, FR]) -> Callable[FP, FR]:
+  def wrapper(*args: FP.args, **kwargs: FP.kwargs) -> FR:
+    if len(args) > 0:
+      assert_type(args[0], object)
+    if 'foo' in kwargs:
+      assert_type(kwargs['foo'], object)
+    return f(*args, **kwargs)
+  return wrapper
+"#,
+);
+
+testcase!(
+    test_paramspec_named_arguments_concatenate,
+    r#"
+from typing import Callable, ParamSpec
+
+P = ParamSpec("P")
+
+def outer(f: Callable[P, None]) -> Callable[P, None]:
+  def foo(x: int, *args: P.args, **kwargs: P.kwargs) -> None:
+    f(*args, **kwargs)
+
+  def bar(*args: P.args, **kwargs: P.kwargs) -> None:
+    foo(1, *args, **kwargs)   # Accepted
+    foo(x=1, *args, **kwargs) # Rejected # E: Expected argument `x` to be positional
+
+  return bar
+"#,
+);
+
+testcase!(
+    test_paramspec_different_origins,
+    r#"
+from typing import Callable, ParamSpec
+
+P1 = ParamSpec("P1")
+P2 = ParamSpec("P2")
+
+def test1(x: Callable[P1, None], y: Callable[P2, None], *args: P1.args, **kwargs: P2.kwargs) -> None: ...  # E: *args and **kwargs must come from the same `ParamSpec`
+def test2(x: int, *args: P1.args, **kwargs: P2.kwargs) -> None: ...  # E: Expected a type form, got instance of `ParamSpecArgs` # E: Expected a type form, got instance of `ParamSpecKwargs`
+"#,
+);
+
+testcase!(
+    test_paramspec_twice,
+    r#"
+from typing import Callable, ParamSpec
+
+P = ParamSpec("P")
+
+def twice(f: Callable[P, int], *args: P.args, **kwargs: P.kwargs) -> int:
+  return f(*args, **kwargs) + f(*args, **kwargs)
+
+def a_int_b_str(a: int, b: str) -> int:
+  return a
+
+twice(a_int_b_str, 1, "A")     # Accepted
+twice(a_int_b_str, b="A", a=1) # Accepted
+twice(a_int_b_str, "A", 1)     # Rejected # E: `Literal['A']` is not assignable to parameter `a` with type `int` # E: `Literal[1]` is not assignable to parameter `b` with type `str`
+"#,
+);
+
+testcase!(
+    test_paramspec_callable_infer_ellipsis,
+    r#"
+from typing import Callable, ParamSpec
+
+P = ParamSpec("P")
+def f(f: Callable[P, int], *args: P.args, **kwargs: P.kwargs) -> int:
+  return f(*args, **kwargs) + f(*args, **kwargs)
+x: Callable[..., int] = lambda: 1
+
+f(x, 1)"#,
+);
+
+testcase!(
+    bug = "we can pass in anything for the ParamSpec component of the concatenation",
+    test_paramspec_callable_infer_concatenate,
+    r#"
+from typing import Callable, ParamSpec, Concatenate
+
+def f[**P](h: Callable[P, int], *args: P.args, **kwargs: P.kwargs) -> int:
+    return h(*args, **kwargs)
+
+def g[**P2](h: Callable[Concatenate[int, P2], int], *args: P2.args, **kwargs: P2.kwargs):
+    # This call is valid
+    f(h, 1, *args, **kwargs)
+    # Every one of these is buggy - we're completely dropping the P2 <-> P correspondence
+    f(h, 1)
+    f(h)  # E: Expected 1 more positional argument in function `f`
+    f(h, 1, 2)
+"#,
+);
+
+testcase!(
+    test_functools_wraps_paramspec,
+    r#"
+from functools import wraps
+
+def f(fn):
+    @wraps(fn)
+    def wrapped_fn(x):
+        return fn(x)
+
+    return wrapped_fn
+"#,
+);
+
+testcase!(
+    test_bad_paramspec_in_concatenate,
+    r#"
+from typing import Callable, Concatenate
+
+X = Callable[Concatenate[int, "oops"], int]  # E: Expected a `ParamSpec`  # E: Could not find name `oops`
+
+def f(x: X, y):
+    x(0)
+  "#,
+);
+
+testcase!(
+    test_in_alias,
+    r#"
+from typing import Callable, ParamSpec, TypeAlias
+P = ParamSpec("P")
+TA: TypeAlias = Callable[P, None]
+def f(f: TA):
+    # f can be called with anything
+    f()
+    f("")
+    f(1, 2, 3, 4, 5)
+    "#,
+);
+
+testcase!(
+    test_in_try_except,
+    r#"
+from collections.abc import Callable
+def run[**P, R](func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+    while True:
+        try:
+            return func(*args,**kwargs)
+        except Exception:
+            pass
+    raise NotImplementedError("Unreachable")
+  "#,
+);
+
+testcase!(
+    test_param_spec_component_subtype,
+    r#"
+def test[**P](*args: P.args, **kwargs: P.kwargs) -> None:
+  x: tuple[object, ...] = args
+  y: dict[str, object] = kwargs
+"#,
+);
+
+testcase!(
+    test_param_spec_component_iter,
+    r#"
+from typing import *
+
+R = TypeVar("R")
+P = ParamSpec("P")
+
+def wrap_any(f, *args, **kwargs):
+    return f(*args, **kwargs)
+
+def wrap(f: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+    return wrap_any(f, *args, **kwargs)
+"#,
+);
+
+testcase!(
+    test_paramspec_forwarding_between_generic_helpers,
+    r#"
+from typing import Callable, ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def run_and_get_code(fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R: ...
+
+def run_and_get_kernels(fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+    return run_and_get_code(fn, *args, **kwargs)
+"#,
+);
+
+testcase!(
+    test_paramspec_forwarding_bad_args,
+    r#"
+from typing import Callable, ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def inner(fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R: ...
+
+def outer(fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+    return inner(fn, 1, 2)  # E: Expected *-unpacked P.args and **-unpacked P.kwargs
+"#,
+);
+
+testcase!(
+    test_paramspec_forwarding_with_concatenate,
+    r#"
+from typing import Callable, Concatenate, ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def inner(fn: Callable[Concatenate[int, P], R], x: int, *args: P.args, **kwargs: P.kwargs) -> R: ...
+
+def outer(fn: Callable[Concatenate[int, P], R], x: int, *args: P.args, **kwargs: P.kwargs) -> R:
+    return inner(fn, x, *args, **kwargs)
+"#,
+);
+
+testcase!(
+    test_paramspec_forwarding_extra_concrete_arg,
+    r#"
+from typing import Callable, ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def inner(fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R: ...
+
+def outer(fn: Callable[P, R], extra: int, *args: P.args, **kwargs: P.kwargs) -> R:
+    return inner(fn, *args, **kwargs)
+"#,
+);
+
+testcase!(
+    test_paramspec_forwarding_chained,
+    r#"
+from typing import Callable, ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def level1(fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R: ...
+
+def level2(fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+    return level1(fn, *args, **kwargs)
+
+def level3(fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+    return level2(fn, *args, **kwargs)
+"#,
+);
+
+testcase!(
+    test_paramspec_forwarding_extra_arg_before_star,
+    r#"
+from typing import Callable, ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def inner(fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R: ...
+
+def outer(fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+    return inner(fn, 1, *args, **kwargs)  # E: Expected *-unpacked P.args and **-unpacked P.kwargs
+"#,
+);
+
+testcase!(
+    test_paramspec_forwarding_extra_arg_after_star,
+    r#"
+from typing import Callable, ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def inner(fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R: ...
+
+def outer(fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+    return inner(fn, *args, 1, **kwargs)  # E: Expected *-unpacked P.args and **-unpacked P.kwargs
+"#,
+);
+
+testcase!(
+    test_paramspec_forwarding_kwargs_only,
+    r#"
+from typing import Callable, Concatenate, ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def inner(fn: Callable[Concatenate[int, P], R], x: int, *args: P.args, **kwargs: P.kwargs) -> R: ...
+
+def outer(fn: Callable[Concatenate[int, P], R], x: int, *args: P.args, **kwargs: P.kwargs) -> R:
+    return inner(fn, x, **kwargs)  # E: Expected *-unpacked P.args and **-unpacked P.kwargs
+"#,
+);
+
+testcase!(
+    test_param_spec_ellipsis,
+    r#"
+from typing import Callable
+def test[**P](v: Callable[P, None]):
+    a: Callable[..., None] = v
+    b: Callable[P, None] = a
+"#,
+);
+
+testcase!(
+    test_functools_partial_reassignment_paramspec,
+    r#"
+import functools
+from collections.abc import Callable
+from typing import ParamSpec, TypeVar, assert_type
+
+P = ParamSpec("P")
+T = TypeVar("T")
+
+def run_sync(func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    func = functools.partial(func, *args, **kwargs)
+    return func()
+
+def greet(name: str, greeting: str) -> int:
+    return 0
+
+assert_type(run_sync(greet, "Alice", greeting="Hi"), int)
+"#,
+);
+
+testcase!(
+    test_functools_partial_reassignment_paramspec_concatenate,
+    r#"
+import functools
+from collections.abc import Callable
+from typing import Concatenate, ParamSpec, TypeVar, assert_type
+
+P = ParamSpec("P")
+T = TypeVar("T")
+
+def run_sync(func: Callable[Concatenate[int, P], T], x: int, *args: P.args, **kwargs: P.kwargs) -> T:
+    func = functools.partial(func, x, *args, **kwargs)
+    return func()
+
+def greet(x: int, name: str) -> str:
+    return ""
+
+assert_type(run_sync(greet, 1, "Alice"), str)
+"#,
+);
+
+testcase!(
+    test_functools_partial_reassignment_paramspec_strict,
+    TestEnv::new().enable_strict_callable_subtyping(),
+    r#"
+import functools
+from collections.abc import Callable
+from typing import ParamSpec, TypeVar
+
+P = ParamSpec("P")
+T = TypeVar("T")
+
+def run_sync(func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    func = functools.partial(func, *args, **kwargs)  # E: `partial[T]` is not assignable to variable `func` with type `(ParamSpec(P)) -> T`
+    return func()  # E: Expected *-unpacked P.args and **-unpacked P.kwargs
+"#,
+);
+
+testcase!(
+    test_param_spec_empty,
+    r#"
+def foo[**P](x: int = 0, *args: P.args, **kwargs: P.kwargs):
+    pass
+foo()
+"#,
+);
+
+testcase!(
+    test_param_spec_optional_prefix_arg,
+    r#"
+from typing import Concatenate, ParamSpec, TypeVar, Callable
+
+class T:
+    def c1(self) -> None:
+        pass
+
+Res = TypeVar("Res", covariant=True)
+P = ParamSpec("P")
+
+def caller(
+    vals: list[T],
+    action: Callable[Concatenate[T, P], Res],
+    extra_arg: bool=True,
+    *args: P.args,
+    **kwargs: P.kwargs
+) -> None:
+    for val in vals:
+        if extra_arg:
+            _ = action(val, *args, **kwargs)
+
+caller([], T.c1)
+"#,
+);
+
+testcase!(
+    test_paramspec_any,
+    r#"
+from typing import Callable, Any, ParamSpec, Generic
+
+P = ParamSpec('P')
+
+class Task(Generic[P]):
+    __call__: Callable[P, None]
+
+# Any should be accepted as a valid ParamSpec argument
+def foo(task: Task[Any]) -> None:
+    pass
+"#,
+);
+
+testcase!(
+    test_paramspec_complex_decorator_with_concatenate,
+    r#"
+from typing import *
+
+T = TypeVar("T")
+P = ParamSpec("P")
+
+def decorator(
+    cls: type[object], foo: str | None = None
+) -> Callable[[Callable[Concatenate[Callable[P, T], P], T]], Callable[P, T]]:
+    raise NotImplementedError()
+
+class Cls: pass
+
+@decorator(Cls)
+def test(
+    foo: Callable[Concatenate[Cls, P], object],
+    self: Cls,
+    *args: P.args,
+    **kwargs: P.kwargs,
+):
+    return foo(self, *args, **kwargs)
+"#,
+);
+
+testcase!(
+    test_paramspec_protocol_overload_named_arg_matching,
+    r#"
+from typing import *
+
+T = TypeVar('T')
+T_co = TypeVar('T_co', covariant=True)
+P = ParamSpec('P')
+K = TypeVar('K')
+K_con = TypeVar('K_con', contravariant=True)
+
+class Wrapper(Generic[P, T]):
+    def call(self, *args: P.args, **kwargs: P.kwargs) -> T: ...
+
+class InstanceMethod(Protocol[K_con, P, T_co]):
+    def __call__(_self, self: K_con, *args: P.args, **kwargs: P.kwargs) -> T_co: ...
+
+class BareFn(Protocol[P, T_co]):
+    def __call__(_self, *args: P.args, **kwargs: P.kwargs) -> T_co: ...
+
+@overload
+def asyncable(fn: InstanceMethod[K, P, T]) -> Wrapper[P, T]: ...
+@overload
+def asyncable(fn: BareFn[P, T]) -> Wrapper[P, T]: ...
+def asyncable(fn) -> Wrapper[P, T]: ...
+
+@asyncable
+def bare_fn(a: int) -> str: ...
+
+# Should match BareFn overload, NOT InstanceMethod
+reveal_type(bare_fn) # E: Wrapper[[a: int], str]
+"#,
+);
+
+testcase!(
+    test_paramspec_named_params_before_args,
+    r#"
+from typing import ParamSpec, TypeVar, Callable
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def call_with_retry(
+    f: Callable[P, R],
+    max_attempts: int = 10,
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> R:
+    return f(*args, **kwargs)
+
+def write_data() -> None:
+    pass
+
+call_with_retry(write_data, max_attempts=5)
+call_with_retry(write_data, 5)
+
+def compute(x: int, y: str) -> bool:
+    return True
+
+call_with_retry(compute, max_attempts=3, x=1, y="hello")
+call_with_retry(compute, 3, 1, "hello")
+"#,
+);
+
+// Regression test for https://github.com/facebook/pyrefly/issues/3054
+testcase!(
+    test_paramspec_forwarding_with_overloaded_callable,
+    r#"
+from typing import ParamSpec, overload, Callable, Any
+
+P = ParamSpec("P")
+
+@overload
+def assert_raises(
+    exception_class: type[BaseException],
+    /,
+) -> None: ...
+@overload
+def assert_raises(
+    exception_class: type[BaseException],
+    callable: Callable[P, Any],
+    /,
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> None: ...
+def assert_raises(*args: Any, **kwargs: Any) -> None:
+    pass
+
+@overload
+def compute(x: int, y: int) -> int: ...
+@overload
+def compute(x: str, y: str) -> str: ...
+def compute(x: int | str, y: int | str) -> int | str:
+    return x
+
+assert_raises(ValueError, compute, "hello", "world")
+"#,
+);
+
+testcase!(
+    test_paramspec_forwarding_prefix_param_keyword,
+    r#"
+from typing import ParamSpec, Callable
+
+P = ParamSpec("P")
+Q = ParamSpec("Q")
+
+def call_fn(f: Callable[P, None], x: int, *args: P.args, **kwargs: P.kwargs) -> None:
+    f(*args, **kwargs)
+
+def forward(g: Callable[Q, None], *args: Q.args, **kwargs: Q.kwargs) -> None:
+    call_fn(g, x=1, *args, **kwargs)
+"#,
+);
+
+// Reproduces pyinfra's @operation decorator pattern: a Protocol whose __call__
+// mixes explicit "global" params with *args: P.args / **kwargs: P.kwargs, and
+// the decorator returns cast(Protocol[P], wrapped_func). Mypy 1.17 handles
+// this correctly.
+testcase!(
+    test_paramspec_protocol_cast_preserves_binding,
+    r#"
+from typing import Protocol, Generic, Callable, Iterator, cast
+from typing_extensions import ParamSpec
+
+P = ParamSpec("P")
+
+class OperationResult:
+    changed: bool
+
+class OperationProtocol(Generic[P], Protocol):
+    def __call__(
+        self,
+        _sudo: bool = False,
+        name: str | None = None,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> OperationResult: ...
+
+def make_operation(func: Callable[P, Iterator[str]]) -> OperationProtocol[P]:
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> OperationResult:
+        return OperationResult()
+    return cast(OperationProtocol[P], wrapper)
+
+def _service_impl(service_name: str, running: bool = True) -> Iterator[str]:
+    yield "test"
+
+service = make_operation(_service_impl)
+
+# P-bound params work correctly:
+service(service_name="nginx")
+service(service_name="nginx", running=True)
+
+# Protocol's explicit params also work:
+service(service_name="nginx", _sudo=True)
+service(service_name="nginx", running=True, _sudo=True, name="Start nginx")
+
+# Correctly rejected — not on the Protocol or in P:
+service(nonexistent_param=True)  # E: Missing argument `service_name` # E: Unexpected keyword argument `nonexistent_param`
+"#,
+);

@@ -1,0 +1,55 @@
+{
+  "files": [
+    {
+      "bytes": 442,
+      "path": ".github/workflows/ci.yml",
+      "sha256": "940555a1f0a9b3a203a9aec908e110493254c778beb9228f643248fce8c11c5f"
+    },
+    {
+      "bytes": 1101,
+      "path": "LICENSE",
+      "sha256": "1ce941682a96c7b898ecd125d0f2e22319758ea6f3adbf498a65d649b0f3f7dd"
+    },
+    {
+      "bytes": 55,
+      "path": "default.js",
+      "sha256": "d7f46114c176de337df05aef386228b8ee1cd60e93a7400ee4ac98b91651f35e"
+    },
+    {
+      "bytes": 355,
+      "path": "index.d.ts",
+      "sha256": "1e9c163d34dfec47f0cc38322bb35ae6e031fec7947bc739ed8e3f61c3b6ad54"
+    },
+    {
+      "bytes": 5847,
+      "path": "index.js",
+      "sha256": "276defbca175e8293ccaa08fcf1de4d8071c096e606bd8e156976c7550bdb0b7"
+    },
+    {
+      "bytes": 273,
+      "path": "index.test-d.ts",
+      "sha256": "486cd27a91b82aa30c23988fa421bc2ee1f4a8f835e558e068d273410ff6566a"
+    },
+    {
+      "bytes": 1656,
+      "path": "package.json",
+      "sha256": "587604c366b2f0f40e660ef8496d0480dd0cd839cfc3e64b32f644a7a2a549cf"
+    },
+    {
+      "bytes": 5353,
+      "path": "readme.md",
+      "sha256": "0dedb36a7db801481bc4528b6b00224d6197a2d90aa90ff7c609c8afa26ff91a"
+    },
+    {
+      "bytes": 12068,
+      "path": "test/index.js",
+      "sha256": "451902829edd5ecb3d9369621af041e67365836fe8faa3fa2cd3116564b67458"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "rfdc",
+    "version": "1.4.1"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

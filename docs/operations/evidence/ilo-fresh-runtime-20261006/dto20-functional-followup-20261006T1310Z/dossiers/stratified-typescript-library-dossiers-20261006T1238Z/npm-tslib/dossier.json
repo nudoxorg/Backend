@@ -1,0 +1,81 @@
+{
+  "schema": "nudox.source-verified-stratified-dossier.v1",
+  "package": {
+    "ecosystem": "npm",
+    "id": "tslib",
+    "version": "2.8.1"
+  },
+  "source_root": "/root/nudox-corpus-20261006/artifacts/stratified-typescript-library-dossiers-20261006T1238Z/npm-tslib/source",
+  "source_tree_sha256": "138d77c4539993bf3aebbb67242b23eda37520f24622bd85a8ab328bb32f7a31",
+  "source_files": 14,
+  "source_bytes": 90359,
+  "inventory_sha256": "344e93fe01b1d373653fa7d2425a83d2ec33ecfd7755fd0abbf8abe6238612ed",
+  "origin_sha256": "5ae5e6b46f943448eeb3471f3083a40ba3bceb3269de36b778ef576b96dbf547",
+  "archive_sha256": "66f635d5eeabae44807534976913a102cf615b9a045368359c9f79ae6ee2119e",
+  "origin_verified": true,
+  "archives_reused": true,
+  "acquisition_requests": [
+    {
+      "reused_metadata": "/root/nudox-corpus-20261006/catalog/npm-pin-seed100-20261006T0457Z/metadata/531411c19f3ae30165be1b8e.json",
+      "reused_archive": "/root/nudox-corpus-20261006/catalog/npm-pin-seed100-20261006T0457Z/tarballs/531411c19f3ae30165be1b8e.tgz",
+      "original_acquisition_directory": "/root/nudox-corpus-20261006/catalog/npm-pin-seed100-20261006T0457Z"
+    }
+  ],
+  "resource_before": {
+    "memory_available_kib": 57608620,
+    "free_disk_bytes": 58090954752
+  },
+  "dependency_requirements": {
+    "dependencies": {},
+    "peerDependencies": {},
+    "devDependencies": {}
+  },
+  "dependency_closure_installed": false,
+  "source_expectations": [
+    {
+      "name": "__awaiter",
+      "path": "tslib.d.ts",
+      "line": 110,
+      "file_sha256": "a6a5253138c5432c68a1510c70fe78a644fe2e632111ba778e1978010d6edfec",
+      "name_start_byte": 4841,
+      "name_end_byte": 4850,
+      "name_sha256": "e241a10fd3ffb96d9a1e39ba1aaf1a475cc2da2ebca7dfaf2b76c3c524c4a3cd",
+      "expectation_authority": "actual declaration token; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "__generator",
+      "path": "tslib.d.ts",
+      "line": 120,
+      "file_sha256": "a6a5253138c5432c68a1510c70fe78a644fe2e632111ba778e1978010d6edfec",
+      "name_start_byte": 5209,
+      "name_end_byte": 5220,
+      "name_sha256": "3de059c65dec111d4707665b28d97627ad520906af36777d4096e5a5a843c626",
+      "expectation_authority": "actual declaration token; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "__importStar",
+      "path": "tslib.d.ts",
+      "line": 224,
+      "file_sha256": "a6a5253138c5432c68a1510c70fe78a644fe2e632111ba778e1978010d6edfec",
+      "name_start_byte": 8751,
+      "name_end_byte": 8763,
+      "name_sha256": "80bdcfa30105fbb7c933c4c9d767fb45c1c13821e65256d1e1b29ca2a2e31f55",
+      "expectation_authority": "actual declaration token; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "__importDefault",
+      "path": "tslib.d.ts",
+      "line": 235,
+      "file_sha256": "a6a5253138c5432c68a1510c70fe78a644fe2e632111ba778e1978010d6edfec",
+      "name_start_byte": 9003,
+      "name_end_byte": 9018,
+      "name_sha256": "9e2b7038b634bf3a7121b04e9bdaf09e958339d86a1861ab6dba4a94acd37b22",
+      "expectation_authority": "actual declaration token; compiler binding/reference confidence not yet observed"
+    }
+  ],
+  "runtime_acceptance_status": "not_run",
+  "runtime_passes": 0,
+  "package_code_executed": false,
+  "observer_sha256": "7339a4bcd2bcfbcb02f42666703284303355d6778a2068260350d68f4b46184d",
+  "origin_verifier_sha256": "1ef8275b8e6daa9bfe711d05d367316b09635061b4cb9ca147816c6bed3a3039"
+}

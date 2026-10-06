@@ -7,18 +7,20 @@
 //! one synthetic acquisition record.
 
 use crate::process::RegistryDiscoveryConfig;
+#[cfg(test)]
+use backend_engine::registry::DiscoveryTimestamp;
 use backend_engine::registry::{
     DISCOVERY_BATCH_ENVELOPE_VERSION, DiscoveryBatch, DiscoveryBatchDraft, DiscoveryCompleteness,
     DiscoveryCursor, DiscoveryError, DiscoveryFacet, DiscoveryFact, DiscoveryMetadata,
     DiscoveryObservedAt, DiscoveryPackageRetraction, DiscoveryReleaseObservation,
     DiscoverySourceEvent, DiscoverySourceIdentity, DiscoveryStanding,
-    MAX_DISCOVERY_BATCH_ENCODED_BYTES, MAX_DISCOVERY_PAGE_ITEMS, NugetCatalogEvent,
-    RegistryEcosystem, RegistryEndpoint, crates_sparse_index_path, discovery_source_identity,
-    parse_conan_recipe_tree, parse_conan_recipe_versions, parse_crates_recent_page,
-    parse_crates_sparse_package, parse_go_module_index_page, parse_maven_search_page,
-    parse_npm_changes_page, parse_npm_packument_document, parse_nuget_catalog_index,
-    parse_nuget_catalog_leaf, parse_nuget_catalog_page, parse_pypi_project_list,
-    parse_pypi_project_metadata,
+    MAX_DISCOVERY_BATCH_ENCODED_BYTES, MAX_DISCOVERY_PAGE_ITEMS, MAX_NPM_PACKUMENT_BYTES,
+    MAX_PYPI_PROJECT_INDEX_BYTES, NugetCatalogEvent, RegistryEcosystem, RegistryEndpoint,
+    crates_sparse_index_path, discovery_source_identity, parse_conan_recipe_tree,
+    parse_conan_recipe_versions, parse_crates_recent_page, parse_crates_sparse_package,
+    parse_go_module_index_page, parse_maven_search_page, parse_npm_changes_page,
+    parse_npm_packument_document, parse_nuget_catalog_index, parse_nuget_catalog_leaf,
+    parse_nuget_catalog_page, parse_pypi_project_list, parse_pypi_project_metadata,
 };
 use backend_platform::durable;
 use base64::Engine as _;
@@ -33,8 +35,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-#[cfg(test)]
-use backend_engine::registry::DiscoveryTimestamp;
+
+pub(crate) mod package_metadata;
 
 const JOURNAL_MAGIC: &[u8; 8] = b"DISCOV01";
 const JOURNAL_VERSION: u16 = DISCOVERY_BATCH_ENVELOPE_VERSION;
@@ -54,6 +56,10 @@ const DISCOVERY_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 pub(crate) const DISCOVERY_FRESHNESS_MILLIS: u64 = 60_000;
 const DISCOVERY_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const DISCOVERY_REFRESH_BUDGET: Duration = Duration::from_secs(20);
+// PEP 691 has no page cursor: its global project list must be downloaded
+// before any bounded per-project metadata can be selected.
+const PYPI_PROJECT_INDEX_TIMEOUT: Duration = Duration::from_secs(60);
+const PYPI_DISCOVERY_REFRESH_BUDGET: Duration = Duration::from_secs(90);
 const DISCOVERY_SOURCE_LIMIT: usize = 8;
 const DISCOVERY_MESSAGE_CAPACITY: usize = 8;
 const MAX_CACHED_SPARSE_RELEASES: usize = 4096;
@@ -176,6 +182,9 @@ pub(crate) struct DiscoveryGateway {
     receiver: Receiver<DiscoveryWorkerMessage>,
     workers: Vec<JoinHandle<()>>,
     cancelled: Arc<AtomicBool>,
+    metadata_sources: Vec<RegistryEndpoint>,
+    metadata_offline: bool,
+    package_metadata: package_metadata::PackageMetadataCache,
 }
 
 enum DiscoveryWorkerMessage {
@@ -202,6 +211,8 @@ impl DiscoveryGateway {
         let mut workers = Vec::new();
         let mut seen = BTreeSet::new();
         let mut sources = Vec::new();
+        let metadata_sources = config.sources.clone();
+        let metadata_offline = config.offline;
         for endpoint in config.sources {
             let source = discovery_source_identity(&endpoint);
             if seen.insert(source) {
@@ -250,6 +261,9 @@ impl DiscoveryGateway {
             receiver,
             workers,
             cancelled,
+            metadata_sources,
+            metadata_offline,
+            package_metadata: package_metadata::PackageMetadataCache::default(),
         })
     }
 
@@ -313,7 +327,11 @@ fn discovery_worker(
     let mut retry_delay = DISCOVERY_REFRESH_INTERVAL;
     let mut sparse_cache = BTreeMap::new();
     while !cancelled.load(Ordering::Acquire) {
-        let deadline = Instant::now() + DISCOVERY_REFRESH_BUDGET;
+        let refresh_budget = match endpoint.ecosystem() {
+            RegistryEcosystem::Pypi => PYPI_DISCOVERY_REFRESH_BUDGET,
+            _ => DISCOVERY_REFRESH_BUDGET,
+        };
+        let deadline = Instant::now() + refresh_budget;
         match build_source_batch(
             &endpoint,
             cursor.clone(),
@@ -691,7 +709,7 @@ fn refresh_npm(
             let name = percent_encode_component(&package.name);
             let packument_url = format!("{}/{name}", base.trim_end_matches('/'));
             let packument_bytes =
-                fetch_metadata(&packument_url, MAX_SOURCE_BODY_BYTES, deadline, cancelled)?;
+                fetch_metadata(&packument_url, MAX_NPM_PACKUMENT_BYTES, deadline, cancelled)?;
             let sequence = package
                 .source_event_time
                 .parse::<u64>()
@@ -759,10 +777,11 @@ fn refresh_pypi(
     let list_url = format!("{}/simple/", endpoint.as_str().trim_end_matches('/'));
     let list_bytes = fetch_metadata_with_accept(
         &list_url,
-        MAX_SOURCE_BODY_BYTES,
+        MAX_PYPI_PROJECT_INDEX_BYTES,
         deadline,
         cancelled,
         "application/vnd.pypi.simple.v1+json",
+        PYPI_PROJECT_INDEX_TIMEOUT,
     )?;
     let list = parse_pypi_project_list(
         &list_bytes,
@@ -1371,7 +1390,14 @@ fn fetch_metadata(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<Vec<u8>, DiscoveryStoreError> {
-    fetch_metadata_with_accept(url, maximum, deadline, cancelled, "application/json")
+    fetch_metadata_with_accept(
+        url,
+        maximum,
+        deadline,
+        cancelled,
+        "application/json",
+        DISCOVERY_REQUEST_TIMEOUT,
+    )
 }
 
 fn fetch_metadata_with_accept(
@@ -1380,6 +1406,7 @@ fn fetch_metadata_with_accept(
     deadline: Instant,
     cancelled: &AtomicBool,
     accept: &str,
+    request_timeout: Duration,
 ) -> Result<Vec<u8>, DiscoveryStoreError> {
     if cancelled.load(Ordering::Acquire) {
         return Err(DiscoveryStoreError::Cancelled);
@@ -1391,7 +1418,7 @@ fn fetch_metadata_with_accept(
         )));
     }
     let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(remaining.min(DISCOVERY_REQUEST_TIMEOUT)))
+        .timeout_global(Some(remaining.min(request_timeout)))
         .max_redirects(0)
         .http_status_as_error(false)
         .build()
@@ -2490,6 +2517,84 @@ mod tests {
 
     fn cursor(value: &str) -> DiscoveryCursor {
         DiscoveryCursor::new(value.as_bytes().to_vec()).expect("cursor")
+    }
+
+    #[test]
+    fn pypi_global_project_index_download_exceeds_package_metadata_budget() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener");
+        listener
+            .set_nonblocking(true)
+            .expect("bounded fixture accept");
+        let address = listener.local_addr().expect("fixture address");
+        let mut project_index = br#"{"meta":{},"projects":[{"name":"requests"}]}"#.to_vec();
+        project_index.resize(MAX_SOURCE_BODY_BYTES + 1, b' ');
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for body in [
+                project_index,
+                br#"{"info":{"name":"requests","version":"2.32.5"},"releases":{"2.32.5":[{"yanked":false}]}}"#.to_vec(),
+            ] {
+                let accept_deadline = Instant::now() + Duration::from_secs(5);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            if Instant::now() >= accept_deadline {
+                                return requests;
+                            }
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("fixture request: {error}"),
+                    }
+                };
+                stream.set_nonblocking(false).expect("blocking fixture stream");
+                stream.set_write_timeout(Some(Duration::from_secs(5))).expect("bounded fixture write");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("bounded fixture read");
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).expect("read fixture request");
+                    request.push(byte[0]);
+                    assert!(request.len() <= 16 * 1024, "bounded fixture headers");
+                }
+                requests.push(String::from_utf8(request).expect("HTTP request"));
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                )
+                .expect("write fixture headers");
+                stream.write_all(&body).expect("write full fixture body");
+            }
+            requests
+        });
+        let endpoint = RegistryEndpoint::new(RegistryEcosystem::Pypi, format!("http://{address}"))
+            .expect("loopback PyPI source");
+        let cancelled = AtomicBool::new(false);
+        let batch = refresh_pypi(
+            &endpoint,
+            DiscoveryCursor::default(),
+            1,
+            Instant::now() + Duration::from_secs(20),
+            &cancelled,
+        );
+        let requests = server.join().expect("fixture server");
+        let batch = batch.expect("full project index, bounded package metadata");
+        assert_eq!(batch.facts.len(), 1);
+        assert_eq!(
+            batch.facts[0].coordinate.as_str(),
+            "pkg:pypi/requests@2.32.5"
+        );
+        assert_eq!(batch.completeness, DiscoveryCompleteness::Windowed);
+        assert_eq!(batch.next_cursor.as_bytes(), b"pypi-v1:requests");
+        assert!(requests[0].starts_with("GET /simple/ "));
+        assert!(requests[0].contains("application/vnd.pypi.simple.v1+json"));
+        assert!(requests[1].starts_with("GET /pypi/requests/json "));
     }
 
     #[test]

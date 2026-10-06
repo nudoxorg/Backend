@@ -1,0 +1,45 @@
+{
+  "files": [
+    {
+      "bytes": 1067,
+      "path": "LICENSE",
+      "sha256": "644304c533dee96438937c0bdcbb49897d80fd8df3be4573f3c57b9c2ca22587"
+    },
+    {
+      "bytes": 5474,
+      "path": "README.md",
+      "sha256": "db25953c7141c3895cabeb5baa0de487f82a3b73a031e59a9941964eb569b90d"
+    },
+    {
+      "bytes": 17688,
+      "path": "dist/toad-cache.cjs",
+      "sha256": "4cb6bbe2942982c456b06d93233f4150293ad1110bba6e086a31e41eef3d758e"
+    },
+    {
+      "bytes": 17492,
+      "path": "dist/toad-cache.mjs",
+      "sha256": "42032b735033a7dbceab035407afb9e062f7668ea91bef26ab1df3f5c1a388eb"
+    },
+    {
+      "bytes": 2141,
+      "path": "package.json",
+      "sha256": "9a5432cd1cbf647e5ea89ed66938566437dae04c65c286c0459fb1e7152f55d6"
+    },
+    {
+      "bytes": 3691,
+      "path": "toad-cache.d.cts",
+      "sha256": "f3bf3d0f4bd5fdc835a08b987f49b6794025dfe67e616142d4f86a46b0f60ac7"
+    },
+    {
+      "bytes": 3532,
+      "path": "toad-cache.d.ts",
+      "sha256": "178c20105e153dafc905c297238866daaa7b1f7781aa80a8d2f4d393f4818ca8"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "toad-cache",
+    "version": "3.7.4"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

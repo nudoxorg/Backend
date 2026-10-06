@@ -1,0 +1,266 @@
+//! Tests for JSDoc @implements tag checking.
+//!
+//! Verifies that classes with @implements tags in JS files are checked
+//! for interface/class member compatibility, emitting TS2420 (missing members),
+//! TS2416 (incompatible member types), and TS2720 (implementing a class).
+
+use tsz_checker::context::CheckerOptions;
+
+fn check_js(source: &str) -> Vec<u32> {
+    let options = CheckerOptions {
+        check_js: true,
+        strict: true,
+        ..CheckerOptions::default()
+    };
+    tsz_checker::test_utils::check_source(source, "test.js", options)
+        .into_iter()
+        .map(|d| d.code)
+        .collect()
+}
+
+fn check_ts(source: &str) -> Vec<u32> {
+    let options = CheckerOptions::default();
+
+    let mut parser =
+        tsz_parser::parser::ParserState::new("test.ts".to_string(), source.to_string());
+    let root = parser.parse_source_file();
+
+    let mut binder = tsz_binder::BinderState::new();
+    binder.bind_source_file(parser.get_arena(), root);
+
+    let types = tsz_solver::construction::TypeInterner::new();
+    let mut checker = tsz_checker::state::CheckerState::new(
+        parser.get_arena(),
+        &binder,
+        &types,
+        "test.ts".to_string(),
+        options,
+    );
+
+    checker.ctx.set_lib_contexts(Vec::new());
+    checker.check_source_file(root);
+
+    checker.ctx.diagnostics.iter().map(|d| d.code).collect()
+}
+
+/// @implements with class target — missing members → TS2720
+#[test]
+fn test_jsdoc_implements_class_missing_member_emits_ts2720() {
+    let codes = check_js(
+        r#"
+class A {
+    method() { return 0; }
+}
+
+/** @implements {A} */
+class B {
+}
+"#,
+    );
+    assert!(
+        codes.contains(&2720),
+        "Expected TS2720 for class missing implemented class member, got: {codes:?}"
+    );
+}
+
+/// @implements without braces — `@implements A` syntax
+#[test]
+fn test_jsdoc_implements_no_braces() {
+    let codes = check_js(
+        r#"
+class A {
+    method() { return 0; }
+}
+
+/** @implements A */
+class B {
+}
+"#,
+    );
+    assert!(
+        codes.contains(&2720),
+        "Expected TS2720 for @implements without braces, got: {codes:?}"
+    );
+}
+
+#[test]
+fn test_jsdoc_implements_missing_type_emits_ts1003() {
+    let codes = check_js(
+        r#"
+class A { constructor() { this.x = 0; } }
+/** @implements */
+class B {
+}
+"#,
+    );
+    assert!(
+        codes.contains(&1003),
+        "Expected TS1003 for empty @implements tag, got: {codes:?}"
+    );
+}
+
+/// @implements with multiple tags — missing member from second target
+#[test]
+fn test_jsdoc_implements_multiple_tags() {
+    let codes = check_js(
+        r#"
+class A {
+    foo() { return 0; }
+}
+class B {
+    bar() { return ""; }
+}
+
+/**
+ * @implements {A}
+ * @implements {B}
+ */
+class C {
+    foo() { return 0; }
+}
+"#,
+    );
+    // C is missing B's `bar` method → should emit TS2720
+    assert!(
+        codes.contains(&2720),
+        "Expected TS2720 for missing member from second @implements, got: {codes:?}"
+    );
+}
+
+/// @implements on TS file → should NOT trigger JSDoc checking
+#[test]
+fn test_jsdoc_implements_ignored_in_ts_files() {
+    let codes = check_ts(
+        r#"
+class A {
+    method(): number { return 0; }
+}
+
+/** @implements {A} */
+class B {
+}
+"#,
+    );
+    // Should NOT emit TS2720 — JSDoc @implements only checked in JS files
+    assert!(
+        !codes.contains(&2720),
+        "Expected no TS2720 in .ts file for @implements JSDoc tag, got: {codes:?}"
+    );
+}
+
+/// @implements with a `@typedef` target — missing member should emit TS2420.
+/// The target is a JSDoc structural alias, not a TS class/interface, so
+/// the conformance check must consult the JSDoc typedef table.
+#[test]
+fn test_jsdoc_implements_typedef_missing_member_emits_ts2420() {
+    let codes = check_js(
+        r#"
+/** @typedef {{ run(): void }} Runnable */
+/** @implements {Runnable} */
+class Task {
+}
+"#,
+    );
+    assert!(
+        codes.contains(&2420),
+        "Expected TS2420 for class missing typedef member, got: {codes:?}"
+    );
+}
+
+/// @implements with a `@typedef` target — incompatible member type should emit TS2416.
+#[test]
+fn test_jsdoc_implements_typedef_incompatible_member_emits_ts2416() {
+    let codes = check_js(
+        r#"
+/** @typedef {{ run(): void }} Runnable */
+/** @implements {Runnable} */
+class Task {
+    /** @type {number} */
+    run = 5;
+}
+"#,
+    );
+    assert!(
+        codes.contains(&2416),
+        "Expected TS2416 for class with incompatible typedef member, got: {codes:?}"
+    );
+}
+
+/// Renamed identifiers (`Mover`/`Car`) — same structural rule must hold.
+#[test]
+fn test_jsdoc_implements_typedef_renamed_identifiers() {
+    let codes = check_js(
+        r#"
+/** @typedef {{ drive(): void }} Mover */
+/** @implements {Mover} */
+class Car {
+}
+"#,
+    );
+    assert!(
+        codes.contains(&2420),
+        "Expected TS2420 for renamed-identifier typedef target, got: {codes:?}"
+    );
+}
+
+/// Negative control — class correctly satisfies the typedef shape.
+#[test]
+fn test_jsdoc_implements_typedef_satisfied_no_error() {
+    let codes = check_js(
+        r#"
+/** @typedef {{ run(): void }} Runnable */
+/** @implements {Runnable} */
+class Task {
+    run() {}
+}
+"#,
+    );
+    assert!(
+        !codes.contains(&2420) && !codes.contains(&2416) && !codes.contains(&2720),
+        "Expected no implements diagnostics for satisfied typedef, got: {codes:?}"
+    );
+}
+
+/// Multiple missing members from a typedef shape.
+#[test]
+fn test_jsdoc_implements_typedef_multiple_missing_members() {
+    let codes = check_js(
+        r#"
+/** @typedef {{ run(): void, stop(): void }} Runnable */
+/** @implements {Runnable} */
+class Task {
+    run() {}
+}
+"#,
+    );
+    assert!(
+        codes.contains(&2420),
+        "Expected TS2420 for typedef shape with multiple missing members, got: {codes:?}"
+    );
+}
+
+/// Mixing a class target and a typedef target on the same class.
+#[test]
+fn test_jsdoc_implements_mixed_class_and_typedef_targets() {
+    let codes = check_js(
+        r#"
+class Stoppable {
+    stop() {}
+}
+/** @typedef {{ run(): void }} Runnable */
+
+/**
+ * @implements {Stoppable}
+ * @implements {Runnable}
+ */
+class Task {
+    stop() {}
+}
+"#,
+    );
+    // Missing `run` from Runnable typedef → TS2420.
+    assert!(
+        codes.contains(&2420),
+        "Expected TS2420 from missing typedef member while class target is satisfied, got: {codes:?}"
+    );
+}

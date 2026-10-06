@@ -1233,11 +1233,11 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             else {
                 continue;
             };
-            let complete = declarations
+            let members = declarations
                 .iter()
                 .enumerate()
                 .filter(|(_, declaration)| declaration.owner == Some(owner))
-                .all(|(child, _)| {
+                .map(|(child, _)| {
                     self.representative
                         .get(child)
                         .copied()
@@ -1245,11 +1245,11 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                         .and_then(|representative| self.ordinals.get(representative))
                         .copied()
                         .flatten()
-                        .is_some()
-                });
-            if complete {
+                })
+                .collect::<Option<Vec<_>>>();
+            if let Some(members) = members {
                 self.facts
-                    .mark_members_captured(ordinal)
+                    .capture_declared_members(ordinal, &members)
                     .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
             }
         }
@@ -3428,6 +3428,51 @@ mod tests {
 
     use super::{ClangCollectError, FactSet, collect, include_spelling};
 
+    #[test]
+    fn declared_member_inventory_preserves_complete_native_clang_members() -> Result<(), TestError>
+    {
+        use backend_semantic::ir::{FactAvailability, SemanticReader};
+        let ir = owned_ir(
+            b"struct NativeRecord { int value; int other; };\nenum NativeEnum { First, Second };\n",
+        )?;
+        for (name, expected) in [
+            (&b"NativeRecord"[..], &[&b"value"[..], &b"other"[..]][..]),
+            (&b"NativeEnum"[..], &[&b"First"[..], &b"Second"[..]][..]),
+        ] {
+            let owner = ir
+                .items()
+                .find(|item| item.name() == name)
+                .ok_or(TestError::Missing("native inventory owner"))?;
+            assert_eq!(
+                ir.entity(owner.id())
+                    .expect("owner entity")
+                    .authority
+                    .members,
+                FactAvailability::Captured
+            );
+            let mut members = owner
+                .members()
+                .iter()
+                .map(|member| {
+                    ir.item(*member)
+                        .expect("native member")
+                        .name()
+                        .named_bytes()
+                        .expect("native inventory fixture member is named")
+                        .to_vec()
+                })
+                .collect::<Vec<_>>();
+            members.sort();
+            let mut expected = expected
+                .iter()
+                .map(|name| name.to_vec())
+                .collect::<Vec<_>>();
+            expected.sort();
+            assert_eq!(members, expected);
+        }
+        Ok(())
+    }
+
     /// Identifies the one direct native fact a live authority proof requires.
     #[derive(Debug, Error)]
     enum TestError {
@@ -4025,7 +4070,7 @@ mod tests {
 
     /// Clang does not invent a declaration entity for an unnamed source
     /// parameter. The admitted signature and binding slots therefore retain
-    /// only the one named carrier, at position zero in the lowered tuple.
+    /// the named parameter at position zero and the non-void result carrier.
     #[test]
     fn unnamed_parameter_is_not_fabricated_as_a_carrier_binding() -> Result<(), TestError> {
         let source = b"int hidden(int, int kept);\n";
@@ -4042,6 +4087,12 @@ mod tests {
                 item.name() == b"kept" && item.kind() == backend_semantic::ir::ItemKind::Parameter
             })
             .ok_or(TestError::Missing("owned named parameter"))?;
+        let result = owned
+            .items()
+            .find(|item| {
+                item.name() == b"hidden" && item.kind() == backend_semantic::ir::ItemKind::Parameter
+            })
+            .ok_or(TestError::Missing("owned non-void result carrier"))?;
         let bindings = match owned.signature_carrier_bindings(owner.id()) {
             Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
                 bindings.collect::<Vec<_>>()
@@ -4049,12 +4100,20 @@ mod tests {
             _ => return Err(TestError::Missing("owned Clang unnamed-slot bindings")),
         };
         if bindings
-            != vec![backend_semantic::ir::SignatureCarrierBinding {
-                owner: owner.id(),
-                role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
-                position: 0,
-                carrier: kept.id(),
-            }]
+            != vec![
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: owner.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
+                    position: 0,
+                    carrier: kept.id(),
+                },
+                backend_semantic::ir::SignatureCarrierBinding {
+                    owner: owner.id(),
+                    role: backend_semantic::ir::SignatureCarrierBindingRole::Result,
+                    position: 0,
+                    carrier: result.id(),
+                },
+            ]
         {
             return Err(TestError::Missing("Clang unnamed parameter omission"));
         }

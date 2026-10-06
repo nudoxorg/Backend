@@ -4,11 +4,12 @@
 use std::{path::PathBuf, time::Duration};
 
 use backend_library::interface::{
-    CompilerCause, CompilerDiagnostic, CompilerRuntimeCause, CompilerTerminal, FragmentCause,
-    PackageCompilePhase, PackageDeclarationScopeCause, PackageEcosystem, PackagePathComponentError,
-    PackageSourceCause, PackageSourceIoPhase, PackageTextRange,
+    CompilerCause, CompilerDiagnostic, CompilerRuntimeCause, CompilerTerminal, CompilerToolFailure,
+    CompilerToolIssue, CompilerToolRequirement, FragmentCause, PackageCompilePhase,
+    PackageDeclarationScopeCause, PackageEcosystem, PackagePathComponentError, PackageSourceCause,
+    PackageSourceIoPhase, PackageTextRange,
 };
-use backend_semantic::vocabulary::FrontendError;
+use backend_semantic::vocabulary::{FrontendError, NativeTool};
 use serde::Deserialize;
 
 use super::authority::GoldenSourceAuthority;
@@ -67,6 +68,12 @@ pub(crate) enum GoldenCompilerTerminal {
         stage: super::authority::GoldenStage,
         tool: super::authority::GoldenNativeTool,
     },
+    RequiredTool {
+        source: GoldenSourceAuthority,
+        language: super::authority::GoldenLanguage,
+        stage: super::authority::GoldenStage,
+        issue: GoldenCompilerToolIssue,
+    },
     Cancelled {
         attempted: GoldenCompilerAttempt,
         diagnostic: Option<GoldenCompilerDiagnostic>,
@@ -79,6 +86,33 @@ pub(crate) enum GoldenCompilerTerminal {
         attempted: GoldenCompilerAttempt,
         cause: GoldenPublicationCause,
     },
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GoldenCompilerToolIssue {
+    requirement: String,
+    failure: String,
+}
+
+fn golden_tool_requirement(requirement: CompilerToolRequirement) -> &'static str {
+    match requirement {
+        CompilerToolRequirement::Native(NativeTool::Rustc) => "rustc",
+        CompilerToolRequirement::Native(NativeTool::Clang) => "clang",
+        CompilerToolRequirement::Native(NativeTool::Python) => "python",
+        CompilerToolRequirement::Native(NativeTool::TypeScriptCompiler) => "typescript_compiler",
+        CompilerToolRequirement::Native(NativeTool::GoCompiler) => "go_compiler",
+        CompilerToolRequirement::Native(NativeTool::JavaCompiler) => "java_compiler",
+        CompilerToolRequirement::Native(NativeTool::CSharpCompiler) => "csharp_compiler",
+        CompilerToolRequirement::PythonChecker => "python_checker",
+    }
+}
+
+fn golden_tool_failure(failure: CompilerToolFailure) -> &'static str {
+    match failure {
+        CompilerToolFailure::Missing => "missing",
+        CompilerToolFailure::ProbeFailed => "probe_failed",
+    }
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -386,6 +420,20 @@ impl From<CompilerTerminal> for GoldenCompilerTerminal {
                 stage: stage.into(),
                 tool: tool.into(),
             },
+            CompilerTerminal::RequiredTool {
+                source,
+                language,
+                stage,
+                issue,
+            } => Self::RequiredTool {
+                source: source.into(),
+                language: language.into(),
+                stage: stage.into(),
+                issue: GoldenCompilerToolIssue {
+                    requirement: golden_tool_requirement(issue.requirement).to_owned(),
+                    failure: golden_tool_failure(issue.failure).to_owned(),
+                },
+            },
             CompilerTerminal::Cancelled {
                 attempted,
                 diagnostic,
@@ -648,6 +696,9 @@ impl From<CompilerCause> for GoldenCompilerCause {
             },
             CompilerCause::Fragment(cause) => Self::Fragment {
                 cause: cause.into(),
+            },
+            CompilerCause::FragmentFailure(failure) => Self::Fragment {
+                cause: failure.phase().into(),
             },
         }
     }

@@ -117,6 +117,15 @@ pub enum AuthorityFailure<'diagnostic> {
         #[source]
         cause: backend_frontend_typescript::legacy::AuthorityError,
     },
+    /// Native TSZ could not prove the selected project/file transaction.
+    #[error("native TypeScript project authority failed")]
+    TypeScriptTsz {
+        /// Bounded source diagnostic retained by the TSZ adapter, when present.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Exact typed project authority failure.
+        #[source]
+        cause: backend_frontend_typescript::TszAuthorityError,
+    },
     /// TypeScript source bytes could not be lent to OXC as valid UTF-8 text.
     #[error("TypeScript source is not valid UTF-8")]
     TypeScriptUtf8 {
@@ -303,6 +312,11 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                 class: typescript_class(cause),
                 diagnostic: *diagnostic,
             },
+            Self::TypeScriptTsz { diagnostic, .. } => AuthorityFailureProjection {
+                phase: AuthorityPhase::Project,
+                class: AuthorityDiagnosticClass::Projection,
+                diagnostic: *diagnostic,
+            },
             Self::TypeScriptUtf8 { diagnostic, .. } | Self::TypeScriptSpan { diagnostic, .. } => {
                 AuthorityFailureProjection {
                     phase: AuthorityPhase::Parse,
@@ -395,6 +409,7 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
             ) | (Self::Rust { .. }, LanguageProfile::Rust(_))
                 | (
                     Self::TypeScript { .. }
+                        | Self::TypeScriptTsz { .. }
                         | Self::TypeScriptUtf8 { .. }
                         | Self::TypeScriptSpan { .. },
                     LanguageProfile::TypeScript(_)
@@ -605,6 +620,12 @@ fn python_class(
     }
 }
 
+pub(crate) fn go_authority_projection(
+    cause: &backend_frontend_go::legacy::OracleError,
+) -> (AuthorityPhase, AuthorityDiagnosticClass) {
+    (go_phase(cause), go_class(cause))
+}
+
 fn go_phase(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityPhase {
     match cause {
         backend_frontend_go::legacy::OracleError::Decode { .. } => AuthorityPhase::Parse,
@@ -626,7 +647,13 @@ fn go_phase(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityPhase 
         | backend_frontend_go::legacy::OracleError::OutputLimit { .. }
         | backend_frontend_go::legacy::OracleError::Timeout { .. }
         | backend_frontend_go::legacy::OracleError::Pipe { .. }
-        | backend_frontend_go::legacy::OracleError::WorkerPanic { .. } => AuthorityPhase::Open,
+        | backend_frontend_go::legacy::OracleError::WorkerPanic { .. }
+        | backend_frontend_go::legacy::OracleError::GoOracleSourceDirectory(_)
+        | backend_frontend_go::legacy::OracleError::GoOracleSourceFile { .. }
+        | backend_frontend_go::legacy::OracleError::GoOracleHelperCache { .. }
+        | backend_frontend_go::legacy::OracleError::GoToolchainIdentityChanged => {
+            AuthorityPhase::Open
+        }
     }
 }
 
@@ -738,5 +765,52 @@ fn java_bound_class(
         AuthorityPhase::Open | AuthorityPhase::Resolve | AuthorityPhase::TypeCheck => {
             AuthorityDiagnosticClass::Authority
         }
+    }
+}
+
+#[cfg(test)]
+mod go_authority_projection_tests {
+    use super::{AuthorityDiagnosticClass, AuthorityPhase, go_authority_projection};
+    use backend_frontend_go::legacy::OracleError;
+    use std::path::PathBuf;
+
+    #[test]
+    fn private_helper_workspace_errors_keep_open_phase_authority_class_and_detail() {
+        let errors = [
+            OracleError::GoOracleSourceDirectory(std::io::Error::other(
+                "private temporary directory unavailable",
+            )),
+            OracleError::GoOracleSourceFile {
+                path: PathBuf::from("/tmp/nudox-go-oracle/main.go"),
+                source: std::io::Error::other("private source write denied"),
+            },
+            OracleError::GoOracleHelperCache {
+                detail: "offline helper build cache could not be installed".to_owned(),
+            },
+            OracleError::GoToolchainIdentityChanged,
+        ];
+
+        for cause in &errors {
+            let (phase, class) = go_authority_projection(cause);
+            assert_eq!(phase, AuthorityPhase::Open);
+            assert_eq!(class, AuthorityDiagnosticClass::Authority);
+            assert!(!cause.to_string().is_empty());
+        }
+
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("private temporary directory unavailable")
+        );
+        assert!(
+            errors[1]
+                .to_string()
+                .contains("/tmp/nudox-go-oracle/main.go")
+        );
+        assert!(
+            errors[1]
+                .to_string()
+                .contains("private source write denied")
+        );
     }
 }

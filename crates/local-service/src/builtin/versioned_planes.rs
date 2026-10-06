@@ -12,9 +12,9 @@ use backend_extension_turso::{
 };
 use backend_replication::{
     ByteRange, IrHydrationRequest, SelectedGenerationSource, SelectedGenerationStamp,
-    SelectedNativeHistoryBinding, SelectedNativeHistoryImage, SelectedNativeImagePublicationFence,
-    SelectedNativeImageSource, SelectedTypedV3HistoryError, SemanticCatalogChunk,
-    SemanticCatalogGet, SemanticManifestChunk, SemanticManifestGet, SemanticTargetKey,
+    SelectedNativeHistoryImage, SelectedNativeImagePublicationFence, SelectedNativeImageSource,
+    SelectedTypedV3HistoryError, SemanticCatalogChunk, SemanticCatalogGet, SemanticManifestChunk,
+    SemanticManifestGet, SemanticTargetKey,
 };
 use backend_replication::{
     FileSemanticRangeStore, HistoryCommitId, HistoryRefName, TransportLimits,
@@ -725,8 +725,6 @@ impl SelectedNativeImageSource for OwnedSemanticAuthoritySelectionSource {
         if image_identity != selected_image.image_identity() {
             return Err(OwnedSemanticAuthoritySelectionError::StaleSelection);
         }
-        #[cfg(test)]
-        self.loader.wait_at_native_history_fence_gate();
         Ok(OwnedSemanticAuthorityPublicationFence {
             _selections: selections,
             target,
@@ -902,97 +900,632 @@ fn publish_native_history_commit(
             "selected canonical catalog root differs from its marker stamp".to_owned(),
         ));
     }
-    let artifacts = metadata.artifacts();
-    if artifacts.len() != 1 {
-        return Err(NativeHistoryPublicationError::Refused(
-            "typed V3 publication requires exactly one selected semantic image".to_owned(),
-        ));
+
+    let mut members = Vec::new();
+    members
+        .try_reserve_exact(metadata.artifacts().len())
+        .map_err(|_| {
+            NativeHistoryPublicationError::Refused(
+                "selected package manifest allocation failed".to_owned(),
+            )
+        })?;
+    for artifact in metadata.artifacts() {
+        let image_key = artifact.image_key();
+        let manifest = publication
+            .manifest(image_key)
+            .map_err(|error| NativeHistoryPublicationError::Refused(error.to_string()))?;
+        members.push((image_key, manifest));
     }
-    let image_key = artifacts[0].image_key();
-    let manifest = publication
-        .manifest(image_key)
-        .map_err(|error| NativeHistoryPublicationError::Refused(error.to_string()))?;
     let mut source = OwnedSemanticAuthoritySelectionSource::new(
         Arc::clone(&work.loader),
         work.store.clone(),
         work.key.clone(),
     );
-    let binding =
-        match SelectedNativeHistoryBinding::bind(&mut source, catalog, image_key, manifest) {
-            Ok(binding) => binding,
-            Err(reason) => {
-                ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
-                return Err(NativeHistoryPublicationError::Refused(reason));
-            }
-        };
-    if binding.selected_stamp() != work.stamp {
+    let package = match backend_replication::SelectedNativeHistoryPackageBinding::bind(
+        &mut source,
+        catalog,
+        members,
+    ) {
+        Ok(package) => package,
+        Err(reason) => {
+            ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
+            return Err(NativeHistoryPublicationError::Refused(reason));
+        }
+    };
+    if package.selected_stamp() != work.stamp {
         return Err(NativeHistoryPublicationError::Superseded);
     }
-    let branch = HistoryRefName::new("selected-native-v3")
+    let public_branch = HistoryRefName::new("selected-native-v3")
         .map_err(NativeHistoryPublicationError::Refused)?;
+    let staging_branch = selected_native_history_staging_branch()?;
     let mut limits = TransportLimits::default();
     limits.max_chunk = 16 * 1024;
     let history = FileSemanticRangeStore::open(work.store.clone(), limits)
         .map_err(NativeHistoryPublicationError::Refused)?;
-    if let Some(commit) = history
-        .selected_typed_v3_history_branch_current(&binding, &branch)
+    let public_tip_before = history
+        .history_ref(
+            package.target(),
+            backend_replication::HistoryRefKind::Branch,
+            &public_branch,
+        )
         .map_err(NativeHistoryPublicationError::Refused)?
-    {
-        let ancestry = history
-            .history_ref_ancestry_proof(
-                binding.target(),
-                backend_replication::HistoryRefKind::Branch,
-                &branch,
-                commit,
+        .map(|reference| reference.commit());
+    let public_prefix = history
+        .selected_typed_v3_history_package_prefix(&package, &public_branch)
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    if public_prefix.len() == package.images().len() {
+        let tip = public_tip_before.ok_or_else(|| {
+            NativeHistoryPublicationError::Refused(
+                "complete package history has no public branch tip".to_owned(),
             )
+        })?;
+        let first_parent = history_prefix_parent(&history, package.target(), &public_prefix)?;
+        let image_proofs = verify_native_history_package_prefix(
+            &history,
+            &package,
+            &public_branch,
+            tip,
+            &public_prefix,
+            0,
+            first_parent,
+        )?;
+        ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
+        if history
+            .history_ref(
+                package.target(),
+                backend_replication::HistoryRefKind::Branch,
+                &staging_branch,
+            )
+            .map_err(NativeHistoryPublicationError::Refused)?
+            .is_some_and(|reference| reference.commit() == tip)
+        {
+            let _ = history.compare_and_swap_history_ref(
+                package.target(),
+                backend_replication::HistoryRefKind::Branch,
+                staging_branch.clone(),
+                Some(tip),
+                None,
+            );
+        }
+        let commit = *public_prefix.last().ok_or_else(|| {
+            NativeHistoryPublicationError::Refused("complete package history is empty".to_owned())
+        })?;
+        return Ok(NativeHistoryPublicationReceipt {
+            commit,
+            proof: native_history_package_publication_proof(&package, image_proofs, tip, commit),
+        });
+    }
+
+    let stage_anchor = if public_prefix.is_empty() {
+        public_tip_before
+    } else {
+        history_prefix_parent(&history, package.target(), &public_prefix)?
+    };
+    let mut staging_tip_ready = history
+        .history_ref(
+            package.target(),
+            backend_replication::HistoryRefKind::Branch,
+            &staging_branch,
+        )
+        .map_err(NativeHistoryPublicationError::Refused)?
+        .map(|reference| reference.commit());
+    let staging_prefix = history
+        .selected_typed_v3_history_package_prefix(&package, &staging_branch)
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    if staging_prefix.is_empty() {
+        if staging_tip_ready != stage_anchor {
+            if let Err(reason) = reset_native_history_staging_ref(
+                &history,
+                package.target(),
+                staging_branch.clone(),
+                staging_tip_ready,
+                stage_anchor,
+            ) {
+                staging_tip_ready = history
+                    .history_ref(
+                        package.target(),
+                        backend_replication::HistoryRefKind::Branch,
+                        &staging_branch,
+                    )
+                    .map_err(NativeHistoryPublicationError::Refused)?
+                    .map(|reference| reference.commit());
+                if staging_tip_ready != stage_anchor {
+                    return Err(NativeHistoryPublicationError::Refused(format!(
+                        "reset stale package staging ref: {reason}"
+                    )));
+                }
+                // A competing writer's equal ID still requires cold admission.
+                reset_native_history_staging_ref(
+                    &history,
+                    package.target(),
+                    staging_branch.clone(),
+                    stage_anchor,
+                    stage_anchor,
+                )
+                .map_err(|error| {
+                    NativeHistoryPublicationError::Refused(format!(
+                        "re-admit converged package staging ref: {error}"
+                    ))
+                })?;
+            } else {
+                staging_tip_ready = stage_anchor;
+            }
+        }
+    } else if history_prefix_parent(&history, package.target(), &staging_prefix)? != stage_anchor {
+        return Err(NativeHistoryPublicationError::Refused(
+            "package staging prefix is rooted at another history generation".to_owned(),
+        ));
+    }
+    let mut image_proofs = if staging_prefix.is_empty() {
+        Vec::new()
+    } else {
+        let tip = staging_tip_ready.ok_or_else(|| {
+            NativeHistoryPublicationError::Refused(
+                "package staging prefix has no staging branch tip".to_owned(),
+            )
+        })?;
+        verify_native_history_package_prefix(
+            &history,
+            &package,
+            &staging_branch,
+            tip,
+            &staging_prefix,
+            0,
+            stage_anchor,
+        )?
+        .into_vec()
+    };
+
+    let policy = SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+        .map_err(|error| NativeHistoryPublicationError::Refused(error.to_string()))?;
+    let policies = backend_replication::SemanticTypedPlaneBoundaryPoliciesV3::new(
+        policy, policy, policy, policy, policy, policy, policy,
+    );
+    for member in package.images().iter().skip(staging_prefix.len()) {
+        ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
+        let binding = member.binding();
+        let mapped_image = map_selected_image_for_native_history(
+            &work,
+            claim,
+            &selected,
+            work.stamp,
+            binding.image_key(),
+        )?;
+        let selected_image = binding
+            .bind_mapped_image(&mapped_image)
             .map_err(NativeHistoryPublicationError::Refused)?;
+        let publication = match history.publish_selected_typed_v3_history_branch(
+            &selected_image,
+            staging_branch.clone(),
+            *package.package_identity(),
+            policies,
+            SemanticTypedPlaneVerificationTierV2::Standard,
+            JumboRopeLimits::default(),
+            &mut source,
+        ) {
+            Ok(publication) => publication,
+            Err(error) => return Err(map_typed_history_publication_error(error)),
+        };
+        ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
+        if publication.current().is_none() {
+            return Err(NativeHistoryPublicationError::Refused(
+                "typed V3 staging publication returned no current image commit".to_owned(),
+            ));
+        }
+    }
+
+    let staged_ids = history
+        .selected_typed_v3_history_package_prefix(&package, &staging_branch)
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    if staged_ids.len() != package.images().len() {
+        return Err(NativeHistoryPublicationError::Refused(
+            "package staging branch does not contain every selected image".to_owned(),
+        ));
+    }
+    let staged_tip = *staged_ids.last().ok_or_else(|| {
+        NativeHistoryPublicationError::Refused("package staging branch is empty".to_owned())
+    })?;
+    let staged_branch_tip = history
+        .history_ref(
+            package.target(),
+            backend_replication::HistoryRefKind::Branch,
+            &staging_branch,
+        )
+        .map_err(NativeHistoryPublicationError::Refused)?
+        .map(|reference| reference.commit());
+    if staged_branch_tip != Some(staged_tip) {
+        return Err(NativeHistoryPublicationError::Refused(
+            "package staging branch moved during complete-set verification".to_owned(),
+        ));
+    }
+    if staged_ids.get(..staging_prefix.len()) != Some(staging_prefix.as_ref())
+        || image_proofs.len() != staging_prefix.len()
+    {
+        return Err(NativeHistoryPublicationError::Refused(
+            "staging prefix changed after its exact cold replay".to_owned(),
+        ));
+    }
+    let suffix = staged_ids.get(staging_prefix.len()..).ok_or_else(|| {
+        NativeHistoryPublicationError::Refused(
+            "complete staged package omitted its previously checked prefix".to_owned(),
+        )
+    })?;
+    if !suffix.is_empty() {
+        let first_parent = staging_prefix.last().copied().or(stage_anchor);
+        image_proofs.extend(
+            verify_native_history_package_prefix(
+                &history,
+                &package,
+                &staging_branch,
+                staged_tip,
+                suffix,
+                staging_prefix.len(),
+                first_parent,
+            )?
+            .into_vec(),
+        );
+    }
+    if image_proofs.len() != package.images().len() {
+        return Err(NativeHistoryPublicationError::Refused(
+            "cold package history proof does not cover the complete selected catalog".to_owned(),
+        ));
+    }
+    let image_proofs = image_proofs.into_boxed_slice();
+
+    let final_member = package.images().last().ok_or_else(|| {
+        NativeHistoryPublicationError::Refused("selected package has no native images".to_owned())
+    })?;
+    let final_image = map_selected_image_for_native_history(
+        &work,
+        claim,
+        &selected,
+        work.stamp,
+        final_member.binding().image_key(),
+    )?;
+    let selected_final_image = final_member
+        .binding()
+        .bind_mapped_image(&final_image)
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
+    let fence = source
+        .acquire_publication_fence(&selected_final_image)
+        .map_err(|error| {
+            match <OwnedSemanticAuthoritySelectionSource as SelectedNativeImageSource>::classify_selection_error(&error) {
+                backend_replication::SelectedNativeImageSourceFailure::StaleSelection => {
+                    NativeHistoryPublicationError::Superseded
+                }
+                backend_replication::SelectedNativeImageSourceFailure::RetryableAvailability => {
+                    NativeHistoryPublicationError::Deferred(error.to_string())
+                }
+                backend_replication::SelectedNativeImageSourceFailure::Refused => {
+                    NativeHistoryPublicationError::Refused(error.to_string())
+                }
+            }
+        })?;
+    // Pause the final package-reference CAS; per-image staging fences
+    // intentionally admit later selected-marker updates.
+    #[cfg(test)]
+    work.loader
+        .wait_at_native_history_fence_gate(package.target(), work.store.root());
+    if fence.selected_target() != package.target()
+        || fence.selected_stamp() != package.selected_stamp()
+        || fence.selected_image() != final_member.binding().image_key()
+        || fence.selected_image_identity() != final_member.binding().image_identity()
+    {
+        return Err(NativeHistoryPublicationError::Superseded);
+    }
+    let public_update = history.publish_typed_v3_history_ref_cold(
+        package.target(),
+        backend_replication::HistoryRefKind::Branch,
+        public_branch.clone(),
+        public_tip_before,
+        staged_tip,
+        SemanticTypedPlaneVerificationTierV2::Standard,
+        JumboRopeLimits::default(),
+    );
+    let public_update = match public_update {
+        Ok(update) if update.current() == Some(staged_tip) => update,
+        Ok(_) => {
+            return Err(NativeHistoryPublicationError::Refused(
+                "public package branch CAS returned another history commit".to_owned(),
+            ));
+        }
+        Err(reason) => {
+            return Err(NativeHistoryPublicationError::Refused(format!(
+                "publish complete package history branch: {reason}"
+            )));
+        }
+    };
+    drop(fence);
+    ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
+    let ancestry = history
+        .history_ref_ancestry_proof(
+            package.target(),
+            backend_replication::HistoryRefKind::Branch,
+            &public_branch,
+            staged_tip,
+        )
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    if ancestry.ref_tip() != staged_tip || ancestry.ancestor() != staged_tip {
+        return Err(NativeHistoryPublicationError::Refused(
+            "public branch ancestry did not prove the complete package CAS".to_owned(),
+        ));
+    }
+    let _ = history.compare_and_swap_history_ref(
+        package.target(),
+        backend_replication::HistoryRefKind::Branch,
+        staging_branch,
+        Some(staged_tip),
+        None,
+    );
+    let _ = public_update;
+    Ok(NativeHistoryPublicationReceipt {
+        commit: staged_tip,
+        proof: native_history_package_publication_proof(
+            &package,
+            image_proofs,
+            ancestry.ref_tip(),
+            ancestry.ancestor(),
+        ),
+    })
+}
+
+fn selected_native_history_staging_branch() -> Result<HistoryRefName, NativeHistoryPublicationError>
+{
+    HistoryRefName::new("selected-native-v3/staging")
+        .map_err(NativeHistoryPublicationError::Refused)
+}
+
+/// Reuses an earlier package tip through its own format's cold admission.
+/// A history ID describes stored content; only a verified closure permits a
+/// typed ref update. The cold paths retain their GC pin through the exact CAS.
+fn reset_native_history_staging_ref(
+    history: &FileSemanticRangeStore,
+    target: &SemanticTargetKey,
+    branch: HistoryRefName,
+    expected: Option<HistoryCommitId>,
+    anchor: Option<HistoryCommitId>,
+) -> Result<backend_replication::HistoryRefUpdateReceipt, String> {
+    let Some(commit_id) = anchor else {
+        return history.compare_and_swap_history_ref(
+            target,
+            backend_replication::HistoryRefKind::Branch,
+            branch,
+            expected,
+            None,
+        );
+    };
+    match history.history_commit(target, commit_id)?.generation_root() {
+        backend_replication::HistoryGenerationRoot::TypedV3(_) => history
+            .publish_typed_v3_history_ref_cold(
+                target,
+                backend_replication::HistoryRefKind::Branch,
+                branch,
+                expected,
+                commit_id,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+            ),
+        backend_replication::HistoryGenerationRoot::TypedV2(_) => history
+            .publish_typed_v2_history_ref_cold(
+                target,
+                backend_replication::HistoryRefKind::Branch,
+                branch,
+                expected,
+                commit_id,
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+            ),
+        backend_replication::HistoryGenerationRoot::NxfiV1(_) => history
+            .compare_and_swap_history_ref(
+                target,
+                backend_replication::HistoryRefKind::Branch,
+                branch,
+                expected,
+                Some(commit_id),
+            ),
+    }
+}
+
+fn history_prefix_parent(
+    history: &FileSemanticRangeStore,
+    target: &SemanticTargetKey,
+    prefix: &[HistoryCommitId],
+) -> Result<Option<HistoryCommitId>, NativeHistoryPublicationError> {
+    let first = prefix.first().ok_or_else(|| {
+        NativeHistoryPublicationError::Refused("package history prefix is empty".to_owned())
+    })?;
+    let commit = history
+        .history_commit(target, *first)
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    if commit.parents().len() > 1 {
+        return Err(NativeHistoryPublicationError::Refused(
+            "native package history contains an unsupported merge".to_owned(),
+        ));
+    }
+    Ok(commit.parents().first().copied())
+}
+
+fn verify_native_history_package_prefix(
+    history: &FileSemanticRangeStore,
+    package: &backend_replication::SelectedNativeHistoryPackageBinding,
+    branch: &HistoryRefName,
+    expected_tip: HistoryCommitId,
+    commit_ids: &[HistoryCommitId],
+    start_ordinal: usize,
+    expected_first_parent: Option<HistoryCommitId>,
+) -> Result<
+    Box<[backend_engine::SemanticHistoryImagePublicationProof]>,
+    NativeHistoryPublicationError,
+> {
+    let end_ordinal = start_ordinal
+        .checked_add(commit_ids.len())
+        .filter(|end| *end <= package.images().len())
+        .ok_or_else(|| {
+            NativeHistoryPublicationError::Refused(
+                "package history slice is outside the selected catalog".to_owned(),
+            )
+        })?;
+    if commit_ids.is_empty() {
+        return Err(NativeHistoryPublicationError::Refused(
+            "package history replay slice is empty".to_owned(),
+        ));
+    }
+    let ancestry_proofs = history
+        .history_ref_ancestry_proofs_for_chain(
+            package.target(),
+            backend_replication::HistoryRefKind::Branch,
+            branch,
+            commit_ids,
+            expected_first_parent,
+        )
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    if ancestry_proofs.len() != commit_ids.len()
+        || ancestry_proofs
+            .last()
+            .is_none_or(|proof| proof.ref_tip() != expected_tip)
+    {
+        return Err(NativeHistoryPublicationError::Refused(
+            "package ancestry proof is not bound to the exact ref tip".to_owned(),
+        ));
+    }
+
+    let mut proofs = Vec::new();
+    proofs.try_reserve_exact(commit_ids.len()).map_err(|_| {
+        NativeHistoryPublicationError::Refused("package history proof allocation failed".to_owned())
+    })?;
+    for offset in 0..commit_ids.len() {
+        let ordinal = start_ordinal.checked_add(offset).ok_or_else(|| {
+            NativeHistoryPublicationError::Refused("package image ordinal overflow".to_owned())
+        })?;
+        if ordinal >= end_ordinal {
+            return Err(NativeHistoryPublicationError::Refused(
+                "package history slice exceeded its checked catalog range".to_owned(),
+            ));
+        }
+        let selected = package.images()[ordinal].binding();
+        let commit_id = commit_ids[offset];
+        let ancestry = &ancestry_proofs[offset];
+        if ancestry.ref_tip() != expected_tip || ancestry.ancestor() != commit_id {
+            return Err(NativeHistoryPublicationError::Refused(
+                "package image is not reachable from the exact staged/public ref tip".to_owned(),
+            ));
+        }
         let replay = history
             .replay_typed_v3_history(
-                binding.target(),
+                package.target(),
                 backend_replication::HistoryRefKind::Branch,
-                &branch,
-                commit,
-                &ancestry,
+                branch,
+                commit_id,
+                ancestry,
                 SemanticTypedPlaneVerificationTierV2::Standard,
                 JumboRopeLimits::default(),
             )
             .map_err(NativeHistoryPublicationError::Refused)?;
-        if replay.commit().identity() != commit
+        let admitted = replay.commit();
+        let expected_parents = if offset == 0 {
+            expected_first_parent.into_iter().collect::<Vec<_>>()
+        } else {
+            vec![commit_ids[offset - 1]]
+        };
+        if admitted.identity() != commit_id
+            || admitted.selected_stamp() != package.selected_stamp()
+            || admitted.provenance() != package.package_identity()
+            || admitted.manifest_root() != selected.manifest().root()
+            || replay.input_claim() != selected.input_claim()
             || replay.input_replay_status()
                 != backend_replication::TypedV3HistoryInputReplayStatus::Unproven
-            || ancestry.ancestor() != commit
+            || admitted.parents() != expected_parents.as_slice()
+            || admitted.parents().len() > 1
         {
             return Err(NativeHistoryPublicationError::Refused(
-                "cold typed V3 replay did not verify the exact selected commit as unproven input"
-                    .to_owned(),
+                "cold typed V3 replay differs from the exact ordered package binding".to_owned(),
             ));
         }
-        ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
-        let proof = native_history_publication_proof(
-            binding.selected_stamp(),
-            binding.image_key(),
-            binding.image_identity(),
-            ancestry.ref_tip(),
-            ancestry.ancestor(),
-            replay.commit().parents(),
-        )?;
-        return Ok(NativeHistoryPublicationReceipt { commit, proof });
+        proofs.push(backend_engine::SemanticHistoryImagePublicationProof {
+            image: backend_engine::SemanticHistoryImageIdentity {
+                artifact_ordinal: selected.image_key().artifact_ordinal(),
+                semantic_generation: *selected.image_key().semantic_generation().as_bytes(),
+                manifest_root: *selected.image_key().manifest_root().as_bytes(),
+                image_identity: *selected.image_identity().as_ref(),
+            },
+            history_commit: *commit_id.as_bytes(),
+            parent_commits: admitted
+                .parents()
+                .iter()
+                .map(|parent| *parent.as_bytes())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        });
     }
+    let observed_tip = history
+        .history_ref(
+            package.target(),
+            backend_replication::HistoryRefKind::Branch,
+            branch,
+        )
+        .map_err(NativeHistoryPublicationError::Refused)?
+        .map(|reference| reference.commit());
+    if observed_tip != Some(expected_tip) {
+        return Err(NativeHistoryPublicationError::Refused(
+            "package history ref moved during cold replay".to_owned(),
+        ));
+    }
+    Ok(proofs.into_boxed_slice())
+}
+
+fn native_history_package_publication_proof(
+    package: &backend_replication::SelectedNativeHistoryPackageBinding,
+    images: Box<[backend_engine::SemanticHistoryImagePublicationProof]>,
+    reference_tip: HistoryCommitId,
+    reachable_commit: HistoryCommitId,
+) -> backend_engine::SemanticHistoryPublicationProof {
+    let stamp = package.selected_stamp();
+    backend_engine::SemanticHistoryPublicationProof {
+        selection: backend_engine::SemanticHistorySelectionStamp {
+            namespace: *stamp.namespace(),
+            profile: backend_engine::SemanticLanguageProfile::new(stamp.profile()),
+            source_coordinate: *stamp.source_coordinate(),
+            selection_revision: stamp.selection_revision(),
+            selected_root: *stamp.selected_root(),
+            closure_id: *stamp.closure_id(),
+            catalog_root: *stamp.catalog_root().as_bytes(),
+        },
+        target_package: package.target().package().to_owned(),
+        target_coordinate: package.target().coordinate().to_owned(),
+        package_identity: *package.package_identity(),
+        images,
+        reference_tip: *reference_tip.as_bytes(),
+        reachable_commit: *reachable_commit.as_bytes(),
+        input_replay_status: backend_engine::SemanticHistoryInputReplayStatus::Unproven,
+    }
+}
+
+fn map_selected_image_for_native_history(
+    work: &super::semantic_authority::NativeHistoryPublicationWork,
+    claim: SemanticPublicationClaim,
+    selected: &SelectedGeneration,
+    stamp: SelectedGenerationStamp,
+    image_key: SemanticPlaneImageKey,
+) -> Result<backend_semantic::ir::MappedSemanticImage, NativeHistoryPublicationError> {
     let plan = SemanticAuthority::selected_full_image_plan_for_store(
         &work.store,
         &work.key,
         claim,
         image_key,
-        &selected,
-        work.stamp,
+        selected,
+        stamp,
     )
     .map_err(|error| NativeHistoryPublicationError::Refused(error.0))?;
+    if plan.image != image_key || plan.stamp != stamp {
+        return Err(NativeHistoryPublicationError::Superseded);
+    }
     if plan.total_length == 0 || plan.total_length > backend_replication::MAX_SEMANTIC_IMAGE_BYTES {
         return Err(NativeHistoryPublicationError::Refused(
             "selected image exceeds the 128 MiB publication bound".to_owned(),
         ));
     }
-    ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
+    ensure_native_history_selection(&work.loader, &work.key, claim, stamp)?;
     let max_image_bytes =
         usize::try_from(backend_replication::MAX_SEMANTIC_IMAGE_BYTES).map_err(|_| {
             NativeHistoryPublicationError::Refused(
@@ -1007,7 +1540,7 @@ fn publish_native_history_commit(
         max_image_bytes,
         |offset, output| {
             if let Err(error) =
-                ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)
+                ensure_native_history_selection(&work.loader, &work.key, claim, stamp)
             {
                 *selection_error.borrow_mut() = Some(error);
                 return Err(SelectedImageRangeReadError::Refused(
@@ -1027,7 +1560,7 @@ fn publish_native_history_commit(
             })?;
             work.image_ranges.read_range_into(&plan, range, output)
         },
-        || match ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp) {
+        || match ensure_native_history_selection(&work.loader, &work.key, claim, stamp) {
             Ok(()) => false,
             Err(error) => {
                 *selection_error.borrow_mut() = Some(error);
@@ -1044,7 +1577,7 @@ fn publish_native_history_commit(
             if let Some(error) = selection_error.borrow_mut().take() {
                 error
             } else {
-                match ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp) {
+                match ensure_native_history_selection(&work.loader, &work.key, claim, stamp) {
                     Err(error) => error,
                     Ok(()) => match source {
                         SelectedImageRangeReadError::Deferred(reason) => {
@@ -1085,128 +1618,8 @@ fn publish_native_history_commit(
             "selected image mapping did not account for its exact byte extent".to_owned(),
         ));
     }
-    let selected_image = match binding.bind_mapped_image(&mapped_image) {
-        Ok(selected_image) => selected_image,
-        Err(reason) => {
-            ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
-            return Err(NativeHistoryPublicationError::Refused(reason));
-        }
-    };
-    let policy = SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
-        .map_err(|error| NativeHistoryPublicationError::Refused(error.to_string()))?;
-    let policies = backend_replication::SemanticTypedPlaneBoundaryPoliciesV3::new(
-        policy, policy, policy, policy, policy, policy, policy,
-    );
-    let provenance = selected_history_provenance(&selected_image);
-    let receipt = match history.publish_selected_typed_v3_history_branch(
-        &selected_image,
-        branch,
-        provenance,
-        policies,
-        SemanticTypedPlaneVerificationTierV2::Standard,
-        JumboRopeLimits::default(),
-        &mut source,
-    ) {
-        Ok(receipt) => receipt,
-        Err(error) => return Err(map_typed_history_publication_error(error)),
-    };
-    ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
-    let commit = receipt.current().ok_or_else(|| {
-        NativeHistoryPublicationError::Refused(
-            "typed V3 branch publication returned no current commit".to_owned(),
-        )
-    })?;
-    let ancestry = history
-        .history_ref_ancestry_proof(
-            selected_image.target(),
-            backend_replication::HistoryRefKind::Branch,
-            &HistoryRefName::new("selected-native-v3")
-                .map_err(NativeHistoryPublicationError::Refused)?,
-            commit,
-        )
-        .map_err(NativeHistoryPublicationError::Refused)?;
-    if ancestry.ancestor() != commit {
-        return Err(NativeHistoryPublicationError::Refused(
-            "typed V3 branch ancestry did not prove its CAS commit".to_owned(),
-        ));
-    }
-    ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
-    let parent_commits = receipt.previous().into_iter().collect::<Vec<_>>();
-    let proof = native_history_publication_proof(
-        selected_image.selected_stamp(),
-        selected_image.image_key(),
-        selected_image.image_identity(),
-        ancestry.ref_tip(),
-        ancestry.ancestor(),
-        &parent_commits,
-    )?;
-    Ok(NativeHistoryPublicationReceipt { commit, proof })
-}
-
-fn native_history_publication_proof(
-    stamp: SelectedGenerationStamp,
-    image: SemanticPlaneImageKey,
-    image_identity: SemanticImageIdentity,
-    reference_tip: HistoryCommitId,
-    reachable_commit: HistoryCommitId,
-    parent_commits: &[HistoryCommitId],
-) -> Result<backend_engine::SemanticHistoryPublicationProof, NativeHistoryPublicationError> {
-    if parent_commits.len() > 2 {
-        return Err(NativeHistoryPublicationError::Refused(
-            "typed V3 history commit exceeds the bounded parent count".to_owned(),
-        ));
-    }
-    Ok(backend_engine::SemanticHistoryPublicationProof {
-        selection: backend_engine::SemanticHistorySelectionStamp {
-            namespace: *stamp.namespace(),
-            profile: backend_engine::SemanticLanguageProfile::new(stamp.profile()),
-            source_coordinate: *stamp.source_coordinate(),
-            selection_revision: stamp.selection_revision(),
-            selected_root: *stamp.selected_root(),
-            closure_id: *stamp.closure_id(),
-            catalog_root: *stamp.catalog_root().as_bytes(),
-        },
-        image: backend_engine::SemanticHistoryImageIdentity {
-            artifact_ordinal: image.artifact_ordinal(),
-            semantic_generation: *image.semantic_generation().as_bytes(),
-            manifest_root: *image.manifest_root().as_bytes(),
-            image_identity: *image_identity.as_ref(),
-        },
-        reference_tip: *reference_tip.as_bytes(),
-        reachable_commit: *reachable_commit.as_bytes(),
-        parent_commits: parent_commits
-            .iter()
-            .map(|commit| *commit.as_bytes())
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
-        input_replay_status: backend_engine::SemanticHistoryInputReplayStatus::Unproven,
-    })
-}
-
-fn selected_history_provenance(
-    selected: &SelectedNativeHistoryImage<'_>,
-) -> [u8; 32] {
-    let target = selected.target();
-    let stamp = selected.selected_stamp();
-    let image = selected.image_key();
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend.locald.selected-native-v3.provenance.v1\0");
-    hasher.update(target.package().as_bytes());
-    hasher.update(&[0]);
-    hasher.update(target.coordinate().as_bytes());
-    hasher.update(&<[u8; 2]>::from(target.profile()));
-    hasher.update(stamp.namespace());
-    hasher.update(&<[u8; 2]>::from(stamp.profile()));
-    hasher.update(stamp.source_coordinate());
-    hasher.update(&stamp.selection_revision().to_le_bytes());
-    hasher.update(stamp.selected_root());
-    hasher.update(stamp.closure_id());
-    hasher.update(stamp.catalog_root().as_bytes());
-    hasher.update(&image.artifact_ordinal().to_le_bytes());
-    hasher.update(image.semantic_generation().as_bytes());
-    hasher.update(image.manifest_root().as_bytes());
-    hasher.update(selected.image_identity().as_ref());
-    *hasher.finalize().as_bytes()
+    ensure_native_history_selection(&work.loader, &work.key, claim, stamp)?;
+    Ok(mapped_image)
 }
 
 /// Reads bounded canonical semantic-plane byte ranges from the selected CAS.
@@ -1854,6 +2267,59 @@ mod tests {
     use std::time::Instant;
 
     static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn staging_anchor_refuses_unknown_commit_and_stale_expected_tip() {
+        let directory = path();
+        let store = FileStore::open(&directory, 8 * 1024 * 1024).expect("open history CAS");
+        let history_limits = TransportLimits {
+            max_chunk: OBJECT_READ_CHUNK_BYTES,
+            ..TransportLimits::default()
+        };
+        let history = FileSemanticRangeStore::open(store.clone(), history_limits)
+            .expect("open history facade");
+        let branch = selected_native_history_staging_branch()
+            .unwrap_or_else(|_| panic!("valid staging branch"));
+        let target = target();
+        let unknown = HistoryCommitId::from_bytes([0x91; 32]);
+
+        assert!(
+            reset_native_history_staging_ref(
+                &history,
+                &target,
+                branch.clone(),
+                None,
+                Some(unknown)
+            )
+            .is_err(),
+            "a claimed history ID cannot install a staging ref without admitted content",
+        );
+        assert!(
+            reset_native_history_staging_ref(
+                &history,
+                &target,
+                branch.clone(),
+                Some(unknown),
+                None
+            )
+            .is_err(),
+            "clearing a ref still requires its exact expected tip",
+        );
+        assert!(
+            history
+                .history_ref(
+                    &target,
+                    backend_replication::HistoryRefKind::Branch,
+                    &branch
+                )
+                .expect("read unchanged branch")
+                .is_none(),
+            "neither refusal may install a partial staging ref",
+        );
+        drop(history);
+        drop(store);
+        std::fs::remove_dir_all(directory).expect("remove history workspace");
+    }
 
     #[test]
     fn native_history_range_status_keeps_transient_and_integrity_failures_distinct() {

@@ -278,7 +278,7 @@ pub fn record_list_from_rows(
     more: bool,
 ) -> RecordList {
     let line = CoverageLine::new(coverage, u64::try_from(rows.len()).ok());
-    let records = rows
+    let mut records = rows
         .iter()
         .map(|row| {
             let record = Record::from_row(row);
@@ -288,6 +288,11 @@ pub fn record_list_from_rows(
             }
         })
         .collect::<Vec<_>>();
+    // View rows are ordered by canonical identity for hashing and paging.
+    // Scored search rows carry the owner's absolute rank independently of
+    // that storage order. Restore it only in the readable projection; a
+    // stable sort leaves unscored rows and equal scores in their input order.
+    records.sort_by_key(|record| std::cmp::Reverse(record.score().map(crate::record::Score::get)));
     RecordList::new(query, line, records).with_more(more)
 }
 

@@ -1,0 +1,371 @@
+{
+  "schema": "nudox.private-functional-surface-read.v1",
+  "original_run": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca",
+  "original_state_mutated": false,
+  "original_source_mutated": false,
+  "root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d",
+  "candidate_manifest": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "candidate_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "source_tree_sha256": "759085c4931d781ea941e5ec5f217b2e3e86124b4b83b41f53be38b84e84b065",
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/home",
+    "XDG_CONFIG_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/home/.config",
+    "XDG_DATA_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/home/.local/share",
+    "XDG_STATE_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/home/.local/state",
+    "TMPDIR": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/tmp",
+    "PATH": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin:/nix/store/1xklj6dmgcpgz60c9w2ynaq7ynzfsrrq-go-1.26.4/share/go/bin:/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin:/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin:/root/nudox-corpus-20261006/corpora/next-react-alias-fixture/node_modules/typescript/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "USER": "root",
+    "LOGNAME": "root",
+    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "{\"version\":1,\"paths\":[{\"variable\":\"NUDOX_PYTHON\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,57,114,48,50,121,107,120,57,121,51,53,108,102,52,103,107,54,103,99,51,48,103,110,97,103,49,121,56,110,99,112,55,45,112,121,116,104,111,110,51,45,51,46,49,51,46,49,53,47,98,105,110,47,112,121,116,104,111,110,51,46,49,51]}},{\"variable\":\"NUDOX_TSC\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115,47,116,121,112,101,115,99,114,105,112,116,47,98,105,110,47,116,115,99]}},{\"variable\":\"NUDOX_GO\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111,47,98,105,110,47,103,111]}},{\"variable\":\"NUDOX_TYPESCRIPT_NODE\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,48,110,98,112,48,51,48,51,56,115,51,51,99,107,55,49,50,121,120,57,50,49,57,103,99,106,51,97,50,115,113,109,45,110,111,100,101,106,115,45,115,108,105,109,45,50,52,46,49,56,46,48,47,98,105,110,47,110,111,100,101]}},{\"variable\":\"NUDOX_TYPESCRIPT_MODULE_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115]}},{\"variable\":\"NUDOX_PYREFLY\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,113,100,120,122,120,107,119,104,49,51,98,103,118,53,48,48,54,54,102,107,50,107,97,51,112,49,122,112,110,106,97,112,45,112,121,114,101,102,108,121,45,49,46,50,46,48,45,100,101,118,46,49,47,98,105,110,47,112,121,114,101,102,108,121]}},{\"variable\":\"NUDOX_GO_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111]}}]}",
+    "BACKEND_LOCALD_BIN": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/disabled-auto-owner"
+  },
+  "observer_sha256": "491f4ab662812bb98a2c29af31382c34e9b7ab189645b56f408aad63070250f2",
+  "helper_sha256": "769107616b70af94c1efbe931bb8f20b303a043d3553d2bf2981763844acc263",
+  "resource_before": {
+    "memory_available_kib": 60314348,
+    "disk_free_bytes": 56425156608
+  },
+  "commands": [
+    {
+      "label": "initial-health",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+        "--endpoint",
+        "/tmp/nudox-read-43d852f7ec554d0e96.sock",
+        "--passive",
+        "health"
+      ],
+      "exit": 0,
+      "seconds": 0.08952056395355612,
+      "stdout_bytes": 804,
+      "stdout_sha256": "7c3c2f36bd4b04c9f968e31a73d5a2a7e78114f2784bdbe3d0e7b1c4291eb2e5",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "cli-search",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+        "--endpoint",
+        "/tmp/nudox-read-43d852f7ec554d0e96.sock",
+        "search",
+        "getHello",
+        "--limit",
+        "10"
+      ],
+      "exit": 0,
+      "seconds": 0.048432220006361604,
+      "stdout_bytes": 1948,
+      "stdout_sha256": "2a0d27736218a772cc725344e617097c8ff34e9d8a6118303fd025affb9700da",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "mcp-search",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+        "--endpoint",
+        "/tmp/nudox-read-43d852f7ec554d0e96.sock"
+      ],
+      "exit": 0,
+      "seconds": 0.011308959918096662,
+      "stdout_bytes": 4288,
+      "stdout_sha256": "31951427a9f232a70d33642b192d92e7b8229158d055314449d4be501dbf59a1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "persistent-1",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+        "--endpoint",
+        "/tmp/nudox-read-43d852f7ec554d0e96.sock"
+      ],
+      "mcp_pid": 1034880,
+      "seconds": 0.002869545016437769,
+      "request": {
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {},
+          "clientInfo": {
+            "name": "persistent-ordinary-cold-read",
+            "version": "1"
+          }
+        },
+        "id": 1
+      },
+      "stdout_sha256": "e420509e94c090ccdba0a2c8ff64d07377ae6399312ad7228f7ea650f6957d06"
+    },
+    {
+      "label": "persistent-3",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+        "--endpoint",
+        "/tmp/nudox-read-43d852f7ec554d0e96.sock"
+      ],
+      "mcp_pid": 1034880,
+      "seconds": 0.013979149982333183,
+      "request": {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "name": "backend.search",
+          "arguments": {
+            "detail": "full",
+            "query": "getHello",
+            "limit": 1
+          }
+        },
+        "id": 3
+      },
+      "stdout_sha256": "04583a9f77d835e39ea5a26df9729c24d303d2ddd8437d9011470d6ae764a8b7"
+    },
+    {
+      "label": "cold-first-health",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+        "--endpoint",
+        "/tmp/nudox-read-43d852f7ec554d0e96.sock",
+        "--passive",
+        "health"
+      ],
+      "exit": 0,
+      "seconds": 0.09425038902554661,
+      "stdout_bytes": 804,
+      "stdout_sha256": "7c3c2f36bd4b04c9f968e31a73d5a2a7e78114f2784bdbe3d0e7b1c4291eb2e5",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "persistent-4",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+        "--endpoint",
+        "/tmp/nudox-read-43d852f7ec554d0e96.sock"
+      ],
+      "mcp_pid": 1034880,
+      "seconds": 0.06611555896233767,
+      "request": {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "name": "backend.search",
+          "arguments": {
+            "detail": "full",
+            "query": "getHello",
+            "limit": 1,
+            "cursor": "mcp1-1791289177-cGMxLTAwMDNiM2FjNTE0OTgzY2NlZTk4M2FjYTNlYmIyNGJhNmJkYTZiNjk4NzI5MmQ1NzJmOTRhMWQzOGEzOWFkYWE0NWY1MGEwMjQ0MGFiMWNiMTI4MWM2ZTI5NTYxYWMxN2JhOThmYmYxMjU0ZWNmMmNjZTNlNjQyYmM4ZjZhNWZiMWE4OTQ2NTBhNWQyZDM4YzUwN2M2MjFiYjdhZGVjOTYzYWZhYzdiZDc0MGJiYzg1MDA3YjFjZDYwOWE2N2ZiMjQ4MmYxMmE0MGIxYTlkOGIzYWYwOTJlYjk1NzQ1NzU5NjdjMTlhNWRiOWNhNDhlZGU1NDIyNmUyOGYyOTM2MWUzNzYwMDAwMzQ2NTU3Y2JmODJjNTViOWIzOGY5MTA2ZTk1YzkyOWJkNzFkM2U5NmUyN2M4MDliMTdjYTBlOTJlZGEzM2QxMGYwMDAwMDAwMDAwMDAwMDBiMDAwMDAwMDAwMDAwMDAwMQ-3074e4b5c9ffabb688c55b5bc92e6542"
+          }
+        },
+        "id": 4
+      },
+      "stdout_sha256": "713a1e8d51d38dbb8bea332a2fe25731728cb653ed3ef7261e3c332b76718e99"
+    },
+    {
+      "label": "persistent-5",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+        "--endpoint",
+        "/tmp/nudox-read-43d852f7ec554d0e96.sock"
+      ],
+      "mcp_pid": 1034880,
+      "seconds": 0.021045471890829504,
+      "request": {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "name": "backend.search",
+          "arguments": {
+            "detail": "full",
+            "query": "getHello",
+            "limit": 1,
+            "cursor": "mcp1-1791289179-cGMxLTAwMDNiM2FjNTE0OTgzY2NlZTk4M2FjYTNlYmIyNGJhNmJkYTZiNjk4NzI5MmQ1NzJmOTRhMWQzOGEzOWFkYWE0NWY1OTRkNzkyNWQwNGRiOTc3YWU5MTQyMTU2MGNkMjZlZDUyOGI5ZWIwNDYzODIxMmMzYjExNGIzYTE2ZDNlNDU4MDQ2NTBhNWQyZDM4YzUwN2M2MjFiYjdhZGVjOTYzYWZhYzdiZDc0MGJiYzg1MDA3YjFjZDYwOWE2N2ZiMjQ4MmYxMmE0MGIxYTlkOGIzYWYwOTJlYjk1NzQ1NzU5NjdjMTlhNWRiOWNhNDhlZGU1NDIyNmUyOGYyOTM2MWUzNzYwMDAwMzA4MGIzNmJiMjc2YWViMDc1MDYzMjhlMjczYWQ3YWJhN2I2MTRkNGZiZDliMjRhYzY1YjM3ZjVlYjkzODJmNWUwMDAwMDAwMDAwMDAwMDBiMDAwMDAwMDAwMDAwMDAwMg-27454d1ef7d5350acd0f91effbc2042f"
+          }
+        },
+        "id": 5
+      },
+      "stdout_sha256": "28f84eacbe8c45dcd185422cd12769f11f1035ebdcebbde8349e6e8c40dee804"
+    },
+    {
+      "label": "final-health",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/state",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+        "--endpoint",
+        "/tmp/nudox-read-43d852f7ec554d0e96.sock",
+        "--passive",
+        "health"
+      ],
+      "exit": 0,
+      "seconds": 0.0877083339728415,
+      "stdout_bytes": 804,
+      "stdout_sha256": "7c3c2f36bd4b04c9f968e31a73d5a2a7e78114f2784bdbe3d0e7b1c4291eb2e5",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "owners": [
+    {
+      "label": "initial-clone-read",
+      "pid": 1034788,
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/state",
+        "--endpoint",
+        "/tmp/nudox-read-43d852f7ec554d0e96.sock",
+        "--idle-timeout-ms",
+        "0"
+      ],
+      "live_readiness_seconds": 1.7561575209256262,
+      "retirement": {
+        "run": "initial-clone-read",
+        "binary_sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "exit_code": -15,
+        "stdout": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "readers_complete": true
+      }
+    },
+    {
+      "label": "after-kernel-exit-cold-owner",
+      "pid": 1034883,
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca-cold-search-aad85d1d/state",
+        "--endpoint",
+        "/tmp/nudox-read-43d852f7ec554d0e96.sock",
+        "--idle-timeout-ms",
+        "0"
+      ],
+      "live_readiness_seconds": 1.7124794659903273,
+      "retirement": {
+        "run": "after-kernel-exit-cold-owner",
+        "binary_sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "exit_code": -15,
+        "stdout": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "truncated": false,
+          "prefix_base64": "",
+          "tail_base64": "",
+          "read_error": null
+        },
+        "readers_complete": true
+      }
+    }
+  ],
+  "whole_package_pass": false,
+  "cold_paging": {
+    "coordinates": [
+      "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::74a695248b8a3fc6cc81a61ab9e9c6d26a0ad5661d3605c004aa382322430d8e::getHello",
+      "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::3aeee8774d15749a234cbf8013dbcb8df22ba43109dbe89324ca14158b5edb40::getHello",
+      "external semantic target"
+    ],
+    "cli_coordinates": [
+      "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::3aeee8774d15749a234cbf8013dbcb8df22ba43109dbe89324ca14158b5edb40::getHello",
+      "external semantic target",
+      "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::74a695248b8a3fc6cc81a61ab9e9c6d26a0ad5661d3605c004aa382322430d8e::getHello"
+    ],
+    "exact_coordinate_order_parity": false,
+    "duplicate_coordinates": false,
+    "unresolved_cursor": null
+  }
+}

@@ -11,7 +11,10 @@ use backend_semantic::vocabulary::NativeTool;
 use backend_store::journal::PublicationLimitError;
 use thiserror::Error;
 
-use super::{LocalHostDirectory, LocalHostPathKind, LocalHostPathRole, LocalHostVariable};
+use super::{
+    ClosedLocalHostEnvironmentSnapshotError, LocalHostDirectory, LocalHostPathKind,
+    LocalHostPathRole, LocalHostVariable,
+};
 use crate::application::{
     LocalCompilerRuntimeConfigurationError, LocalCompilerRuntimeOpenError,
     LocalCompilerScratchError, LocalCompilerTimeoutError, LocalPackageRootError,
@@ -21,6 +24,12 @@ use crate::application::{
 /// Exact failure while admitting and starting a process-local compiler owner.
 #[derive(Debug, Error)]
 pub enum LocalCompilerHostError {
+    /// Installed-tool capture was requested from a host configured with another discovery mode.
+    #[error("installed compiler selection requires the installed-tools capture policy")]
+    InstalledSelectionRequiresCapturePolicy,
+    /// The selected host snapshot could not be encoded or admitted.
+    #[error(transparent)]
+    HostSnapshot(#[from] ClosedLocalHostEnvironmentSnapshotError),
     /// No platform data-root authority was available.
     #[error("no durable local compiler data root is configured for this platform")]
     DataRootUnavailable,
@@ -73,6 +82,14 @@ pub enum LocalCompilerHostError {
         /// Original filesystem cause.
         #[source]
         source: io::Error,
+    },
+    /// A recognized application bundle did not match its own bounded file inventory.
+    #[error("invalid application bundle runtime manifest at {path:?}: {message}")]
+    BundleManifest {
+        /// Exact manifest or inventory path that failed validation.
+        path: Box<Path>,
+        /// Bounded validation detail.
+        message: Box<str>,
     },
     /// A named runtime storage directory could not be created.
     #[error("could not create local compiler {directory:?} directory at {path:?}")]
@@ -168,6 +185,9 @@ pub enum LocalCompilerHostError {
     /// Pyrefly authority rejected its explicit executable.
     #[error(transparent)]
     PythonAuthority(#[from] PyreflyExecutableError),
+    /// The actual compiled native Python producer could not be admitted.
+    #[error(transparent)]
+    NativePythonAuthority(#[from] backend_frontend_python::legacy::checker::CheckerError),
     /// Go authority rejected its explicit producer.
     #[error(transparent)]
     GoAuthority(#[from] GoOracleConfigurationError),

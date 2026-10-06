@@ -22,7 +22,7 @@ use std::{
 };
 
 use backend_semantic::vocabulary::{
-    CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage,
+    CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage, TypeScriptSource,
 };
 
 use super::parse_with_native_tool;
@@ -79,6 +79,29 @@ impl Work {
     }
 }
 
+struct TypeScriptModuleFixture(PathBuf);
+
+impl TypeScriptModuleFixture {
+    fn copy_script(source: &Path) -> (Self, PathBuf, PathBuf) {
+        let root = unique("typescript-module-fixture");
+        let module_root = root.join("node_modules");
+        let package = module_root.join("typescript");
+        let script = package.join("bin/tsc");
+        fs::create_dir_all(script.parent().expect("fixture script parent"))
+            .expect("create fixture TypeScript package");
+        fs::copy(source, &script).expect("copy TypeScript script into selected package");
+        let module_root = fs::canonicalize(module_root).expect("canonical fixture module root");
+        let script = fs::canonicalize(script).expect("canonical fixture TypeScript script");
+        (Self(root), module_root, script)
+    }
+}
+
+impl Drop for TypeScriptModuleFixture {
+    fn drop(&mut self) {
+        let _removed = fs::remove_dir_all(&self.0);
+    }
+}
+
 impl Drop for Work {
     fn drop(&mut self) {
         let _removed = fs::remove_dir_all(&self.0);
@@ -106,6 +129,83 @@ fn run<'diagnostic>(
         toolchain.tool,
         identity.identity,
         toolchain.identity,
+    );
+    parse_with_native_tool(
+        NativeRecipe {
+            profile,
+            stage: Stage::LowerIr,
+            source,
+            toolchain,
+        },
+        identity,
+        recipe_fact,
+        CompileScratch {
+            diagnostic_output,
+            native_work,
+        },
+        CompileControl {
+            deadline,
+            cancelled,
+        },
+    )
+}
+
+fn run_typescript_with_interpreter<'diagnostic>(
+    compiler_script: &Path,
+    interpreter: &Path,
+    source: &[u8],
+    cancelled: &AtomicBool,
+    deadline: Instant,
+    diagnostic_output: &'diagnostic mut [u8],
+    native_work: &Path,
+) -> Result<(), CompileFailure<'diagnostic>> {
+    let compiler_script = fs::canonicalize(compiler_script).expect("canonical compiler script");
+    let (_fixture, module_root, compiler_script) =
+        TypeScriptModuleFixture::copy_script(&compiler_script);
+    let interpreter = fs::canonicalize(interpreter).expect("canonical selected interpreter");
+    let toolchain = ResolvedToolchain::from_interpreted_script(
+        NativeTool::TypeScriptCompiler,
+        &interpreter,
+        &compiler_script,
+        &module_root,
+        b"typescript-version-fixture",
+        b"node-version-fixture",
+        crate::application::executable_content_digest(&compiler_script)
+            .expect("snapshot compiler script"),
+        crate::application::executable_content_digest(&interpreter)
+            .expect("snapshot selected interpreter"),
+        crate::application::typescript_module_closure_digest(&module_root)
+            .expect("snapshot selected TypeScript package"),
+    )
+    .expect("bind exact interpreted script selection");
+    run_typescript_with_toolchain(
+        toolchain,
+        source,
+        cancelled,
+        deadline,
+        diagnostic_output,
+        native_work,
+    )
+}
+
+fn run_typescript_with_toolchain<'diagnostic>(
+    toolchain: ResolvedToolchain<'_>,
+    source: &[u8],
+    cancelled: &AtomicBool,
+    deadline: Instant,
+    diagnostic_output: &'diagnostic mut [u8],
+    native_work: &Path,
+) -> Result<(), CompileFailure<'diagnostic>> {
+    let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+    let identity = SourceLease::enter(source)
+        .expect("source fits the lease")
+        .identity();
+    let recipe_fact = CompileRecipeFact::derive(
+        profile,
+        Stage::LowerIr,
+        toolchain.tool,
+        identity.identity,
+        toolchain.invocation_identity(),
     );
     parse_with_native_tool(
         NativeRecipe {
@@ -167,6 +267,160 @@ fn stdin_closed_then_never_exit_retains_the_input_cause_and_reaps_the_child() {
     assert!(
         matches!(result, Err(CompileFailure::ToolInput { .. })),
         "expected ToolInput, observed {result:?}"
+    );
+    work.assert_empty();
+}
+
+#[test]
+fn interpreted_typescript_invocation_clears_inherited_environment() {
+    const SENTINEL: &str = "NUDOX_NATIVE_TYPESCRIPT_ENVIRONMENT_POLICY_TEST";
+    const SENTINEL_VALUE: &str = "ambient-value-for-typescript-child-test";
+    if env::var_os(SENTINEL).as_deref() != Some(std::ffi::OsStr::new(SENTINEL_VALUE)) {
+        let output = Command::new(env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "driver::native::bounded_tests::interpreted_typescript_invocation_clears_inherited_environment",
+                "--nocapture",
+            ])
+            .env(SENTINEL, SENTINEL_VALUE)
+            .output()
+            .expect("spawn isolated TypeScript environment test");
+        assert!(
+            output.status.success(),
+            "isolated TypeScript environment test failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    let interpreter = script(
+        b"#!/bin/sh\nif [ \"$1\" = '--version' ]; then printf 'v24.21.0\\n'; exit 0; fi\ncompiler=$1\nshift\nexec /bin/sh \"$compiler\" \"$@\"\n",
+    );
+    let compiler = script(
+        format!(
+            "#!/bin/sh\nif [ \"${{{SENTINEL}+x}}\" = x ]; then exit 91; fi\n[ \"$1\" = '--noEmit' ] || exit 92\n[ \"$2\" = '--pretty' ] || exit 93\n[ \"$8\" = 'compiler-probe.ts' ] || exit 94\nexit 0\n"
+        )
+        .as_bytes(),
+    );
+    let work = Work::create();
+    let cancelled = AtomicBool::new(false);
+    let mut diagnostic = [0; 256];
+    let result = run_typescript_with_interpreter(
+        &compiler.0,
+        &interpreter.0,
+        b"const value: number = 1;",
+        &cancelled,
+        Instant::now() + Duration::from_secs(3),
+        &mut diagnostic,
+        &work.0,
+    );
+    assert!(result.is_ok(), "closed typed invocation failed: {result:?}");
+    work.assert_empty();
+}
+
+#[test]
+fn interpreted_typescript_invocation_is_cancelled_and_reaped() {
+    let interpreter = script(b"#!/bin/sh\ncompiler=$1\nshift\nexec /bin/sh \"$compiler\" \"$@\"\n");
+    let compiler = script(b"#!/bin/sh\nwhile :; do :; done\n");
+    let work = Work::create();
+    let cancelled = AtomicBool::new(false);
+    let mut diagnostic = [0; 256];
+    let result = run_typescript_with_interpreter(
+        &compiler.0,
+        &interpreter.0,
+        b"const value: number = 1;",
+        &cancelled,
+        Instant::now() + Duration::from_millis(300),
+        &mut diagnostic,
+        &work.0,
+    );
+    assert!(
+        matches!(result, Err(CompileFailure::DeadlineExceeded { .. })),
+        "expected bounded DeadlineExceeded, observed {result:?}"
+    );
+    work.assert_empty();
+}
+
+#[test]
+#[ignore = "requires NUDOX_TEST_TYPESCRIPT_NODE and NUDOX_TEST_TYPESCRIPT_SCRIPT absolute paths"]
+fn admitted_global_typescript_script_compiles_through_node_with_env_cleared() {
+    let interpreter = PathBuf::from(
+        env::var_os("NUDOX_TEST_TYPESCRIPT_NODE")
+            .expect("ignored test requires an admitted Node executable path"),
+    );
+    let compiler_script = PathBuf::from(
+        env::var_os("NUDOX_TEST_TYPESCRIPT_SCRIPT")
+            .expect("ignored test requires an admitted global TypeScript script path"),
+    );
+    let interpreter = fs::canonicalize(interpreter).expect("canonical Node executable");
+    let compiler_script = fs::canonicalize(compiler_script).expect("canonical global tsc script");
+    let module_root = compiler_script
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .expect("global TypeScript script has node_modules/typescript/bin/tsc layout")
+        .to_path_buf();
+    let limits = crate::application::ToolchainProbeLimits::new(
+        Duration::from_secs(8),
+        std::num::NonZeroUsize::new(16 * 1024).expect("nonzero version-output bound"),
+    )
+    .expect("bounded TypeScript invocation admission");
+    let (script_version, interpreter_version, script_digest, interpreter_digest, module_digest) =
+        crate::application::admit_typescript_script_invocation(
+            &compiler_script,
+            &interpreter,
+            &module_root,
+            limits,
+        )
+        .expect("admit exact global tsc script and Node interpreter");
+    let toolchain = ResolvedToolchain::from_interpreted_script(
+        NativeTool::TypeScriptCompiler,
+        &interpreter,
+        &compiler_script,
+        &module_root,
+        &script_version,
+        &interpreter_version,
+        script_digest,
+        interpreter_digest,
+        module_digest,
+    )
+    .expect("bind admitted compiler and interpreter");
+    assert_ne!(toolchain.identity, toolchain.invocation_identity());
+    let work = Work::create();
+    let cancelled = AtomicBool::new(false);
+    let mut diagnostic = [0; 4096];
+    let result = run_typescript_with_toolchain(
+        toolchain,
+        b"export const typed: number = 24;\n",
+        &cancelled,
+        Instant::now() + Duration::from_secs(15),
+        &mut diagnostic,
+        &work.0,
+    );
+    assert!(result.is_ok(), "admitted global tsc failed: {result:?}");
+    assert!(diagnostic.iter().all(|byte| *byte == 0));
+    work.assert_empty();
+
+    let mut invalid_diagnostic = [0; 4096];
+    let invalid = run_typescript_with_toolchain(
+        toolchain,
+        b"const typed: number = 'not a number';\n",
+        &cancelled,
+        Instant::now() + Duration::from_secs(15),
+        &mut invalid_diagnostic,
+        &work.0,
+    );
+    let Err(CompileFailure::NativeRejected {
+        status, diagnostic, ..
+    }) = invalid
+    else {
+        panic!("the admitted global tsc did not reject invalid TypeScript: {invalid:?}");
+    };
+    assert!(!status.success());
+    let diagnostic = std::str::from_utf8(diagnostic.bytes).expect("TypeScript diagnostic UTF-8");
+    assert!(
+        diagnostic.contains("Type 'string' is not assignable to type 'number'."),
+        "expected TypeScript's type mismatch diagnostic, observed {diagnostic:?}"
     );
     work.assert_empty();
 }

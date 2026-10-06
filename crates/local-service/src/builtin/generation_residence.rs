@@ -1700,14 +1700,61 @@ mod tests {
             return;
         }
 
+        use backend_engine::DaemonConfig;
         use backend_engine::application::StagedSemanticPackage;
-        use backend_engine::{DaemonConfig, RelationAdmissionRegistry};
         use backend_replication::{
             FileSemanticRangeStore, HistoryRefKind, HistoryRefName, SemanticTargetKey,
             TransportLimits, TypedV3HistoryInputReplayStatus,
         };
         use backend_semantic::ir::{JumboRopeLimits, SemanticTypedPlaneVerificationTierV2};
         use std::time::{Duration, Instant};
+
+        fn target_root_for_diagnostic(
+            store_root: &std::path::Path,
+            target: &SemanticTargetKey,
+        ) -> std::path::PathBuf {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"backend.semantic.local-generation-target.v1\0");
+            for field in [target.package().as_bytes(), target.coordinate().as_bytes()] {
+                hasher.update(&(field.len() as u64).to_be_bytes());
+                hasher.update(field);
+            }
+            hasher.update(&<[u8; 2]>::from(target.profile()));
+            let identity = hasher.finalize();
+            let leaf = identity
+                .as_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            store_root.join(leaf)
+        }
+
+        fn refs_catalog_evidence(target_root: &std::path::Path) -> String {
+            let path = target_root.join("history").join("refs.catalog");
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let digest = blake3::hash(&bytes);
+                    let prefix = bytes
+                        .iter()
+                        .take(256)
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>();
+                    format!(
+                        "path={path:?} bytes={} blake3={} prefix_hex={prefix}",
+                        bytes.len(),
+                        digest.to_hex()
+                    )
+                }
+                Err(error) => format!("path={path:?} read_error={error}"),
+            }
+        }
+
+        // FileSemanticRangeStore's persisted V3 range-CAS format requires
+        // 16 KiB chunks. Keep both writer-side and reopen-side stores on the
+        // same valid production policy rather than TransportLimits' generic
+        // 64 KiB transfer default.
+        let mut history_limits = TransportLimits::default();
+        history_limits.max_chunk = 16 * 1024;
 
         const SOURCE_A: [(&str, &str); 2] = [
             ("src/alpha.c", "int alpha(void) { return 1; }\n"),
@@ -1720,6 +1767,8 @@ mod tests {
         let staged_a: StagedSemanticPackage = fixture
             .stage_selected_generation(false)
             .expect("stage generation A with the real compiler");
+        let generation_a_image_count = staged_a.artifacts().len();
+        assert_eq!(generation_a_image_count, SOURCE_A.len());
         let staged_b: StagedSemanticPackage = fixture
             .stage_selected_generation(true)
             .expect("stage generation B with the real compiler");
@@ -1730,11 +1779,8 @@ mod tests {
             .expect("admit product profile");
         let dispatcher = super::super::builtin_dispatcher(Some([0x79; 32]), profile, 1)
             .expect("configure product owner");
-        let registry = RelationAdmissionRegistry::new()
-            .with_relation::<super::super::BuiltinWorkspaceRelation>()
-            .expect("register source relation")
-            .with_relation::<super::super::BuiltinSemanticRelation>()
-            .expect("register semantic relation");
+        let registry =
+            super::super::product_relation_registry().expect("product relation registry");
         let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
             &marker_workspace,
             super::super::BuiltinModel,
@@ -1785,9 +1831,9 @@ mod tests {
         // serving selector. It pauses the actual async publisher before the
         // replication API can begin the commit/ref CAS sequence.
         let fence_deadline = Instant::now() + Duration::from_secs(60);
-        loop {
+        let worker_fence_diagnostic = loop {
             match fence_reached_result.try_recv() {
-                Ok(()) => break,
+                Ok(diagnostic) => break diagnostic,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     panic!("real V3 publication dropped its marker-fence notification")
                 }
@@ -1821,7 +1867,7 @@ mod tests {
                 "real V3 publication did not acquire the marker fence within 60 seconds; latest owner status: {status:?}; selected stamp: {stamp_a:?}"
             );
             std::thread::sleep(Duration::from_millis(10));
-        }
+        };
         let loader = authority.native_history_loader_for_test();
         assert!(
             authority.native_history_reader_holds_selector(),
@@ -1840,6 +1886,8 @@ mod tests {
         .expect("derive selected history target");
         let branch = HistoryRefName::new("selected-native-v3").expect("valid history branch");
         let writer_target = target.clone();
+        let writer_target_diagnostic = writer_target.clone();
+        let writer_store_root_diagnostic = store.root().to_path_buf();
         let writer_branch = branch.clone();
         let writer_key = key.clone();
         let writer = std::thread::spawn(move || {
@@ -1852,7 +1900,7 @@ mod tests {
                 || {
                     let history = FileSemanticRangeStore::open(
                         store.clone(),
-                        TransportLimits::default(),
+                        history_limits,
                     )
                     .map_err(|error| {
                         super::super::BuiltinModelError(format!(
@@ -1905,7 +1953,6 @@ mod tests {
                             ))
                         })?;
                     if replay.commit().selected_stamp() != stamp_a
-                        || !replay.commit().parents().is_empty()
                         || replay.input_replay_status()
                             != TypedV3HistoryInputReplayStatus::Unproven
                     {
@@ -1913,6 +1960,48 @@ mod tests {
                             "generation A branch commit has the wrong stamp, ancestry, or input status"
                                 .to_owned(),
                         ));
+                    }
+                    // A complete package tip is the last image, not its first
+                    // commit. Verify every image in the exact expected chain
+                    // before permitting the marker writer to install B.
+                    let mut image_commit = commit_a;
+                    for ordinal in (0..generation_a_image_count).rev() {
+                        let proof = history
+                            .history_ref_ancestry_proof(
+                                &writer_target,
+                                HistoryRefKind::Branch,
+                                &writer_branch,
+                                image_commit,
+                            )
+                            .map_err(super::super::BuiltinModelError)?;
+                        let image = history
+                            .replay_typed_v3_history(
+                                &writer_target,
+                                HistoryRefKind::Branch,
+                                &writer_branch,
+                                image_commit,
+                                &proof,
+                                SemanticTypedPlaneVerificationTierV2::Standard,
+                                JumboRopeLimits::default(),
+                            )
+                            .map_err(super::super::BuiltinModelError)?;
+                        if image.commit().selected_stamp() != stamp_a
+                            || image.input_replay_status()
+                                != TypedV3HistoryInputReplayStatus::Unproven
+                        {
+                            return Err(super::super::BuiltinModelError(
+                                "generation A image has the wrong stamp or input status".to_owned(),
+                            ));
+                        }
+                        match (ordinal, image.commit().parents()) {
+                            (0, []) => {}
+                            (1.., [parent]) => image_commit = *parent,
+                            _ => {
+                                return Err(super::super::BuiltinModelError(
+                                    "generation A package has the wrong image ancestry".to_owned(),
+                                ));
+                            }
+                        }
                     }
                     super::super::commands::commit_builtin_intent(&mut daemon, 2, &intent_b)?;
                     Ok(commit_a)
@@ -1943,7 +2032,40 @@ mod tests {
             .expect("release V3 publisher after writer has blocked on the marker lease");
 
         let (mut authority, daemon, commit_a) = writer.join().expect("join product marker writer");
-        let commit_a = commit_a.expect("generation B marker commits after generation A CAS");
+        let commit_a = match commit_a {
+            Ok(commit_a) => commit_a,
+            Err(error) => {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let status = loop {
+                    let status = authority
+                        .native_history_status(&key, claim_a)
+                        .expect("read generation A status after marker failure");
+                    if !matches!(
+                        status,
+                        backend_engine::SemanticHistoryPublicationStatus::Pending { .. }
+                    ) || Instant::now() >= deadline
+                    {
+                        break status;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                panic!(
+                    "generation B marker commits after generation A CAS: {error}; generation A publication status: {status:?}; worker target={:?} worker store root={:?}; writer target={:?} writer store root={:?}; worker refs catalog: {}; writer refs catalog: {}",
+                    worker_fence_diagnostic.target,
+                    worker_fence_diagnostic.store_root,
+                    writer_target_diagnostic,
+                    writer_store_root_diagnostic,
+                    refs_catalog_evidence(&target_root_for_diagnostic(
+                        &worker_fence_diagnostic.store_root,
+                        &worker_fence_diagnostic.target,
+                    )),
+                    refs_catalog_evidence(&target_root_for_diagnostic(
+                        &writer_store_root_diagnostic,
+                        &writer_target_diagnostic,
+                    )),
+                );
+            }
+        };
         drop(daemon);
 
         let deadline = Instant::now() + Duration::from_secs(45);
@@ -1969,10 +2091,18 @@ mod tests {
                 status => panic!("generation B V3 publication did not succeed: {status:?}"),
             }
         };
-        assert_eq!(proof_b.parent_commits.as_ref(), [*commit_a.as_bytes()]);
+        assert_eq!(
+            proof_b
+                .images
+                .last()
+                .expect("package has image")
+                .parent_commits
+                .as_ref(),
+            [*commit_a.as_bytes()]
+        );
         assert_eq!(proof_b.reachable_commit, commit_b);
 
-        let history = FileSemanticRangeStore::open(authority.store(), TransportLimits::default())
+        let history = FileSemanticRangeStore::open(authority.store(), history_limits)
             .expect("reopen branch history store");
         let branch_tip = history
             .history_ref(&target, HistoryRefKind::Branch, &branch)

@@ -2,8 +2,9 @@ use super::ids::{AtomListId, DocId, EntityListId, ExternalId, ItemKind, LinkId};
 use super::tree::TreeLinkTarget;
 use super::type_model::Visibility;
 use crate::ir::{
-    AtomId, AtomInterner, DeclarationFamilyId, DeclarationIdentity, EntityId,
-    ExternalDeclarationIdentity, ExternalEntityRef, StableRef, TextId, TypeId, VariantFingerprint,
+    AnonymousCallableFamilyMultiplicity, AtomId, AtomInterner, DeclarationFamilyId,
+    DeclarationIdentity, EntityId, ExternalDeclarationIdentity, ExternalEntityRef, StableRef,
+    TextId, TypeId, VariantFingerprint,
 };
 use core::mem::size_of;
 
@@ -292,8 +293,8 @@ impl EntityVersion {
 /// One compact entity row. All variable-size data is an interned typed-list ID.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Item {
-    /// Interned source spelling of this declaration's name.
-    pub name: AtomId,
+    /// Tagged source-written name or anonymous-callable structural anchor.
+    pub name: ItemName,
     /// Cross-language declaration category.
     pub kind: ItemKind,
     /// Language-independent visibility fact, or `Unknown` when unavailable.
@@ -310,6 +311,303 @@ pub struct Item {
     pub attributes: AtomListId,
     /// Optional source file and half-open byte range.
     pub source: Option<SourceSpan>,
+}
+
+/// The stored name lane for a semantic entity.
+///
+/// Anonymous callables have no symbol name. Their bounded structural anchor
+/// occupies the same typed atom coordinate only when this tag says so.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ItemName {
+    /// Exact source-written declaration spelling.
+    Named(AtomId),
+    /// Versioned structural anchor for one anonymous callable instance.
+    AnonymousCallable(AtomId),
+}
+
+impl ItemName {
+    /// Atom coordinate backing either typed name variant.
+    #[must_use]
+    pub const fn atom(self) -> AtomId {
+        match self {
+            Self::Named(atom) | Self::AnonymousCallable(atom) => atom,
+        }
+    }
+
+    /// Atom coordinate only when this row carries a source-written name.
+    #[must_use]
+    pub const fn named_atom(self) -> Option<AtomId> {
+        match self {
+            Self::Named(atom) => Some(atom),
+            Self::AnonymousCallable(_) => None,
+        }
+    }
+
+    /// Anchor coordinate only when this row is an anonymous callable.
+    #[must_use]
+    pub const fn anonymous_callable_anchor(self) -> Option<AtomId> {
+        match self {
+            Self::Named(_) => None,
+            Self::AnonymousCallable(atom) => Some(atom),
+        }
+    }
+}
+
+/// Typed name returned by semantic item readers. Anonymous callable anchors
+/// are structural evidence and are never presented as source identifier text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ItemNameView<'ir> {
+    /// Exact source-written declaration spelling.
+    Named(&'ir [u8]),
+    /// Versioned structural anchor bytes for one anonymous callable.
+    AnonymousCallable {
+        /// Borrowed typed anchor and stable-family multiplicity.
+        anchor: AnonymousCallableAnchorView<'ir>,
+    },
+}
+
+/// Borrowed, version-checked view of one encoded anonymous callable anchor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AnonymousCallableAnchorView<'ir> {
+    encoded: &'ir [u8],
+}
+
+impl<'ir> AnonymousCallableAnchorView<'ir> {
+    pub(crate) const fn new(encoded: &'ir [u8]) -> Self {
+        Self { encoded }
+    }
+
+    /// Validates and borrows one complete encoded anonymous-callable anchor.
+    #[must_use]
+    pub fn try_from_encoded(encoded: &'ir [u8]) -> Option<Self> {
+        let view = Self::new(encoded);
+        view.is_well_formed().then_some(view)
+    }
+
+    /// Decodes the bounded typed route while borrowing text cells from the
+    /// validated anchor storage.
+    #[must_use]
+    pub fn steps(self) -> Option<Vec<crate::ir::CallableAnchorStep<'ir>>> {
+        if !self.is_well_formed() {
+            return None;
+        }
+        let route_count = usize::try_from(read_anchor_u32(self.encoded, 8)?).ok()?;
+        let mut steps = Vec::new();
+        steps.try_reserve_exact(route_count).ok()?;
+        let mut cursor = 12_usize;
+        for _ in 0..route_count {
+            let role = match self.encoded.get(cursor).copied()? {
+                0 => crate::ir::CallableChildRole::CallArgument,
+                1 => crate::ir::CallableChildRole::VariableInitializer,
+                2 => crate::ir::CallableChildRole::PropertyValue,
+                3 => crate::ir::CallableChildRole::ConditionalConsequent,
+                4 => crate::ir::CallableChildRole::ConditionalAlternate,
+                5 => crate::ir::CallableChildRole::ArrayElement,
+                6 => crate::ir::CallableChildRole::ObjectMemberValue,
+                7 => crate::ir::CallableChildRole::SignatureParameterType,
+                8 => crate::ir::CallableChildRole::TypeExpression,
+                9 => crate::ir::CallableChildRole::TypeAliasValue,
+                10 => crate::ir::CallableChildRole::CallSignatureMember,
+                11 => crate::ir::CallableChildRole::ConstructSignatureMember,
+                _ => return None,
+            };
+            let parent_tag = self.encoded.get(cursor.checked_add(1)?)?;
+            cursor = cursor.checked_add(2)?;
+            let parent = match *parent_tag {
+                0 => crate::ir::CallableParentShape::Call,
+                1 | 2 | 5 | 6 | 8 => {
+                    let length = usize::try_from(read_anchor_u32(self.encoded, cursor)?).ok()?;
+                    let start = cursor.checked_add(4)?;
+                    let end = start.checked_add(length)?;
+                    let token = core::str::from_utf8(self.encoded.get(start..end)?)
+                        .ok()?
+                        .as_bytes();
+                    cursor = end;
+                    match *parent_tag {
+                        1 => crate::ir::CallableParentShape::VariableBinding(token),
+                        2 => crate::ir::CallableParentShape::PropertyName(token),
+                        5 => crate::ir::CallableParentShape::ObjectMember(token),
+                        6 => crate::ir::CallableParentShape::SignatureParameter(token),
+                        _ => crate::ir::CallableParentShape::TypeAliasName(token),
+                    }
+                }
+                3 => crate::ir::CallableParentShape::Conditional,
+                4 => crate::ir::CallableParentShape::ArrayLiteral,
+                7 => {
+                    let kind = decode_callable_type_container(*self.encoded.get(cursor)?)?;
+                    cursor = cursor.checked_add(1)?;
+                    crate::ir::CallableParentShape::TypeContainer(kind)
+                }
+                _ => return None,
+            };
+            steps.push(crate::ir::CallableAnchorStep {
+                child_role: role,
+                parent,
+            });
+        }
+        (cursor == self.encoded.len()).then_some(steps)
+    }
+
+    /// Verifies the complete bounded storage grammar without allocating.
+    #[must_use]
+    pub(crate) fn is_well_formed(self) -> bool {
+        let encoded = self.encoded;
+        let Some(magic) = encoded.get(..4) else {
+            return false;
+        };
+        let legacy = magic == b"NAC\x01";
+        if !legacy && magic != b"NAC\x02" {
+            return false;
+        }
+        let Some(multiplicity) = read_anchor_u32(encoded, 4) else {
+            return false;
+        };
+        let Some(route_count) = read_anchor_u32(encoded, 8) else {
+            return false;
+        };
+        if multiplicity == 0 || route_count == 0 || route_count > 32 {
+            return false;
+        }
+        let mut cursor = 12_usize;
+        let mut text_bytes = 0_usize;
+        for _ in 0..route_count {
+            let Some(role) = encoded.get(cursor).copied() else {
+                return false;
+            };
+            let Some(parent) = encoded.get(cursor.saturating_add(1)).copied() else {
+                return false;
+            };
+            let compatible = matches!(
+                (role, parent),
+                (0, 0)
+                    | (1, 1)
+                    | (2, 2)
+                    | (3 | 4, 3)
+                    | (5, 4)
+                    | (6, 5)
+                    | (7, 6)
+                    | (8, 7)
+                    | (9, 8)
+                    | (10, 7)
+                    | (11, 7)
+            );
+            if !compatible || (legacy && (role > 6 || parent > 5)) {
+                return false;
+            }
+            cursor = cursor.saturating_add(2);
+            if matches!(parent, 1 | 2 | 5 | 6 | 8) {
+                let Some(length) = read_anchor_u32(encoded, cursor) else {
+                    return false;
+                };
+                let Ok(length) = usize::try_from(length) else {
+                    return false;
+                };
+                if length == 0 {
+                    return false;
+                }
+                text_bytes = text_bytes.saturating_add(length);
+                if text_bytes > crate::ir_vocabulary::MAX_ANONYMOUS_CALLABLE_ANCHOR_BYTES {
+                    return false;
+                }
+                let start = cursor.saturating_add(4);
+                let Some(end) = start.checked_add(length) else {
+                    return false;
+                };
+                let Some(token) = encoded.get(start..end) else {
+                    return false;
+                };
+                if core::str::from_utf8(token).is_err() {
+                    return false;
+                }
+                cursor = end;
+            } else if parent == 7 {
+                let Some(kind) = encoded.get(cursor).copied() else {
+                    return false;
+                };
+                if kind > 11 || (matches!(role, 10 | 11) && !matches!(kind, 10 | 11)) {
+                    return false;
+                }
+                cursor = cursor.saturating_add(1);
+            }
+        }
+        cursor == encoded.len()
+    }
+
+    /// Exact versioned bytes retained for this structural anchor.
+    #[must_use]
+    pub const fn encoded_bytes(self) -> &'ir [u8] {
+        self.encoded
+    }
+
+    /// Current multiplicity of the stable structural callable family.
+    #[must_use]
+    pub fn family_multiplicity(self) -> Option<AnonymousCallableFamilyMultiplicity> {
+        if !self.is_well_formed() {
+            return None;
+        }
+        if !matches!(self.encoded.get(..4)?, b"NAC\x01" | b"NAC\x02") {
+            return None;
+        }
+        let count = u32::from_le_bytes(self.encoded.get(4..8)?.try_into().ok()?);
+        AnonymousCallableFamilyMultiplicity::new(count)
+    }
+}
+
+fn decode_callable_type_container(value: u8) -> Option<crate::ir::CallableTypeContainerKind> {
+    Some(match value {
+        0 => crate::ir::CallableTypeContainerKind::Array,
+        1 => crate::ir::CallableTypeContainerKind::Tuple,
+        2 => crate::ir::CallableTypeContainerKind::Union,
+        3 => crate::ir::CallableTypeContainerKind::Intersection,
+        4 => crate::ir::CallableTypeContainerKind::Parenthesized,
+        5 => crate::ir::CallableTypeContainerKind::Optional,
+        6 => crate::ir::CallableTypeContainerKind::Rest,
+        7 => crate::ir::CallableTypeContainerKind::Function,
+        8 => crate::ir::CallableTypeContainerKind::Constructor,
+        9 => crate::ir::CallableTypeContainerKind::TypeReference,
+        10 => crate::ir::CallableTypeContainerKind::TypeLiteral,
+        11 => crate::ir::CallableTypeContainerKind::Interface,
+        _ => return None,
+    })
+}
+
+fn read_anchor_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
+    ))
+}
+
+impl<'ir> ItemNameView<'ir> {
+    /// Returns source-written bytes only for named declarations.
+    #[must_use]
+    pub const fn named_bytes(self) -> Option<&'ir [u8]> {
+        match self {
+            Self::Named(bytes) => Some(bytes),
+            Self::AnonymousCallable { .. } => None,
+        }
+    }
+
+    /// Returns the anonymous structural anchor, if this row is callable and
+    /// has no source-written declaration name.
+    #[must_use]
+    pub const fn anonymous_anchor(self) -> Option<AnonymousCallableAnchorView<'ir>> {
+        match self {
+            Self::Named(_) => None,
+            Self::AnonymousCallable { anchor } => Some(anchor),
+        }
+    }
+}
+
+impl PartialEq<&[u8]> for ItemNameView<'_> {
+    fn eq(&self, other: &&[u8]) -> bool {
+        matches!(self, Self::Named(bytes) if *bytes == *other)
+    }
+}
+
+impl<const N: usize> PartialEq<&[u8; N]> for ItemNameView<'_> {
+    fn eq(&self, other: &&[u8; N]) -> bool {
+        matches!(self, Self::Named(bytes) if *bytes == other.as_slice())
+    }
 }
 /// Kind of an extrinsic graph edge.
 #[repr(u8)]

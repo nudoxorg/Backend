@@ -1,0 +1,49 @@
+{
+  "schema": "nudox.diagnostic-preview-channel.v1",
+  "production_ready": false,
+  "bootstrap": {
+    "url": "https://github.com/nudoxorg/Backend/releases/download/nudox-preview-installer/install-bootstrap-c7abc61872fbf970.py",
+    "sha256": "c7abc61872fbf9701fb21eccffe0bded7a6bcb513e7c849532a443fb74f5edaa",
+    "bytes": 5780
+  },
+  "platforms": {
+    "linux-x64": {
+      "status": "diagnostic-preview",
+      "source": "0584c3b6c019956d5fcb51dbd299c64389c3a11b",
+      "tag": "checkpoint-20261006-0584c3b6c0-linux-x64",
+      "known_failures": [
+        "Whole Requests publication refuses staged output versus exact compiler attempt.",
+        "TypeScript installed fallback witness refusal; whole-project QA is false."
+      ],
+      "installer": {
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261006-0584c3b6c0-linux-x64/install-linux-x64.py",
+        "sha256": "61837bb39ca18cd0a39e0f63c05f80bc35a34a798aa686f50af7cb85a46c6a90",
+        "bytes": 30967
+      },
+      "archive": {
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261006-0584c3b6c0-linux-x64/nudox-linux-x86_64-0584c3b6c0.tar.gz",
+        "sha256": "a6376f0cae1c68a628b90abab221ad86db446c606c5e2ca982e22cc2fdaf1d0f",
+        "bytes": 82277423
+      }
+    },
+    "macos-arm64": {
+      "status": "diagnostic-preview",
+      "source": "0584c3b6c019956d5fcb51dbd299c64389c3a11b",
+      "tag": "checkpoint-20261006-0584c3b6c0-macos-arm64",
+      "known_failures": [
+        "Whole Requests publication refuses staged output versus exact compiler attempt.",
+        "TypeScript installed fallback witness refusal; whole-project QA is false."
+      ],
+      "installer": {
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261006-0584c3b6c0-macos-arm64/install-macos-arm64.py",
+        "sha256": "72e88553137ed564b9a0fb75a909712ec0da7f7b43df7dfafc7754b717a07d51",
+        "bytes": 15521
+      },
+      "archive": {
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261006-0584c3b6c0-macos-arm64/nudox-macos-arm64-0584c3b6c0.tar.gz",
+        "sha256": "c01679c20f953f7129254790d2295936c902efbf036e42edfd8b72100fe0967b",
+        "bytes": 70245136
+      }
+    }
+  }
+}

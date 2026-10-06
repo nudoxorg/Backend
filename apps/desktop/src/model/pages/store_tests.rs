@@ -95,7 +95,8 @@ fn cargo_file_slots_keep_exact_authority_and_drop_stale_landings() {
     );
     assert_eq!(
         store.land(&first_key, newer, Ok(PageValue::CargoSource(page(&first)))),
-        Landing::Unchanged
+        Landing::Applied,
+        "a forced current-file revalidation ends its visible fetch even when bytes are equal"
     );
     assert_ne!(first, second);
     let other_project = CargoSourceKey {

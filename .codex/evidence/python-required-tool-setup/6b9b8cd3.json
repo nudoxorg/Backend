@@ -1,0 +1,39 @@
+{
+  "schema": "nudox.python-required-tool-setup-checks.v1",
+  "candidate_commit": "6b9b8cd3c7dd6a2bd1ce551b23282fbcc6295f03",
+  "candidate_tree": "241824d886caffef97687a713ff8632ed701d148",
+  "base_commit": "5bfa1148370d09f459e71d52c7bf5bfdb0e2b619",
+  "source_patch_sha256": "7ad6301656a491afa7d3177471a57b2b45456849a528b33eca3f7b4213240ddd",
+  "source_patch_sha256_before_check": "7ad6301656a491afa7d3177471a57b2b45456849a528b33eca3f7b4213240ddd",
+  "source_patch_sha256_after_check": "7ad6301656a491afa7d3177471a57b2b45456849a528b33eca3f7b4213240ddd",
+  "post_commit_status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "build_environment_receipt": {
+    "path": "/root/nudox-corpus-20261006/receipts/goportable-engine-successor-91a55cbd-native-env-20261006T0748Z.json",
+    "sha256": "fe951c32aef2cbbe838a77a59740d82623bde0f7d3d1080b96c4b96a52c0826a"
+  },
+  "checks": [
+    {
+      "command": "cargo check -p backend-library -p backend-engine --lib",
+      "result": "passed",
+      "log": "/root/nudox-corpus-20261006/receipts/python-required-tool-6b9b8cd3/production-libs-check.log",
+      "log_sha256": "62e49851b912e58601c2af4e3fc99e70e1e7ae594ba0677ff4207e7bcbafe022"
+    },
+    {
+      "command": "cargo test -p backend-library package_required_python_checker_failure_is_typed_and_actionable --lib",
+      "result": "passed; 1 test",
+      "log": "/root/nudox-corpus-20261006/receipts/python-required-tool-6b9b8cd3/library-focused-test.log",
+      "log_sha256": "42896b52a5b9054df35001b24354453fe32fc87678fde033ba18ef242b817365"
+    },
+    {
+      "command": "cargo test -p backend-engine --test local_host python_checker_setup_is_explicit_typed_and_distinct_from_python_interpreter -- --exact",
+      "result": "passed; 1 test",
+      "log": "/root/nudox-corpus-20261006/receipts/python-required-tool-6b9b8cd3/engine-host-focused-test.log",
+      "log_sha256": "491ea273c676df4bda1b2837ec57bec7c3ce984b2f2089175f8867ebba65874f",
+      "note": "CXX was set to pkg-config in this invocation; compilation and test completed successfully without invoking CXX."
+    }
+  ],
+  "pending": [
+    "Compile the changed backend-library integration golden helper with a focused --test unified_terminal --no-run check after the guarded Cargo slot is available."
+  ],
+  "patch_hash_basis": "SHA-256 of git diff --binary base_commit..candidate_commit, reconstructed after validation. The tested source content was then committed unchanged; these exact bytes identify the test input tree, although the hash was not captured live before each command."
+}

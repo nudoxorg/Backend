@@ -8,7 +8,7 @@
 //! coverage, typed faults — and it changes only when the presentation model
 //! changes.
 
-use backend_library::RegistryNativeMetadata;
+use backend_library::{CompilerNativeToolFact, PackageCompilerFailure, RegistryNativeMetadata};
 use serde::{Deserialize, Serialize};
 
 use crate::coverage::{CoverageLine, LaneState};
@@ -66,6 +66,44 @@ fn tagged<T: Serialize>(kind: &str, value: &T) -> serde_json::Value {
     }
 }
 
+/// Full bytes of an observed selected symbol row, exported as display operand
+/// material. This does not deserialize into a compiler `SymbolKey` or proof.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct SelectedSymbolIdDto([u8; 32]);
+
+impl SelectedSymbolIdDto {
+    /// Exact retained row bytes for a public selected-symbol operand.
+    #[must_use]
+    pub const fn bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for SelectedSymbolIdDto {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let bytes = <[u8; 32]>::deserialize(deserializer)?;
+        if bytes == [0; 32] {
+            return Err(serde::de::Error::custom("selected symbol row id is empty"));
+        }
+        Ok(Self(bytes))
+    }
+}
+
+/// Closed identity operand facet; display abbreviations and other key families
+/// cannot be treated as selected symbol identifiers.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
+pub enum IdentitySemanticData {
+    /// Full bytes retained from the actual selected symbol row.
+    SelectedSymbolId(SelectedSymbolIdDto),
+}
+
 /// One identity, in parts.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct IdentityDto {
@@ -91,6 +129,9 @@ pub struct IdentityDto {
     /// The display abbreviation of the row's stable key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// Exact selected symbol operand, independently of its short display label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_data: Option<IdentitySemanticData>,
 }
 
 impl IdentityDto {
@@ -112,6 +153,14 @@ impl IdentityDto {
                 .map(|segment| segment.as_str().to_owned())
                 .collect(),
             key: identity.key().tag().map(|tag| tag.to_string()),
+            semantic_data: match identity.key() {
+                crate::IdentityKey::Symbol(key) if key.as_bytes() != &[0; 32] => Some(
+                    IdentitySemanticData::SelectedSymbolId(SelectedSymbolIdDto(*key.as_bytes())),
+                ),
+                crate::IdentityKey::Package(_)
+                | crate::IdentityKey::Symbol(_)
+                | crate::IdentityKey::Absent => None,
+            },
         }
     }
 }
@@ -237,6 +286,27 @@ pub struct FaultDto {
     /// The next step as an MCP tool call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call: Option<serde_json::Value>,
+    /// Exact producer-supplied bounded compiler refusal, including closed phase and kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler_failure: Option<PackageCompilerFailure>,
+    /// Native setup requirement projected from the same closed compiler cause.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler_tool_requirement: Option<CompilerToolRequirementDto>,
+}
+
+/// Machine-actionable setup facts derived from a producer's native tool requirement.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CompilerToolRequirementDto {
+    /// Exact selected native tool family.
+    pub tool: CompilerNativeToolFact,
+    /// Executable expected by the compiler registry.
+    pub executable: String,
+    /// Public host configuration variable for this executable family.
+    pub configuration_variable: String,
+    /// Currently configured family, when a setup mismatch supplied one.
+    pub configured_tool: Option<CompilerNativeToolFact>,
+    /// Whether configuring this native tool can satisfy the setup requirement.
+    pub configuration_required: bool,
 }
 
 impl FaultDto {
@@ -250,6 +320,18 @@ impl FaultDto {
             detail: fault.cause().sentence().to_owned(),
             shell: fault.affordance().shell(),
             call: fault.affordance().tool_call(),
+            compiler_failure: fault.compiler_failure().cloned(),
+            compiler_tool_requirement: fault.compiler_failure().and_then(|failure| {
+                failure
+                    .required_native_tool()
+                    .map(|tool| CompilerToolRequirementDto {
+                        tool,
+                        executable: tool.executable().to_owned(),
+                        configuration_variable: tool.configuration_variable().to_owned(),
+                        configured_tool: failure.configured_native_tool(),
+                        configuration_required: failure.requires_tool_configuration(),
+                    })
+            }),
         }
     }
 
@@ -742,6 +824,16 @@ pub struct ProductDto {
     /// Exact checked Project membership captured with the selected semantic generations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_source_frontier: Option<backend_library::SelectedProjectSourceFrontier>,
+    /// Exact selected Project source-membership page and its continuation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_source_membership_page:
+        Option<backend_library::PackageSourceMembershipPageResultV1>,
+    /// Exact existing shape wire tree exported after direct certificate admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_data: Option<crate::product::ProductSemanticData>,
+    /// Exact source-only package metadata lookup evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_discovery: Option<crate::product::PackageDiscoveryProjection>,
 }
 
 /// Shared page envelope projected for CLI, MCP, and desktop product replies.
@@ -783,10 +875,10 @@ pub struct ProductRecordDto {
     /// Source-scoped, version-specific lineage group for index search.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_group: Option<backend_library::RegistryPackageSearchGroup>,
-    /// Exact owner-reported derived-history state for an immutable semantic
-    /// compiler generation.
+    /// Concise typed derived-history state for the readable generation row.
+    /// The complete immutable proof remains in `semantic_data`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub history_status: Option<backend_library::SemanticHistoryPublicationStatus>,
+    pub history_status: Option<crate::product::ProductSemanticHistoryStatus>,
     /// Exact canonical two-byte profile of an immutable semantic generation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiler_profile: Option<backend_library::SemanticLanguageProfile>,
@@ -827,6 +919,9 @@ impl ProductDto {
             index_job: view.index_job().cloned(),
             index_operation: view.index_operation().cloned(),
             selected_source_frontier: view.selected_source_frontier().cloned(),
+            package_source_membership_page: view.package_source_membership_page().cloned(),
+            semantic_data: view.semantic_data().cloned(),
+            package_discovery: view.package_discovery().cloned(),
         }
     }
 }

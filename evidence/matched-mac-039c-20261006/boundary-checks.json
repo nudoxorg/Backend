@@ -1,0 +1,51 @@
+{
+  "malformed": {
+    "exit": 64,
+    "socket_ready": false,
+    "sanitized_diagnostic": true
+  },
+  "unknown-field": {
+    "exit": 64,
+    "socket_ready": false,
+    "sanitized_diagnostic": true
+  },
+  "unknown-role": {
+    "exit": 64,
+    "socket_ready": false,
+    "sanitized_diagnostic": true
+  },
+  "explicit-empty": {
+    "ignores_ambient_configured_python": true,
+    "add_exit": 2,
+    "captured_syntax_resolves": true
+  },
+  "absent_operator_configured": {
+    "add_pending": true,
+    "semantic_identity_resolves": true,
+    "scope": "existing native provider absolute paths supplied; no stock installation claim"
+  },
+  "minimal_refusal_cold": {
+    "cold_exit": 0,
+    "sequence": 2,
+    "rows": 17,
+    "revision": "cba7f3ec4311916cb58cbe3dd092ea45aa74a4e642f418db3f328074d771cf0b",
+    "remaining_owners": 0
+  },
+  "guard": {
+    "minimum_free_bytes": 25368576000,
+    "results": [
+      {
+        "case": "compiler-boundary",
+        "exit": 0,
+        "seconds": 8.037622333999025,
+        "free_bytes": 25372491776
+      },
+      {
+        "case": "minimal-refusal-cold",
+        "exit": 0,
+        "seconds": 4.013811416996759,
+        "free_bytes": 25368576000
+      }
+    ]
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "schema": "nudox.read-only-retained-source-row-forensics.v2",
+  "source_commit": "9f44dae6342fb286178178bda5be33ea79d969a4",
+  "journal_path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T095613Z-python-configured-6195576e/state/workspace.journal",
+  "journal_bytes": 6947834,
+  "journal_sha256": "dbe3b435c43ff67b2b7254ef21c809a083303ce54437e0484641dd79eddf7dd6",
+  "basis": "Exact BPI9 source_changes plus canonical PSR2..PSRB file-body grammar. Read-only forensic decode, not outer journal hash-root/proof re-admission or product run. v1 excluded minimal PSR8 unavailable encoding; retained unchanged.",
+  "intents": [
+    {
+      "journal_intent_offset": 1733949,
+      "operation_tag": "03",
+      "package_key": "b34c1906fdf10fd7e5916230a92a492a803949446f90576436f26d467e8fd9ff",
+      "label": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T095613Z-python-configured-6195576e/project",
+      "source_changes": 55,
+      "source_formats": {
+        "PSRA": 12,
+        "PSRB": 40,
+        "PSR8": 3
+      },
+      "unavailable_rows": [
+        {
+          "file_key": "b34c1906fdf10fd7e5916230a92a492ac54bde7b3743c4f7deb1030f6eef7250",
+          "project_key": "b34c1906fdf10fd7e5916230a92a492a803949446f90576436f26d467e8fd9ff",
+          "path": "src/msgspec/_core.c",
+          "language_wire_tag": "07",
+          "content_version": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_identity": null,
+          "retention": "unavailable",
+          "reason": "unparsed",
+          "declaration_count": 0,
+          "wire_format": "PSR8",
+          "value_sha256": "fd19b53a643a325920f2f9e2807e23a93b23a7df08ce21abe7e1ede8238faea1",
+          "value_hex": "5053523802b34c1906fdf10fd7e5916230a92a492a803949446f90576436f26d467e8fd9ff000000137372632f6d7367737065632f5f636f72652e63070000000000000000000000000000000000000000000000000000000000000000d26778b034836070ca70b2e15161ddc90dd225e1d5ac34d11fc65febabc06075040300000000"
+        },
+        {
+          "file_key": "b34c1906fdf10fd7e5916230a92a492ae6134b258ada2652c0c17eedf01762cb",
+          "project_key": "b34c1906fdf10fd7e5916230a92a492a803949446f90576436f26d467e8fd9ff",
+          "path": "src/msgspec/itoa.h",
+          "language_wire_tag": "07",
+          "content_version": "0000000000000000000000000000000000000000000000000000000000000000",
+          "source_identity": null,
+          "retention": "unavailable",
+          "reason": "unparsed",
+          "declaration_count": 0,
+          "wire_format": "PSR8",
+          "value_sha256": "167cafb7f445fb10722cbd0c230ff75c2440f701890d541ddc700b56979c19ae",
+          "value_hex": "5053523802b34c1906fdf10fd7e5916230a92a492a803949446f90576436f26d467e8fd9ff000000127372632f6d7367737065632f69746f612e68070000000000000000000000000000000000000000000000000000000000000000d26778b034836070ca70b2e15161ddc90dd225e1d5ac34d11fc65febabc06075040300000000"
+        }
+      ]
+    },
+    {
+      "journal_intent_offset": 6941851,
+      "operation_tag": "03",
+      "package_key": "b34c1906fdf10fd7e5916230a92a492a803949446f90576436f26d467e8fd9ff",
+      "label": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T095613Z-python-configured-6195576e/project",
+      "source_changes": 0,
+      "source_formats": {},
+      "unavailable_rows": []
+    }
+  ]
+}

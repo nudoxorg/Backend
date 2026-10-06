@@ -122,6 +122,47 @@ pub(super) fn descriptor_matches_base(
 }
 
 impl FileStore {
+    /// Reopens the exact publication selected immediately before the named
+    /// current workspace head. The current publication's authenticated
+    /// journal descriptor binds its base root and generation; this method
+    /// replays the hash-chained journal prefix to recover that base's exact
+    /// closure descriptor.
+    ///
+    /// The scan uses constant memory and stops at the requested generation.
+    /// It is intended for cold persisted-transition admission, not a hot
+    /// publication path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Corrupt`] when the named workspace head is not
+    /// currently selected or its publication history is malformed.
+    pub fn workspace_base_publication(
+        &self,
+        target_root: Hash,
+        target_generation: u64,
+    ) -> Result<Option<SelectedHead>, StoreError> {
+        let _process_lock = self.acquire_process_lock()?;
+        let current = self.read_state()?.selected.ok_or(StoreError::Corrupt)?;
+        let descriptor = current.descriptor();
+        let binding = descriptor.workspace().ok_or(StoreError::Corrupt)?;
+        if binding.root() != &descriptor.target() || binding.closure() != descriptor.closure() {
+            return Err(StoreError::Corrupt);
+        }
+        if descriptor.target() != target_root || descriptor.target_generation() != target_generation
+        {
+            return Err(StoreError::Corrupt);
+        }
+        let base_generation = descriptor.base_generation();
+        if base_generation == 0 {
+            return Ok(None);
+        }
+        let base_root = descriptor.base().ok_or(StoreError::Corrupt)?;
+
+        let publication =
+            find_workspace_publication(&self.root.join("journal"), base_root, base_generation)?;
+        publication.ok_or(StoreError::Corrupt).map(Some)
+    }
+
     pub(super) fn read_state(&self) -> Result<JournalState, StoreError> {
         super::objects::scavenge_store_temps(&self.root)?;
         let head_file = head::read_head(&self.root.join("HEAD"))?;
@@ -156,12 +197,16 @@ impl FileStore {
             },
         };
         match recovered {
-            RecoveredHead::RepairMissing(selected) => self.write_head(&selected)?,
+            RecoveredHead::RepairMissing(selected) => {
+                self.validate_recovered_workspace_membership(&selected)?;
+                self.write_head(&selected)?;
+            }
             RecoveredHead::RepairInterrupted {
                 selected,
                 orphaned_temps,
             } => {
                 debug_assert_ne!(orphaned_temps, 0);
+                self.validate_recovered_workspace_membership(&selected)?;
                 self.write_head(&selected)?;
             }
             RecoveredHead::Current(selected) => debug_assert_eq!(tail.selected, Some(selected)),
@@ -170,6 +215,48 @@ impl FileStore {
         Ok(JournalState {
             selected: tail.selected,
         })
+    }
+
+    fn validate_recovered_workspace_membership(
+        &self,
+        head: &SelectedHead,
+    ) -> Result<(), StoreError> {
+        let Some(binding) = head.descriptor.workspace() else {
+            return Ok(());
+        };
+        binding.verify()?;
+        if binding.root() != &head.descriptor.target()
+            || binding.closure() != head.descriptor.closure()
+        {
+            return Err(StoreError::Corrupt);
+        }
+        let index = self.open_closure(binding.closure())?;
+        let mut after = None;
+        let mut seen = 0_u64;
+        loop {
+            let page = index.page_ids(after, 128)?;
+            for &id in page.object_ids() {
+                if after.is_some_and(|previous| id <= previous) {
+                    return Err(StoreError::Corrupt);
+                }
+                self.verify_closure_member_limited(id, None)?;
+                seen = seen.checked_add(1).ok_or(StoreError::Bounds)?;
+                if seen > index.object_count() {
+                    return Err(StoreError::Corrupt);
+                }
+                after = Some(id);
+            }
+            if page.next().is_none() {
+                break;
+            }
+            if page.next() != after {
+                return Err(StoreError::Corrupt);
+            }
+        }
+        if seen != index.object_count() {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(())
     }
 
     pub(super) fn ensure_head_file(&self, head: &SelectedHead) -> Result<(), StoreError> {
@@ -262,6 +349,47 @@ fn scan_journal(path: &Path, length: u64) -> Result<JournalTail, StoreError> {
         Err(error) => return Err(io_error(&error)),
     };
     validate_stream(path, &mut file, 0, length, 1, [0; 32], None)
+}
+
+fn find_workspace_publication(
+    path: &Path,
+    workspace_root: Hash,
+    generation: u64,
+) -> Result<Option<SelectedHead>, StoreError> {
+    let length = journal_length(path)?;
+    let mut file = File::open(path).map_err(|error| io_error(&error))?;
+    let mut offset = 0_u64;
+    let mut expected_sequence = 1_u64;
+    let mut previous = [0_u8; 32];
+    let mut selected = None;
+    let record_bytes = u64::try_from(JOURNAL_RECORD_BYTES).map_err(|_| StoreError::Bounds)?;
+    while offset < length {
+        let frame = journal::read_record(&mut file)?;
+        if frame.sequence != expected_sequence || frame.previous != previous {
+            return Err(StoreError::Corrupt);
+        }
+        selected = apply_frame(path, &frame, selected.as_ref())?;
+        if frame.tag == PUBLISHED_TAG
+            && frame.payload.target == workspace_root
+            && frame.payload.target_generation == generation
+        {
+            let binding = frame.payload.workspace.ok_or(StoreError::Corrupt)?;
+            if binding.root() != &workspace_root || binding.closure() != frame.payload.closure {
+                return Err(StoreError::Corrupt);
+            }
+            return Ok(Some(SelectedHead {
+                journal_sequence: frame.sequence,
+                descriptor: frame.payload,
+            }));
+        }
+        previous = frame.checksum;
+        expected_sequence = expected_sequence.checked_add(1).ok_or(StoreError::Bounds)?;
+        offset = offset.checked_add(record_bytes).ok_or(StoreError::Bounds)?;
+    }
+    if offset != length {
+        return Err(StoreError::Corrupt);
+    }
+    Ok(None)
 }
 
 fn extend_journal(

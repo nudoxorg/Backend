@@ -1,0 +1,35 @@
+{
+  "files": [
+    {
+      "bytes": 1087,
+      "path": "LICENSE",
+      "sha256": "62568a2d1337b77171ecca9db10579163446de1ba6151678e81f06cdc199971b"
+    },
+    {
+      "bytes": 21226,
+      "path": "README.md",
+      "sha256": "fd915568cac76a11f869256166b01445efaf849e28b9c614ab3028a1d0d50e34"
+    },
+    {
+      "bytes": 3253,
+      "path": "lib/ipaddr.d.ts",
+      "sha256": "7941732a17265098357f4c6b0d6579b6c868ccbde4db24a6640865d9ec1cf0d1"
+    },
+    {
+      "bytes": 38007,
+      "path": "lib/ipaddr.js",
+      "sha256": "52bcb70a2b313469c52a511ab405a4bd73599e36581d6075bbefdb2cfc4b80d8"
+    },
+    {
+      "bytes": 851,
+      "path": "package.json",
+      "sha256": "a124e0548d4c1f9e2c694807947ef527fa7f7f3012474d54c1df3cc21a5ddb9c"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "ipaddr.js",
+    "version": "2.5.0"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

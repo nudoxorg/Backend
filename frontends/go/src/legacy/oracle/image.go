@@ -244,22 +244,22 @@ type satPlan struct {
 // Rows stay structured until marshal so planes can be laid out in the exact
 // canonical orders the reader validates.
 type imagePlan struct {
-	module     modulePlan
-	packages   []packagePlan
-	atoms      []byte
-	decls      []declPlan
-	types      []typePlan
-	sigParams  []sigParamPlan
-	children   []childPlan
-	methods    []methodPlan
-	params     []paramPlan
-	members    []memberPlan
-	methodSets []methodSetPlan
-	docs       []docPlan
-	refs       []refPlan
-	cons       []conPlan
-	sats           []satPlan
-	unresolvedCgo  []atomCell
+	module        modulePlan
+	packages      []packagePlan
+	atoms         []byte
+	decls         []declPlan
+	types         []typePlan
+	sigParams     []sigParamPlan
+	children      []childPlan
+	methods       []methodPlan
+	params        []paramPlan
+	members       []memberPlan
+	methodSets    []methodSetPlan
+	docs          []docPlan
+	refs          []refPlan
+	cons          []conPlan
+	sats          []satPlan
+	unresolvedCgo []atomCell
 
 	// memberRequests stashes each struct/interface row's member rows until
 	// finalize lays the member plane out in type-row order. Nested anonymous
@@ -1250,7 +1250,17 @@ func buildAuthorityPlan(output *Output, boundSource string) (*imagePlan, error) 
 			if constraint == nil || constraint.File == "" {
 				return nil, fmt.Errorf("go/types emitted a missing build-constraint file")
 			}
-			if len(constraint.Constraints) == 0 || constraint.Constraints[0] == "" {
+			spelling := ""
+			if len(constraint.Constraints) > 0 {
+				spelling = constraint.Constraints[0]
+			}
+			if constraint.ExcludedReason != "" {
+				if spelling != "" {
+					spelling += "; "
+				}
+				spelling += "excluded: " + constraint.ExcludedReason
+			}
+			if spelling == "" {
 				return nil, fmt.Errorf(
 					"go/types emitted an empty build constraint for %s", constraint.File)
 			}
@@ -1258,7 +1268,7 @@ func buildAuthorityPlan(output *Output, boundSource string) (*imagePlan, error) 
 			if err != nil {
 				return nil, err
 			}
-			spelling, err := p.atom(constraint.Constraints[0])
+			spellingCell, err := p.atom(spelling)
 			if err != nil {
 				return nil, err
 			}
@@ -1286,7 +1296,7 @@ func buildAuthorityPlan(output *Output, boundSource string) (*imagePlan, error) 
 			}
 			p.cons = append(p.cons, conPlan{
 				file:       file,
-				constraint: spelling,
+				constraint: spellingCell,
 				blob:       blobCell,
 				count:      count,
 			})

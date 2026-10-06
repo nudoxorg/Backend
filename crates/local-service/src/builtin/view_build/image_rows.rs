@@ -294,11 +294,7 @@ fn row_retained_bytes(row: &Row, shared_text: &mut HashSet<usize>) -> usize {
     if let Some(preimage) = row.identity_preimage() {
         bytes = bytes.saturating_add(preimage.as_str().len());
     }
-    bytes = bytes.saturating_add(
-        row.document
-            .len()
-            .saturating_mul(size_of::<Fragment>()),
-    );
+    bytes = bytes.saturating_add(row.document.len().saturating_mul(size_of::<Fragment>()));
     for fragment in row.document.iter() {
         bytes = bytes.saturating_add(match fragment {
             Fragment::Text(text) | Fragment::Code(text) => text.capacity(),
@@ -1466,6 +1462,7 @@ mod tests {
         }];
         let items = [TreeItemInput {
             name: b"Worker",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Record,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {

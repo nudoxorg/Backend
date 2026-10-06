@@ -1,0 +1,145 @@
+{
+  "schema": "nudox.source-verified-stratified-dossier.v1",
+  "package": {
+    "ecosystem": "npm",
+    "id": "immer",
+    "version": "11.1.18"
+  },
+  "source_root": "/root/nudox-corpus-20261006/artifacts/stratified-typescript-library-dossiers-20261006T1238Z/npm-immer/source",
+  "source_tree_sha256": "95e5c4def7005b213b1ecd797d656e194e21b8cb11a35c2b8260ab5c086d857d",
+  "source_files": 34,
+  "source_bytes": 956851,
+  "inventory_sha256": "2e3556b594a7ad1fbc26cdbfa9af54e51cd2f45711b9d0ecbff2e51a4f900dc8",
+  "origin_sha256": "d80f0fbe005a1d137cca07189bd6c928f542d86e69c9817fc934b0d386befba0",
+  "archive_sha256": "681456111ff0f2971f3efac9904942d7b7aa267f468ccdd1a3a018fdce8f0280",
+  "origin_verified": true,
+  "archives_reused": true,
+  "acquisition_requests": [
+    {
+      "reused_metadata": "/root/nudox-corpus-20261006/catalog/npm-pin-seed100-20261006T0457Z/metadata/0e28965198654141a0b0f0c5.json",
+      "reused_archive": "/root/nudox-corpus-20261006/catalog/npm-pin-seed100-20261006T0457Z/tarballs/0e28965198654141a0b0f0c5.tgz",
+      "original_acquisition_directory": "/root/nudox-corpus-20261006/catalog/npm-pin-seed100-20261006T0457Z"
+    }
+  ],
+  "resource_before": {
+    "memory_available_kib": 57608620,
+    "free_disk_bytes": 58090958848
+  },
+  "dependency_requirements": {
+    "dependencies": {},
+    "peerDependencies": {},
+    "devDependencies": {
+      "cpx2": "^3.0.0",
+      "tsup": "^6.7.0",
+      "vite": "^6.4.2",
+      "husky": "^1.2.0",
+      "redux": "^4.0.5",
+      "lodash": "^4.17.4",
+      "rimraf": "^2.6.2",
+      "vitest": "^3.2.6",
+      "flow-bin": "^0.123.0",
+      "prettier": "3.8.0",
+      "coveralls": "^3.0.0",
+      "immutable": "^4.3.9",
+      "type-plus": "^7.6.2",
+      "typescript": "^5.0.2",
+      "@babel/core": "^7.21.3",
+      "@types/node": "^24.3.1",
+      "deep-freeze": "^0.0.1",
+      "import-size": "^1.0.2",
+      "pretty-quick": "^4.2.2",
+      "lodash.clonedeep": "^4.5.0",
+      "semantic-release": "^25.0.3",
+      "seamless-immutable": "^7.1.3",
+      "@vitest/coverage-v8": "2.1.9"
+    }
+  },
+  "dependency_closure_installed": false,
+  "source_expectations": [
+    {
+      "name": "WritableDraft",
+      "path": "dist/immer.d.ts",
+      "line": 32,
+      "file_sha256": "57658b130a56abe2ba4f7eb1490038f0b31aa2f3cc2e42d24032626fcf6b1be3",
+      "name_start_byte": 1373,
+      "name_end_byte": 1386,
+      "name_sha256": "dd5d4f9dfb032dd08ca6985ff99589e95e15e59cda23dc9adb00ea59c3e56018",
+      "expectation_authority": "actual declaration token; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "Draft",
+      "path": "dist/immer.d.ts",
+      "line": 47,
+      "file_sha256": "57658b130a56abe2ba4f7eb1490038f0b31aa2f3cc2e42d24032626fcf6b1be3",
+      "name_start_byte": 2170,
+      "name_end_byte": 2175,
+      "name_sha256": "ebf12ef47cf575b3ba9a3cc019c5310146fdac88f6d1be6618d6e91158c2f174",
+      "expectation_authority": "actual declaration token; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "Patch",
+      "path": "dist/immer.d.ts",
+      "line": 52,
+      "file_sha256": "57658b130a56abe2ba4f7eb1490038f0b31aa2f3cc2e42d24032626fcf6b1be3",
+      "name_start_byte": 2819,
+      "name_end_byte": 2824,
+      "name_sha256": "7e345470de240d118d52814a74f5c64fabae0f55b122ecb00ffa17a8889ebc7d",
+      "expectation_authority": "actual declaration token; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "Immer",
+      "path": "dist/immer.d.ts",
+      "line": 153,
+      "file_sha256": "57658b130a56abe2ba4f7eb1490038f0b31aa2f3cc2e42d24032626fcf6b1be3",
+      "name_start_byte": 8842,
+      "name_end_byte": 8847,
+      "name_sha256": "8939b820b1859772e05ad8ccfa965b65e282340df5a585f4e9daf283cf086252",
+      "expectation_authority": "actual declaration token; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "Immer",
+      "path": "src/core/immerClass.ts",
+      "line": 47,
+      "file_sha256": "8cf35b67c6f31fb1e1d861dde65c5db106a90178aaf2d6f1a18fc0683a45eb01",
+      "name_start_byte": 657,
+      "name_end_byte": 662,
+      "name_sha256": "8939b820b1859772e05ad8ccfa965b65e282340df5a585f4e9daf283cf086252",
+      "expectation_authority": "actual declaration token; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "WritableDraft",
+      "path": "src/types/types-external.ts",
+      "line": 31,
+      "file_sha256": "567ef259fb823d1af6c9dfab6607b4c39ebbf55c629d2feecfd59c3af005b422",
+      "name_start_byte": 990,
+      "name_end_byte": 1003,
+      "name_sha256": "dd5d4f9dfb032dd08ca6985ff99589e95e15e59cda23dc9adb00ea59c3e56018",
+      "expectation_authority": "actual declaration token; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "Draft",
+      "path": "src/types/types-external.ts",
+      "line": 59,
+      "file_sha256": "567ef259fb823d1af6c9dfab6607b4c39ebbf55c629d2feecfd59c3af005b422",
+      "name_start_byte": 1788,
+      "name_end_byte": 1793,
+      "name_sha256": "ebf12ef47cf575b3ba9a3cc019c5310146fdac88f6d1be6618d6e91158c2f174",
+      "expectation_authority": "actual declaration token; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "Patch",
+      "path": "src/types/types-external.ts",
+      "line": 88,
+      "file_sha256": "567ef259fb823d1af6c9dfab6607b4c39ebbf55c629d2feecfd59c3af005b422",
+      "name_start_byte": 2636,
+      "name_end_byte": 2641,
+      "name_sha256": "7e345470de240d118d52814a74f5c64fabae0f55b122ecb00ffa17a8889ebc7d",
+      "expectation_authority": "actual declaration token; compiler binding/reference confidence not yet observed"
+    }
+  ],
+  "runtime_acceptance_status": "not_run",
+  "runtime_passes": 0,
+  "package_code_executed": false,
+  "observer_sha256": "7339a4bcd2bcfbcb02f42666703284303355d6778a2068260350d68f4b46184d",
+  "origin_verifier_sha256": "1ef8275b8e6daa9bfe711d05d367316b09635061b4cb9ca147816c6bed3a3039"
+}

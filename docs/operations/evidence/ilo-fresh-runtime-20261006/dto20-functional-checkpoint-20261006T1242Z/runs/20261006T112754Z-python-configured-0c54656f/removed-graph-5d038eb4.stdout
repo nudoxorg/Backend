@@ -1,0 +1,7 @@
+{
+  "answer": "fault",
+  "cause": "unproven",
+  "detail": "a frame, DTO, or identity proof failed admission: command execution failed: semantic graph source is absent from the selected view",
+  "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::f6867a3f30429fee10da3eb643fc29305e9ecbca624d21fc5c5cc4be022037b6::startup",
+  "slug": "protocol"
+}

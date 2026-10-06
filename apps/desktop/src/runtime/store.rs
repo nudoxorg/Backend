@@ -99,6 +99,9 @@ pub enum StoreEvent {
     Snapshot(Branch),
     /// One page resource changed (started, landed, failed, or cancelled).
     Resource(PageKey),
+    /// Package facts were published at this authority. Aggregate projections
+    /// must withdraw their prior observations even when the root is unchanged.
+    PackagesPublished(crate::core::ProducerAuthority),
 }
 
 impl StoreEvent {
@@ -162,6 +165,9 @@ impl Watch {
     pub fn changed(&mut self, store: &DataStore, event: &StoreEvent) -> bool {
         match event {
             StoreEvent::Snapshot(branch) => self.branches.contains(branch),
+            // Page watches receive their own stamp movements. Aggregate
+            // consumers subscribe to the publication boundary directly.
+            StoreEvent::PackagesPublished(_) => false,
             StoreEvent::Resource(key) => match self.keys.get_mut(key) {
                 Some(seen) => {
                     let stamp = store.stamp(key);

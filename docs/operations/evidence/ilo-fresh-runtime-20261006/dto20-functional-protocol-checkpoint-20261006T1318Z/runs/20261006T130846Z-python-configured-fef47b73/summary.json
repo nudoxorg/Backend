@@ -1,0 +1,745 @@
+{
+  "schema": "nudox.fresh-real-remote-runtime.v1",
+  "root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73",
+  "language": "python",
+  "mode": "configured",
+  "source": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-cachetools/source",
+  "source_origin": {
+    "archive": {
+      "path": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-cachetools/archive.tar.gz",
+      "sha256": "b1a7537025c06abf96fcc1443e496af9a3fb95e774e70e1f0af226f73f7f2dcc",
+      "url": "https://files.pythonhosted.org/packages/31/44/71476a5812da1ddf2c9a3efd31ae76d01480a1cf03ed13ac28aa8f2402e4/cachetools-7.2.1.tar.gz"
+    },
+    "package": {
+      "ecosystem": "pypi",
+      "id": "cachetools",
+      "version": "7.2.1"
+    },
+    "registry_metadata": {
+      "path": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-cachetools/registry-metadata.json",
+      "sha256": "c28943c8cfdbcbddb0c583287914711ef120f45b1b78b8525e8a50966899792c",
+      "url": "https://pypi.org/pypi/cachetools/json"
+    },
+    "schema": "nudox.registry-artifact-origin.v1",
+    "unpack": {
+      "strip_prefix": "cachetools-7.2.1/"
+    }
+  },
+  "source_before": {
+    "files": [
+      [
+        "CHANGELOG.rst",
+        15780,
+        "b7b068263aaad1fb8f92bdb31aead8f354244a68191ad0f384883ffc6b995c66"
+      ],
+      [
+        "LICENSE",
+        1085,
+        "28c000b52b0ee27138a68ef778227e4057046e86b65f62f1cacb99b0cc49e0d2"
+      ],
+      [
+        "MANIFEST.in",
+        60,
+        "112a66627a754e7be3084a4abec44998dfbe3c4e9515fca8fa38661e11800568"
+      ],
+      [
+        "PKG-INFO",
+        5506,
+        "fe9b6190d89bc7715f1526e89f37d307b7c485bf4134043f76e464c216614a81"
+      ],
+      [
+        "README.rst",
+        4144,
+        "b44071bcf42e41215188219203da345d48358acba735ef272b2bba8b7f2a3652"
+      ],
+      [
+        "docs/conf.py",
+        471,
+        "f68affa8dfcf4a20d5fe872cfb0e19f9b284f8feda563dd8e8e23eafe75cd4eb"
+      ],
+      [
+        "docs/index.rst",
+        31459,
+        "3158547980de18c94a5dabcad2b2f94753d759cb8cff10104cccde51e5edab47"
+      ],
+      [
+        "pyproject.toml",
+        1665,
+        "bb02a66397173399a9bcab7de0b1f0a34f7d6df83e357f94b52bd45b08f22cea"
+      ],
+      [
+        "setup.cfg",
+        38,
+        "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e"
+      ],
+      [
+        "src/cachetools/__init__.py",
+        23791,
+        "c595cd9ea1ce7e52be423397398f33ad9fb8074d568bd664f229570e97f7a660"
+      ],
+      [
+        "src/cachetools/__init__.pyi",
+        7695,
+        "ed9551103ba6c51b632604268e7104f649a7b0ec40c4c0a6802540e56e4b7c46"
+      ],
+      [
+        "src/cachetools/_cached.py",
+        7084,
+        "f918cb6517d3d2fdb3e5eaecbf187b069b3cb1d7c999791f5f2561c9f49f7f5c"
+      ],
+      [
+        "src/cachetools/_cachedmethod.py",
+        14511,
+        "d02cd5a8c33e8b244f78c6ce26580dbfb89ed521fb25b637d5cec6070e390ce0"
+      ],
+      [
+        "src/cachetools/func.py",
+        3275,
+        "87724e4fc82303fd5172cc9fd03c7aaf6a767c6c477f3cb74a245fc45ebf7816"
+      ],
+      [
+        "src/cachetools/func.pyi",
+        2235,
+        "b55c20d4122014165183e80b3078b402b9a5f1300c509143bd6ec861d5819af2"
+      ],
+      [
+        "src/cachetools/keys.py",
+        1967,
+        "9550bd6914744c2fc6fd211dfb83cdae2d6206b1a1bfcf052d017cb23b39b49e"
+      ],
+      [
+        "src/cachetools/keys.pyi",
+        534,
+        "594a1166a9c399a375b6095ee1b38408f44b7d7c8b7b57685caab85b4598a24c"
+      ],
+      [
+        "src/cachetools/py.typed",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "src/cachetools.egg-info/PKG-INFO",
+        5506,
+        "fe9b6190d89bc7715f1526e89f37d307b7c485bf4134043f76e464c216614a81"
+      ],
+      [
+        "src/cachetools.egg-info/SOURCES.txt",
+        761,
+        "f325856378d1ef8d674bca055b5c928424ca6328a665143137166f3fd87e6148"
+      ],
+      [
+        "src/cachetools.egg-info/dependency_links.txt",
+        1,
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      ],
+      [
+        "src/cachetools.egg-info/top_level.txt",
+        11,
+        "6a2d851fbf131b0a017028157e8a9bce4e48402b670ee91d4ace332ae54fbc3b"
+      ],
+      [
+        "tests/__init__.py",
+        15324,
+        "72d99005a5d409aa14990b42b54646b726a4f3ca7a091a6f4831ff7701293eb8"
+      ],
+      [
+        "tests/test_cache.py",
+        148,
+        "dbdf81b02f344a0e62a5dcf2364be7e135e2511e765e93b43864aeb7aa3b115c"
+      ],
+      [
+        "tests/test_cached.py",
+        16729,
+        "27097d0df26efd2e6f72d03e5a8c9cdd7c4b5545ecee38aa439a78538c72fb0a"
+      ],
+      [
+        "tests/test_cachedmethod.py",
+        26260,
+        "d5b131d062ef613bbbcaaf107b4ab0a2f28f4bf505dd00964d2c46cf5ac757bf"
+      ],
+      [
+        "tests/test_classmethod.py",
+        5156,
+        "465e882cf15481277cef959eb5d4ec0072d61c342079cac05684da55fe543851"
+      ],
+      [
+        "tests/test_fifo.py",
+        1699,
+        "c6134627b4d9daab20e67b27fe2ff8d7e225116ae46d6a0e79b2c9b620d25941"
+      ],
+      [
+        "tests/test_func.py",
+        5937,
+        "668e212d3a49b5442578e1a77579bacd20bbd466a8ea4a18ac04969fa4e75827"
+      ],
+      [
+        "tests/test_keys.py",
+        4773,
+        "c6e39d6e781cb737159b43d725c4a0f00ce6f2885376fb6efd01c5d59e196064"
+      ],
+      [
+        "tests/test_lfu.py",
+        2904,
+        "11981704035d965ae733140734efb7cd30615ef492cfeeb464f63992db59b404"
+      ],
+      [
+        "tests/test_lru.py",
+        2268,
+        "dbfd53eb372f24571f70d739faeb6c4963f79c80ef18228f44b38b1112bf1a6c"
+      ],
+      [
+        "tests/test_rr.py",
+        2897,
+        "995ee7555ebe96c8b4f988c23a8923de980b5f0c42ca073906988e28dd773ec2"
+      ],
+      [
+        "tests/test_threading.py",
+        3386,
+        "fd6bfb6b3d0b4c650a1786381ab4c33d04ff348cd5d1e91d8014239df111c165"
+      ],
+      [
+        "tests/test_tlru.py",
+        11685,
+        "461fd80337d3e4a7fba830b30765cce19666611f797568f18740e4f6eea98199"
+      ],
+      [
+        "tests/test_ttl.py",
+        7372,
+        "dad8f3e725176a39a487d23bd4a25930db05380ce0b452f73485506dbe5284d1"
+      ],
+      [
+        "tox.ini",
+        676,
+        "ca2be656d1b20d7731eb8bcd303df16893878ee2bdd95ef93e77a3c595411a52"
+      ]
+    ],
+    "sha256": "1b440b76455fd28c5b56a7369b6e8c8514a4a8d68898fe4626fc79325247b279"
+  },
+  "runtime_manifest": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+  "runtime_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "runtime_manifest_content": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "binaries": {
+    "backend-cli": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+      "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d"
+    },
+    "backend-locald": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+      "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb"
+    },
+    "backend-mcp": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+      "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb"
+    }
+  },
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/home",
+    "XDG_CONFIG_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/home/.config",
+    "XDG_DATA_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/home/.local/share",
+    "XDG_STATE_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/home/.local/state",
+    "TMPDIR": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/tmp",
+    "PATH": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin:/nix/store/1xklj6dmgcpgz60c9w2ynaq7ynzfsrrq-go-1.26.4/share/go/bin:/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin:/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin:/root/nudox-corpus-20261006/corpora/next-react-alias-fixture/node_modules/typescript/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "USER": "root",
+    "LOGNAME": "root",
+    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "{\"version\":1,\"paths\":[{\"variable\":\"NUDOX_PYTHON\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,57,114,48,50,121,107,120,57,121,51,53,108,102,52,103,107,54,103,99,51,48,103,110,97,103,49,121,56,110,99,112,55,45,112,121,116,104,111,110,51,45,51,46,49,51,46,49,53,47,98,105,110,47,112,121,116,104,111,110,51,46,49,51]}},{\"variable\":\"NUDOX_TSC\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115,47,116,121,112,101,115,99,114,105,112,116,47,98,105,110,47,116,115,99]}},{\"variable\":\"NUDOX_GO\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111,47,98,105,110,47,103,111]}},{\"variable\":\"NUDOX_TYPESCRIPT_NODE\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,48,110,98,112,48,51,48,51,56,115,51,51,99,107,55,49,50,121,120,57,50,49,57,103,99,106,51,97,50,115,113,109,45,110,111,100,101,106,115,45,115,108,105,109,45,50,52,46,49,56,46,48,47,98,105,110,47,110,111,100,101]}},{\"variable\":\"NUDOX_TYPESCRIPT_MODULE_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115]}},{\"variable\":\"NUDOX_PYREFLY\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,113,100,120,122,120,107,119,104,49,51,98,103,118,53,48,48,54,54,102,107,50,107,97,51,112,49,122,112,110,106,97,112,45,112,121,114,101,102,108,121,45,49,46,50,46,48,45,100,101,118,46,49,47,98,105,110,47,112,121,114,101,102,108,121]}},{\"variable\":\"NUDOX_GO_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111]}}]}"
+  },
+  "compiler_snapshot_sha256": "0f13715f573afb87eb795bc2eb7960737abd1b7e7cd8a35ddf54a46f4a51e066",
+  "workspace_preexisting": false,
+  "endpoint_preexisting": false,
+  "fresh_home_entries": [],
+  "installer_tested": false,
+  "dependency_closure_copied": false,
+  "accepted_project_pass": false,
+  "journey_options": {
+    "skip_update_cancel": false,
+    "cancel_before_first_add": false,
+    "transport_only": false,
+    "public_compiler_variables": [],
+    "requested_queries": [
+      "cached"
+    ],
+    "edit_file": "src/cachetools/__init__.py",
+    "keep_edited_source": true,
+    "first_publish_only": false,
+    "witness_path": "src/cachetools/__init__.py",
+    "witness_line": 737,
+    "resolve_detail": "summary",
+    "resolve_limit": 10
+  },
+  "source_after": {
+    "files": [
+      [
+        "CHANGELOG.rst",
+        15780,
+        "b7b068263aaad1fb8f92bdb31aead8f354244a68191ad0f384883ffc6b995c66"
+      ],
+      [
+        "LICENSE",
+        1085,
+        "28c000b52b0ee27138a68ef778227e4057046e86b65f62f1cacb99b0cc49e0d2"
+      ],
+      [
+        "MANIFEST.in",
+        60,
+        "112a66627a754e7be3084a4abec44998dfbe3c4e9515fca8fa38661e11800568"
+      ],
+      [
+        "PKG-INFO",
+        5506,
+        "fe9b6190d89bc7715f1526e89f37d307b7c485bf4134043f76e464c216614a81"
+      ],
+      [
+        "README.rst",
+        4144,
+        "b44071bcf42e41215188219203da345d48358acba735ef272b2bba8b7f2a3652"
+      ],
+      [
+        "docs/conf.py",
+        471,
+        "f68affa8dfcf4a20d5fe872cfb0e19f9b284f8feda563dd8e8e23eafe75cd4eb"
+      ],
+      [
+        "docs/index.rst",
+        31459,
+        "3158547980de18c94a5dabcad2b2f94753d759cb8cff10104cccde51e5edab47"
+      ],
+      [
+        "pyproject.toml",
+        1665,
+        "bb02a66397173399a9bcab7de0b1f0a34f7d6df83e357f94b52bd45b08f22cea"
+      ],
+      [
+        "setup.cfg",
+        38,
+        "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e"
+      ],
+      [
+        "src/cachetools/__init__.py",
+        23793,
+        "75afd628cc1ec49e5493da64e69108c865822412e31980ae4b3ac46692a39fcf"
+      ],
+      [
+        "src/cachetools/__init__.pyi",
+        7695,
+        "ed9551103ba6c51b632604268e7104f649a7b0ec40c4c0a6802540e56e4b7c46"
+      ],
+      [
+        "src/cachetools/_cached.py",
+        7084,
+        "f918cb6517d3d2fdb3e5eaecbf187b069b3cb1d7c999791f5f2561c9f49f7f5c"
+      ],
+      [
+        "src/cachetools/_cachedmethod.py",
+        14511,
+        "d02cd5a8c33e8b244f78c6ce26580dbfb89ed521fb25b637d5cec6070e390ce0"
+      ],
+      [
+        "src/cachetools/func.py",
+        3275,
+        "87724e4fc82303fd5172cc9fd03c7aaf6a767c6c477f3cb74a245fc45ebf7816"
+      ],
+      [
+        "src/cachetools/func.pyi",
+        2235,
+        "b55c20d4122014165183e80b3078b402b9a5f1300c509143bd6ec861d5819af2"
+      ],
+      [
+        "src/cachetools/keys.py",
+        1967,
+        "9550bd6914744c2fc6fd211dfb83cdae2d6206b1a1bfcf052d017cb23b39b49e"
+      ],
+      [
+        "src/cachetools/keys.pyi",
+        534,
+        "594a1166a9c399a375b6095ee1b38408f44b7d7c8b7b57685caab85b4598a24c"
+      ],
+      [
+        "src/cachetools/py.typed",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "src/cachetools.egg-info/PKG-INFO",
+        5506,
+        "fe9b6190d89bc7715f1526e89f37d307b7c485bf4134043f76e464c216614a81"
+      ],
+      [
+        "src/cachetools.egg-info/SOURCES.txt",
+        761,
+        "f325856378d1ef8d674bca055b5c928424ca6328a665143137166f3fd87e6148"
+      ],
+      [
+        "src/cachetools.egg-info/dependency_links.txt",
+        1,
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      ],
+      [
+        "src/cachetools.egg-info/top_level.txt",
+        11,
+        "6a2d851fbf131b0a017028157e8a9bce4e48402b670ee91d4ace332ae54fbc3b"
+      ],
+      [
+        "tests/__init__.py",
+        15324,
+        "72d99005a5d409aa14990b42b54646b726a4f3ca7a091a6f4831ff7701293eb8"
+      ],
+      [
+        "tests/test_cache.py",
+        148,
+        "dbdf81b02f344a0e62a5dcf2364be7e135e2511e765e93b43864aeb7aa3b115c"
+      ],
+      [
+        "tests/test_cached.py",
+        16729,
+        "27097d0df26efd2e6f72d03e5a8c9cdd7c4b5545ecee38aa439a78538c72fb0a"
+      ],
+      [
+        "tests/test_cachedmethod.py",
+        26260,
+        "d5b131d062ef613bbbcaaf107b4ab0a2f28f4bf505dd00964d2c46cf5ac757bf"
+      ],
+      [
+        "tests/test_classmethod.py",
+        5156,
+        "465e882cf15481277cef959eb5d4ec0072d61c342079cac05684da55fe543851"
+      ],
+      [
+        "tests/test_fifo.py",
+        1699,
+        "c6134627b4d9daab20e67b27fe2ff8d7e225116ae46d6a0e79b2c9b620d25941"
+      ],
+      [
+        "tests/test_func.py",
+        5937,
+        "668e212d3a49b5442578e1a77579bacd20bbd466a8ea4a18ac04969fa4e75827"
+      ],
+      [
+        "tests/test_keys.py",
+        4773,
+        "c6e39d6e781cb737159b43d725c4a0f00ce6f2885376fb6efd01c5d59e196064"
+      ],
+      [
+        "tests/test_lfu.py",
+        2904,
+        "11981704035d965ae733140734efb7cd30615ef492cfeeb464f63992db59b404"
+      ],
+      [
+        "tests/test_lru.py",
+        2268,
+        "dbfd53eb372f24571f70d739faeb6c4963f79c80ef18228f44b38b1112bf1a6c"
+      ],
+      [
+        "tests/test_rr.py",
+        2897,
+        "995ee7555ebe96c8b4f988c23a8923de980b5f0c42ca073906988e28dd773ec2"
+      ],
+      [
+        "tests/test_threading.py",
+        3386,
+        "fd6bfb6b3d0b4c650a1786381ab4c33d04ff348cd5d1e91d8014239df111c165"
+      ],
+      [
+        "tests/test_tlru.py",
+        11685,
+        "461fd80337d3e4a7fba830b30765cce19666611f797568f18740e4f6eea98199"
+      ],
+      [
+        "tests/test_ttl.py",
+        7372,
+        "dad8f3e725176a39a487d23bd4a25930db05380ce0b452f73485506dbe5284d1"
+      ],
+      [
+        "tox.ini",
+        676,
+        "ca2be656d1b20d7731eb8bcd303df16893878ee2bdd95ef93e77a3c595411a52"
+      ]
+    ],
+    "sha256": "cfddc357b1c45a1627ecf29f645846502ea8940bc50fa86067634388345f8219"
+  },
+  "checks": [
+    {
+      "query": "cached",
+      "mcp_search": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "~lanes exact\u271310 names\u271310 graph\u271310 semantic\u2717 unconfigured semantic-search unavailable (unconfigured)\nproject \u203a tests/test_classmethod.py:9 \u203a Cached  \u00b7  struct \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::7fdea90619082ffea8fd4697efc2d53ad0f455c5d376150128290555ddb2ad68::Cached`  class Cached:\nproject \u203a src/cachetools/__init__.pyi:186 \u203a cached  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::3fe448160fc5b3f99e4dcf3326c42cf986ce52c5a252469a9b0846d8ce0f6ec7::cached`  @overload\nproject \u203a src/cachetools/__init__.pyi:177 \u203a cached  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::3fe448160fc5b3f99e4dcf3326c42cf9510b3368e4c6ff78f3aa13eb43dc75d4::cached`  @overload\nproject \u203a src/cachetools/__init__.py:737 \u203a cached  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::489d8b813f8ce1fd8aee65c67f8d46f2a43f65d89aa4b2e966cca56be0415dc9::cached`  def cached(cache, key=keys.hashkey, lock=None, condition=None, info=False):\nproject \u203a cached  \u00b7  type \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::6f6e5319fecf195783883e1bf533287533c83cfdd3c49069e3be839222a386e7::cached`  unknown(unannotated)\nproject \u203a tests/test_cachedmethod.py:504 \u203a Cached  \u00b7  struct \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::d806289cc242af7693137a3026dd22ca3720ae2fcf7aa876edd897f2185f4af7::Cached`  class Cached:\nproject \u203a tests/test_cachedmethod.py:496 \u203a Cached  \u00b7  struct \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::bd6a9dc10fd85575c97de991133bc20067ee90307e33ec00e384a66f0814f618::Cached`  class Cached:\nproject \u203a cached  \u00b7  type \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::bdf92633a9b2d362567877c61359aef233c83cfdd3c49069e3be839222a386e7::cached`  unknown(unannotated)\nproject \u203a tests/test_cachedmethod.py:10 \u203a Cached  \u00b7  struct \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::2d27f488f7e869a103f3f9bccb114758d0f455c5d376150128290555ddb2ad68::Cached`  class Cached:\nproject \u203a src/cachetools/__init__.pyi:169 \u203a cached  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::3fe448160fc5b3f99e4dcf3326c42cf9920e731db3ae2815004f01540be1d4bc::cached`  @overload\n\u2026 more rows at this revision; raise `limit` to see them\n",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "answer": "records",
+            "budget": {
+              "bytes": 7169,
+              "bytesPerToken": 4,
+              "estimatedTokens": 1793
+            },
+            "coverage": [
+              {
+                "lane": "exact",
+                "state": "complete"
+              },
+              {
+                "lane": "names",
+                "state": "complete"
+              },
+              {
+                "lane": "graph",
+                "state": "complete"
+              },
+              {
+                "lane": "semantic",
+                "reason": "unconfigured",
+                "state": "unavailable"
+              }
+            ],
+            "detail": "full",
+            "more": true,
+            "nextCursor": "mcp1-1791293047-cGMxLTAwMDNlOGE5NmRlZDhlOGYyOTk0NWU5NzZhNjc1ZDNiNDRmMjNiN2FiNTE1NDJjZGU3NTI4YmNmOTMyNDAwMjk3MjE5ZDllMzQ1NGIyYjk0OWFlMjNhZmIxNTE5YWU4MmVlYWY2ZjQ5MGM5OTg2Yzg1MGY1OTkwMDdjNzQ5N2QyZWU1ODQ2NTBhNWQyZDM4YzUwN2M2MjFiYjdhZGVjOTYzYWZhYzdiZDc0MGJiYzg1MDA3YjFjZDYwOWE2N2ZiMjQ4MmYxMmE0MGIxYTlkOGIzYWYwOTJlYjk1NzQ1NzU5NjdjMTlhNWRiOWNhNDhlZGU1NDIyNmUyOGYyOTM2MWUzNzYwMDAwMzViN2Q4OWMzYTY5NGRlZmIyZmI5YWQ1MWQ2OTczNmVlMmQ3ZWYzMDBlOTc5MGFmZTBmMjc4ZGEzOTI2ZDFhZWEwMDAwMDAwMDAwMDAwMDAyMDAwMDAwMDAwMDAwMDAwYQ-05094d43706db5f7edbf92271fd020da",
+            "query": "cached",
+            "readiness": "ready",
+            "records": [
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::7fdea90619082ffea8fd4697efc2d53ad0f455c5d376150128290555ddb2ad68::Cached",
+                  "key": "570134ff",
+                  "line": 9,
+                  "name": "Cached",
+                  "path": "tests/test_classmethod.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project",
+                  "segments": [
+                    "Cached"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a tests/test_classmethod.py:9 \u203a Cached"
+                },
+                "kind": "struct",
+                "language": "python",
+                "score": 4294967289,
+                "signature": "class Cached:",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::3fe448160fc5b3f99e4dcf3326c42cf986ce52c5a252469a9b0846d8ce0f6ec7::cached",
+                  "key": "6f168c0b",
+                  "line": 186,
+                  "name": "cached",
+                  "path": "src/cachetools/__init__.pyi",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project",
+                  "segments": [
+                    "cached"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/cachetools/__init__.pyi:186 \u203a cached"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967294,
+                "signature": "@overload",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::3fe448160fc5b3f99e4dcf3326c42cf9510b3368e4c6ff78f3aa13eb43dc75d4::cached",
+                  "key": "71026b21",
+                  "line": 177,
+                  "name": "cached",
+                  "path": "src/cachetools/__init__.pyi",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project",
+                  "segments": [
+                    "cached"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/cachetools/__init__.pyi:177 \u203a cached"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967291,
+                "signature": "@overload",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::489d8b813f8ce1fd8aee65c67f8d46f2a43f65d89aa4b2e966cca56be0415dc9::cached",
+                  "key": "7d7f6347",
+                  "line": 737,
+                  "name": "cached",
+                  "path": "src/cachetools/__init__.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project",
+                  "segments": [
+                    "cached"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/cachetools/__init__.py:737 \u203a cached"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967293,
+                "signature": "def cached(cache, key=keys.hashkey, lock=None, condition=None, info=False):",
+                "state": "ready",
+                "summary": "Decorator to wrap a function with a memoizing callable that saves"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::6f6e5319fecf195783883e1bf533287533c83cfdd3c49069e3be839222a386e7::cached",
+                  "key": "897cb274",
+                  "name": "cached",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project",
+                  "segments": [
+                    "cached"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a cached"
+                },
+                "kind": "type",
+                "language": "unknown",
+                "score": 4294967290,
+                "signature": "unknown(unannotated)",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::d806289cc242af7693137a3026dd22ca3720ae2fcf7aa876edd897f2185f4af7::Cached",
+                  "key": "94ad1432",
+                  "line": 504,
+                  "name": "Cached",
+                  "path": "tests/test_cachedmethod.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project",
+                  "segments": [
+                    "Cached"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a tests/test_cachedmethod.py:504 \u203a Cached"
+                },
+                "kind": "struct",
+                "language": "python",
+                "score": 4294967286,
+                "signature": "class Cached:",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::bd6a9dc10fd85575c97de991133bc20067ee90307e33ec00e384a66f0814f618::Cached",
+                  "key": "a2dfe995",
+                  "line": 496,
+                  "name": "Cached",
+                  "path": "tests/test_cachedmethod.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project",
+                  "segments": [
+                    "Cached"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a tests/test_cachedmethod.py:496 \u203a Cached"
+                },
+                "kind": "struct",
+                "language": "python",
+                "score": 4294967288,
+                "signature": "class Cached:",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::bdf92633a9b2d362567877c61359aef233c83cfdd3c49069e3be839222a386e7::cached",
+                  "key": "c466573a",
+                  "name": "cached",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project",
+                  "segments": [
+                    "cached"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a cached"
+                },
+                "kind": "type",
+                "language": "unknown",
+                "score": 4294967292,
+                "signature": "unknown(unannotated)",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::2d27f488f7e869a103f3f9bccb114758d0f455c5d376150128290555ddb2ad68::Cached",
+                  "key": "cc84478a",
+                  "line": 10,
+                  "name": "Cached",
+                  "path": "tests/test_cachedmethod.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project",
+                  "segments": [
+                    "Cached"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a tests/test_cachedmethod.py:10 \u203a Cached"
+                },
+                "kind": "struct",
+                "language": "python",
+                "score": 4294967287,
+                "signature": "class Cached:",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project::semantic::3fe448160fc5b3f99e4dcf3326c42cf9920e731db3ae2815004f01540be1d4bc::cached",
+                  "key": "df2af01d",
+                  "line": 169,
+                  "name": "cached",
+                  "path": "src/cachetools/__init__.pyi",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-fef47b73/project",
+                  "segments": [
+                    "cached"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/cachetools/__init__.pyi:169 \u203a cached"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967295,
+                "signature": "@overload",
+                "state": "ready"
+              }
+            ],
+            "semantic_search": {
+              "reason": "unconfigured",
+              "status": "unavailable"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "owned_daemons_remaining": [],
+  "endpoint_remaining": true,
+  "source_unchanged": false
+}

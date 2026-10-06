@@ -39,6 +39,155 @@ fn assert_content(ledger: &crate::probe::Ledger, card: Bounds<Pixels>) {
 }
 
 #[gpui::test]
+fn restored_selection_keeps_exact_camera_through_first_measured_frame_without_new_history(cx: &mut TestAppContext) {
+    cx.update(|cx| gpui_component::init(cx));
+    for reduced in [false, true] {
+        cx.update(|cx| set_facet(Facet { reduced_motion: reduced, ..Facet::default() }, cx));
+        let scene = scene();
+        let camera = crate::motion::Camera::new(f64::from(scene.layout.x[3]) + 13.25,
+            f64::from(scene.layout.y[3]) - 8.75, 91.5);
+        let (graph, cx) = cx.add_window_view(|window, cx|
+            GraphView::with_scene(scene.clone(), Start::Restore { camera, focus: Some(3) }, window, cx));
+        assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), Some(3), "semantics publish before first paint");
+        draw(cx);
+        graph.read_with(cx, |graph, _| {
+            assert_eq!(graph.camera(), Some(camera), "actual reading chrome cannot overwrite retained placement");
+            assert_eq!(graph.prism.as_ref().map(|prism| (prism.node, prism.g)), Some((3, 1.0)));
+            assert!(graph.trail.is_empty(), "restoration is not a navigation visit");
+            assert!(!graph.find_open() && graph.results.is_empty() && graph.state.pending_accept.is_none());
+            assert!(graph.hover.is_none() && graph.peek.is_none());
+        });
+        settle(cx);
+        assert_eq!(graph.read_with(cx, |graph, _| graph.camera()), Some(camera));
+        graph.update(cx, |graph, cx| graph.enter(0, cx));
+        assert_eq!(graph.read_with(cx, |graph, _| graph.camera()), Some(camera),
+            "a restored map begins the next semantic flight from its retained placement, without an artificial package reset");
+        settle(cx);
+        graph.read_with(cx, |graph, _| {
+            assert_eq!(graph.focused(), Some(0));
+            assert_ne!(graph.camera(), Some(camera), "later semantic navigation owns framing");
+            assert!(!graph.retained_placement);
+        });
+        graph.update(cx, |graph, cx| graph.show_world(cx));
+        settle(cx);
+        assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), None);
+    }
+}
+
+#[gpui::test]
+fn invalid_passive_restoration_clears_selection_before_prism_construction(cx: &mut TestAppContext) {
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+    let scene = scene();
+    let outside = u32::try_from(scene.world.len()).expect("tiny fixture node limit");
+    let camera = crate::motion::Camera::new(8.25, -11.5, 101.75);
+    for asynchronous in [false, true] {
+        for invalid in [outside, u32::MAX] {
+            let start = Start::Restore { camera, focus: Some(invalid) };
+            let (graph, cx) = cx.add_window_view(|window, cx| {
+                if asynchronous { GraphView::new(scene.world.clone(), start, window, cx) }
+                else { GraphView::with_scene(scene.clone(), start, window, cx) }
+            });
+            graph.read_with(cx, |graph, _| {
+                assert_eq!(graph.focused(), None, "invalid restoration never selects a substitute raw id");
+                assert!(graph.prism.is_none(), "no Prism::of access occurs for an unadmitted node");
+                assert_eq!(graph.start, Start::Restore { camera, focus: None });
+            });
+            settle(cx);
+            graph.read_with(cx, |graph, _| {
+                assert_eq!(graph.camera(), Some(camera));
+                assert_eq!(graph.focused(), None);
+                assert!(graph.prism.is_none() && graph.trail.is_empty());
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn restored_camera_survives_resize_and_double_text_scale_with_reachable_card_controls(cx: &mut TestAppContext) {
+    cx.update(|cx| { gpui_component::init(cx); crate::probe::enable(cx); });
+    for reduced in [false, true] {
+        cx.update(|cx| set_facet(Facet { reduced_motion: reduced, ..Facet::default() }, cx));
+        let scene = scene();
+        let camera = crate::motion::Camera::new(f64::from(scene.layout.x[0]) + 12.0,
+            f64::from(scene.layout.y[0]) - 7.0, 83.5);
+        let (host, cx) = cx.add_window_view(|window, cx| Region {
+            graph: cx.new(|cx| {
+                let mut graph = GraphView::with_scene(scene.clone(), Start::Restore { camera, focus: Some(0) }, window, cx);
+                graph.set_status("Observed graph".into(), Some("Observed declaration and relation coverage".into()), cx);
+                graph
+            }),
+            bounds: Bounds::new(point(px(80.0), px(50.0)), size(px(900.0), px(640.0))),
+        });
+        let graph = host.read_with(cx, |host, _| host.graph.clone());
+        cx.update(|window, _| window.set_a11y_forced(true));
+        settle(cx);
+        for (width, text_scale) in [(480.0, 1.0), (900.0, 2.0), (480.0, 2.0), (900.0, 1.0)] {
+            cx.update(|_, cx| set_facet(Facet { reduced_motion: reduced, text_scale, ..Facet::default() }, cx));
+            let region = Bounds::new(point(px(120.0), px(60.0)), size(px(width), px(620.0)));
+            host.update(cx, |host, cx| { host.bounds = region; cx.notify(); });
+            draw(cx);
+            graph.read_with(cx, |graph, _| {
+                assert_eq!(graph.camera(), Some(camera), "the first measured resize frame retains actual placement");
+                assert_eq!(graph.focused(), Some(0));
+                let card = graph.card_bounds.expect("new measured reading chrome");
+                assert!(card.left() >= region.left() && card.top() >= region.top()
+                    && card.right() <= region.right() && card.bottom() <= region.bottom());
+            });
+            settle(cx);
+            let card = graph.read_with(cx, |graph, _| graph.card_bounds.expect("settled native card"));
+            let wheel = |cx: &mut VisualTestContext, delta| cx.simulate_event(gpui::ScrollWheelEvent {
+                position: card.center(), delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(delta))),
+                modifiers: gpui::Modifiers::none(), touch_phase: gpui::TouchPhase::Moved,
+            });
+            wheel(cx, 3000.0); draw(cx);
+            cx.update(|_, cx| { crate::probe::take(cx); });
+            draw(cx);
+            let ledger = cx.update(|_, cx| crate::probe::take(cx));
+            assert_content(&ledger, card);
+            wheel(cx, -3000.0); draw(cx);
+            let (target, bounds) = cx.update(|window, _| {
+                let tree = window.a11y_tree().expect("native card controls");
+                let target = tree.nodes.iter().find(|(_, node)| node.label() == Some("Graph coverage"))
+                    .map(|(id, node)| { assert!(!node.is_disabled() && node.supports_action(gpui::AccessibleAction::Click)); *id })
+                    .expect("coverage remains a reachable native control");
+                let json: serde_json::Value = serde_json::from_str(&window.debug_a11y_tree_json().expect("actual native bounds")).expect("native tree JSON");
+                let bounds = json["nodes"].as_object().expect("nodes").values()
+                    .find(|node| node["aria"]["label"].as_str() == Some("Graph coverage"))
+                    .expect("coverage geometry")["bounds"].clone();
+                (target, bounds)
+            });
+            let x = bounds["x"].as_f64().expect("x"); let y = bounds["y"].as_f64().expect("y");
+            let w = bounds["width"].as_f64().expect("width"); let h = bounds["height"].as_f64().expect("height");
+            assert!(w > 0.0 && h > 0.0 && x >= f64::from(f32::from(card.left())) - 0.5
+                && y >= f64::from(f32::from(card.top())) - 0.5
+                && x + w <= f64::from(f32::from(card.right())) + 0.5
+                && y + h <= f64::from(f32::from(card.bottom())) + 0.5,
+                "real card scrolling reveals coverage within its painted viewport: {bounds:?}, {card:?}");
+            cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT,
+                target_node: target, data: None,
+            }, cx));
+            draw(cx);
+            graph.read_with(cx, |graph, _| {
+                assert!(graph.status_open, "the reachable native action really opens coverage");
+                assert_eq!(graph.camera(), Some(camera), "card overflow and control activation cannot reframe the map");
+                assert_eq!(graph.focused(), Some(0));
+                assert!(graph.trail.is_empty());
+            });
+            let close = cx.update(|window, _| window.a11y_tree().expect("open coverage").nodes.iter()
+                .find(|(_, node)| node.label() == Some("Hide coverage"))
+                .map(|(id, _)| *id).expect("current close action"));
+            cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT,
+                target_node: close, data: None,
+            }, cx));
+            draw(cx);
+            assert!(!graph.read_with(cx, |graph, _| graph.status_open));
+        }
+    }
+}
+
+#[gpui::test]
 fn first_draw_resize_uses_actual_embedded_region_and_preserves_native_find_focus(cx: &mut TestAppContext) {
     cx.update(|cx| { gpui_component::init(cx); crate::probe::enable(cx); });
     for (reduced, text_scale) in [(false, 1.0), (true, 1.0), (false, 2.0), (true, 2.0)] {

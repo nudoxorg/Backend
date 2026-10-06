@@ -5,8 +5,7 @@ use core::ops::Deref;
 
 use super::{ExactEntityKey, ExactEntityValue, IndexedType, LinkKinds, SemanticTypeFact};
 use backend_semantic::index_core::EntityDocumentId;
-use backend_semantic::ir::EntityId;
-use backend_semantic::ir::{EntityKind, TypeNode};
+use backend_semantic::ir::{EntityId, EntityKind, ItemNameView, TypeNode};
 
 /// A nonforgeable semantic entity fact selected from one reopened compiler fragment.
 ///
@@ -28,8 +27,8 @@ pub struct EntityFactView<'bytes> {
     pub exact_key: ExactEntityKey,
     /// Checked, fixed-width exact value carrying this entity's kind and type facts.
     pub exact_value: ExactEntityValue,
-    /// Validated entity-name atom bytes borrowed from the reopened fragment.
-    pub name: &'bytes [u8],
+    /// Validated typed name borrowed from the reopened fragment.
+    pub name: ItemNameView<'bytes>,
 }
 
 impl<'bytes> Deref for EntityFact<'bytes> {
@@ -57,7 +56,7 @@ impl<'bytes> EntityFact<'bytes> {
                     IndexedType::Compact(semantic_type),
                     LinkKinds::NONE,
                 ),
-                name,
+                name: ItemNameView::Named(name),
             },
         }
     }
@@ -65,7 +64,7 @@ impl<'bytes> EntityFact<'bytes> {
     pub(crate) fn new_semantic(
         document: EntityDocumentId,
         entity: EntityId,
-        name: &'bytes [u8],
+        name: ItemNameView<'bytes>,
         kind: EntityKind,
         semantic_type: Option<SemanticTypeFact>,
         links: LinkKinds,
@@ -127,7 +126,9 @@ mod tests {
                 observed: size_of::<ExactEntityValue>(),
             });
         }
-        if size_of::<EntityFact<'_>>() != 64 {
+        // The borrowed named/anonymous sum adds one eight-byte discriminant
+        // beside the former slice. Keep that deliberate public cost bounded.
+        if size_of::<EntityFact<'_>>() != 72 {
             return Err(LayoutTestError::EntityFact {
                 observed: size_of::<EntityFact<'_>>(),
             });

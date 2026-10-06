@@ -34,7 +34,7 @@ const IDENTITY_BYTES: usize = size_of::<[u8; 32]>();
 const GENERATION_BYTES: usize = IDENTITY_BYTES * 2;
 const MANIFEST_BYTES: usize = IDENTITY_BYTES + size_of::<u8>() + size_of::<u32>() * 2;
 const BINDING_FACT_BYTES: usize = IDENTITY_BYTES + GENERATION_BYTES + IDENTITY_BYTES;
-const CLAIM_BYTES: usize = MANIFEST_BYTES + BINDING_FACT_BYTES;
+pub(super) const CLAIM_BYTES: usize = MANIFEST_BYTES + BINDING_FACT_BYTES;
 
 /// Package-scoped identity of one compiler authority transaction.
 ///
@@ -471,11 +471,11 @@ impl PartialSemanticCoverage {
         Ok(Self { completed, total })
     }
 
-    const fn completed(self) -> NonZeroU32 {
+    pub const fn completed(self) -> NonZeroU32 {
         self.completed
     }
 
-    const fn total(self) -> NonZeroU32 {
+    pub const fn total(self) -> NonZeroU32 {
         self.total
     }
 }
@@ -488,6 +488,100 @@ pub enum SemanticPublicationCoverage {
     /// Every published artifact is complete, while the authority observed only
     /// a checked portion of the declared project scope.
     Partial(PartialSemanticCoverage),
+}
+
+/// Coherent prior generation retained across a source-first refresh.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticPublicationVersion {
+    coverage: SemanticPublicationCoverage,
+    claim: SemanticPublicationClaim,
+}
+
+impl SemanticPublicationVersion {
+    /// Admits a prior claim and the coverage written with that exact version.
+    #[must_use]
+    pub const fn new(
+        coverage: SemanticPublicationCoverage,
+        claim: SemanticPublicationClaim,
+    ) -> Self {
+        Self { coverage, claim }
+    }
+
+    /// Coverage retained by the previous semantic generation.
+    #[must_use]
+    pub const fn coverage(self) -> SemanticPublicationCoverage {
+        self.coverage
+    }
+
+    /// Exact immutable semantic generation claim.
+    #[must_use]
+    pub const fn claim(self) -> SemanticPublicationClaim {
+        self.claim
+    }
+}
+
+/// Exact source frontier bound to one semantic refresh.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticSourceCapture {
+    operation_key: Option<[u8; 32]>,
+    source_version: [u8; 32],
+    input_digest: [u8; 32],
+    observation_sequence: u64,
+    source_count: u64,
+}
+
+impl SemanticSourceCapture {
+    /// Admits the source and compiler-observation facts bound by one capture.
+    pub fn new(
+        operation_key: Option<[u8; 32]>,
+        source_version: [u8; 32],
+        input_digest: [u8; 32],
+        observation_sequence: u64,
+        source_count: u64,
+    ) -> Result<Self, &'static str> {
+        if operation_key.is_some_and(|key| key.iter().all(|byte| *byte == 0))
+            || observation_sequence == 0
+        {
+            return Err("semantic source capture identity is reserved");
+        }
+        Ok(Self {
+            operation_key,
+            source_version,
+            input_digest,
+            observation_sequence,
+            source_count,
+        })
+    }
+
+    /// Caller-owned operation key, when this capture belongs to a keyed API.
+    #[must_use]
+    pub const fn operation_key(&self) -> Option<&[u8; 32]> {
+        self.operation_key.as_ref()
+    }
+
+    /// Digest of the exact project source frontier committed with this capture.
+    #[must_use]
+    pub const fn source_version(&self) -> &[u8; 32] {
+        &self.source_version
+    }
+
+    /// Compiler input digest witnessed before this capture was committed.
+    #[must_use]
+    pub const fn input_digest(&self) -> &[u8; 32] {
+        &self.input_digest
+    }
+
+    /// Durable source-observation sequence assigned by the semantic authority.
+    #[must_use]
+    pub const fn observation_sequence(&self) -> u64 {
+        self.observation_sequence
+    }
+
+    /// Number of source files in this semantic profile's captured frontier.
+    #[must_use]
+    pub const fn source_count(&self) -> u64 {
+        self.source_count
+    }
 }
 
 /// Exact reason no semantic publication exists for one selected compilation.
@@ -724,7 +818,7 @@ impl ProductSemanticPublicationSnapshot {
             retention: SemanticPublicationRetentionFacts {
                 relation_rows: relation_root.row_count(),
                 relation_level: relation_root.level(),
-                retained_objects: snapshot.closure().manifest().object_count(),
+                retained_objects: snapshot.closure().control_manifest().object_count(),
             },
         })
     }
@@ -835,7 +929,7 @@ pub(super) fn semantic_publication_fixture_with_authority(
         .map_err(|error| error.to_string())
 }
 
-fn encode_coverage(coverage: SemanticPublicationCoverage, output: &mut Vec<u8>) {
+pub(super) fn encode_coverage(coverage: SemanticPublicationCoverage, output: &mut Vec<u8>) {
     match coverage {
         SemanticPublicationCoverage::Complete => output.push(1),
         SemanticPublicationCoverage::Partial(partial) => {
@@ -844,6 +938,89 @@ fn encode_coverage(coverage: SemanticPublicationCoverage, output: &mut Vec<u8>) 
             output.extend_from_slice(&partial.total().get().to_be_bytes());
         }
     }
+}
+
+pub(super) fn encode_source_capture(capture: SemanticSourceCapture, output: &mut Vec<u8>) {
+    match capture.operation_key {
+        Some(operation_key) => {
+            output.push(1);
+            output.extend_from_slice(&operation_key);
+        }
+        None => output.push(0),
+    }
+    output.extend_from_slice(&capture.source_version);
+    output.extend_from_slice(&capture.input_digest);
+    output.extend_from_slice(&capture.observation_sequence.to_be_bytes());
+    output.extend_from_slice(&capture.source_count.to_be_bytes());
+}
+
+pub(super) fn decode_source_capture(
+    bytes: &[u8],
+) -> Result<(SemanticSourceCapture, &[u8]), RelationDecodeError> {
+    let (&tag, mut rest) = bytes.split_first().ok_or(RelationDecodeError::Malformed)?;
+    let operation_key = match tag {
+        0 => None,
+        1 => {
+            let (id, next) = take_identity(rest)?;
+            rest = next;
+            Some(id.try_into().map_err(|_| RelationDecodeError::Malformed)?)
+        }
+        _ => return Err(RelationDecodeError::Malformed),
+    };
+    let (source_version, next) = take_identity(rest)?;
+    let (input_digest, next) = take_identity(next)?;
+    let (observation_sequence, next) = take_u64(next)?;
+    let (source_count, rest) = take_u64(next)?;
+    let source_version = source_version
+        .try_into()
+        .map_err(|_| RelationDecodeError::Malformed)?;
+    let input_digest = input_digest
+        .try_into()
+        .map_err(|_| RelationDecodeError::Malformed)?;
+    let capture = SemanticSourceCapture::new(
+        operation_key,
+        source_version,
+        input_digest,
+        observation_sequence,
+        source_count,
+    )
+    .map_err(|_| RelationDecodeError::Malformed)?;
+    Ok((capture, rest))
+}
+
+pub(super) fn encode_version(version: SemanticPublicationVersion, output: &mut Vec<u8>) {
+    encode_coverage(version.coverage, output);
+    encode_claim(version.claim, output);
+}
+
+pub(super) fn decode_version(
+    bytes: &[u8],
+) -> Result<(SemanticPublicationVersion, &[u8]), RelationDecodeError> {
+    let (&tag, rest) = bytes.split_first().ok_or(RelationDecodeError::Malformed)?;
+    let (coverage, rest) = match tag {
+        1 => (SemanticPublicationCoverage::Complete, rest),
+        2 => {
+            let (completed, rest) = take_u32(rest)?;
+            let (total, rest) = take_u32(rest)?;
+            let completed = NonZeroU32::new(completed).ok_or(RelationDecodeError::Malformed)?;
+            let total = NonZeroU32::new(total).ok_or(RelationDecodeError::Malformed)?;
+            (
+                SemanticPublicationCoverage::Partial(
+                    PartialSemanticCoverage::new(completed, total)
+                        .map_err(|_| RelationDecodeError::Malformed)?,
+                ),
+                rest,
+            )
+        }
+        _ => return Err(RelationDecodeError::Malformed),
+    };
+    let (claim_bytes, rest) = rest
+        .split_at_checked(CLAIM_BYTES)
+        .ok_or(RelationDecodeError::Malformed)?;
+    Ok((
+        SemanticPublicationVersion::new(coverage, decode_claim(claim_bytes)?),
+        rest,
+    ))
 }
 
 fn decode_published(bytes: &[u8]) -> Result<ProductSemanticPublicationRecord, RelationDecodeError> {
@@ -867,7 +1044,7 @@ fn decode_published(bytes: &[u8]) -> Result<ProductSemanticPublicationRecord, Re
     Ok(ProductSemanticPublicationRecord::Published { coverage, claim })
 }
 
-fn encode_claim(claim: SemanticPublicationClaim, output: &mut Vec<u8>) {
+pub(super) fn encode_claim(claim: SemanticPublicationClaim, output: &mut Vec<u8>) {
     let manifest = claim.manifest();
     let binding = claim.binding();
     output.extend_from_slice(manifest.identity.as_ref());
@@ -879,7 +1056,7 @@ fn encode_claim(claim: SemanticPublicationClaim, output: &mut Vec<u8>) {
     output.extend_from_slice(binding.manifest.as_ref());
 }
 
-fn decode_claim(bytes: &[u8]) -> Result<SemanticPublicationClaim, RelationDecodeError> {
+pub(super) fn decode_claim(bytes: &[u8]) -> Result<SemanticPublicationClaim, RelationDecodeError> {
     if bytes.len() != CLAIM_BYTES {
         return Err(RelationDecodeError::Malformed);
     }
@@ -996,6 +1173,18 @@ fn take_u32(bytes: &[u8]) -> Result<(u32, &[u8]), RelationDecodeError> {
         .split_first_chunk::<4>()
         .ok_or(RelationDecodeError::Malformed)?;
     Ok((u32::from_be_bytes(*value), rest))
+}
+
+fn take_u64(bytes: &[u8]) -> Result<(u64, &[u8]), RelationDecodeError> {
+    let (value, rest) = bytes
+        .split_at_checked(8)
+        .ok_or(RelationDecodeError::Malformed)?;
+    let value = u64::from_be_bytes(
+        value
+            .try_into()
+            .map_err(|_| RelationDecodeError::Malformed)?,
+    );
+    Ok((value, rest))
 }
 
 #[cfg(test)]

@@ -147,6 +147,7 @@ pub(crate) struct Ctx<'a> {
     pub package_outline_expanded: bool,
     /// Explicit Find choices retained through Compare and route history.
     pub find_held: Vec<facet::browse::find::HeldPackage>,
+    pub find_state: facet::browse::find::FindState,
     /// A declaration page reached by a hop forward from another declaration:
     /// the one it came from, which the page rings where it finds it.
     pub arrived_from: Option<crate::model::pages::SymbolRef>,

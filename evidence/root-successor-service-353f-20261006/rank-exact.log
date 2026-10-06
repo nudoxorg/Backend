@@ -1,0 +1,6 @@
+
+running 1 test
+test tests::ranked_search_presentation_agrees_with_successor_pages_without_mutating_the_view ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 91 filtered out; finished in 0.01s
+

@@ -1,0 +1,457 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/vendor/gpui_ce_components/Cargo.toml
+workspace: /Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/Cargo.toml
+   Compiling libc v0.2.189
+   Compiling syn v2.0.119
+   Compiling syn v3.0.4
+   Compiling zerocopy-derive v0.8.56
+   Compiling getrandom v0.3.4
+   Compiling rand_core v0.9.5
+   Compiling serde_derive v1.0.229
+   Compiling zerocopy v0.8.56
+   Compiling winnow v0.5.40
+   Compiling toml_datetime v0.6.11
+   Compiling toml_edit v0.20.7
+   Compiling serde v1.0.229
+   Compiling aho-corasick v1.1.5
+   Compiling proc-macro-crate v2.0.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling regex-syntax v0.8.11
+   Compiling rustix v1.1.4
+   Compiling thiserror v2.0.20
+   Compiling strum_macros v0.28.0
+   Compiling regex-automata v0.4.18
+   Compiling derive_more-impl v2.1.1
+   Compiling rand_chacha v0.9.0
+   Compiling rstest_macros v0.26.1
+   Compiling bolero-generator-derive v0.13.4
+   Compiling rand_xoshiro v0.7.0
+   Compiling thiserror-impl v2.0.20
+   Compiling errno v0.3.14
+   Compiling either v1.18.0
+   Compiling target-tuple v1.0.2
+   Compiling bolero-generator v0.13.5
+   Compiling rand v0.9.5
+   Compiling derive_more v2.1.1
+   Compiling regex v1.13.1
+   Compiling strum v0.28.0
+   Compiling smallvec v1.16.0
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling serde_spanned v1.1.1
+   Compiling socket2 v0.6.5
+   Compiling memchr v2.8.3
+   Compiling relative-path v1.9.3
+   Compiling pretty-hex v0.4.2
+   Compiling serde_json v1.0.151
+   Compiling bolero-engine v0.13.4
+   Compiling backend-platform v0.2.0 (/Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/crates/platform)
+   Compiling toml v1.1.5+spec-1.1.0
+   Compiling backend-version v0.2.0 (/Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/crates/version)
+   Compiling fearless_simd v0.7.0
+   Compiling termcolor v1.4.1
+   Compiling rstest v0.26.1
+   Compiling trybuild v1.0.121
+   Compiling bolero v0.13.4
+   Compiling backend-store v0.2.0 (/Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/crates/store)
+warning: unnecessary qualification
+   --> crates/store/src/durable/gc/sweep.rs:339:8
+    |
+339 |     if super::take_test_fault(2) {
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+    |
+339 -     if super::take_test_fault(2) {
+339 +     if take_test_fault(2) {
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/gc/sweep.rs:347:8
+    |
+347 |     if super::take_test_fault(3) {
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+347 -     if super::take_test_fault(3) {
+347 +     if take_test_fault(3) {
+    |
+
+warning: unnecessary qualification
+  --> crates/store/src/durable/gc/tests.rs:52:40
+   |
+52 | fn physical_pack_path(root: &Path, id: super::super::super::PackId) -> PathBuf {
+   |                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: remove the unnecessary path segments
+   |
+52 - fn physical_pack_path(root: &Path, id: super::super::super::PackId) -> PathBuf {
+52 + fn physical_pack_path(root: &Path, id: PackId) -> PathBuf {
+   |
+
+warning: unnecessary qualification
+  --> crates/store/src/durable/gc/tests.rs:66:43
+   |
+66 | fn physical_closure_path(root: &Path, id: super::super::super::ClosureId) -> PathBuf {
+   |                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: remove the unnecessary path segments
+   |
+66 - fn physical_closure_path(root: &Path, id: super::super::super::ClosureId) -> PathBuf {
+66 + fn physical_closure_path(root: &Path, id: ClosureId) -> PathBuf {
+   |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/gc/tests.rs:622:13
+    |
+622 |             super::super::super::StoredValue::new(Vec::new(), 1, vec![*target.as_bytes()]),
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+622 -             super::super::super::StoredValue::new(Vec::new(), 1, vec![*target.as_bytes()]),
+622 +             StoredValue::new(Vec::new(), 1, vec![*target.as_bytes()]),
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/objects.rs:626:39
+    |
+626 |         let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+626 -         let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+626 +         let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/streaming_closure.rs:965:21
+    |
+965 |                     super::super::ArtifactClosureClaim::from_id(expected),
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+965 -                     super::super::ArtifactClosureClaim::from_id(expected),
+965 +                     ArtifactClosureClaim::from_id(expected),
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/streaming_closure.rs:999:17
+    |
+999 |                 super::super::ArtifactClosureClaim::from_id(expected),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+999 -                 super::super::ArtifactClosureClaim::from_id(expected),
+999 +                 ArtifactClosureClaim::from_id(expected),
+    |
+
+warning: unnecessary qualification
+    --> crates/store/src/durable/streaming_closure.rs:1092:21
+     |
+1092 |                     super::super::ArtifactClosureClaim::from_id(expected),
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1092 -                     super::super::ArtifactClosureClaim::from_id(expected),
+1092 +                     ArtifactClosureClaim::from_id(expected),
+     |
+
+warning: unnecessary qualification
+    --> crates/store/src/durable/streaming_closure.rs:1160:25
+     |
+1160 |                         super::super::ArtifactClosureClaim::from_id(expected),
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1160 -                         super::super::ArtifactClosureClaim::from_id(expected),
+1160 +                         ArtifactClosureClaim::from_id(expected),
+     |
+
+warning: unnecessary qualification
+    --> crates/store/src/durable/streaming_closure.rs:1175:21
+     |
+1175 |                     super::super::ArtifactClosureClaim::from_id(expected),
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1175 -                     super::super::ArtifactClosureClaim::from_id(expected),
+1175 +                     ArtifactClosureClaim::from_id(expected),
+     |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:175:16
+    |
+175 |     assert_eq!(core::mem::align_of::<HeaderRecord>(), 1);
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+175 -     assert_eq!(core::mem::align_of::<HeaderRecord>(), 1);
+175 +     assert_eq!(align_of::<HeaderRecord>(), 1);
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:176:16
+    |
+176 |     assert_eq!(core::mem::align_of::<FrameRecord>(), 1);
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+176 -     assert_eq!(core::mem::align_of::<FrameRecord>(), 1);
+176 +     assert_eq!(align_of::<FrameRecord>(), 1);
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:411:24
+    |
+411 |     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+411 -     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+411 +     let event_offset = size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:411:66
+    |
+411 |     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+    |                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+411 -     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+411 +     let event_offset = core::mem::size_of::<WorkflowVersion>() + size_of::<StageKey>();
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/publication/owner/tests.rs:146:9
+    |
+146 |         super::super::format::ChainLink {
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+146 -         super::super::format::ChainLink {
+146 +         ChainLink {
+    |
+
+warning: unnecessary qualification
+  --> crates/store/src/journal/publication/service/tests.rs:78:17
+   |
+78 |         latest: super::LatestPublication::empty(),
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: remove the unnecessary path segments
+   |
+78 -         latest: super::LatestPublication::empty(),
+78 +         latest: LatestPublication::empty(),
+   |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/publication/service/tests.rs:120:17
+    |
+120 |         latest: super::LatestPublication::empty(),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+120 -         latest: super::LatestPublication::empty(),
+120 +         latest: LatestPublication::empty(),
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/publication/service/tests.rs:140:17
+    |
+140 |         latest: super::LatestPublication::empty(),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+140 -         latest: super::LatestPublication::empty(),
+140 +         latest: LatestPublication::empty(),
+    |
+
+warning: unreachable `pub` item
+  --> crates/store/tests/harness/mod.rs:16:1
+   |
+16 | pub enum ExpectedFailure {
+   | ---^^^^^^^^^^^^^^^^^^^^^
+   | |
+   | help: consider restricting its visibility: `pub(crate)`
+   |
+   = help: or consider exporting it for use by other crates
+   = note: requested on the command line with `-W unreachable-pub`
+
+warning: unreachable `pub` item
+  --> crates/store/tests/harness/mod.rs:24:1
+   |
+24 | pub enum ScenarioError {
+   | ---^^^^^^^^^^^^^^^^^^^
+   | |
+   | help: consider restricting its visibility: `pub(crate)`
+   |
+   = help: or consider exporting it for use by other crates
+
+warning: unreachable `pub` item
+  --> crates/store/tests/harness/mod.rs:53:1
+   |
+53 |   pub fn expect_journal<Value>(
+   |   ^--
+   |   |
+   |  _help: consider restricting its visibility: `pub(crate)`
+   | |
+54 | |     result: Result<Value, JournalError>,
+55 | |     expected: ExpectedFailure,
+56 | |     accepts: impl FnOnce(&JournalError) -> bool,
+57 | | ) -> Result<(), ScenarioError> {
+   | |______________________________^
+   |
+   = help: or consider exporting it for use by other crates
+
+warning: unreachable `pub` item
+  --> crates/store/tests/harness/mod.rs:65:1
+   |
+65 |   pub fn expect_commit<Value>(
+   |   ^--
+   |   |
+   |  _help: consider restricting its visibility: `pub(crate)`
+   | |
+66 | |     result: Result<Value, CommitError>,
+67 | |     expected: ExpectedFailure,
+68 | |     accepts: impl FnOnce(&CommitError) -> bool,
+69 | | ) -> Result<(), ScenarioError> {
+   | |______________________________^
+   |
+   = help: or consider exporting it for use by other crates
+
+warning: unreachable `pub` item
+  --> crates/store/tests/harness/mod.rs:77:1
+   |
+77 | pub struct Fixture {
+   | ---^^^^^^^^^^^^^^^
+   | |
+   | help: consider restricting its visibility: `pub(crate)`
+   |
+   = help: or consider exporting it for use by other crates
+
+warning: unreachable `pub` item
+  --> crates/store/tests/harness/mod.rs:82:5
+   |
+82 |     pub fn new(label: &str) -> Self {
+   |     ---^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |     |
+   |     help: consider restricting its visibility: `pub(crate)`
+
+warning: unreachable `pub` item
+  --> crates/store/tests/harness/mod.rs:92:5
+   |
+92 |     pub fn path(&self) -> &Path {
+   |     ---^^^^^^^^^^^^^^^^^^^^^^^^
+   |     |
+   |     help: consider restricting its visibility: `pub(crate)`
+
+warning: unreachable `pub` item
+  --> crates/store/tests/harness/mod.rs:96:5
+   |
+96 |     pub fn bytes(&self) -> Result<Vec<u8>, io::Error> {
+   |     ---^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |     |
+   |     help: consider restricting its visibility: `pub(crate)`
+
+warning: unreachable `pub` item
+   --> crates/store/tests/harness/mod.rs:100:5
+    |
+100 |     pub fn replace(&self, bytes: &[u8]) -> Result<(), io::Error> {
+    |     ---^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |     |
+    |     help: consider restricting its visibility: `pub(crate)`
+
+warning: unreachable `pub` item
+   --> crates/store/tests/harness/mod.rs:104:5
+    |
+104 |     pub fn remove(self) -> Result<(), io::Error> {
+    |     ---^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |     |
+    |     help: consider restricting its visibility: `pub(crate)`
+
+warning: unreachable `pub` item
+   --> crates/store/tests/harness/mod.rs:109:1
+    |
+109 | pub fn receipt_end(sequence: usize) -> Result<u64, ScenarioError> {
+    | ---^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | |
+    | help: consider restricting its visibility: `pub(crate)`
+    |
+    = help: or consider exporting it for use by other crates
+
+warning: `backend-store` (test "file_journal") generated 11 warnings (run `cargo fix --test "file_journal" -p backend-store` to apply 11 suggestions)
+warning: missing documentation for the crate
+   --> crates/store/tests/bounded_object_read.rs:1:1
+    |
+  1 | / #![allow(clippy::expect_used, clippy::unwrap_used)]
+  2 | |
+  3 | | use allocation_counter::measure;
+  4 | | use backend_store::{
+...   |
+274 | |     ));
+275 | | }
+    | |_^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: `backend-store` (test "bounded_object_read") generated 1 warning
+warning: missing documentation for the crate
+   --> crates/store/tests/artifact_stream.rs:1:1
+    |
+  1 | / #![allow(clippy::expect_used, clippy::unwrap_used)]
+  2 | |
+  3 | | use backend_store::{
+  4 | |     ArtifactBudget, ArtifactClosureClaim, ArtifactObjectClaim, ArtifactPlan, ClosureId,
+...   |
+766 | |     );
+767 | | }
+    | |_^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: `backend-store` (test "artifact_stream") generated 1 warning
+warning: `backend-store` (lib test) generated 19 warnings (run `cargo fix --lib -p backend-store --tests` to apply 19 suggestions)
+    Finished `test` profile [optimized + debuginfo] target(s) in 56.99s
+     Running unittests src/lib.rs (.local/build/qa/.nudox-cargo/slot-0/debug/deps/backend_store-29301fc2d15472ae)
+
+running 3 tests
+
+thread 'durable::artifact_fs::imp::immutable_read_tests::already_sealed_read_preserves_inode_ctime' (14258363) panicked at crates/store/src/durable/artifact_fs.rs:849:13:
+assertion `left == right` failed
+  left: (16777231, 252046347, 1791281554, 946679665)
+ right: (16777231, 252046347, 1791281554, 952992353)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'durable::artifact_fs::imp::immutable_read_tests::legacy_read_tightens_all_permission_bits_once' (14258364) panicked at crates/store/src/durable/artifact_fs.rs:861:17:
+assertion `left == right` failed
+  left: (16777231, 252046348, 1791281554, 946775040)
+ right: (16777231, 252046348, 1791281554, 968101989)
+test durable::artifact_fs::imp::immutable_read_tests::already_sealed_read_preserves_inode_ctime ... FAILED
+test durable::artifact_fs::imp::immutable_read_tests::legacy_read_tightens_all_permission_bits_once ... FAILED
+test durable::artifact_fs::imp::immutable_read_tests::sealed_read_still_refuses_symlink_and_hardlink ... ok
+
+failures:
+
+failures:
+    durable::artifact_fs::imp::immutable_read_tests::already_sealed_read_preserves_inode_ctime
+    durable::artifact_fs::imp::immutable_read_tests::legacy_read_tightens_all_permission_bits_once
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 265 filtered out; finished in 0.14s
+
+error: test failed, to rerun pass `-p backend-store --lib`

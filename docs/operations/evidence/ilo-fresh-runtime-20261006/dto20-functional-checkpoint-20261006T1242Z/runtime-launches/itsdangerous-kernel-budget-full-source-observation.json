@@ -1,0 +1,1997 @@
+{
+  "schema": "nudox.retained-functional-journey-observation.v1",
+  "run": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314",
+  "manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "summary_sha256": "decb14a42a1ccec03a7551cd3a1dfb93e8fcbf230e5ca30fcb0ee384f08561c5",
+  "wire_sha256": "67c824f985a0085c36af646e71ef38f5507742618c7c42fc4e595cb7482e293c",
+  "observer_sha256": "4195bb8b8a92552121f663f1f5feee0448b2c32705bdd3dc894b37f4161c373f",
+  "requested_witness": {
+    "path": "src/itsdangerous/signer.py",
+    "line": 222
+  },
+  "requested_witness_present_in_resolution": false,
+  "healths": [
+    {
+      "label": "fresh-health",
+      "exit": 0,
+      "seconds": 3.493857,
+      "sequence": 0,
+      "rows": 0,
+      "fault": null
+    },
+    {
+      "label": "post-add-health",
+      "exit": 0,
+      "seconds": 0.083338,
+      "sequence": 2,
+      "rows": 768,
+      "fault": null
+    },
+    {
+      "label": "after-job-cancel-health",
+      "exit": 0,
+      "seconds": 0.081827,
+      "sequence": 4,
+      "rows": 768,
+      "fault": null
+    },
+    {
+      "label": "retry-health",
+      "exit": 0,
+      "seconds": 0.081576,
+      "sequence": 6,
+      "rows": 768,
+      "fault": null
+    },
+    {
+      "label": "edit-health",
+      "exit": 0,
+      "seconds": 0.096674,
+      "sequence": 8,
+      "rows": 768,
+      "fault": null
+    },
+    {
+      "label": "removed-health",
+      "exit": 0,
+      "seconds": 0.083238,
+      "sequence": 9,
+      "rows": 0,
+      "fault": null
+    },
+    {
+      "label": "readded-health",
+      "exit": 0,
+      "seconds": 0.081858,
+      "sequence": 11,
+      "rows": 768,
+      "fault": null
+    },
+    {
+      "label": "cold-health",
+      "exit": 0,
+      "seconds": 3.157501,
+      "sequence": 11,
+      "rows": 768,
+      "fault": null
+    }
+  ],
+  "command_timings": [
+    {
+      "label": "tool-node",
+      "exit": 0,
+      "seconds": 0.009675,
+      "stdout_bytes": 9
+    },
+    {
+      "label": "tool-tsc",
+      "exit": 0,
+      "seconds": 0.112673,
+      "stdout_bytes": 14
+    },
+    {
+      "label": "tool-python3",
+      "exit": 0,
+      "seconds": 0.002825,
+      "stdout_bytes": 15
+    },
+    {
+      "label": "tool-pyrefly",
+      "exit": 0,
+      "seconds": 0.003142,
+      "stdout_bytes": 20
+    },
+    {
+      "label": "tool-go",
+      "exit": 0,
+      "seconds": 0.003209,
+      "stdout_bytes": 32
+    },
+    {
+      "label": "fresh-health",
+      "exit": 0,
+      "seconds": 3.493857,
+      "stdout_bytes": 802
+    },
+    {
+      "label": "fresh-add",
+      "exit": 0,
+      "seconds": 6.391122,
+      "stdout_bytes": 356
+    },
+    {
+      "label": "post-add-health",
+      "exit": 0,
+      "seconds": 0.083338,
+      "stdout_bytes": 804
+    },
+    {
+      "label": "post-add-packages",
+      "exit": 0,
+      "seconds": 0.011098,
+      "stdout_bytes": 527
+    },
+    {
+      "label": "post-add-semantic-versions",
+      "exit": 0,
+      "seconds": 0.006903,
+      "stdout_bytes": 1113
+    },
+    {
+      "label": "query-search-sign",
+      "exit": 0,
+      "seconds": 0.890379,
+      "stdout_bytes": 20232
+    },
+    {
+      "label": "query-resolve",
+      "exit": 0,
+      "seconds": 0.0106,
+      "stdout_bytes": 6052
+    },
+    {
+      "label": "query-outline-bare",
+      "exit": 0,
+      "seconds": 0.029672,
+      "stdout_bytes": 36482
+    },
+    {
+      "label": "query-outline-dot",
+      "exit": 0,
+      "seconds": 0.028124,
+      "stdout_bytes": 36482
+    },
+    {
+      "label": "query-outline-absolute",
+      "exit": 0,
+      "seconds": 0.030268,
+      "stdout_bytes": 36482
+    },
+    {
+      "label": "query-source-5830ef61",
+      "exit": 0,
+      "seconds": 0.011272,
+      "stdout_bytes": 1696
+    },
+    {
+      "label": "query-show-5830ef61",
+      "exit": 0,
+      "seconds": 0.054732,
+      "stdout_bytes": 8983
+    },
+    {
+      "label": "query-references-5830ef61",
+      "exit": 0,
+      "seconds": 0.02094,
+      "stdout_bytes": 5485
+    },
+    {
+      "label": "query-graph-5830ef61",
+      "exit": 0,
+      "seconds": 0.026816,
+      "stdout_bytes": 2416
+    },
+    {
+      "label": "query-related-5830ef61",
+      "exit": 0,
+      "seconds": 0.028211,
+      "stdout_bytes": 9443
+    },
+    {
+      "label": "query-source-12d36feb",
+      "exit": 0,
+      "seconds": 0.011391,
+      "stdout_bytes": 1651
+    },
+    {
+      "label": "query-show-12d36feb",
+      "exit": 0,
+      "seconds": 0.05633,
+      "stdout_bytes": 2247
+    },
+    {
+      "label": "query-references-12d36feb",
+      "exit": 0,
+      "seconds": 0.024837,
+      "stdout_bytes": 337
+    },
+    {
+      "label": "query-graph-12d36feb",
+      "exit": 0,
+      "seconds": 0.025334,
+      "stdout_bytes": 1264
+    },
+    {
+      "label": "query-related-12d36feb",
+      "exit": 0,
+      "seconds": 0.02671,
+      "stdout_bytes": 1264
+    },
+    {
+      "label": "query-source-745cc184",
+      "exit": 0,
+      "seconds": 0.011333,
+      "stdout_bytes": 1949
+    },
+    {
+      "label": "query-show-745cc184",
+      "exit": 0,
+      "seconds": 0.055114,
+      "stdout_bytes": 1965
+    },
+    {
+      "label": "query-references-745cc184",
+      "exit": 0,
+      "seconds": 0.022428,
+      "stdout_bytes": 337
+    },
+    {
+      "label": "query-graph-745cc184",
+      "exit": 0,
+      "seconds": 0.029831,
+      "stdout_bytes": 1277
+    },
+    {
+      "label": "query-related-745cc184",
+      "exit": 0,
+      "seconds": 0.026644,
+      "stdout_bytes": 1277
+    },
+    {
+      "label": "after-job-cancel-health",
+      "exit": 0,
+      "seconds": 0.081827,
+      "stdout_bytes": 804
+    },
+    {
+      "label": "retry-add",
+      "exit": 0,
+      "seconds": 4.835449,
+      "stdout_bytes": 356
+    },
+    {
+      "label": "retry-health",
+      "exit": 0,
+      "seconds": 0.081576,
+      "stdout_bytes": 804
+    },
+    {
+      "label": "retry-search-sign",
+      "exit": 0,
+      "seconds": 0.603767,
+      "stdout_bytes": 20232
+    },
+    {
+      "label": "retry-resolve",
+      "exit": 0,
+      "seconds": 0.011235,
+      "stdout_bytes": 6052
+    },
+    {
+      "label": "edit-add",
+      "exit": 0,
+      "seconds": 5.601061,
+      "stdout_bytes": 356
+    },
+    {
+      "label": "edit-health",
+      "exit": 0,
+      "seconds": 0.096674,
+      "stdout_bytes": 804
+    },
+    {
+      "label": "edit-resolve",
+      "exit": 0,
+      "seconds": 0.013998,
+      "stdout_bytes": 6052
+    },
+    {
+      "label": "edit-source-5830ef61",
+      "exit": 0,
+      "seconds": 0.015103,
+      "stdout_bytes": 1698
+    },
+    {
+      "label": "edit-document-5830ef61",
+      "exit": 0,
+      "seconds": 0.073074,
+      "stdout_bytes": 8985
+    },
+    {
+      "label": "edit-source-12d36feb",
+      "exit": 0,
+      "seconds": 0.01375,
+      "stdout_bytes": 1651
+    },
+    {
+      "label": "edit-document-12d36feb",
+      "exit": 0,
+      "seconds": 0.078813,
+      "stdout_bytes": 2247
+    },
+    {
+      "label": "edit-source-745cc184",
+      "exit": 0,
+      "seconds": 0.018397,
+      "stdout_bytes": 1949
+    },
+    {
+      "label": "edit-document-745cc184",
+      "exit": 0,
+      "seconds": 0.080239,
+      "stdout_bytes": 1965
+    },
+    {
+      "label": "remove-project",
+      "exit": 0,
+      "seconds": 1.619125,
+      "stdout_bytes": 358
+    },
+    {
+      "label": "removed-health",
+      "exit": 0,
+      "seconds": 0.083238,
+      "stdout_bytes": 802
+    },
+    {
+      "label": "removed-source-5830ef61",
+      "exit": 2,
+      "seconds": 0.021296,
+      "stdout_bytes": 363
+    },
+    {
+      "label": "removed-show-5830ef61",
+      "exit": 2,
+      "seconds": 0.019898,
+      "stdout_bytes": 363
+    },
+    {
+      "label": "removed-references-5830ef61",
+      "exit": 2,
+      "seconds": 0.011583,
+      "stdout_bytes": 158
+    },
+    {
+      "label": "removed-graph-5830ef61",
+      "exit": 2,
+      "seconds": 0.016557,
+      "stdout_bytes": 419
+    },
+    {
+      "label": "removed-source-12d36feb",
+      "exit": 2,
+      "seconds": 0.011116,
+      "stdout_bytes": 375
+    },
+    {
+      "label": "removed-show-12d36feb",
+      "exit": 2,
+      "seconds": 0.015871,
+      "stdout_bytes": 375
+    },
+    {
+      "label": "removed-references-12d36feb",
+      "exit": 2,
+      "seconds": 0.005116,
+      "stdout_bytes": 158
+    },
+    {
+      "label": "removed-graph-12d36feb",
+      "exit": 2,
+      "seconds": 0.010675,
+      "stdout_bytes": 431
+    },
+    {
+      "label": "removed-source-745cc184",
+      "exit": 2,
+      "seconds": 0.011112,
+      "stdout_bytes": 375
+    },
+    {
+      "label": "removed-show-745cc184",
+      "exit": 2,
+      "seconds": 0.01063,
+      "stdout_bytes": 375
+    },
+    {
+      "label": "removed-references-745cc184",
+      "exit": 2,
+      "seconds": 0.010447,
+      "stdout_bytes": 158
+    },
+    {
+      "label": "removed-graph-745cc184",
+      "exit": 2,
+      "seconds": 0.01044,
+      "stdout_bytes": 431
+    },
+    {
+      "label": "readd-project",
+      "exit": 0,
+      "seconds": 4.356764,
+      "stdout_bytes": 356
+    },
+    {
+      "label": "readded-health",
+      "exit": 0,
+      "seconds": 0.081858,
+      "stdout_bytes": 805
+    },
+    {
+      "label": "readded-source-5830ef61",
+      "exit": 0,
+      "seconds": 0.010929,
+      "stdout_bytes": 1698
+    },
+    {
+      "label": "readded-show-5830ef61",
+      "exit": 0,
+      "seconds": 0.057012,
+      "stdout_bytes": 8985
+    },
+    {
+      "label": "readded-references-5830ef61",
+      "exit": 0,
+      "seconds": 0.293481,
+      "stdout_bytes": 5485
+    },
+    {
+      "label": "readded-graph-5830ef61",
+      "exit": 0,
+      "seconds": 0.027031,
+      "stdout_bytes": 2416
+    },
+    {
+      "label": "readded-source-12d36feb",
+      "exit": 0,
+      "seconds": 0.010976,
+      "stdout_bytes": 1651
+    },
+    {
+      "label": "readded-show-12d36feb",
+      "exit": 0,
+      "seconds": 0.056764,
+      "stdout_bytes": 2247
+    },
+    {
+      "label": "readded-references-12d36feb",
+      "exit": 0,
+      "seconds": 0.018375,
+      "stdout_bytes": 337
+    },
+    {
+      "label": "readded-graph-12d36feb",
+      "exit": 0,
+      "seconds": 0.025798,
+      "stdout_bytes": 1264
+    },
+    {
+      "label": "readded-source-745cc184",
+      "exit": 0,
+      "seconds": 0.011333,
+      "stdout_bytes": 1949
+    },
+    {
+      "label": "readded-show-745cc184",
+      "exit": 0,
+      "seconds": 0.057332,
+      "stdout_bytes": 1965
+    },
+    {
+      "label": "readded-references-745cc184",
+      "exit": 0,
+      "seconds": 0.018969,
+      "stdout_bytes": 337
+    },
+    {
+      "label": "readded-graph-745cc184",
+      "exit": 0,
+      "seconds": 0.026054,
+      "stdout_bytes": 1277
+    },
+    {
+      "label": "cold-health",
+      "exit": 0,
+      "seconds": 3.157501,
+      "stdout_bytes": 805
+    },
+    {
+      "label": "cold-search-sign",
+      "exit": 0,
+      "seconds": 1.044271,
+      "stdout_bytes": 20198
+    },
+    {
+      "label": "cold-source-5830ef61",
+      "exit": 0,
+      "seconds": 0.01094,
+      "stdout_bytes": 1698
+    },
+    {
+      "label": "cold-show-5830ef61",
+      "exit": 0,
+      "seconds": 0.053662,
+      "stdout_bytes": 8985
+    },
+    {
+      "label": "cold-references-5830ef61",
+      "exit": 0,
+      "seconds": 0.018879,
+      "stdout_bytes": 5485
+    },
+    {
+      "label": "cold-graph-5830ef61",
+      "exit": 0,
+      "seconds": 0.025699,
+      "stdout_bytes": 2416
+    },
+    {
+      "label": "cold-source-12d36feb",
+      "exit": 0,
+      "seconds": 0.011191,
+      "stdout_bytes": 1651
+    },
+    {
+      "label": "cold-show-12d36feb",
+      "exit": 0,
+      "seconds": 0.060839,
+      "stdout_bytes": 2247
+    },
+    {
+      "label": "cold-references-12d36feb",
+      "exit": 0,
+      "seconds": 0.01905,
+      "stdout_bytes": 337
+    },
+    {
+      "label": "cold-graph-12d36feb",
+      "exit": 0,
+      "seconds": 0.026129,
+      "stdout_bytes": 1264
+    },
+    {
+      "label": "cold-source-745cc184",
+      "exit": 0,
+      "seconds": 0.01141,
+      "stdout_bytes": 1949
+    },
+    {
+      "label": "cold-show-745cc184",
+      "exit": 0,
+      "seconds": 0.064809,
+      "stdout_bytes": 1965
+    },
+    {
+      "label": "cold-references-745cc184",
+      "exit": 0,
+      "seconds": 0.028248,
+      "stdout_bytes": 337
+    },
+    {
+      "label": "cold-graph-745cc184",
+      "exit": 0,
+      "seconds": 0.025791,
+      "stdout_bytes": 1277
+    }
+  ],
+  "source_checks": [
+    {
+      "label": "query-source-5830ef61",
+      "source_version": 0,
+      "path": "src/itsdangerous/signer.py",
+      "line": 222,
+      "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584",
+      "returned_lines": 4,
+      "returned_body_bytes": 176,
+      "actual_declaration_lines": 4,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "b13f9baf09931655e2cc0d7d4d5d5ee15b7ddae63deff6f27475879f409c588c"
+    },
+    {
+      "label": "query-show-5830ef61",
+      "source_version": 0,
+      "path": "src/itsdangerous/signer.py",
+      "line": 222,
+      "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584",
+      "returned_lines": 4,
+      "returned_body_bytes": 176,
+      "actual_declaration_lines": 4,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "e0bfe15e0a26ef7df8f7713a568e752a78e00861e4ffe6200a96d2c1be94ca3c"
+    },
+    {
+      "label": "query-source-12d36feb",
+      "source_version": 0,
+      "path": "src/itsdangerous/signer.py",
+      "line": 15,
+      "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584",
+      "returned_lines": 14,
+      "returned_body_bytes": 546,
+      "actual_declaration_lines": 14,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "c3c311127f187f7f0b1f6a71a161d88cac87b53a39bf96f8285f32ed368f3c31"
+    },
+    {
+      "label": "query-show-12d36feb",
+      "source_version": 0,
+      "path": "src/itsdangerous/signer.py",
+      "line": 15,
+      "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584",
+      "returned_lines": 14,
+      "returned_body_bytes": 546,
+      "actual_declaration_lines": 14,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "d3a9168b959b33d7888e560b863ae817c8a7164be857d94dc9a359dc1f985c37"
+    },
+    {
+      "label": "edit-source-5830ef61",
+      "source_version": 1,
+      "path": "src/itsdangerous/signer.py",
+      "line": 222,
+      "source_sha256": "bf6af4cc5e5870d26ccfdf5a1dba711910a4294a608498fbc30e669708c8d75e",
+      "returned_lines": 4,
+      "returned_body_bytes": 178,
+      "actual_declaration_lines": 4,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "503d1823dde296594213771f5c12fc6658b42fe2bc57a4a21f52425e91650293"
+    },
+    {
+      "label": "edit-document-5830ef61",
+      "source_version": 1,
+      "path": "src/itsdangerous/signer.py",
+      "line": 222,
+      "source_sha256": "bf6af4cc5e5870d26ccfdf5a1dba711910a4294a608498fbc30e669708c8d75e",
+      "returned_lines": 4,
+      "returned_body_bytes": 178,
+      "actual_declaration_lines": 4,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "76fe9597dfc860750967b5efdf923083c3596482d83bbe51a3fddac4b7257cf5"
+    },
+    {
+      "label": "edit-source-12d36feb",
+      "source_version": 1,
+      "path": "src/itsdangerous/signer.py",
+      "line": 15,
+      "source_sha256": "bf6af4cc5e5870d26ccfdf5a1dba711910a4294a608498fbc30e669708c8d75e",
+      "returned_lines": 14,
+      "returned_body_bytes": 546,
+      "actual_declaration_lines": 14,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "c3c311127f187f7f0b1f6a71a161d88cac87b53a39bf96f8285f32ed368f3c31"
+    },
+    {
+      "label": "edit-document-12d36feb",
+      "source_version": 1,
+      "path": "src/itsdangerous/signer.py",
+      "line": 15,
+      "source_sha256": "bf6af4cc5e5870d26ccfdf5a1dba711910a4294a608498fbc30e669708c8d75e",
+      "returned_lines": 14,
+      "returned_body_bytes": 546,
+      "actual_declaration_lines": 14,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "d3a9168b959b33d7888e560b863ae817c8a7164be857d94dc9a359dc1f985c37"
+    },
+    {
+      "label": "readded-source-5830ef61",
+      "source_version": 1,
+      "path": "src/itsdangerous/signer.py",
+      "line": 222,
+      "source_sha256": "bf6af4cc5e5870d26ccfdf5a1dba711910a4294a608498fbc30e669708c8d75e",
+      "returned_lines": 4,
+      "returned_body_bytes": 178,
+      "actual_declaration_lines": 4,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "503d1823dde296594213771f5c12fc6658b42fe2bc57a4a21f52425e91650293"
+    },
+    {
+      "label": "readded-show-5830ef61",
+      "source_version": 1,
+      "path": "src/itsdangerous/signer.py",
+      "line": 222,
+      "source_sha256": "bf6af4cc5e5870d26ccfdf5a1dba711910a4294a608498fbc30e669708c8d75e",
+      "returned_lines": 4,
+      "returned_body_bytes": 178,
+      "actual_declaration_lines": 4,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "76fe9597dfc860750967b5efdf923083c3596482d83bbe51a3fddac4b7257cf5"
+    },
+    {
+      "label": "readded-source-12d36feb",
+      "source_version": 1,
+      "path": "src/itsdangerous/signer.py",
+      "line": 15,
+      "source_sha256": "bf6af4cc5e5870d26ccfdf5a1dba711910a4294a608498fbc30e669708c8d75e",
+      "returned_lines": 14,
+      "returned_body_bytes": 546,
+      "actual_declaration_lines": 14,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "c3c311127f187f7f0b1f6a71a161d88cac87b53a39bf96f8285f32ed368f3c31"
+    },
+    {
+      "label": "readded-show-12d36feb",
+      "source_version": 1,
+      "path": "src/itsdangerous/signer.py",
+      "line": 15,
+      "source_sha256": "bf6af4cc5e5870d26ccfdf5a1dba711910a4294a608498fbc30e669708c8d75e",
+      "returned_lines": 14,
+      "returned_body_bytes": 546,
+      "actual_declaration_lines": 14,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "d3a9168b959b33d7888e560b863ae817c8a7164be857d94dc9a359dc1f985c37"
+    },
+    {
+      "label": "cold-source-5830ef61",
+      "source_version": 1,
+      "path": "src/itsdangerous/signer.py",
+      "line": 222,
+      "source_sha256": "bf6af4cc5e5870d26ccfdf5a1dba711910a4294a608498fbc30e669708c8d75e",
+      "returned_lines": 4,
+      "returned_body_bytes": 178,
+      "actual_declaration_lines": 4,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "503d1823dde296594213771f5c12fc6658b42fe2bc57a4a21f52425e91650293"
+    },
+    {
+      "label": "cold-show-5830ef61",
+      "source_version": 1,
+      "path": "src/itsdangerous/signer.py",
+      "line": 222,
+      "source_sha256": "bf6af4cc5e5870d26ccfdf5a1dba711910a4294a608498fbc30e669708c8d75e",
+      "returned_lines": 4,
+      "returned_body_bytes": 178,
+      "actual_declaration_lines": 4,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "76fe9597dfc860750967b5efdf923083c3596482d83bbe51a3fddac4b7257cf5"
+    },
+    {
+      "label": "cold-source-12d36feb",
+      "source_version": 1,
+      "path": "src/itsdangerous/signer.py",
+      "line": 15,
+      "source_sha256": "bf6af4cc5e5870d26ccfdf5a1dba711910a4294a608498fbc30e669708c8d75e",
+      "returned_lines": 14,
+      "returned_body_bytes": 546,
+      "actual_declaration_lines": 14,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "c3c311127f187f7f0b1f6a71a161d88cac87b53a39bf96f8285f32ed368f3c31"
+    },
+    {
+      "label": "cold-show-12d36feb",
+      "source_version": 1,
+      "path": "src/itsdangerous/signer.py",
+      "line": 15,
+      "source_sha256": "bf6af4cc5e5870d26ccfdf5a1dba711910a4294a608498fbc30e669708c8d75e",
+      "returned_lines": 14,
+      "returned_body_bytes": 546,
+      "actual_declaration_lines": 14,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "d3a9168b959b33d7888e560b863ae817c8a7164be857d94dc9a359dc1f985c37"
+    }
+  ],
+  "cli_mcp_parities": [
+    {
+      "cli_label": "query-source-5830ef61",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "b13f9baf09931655e2cc0d7d4d5d5ee15b7ddae63deff6f27475879f409c588c",
+      "mcp_reply_wire_line": 101
+    },
+    {
+      "cli_label": "query-show-5830ef61",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "e0bfe15e0a26ef7df8f7713a568e752a78e00861e4ffe6200a96d2c1be94ca3c",
+      "mcp_reply_wire_line": 103
+    },
+    {
+      "cli_label": "query-references-5830ef61",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "09c5410a8e99055d9bc372c31f34e326541e4936b7a3bd5ab232a53220dbe58b",
+      "mcp_reply_wire_line": 105
+    },
+    {
+      "cli_label": "query-graph-5830ef61",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "37cfa2d10f78dac1f5d2917b8f3e94adc3dd7cb4b45848f37713f7be8f0ce38d",
+      "mcp_reply_wire_line": 107
+    },
+    {
+      "cli_label": "query-source-12d36feb",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "c3c311127f187f7f0b1f6a71a161d88cac87b53a39bf96f8285f32ed368f3c31",
+      "mcp_reply_wire_line": 114
+    },
+    {
+      "cli_label": "query-show-12d36feb",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "d3a9168b959b33d7888e560b863ae817c8a7164be857d94dc9a359dc1f985c37",
+      "mcp_reply_wire_line": 116
+    },
+    {
+      "cli_label": "query-references-12d36feb",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "c9c0d5dfa3ab564e8bd1a54e829a6838b7dfa72d9d0ffd30839f59dda17b76ab",
+      "mcp_reply_wire_line": 118
+    },
+    {
+      "cli_label": "query-graph-12d36feb",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "e91f758dd097efcd74cf700c0220cebd0084102589eca60f0d97f856e0dbab09",
+      "mcp_reply_wire_line": 120
+    },
+    {
+      "cli_label": "query-source-745cc184",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "148fca4ea72090abc96b29bd0291815cd59513253ad194aca7d5c458727054b3",
+      "mcp_reply_wire_line": 127
+    },
+    {
+      "cli_label": "query-show-745cc184",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "70b6602bea0a7f3223afb445806eaba1c90f40bf208cb1efeffa6f1cbd764576",
+      "mcp_reply_wire_line": 129
+    },
+    {
+      "cli_label": "query-references-745cc184",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "06876dd013a6224ad8e6c15d3dc04c2073a44abda406000999bff711d7e12cf7",
+      "mcp_reply_wire_line": 131
+    },
+    {
+      "cli_label": "query-graph-745cc184",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "0a80911ce36215c011bea90bacfb5bb73b37d53fe0a4edec26db6ab0a98f5275",
+      "mcp_reply_wire_line": 133
+    },
+    {
+      "cli_label": "removed-source-5830ef61",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "69311cab4cc6cdaeb49e0f1e83e9987fbec868d369ffb959dc17d32211e7cc53",
+      "mcp_reply_wire_line": 174
+    },
+    {
+      "cli_label": "removed-show-5830ef61",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "69311cab4cc6cdaeb49e0f1e83e9987fbec868d369ffb959dc17d32211e7cc53",
+      "mcp_reply_wire_line": 176
+    },
+    {
+      "cli_label": "removed-references-5830ef61",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1",
+      "mcp_reply_wire_line": 178
+    },
+    {
+      "cli_label": "removed-graph-5830ef61",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "65c0a0c85bd1a44a63a4781086641f0e395fa5b46e5702c2c0d5b400df32b4f6",
+      "mcp_reply_wire_line": 180
+    },
+    {
+      "cli_label": "removed-source-12d36feb",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "78567c87a08d362371fef5643db8a2421408cb21c1fc15188221c1ba33634f57",
+      "mcp_reply_wire_line": 186
+    },
+    {
+      "cli_label": "removed-show-12d36feb",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "78567c87a08d362371fef5643db8a2421408cb21c1fc15188221c1ba33634f57",
+      "mcp_reply_wire_line": 188
+    },
+    {
+      "cli_label": "removed-references-12d36feb",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1",
+      "mcp_reply_wire_line": 190
+    },
+    {
+      "cli_label": "removed-graph-12d36feb",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "97e2f200bdc25af74d18fdf89e249d16b4596bdc4d35a7f6796e02383f064341",
+      "mcp_reply_wire_line": 192
+    },
+    {
+      "cli_label": "removed-source-745cc184",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "a098f893cc2e80e2817da1e4fb1f99f2c54b7daa544241d79294efc78cee4bf2",
+      "mcp_reply_wire_line": 198
+    },
+    {
+      "cli_label": "removed-show-745cc184",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "a098f893cc2e80e2817da1e4fb1f99f2c54b7daa544241d79294efc78cee4bf2",
+      "mcp_reply_wire_line": 200
+    },
+    {
+      "cli_label": "removed-references-745cc184",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1",
+      "mcp_reply_wire_line": 202
+    },
+    {
+      "cli_label": "removed-graph-745cc184",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "c70272269d3f2eb7ee40c5350ec4bad34e3e279f53068c7cdb584d3155aaf1d0",
+      "mcp_reply_wire_line": 204
+    },
+    {
+      "cli_label": "readded-source-5830ef61",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "503d1823dde296594213771f5c12fc6658b42fe2bc57a4a21f52425e91650293",
+      "mcp_reply_wire_line": 212
+    },
+    {
+      "cli_label": "readded-show-5830ef61",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "76fe9597dfc860750967b5efdf923083c3596482d83bbe51a3fddac4b7257cf5",
+      "mcp_reply_wire_line": 214
+    },
+    {
+      "cli_label": "readded-references-5830ef61",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "09c5410a8e99055d9bc372c31f34e326541e4936b7a3bd5ab232a53220dbe58b",
+      "mcp_reply_wire_line": 216
+    },
+    {
+      "cli_label": "readded-graph-5830ef61",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "c4bb9797a5f324777e0bf2d0489bc2fa71707f493f7cd30fd580f09772bffac0",
+      "mcp_reply_wire_line": 218
+    },
+    {
+      "cli_label": "readded-source-12d36feb",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "c3c311127f187f7f0b1f6a71a161d88cac87b53a39bf96f8285f32ed368f3c31",
+      "mcp_reply_wire_line": 224
+    },
+    {
+      "cli_label": "readded-show-12d36feb",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "d3a9168b959b33d7888e560b863ae817c8a7164be857d94dc9a359dc1f985c37",
+      "mcp_reply_wire_line": 226
+    },
+    {
+      "cli_label": "readded-references-12d36feb",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "c9c0d5dfa3ab564e8bd1a54e829a6838b7dfa72d9d0ffd30839f59dda17b76ab",
+      "mcp_reply_wire_line": 228
+    },
+    {
+      "cli_label": "readded-graph-12d36feb",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "e91f758dd097efcd74cf700c0220cebd0084102589eca60f0d97f856e0dbab09",
+      "mcp_reply_wire_line": 230
+    },
+    {
+      "cli_label": "readded-source-745cc184",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "148fca4ea72090abc96b29bd0291815cd59513253ad194aca7d5c458727054b3",
+      "mcp_reply_wire_line": 236
+    },
+    {
+      "cli_label": "readded-show-745cc184",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "70b6602bea0a7f3223afb445806eaba1c90f40bf208cb1efeffa6f1cbd764576",
+      "mcp_reply_wire_line": 238
+    },
+    {
+      "cli_label": "readded-references-745cc184",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "06876dd013a6224ad8e6c15d3dc04c2073a44abda406000999bff711d7e12cf7",
+      "mcp_reply_wire_line": 240
+    },
+    {
+      "cli_label": "readded-graph-745cc184",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "0a80911ce36215c011bea90bacfb5bb73b37d53fe0a4edec26db6ab0a98f5275",
+      "mcp_reply_wire_line": 242
+    },
+    {
+      "cli_label": "cold-source-5830ef61",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "503d1823dde296594213771f5c12fc6658b42fe2bc57a4a21f52425e91650293",
+      "mcp_reply_wire_line": 263
+    },
+    {
+      "cli_label": "cold-show-5830ef61",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "76fe9597dfc860750967b5efdf923083c3596482d83bbe51a3fddac4b7257cf5",
+      "mcp_reply_wire_line": 265
+    },
+    {
+      "cli_label": "cold-references-5830ef61",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "09c5410a8e99055d9bc372c31f34e326541e4936b7a3bd5ab232a53220dbe58b",
+      "mcp_reply_wire_line": 267
+    },
+    {
+      "cli_label": "cold-graph-5830ef61",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exact_parity": true,
+      "cli_stdout_sha256": "c4bb9797a5f324777e0bf2d0489bc2fa71707f493f7cd30fd580f09772bffac0",
+      "mcp_reply_wire_line": 269
+    },
+    {
+      "cli_label": "cold-source-12d36feb",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "c3c311127f187f7f0b1f6a71a161d88cac87b53a39bf96f8285f32ed368f3c31",
+      "mcp_reply_wire_line": 275
+    },
+    {
+      "cli_label": "cold-show-12d36feb",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "d3a9168b959b33d7888e560b863ae817c8a7164be857d94dc9a359dc1f985c37",
+      "mcp_reply_wire_line": 277
+    },
+    {
+      "cli_label": "cold-references-12d36feb",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "c9c0d5dfa3ab564e8bd1a54e829a6838b7dfa72d9d0ffd30839f59dda17b76ab",
+      "mcp_reply_wire_line": 279
+    },
+    {
+      "cli_label": "cold-graph-12d36feb",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exact_parity": true,
+      "cli_stdout_sha256": "e91f758dd097efcd74cf700c0220cebd0084102589eca60f0d97f856e0dbab09",
+      "mcp_reply_wire_line": 281
+    },
+    {
+      "cli_label": "cold-source-745cc184",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "148fca4ea72090abc96b29bd0291815cd59513253ad194aca7d5c458727054b3",
+      "mcp_reply_wire_line": 287
+    },
+    {
+      "cli_label": "cold-show-745cc184",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "70b6602bea0a7f3223afb445806eaba1c90f40bf208cb1efeffa6f1cbd764576",
+      "mcp_reply_wire_line": 289
+    },
+    {
+      "cli_label": "cold-references-745cc184",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "06876dd013a6224ad8e6c15d3dc04c2073a44abda406000999bff711d7e12cf7",
+      "mcp_reply_wire_line": 291
+    },
+    {
+      "cli_label": "cold-graph-745cc184",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exact_parity": true,
+      "cli_stdout_sha256": "0a80911ce36215c011bea90bacfb5bb73b37d53fe0a4edec26db6ab0a98f5275",
+      "mcp_reply_wire_line": 293
+    }
+  ],
+  "references": [
+    {
+      "label": "query-references-5830ef61",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exit": 0,
+      "records": [
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::e64b590802d129f1de98e16ef717cd95c697d646c71ef970eb1e8ead04cdceda::test_bad_payload_exception",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::e64b590802d129f1de98e16ef717cd95c697d646c71ef970eb1e8ead04cdceda::test_bad_payload_exception",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_serializer.py [bytes2496..2500)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::2bf4247a8962b7acd9fd324727a05ecbc88c2e3b35e1211c33fd5d810a0df99e::test_loads_unsafe",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::2bf4247a8962b7acd9fd324727a05ecbc88c2e3b35e1211c33fd5d810a0df99e::test_loads_unsafe",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_serializer.py [bytes3065..3069)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::d22dcbcd1fd530cd122c26d22a97f7283c3b5de8d256d3578f4311c7bd2e44cb::test_signer",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::d22dcbcd1fd530cd122c26d22a97f7283c3b5de8d256d3578f4311c7bd2e44cb::test_signer",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes685..689)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::ce18d900b3ae58d5c46d624fd7733600ceaa8c5a1870a0ee6c451083d1581a81::test_no_separator",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::ce18d900b3ae58d5c46d624fd7733600ceaa8c5a1870a0ee6c451083d1581a81::test_no_separator",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes920..924)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::7721ae35702161f65bdefde078f9bd5e58b748c00ed81befce2d87a467e8d632::test_broken_signature",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::7721ae35702161f65bdefde078f9bd5e58b748c00ed81befce2d87a467e8d632::test_broken_signature",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes1181..1185)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::7b199c472efbcfb734eed0d114cf88cb94eb3830b160aa2c64b45aabec7e7e80::test_changed_value",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::7b199c472efbcfb734eed0d114cf88cb94eb3830b160aa2c64b45aabec7e7e80::test_changed_value",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes1537..1541)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::8b2ffe611beb590d76a3f97353505202d067782b802301233494ee64231df98c::test_key_derivation",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::8b2ffe611beb590d76a3f97353505202d067782b802301233494ee64231df98c::test_key_derivation",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes2209..2213)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::346e183f800374287479c04fbe1f775aac5dc02f25380cc568cd22ca1fc6bffc::test_digest_method",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::346e183f800374287479c04fbe1f775aac5dc02f25380cc568cd22ca1fc6bffc::test_digest_method",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes2572..2576)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::041fe60ee03d617828420228dbfaa3d61063ef4eb8179d70b4f80b08858d5a8d::test_algorithm",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::041fe60ee03d617828420228dbfaa3d61063ef4eb8179d70b4f80b08858d5a8d::test_algorithm",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes2865..2869)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::369fbd66524375062029c3c52571ecd227f0beb48dd326ba47f514d6bd9d214d::test_secret_keys",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::369fbd66524375062029c3c52571ecd227f0beb48dd326ba47f514d6bd9d214d::test_secret_keys",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes3083..3087)"
+          ]
+        }
+      ],
+      "stdout_sha256": "09c5410a8e99055d9bc372c31f34e326541e4936b7a3bd5ab232a53220dbe58b"
+    },
+    {
+      "label": "query-references-12d36feb",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "c9c0d5dfa3ab564e8bd1a54e829a6838b7dfa72d9d0ffd30839f59dda17b76ab"
+    },
+    {
+      "label": "query-references-745cc184",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "06876dd013a6224ad8e6c15d3dc04c2073a44abda406000999bff711d7e12cf7"
+    },
+    {
+      "label": "removed-references-5830ef61",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exit": 2,
+      "records": [],
+      "stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1"
+    },
+    {
+      "label": "removed-references-12d36feb",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exit": 2,
+      "records": [],
+      "stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1"
+    },
+    {
+      "label": "removed-references-745cc184",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exit": 2,
+      "records": [],
+      "stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1"
+    },
+    {
+      "label": "readded-references-5830ef61",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exit": 0,
+      "records": [
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::e64b590802d129f1de98e16ef717cd95c697d646c71ef970eb1e8ead04cdceda::test_bad_payload_exception",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::e64b590802d129f1de98e16ef717cd95c697d646c71ef970eb1e8ead04cdceda::test_bad_payload_exception",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_serializer.py [bytes2496..2500)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::2bf4247a8962b7acd9fd324727a05ecbc88c2e3b35e1211c33fd5d810a0df99e::test_loads_unsafe",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::2bf4247a8962b7acd9fd324727a05ecbc88c2e3b35e1211c33fd5d810a0df99e::test_loads_unsafe",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_serializer.py [bytes3065..3069)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::d22dcbcd1fd530cd122c26d22a97f7283c3b5de8d256d3578f4311c7bd2e44cb::test_signer",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::d22dcbcd1fd530cd122c26d22a97f7283c3b5de8d256d3578f4311c7bd2e44cb::test_signer",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes685..689)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::ce18d900b3ae58d5c46d624fd7733600ceaa8c5a1870a0ee6c451083d1581a81::test_no_separator",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::ce18d900b3ae58d5c46d624fd7733600ceaa8c5a1870a0ee6c451083d1581a81::test_no_separator",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes920..924)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::7721ae35702161f65bdefde078f9bd5e58b748c00ed81befce2d87a467e8d632::test_broken_signature",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::7721ae35702161f65bdefde078f9bd5e58b748c00ed81befce2d87a467e8d632::test_broken_signature",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes1181..1185)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::7b199c472efbcfb734eed0d114cf88cb94eb3830b160aa2c64b45aabec7e7e80::test_changed_value",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::7b199c472efbcfb734eed0d114cf88cb94eb3830b160aa2c64b45aabec7e7e80::test_changed_value",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes1537..1541)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::8b2ffe611beb590d76a3f97353505202d067782b802301233494ee64231df98c::test_key_derivation",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::8b2ffe611beb590d76a3f97353505202d067782b802301233494ee64231df98c::test_key_derivation",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes2209..2213)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::346e183f800374287479c04fbe1f775aac5dc02f25380cc568cd22ca1fc6bffc::test_digest_method",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::346e183f800374287479c04fbe1f775aac5dc02f25380cc568cd22ca1fc6bffc::test_digest_method",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes2572..2576)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::041fe60ee03d617828420228dbfaa3d61063ef4eb8179d70b4f80b08858d5a8d::test_algorithm",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::041fe60ee03d617828420228dbfaa3d61063ef4eb8179d70b4f80b08858d5a8d::test_algorithm",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes2865..2869)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::369fbd66524375062029c3c52571ecd227f0beb48dd326ba47f514d6bd9d214d::test_secret_keys",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::369fbd66524375062029c3c52571ecd227f0beb48dd326ba47f514d6bd9d214d::test_secret_keys",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes3083..3087)"
+          ]
+        }
+      ],
+      "stdout_sha256": "09c5410a8e99055d9bc372c31f34e326541e4936b7a3bd5ab232a53220dbe58b"
+    },
+    {
+      "label": "readded-references-12d36feb",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "c9c0d5dfa3ab564e8bd1a54e829a6838b7dfa72d9d0ffd30839f59dda17b76ab"
+    },
+    {
+      "label": "readded-references-745cc184",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "06876dd013a6224ad8e6c15d3dc04c2073a44abda406000999bff711d7e12cf7"
+    },
+    {
+      "label": "cold-references-5830ef61",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+      "exit": 0,
+      "records": [
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::e64b590802d129f1de98e16ef717cd95c697d646c71ef970eb1e8ead04cdceda::test_bad_payload_exception",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::e64b590802d129f1de98e16ef717cd95c697d646c71ef970eb1e8ead04cdceda::test_bad_payload_exception",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_serializer.py [bytes2496..2500)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::2bf4247a8962b7acd9fd324727a05ecbc88c2e3b35e1211c33fd5d810a0df99e::test_loads_unsafe",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::2bf4247a8962b7acd9fd324727a05ecbc88c2e3b35e1211c33fd5d810a0df99e::test_loads_unsafe",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_serializer.py [bytes3065..3069)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::d22dcbcd1fd530cd122c26d22a97f7283c3b5de8d256d3578f4311c7bd2e44cb::test_signer",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::d22dcbcd1fd530cd122c26d22a97f7283c3b5de8d256d3578f4311c7bd2e44cb::test_signer",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes685..689)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::ce18d900b3ae58d5c46d624fd7733600ceaa8c5a1870a0ee6c451083d1581a81::test_no_separator",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::ce18d900b3ae58d5c46d624fd7733600ceaa8c5a1870a0ee6c451083d1581a81::test_no_separator",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes920..924)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::7721ae35702161f65bdefde078f9bd5e58b748c00ed81befce2d87a467e8d632::test_broken_signature",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::7721ae35702161f65bdefde078f9bd5e58b748c00ed81befce2d87a467e8d632::test_broken_signature",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes1181..1185)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::7b199c472efbcfb734eed0d114cf88cb94eb3830b160aa2c64b45aabec7e7e80::test_changed_value",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::7b199c472efbcfb734eed0d114cf88cb94eb3830b160aa2c64b45aabec7e7e80::test_changed_value",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes1537..1541)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::8b2ffe611beb590d76a3f97353505202d067782b802301233494ee64231df98c::test_key_derivation",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::8b2ffe611beb590d76a3f97353505202d067782b802301233494ee64231df98c::test_key_derivation",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes2209..2213)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::346e183f800374287479c04fbe1f775aac5dc02f25380cc568cd22ca1fc6bffc::test_digest_method",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::346e183f800374287479c04fbe1f775aac5dc02f25380cc568cd22ca1fc6bffc::test_digest_method",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes2572..2576)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::041fe60ee03d617828420228dbfaa3d61063ef4eb8179d70b4f80b08858d5a8d::test_algorithm",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::041fe60ee03d617828420228dbfaa3d61063ef4eb8179d70b4f80b08858d5a8d::test_algorithm",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes2865..2869)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::369fbd66524375062029c3c52571ecd227f0beb48dd326ba47f514d6bd9d214d::test_secret_keys",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::369fbd66524375062029c3c52571ecd227f0beb48dd326ba47f514d6bd9d214d::test_secret_keys",
+          "tags": [
+            "calls",
+            "syntactic",
+            "tests/test_itsdangerous/test_signer.py [bytes3083..3087)"
+          ]
+        }
+      ],
+      "stdout_sha256": "09c5410a8e99055d9bc372c31f34e326541e4936b7a3bd5ab232a53220dbe58b"
+    },
+    {
+      "label": "cold-references-12d36feb",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "c9c0d5dfa3ab564e8bd1a54e829a6838b7dfa72d9d0ffd30839f59dda17b76ab"
+    },
+    {
+      "label": "cold-references-745cc184",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "06876dd013a6224ad8e6c15d3dc04c2073a44abda406000999bff711d7e12cf7"
+    }
+  ],
+  "largest_mcp_replies": [
+    {
+      "wire_line": 150,
+      "bytes": 36796,
+      "estimated_tokens": 9199
+    },
+    {
+      "wire_line": 34,
+      "bytes": 36795,
+      "estimated_tokens": 9199
+    },
+    {
+      "wire_line": 156,
+      "bytes": 36760,
+      "estimated_tokens": 9190
+    },
+    {
+      "wire_line": 257,
+      "bytes": 36759,
+      "estimated_tokens": 9190
+    },
+    {
+      "wire_line": 19,
+      "bytes": 18855,
+      "estimated_tokens": 4714
+    }
+  ],
+  "source_edits": [
+    {
+      "kind": "source-edit",
+      "utc": "2026-10-06T12:24:51Z",
+      "path": "src/itsdangerous/signer.py",
+      "before_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584",
+      "after_sha256": "bf6af4cc5e5870d26ccfdf5a1dba711910a4294a608498fbc30e669708c8d75e",
+      "tree_after": {
+        "files": [
+          [
+            "CHANGES.rst",
+            7946,
+            "30c6dd7adaa94fc9d3db5ace9c37647c91af3af3acc9977eda020de717b6072b"
+          ],
+          [
+            "LICENSE.txt",
+            1475,
+            "63af09891b6be8ad1a4252ed43af0f4efba7fc948e228367bed7f3c5ae0b09d7"
+          ],
+          [
+            "PKG-INFO",
+            1924,
+            "d2b934fb56708a1b94e439f0255c0f5a8108e3258ec827b18a1dc9c991db9611"
+          ],
+          [
+            "README.md",
+            1110,
+            "2516a14cadb02e524672755d547a7edf75551138b27cce4620b19a598986d654"
+          ],
+          [
+            "docs/Makefile",
+            581,
+            "ffa975e0794eed8baca37b894e2cf2e689c354cd8ea5980dc2c80b18f96ac37b"
+          ],
+          [
+            "docs/_static/itsdangerous-logo-sidebar.png",
+            6629,
+            "6149a2fc980de448cdf4d027647ffdf13f34da49794be753b079fe8cc1dab404"
+          ],
+          [
+            "docs/_static/itsdangerous-logo.png",
+            18971,
+            "5abfe1d072faeeafe8788042259b3bf715032cb1ebb4a0f6a30ef688552e6159"
+          ],
+          [
+            "docs/changes.rst",
+            45,
+            "94c7e3657f8795af8f66d20fb6208f83df46bce9cab9b82d2c16ad961a87f7e0"
+          ],
+          [
+            "docs/concepts.rst",
+            5230,
+            "6d042175f626cbc4b4e23fcb8eba7f15727f387f7afcd20c2a32c3f7db14e095"
+          ],
+          [
+            "docs/conf.py",
+            1976,
+            "40f5e13a39d50776a4f5f98828211ff49a3b58b79aced9a61ae8a51a7bf6486b"
+          ],
+          [
+            "docs/encoding.rst",
+            139,
+            "6ba9be2255834de862aa33ad234ba65f47c52e459c7b0ae8deee60924c923ff2"
+          ],
+          [
+            "docs/exceptions.rst",
+            332,
+            "c6d9476f5d1f039a7e2524872073d1c19e98e5336b3d61b7235c00a91b13968b"
+          ],
+          [
+            "docs/index.rst",
+            1654,
+            "f34927b5e59d05de4d09cf41279c41e565a41da3424579770ff213d4670f79f9"
+          ],
+          [
+            "docs/license.rst",
+            98,
+            "1e07e9c25f2618a040560b70e63f42259eab24e558d0f3532e6163d751cb4eea"
+          ],
+          [
+            "docs/make.bat",
+            752,
+            "89a52884548ce62dd8ea6f58710e767ce865c08d47faeb3c79e0cec8b6174e77"
+          ],
+          [
+            "docs/serializer.rst",
+            3485,
+            "5bd1b914ee53d300abd18b3a9b7b0b81ff39d787c0ff8d8c8008500126a339e5"
+          ],
+          [
+            "docs/signer.rst",
+            1263,
+            "37402951e0ddc75a8dd3019d9d1f9bbc2425f0bbf5b270838d1a9d9dcdf7366f"
+          ],
+          [
+            "docs/timed.rst",
+            689,
+            "6ec021e674528785b208a68c150022a07a2c36dedf5cbe0c1a50250cc7b34d6b"
+          ],
+          [
+            "docs/url_safe.rst",
+            615,
+            "2cf2c8d47eab05cf8e19f703c49cf2764e0142aa2d094680d3057c02fee17dbf"
+          ],
+          [
+            "pyproject.toml",
+            1868,
+            "953e3af993d7ce64856e943e830ab0f0439a4994ae4bc5d5eb1dfdbc18bee521"
+          ],
+          [
+            "requirements/build.in",
+            6,
+            "f10ec3ffef16a8dace9b58801e0da28819c98af4c8933410d7e7cacc952f9e9b"
+          ],
+          [
+            "requirements/build.txt",
+            227,
+            "e623540e870b119c29064c83467dad8b4b99150caf8b37acabf5ce9a86e2abaa"
+          ],
+          [
+            "requirements/dev.in",
+            54,
+            "59c4aae56502db599ff7af1057693acbe81b8e3e793f303393f68d69756c7ca6"
+          ],
+          [
+            "requirements/dev.txt",
+            3125,
+            "a19e1555eba8be011d1e5ba6b6a6b87e818b2631cdacfc533cbeec815c1ef24b"
+          ],
+          [
+            "requirements/docs.in",
+            55,
+            "15bc4ac3a6c319acd99bba37f54a43012443269449c304b993b7ee8990670ff4"
+          ],
+          [
+            "requirements/docs.txt",
+            1141,
+            "711a3de180d52e23a95861ac02a0b5419153a13ba27c6531b4d42e39a02a5bea"
+          ],
+          [
+            "requirements/tests.in",
+            17,
+            "f3399bf96daae93fb7adfa70d9fea1fac7eb27c9b29641e2ec4c28dbbdc748cb"
+          ],
+          [
+            "requirements/tests.txt",
+            381,
+            "6989747e91fc4c09ee14c58305a277a9387fb9ca71615dacf21b5b085c017c4f"
+          ],
+          [
+            "requirements/typing.in",
+            20,
+            "26b8a9c4c745b8765e88c7c6c2992aae86e5b3b82eeabe9201c76143c9341be2"
+          ],
+          [
+            "requirements/typing.txt",
+            535,
+            "d69053ffd15e7af37f96f3508cd618371ca82304a2619dfa81880ed37be9c4a1"
+          ],
+          [
+            "src/itsdangerous/__init__.py",
+            1427,
+            "e122bbe6c09edbdc5b460404d5942d3079ca52e65801fddb4a964eadf7f52006"
+          ],
+          [
+            "src/itsdangerous/_json.py",
+            473,
+            "c0f4069a07b6c99f77dbc107285ea069d19ec866022502b1b54fa22ca13a5270"
+          ],
+          [
+            "src/itsdangerous/encoding.py",
+            1409,
+            "c304f3e6aff7ccb71a01dba793afef4a84adc06a9859edf4ed997f53ceda4453"
+          ],
+          [
+            "src/itsdangerous/exc.py",
+            3201,
+            "46bddec68d0c44511c3d996dc1e7322b5e955756c4d8af7f175f9dfa58dc527e"
+          ],
+          [
+            "src/itsdangerous/py.typed",
+            0,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          ],
+          [
+            "src/itsdangerous/serializer.py",
+            15601,
+            "3e67700032ea912c902d9d2338a0200ec016e24fc7d13940ef5122df3d02e5a2"
+          ],
+          [
+            "src/itsdangerous/signer.py",
+            9649,
+            "bf6af4cc5e5870d26ccfdf5a1dba711910a4294a608498fbc30e669708c8d75e"
+          ],
+          [
+            "src/itsdangerous/timed.py",
+            8083,
+            "e91bc332a36e9863317f4f8796969974df4f51042646fad01a994a871ba2bd4b"
+          ],
+          [
+            "src/itsdangerous/url_safe.py",
+            2505,
+            "6b3e1ee5f5e2fefb3e61b5a3f186709f8c2254a7de0fef8610a453e547aee0fe"
+          ],
+          [
+            "tests/test_itsdangerous/__init__.py",
+            0,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          ],
+          [
+            "tests/test_itsdangerous/test_encoding.py",
+            1004,
+            "af71dbee0825fc8ae947b6c789b05f2331afe60efae2aee5145727446385c3f0"
+          ],
+          [
+            "tests/test_itsdangerous/test_serializer.py",
+            6863,
+            "e9620d6a6999a77773e3a5733ca71cb81375dafd06ad0f3a5b2bea9404e66c26"
+          ],
+          [
+            "tests/test_itsdangerous/test_signer.py",
+            3435,
+            "219c2a399adc874f14534d1311e950c1e29b2c7d05d037770701b2af258b97a2"
+          ],
+          [
+            "tests/test_itsdangerous/test_timed.py",
+            3807,
+            "b75531b8901d48a6d7a5c4bbbb2342f02f6ef022185840121f7705c1e907979a"
+          ],
+          [
+            "tests/test_itsdangerous/test_url_safe.py",
+            793,
+            "64d2afc9ab467f209549841f0d87125243d646e011c725818eda8e75ad4d830d"
+          ],
+          [
+            "tox.ini",
+            960,
+            "14944e648c4ab0168260332f94a27f45ea39a5b115e6e19c06d80ec533a1ee70"
+          ]
+        ],
+        "sha256": "cac6f870d862ff2e71ad7006d81cec75d27b32e617420b29e9865221b3bf6ac4"
+      }
+    }
+  ],
+  "pagination": [
+    {
+      "kind": "pagination-observation",
+      "utc": "2026-10-06T12:24:43Z",
+      "query": "sign",
+      "pages": 20,
+      "records": 20,
+      "coordinates": [
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::344e2fbcc299b06c969041a11ad7df4766c7d77a75663acc28213e31d8db5ade::sign",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1e96542598f7afed3fed70d5d6674fed7b53a82129c3d986aa7d8c686c6d5891::sign",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::35db81391f7ee4b32b8420bb22c9dff36b8f4c7c38dd6aa24b64a431d3055bd5::Serializer",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::4a8ee557c502e1ec835fb10b3f25c4d6429dfbd59d20f7171c84b756159aa1ad::Signer",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::113a8f758b2554ed7d86bf14239a6c7bb78bb4ae7661ecbca3a172153ce9bba1::BadHeader",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::a0ba5144a9f2bf449f42e2f08ab86d0cf869fd12d20d747b5a5c507f0b9fdf63::NoneAlgorithm",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::2d51c8b4d364aa4aef7b06dd4c1047d277c387a5ac0be449c2380d8fff65b6bb::TimestampSigner",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::8546732e37bca0af6f529c289ab1479ac9ca4f416f14b7224e8b7cbbd2a6671a::Signer256",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::13a0fdda4375ab58d458d682774bf18026cd760a2e637cab45ab4f3293a08e87::BadTimeSignature",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::1b32f6f5b6dbd8c37a0022126eda084b5228b35be29e8bc7a9af39a5f5d77137::SigningAlgorithm",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::7e7990ad0e1ccba383eae6543f1cc4717505a922c93f33ba6b53352ca09c1283::SignatureExpired",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::ab7fbaa4aab83e0bd0fdaba3e095a32b002ba33339f81fc723e5a74f0348de59::BadSignature",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::f439593265458327a6ab0c5c96e441274ef8e99c723d98de088a17985d988792::HMACAlgorithm",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::8ea801164c0ec2d176805aec05017c9bbb1d1c667a15f4b68dba7f7c2a92c4be::TestSigner",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::ac591a0a8c85afe5db09904fb78a375e0af045fdb2a399919d8d00930b9be29b::BadPayload",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::794fd8dfd198869e2f265b9ed85f32b8eb86f1172a9b0f83dfe3160332670fc0::TimedSerializer",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::6c04db1e653b6feedbd9e5cb3e02e4566c9221969896189cbb9c964226e9fd9a::TestTimestampSigner",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::b60035629a6f80fbae48dc408f9000ead5c5651e77f26de85bc0e89b9b2ae89c::Signer",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::04875695c5a3b35d7a7a33c0b8dd9258d5c5651e77f26de85bc0e89b9b2ae89c::Signer",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project::semantic::a83bd0551a00e47af78f0860fdd486351349a022e8873a39351edaa4e4af9fc0::signer"
+      ],
+      "duplicate_coordinates": false,
+      "unresolved_cursor": "mcp1-1791290383-cGMxLTAwMDNhODZkM2RhYWMwNDc5MzMwYTQwODVhNzk3MWJjZGEyNzBiZmRmM2EwMWNlNDljNzFmNjcyMThlMjNmN2QyOGFhMmNlOWY4ODEzNWNjY2JjZDExNGVkNjMxNTJkMzczYmUwNzJlMTVjYzRlNWZkYzA2M2QyNzA2ZGQxNjlkNGI4MTQ2NTBhNWQyZDM4YzUwN2M2MjFiYjdhZGVjOTYzYWZhYzdiZDc0MGJiYzg1MDA3YjFjZDYwOWE2N2ZiMjQ4MmYxMmE0MGIxYTlkOGIzYWYwOTJlYjk1NzQ1NzU5NjdjMTlhNWRiOWNhNDhlZGU1NDIyNmUyOGYyOTM2MWUzNzYwMDAwMzI1M2M3MjljMTJlZGU2MmIzZjFkNjNkMTRiNTZiZTgxM2Y3ZWNhYTUzODNmZjYzOTNlNDZlNWIwODg0ZjgwNDIwMDAwMDAwMDAwMDAwMDAyMDAwMDAwMDAwMDAwMDAxNA-600b0f60b6ed3ce91e84dcce8c2f2a06"
+    }
+  ],
+  "cancellation": [
+    {
+      "kind": "job-ticket-discovery",
+      "utc": "2026-10-06T12:24:44Z",
+      "ticket": {
+        "id": 2,
+        "owner_epoch": [
+          163,
+          0,
+          233,
+          197,
+          190,
+          218,
+          214,
+          136,
+          153,
+          31,
+          172,
+          201,
+          248,
+          215,
+          109,
+          91
+        ],
+        "package": {
+          "kind": "local",
+          "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project"
+        }
+      },
+      "reply": {
+        "id": 47,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "# index-start\nindex job 2 started  \u00b7  stage scanning \u00b7 poll index_progress\n`{\"id\":2,\"owner_epoch\":[163,0,233,197,190,218,214,136,153,31,172,201,248,215,109,91],\"package\":{\"kind\":\"local\",\"value\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project\"}}`\n1 row(s)\npoll `backend.index_progress` with the exact ticket shown above (after_sequence 0)\n",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "answer": "surface",
+            "budget": {
+              "bytes": 752,
+              "bytesPerToken": 4,
+              "estimatedTokens": 188
+            },
+            "detail": "full",
+            "surface": {
+              "data": {
+                "data": {
+                  "stage": "scanning",
+                  "ticket": {
+                    "id": 2,
+                    "owner_epoch": [
+                      163,
+                      0,
+                      233,
+                      197,
+                      190,
+                      218,
+                      214,
+                      136,
+                      153,
+                      31,
+                      172,
+                      201,
+                      248,
+                      215,
+                      109,
+                      91
+                    ],
+                    "package": {
+                      "kind": "local",
+                      "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project"
+                    }
+                  }
+                },
+                "state": "started"
+              },
+              "index_job": {
+                "kind": "started",
+                "value": {
+                  "data": {
+                    "stage": "scanning",
+                    "ticket": {
+                      "id": 2,
+                      "owner_epoch": [
+                        163,
+                        0,
+                        233,
+                        197,
+                        190,
+                        218,
+                        214,
+                        136,
+                        153,
+                        31,
+                        172,
+                        201,
+                        248,
+                        215,
+                        109,
+                        91
+                      ],
+                      "package": {
+                        "kind": "local",
+                        "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-250f2314/project"
+                      }
+                    }
+                  },
+                  "state": "started"
+                }
+              },
+              "result": "index-started"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "journey_error": null,
+  "whole_package_pass": false,
+  "original_acquired_source_mutated": false,
+  "source_witnesses_are_not_compiler_bindings": true
+}

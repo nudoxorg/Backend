@@ -75,9 +75,8 @@ use backend_semantic::ir::{
 };
 use backend_semantic::vocabulary::{
     GoImageDeclarationKind, GoImageFault, GoImageFlagCell, GoImageHeaderFault, GoImagePlane,
-    GoImageTypeKind,
-    GoProjectionFault as PortableGoProjectionFault, GoProjectionIndexPhase, GoProjectionListPhase,
-    LoweringUnsupported, ProjectionForeignKeyFault, ProjectionLineagePart,
+    GoImageTypeKind, GoProjectionFault as PortableGoProjectionFault, GoProjectionIndexPhase,
+    GoProjectionListPhase, LoweringUnsupported, ProjectionForeignKeyFault, ProjectionLineagePart,
     ProjectionPackageLineageFault,
 };
 use core::str;
@@ -1904,11 +1903,16 @@ impl<'x, 'source> Projector<'x, 'source> {
             .map_err(|fault| lane_terminal(self.facts.len(), declaration.name.len(), fault))?;
         let mut fields = Vec::new();
         let mut interface_methods = Vec::new();
+        let mut inventory_complete = false;
         if let Some(root_cell) = declaration.type_root {
             let row = self
                 .image
                 .type_row(index_of(root_cell))
                 .map_err(GoCollectError::Image)?;
+            inventory_complete = !matches!(
+                row.kind,
+                TypeRowKind::Invalid | TypeRowKind::Named | TypeRowKind::Alias
+            );
             match row.kind {
                 TypeRowKind::Struct => self.fields(
                     &row,
@@ -1933,6 +1937,8 @@ impl<'x, 'source> Projector<'x, 'source> {
         }
         let mut methods = Vec::new();
         let mut method_names = Vec::new();
+        let mut declared_members = fields.clone();
+        declared_members.extend(interface_methods.iter().map(|(ordinal, _)| *ordinal));
         let image_version = self.image.version();
         for method_index in 0..self.image.method_count() {
             let method = self
@@ -1970,12 +1976,25 @@ impl<'x, 'source> Projector<'x, 'source> {
                 file: method.file,
             });
             methods.push(ordinal);
+            if !method.promoted {
+                declared_members.push(ordinal);
+            }
             method_names.push(method.name);
             self.method_ordinals[method_index] = Some(ordinal);
         }
         for (ordinal, name) in interface_methods {
             methods.push(ordinal);
             method_names.push(name);
+        }
+        // The type row owns direct struct fields / explicit interface
+        // signatures. The declared method plane is distinct from promoted
+        // methods and the effective interface method-set plane below.
+        if inventory_complete {
+            self.facts
+                .capture_declared_members(type_ordinal, &declared_members)
+                .map_err(|fault| {
+                    lane_terminal_ordinal(type_ordinal, declaration.name.len(), fault)
+                })?;
         }
         for method_set_index in 0..self.image.method_set_count() {
             let method_set = self
@@ -3951,6 +3970,7 @@ mod tests {
         name: Cell,
         type_root: Option<u32>,
         receiver: Cell,
+        promoted: bool,
         receiver_params: (Cell, u32),
         /// The method's declaring extent.
         span: (u32, u32),
@@ -4300,6 +4320,7 @@ mod tests {
                 name: spelled,
                 type_root,
                 receiver,
+                promoted: false,
                 receiver_params: (
                     Cell {
                         offset: 0,
@@ -4499,7 +4520,7 @@ mod tests {
                 let (receiver, receiver_len) = cell(row.receiver);
                 let (blob, blob_len) = cell(row.receiver_params.0);
                 methods.extend_from_slice(&row.owner.to_le_bytes());
-                methods.extend_from_slice(&[1, 0, 0, 0]);
+                methods.extend_from_slice(&[1, 0, u8::from(row.promoted), 0]);
                 methods.extend_from_slice(&name);
                 methods.extend_from_slice(&name_len);
                 methods.extend_from_slice(&row.type_root.unwrap_or(NONE).to_le_bytes());
@@ -5243,12 +5264,7 @@ mod tests {
         let error = fix.named(b"", b"error", &[]);
         let brew = fix.func(&[int, string], &[int, error], false);
         fix.declaration(KIND_FUNC, b"Brew", Some(brew));
-        for (ordinal, name) in [
-            &b"count"[..],
-            &b"label"[..],
-            &b"total"[..],
-            &b"err"[..],
-        ]
+        for (ordinal, name) in [&b"count"[..], &b"label"[..], &b"total"[..], &b"err"[..]]
             .into_iter()
             .enumerate()
         {
@@ -5471,6 +5487,71 @@ mod tests {
         if bag_facts.fields.raw != 0 || bag_facts.method_set.raw != 0 {
             return Err(TestError::Missing("empty bag extension"));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn declared_member_inventory_excludes_promoted_and_effective_method_sets()
+    -> Result<(), TestError> {
+        use backend_semantic::ir::{FactAvailability, SemanticReader};
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let signature = fix.func(&[], &[], false);
+        let record = fix.start_row(ROW_STRUCT);
+        fix.field(record, b"Own", Some(int));
+        let owner = fix.declaration(KIND_TYPE, b"Record", Some(record));
+        fix.method(owner, b"Direct", Some(signature));
+        let promoted = fix.method(owner, b"Promoted", Some(signature));
+        fix.methods[promoted].promoted = true;
+        let interface = fix.start_row(ROW_INTERFACE);
+        fix.interface_method(interface, b"Explicit", Some(signature));
+        fix.method_set(interface, b"Effective", Some(signature));
+        fix.declaration(KIND_TYPE, b"Interface", Some(interface));
+        let empty = fix.start_row(ROW_STRUCT);
+        fix.declaration(KIND_TYPE, b"Empty", Some(empty));
+        fix.declaration(KIND_TYPE, b"Unknown", None);
+        let ir = lower_ir(&fix, b"package demo\n")?;
+        for (name, expected) in [
+            (&b"Record"[..], &[&b"Own"[..], &b"Direct"[..]][..]),
+            (&b"Interface"[..], &[&b"Explicit"[..]][..]),
+            (&b"Empty"[..], &[][..]),
+        ] {
+            let item = ir
+                .items()
+                .find(|item| item.name() == name)
+                .ok_or(TestError::Missing("inventory owner"))?;
+            assert_eq!(
+                ir.entity(item.id()).expect("entity").authority.members,
+                FactAvailability::Captured
+            );
+            let mut names = item
+                .members()
+                .iter()
+                .map(|id| {
+                    ir.item(*id)
+                        .expect("member")
+                        .name()
+                        .named_bytes()
+                        .expect("Go inventory fixture member is named")
+                        .to_vec()
+                })
+                .collect::<Vec<_>>();
+            names.sort();
+            let mut expected = expected
+                .iter()
+                .map(|name| name.to_vec())
+                .collect::<Vec<_>>();
+            expected.sort();
+            assert_eq!(names, expected);
+        }
+        let unknown = ir
+            .items()
+            .find(|item| item.name() == b"Unknown")
+            .ok_or(TestError::Missing("unknown owner"))?;
+        assert_eq!(
+            ir.entity(unknown.id()).expect("entity").authority.members,
+            FactAvailability::Unavailable
+        );
         Ok(())
     }
 
@@ -7265,7 +7346,11 @@ mod tests {
         // Entities carry their authority-bound declaration spans.
         let mut lang_source = None;
         for row in ir.canonical_entities() {
-            let name = ir.atom(row.name).ok_or(TestError::Missing("entity atom"))?;
+            let name = row
+                .name
+                .named_atom()
+                .and_then(|atom| ir.atom(atom))
+                .ok_or(TestError::Missing("entity atom"))?;
             if name == b"Lang" {
                 lang_source = row.source;
             }

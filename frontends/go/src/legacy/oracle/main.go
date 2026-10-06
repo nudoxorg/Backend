@@ -90,7 +90,7 @@ import (
 // reference target with. `Decl.NameSpan` (serialize.go) now also carries
 // the declaration's own identifier extent. See `extractReferences` for the
 // walk, and `Reference.Class`/`Reference.Kind` for the closed vocabularies.
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 // Output is the root of the emitted JSON document.
 type Output struct {
@@ -143,6 +143,10 @@ type Package struct {
 	// declarations they contain. go/types cannot expose these declarations
 	// because they are intentionally absent from the loaded package scope.
 	BuildConstraints []*BuildConstraint `json:"buildConstraints,omitempty"`
+	// CgoExcludedFiles lists source files selected out by CGO_ENABLED=0 because
+	// they import "C". Their paths are also retained in BuildConstraints with
+	// the explicit cgo-disabled-import-C selection reason.
+	CgoExcludedFiles []string `json:"cgoExcludedFiles,omitempty"`
 	// References is the resolved same-package function call graph.
 	References []*Reference `json:"references,omitempty"`
 	// UnresolvedCgo names incomplete cgo (or otherwise unexpandable) types
@@ -153,9 +157,12 @@ type Package struct {
 
 // BuildConstraint describes one excluded Go source file.
 type BuildConstraint struct {
-	File          string       `json:"file"`
-	Constraints   []string     `json:"constraints,omitempty"`
-	ExportedDecls []*BuildDecl `json:"exportedDecls,omitempty"`
+	File        string   `json:"file"`
+	Constraints []string `json:"constraints,omitempty"`
+	// ExcludedReason records a compiler selection reason that is not a source
+	// build-tag expression, such as cgo-disabled-import-C.
+	ExcludedReason string       `json:"excludedReason,omitempty"`
+	ExportedDecls  []*BuildDecl `json:"exportedDecls,omitempty"`
 }
 
 // BuildDecl identifies an exported declaration found in an excluded file.
@@ -259,12 +266,6 @@ func extractWithPattern(dir, pattern string) (*Output, error) {
 	if len(pkgs) == 0 {
 		return nil, fmt.Errorf("no packages found under %s", dir)
 	}
-	if packagePath, err := firstIgnoredCgoPackage(pkgs); err != nil {
-		return nil, err
-	} else if packagePath != "" {
-		return nil, fmt.Errorf("%s: package %s contains cgo files while CGO_ENABLED=0", unsupportedCgoSentinel, packagePath)
-	}
-
 	out := &Output{SchemaVersion: SchemaVersion}
 	selected := make(map[string]*packages.Package)
 	for _, pkg := range pkgs {
@@ -322,8 +323,6 @@ func extractWithPattern(dir, pattern string) (*Output, error) {
 	return out, nil
 }
 
-const unsupportedCgoSentinel = "NUDOX_GO_UNSUPPORTED_CGO_CLOSURE"
-
 // packagesAuthorityEnvironment projects the explicit parent policy into the
 // nested `go list` processes. The private workspace value exists because the
 // outer `go run` must use GOWORK=off while the target package loader may need a
@@ -357,63 +356,6 @@ func packagesAuthorityEnvironment() ([]string, error) {
 	}
 	env = append(env, "GOWORK="+workspace)
 	return env, nil
-}
-
-// firstIgnoredCgoPackage walks the complete loaded import graph and detects
-// cgo source that CGO_ENABLED=0 moved out of the package. Without this check a
-// best-effort go/packages load could serialize a partial package as complete.
-func firstIgnoredCgoPackage(roots []*packages.Package) (string, error) {
-	visited := make(map[*packages.Package]bool)
-	var visit func(*packages.Package) (string, error)
-	visit = func(pkg *packages.Package) (string, error) {
-		if pkg == nil || visited[pkg] {
-			return "", nil
-		}
-		visited[pkg] = true
-		files := append([]string(nil), pkg.IgnoredFiles...)
-		files = append(files, pkg.GoFiles...)
-		sort.Strings(files)
-		previous := ""
-		for _, filename := range files {
-			if filename == previous {
-				continue
-			}
-			previous = filename
-			if !strings.HasSuffix(filename, ".go") {
-				continue
-			}
-			parsed, err := parser.ParseFile(token.NewFileSet(), filename, nil, parser.ImportsOnly)
-			if err != nil {
-				return "", fmt.Errorf("checking ignored Go source %s for cgo: %w", filename, err)
-			}
-			for _, imported := range parsed.Imports {
-				path, err := strconv.Unquote(imported.Path.Value)
-				if err != nil {
-					return "", fmt.Errorf("reading import in ignored Go source %s: %w", filename, err)
-				}
-				if path == "C" {
-					return pkg.PkgPath, nil
-				}
-			}
-		}
-		importPaths := make([]string, 0, len(pkg.Imports))
-		for importPath := range pkg.Imports {
-			importPaths = append(importPaths, importPath)
-		}
-		sort.Strings(importPaths)
-		for _, importPath := range importPaths {
-			if path, err := visit(pkg.Imports[importPath]); err != nil || path != "" {
-				return path, err
-			}
-		}
-		return "", nil
-	}
-	for _, pkg := range roots {
-		if path, err := visit(pkg); err != nil || path != "" {
-			return path, err
-		}
-	}
-	return "", nil
 }
 
 // interfaceCandidate is one non-empty interface eligible for cross-package
@@ -553,6 +495,7 @@ func extractPackage(pkg *packages.Package, candidates []interfaceCandidate) *Pac
 		Files:      pkg.GoFiles,
 	}
 	p.BuildConstraints = scanBuildConstraints(pkg)
+	p.CgoExcludedFiles = scanCgoExcludedFiles(pkg)
 	p.References = extractReferences(pkg, docs)
 
 	scope := pkg.Types.Scope()
@@ -1002,21 +945,75 @@ func scanBuildConstraints(pkg *packages.Package) []*BuildConstraint {
 			continue
 		}
 		expr, err := parseConstraint(source)
-		if err != nil || expr == nil {
+		if err != nil {
 			continue
 		}
-		decls := exportedDecls(path)
-		if len(decls) == 0 {
+		importsCgo, err := fileImportsCgo(path)
+		if err != nil {
 			continue
+		}
+		if expr == nil && !importsCgo {
+			continue
+		}
+		constraints := []string(nil)
+		if expr != nil {
+			constraints = append(constraints, expr.String())
+		}
+		reason := ""
+		if importsCgo {
+			reason = "cgo-disabled-import-C"
 		}
 		out = append(out, &BuildConstraint{
-			File:          path,
-			Constraints:   []string{expr.String()},
-			ExportedDecls: decls,
+			File:           path,
+			Constraints:    constraints,
+			ExcludedReason: reason,
+			ExportedDecls:  exportedDecls(path),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].File < out[j].File })
 	return out
+}
+
+// scanCgoExcludedFiles returns only import-C files Go excluded from this
+// package under the explicit CGO_ENABLED=0 authority environment. Active
+// files are compiled and type-checked; cgo files are retained as excluded
+// source facts instead of poisoning the transitive import closure.
+func scanCgoExcludedFiles(pkg *packages.Package) []string {
+	var out []string
+	for _, filename := range pkg.IgnoredFiles {
+		importsCgo, err := fileImportsCgo(filename)
+		if err == nil && importsCgo {
+			out = append(out, filename)
+		}
+	}
+	sort.Strings(out)
+	if len(out) < 2 {
+		return out
+	}
+	deduped := out[:1]
+	for _, filename := range out[1:] {
+		if filename != deduped[len(deduped)-1] {
+			deduped = append(deduped, filename)
+		}
+	}
+	return deduped
+}
+
+func fileImportsCgo(filename string) (bool, error) {
+	file, err := parser.ParseFile(token.NewFileSet(), filename, nil, parser.ImportsOnly)
+	if err != nil {
+		return false, err
+	}
+	for _, imported := range file.Imports {
+		path, err := strconv.Unquote(imported.Path.Value)
+		if err != nil {
+			return false, err
+		}
+		if path == "C" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // parseConstraint parses one build-constraint line from a source file.

@@ -28,6 +28,9 @@ use backend_frontend_go::legacy::{ConfiguredGoOracle, OracleError};
 use backend_frontend_java::legacy::harness::{
     Harness, HarnessError, HarnessRequest, JavaSource, JdkToolchain,
 };
+use backend_frontend_python::legacy::checker::{
+    NativePythonProjectAuthority, PythonProjectControl, PythonProjectReport, PythonProjectSource,
+};
 use backend_frontend_python::legacy::{
     CheckerError as PyreflyError, CheckerReport as PythonReport, ExtractionError, Pyrefly, extract,
 };
@@ -38,8 +41,12 @@ use backend_frontend_rust::legacy::{
 use backend_frontend_typescript::legacy::{
     CheckerError as TypeScriptCheckerError, ExplicitTypeScriptChecker, Report as TypeScriptReport,
 };
+use backend_library::interface::{CompilerToolFailure, CompilerToolIssue, CompilerToolRequirement};
 use backend_semantic::vocabulary::{LanguageProfile, NativeTool, TypeScriptSource};
+use backend_version::{ContentId, ToolchainDomain};
 use thiserror::Error;
+
+use super::typescript_host::TypeScriptProjectHost;
 
 /// Bounded, explicit package-authority adapters selected by the application
 /// owner.  Every optional field names one independently configured producer;
@@ -50,8 +57,10 @@ pub struct PackageAuthorityConfiguration<'config> {
     pub clang: Option<&'config ClangAuthorityEnvironment>,
     /// TypeScript checker that stages the explicitly selected package root.
     pub typescript: Option<&'config ExplicitTypeScriptChecker>,
-    /// Python pyrefly adapter that owns inferred-type and resolution facts.
-    pub python: Option<&'config Pyrefly>,
+    /// Closed host inputs for request-scoped project compiler admission.
+    pub typescript_project_host: Option<&'config TypeScriptProjectHost>,
+    /// Closed Python checker state; a ready value carries both adapter and version proof.
+    pub python_checker: super::LocalRuntimePythonCheckerAdmission<&'config Pyrefly>,
     /// Rust Analyzer/Cargo authority configuration.
     pub rust: Option<RustPackageAuthorityConfiguration<'config>>,
     /// Go package oracle selected by the application owner.
@@ -72,7 +81,8 @@ impl PackageAuthorityConfiguration<'static> {
     pub const UNAVAILABLE: Self = Self {
         clang: None,
         typescript: None,
-        python: None,
+        typescript_project_host: None,
+        python_checker: super::LocalRuntimePythonCheckerAdmission::Unconfigured,
         rust: None,
         go: None,
         csharp: None,
@@ -278,6 +288,114 @@ pub fn enter_package_authority<'request, 'config>(
     enter_package_authority_with_go_authority_witness(request, None)
 }
 
+/// Admits one native Python project session through the same closed package
+/// authority guards used by the per-module entry point.
+pub(crate) fn enter_python_project_authority(
+    request: PackageAuthorityRequest<'_, '_>,
+    package_name: &str,
+    sources: &[PythonProjectSource<'_>],
+) -> Result<PythonProjectReport, PackageAuthorityError> {
+    checkpoint(
+        request.control,
+        request.profile,
+        PackageAuthorityStage::Admission,
+    )?;
+    if request.unit_key != &CompilationUnitKeyV2::PackageRoot {
+        return Err(PackageAuthorityError::CompilationUnitMismatch {
+            profile: request.profile,
+        });
+    }
+    let resolved = require_resolved_toolchain(request.toolchain, request.profile)?;
+    request
+        .source_path
+        .strip_prefix(request.package_root)
+        .map_err(|_| PackageAuthorityError::SourceOutsidePackage {
+            profile: request.profile,
+            package_root: request.package_root.to_path_buf().into_boxed_path(),
+            source_path: request.source_path.to_path_buf().into_boxed_path(),
+        })?;
+    let LanguageProfile::Python(profile) = request.profile else {
+        return Err(PackageAuthorityError::AdapterUnavailable {
+            profile: request.profile,
+            stage: PackageAuthorityStage::PythonPyrefly,
+        });
+    };
+    let super::LocalRuntimePythonCheckerAdmission::Native { authority } =
+        request.configuration.python_checker
+    else {
+        return Err(PackageAuthorityError::RequiredTool {
+            profile: request.profile,
+            stage: PackageAuthorityStage::PythonPyrefly,
+            issue: CompilerToolIssue {
+                requirement: CompilerToolRequirement::PythonChecker,
+                failure: CompilerToolFailure::Missing,
+            },
+        });
+    };
+    require_native_python_toolchain(authority, resolved.identity)?;
+    let report = authority
+        .analyze_project(
+            request.package_root,
+            package_name,
+            sources,
+            profile,
+            PythonProjectControl {
+                cancelled: request.control.cancelled,
+                deadline: request.control.deadline,
+            },
+        )
+        .map_err(PackageAuthorityError::PythonPyrefly)?;
+    checkpoint(
+        request.control,
+        request.profile,
+        PackageAuthorityStage::PythonPyrefly,
+    )?;
+    Ok(report)
+}
+
+fn require_native_python_toolchain(
+    authority: NativePythonProjectAuthority,
+    observed: ContentId<ToolchainDomain>,
+) -> Result<(), PackageAuthorityError> {
+    let expected = ContentId::from_digest(authority.producer_identity().as_bytes());
+    if observed != expected {
+        return Err(
+            PackageAuthorityError::NativePythonToolchainIdentityMismatch { expected, observed },
+        );
+    }
+    Ok(())
+}
+
+fn require_python_checker(
+    admission: super::LocalRuntimePythonCheckerAdmission<&Pyrefly>,
+    profile: LanguageProfile,
+) -> Result<&Pyrefly, PackageAuthorityError> {
+    match admission {
+        super::LocalRuntimePythonCheckerAdmission::Native { .. }
+        | super::LocalRuntimePythonCheckerAdmission::Unconfigured => {
+            Err(PackageAuthorityError::RequiredTool {
+                profile,
+                stage: PackageAuthorityStage::PythonPyrefly,
+                issue: CompilerToolIssue {
+                    requirement: CompilerToolRequirement::PythonChecker,
+                    failure: CompilerToolFailure::Missing,
+                },
+            })
+        }
+        super::LocalRuntimePythonCheckerAdmission::ProbeFailed { .. } => {
+            Err(PackageAuthorityError::RequiredTool {
+                profile,
+                stage: PackageAuthorityStage::PythonPyrefly,
+                issue: CompilerToolIssue {
+                    requirement: CompilerToolRequirement::PythonChecker,
+                    failure: CompilerToolFailure::ProbeFailed,
+                },
+            })
+        }
+        super::LocalRuntimePythonCheckerAdmission::Ready { adapter, .. } => Ok(adapter),
+    }
+}
+
 pub(crate) fn enter_package_authority_with_go_authority_witness<'request, 'config>(
     request: PackageAuthorityRequest<'request, 'config>,
     captured_go_authority: Option<&GoPackageAuthorityWitness>,
@@ -376,12 +494,6 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 PackageAuthorityOwner::TypeScript { profile, report }
             }
             LanguageProfile::Python(profile) => {
-                let pyrefly = request.configuration.python.ok_or(
-                    PackageAuthorityError::AdapterUnavailable {
-                        profile: request.profile,
-                        stage: PackageAuthorityStage::PythonPyrefly,
-                    },
-                )?;
                 let syntax = extract(request.source, profile)
                     .map_err(PackageAuthorityError::PythonSyntax)?;
                 checkpoint(
@@ -389,9 +501,50 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     request.profile,
                     PackageAuthorityStage::PythonSyntax,
                 )?;
-                let report = pyrefly
-                    .analyze_in_package(request.source, profile, &syntax, request.package_root)
-                    .map_err(PackageAuthorityError::PythonPyrefly)?;
+                let report = match request.configuration.python_checker {
+                    super::LocalRuntimePythonCheckerAdmission::Native { authority } => {
+                        require_native_python_toolchain(authority, resolved.identity)?;
+                        let relative_path = request
+                            .source_path
+                            .strip_prefix(request.package_root)
+                            .expect("source root already admitted")
+                            .to_str()
+                            .ok_or_else(|| {
+                                PackageAuthorityError::PythonPyrefly(PyreflyError::ProjectReport {
+                                    path: request.source_path.to_path_buf(),
+                                    message: "non-UTF8 selected module path".to_owned(),
+                                })
+                            })?;
+                        let source = std::str::from_utf8(request.source).map_err(|_| {
+                            PackageAuthorityError::PythonPyrefly(PyreflyError::ProjectReport {
+                                path: request.source_path.to_path_buf(),
+                                message: "non-UTF8 selected source".to_owned(),
+                            })
+                        })?;
+                        let project = authority
+                            .analyze_project(
+                                request.package_root,
+                                "selected",
+                                &[PythonProjectSource {
+                                    relative_path,
+                                    source,
+                                }],
+                                profile,
+                                PythonProjectControl {
+                                    cancelled: request.control.cancelled,
+                                    deadline: request.control.deadline,
+                                },
+                            )
+                            .map_err(PackageAuthorityError::PythonPyrefly)?;
+                        project
+                            .module(relative_path)
+                            .expect("selected native module")
+                            .clone()
+                    }
+                    admission => require_python_checker(admission, request.profile)?
+                        .analyze_in_package(request.source, profile, &syntax, request.package_root)
+                        .map_err(PackageAuthorityError::PythonPyrefly)?,
+                };
                 checkpoint(
                     request.control,
                     request.profile,
@@ -777,6 +930,16 @@ pub enum PackageAuthorityError {
         /// Exact missing producer stage.
         stage: PackageAuthorityStage,
     },
+    /// A specifically named native or auxiliary producer is missing or failed its version probe.
+    #[error("required tool {issue:?} for {profile:?} is not admitted during {stage:?}")]
+    RequiredTool {
+        /// Requested profile.
+        profile: LanguageProfile,
+        /// Exact missing or unadmitted producer stage.
+        stage: PackageAuthorityStage,
+        /// Exact required executable and bounded admission failure.
+        issue: CompilerToolIssue,
+    },
     /// The selected source path was not beneath the explicitly selected root.
     #[error(
         "package authority source {source_path:?} is outside root {package_root:?} for {profile:?}"
@@ -850,9 +1013,25 @@ pub enum PackageAuthorityError {
         /// Requested C-family profile.
         profile: LanguageProfile,
     },
+    /// The resolved toolchain is not the domain-encoded identity of the admitted native producer.
+    #[error(
+        "compiled native Python toolchain identity differs: expected {expected:?}, observed {observed:?}"
+    )]
+    NativePythonToolchainIdentityMismatch {
+        /// Expected domain-encoded toolchain identity derived from the admitted producer digest.
+        expected: ContentId<ToolchainDomain>,
+        /// Exact resolved toolchain identity selected by the runtime.
+        observed: ContentId<ToolchainDomain>,
+    },
     /// The package-aware TypeScript checker returned its exact terminal.
     #[error(transparent)]
     TypeScript(#[from] TypeScriptCheckerError),
+    /// Native TSZ project admission returned its exact terminal.
+    #[error(transparent)]
+    TypeScriptTsz(#[from] backend_frontend_typescript::TszAuthorityError),
+    /// The selected project's TypeScript compiler or module installation was rejected.
+    #[error(transparent)]
+    TypeScriptProjectHost(#[from] super::typescript_host::TypeScriptProjectHostError),
     /// Python syntax extraction returned its exact terminal.
     #[error(transparent)]
     PythonSyntax(#[from] ExtractionError),
@@ -898,7 +1077,8 @@ mod tests {
         PackageAuthorityConfiguration {
             clang: None,
             typescript: None,
-            python: None,
+            typescript_project_host: None,
+            python_checker: crate::application::LocalRuntimePythonCheckerAdmission::Unconfigured,
             rust: None,
             go: None,
             csharp: None,
@@ -939,7 +1119,8 @@ mod tests {
         let configuration = PackageAuthorityConfiguration {
             clang: None,
             typescript: Some(&typescript),
-            python: None,
+            typescript_project_host: None,
+            python_checker: crate::application::LocalRuntimePythonCheckerAdmission::Unconfigured,
             rust: None,
             go: Some(&go),
             csharp: None,

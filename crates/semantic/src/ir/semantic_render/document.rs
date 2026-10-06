@@ -683,8 +683,16 @@ fn emit_document<Reader: SemanticReader + ?Sized>(
     write_text(entity, output, kind_name(row.kind))?;
     write_text(entity, output, ",visibility=")?;
     write_text(entity, output, visibility_name(row.visibility))?;
-    write_text(entity, output, ",name=")?;
-    emit_atom(reader, entity, row.name, output)?;
+    match row.name {
+        crate::ir::ItemName::Named(name) => {
+            write_text(entity, output, ",name=")?;
+            emit_atom(reader, entity, name, output)?;
+        }
+        crate::ir::ItemName::AnonymousCallable(anchor) => {
+            write_text(entity, output, ",anonymous-callable-anchor=")?;
+            emit_atom(reader, entity, anchor, output)?;
+        }
+    }
     write_text(entity, output, ",parentage=")?;
     emit_parentage(entity, output, row.authority.parentage)?;
     write_text(entity, output, ",extension=")?;
@@ -1174,8 +1182,16 @@ fn emit_entity_coordinate<Reader: SemanticReader + ?Sized>(
         })?;
     write_text(owner, output, "entity(identity=")?;
     emit_identity(owner, output, row.version.identity())?;
-    write_text(owner, output, ",name=")?;
-    emit_atom(reader, owner, row.name, output)?;
+    match row.name {
+        crate::ir::ItemName::Named(name) => {
+            write_text(owner, output, ",name=")?;
+            emit_atom(reader, owner, name, output)?;
+        }
+        crate::ir::ItemName::AnonymousCallable(anchor) => {
+            write_text(owner, output, ",anonymous-callable-anchor=")?;
+            emit_atom(reader, owner, anchor, output)?;
+        }
+    }
     write_text(owner, output, ")")
 }
 
@@ -1561,8 +1577,16 @@ fn emit_doc_fragment<Reader: SemanticReader + ?Sized>(
                             })?;
                     write_text(owner, output, "local(")?;
                     emit_identity(owner, output, target_row.version.identity())?;
-                    write_text(owner, output, ",name=")?;
-                    emit_atom(reader, owner, target_row.name, output)?;
+                    match target_row.name {
+                        crate::ir::ItemName::Named(name) => {
+                            write_text(owner, output, ",name=")?;
+                            emit_atom(reader, owner, name, output)?;
+                        }
+                        crate::ir::ItemName::AnonymousCallable(anchor) => {
+                            write_text(owner, output, ",anonymous-callable-anchor=")?;
+                            emit_atom(reader, owner, anchor, output)?;
+                        }
+                    }
                     write_text(owner, output, ")")?;
                 }
                 crate::ir::LinkTarget::External(target) => {

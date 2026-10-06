@@ -18,11 +18,8 @@ use std::path::Path;
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 fn registry() -> TestResult<RelationAdmissionRegistry> {
-    Ok(RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| std::io::Error::other(format!("source registry: {error:?}")))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| std::io::Error::other(format!("semantic registry: {error:?}")))?)
+    super::super::product_relation_registry()
+        .map_err(|error| std::io::Error::other(error.to_string()).into())
 }
 
 fn open_current(

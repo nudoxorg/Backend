@@ -1,0 +1,1 @@
+{"heading":"index","records":[{"title":"index request accepted","operand":"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T124128Z-typescript-configured-abcafe5a/project","tags":["intent d28cb7b9","pending","read `backend health` for readiness"]}],"answer":"product","detail":"full","budget":{"bytes":360,"estimatedTokens":90,"bytesPerToken":4}}

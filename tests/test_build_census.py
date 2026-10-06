@@ -40,6 +40,39 @@ def process(
 
 
 class CargoCensusTests(unittest.TestCase):
+    def test_compiler_groups_count_known_and_foreign_runtime_owners_by_process_group(self) -> None:
+        known = census.ProcessRecord(
+            pid=701,
+            ppid=1,
+            pgid=700,
+            start_token="known-runtime-start",
+            executable="/private/bin/backend-locald",
+            argv=None,
+        )
+        foreign_row = census._PsRow(702, 1, 702, 501, "Fri Oct 2 03:04:26 2026", "locald")
+        unknown = census._unknown_runtime_owner_candidate(foreign_row)
+        snapshot = census.ProcessSnapshot(
+            records={known.pid: known, unknown.pid: unknown},
+            started_at_utc="2026-10-06T17:00:00+00:00",
+            finished_at_utc="2026-10-06T17:00:01+00:00",
+            complete=True,
+            issue_counts={},
+            race_counts={},
+            effective_uid=1000,
+            visible_process_count=2,
+            captured_argv_bytes=0,
+            captured_argv_processes=0,
+            argv_budget_exhausted=False,
+        )
+
+        groups = census.compiler_groups(snapshot, [])
+
+        self.assertEqual([group["pgid"] for group in groups], [700, 702])
+        self.assertEqual(groups[0]["kind"], "runtime-owner")
+        self.assertEqual(groups[0]["classification"], "runtime-owner")
+        self.assertEqual(groups[1]["kind"], "runtime-owner")
+        self.assertEqual(groups[1]["classification"], "unknown")
+
     def test_host_process_rows_parse_darwin_and_linux_fixed_start_fields(self) -> None:
         rows = census._parse_ps_rows(
             "  41  12  41  501 Fri Oct  2 03:04:26 2026 cargo\n"

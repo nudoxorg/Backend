@@ -46,4 +46,6 @@ mod tests;
 pub(super) use host::LeaseHost;
 pub use limits::{LeaseLimitError, SubscriptionLeaseLimits};
 pub(super) use owner::OwnerSource;
+#[cfg(test)]
+pub(super) use state::ReleaseReason;
 pub(super) use table::LeaseTable;

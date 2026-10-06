@@ -13,7 +13,7 @@
 //! reader learns it once.
 
 use crate::drive::ContinuationCursor;
-use crate::fault::Fault;
+use crate::fault::{Fault, Operand};
 use backend_library::{
     AcquisitionDecision, AdvisoryPackageDto, DeclarationChange, DeclarationRecord, DependencyFacts,
     DiffRecord, ForgeFact, ForgePackageDetailRecord, ForgePackagePin, ForgePackageRecord,
@@ -46,7 +46,7 @@ pub struct ProductRecord {
     forge_package_detail: Option<ForgePackageDetailRecord>,
     discovery_details: Option<RegistryDiscoveryCandidate>,
     package_group: Option<RegistryPackageSearchGroup>,
-    history_status: Option<SemanticHistoryPublicationStatus>,
+    history_status: Option<ProductSemanticHistoryStatus>,
     compiler_profile: Option<SemanticLanguageProfile>,
 }
 
@@ -103,11 +103,11 @@ impl ProductRecord {
         self
     }
 
-    /// Attaches the exact owner-reported derived-history state for one
-    /// immutable semantic generation.
+    /// Attaches a concise typed projection of the owner-reported history state.
+    /// The complete publication proof remains in the exact semantic data facet.
     #[must_use]
-    pub fn with_history_status(mut self, status: SemanticHistoryPublicationStatus) -> Self {
-        self.history_status = Some(status);
+    pub fn with_history_status(mut self, status: &SemanticHistoryPublicationStatus) -> Self {
+        self.history_status = Some(ProductSemanticHistoryStatus::from(status));
         self
     }
 
@@ -166,9 +166,9 @@ impl ProductRecord {
         self.package_group.as_ref()
     }
 
-    /// Returns the exact owner-reported derived-history state, when present.
+    /// Returns the concise derived-history state shown beside this row.
     #[must_use]
-    pub fn history_status(&self) -> Option<&SemanticHistoryPublicationStatus> {
+    pub fn history_status(&self) -> Option<&ProductSemanticHistoryStatus> {
         self.history_status.as_ref()
     }
 
@@ -177,7 +177,133 @@ impl ProductRecord {
     pub const fn compiler_profile(&self) -> Option<SemanticLanguageProfile> {
         self.compiler_profile
     }
+}
 
+/// Readable publication state copied from the immutable semantic version reply.
+///
+/// A row needs status, retry/refusal detail, and the published reference. The
+/// complete selected catalog and per-image proofs belong to
+/// [`ProductSemanticData::Versions`], where callers copy the exact source
+/// operand. Keeping that catalog out of this projection prevents duplicating
+/// it in the same answer. This value never re-reads mutable owner state.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProductSemanticHistoryStatus {
+    /// This version is not the committed selection.
+    NotSelected,
+    /// The selection has not been reconciled with derived history.
+    NotRequested {
+        /// Exact committed selection identity.
+        selection_id: [u8; 32],
+    },
+    /// A worker is producing derived history for the selection.
+    Pending {
+        /// Exact committed selection identity.
+        selection_id: [u8; 32],
+    },
+    /// The selection is waiting for a bounded worker slot.
+    Deferred {
+        /// Exact committed selection identity.
+        selection_id: [u8; 32],
+        /// Owner-reported retry detail.
+        reason: String,
+    },
+    /// Complete package history has been published at the exact reference.
+    Published {
+        /// Exact committed selection identity.
+        selection_id: [u8; 32],
+        /// Commit containing the derived history.
+        commit: [u8; 32],
+        /// Reference containing the published commit.
+        reference: String,
+        /// Concise proof status for the readable row.
+        proof: ProductSemanticHistoryProofSummary,
+    },
+    /// Derived history production or admission was refused.
+    Refused {
+        /// Exact committed selection identity.
+        selection_id: [u8; 32],
+        /// Owner-reported refusal detail.
+        reason: String,
+    },
+    /// The selected marker advanced while the worker ran.
+    Superseded {
+        /// Exact superseded selection identity.
+        selection_id: [u8; 32],
+    },
+}
+
+/// Publication facts needed by a readable row, without its per-image catalog.
+///
+/// Older product DTOs carried the complete proof here. Deserialization accepts
+/// those additional fields; the exact proof in new DTOs lives in `semantic_data`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProductSemanticHistoryProofSummary {
+    /// Exact public branch tip verified by the publication proof.
+    pub reference_tip: [u8; 32],
+    /// Persisted input replay authority reported by the proof.
+    pub input_replay_status: backend_library::SemanticHistoryInputReplayStatus,
+}
+
+impl From<&SemanticHistoryPublicationStatus> for ProductSemanticHistoryStatus {
+    fn from(status: &SemanticHistoryPublicationStatus) -> Self {
+        match status {
+            SemanticHistoryPublicationStatus::NotSelected => Self::NotSelected,
+            SemanticHistoryPublicationStatus::NotRequested { selection_id } => Self::NotRequested {
+                selection_id: *selection_id,
+            },
+            SemanticHistoryPublicationStatus::Pending { selection_id } => Self::Pending {
+                selection_id: *selection_id,
+            },
+            SemanticHistoryPublicationStatus::Deferred {
+                selection_id,
+                reason,
+            } => Self::Deferred {
+                selection_id: *selection_id,
+                reason: reason.clone(),
+            },
+            SemanticHistoryPublicationStatus::Published {
+                selection_id,
+                commit,
+                reference,
+                proof,
+            } => Self::Published {
+                selection_id: *selection_id,
+                commit: *commit,
+                reference: reference.clone(),
+                proof: ProductSemanticHistoryProofSummary {
+                    reference_tip: proof.reference_tip,
+                    input_replay_status: proof.input_replay_status,
+                },
+            },
+            SemanticHistoryPublicationStatus::Refused {
+                selection_id,
+                reason,
+            } => Self::Refused {
+                selection_id: *selection_id,
+                reason: reason.clone(),
+            },
+            SemanticHistoryPublicationStatus::Superseded { selection_id } => Self::Superseded {
+                selection_id: *selection_id,
+            },
+        }
+    }
+}
+
+/// Exact semantic operand/result facet, separate from readable display rows.
+/// Values are copied from the typed reply, never reconstructed from row labels.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
+pub enum ProductSemanticData {
+    /// Exact compiler-version records usable as the shape read source operand.
+    Versions(Box<[SemanticVersionRecord]>),
+    /// Existing shape wire egress after certificate-bearing direct admission.
+    Shapes(backend_library::SemanticShapeExport),
 }
 
 /// One rendered product answer.
@@ -191,6 +317,18 @@ pub struct ProductView {
     index_job: Option<IndexJobProjection>,
     index_operation: Option<backend_library::IndexOperationObservation>,
     selected_source_frontier: Option<SelectedProjectSourceFrontier>,
+    package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
+    semantic_data: Option<ProductSemanticData>,
+    package_discovery: Option<PackageDiscoveryProjection>,
+}
+
+/// Exact metadata lookup evidence retained by CLI and MCP presentation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PackageDiscoveryProjection {
+    /// Exact immutable registry package requested by the caller.
+    pub package: backend_library::PackageCoordinate,
+    /// Source-only positive, negative, or unavailable evidence.
+    pub observation: backend_library::RegistryPackageDiscoveryObservation,
 }
 
 /// Exact owner-issued indexing state retained alongside its readable projection.
@@ -359,6 +497,12 @@ impl ProductView {
         self.note.as_deref()
     }
 
+    /// Returns exact package metadata evidence, separate from acquired records.
+    #[must_use]
+    pub fn package_discovery(&self) -> Option<&PackageDiscoveryProjection> {
+        self.package_discovery.as_ref()
+    }
+
     /// Returns the fault explaining a fact the configured feed does not publish.
     #[must_use]
     pub const fn fault(&self) -> Option<&Fault> {
@@ -384,10 +528,24 @@ impl ProductView {
         self.index_operation.as_ref()
     }
 
+    /// Complete bounded compiler shape egress, never a reconstructed source projection.
+    #[must_use]
+    pub fn semantic_data(&self) -> Option<&ProductSemanticData> {
+        self.semantic_data.as_ref()
+    }
+
     /// Returns the exact selected Project membership captured with this semantic query.
     #[must_use]
     pub fn selected_source_frontier(&self) -> Option<&SelectedProjectSourceFrontier> {
         self.selected_source_frontier.as_ref()
+    }
+
+    /// Returns the exact typed page needed to resume selected source membership.
+    #[must_use]
+    pub fn package_source_membership_page(
+        &self,
+    ) -> Option<&backend_library::PackageSourceMembershipPageResultV1> {
+        self.package_source_membership_page.as_ref()
     }
 
     /// Returns this product answer's typed owner cursor, when it has one.
@@ -448,6 +606,14 @@ impl ProductView {
         self
     }
 
+    fn with_package_source_membership_page(
+        mut self,
+        page: backend_library::PackageSourceMembershipPageResultV1,
+    ) -> Self {
+        self.package_source_membership_page = Some(page);
+        self
+    }
+
     /// Records one product answer a surface assembled itself.
     ///
     /// An accepted intent is not a [`SurfaceReply`], but it is the same shape
@@ -463,6 +629,9 @@ impl ProductView {
             index_job: None,
             index_operation: None,
             selected_source_frontier: None,
+            package_source_membership_page: None,
+            semantic_data: None,
+            package_discovery: None,
         }
     }
 
@@ -478,6 +647,9 @@ impl ProductView {
             index_job: None,
             index_operation: None,
             selected_source_frontier: None,
+            package_source_membership_page: None,
+            semantic_data: None,
+            package_discovery: None,
         }
     }
 
@@ -491,6 +663,9 @@ impl ProductView {
             index_job: None,
             index_operation: None,
             selected_source_frontier: None,
+            package_source_membership_page: None,
+            semantic_data: None,
+            package_discovery: None,
         }
     }
 
@@ -504,6 +679,9 @@ impl ProductView {
             index_job: None,
             index_operation: None,
             selected_source_frontier: None,
+            package_source_membership_page: None,
+            semantic_data: None,
+            package_discovery: None,
         }
     }
 
@@ -517,6 +695,9 @@ impl ProductView {
             index_job: None,
             index_operation: None,
             selected_source_frontier: None,
+            package_source_membership_page: None,
+            semantic_data: None,
+            package_discovery: None,
         }
     }
 }
@@ -544,6 +725,44 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         }
         SurfaceReply::Explored(records) => ProductView::rows("explore", registry_rows(records)),
         SurfaceReply::Package(records) => ProductView::rows("package", registry_rows(records)),
+        SurfaceReply::PackageDiscovery {
+            package,
+            observation,
+        } => {
+            use backend_library::RegistryPackageDiscoveryObservation;
+            let mut view = match observation {
+                RegistryPackageDiscoveryObservation::Observed { candidates } => ProductView::rows(
+                    "package",
+                    candidates
+                        .iter()
+                        .cloned()
+                        .map(RegistrySearchHit::Discovered)
+                        .map(|hit| registry_search_hit_row(&hit))
+                        .collect(),
+                ),
+                RegistryPackageDiscoveryObservation::Missing { .. } => ProductView::scalar(
+                    "package",
+                    format!(
+                        "{} is absent from the observed registry package metadata",
+                        package.as_str()
+                    ),
+                ),
+                RegistryPackageDiscoveryObservation::Unavailable { reason, .. } => {
+                    ProductView::scalar(
+                        "package",
+                        format!(
+                            "registry package metadata is unavailable: {}",
+                            reason.as_str()
+                        ),
+                    )
+                }
+            };
+            view.package_discovery = Some(PackageDiscoveryProjection {
+                package: package.clone(),
+                observation: observation.clone(),
+            });
+            view
+        }
         SurfaceReply::PackageDetails { registry, forge } => {
             let mut rows = registry_rows(registry);
             rows.extend(forge.iter().map(forge_package_detail_row));
@@ -575,17 +794,105 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::Dependencies(facts) => dependency_view("dependencies", facts),
         SurfaceReply::PackageGraphPage(page) => package_graph_page_view(page),
         SurfaceReply::Owner(metadata) => owner_view(metadata),
-        SurfaceReply::SemanticVersions(records) => ProductView::rows(
-            "semantic-versions",
-            records.iter().map(semantic_row).collect(),
-        )
-        .with_selected_source_frontier(
-            records
-                .iter()
-                .find_map(|record| record.selected_source_frontier.clone()),
-        ),
+        SurfaceReply::SemanticVersions(records) => {
+            let mut view = ProductView::rows(
+                "semantic-versions",
+                records.iter().map(semantic_row).collect(),
+            )
+            .with_selected_source_frontier(
+                records
+                    .iter()
+                    .find_map(|record| record.selected_source_frontier.clone()),
+            );
+            view.semantic_data = Some(ProductSemanticData::Versions(records.clone()));
+            view
+        }
         SurfaceReply::SemanticVersionSelected(record) => {
-            ProductView::rows("select-semantic-version", vec![semantic_row(record)])
+            let mut view = ProductView::rows("select-semantic-version", vec![semantic_row(record)]);
+            view.semantic_data = Some(ProductSemanticData::Versions(Box::new([record.clone()])));
+            view
+        }
+        SurfaceReply::SemanticShapes(export) => {
+            let mut view = ProductView::stated(
+                "semantic-shapes",
+                "Compiler-owned shapes with exact selected-source provenance.",
+            );
+            view.semantic_data = Some(ProductSemanticData::Shapes(export.clone()));
+            view
+        }
+        SurfaceReply::PackageSourceMembershipPage(page) => {
+            let view = match page {
+                backend_library::PackageSourceMembershipPageResultV1::Page {
+                    package,
+                    file_count,
+                    files,
+                    next,
+                    exclusions,
+                    ..
+                } => {
+                    let mut rows = Vec::with_capacity(files.len().saturating_add(1));
+                    rows.push(ProductRecord::new(
+                        format!(
+                            "{} · {} selected source file(s)",
+                            package.as_str(),
+                            files.len()
+                        ),
+                        None,
+                        vec![
+                            format!("Project frontier: {file_count} file(s) total"),
+                            format!("exclusions: {exclusions:?}"),
+                            format!(
+                                "continuation: {}",
+                                if next.is_some() {
+                                    "available"
+                                } else {
+                                    "complete"
+                                }
+                            ),
+                        ],
+                    ));
+                    rows.extend(files.iter().map(|file| {
+                        ProductRecord::new(
+                            file.path.clone(),
+                            Some(file.path.clone()),
+                            vec![
+                                format!("{:?}", file.language),
+                                format!(
+                                    "InputContentSchema v1: {}",
+                                    encode_id(&file.content_version)
+                                ),
+                                file.source_identity.map_or_else(
+                                    || "SourceFactDomain: not recorded".to_owned(),
+                                    |identity| {
+                                        format!("SourceFactDomain: {}", encode_id(&identity))
+                                    },
+                                ),
+                            ],
+                        )
+                    }));
+                    ProductView::rows("package-source-membership", rows)
+                }
+                backend_library::PackageSourceMembershipPageResultV1::Stale { package, .. } => {
+                    ProductView::scalar(
+                        "package-source-membership",
+                        format!(
+                            "The selected Project source root for {} changed. Start a fresh first page.",
+                            package.as_str()
+                        ),
+                    )
+                }
+                backend_library::PackageSourceMembershipPageResultV1::Unavailable {
+                    package,
+                    reason,
+                } => ProductView::scalar(
+                    "package-source-membership",
+                    format!(
+                        "The selected source membership for {} is unavailable: {reason:?}.",
+                        package.as_str()
+                    ),
+                ),
+            };
+            view.with_package_source_membership_page(page.clone())
         }
         SurfaceReply::IndexStarted(result) => {
             index_start_view(result).with_index_job(IndexJobProjection::Started(result.clone()))
@@ -607,7 +914,10 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
 fn index_operation_view(observation: &backend_library::IndexOperationObservation) -> ProductView {
     use backend_library::IndexOperationObservation as O;
     match observation {
-        O::OutsideReceiptWindow { operation_key, request_digest } => ProductView::rows(
+        O::OutsideReceiptWindow {
+            operation_key,
+            request_digest,
+        } => ProductView::rows(
             "index-operation",
             vec![ProductRecord::new(
                 "index operation receipt is outside the evidence window".to_owned(),
@@ -637,19 +947,80 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                     let _published_root = receipt.view_root();
                     "published".to_owned()
                 }
-                backend_library::IndexOperationState::Failed { detail, .. } => {
-                    format!("failed: {}", detail.as_str())
+                backend_library::IndexOperationState::Failed {
+                    detail,
+                    compiler_failure,
+                    ..
+                } => {
+                    let sentence = compiler_failure.as_ref().map_or_else(
+                        || detail.as_str().to_owned(),
+                        |failure| {
+                            Fault::compiler_refusal(
+                                failure,
+                                Operand::Text(status.operation_key.to_hex()),
+                            )
+                            .cause()
+                            .sentence()
+                            .to_owned()
+                        },
+                    );
+                    format!("failed: {sentence}")
                 }
                 backend_library::IndexOperationState::Unresolved { detail, .. } => {
                     format!("unresolved: {}", detail.as_str())
                 }
             };
+            let mut facts = vec![format!("package {}", status.package.as_str())];
+            if let Some(capture) = &status.source_capture {
+                facts.push(format!(
+                    "source capture root {} at sequence {}",
+                    lower_hex(capture.workspace_root()),
+                    capture.workspace_sequence()
+                ));
+                for profile in capture.profiles() {
+                    let semantic = match profile.state {
+                        backend_library::IndexOperationSemanticProfileState::Pending { prior } => {
+                            match prior {
+                                Some(prior) => format!(
+                                    "pending; prior generation {} is retained as stale",
+                                    lower_hex(&prior.generation)
+                                ),
+                                None => "pending; no prior generation is selected".to_owned(),
+                            }
+                        }
+                        backend_library::IndexOperationSemanticProfileState::Unavailable {
+                            reason,
+                        } => format!("unavailable: {reason:?}"),
+                        backend_library::IndexOperationSemanticProfileState::Failed {
+                            prior,
+                            reason,
+                        } => format!(
+                            "failed: {reason:?}; prior generation {} is retained as stale",
+                            lower_hex(&prior.generation)
+                        ),
+                        backend_library::IndexOperationSemanticProfileState::Published {
+                            generation,
+                            coverage,
+                        } => format!(
+                            "published generation {} with {coverage:?} coverage",
+                            lower_hex(&generation)
+                        ),
+                    };
+                    facts.push(format!(
+                        "{} source version {} ({} files, observation {}): {semantic}",
+                        profile.profile.name().unwrap_or("unknown profile"),
+                        lower_hex(&profile.source_version),
+                        profile.source_count,
+                        profile.observation_sequence,
+                    ));
+                }
+            }
             ProductView::rows(
                 "index-operation",
                 vec![ProductRecord::new(
                     format!("index operation {state}"),
                     Some(status.operation_key.to_hex()),
-                    vec![format!("package {}", status.package.as_str())],
+                    facts,
                 )],
             )
         }
@@ -677,12 +1048,18 @@ fn index_terminal_view(terminal: &IndexJobTerminal) -> ProductView {
     let (state, detail) = match &terminal.outcome {
         IndexJobOutcome::Published => ("published", None),
         IndexJobOutcome::Refused(reason) => ("refused", Some(reason.as_str())),
+        IndexJobOutcome::RefusedWithCompilerFailure { .. } => ("refused", None),
         IndexJobOutcome::Cancelled => ("cancelled", None),
         IndexJobOutcome::Failed(reason) => ("failed", Some(reason.as_str())),
     };
     let mut tags = vec![format!("outcome {state}")];
     if let Some(detail) = detail {
         tags.push(detail.to_owned());
+    }
+    if let IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } = &terminal.outcome {
+        let fault =
+            Fault::compiler_refusal(failure, Operand::Text(index_ticket_json(&terminal.ticket)));
+        tags.push(fault.cause().sentence().to_owned());
     }
     ProductView::rows(
         "index-job-terminal",
@@ -1896,7 +2273,7 @@ fn reference_row(record: &backend_library::ReferenceRecord) -> ProductRecord {
     ];
     match record.evidence.source.as_ref() {
         Some(span) => tags.push(format!(
-            "{}:{}-{}",
+            "{} [bytes{}..{})",
             span.file.as_str(),
             span.start,
             span.end
@@ -1935,7 +2312,7 @@ fn semantic_row(record: &SemanticVersionRecord) -> ProductRecord {
             KeyTag::from_key(&record.generation.to_bytes())
         ),
         format!("{} artifact(s)", record.artifacts),
-        format!("{} semantic byte(s)", record.semantic_bytes),
+        format!("{} manifest byte(s)", record.semantic_bytes),
     ];
     if let PackageReference::Purl(coordinate) = &record.package {
         tags.push(format!("version {}", coordinate.version()));
@@ -1966,7 +2343,7 @@ fn semantic_row(record: &SemanticVersionRecord) -> ProductRecord {
         Some(encode_id(&record.generation.to_bytes())),
         tags,
     )
-    .with_history_status(record.history_status.clone())
+    .with_history_status(&record.history_status)
     .with_compiler_profile(record.profile)
 }
 
@@ -1984,22 +2361,21 @@ fn semantic_history_label(status: &SemanticHistoryPublicationStatus) -> &'static
     }
 }
 
-/// Renders bounded-cardinality semantic publication status as one readable
-/// line while retaining exact identifiers and references in the typed DTO.
-pub(crate) fn semantic_history_details(status: &SemanticHistoryPublicationStatus) -> String {
+/// Renders the typed status projection; the exact proof stays in the facet.
+pub(crate) fn semantic_history_details(status: &ProductSemanticHistoryStatus) -> String {
     match status {
-        SemanticHistoryPublicationStatus::NotSelected => {
+        ProductSemanticHistoryStatus::NotSelected => {
             "Derived history is not selected for this compiler generation.".to_owned()
         }
-        SemanticHistoryPublicationStatus::NotRequested { selection_id } => format!(
+        ProductSemanticHistoryStatus::NotRequested { selection_id } => format!(
             "Derived history has not been requested for committed selection {}.",
             full_digest(selection_id),
         ),
-        SemanticHistoryPublicationStatus::Pending { selection_id } => format!(
+        ProductSemanticHistoryStatus::Pending { selection_id } => format!(
             "Derived history publication is pending for committed selection {}.",
             full_digest(selection_id),
         ),
-        SemanticHistoryPublicationStatus::Deferred {
+        ProductSemanticHistoryStatus::Deferred {
             selection_id,
             reason,
         } => format!(
@@ -2007,7 +2383,7 @@ pub(crate) fn semantic_history_details(status: &SemanticHistoryPublicationStatus
             full_digest(selection_id),
             single_line(reason),
         ),
-        SemanticHistoryPublicationStatus::Published {
+        ProductSemanticHistoryStatus::Published {
             selection_id,
             commit,
             reference,
@@ -2019,7 +2395,7 @@ pub(crate) fn semantic_history_details(status: &SemanticHistoryPublicationStatus
             single_line(reference),
             full_digest(&proof.reference_tip),
         ),
-        SemanticHistoryPublicationStatus::Refused {
+        ProductSemanticHistoryStatus::Refused {
             selection_id,
             reason,
         } => format!(
@@ -2027,7 +2403,7 @@ pub(crate) fn semantic_history_details(status: &SemanticHistoryPublicationStatus
             full_digest(selection_id),
             single_line(reason),
         ),
-        SemanticHistoryPublicationStatus::Superseded { selection_id } => format!(
+        ProductSemanticHistoryStatus::Superseded { selection_id } => format!(
             "Derived history publication was superseded for selection {}; the owner will reconcile the current selection.",
             full_digest(selection_id),
         ),
@@ -2202,8 +2578,14 @@ mod tests {
             SurfaceReply::IndexOperationStatus(observation.clone()),
         ] {
             let view = product_view(&reply);
-            assert!(view.index_job().is_none(), "a tombstone cannot create a live job or terminal receipt");
-            assert_eq!(view.records()[0].operand(), Some(operation_key.to_hex().as_str()));
+            assert!(
+                view.index_job().is_none(),
+                "a tombstone cannot create a live job or terminal receipt"
+            );
+            assert_eq!(
+                view.records()[0].operand(),
+                Some(operation_key.to_hex().as_str())
+            );
             for rendered in [
                 crate::markdown::product(&view),
                 crate::text::product(&view, crate::Theme::plain()),
@@ -2303,6 +2685,74 @@ mod tests {
                 .and_then(|page| page.next_cursor)
                 .as_deref(),
             Some("mcp1-signed-token")
+        );
+    }
+
+    #[test]
+    fn package_source_membership_dto_preserves_typed_cursor_and_reads_older_payloads() {
+        let package = PackageReference::parse("demo-package").expect("local package");
+        let cursor = backend_library::PackageSourceMembershipCursorV1 {
+            schema: backend_library::PACKAGE_SOURCE_MEMBERSHIP_SCHEMA,
+            package: package.clone(),
+            project_key: [0x11; 32],
+            source_relation_root: [0x22; 32],
+            source_version: [0x33; 32],
+            membership_page: 0,
+            membership_offset: 0,
+            ordinal: 0,
+            last_file_key: [0x44; 32],
+        };
+        let page = backend_library::PackageSourceMembershipPageResultV1::Page {
+            package,
+            project_key: [0x11; 32],
+            source_relation_root: [0x22; 32],
+            source_version: [0x33; 32],
+            file_count: 2,
+            start_offset: 0,
+            scope: backend_library::PackageSourceMembershipScopeV1::IndexedProjectMembership,
+            exclusions: backend_library::PackageSourceMembershipExclusionsV1::NotCaptured,
+            files: vec![backend_library::PackageSourceMembershipFileV1 {
+                file_key: [0x44; 32],
+                path: "src/index.ts".to_owned(),
+                language: backend_library::PackageSourceMembershipLanguageV1::TypeScript,
+                content_version: [0x55; 32],
+                source_identity: Some([0x66; 32]),
+            }]
+            .into_boxed_slice(),
+            next: Some(cursor),
+        };
+        let view = product_view(&SurfaceReply::PackageSourceMembershipPage(page.clone()));
+        let dto = crate::dto::ProductDto::new(&view);
+        let encoded = serde_json::to_value(&dto).expect("product DTO JSON");
+        assert_eq!(
+            encoded["package_source_membership_page"]["next"]["last_file_key"][0],
+            0x44
+        );
+        assert_eq!(
+            encoded["package_source_membership_page"]["files"][0]["path"],
+            "src/index.ts"
+        );
+        assert_eq!(
+            encoded["package_source_membership_page"]["files"][0]["language"],
+            "typescript"
+        );
+        assert_eq!(
+            serde_json::from_value::<crate::dto::ProductDto>(encoded.clone())
+                .expect("current DTO round trip")
+                .package_source_membership_page,
+            Some(page)
+        );
+
+        let mut older_payload = encoded;
+        older_payload
+            .as_object_mut()
+            .expect("object DTO")
+            .remove("package_source_membership_page");
+        assert!(
+            serde_json::from_value::<crate::dto::ProductDto>(older_payload)
+                .expect("previous DTO without source page")
+                .package_source_membership_page
+                .is_none()
         );
     }
 
@@ -2453,6 +2903,19 @@ mod tests {
             backend_library::Cursor::for_view_root(&view),
         )
         .expect("checked published receipt");
+        let compiler_failure = backend_library::PackageCompilerFailure::from_package_terminal(
+            "classes/comparator.d.ts",
+            &backend_library::interface::CompilerTerminal::Toolchain {
+                source: backend_library::interface::SourceAuthority {
+                    identity: backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(b"declaration"),
+                    byte_len: 11,
+                },
+                language: backend_semantic::vocabulary::Language::TypeScript,
+                stage: backend_semantic::vocabulary::Stage::LowerIr,
+                selected: backend_semantic::vocabulary::NativeTool::TypeScriptCompiler,
+                configured: None,
+            },
+        ).expect("valid setup terminal").expect("closed compiler refusal");
         let observations = [
             IndexOperationObservation::Unknown { operation_key: key },
             IndexOperationObservation::OutsideReceiptWindow {
@@ -2472,6 +2935,12 @@ mod tests {
             IndexOperationObservation::Known(status(IndexOperationState::Failed {
                 reason: IndexOperationFailureReason::WorkerFailed,
                 detail: ProductText::new("bounded worker detail").expect("failure detail"),
+                compiler_failure: None,
+            })),
+            IndexOperationObservation::Known(status(IndexOperationState::Failed {
+                reason: IndexOperationFailureReason::Refused,
+                detail: ProductText::from_static("compiler rejected declaration"),
+                compiler_failure: Some(compiler_failure.clone()),
             })),
             IndexOperationObservation::Known(status(IndexOperationState::Unresolved {
                 reason: IndexOperationUnresolvedReason::RestartedDuringPublication,
@@ -2487,6 +2956,22 @@ mod tests {
             ] {
                 let view = product_view(&reply);
                 assert_eq!(view.index_operation(), Some(&observation));
+                if let IndexOperationObservation::Known(status) = &observation
+                    && let IndexOperationState::Failed {
+                        compiler_failure: Some(_),
+                        ..
+                    } = &status.state
+                {
+                    let human = &view.records()[0].title;
+                    assert!(human.contains(
+                        "classes/comparator.d.ts: setup/toolchain_configuration_mismatch"
+                    ));
+                    assert!(human.contains("Set NUDOX_TSC"));
+                    assert!(
+                        !human.contains("source_identity"),
+                        "digest JSON belongs only in the typed DTO"
+                    );
+                }
                 let dto = crate::dto::ProductDto::new(&view);
                 assert_eq!(dto.index_operation.as_ref(), Some(&observation));
                 let encoded = serde_json::to_value(&dto).expect("full product DTO");
@@ -2521,10 +3006,60 @@ mod tests {
         }
     }
 
+    #[test]
+    fn durable_index_operation_view_exposes_structural_capture_and_pending_semantics() {
+        use backend_library::{
+            CompileExecutionIntent, IndexOperationKey, IndexOperationObservation,
+            IndexOperationSemanticProfileState, IndexOperationSourceCaptureReceipt,
+            IndexOperationSourceProfile, IndexOperationState, IndexOperationStatus,
+            SemanticLanguageProfile,
+        };
+
+        let key = IndexOperationKey::from_bytes([0x29; 32]).expect("operation key");
+        let package = PackageReference::parse("/workspace/project").expect("local package");
+        let receipt = IndexOperationSourceCaptureReceipt::from_checked_parts(
+            key,
+            [0x31; 32],
+            [0x32; 32],
+            11,
+            vec![IndexOperationSourceProfile {
+                profile: SemanticLanguageProfile::from_name("rust").expect("Rust profile"),
+                source_version: [0x33; 32],
+                input_digest: [0x34; 32],
+                observation_sequence: 12,
+                source_count: 7,
+                state: IndexOperationSemanticProfileState::Pending { prior: None },
+            }]
+            .into_boxed_slice(),
+        )
+        .expect("checked source receipt");
+        let observation = IndexOperationObservation::Known(
+            IndexOperationStatus::new(
+                key,
+                package,
+                CompileExecutionIntent::Interactive,
+                IndexOperationState::Accepted,
+            )
+            .with_source_capture(Some(receipt.clone())),
+        );
+        let view = product_view(&SurfaceReply::IndexOperationStatus(observation.clone()));
+        assert_eq!(view.index_operation(), Some(&observation));
+        let tags = view.records()[0].tags();
+        assert!(
+            tags.iter()
+                .any(|tag| tag.contains(&lower_hex(receipt.workspace_root())))
+        );
+        assert!(
+            tags.iter()
+                .any(|tag| tag.contains("pending; no prior generation"))
+        );
+        assert!(tags.iter().any(|tag| tag.contains("source version")));
+    }
+
     fn published_history_proof(
         commit: [u8; 32],
     ) -> backend_library::SemanticHistoryPublicationProof {
-        backend_library::SemanticHistoryPublicationProof {
+        let mut proof = backend_library::SemanticHistoryPublicationProof {
             selection: backend_library::SemanticHistorySelectionStamp {
                 namespace: [0x12; 16],
                 profile: SemanticLanguageProfile::from_name("rust").expect("Rust profile"),
@@ -2534,17 +3069,26 @@ mod tests {
                 closure_id: [0x15; 32],
                 catalog_root: [0x16; 32],
             },
-            image: backend_library::SemanticHistoryImageIdentity {
-                artifact_ordinal: 0,
-                semantic_generation: [0x17; 32],
-                manifest_root: [0x18; 32],
-                image_identity: [0x19; 32],
-            },
+            target_package: "test-package".to_owned(),
+            target_coordinate: "test-coordinate".to_owned(),
+            package_identity: [0; 32],
+            images: vec![backend_library::SemanticHistoryImagePublicationProof {
+                image: backend_library::SemanticHistoryImageIdentity {
+                    artifact_ordinal: 0,
+                    semantic_generation: [0x17; 32],
+                    manifest_root: [0x18; 32],
+                    image_identity: [0x19; 32],
+                },
+                history_commit: commit,
+                parent_commits: Box::new([]),
+            }]
+            .into_boxed_slice(),
             reference_tip: commit,
             reachable_commit: commit,
-            parent_commits: Box::new([]),
             input_replay_status: backend_library::SemanticHistoryInputReplayStatus::Unproven,
-        }
+        };
+        proof.package_identity = proof.recompute_package_identity();
+        proof
     }
 
     #[test]
@@ -2604,17 +3148,28 @@ mod tests {
             ),
         ];
         for (status, selected, label) in cases {
-            let view = semantic_versions_view(semantic_version(
+            let record = semantic_version(
                 status.clone(),
                 selected,
                 false,
                 SemanticVersionFreshness::Unverified,
-            ));
+            );
+            let view = semantic_versions_view(record.clone());
             let row = view.records().first().expect("semantic generation row");
-            assert_eq!(row.history_status(), Some(&status));
+            assert_eq!(
+                row.history_status(),
+                Some(&ProductSemanticHistoryStatus::from(&status))
+            );
             assert!(row.tags().iter().any(|tag| tag == label));
             let dto = crate::dto::ProductDto::new(&view);
-            assert_eq!(dto.records[0].history_status, Some(status));
+            assert_eq!(
+                dto.records[0].history_status,
+                Some(ProductSemanticHistoryStatus::from(&status))
+            );
+            assert_eq!(
+                dto.semantic_data,
+                Some(ProductSemanticData::Versions(Box::new([record])))
+            );
         }
     }
 
@@ -2631,7 +3186,10 @@ mod tests {
             SemanticVersionFreshness::Unverified,
         ));
         let row = view.records().first().expect("semantic generation row");
-        assert_eq!(row.history_status(), Some(&status));
+        assert_eq!(
+            row.history_status(),
+            Some(&ProductSemanticHistoryStatus::from(&status))
+        );
         assert!(row.tags().iter().any(|tag| tag == "partial"));
         assert!(
             row.tags()
@@ -2685,7 +3243,10 @@ mod tests {
             SemanticVersionFreshness::Unverified,
         ));
         let row = view.records().first().expect("semantic generation row");
-        assert_eq!(row.history_status(), Some(&status));
+        assert_eq!(
+            row.history_status(),
+            Some(&ProductSemanticHistoryStatus::from(&status))
+        );
         assert!(row.tags().iter().any(|tag| tag == "partial"));
         assert!(row.tags().iter().any(|tag| tag == "freshness unverified"));
         assert!(
@@ -2696,12 +3257,15 @@ mod tests {
         assert!(!row.tags().iter().any(|tag| tag == "complete"));
         assert!(!row.tags().iter().any(|tag| tag == "current source input"));
         assert!(crate::markdown::product(&view).contains(&reference));
-        let details = semantic_history_details(&status);
+        let details = semantic_history_details(&ProductSemanticHistoryStatus::from(&status));
         assert!(details.contains(&format!("verified tip: {}", "7c".repeat(32))));
         assert!(details.contains("Compiler input replay remains unproven"));
 
         let dto = crate::dto::ProductDto::new(&view);
-        assert_eq!(dto.records[0].history_status, Some(status.clone()));
+        assert_eq!(
+            dto.records[0].history_status,
+            Some(ProductSemanticHistoryStatus::from(&status))
+        );
         let value = serde_json::to_value(&dto).expect("semantic product DTO");
         assert_eq!(value["records"][0]["history_status"]["state"], "published");
         assert_eq!(
@@ -2709,8 +3273,32 @@ mod tests {
             reference
         );
         let decoded: crate::dto::ProductDto =
-            serde_json::from_value(value).expect("typed status DTO round trip");
-        assert_eq!(decoded.records[0].history_status, Some(status));
+            serde_json::from_value(value.clone()).expect("typed status DTO round trip");
+        assert_eq!(
+            decoded.records[0].history_status,
+            Some(ProductSemanticHistoryStatus::from(&status))
+        );
+        assert!(
+            value["records"][0]["history_status"]["proof"]
+                .get("images")
+                .is_none()
+        );
+        assert_eq!(
+            value["semantic_data"]["value"][0]["history_status"],
+            serde_json::to_value(&status).expect("complete immutable history proof")
+        );
+
+        // A previous row DTO contains the full proof. It still decodes to the
+        // readable projection, with all exact operand fields in the facet.
+        let mut older = value;
+        older["records"][0]["history_status"] =
+            serde_json::to_value(&status).expect("previous complete row status");
+        let decoded: crate::dto::ProductDto =
+            serde_json::from_value(older).expect("previous full proof row DTO");
+        assert_eq!(
+            decoded.records[0].history_status,
+            Some(ProductSemanticHistoryStatus::from(&status))
+        );
     }
 
     #[test]
@@ -2733,7 +3321,10 @@ mod tests {
             .records()
             .first()
             .expect("selected compiler generation remains");
-        assert_eq!(row.history_status(), Some(&status));
+        assert_eq!(
+            row.history_status(),
+            Some(&ProductSemanticHistoryStatus::from(&status))
+        );
         assert!(row.tags().iter().any(|tag| tag == "partial"));
         assert!(
             row.tags()
@@ -2944,5 +3535,46 @@ mod tests {
         );
         assert!(json["records"][0]["forge_package_detail"]["package_coordinate"].is_null());
         assert_eq!(json["records"][0]["operand"], source_text);
+    }
+
+    #[test]
+    fn package_metadata_closed_states_survive_shared_json_presentation() {
+        use backend_library::{PackageCoordinate, RegistryPackageDiscoveryObservation};
+        let package = PackageCoordinate::parse("pkg:pypi/requests@0.0.0").expect("package");
+        for observation in [
+            RegistryPackageDiscoveryObservation::Missing {
+                source: [1; 32],
+                proof: [2; 32],
+                observed_at_millis: 100,
+            },
+            RegistryPackageDiscoveryObservation::Unavailable {
+                source: Some([1; 32]),
+                reason: backend_library::ProductText::new("HTTP 503".to_owned()).expect("reason"),
+            },
+        ] {
+            let reply = SurfaceReply::PackageDiscovery {
+                package: package.clone(),
+                observation: observation.clone(),
+            };
+            assert_eq!(reply.id(), backend_library::CommandId::Package);
+            reply.admit(backend_library::CommandId::Package).expect("admitted metadata reply");
+            let view = product_view(&reply);
+            let dto = crate::dto::ProductDto::new(&view);
+            let encoded = serde_json::to_value(&dto).expect("shared JSON");
+            assert_eq!(encoded["package_discovery"]["package"], package.as_str());
+            let decoded: crate::dto::ProductDto =
+                serde_json::from_value(encoded).expect("closed typed presentation roundtrip");
+            assert_eq!(
+                decoded
+                    .package_discovery
+                    .expect("metadata evidence")
+                    .observation,
+                observation
+            );
+            assert!(
+                view.records().is_empty(),
+                "negative evidence is never an acquired row"
+            );
+        }
     }
 }

@@ -1,0 +1,120 @@
+{
+  "source": "353f12e9cc315b8e0e4ddf48317716f7a22ac22c",
+  "source_after": "353f12e9cc315b8e0e4ddf48317716f7a22ac22c",
+  "dirty_after": "",
+  "binary_sha256": "b3de9ba6a6673527dc41c0aa0ca5e608f882353062e913ea6873be940d106a25",
+  "results": [
+    {
+      "filter": "builtin::commands::semantic_shapes::tests::image_atom_projection_preserves_empty_space_nul_unicode_and_padding",
+      "exit": 0,
+      "stop": null,
+      "matched": true,
+      "elapsed": 1.522,
+      "log_sha256": "a1468a80eb864ce69e1608e5bb88bfdcf21f77246bce4f1d2a1521ed14d44e89"
+    },
+    {
+      "filter": "builtin::commands::semantic_shapes::tests::owned_callable_binding_is_captured_empty_but_nested_function_is_unavailable",
+      "exit": 0,
+      "stop": null,
+      "matched": true,
+      "elapsed": 0.51,
+      "log_sha256": "14632e3105ae05dc6db94321e53dfa2c1603a3cffb88a12f217f8938454a7d1b"
+    },
+    {
+      "filter": "builtin::projection::tests::shape_row_certificate_carries_only_direct_shape_and_package_identities",
+      "exit": 0,
+      "stop": null,
+      "matched": true,
+      "elapsed": 0.508,
+      "log_sha256": "11a21b408477c946a0a86dd246c75bbc761da97be45bb68254717324f57a8bb3"
+    },
+    {
+      "filter": "builtin::semantic_authority::tests::freshness_key_rejects_immutable_generation_rows",
+      "exit": 0,
+      "stop": null,
+      "matched": true,
+      "elapsed": 0.512,
+      "log_sha256": "fc615b98058cc476feb6cd4cd4daf3ae3ea9afaa3fa85de3e579380133a3bbfa"
+    },
+    {
+      "filter": "builtin::registry::tests::failed_advisory_refresh_cold_reopen_keeps_findings_and_marks_unavailable",
+      "exit": 0,
+      "stop": null,
+      "matched": true,
+      "elapsed": 1.518,
+      "log_sha256": "22c7e580006a14fe75a7b5f8c9a062d1990eda6c13aa0bd87b07055719ac88fb"
+    },
+    {
+      "filter": "runtime_policy::tests::codec_rejects_missing_unknown_version_and_noncanonical_fields",
+      "exit": 0,
+      "stop": null,
+      "matched": true,
+      "elapsed": 0.511,
+      "log_sha256": "b0e278b0961d9ea2804923596e49c26bf256647a8879b3d3c8eba6847a72d701"
+    },
+    {
+      "filter": "builtin::owner_fairness_tests::queued_daemon_query_and_lease_expiry_progress_under_sustained_remote_admission",
+      "exit": 101,
+      "stop": null,
+      "matched": true,
+      "elapsed": 0.514,
+      "log_sha256": "d195b58f0104558489700e1a3d31f0bd46eccdd00d5f744a86101202ac3dbd8e"
+    },
+    {
+      "filter": "service::lease::publication_tests::a_reset_slower_than_its_allowance_is_abandoned_and_its_lease_released_on_the_same_socket",
+      "exit": 101,
+      "stop": null,
+      "matched": true,
+      "elapsed": 10.105,
+      "log_sha256": "9858999677029e4adf56d46ef85c9191aa9fbb76d62c6be97b655d19641549b8"
+    },
+    {
+      "filter": "service::lease::publication_tests::a_slow_but_legitimate_multipage_reset_completes_within_the_allowance_it_earned",
+      "exit": 101,
+      "stop": null,
+      "matched": true,
+      "elapsed": 0.519,
+      "log_sha256": "c148728a793985dfe536911c21387c1d5bc02c6cf808bc7b7c1a980c472cfbdb"
+    },
+    {
+      "filter": "service::lease::tests::an_open_answered_with_events_holds_the_lease_at_the_batch_cursor_and_resume_advances_it",
+      "exit": 0,
+      "stop": null,
+      "matched": true,
+      "elapsed": 0.517,
+      "log_sha256": "f36b0189ff9697553139465f3ed72e24edca00730c4a299e3f17c759131ec3d8"
+    },
+    {
+      "filter": "service::lease::tests::an_open_whose_exact_outer_reply_does_not_fit_does_not_retain_or_consume_a_lease",
+      "exit": 0,
+      "stop": null,
+      "matched": true,
+      "elapsed": 0.518,
+      "log_sha256": "ac97ee7799c6435a9676452f6e7e3625b7a088b043277500dd565551038fe38c"
+    },
+    {
+      "filter": "builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations",
+      "exit": 101,
+      "stop": null,
+      "matched": true,
+      "elapsed": 0.518,
+      "log_sha256": "a356cf76993b0b00dcae57390621d03820e81fdefb04c36bc3a97255ff81cee7"
+    },
+    {
+      "filter": "builtin::ingest::tests::reused_scan_drops_compiler_text_until_a_sibling_edit",
+      "exit": 0,
+      "stop": null,
+      "matched": true,
+      "elapsed": 0.52,
+      "log_sha256": "48c4af956bafddd7f6701f5dd416f32f481efa4540605da9cc16cb0c96eaab0f"
+    },
+    {
+      "filter": "builtin::browse::tests::two_real_workspaces_keep_exact_context_authority_with_bounded_lru",
+      "exit": 0,
+      "stop": null,
+      "matched": true,
+      "elapsed": 41.825,
+      "log_sha256": "e2d46106a45832d101f02e5c17092453a38d867386bf675296002f7a6dbc0a5d"
+    }
+  ]
+}

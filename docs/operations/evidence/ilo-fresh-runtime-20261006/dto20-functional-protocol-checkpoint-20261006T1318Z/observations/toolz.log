@@ -1,0 +1,87 @@
+{"label": "tool-node", "exit": 0, "seconds": 0.02358, "stdout_bytes": 9, "fault": null}
+{"label": "tool-tsc", "exit": 0, "seconds": 0.206271, "stdout_bytes": 14, "fault": null}
+{"label": "tool-python3", "exit": 0, "seconds": 0.003936, "stdout_bytes": 15, "fault": null}
+{"label": "tool-pyrefly", "exit": 0, "seconds": 0.00416, "stdout_bytes": 20, "fault": null}
+{"label": "tool-go", "exit": 0, "seconds": 0.004499, "stdout_bytes": 32, "fault": null}
+{"label": "fresh-health", "exit": 0, "seconds": 3.454912, "stdout_bytes": 802, "fault": null}
+{"label": "fresh-add", "exit": 2, "seconds": 11.93169, "stdout_bytes": 692, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: index job did not publish: Refused(ProductText(\"local semantic compilation failed; prior selected semantic generation was preserved: package semantic output could not be prepared for transport: fused compiler outputs could not form a canonical semantic package\\ncaused by: publication includes fragment identity ArtifactId(040ca6716694888280fcb01b02b41fd5769695ca461f028f0b19f433d38d207f) more than once\"))", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project", "slug": "protocol"}}
+{"label": "post-add-health", "exit": 0, "seconds": 0.164706, "stdout_bytes": 804, "fault": null}
+{"label": "post-add-packages", "exit": 0, "seconds": 0.011678, "stdout_bytes": 522, "fault": null}
+{"label": "post-add-semantic-versions", "exit": 0, "seconds": 0.02804, "stdout_bytes": 141, "fault": null}
+{"label": "query-search-compose", "exit": 0, "seconds": 1.092499, "stdout_bytes": 8026, "fault": null}
+{"label": "query-resolve", "exit": 0, "seconds": 0.013394, "stdout_bytes": 6121, "fault": null}
+{"label": "query-outline-bare", "exit": 0, "seconds": 0.030868, "stdout_bytes": 16320, "fault": null}
+{"label": "query-outline-dot", "exit": 0, "seconds": 0.039406, "stdout_bytes": 16320, "fault": null}
+{"label": "query-outline-absolute", "exit": 0, "seconds": 0.039992, "stdout_bytes": 16320, "fault": null}
+{"label": "query-source-f8fa0ba5", "exit": 0, "seconds": 0.01173, "stdout_bytes": 2056, "fault": null}
+{"label": "query-show-f8fa0ba5", "exit": 0, "seconds": 0.343749, "stdout_bytes": 4077, "fault": null}
+{"label": "query-references-f8fa0ba5", "exit": 0, "seconds": 0.205868, "stdout_bytes": 1885, "fault": null}
+{"label": "query-graph-f8fa0ba5", "exit": 0, "seconds": 0.228522, "stdout_bytes": 1635, "fault": null}
+{"label": "query-related-f8fa0ba5", "exit": 0, "seconds": 0.210995, "stdout_bytes": 4110, "fault": null}
+{"label": "query-source-394277e3", "exit": 0, "seconds": 0.012976, "stdout_bytes": 2722, "fault": null}
+{"label": "query-show-394277e3", "exit": 0, "seconds": 0.253106, "stdout_bytes": 3239, "fault": null}
+{"label": "query-references-394277e3", "exit": 0, "seconds": 0.224793, "stdout_bytes": 653, "fault": null}
+{"label": "query-graph-394277e3", "exit": 0, "seconds": 0.290766, "stdout_bytes": 2199, "fault": null}
+{"label": "query-related-394277e3", "exit": 0, "seconds": 0.278517, "stdout_bytes": 2199, "fault": null}
+{"label": "query-source-43feb1a6", "exit": 0, "seconds": 0.012426, "stdout_bytes": 1998, "fault": null}
+{"label": "query-show-43feb1a6", "exit": 0, "seconds": 0.249136, "stdout_bytes": 3051, "fault": null}
+{"label": "query-references-43feb1a6", "exit": 0, "seconds": 0.314247, "stdout_bytes": 706, "fault": null}
+{"label": "query-graph-43feb1a6", "exit": 0, "seconds": 0.240732, "stdout_bytes": 1717, "fault": null}
+{"label": "query-related-43feb1a6", "exit": 0, "seconds": 0.212773, "stdout_bytes": 2345, "fault": null}
+{"label": "after-job-cancel-health", "exit": 0, "seconds": 0.124941, "stdout_bytes": 804, "fault": null}
+{"label": "retry-add", "exit": 2, "seconds": 10.15851, "stdout_bytes": 692, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: index job did not publish: Refused(ProductText(\"local semantic compilation failed; prior selected semantic generation was preserved: package semantic output could not be prepared for transport: fused compiler outputs could not form a canonical semantic package\\ncaused by: publication includes fragment identity ArtifactId(040ca6716694888280fcb01b02b41fd5769695ca461f028f0b19f433d38d207f) more than once\"))", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project", "slug": "protocol"}}
+{"label": "retry-health", "exit": 0, "seconds": 0.111932, "stdout_bytes": 804, "fault": null}
+{"label": "retry-search-compose", "exit": 0, "seconds": 0.790971, "stdout_bytes": 8026, "fault": null}
+{"label": "retry-resolve", "exit": 0, "seconds": 0.013265, "stdout_bytes": 6121, "fault": null}
+{"label": "edit-add", "exit": 2, "seconds": 10.278171, "stdout_bytes": 692, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: index job did not publish: Refused(ProductText(\"local semantic compilation failed; prior selected semantic generation was preserved: package semantic output could not be prepared for transport: fused compiler outputs could not form a canonical semantic package\\ncaused by: publication includes fragment identity ArtifactId(040ca6716694888280fcb01b02b41fd5769695ca461f028f0b19f433d38d207f) more than once\"))", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project", "slug": "protocol"}}
+{"label": "edit-health", "exit": 0, "seconds": 0.105255, "stdout_bytes": 804, "fault": null}
+{"label": "edit-resolve", "exit": 0, "seconds": 0.013824, "stdout_bytes": 6121, "fault": null}
+{"label": "edit-source-f8fa0ba5", "exit": 0, "seconds": 0.009683, "stdout_bytes": 2058, "fault": null}
+{"label": "edit-document-f8fa0ba5", "exit": 0, "seconds": 0.317465, "stdout_bytes": 4079, "fault": null}
+{"label": "edit-source-394277e3", "exit": 0, "seconds": 0.014541, "stdout_bytes": 2722, "fault": null}
+{"label": "edit-document-394277e3", "exit": 0, "seconds": 0.269387, "stdout_bytes": 3239, "fault": null}
+{"label": "edit-source-43feb1a6", "exit": 0, "seconds": 0.01408, "stdout_bytes": 1998, "fault": null}
+{"label": "edit-document-43feb1a6", "exit": 0, "seconds": 0.238546, "stdout_bytes": 3051, "fault": null}
+{"label": "remove-project", "exit": 0, "seconds": 4.468937, "stdout_bytes": 358, "fault": null}
+{"label": "removed-health", "exit": 0, "seconds": 0.155612, "stdout_bytes": 802, "fault": null}
+{"label": "removed-source-f8fa0ba5", "exit": 2, "seconds": 0.012489, "stdout_bytes": 314, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose", "slug": "protocol"}}
+{"label": "removed-show-f8fa0ba5", "exit": 2, "seconds": 0.012347, "stdout_bytes": 314, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose", "slug": "protocol"}}
+{"label": "removed-references-f8fa0ba5", "exit": 2, "seconds": 0.005806, "stdout_bytes": 158, "fault": {"answer": "fault", "cause": "malformed", "detail": "references target is absent from the selected view", "operand": "", "slug": "invalid-query"}}
+{"label": "removed-graph-f8fa0ba5", "exit": 2, "seconds": 0.011787, "stdout_bytes": 370, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: semantic graph source is absent from the selected view", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose", "slug": "protocol"}}
+{"label": "removed-source-394277e3", "exit": 2, "seconds": 0.012659, "stdout_bytes": 319, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc", "slug": "protocol"}}
+{"label": "removed-show-394277e3", "exit": 2, "seconds": 0.011977, "stdout_bytes": 319, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc", "slug": "protocol"}}
+{"label": "removed-references-394277e3", "exit": 2, "seconds": 0.005648, "stdout_bytes": 158, "fault": {"answer": "fault", "cause": "malformed", "detail": "references target is absent from the selected view", "operand": "", "slug": "invalid-query"}}
+{"label": "removed-graph-394277e3", "exit": 2, "seconds": 0.012186, "stdout_bytes": 375, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: semantic graph source is absent from the selected view", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc", "slug": "protocol"}}
+{"label": "removed-source-43feb1a6", "exit": 2, "seconds": 0.013086, "stdout_bytes": 319, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left", "slug": "protocol"}}
+{"label": "removed-show-43feb1a6", "exit": 2, "seconds": 0.012142, "stdout_bytes": 319, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left", "slug": "protocol"}}
+{"label": "removed-references-43feb1a6", "exit": 2, "seconds": 0.005928, "stdout_bytes": 158, "fault": {"answer": "fault", "cause": "malformed", "detail": "references target is absent from the selected view", "operand": "", "slug": "invalid-query"}}
+{"label": "removed-graph-43feb1a6", "exit": 2, "seconds": 0.012231, "stdout_bytes": 375, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: semantic graph source is absent from the selected view", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left", "slug": "protocol"}}
+{"label": "readd-project", "exit": 2, "seconds": 9.838245, "stdout_bytes": 692, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: index job did not publish: Refused(ProductText(\"local semantic compilation failed; prior selected semantic generation was preserved: package semantic output could not be prepared for transport: fused compiler outputs could not form a canonical semantic package\\ncaused by: publication includes fragment identity ArtifactId(040ca6716694888280fcb01b02b41fd5769695ca461f028f0b19f433d38d207f) more than once\"))", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project", "slug": "protocol"}}
+{"label": "readded-health", "exit": 0, "seconds": 0.117872, "stdout_bytes": 804, "fault": null}
+{"label": "readded-source-f8fa0ba5", "exit": 0, "seconds": 0.011502, "stdout_bytes": 2058, "fault": null}
+{"label": "readded-show-f8fa0ba5", "exit": 0, "seconds": 0.24994, "stdout_bytes": 4079, "fault": null}
+{"label": "readded-references-f8fa0ba5", "exit": 0, "seconds": 0.289554, "stdout_bytes": 1885, "fault": null}
+{"label": "readded-graph-f8fa0ba5", "exit": 0, "seconds": 0.235844, "stdout_bytes": 1635, "fault": null}
+{"label": "readded-source-394277e3", "exit": 0, "seconds": 0.013137, "stdout_bytes": 2722, "fault": null}
+{"label": "readded-show-394277e3", "exit": 0, "seconds": 0.286415, "stdout_bytes": 3239, "fault": null}
+{"label": "readded-references-394277e3", "exit": 0, "seconds": 0.233027, "stdout_bytes": 653, "fault": null}
+{"label": "readded-graph-394277e3", "exit": 0, "seconds": 0.221363, "stdout_bytes": 2199, "fault": null}
+{"label": "readded-source-43feb1a6", "exit": 0, "seconds": 0.012892, "stdout_bytes": 1998, "fault": null}
+{"label": "readded-show-43feb1a6", "exit": 0, "seconds": 0.314948, "stdout_bytes": 3051, "fault": null}
+{"label": "readded-references-43feb1a6", "exit": 0, "seconds": 0.269976, "stdout_bytes": 706, "fault": null}
+{"label": "readded-graph-43feb1a6", "exit": 0, "seconds": 0.210937, "stdout_bytes": 1717, "fault": null}
+{"label": "cold-health", "exit": 0, "seconds": 4.982141, "stdout_bytes": 804, "fault": null}
+{"label": "cold-search-compose", "exit": 0, "seconds": 1.196886, "stdout_bytes": 8048, "fault": null}
+{"label": "cold-source-f8fa0ba5", "exit": 0, "seconds": 0.011323, "stdout_bytes": 2058, "fault": null}
+{"label": "cold-show-f8fa0ba5", "exit": 0, "seconds": 0.266674, "stdout_bytes": 4079, "fault": null}
+{"label": "cold-references-f8fa0ba5", "exit": 0, "seconds": 0.325155, "stdout_bytes": 1885, "fault": null}
+{"label": "cold-graph-f8fa0ba5", "exit": 0, "seconds": 0.223072, "stdout_bytes": 1635, "fault": null}
+{"label": "cold-source-394277e3", "exit": 0, "seconds": 0.012939, "stdout_bytes": 2722, "fault": null}
+{"label": "cold-show-394277e3", "exit": 0, "seconds": 0.368387, "stdout_bytes": 3239, "fault": null}
+{"label": "cold-references-394277e3", "exit": 0, "seconds": 0.265799, "stdout_bytes": 653, "fault": null}
+{"label": "cold-graph-394277e3", "exit": 0, "seconds": 0.347537, "stdout_bytes": 2199, "fault": null}
+{"label": "cold-source-43feb1a6", "exit": 0, "seconds": 0.012846, "stdout_bytes": 1998, "fault": null}
+{"label": "cold-show-43feb1a6", "exit": 0, "seconds": 0.316878, "stdout_bytes": 3051, "fault": null}
+{"label": "cold-references-43feb1a6", "exit": 0, "seconds": 0.31776, "stdout_bytes": 706, "fault": null}
+{"label": "cold-graph-43feb1a6", "exit": 0, "seconds": 0.324896, "stdout_bytes": 1717, "fault": null}
+{"root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd", "source_unchanged": false, "accepted_project_pass": false, "remaining_owned_daemons": [], "journey_error": null}

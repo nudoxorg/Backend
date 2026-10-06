@@ -1,0 +1,205 @@
+{
+  "scope": "actual private-target local Mac debug build, opt-level s, no release/bundle acceptance",
+  "source_before": {
+    "revision": "039c360d286962a6cf19488fb86caabd1d8c93de",
+    "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+    "status": "",
+    "cargo_lock_sha256": "ae4af21a8c401aaad1a9c5769f5db6bd441f563ed8bbe7c009aee0ac3d0423b9"
+  },
+  "controls_before": {
+    "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/run-cargo": "19ca1d675bdcfe84cc967d49684a864e3f9a9b879732dfd413cc1588a4cbb4ce",
+    "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/cargo-wrapped": "531ffd52347889a24dc720f3a8b0cb786016f1affef37161044ab060dcd97a79",
+    "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/cargo-rustc-cache": "add011a45751151c5b13914888026da2f57a4752f56012a30e951480491afb7a",
+    "/Users/mileswirht/Downloads/backend/.local/devenv/development.sh": "70ba6d9492604f895898b8f40e448450fcb9d9f4ba64afdbbfcac1f10a2d7184"
+  },
+  "profile": "dev",
+  "opt_level": "s",
+  "jobs": 2,
+  "shared_slots": 6,
+  "host": "Darwin mileswirht 24.6.0 Darwin Kernel Version 24.6.0: Mon Jan 19 21:59:23 PST 2026; root:xnu-11417.140.69.708.3~1/RELEASE_ARM64_T6030 arm64",
+  "started_utc": "2026-10-06T10:55:44.733941+00:00",
+  "recorder_sha256": "2c48b26c1b39cef2bc8d5f292629f87d68c18fa131b23f0e9200bf33da610140",
+  "bounds": {
+    "launch_free_gib": 18,
+    "stop_free_gib": 16,
+    "own_aggregate_cap_bytes": 17179869184
+  },
+  "argv": [
+    "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/run-cargo",
+    "mcp",
+    "build",
+    "--locked",
+    "--offline",
+    "-p",
+    "backend-cli",
+    "-p",
+    "backend-mcp",
+    "-p",
+    "backend-locald",
+    "--message-format=json-render-diagnostics"
+  ],
+  "pid": 81738,
+  "exit": 0,
+  "elapsed_seconds": 566.9870169589994,
+  "finished_utc": "2026-10-06T11:05:11.696251+00:00",
+  "source_after": {
+    "revision": "039c360d286962a6cf19488fb86caabd1d8c93de",
+    "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+    "status": "",
+    "cargo_lock_sha256": "ae4af21a8c401aaad1a9c5769f5db6bd441f563ed8bbe7c009aee0ac3d0423b9"
+  },
+  "controls_after": {
+    "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/run-cargo": "19ca1d675bdcfe84cc967d49684a864e3f9a9b879732dfd413cc1588a4cbb4ce",
+    "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/cargo-wrapped": "531ffd52347889a24dc720f3a8b0cb786016f1affef37161044ab060dcd97a79",
+    "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/cargo-rustc-cache": "add011a45751151c5b13914888026da2f57a4752f56012a30e951480491afb7a",
+    "/Users/mileswirht/Downloads/backend/.local/devenv/development.sh": "70ba6d9492604f895898b8f40e448450fcb9d9f4ba64afdbbfcac1f10a2d7184"
+  },
+  "log_sha256": "0857a1db4762052502ef3bd5ab627d6eb57d3eed74753a144f1ff4cfe8a31bc4",
+  "log_bytes": 1038408,
+  "artifacts": {
+    "backend-mcp": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/apps/mcp#backend-mcp@0.2.0",
+      "manifest_path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/apps/mcp/Cargo.toml",
+      "target": {
+        "kind": [
+          "bin"
+        ],
+        "crate_types": [
+          "bin"
+        ],
+        "name": "backend-mcp",
+        "src_path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/apps/mcp/src/main.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": false,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "s",
+        "debuginfo": 1,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "features": [
+        "default"
+      ],
+      "filenames": [
+        "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/target/debug/backend-mcp"
+      ],
+      "executable": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/target/debug/backend-mcp",
+      "fresh": false
+    },
+    "backend-cli": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/apps/cli#backend-cli@0.2.0",
+      "manifest_path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/apps/cli/Cargo.toml",
+      "target": {
+        "kind": [
+          "bin"
+        ],
+        "crate_types": [
+          "bin"
+        ],
+        "name": "backend-cli",
+        "src_path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/apps/cli/src/main.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": false,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "s",
+        "debuginfo": 1,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "features": [],
+      "filenames": [
+        "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/target/debug/backend-cli"
+      ],
+      "executable": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/target/debug/backend-cli",
+      "fresh": false
+    },
+    "backend-locald": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/apps/locald#backend-locald@0.2.0",
+      "manifest_path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/apps/locald/Cargo.toml",
+      "target": {
+        "kind": [
+          "bin"
+        ],
+        "crate_types": [
+          "bin"
+        ],
+        "name": "backend-locald",
+        "src_path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/apps/locald/src/main.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": false,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "s",
+        "debuginfo": 1,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "features": [],
+      "filenames": [
+        "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/target/debug/backend-locald"
+      ],
+      "executable": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/target/debug/backend-locald",
+      "fresh": false
+    }
+  },
+  "source_unchanged": true,
+  "controls_unchanged": true,
+  "images": {
+    "backend-mcp": {
+      "path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/successor-039c-images/backend-mcp",
+      "build_path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/target/debug/backend-mcp",
+      "sha256": "5f078297db67bbd0e4db467dae66a57a17a9de4e8a7073eb3e1e97db09b74422",
+      "bytes": 84744544,
+      "artifact_profile": {
+        "opt_level": "s",
+        "debuginfo": 1,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "dylib_loads": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/successor-039c-images/backend-mcp:\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 2420.0.0)\n\t/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices (compatibility version 1.0.0, current version 1226.0.0)\n\t/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration (compatibility version 1.0.0, current version 1300.100.9)\n\t/System/Library/Frameworks/Security.framework/Versions/A/Security (compatibility version 1.0.0, current version 61123.100.169)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1345.100.2)\n\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)\n\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 2420.0.0)\n\t/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)\n"
+    },
+    "backend-cli": {
+      "path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/successor-039c-images/backend-cli",
+      "build_path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/target/debug/backend-cli",
+      "sha256": "dac958e7cedaeb6aeffa1c174f2d0842c8843c3e168ab7fbe0321d547f5e2152",
+      "bytes": 108559856,
+      "artifact_profile": {
+        "opt_level": "s",
+        "debuginfo": 1,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "dylib_loads": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/successor-039c-images/backend-cli:\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 2420.0.0)\n\t/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices (compatibility version 1.0.0, current version 1226.0.0)\n\t/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration (compatibility version 1.0.0, current version 1300.100.9)\n\t/System/Library/Frameworks/Security.framework/Versions/A/Security (compatibility version 1.0.0, current version 61123.100.169)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1345.100.2)\n\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)\n\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 2420.0.0)\n\t/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)\n"
+    },
+    "backend-locald": {
+      "path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/successor-039c-images/backend-locald",
+      "build_path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/target/debug/backend-locald",
+      "sha256": "8e67a3a9b7d13341a5a149780b826e90773f6f32508ae48e7752c065c992e66f",
+      "bytes": 223455344,
+      "artifact_profile": {
+        "opt_level": "s",
+        "debuginfo": 1,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "dylib_loads": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/successor-039c-images/backend-locald:\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 2420.0.0)\n\t/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices (compatibility version 1.0.0, current version 1226.0.0)\n\t/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration (compatibility version 1.0.0, current version 1300.100.9)\n\t/System/Library/Frameworks/Security.framework/Versions/A/Security (compatibility version 1.0.0, current version 61123.100.169)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1345.100.2)\n\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)\n\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 2420.0.0)\n\t/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)\n"
+    }
+  }
+}

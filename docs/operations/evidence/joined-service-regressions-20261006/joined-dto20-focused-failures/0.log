@@ -1,0 +1,15 @@
+
+running 1 test
+
+thread 'builtin::commands::semantic_shapes::tests::image_atom_projection_preserves_empty_space_nul_unicode_and_padding' (14895352) panicked at crates/local-service/src/builtin/commands/semantic_shapes.rs:1880:35:
+complete semantic image builds: AuthorityFacts { entity: Id(0), cause: Availability { plane: Visibility, claimed: Unavailable, present: true } }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test builtin::commands::semantic_shapes::tests::image_atom_projection_preserves_empty_space_nul_unicode_and_padding ... FAILED
+
+failures:
+
+failures:
+    builtin::commands::semantic_shapes::tests::image_atom_projection_preserves_empty_space_nul_unicode_and_padding
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 0.01s
+

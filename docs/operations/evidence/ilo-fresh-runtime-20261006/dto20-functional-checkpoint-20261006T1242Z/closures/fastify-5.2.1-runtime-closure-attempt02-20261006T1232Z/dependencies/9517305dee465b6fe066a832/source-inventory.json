@@ -1,0 +1,35 @@
+{
+  "files": [
+    {
+      "bytes": 1174,
+      "path": "LICENSE",
+      "sha256": "9276503e39bdcaad7d26993fae17b1e82d7ef65cf0fe0ae54c361bbc6cbc33da"
+    },
+    {
+      "bytes": 1126,
+      "path": "README.md",
+      "sha256": "2542ad93fac837c9c35f1777356d9aaf5e48fc64aaf9d59243f195c12e2217bd"
+    },
+    {
+      "bytes": 1270,
+      "path": "index.js",
+      "sha256": "5d4827bb4f698191bcb367e0ac1aa30cd3957fce69ce3bbf10475d0c2448ffc9"
+    },
+    {
+      "bytes": 1728,
+      "path": "package.json",
+      "sha256": "8b408ba8cfc7f286a2d9b62c627cbc3a708959871f8d8b731bce93076f41ae76"
+    },
+    {
+      "bytes": 387,
+      "path": "types/index.d.ts",
+      "sha256": "69ad310220ec9b7cae819b7bfc92bb07a6d3fc52671c64ff3a6dbf7244da19d9"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "@fastify/forwarded",
+    "version": "3.0.2"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

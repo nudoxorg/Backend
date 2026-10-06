@@ -1,0 +1,29 @@
+{
+  "answer": "fault",
+  "cause": "refused",
+  "compiler_failure": {
+    "cause": {
+      "family": "authority",
+      "fault": {
+        "class": "authority",
+        "diagnostic": {
+          "observed_bytes": 256,
+          "retained_bytes": 256,
+          "truncated": true
+        },
+        "phase": "type_check"
+      }
+    },
+    "detail": "type check authority fault: authority runtime",
+    "detail_truncated": false,
+    "kind_tag": "authority_runtime",
+    "phase": "authority",
+    "recipe_identity": "content:11ce4ca9078bd6a559af2bdc1c67cdb36f8cba21db2c6888fbf9d0dcae119b89",
+    "relative_path": "tslib.es6.js",
+    "source_byte_len": 19215,
+    "source_identity": "content:0e5e4a05210e03e65a4b046456595b0cca2e36f726cf9b41180f978fa1ad080f"
+  },
+  "detail": "tslib.es6.js: authority/authority_runtime; type check authority fault: authority runtime",
+  "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123952Z-typescript-configured-8d4c9987/project",
+  "slug": "compiler-refused"
+}

@@ -23,8 +23,8 @@ use crate::coverage::lane_name;
 use crate::identity::{Coordinate, KeyTag};
 use backend_client::ClientError;
 use backend_library::{
-    CommandFailure, Coverage, Lane, ProductAdmissionError, Reason, SourceAvailability,
-    SourceExcerpt, ViewRevision,
+    CommandFailure, Coverage, Lane, PackageCompilerFailure, PackageCompilerFailurePhase,
+    ProductAdmissionError, Reason, SourceAvailability, SourceExcerpt, ViewRevision,
 };
 use core::fmt;
 
@@ -37,6 +37,8 @@ pub enum FaultSlug {
     WrongBasis,
     /// The query failed bounded semantic validation.
     InvalidQuery,
+    /// A closed compiler failure refused one package source member.
+    CompilerRefused,
     /// A continuation cursor belongs to another recipe or revision.
     CursorMismatch,
     /// The retained view could not satisfy an invariant.
@@ -75,6 +77,7 @@ impl FaultSlug {
             Self::NotFound => "not-found",
             Self::WrongBasis => "wrong-basis",
             Self::InvalidQuery => "invalid-query",
+            Self::CompilerRefused => "compiler-refused",
             Self::CursorMismatch => "cursor-mismatch",
             Self::IncoherentView => "incoherent-view",
             Self::SequenceOverflow => "sequence-overflow",
@@ -350,6 +353,7 @@ pub struct Fault {
     operand: Operand,
     cause: Cause,
     affordance: Affordance,
+    compiler_failure: Option<PackageCompilerFailure>,
 }
 
 impl Fault {
@@ -366,6 +370,7 @@ impl Fault {
             operand,
             cause,
             affordance,
+            compiler_failure: None,
         }
     }
 
@@ -391,6 +396,12 @@ impl Fault {
     #[must_use]
     pub const fn affordance(&self) -> &Affordance {
         &self.affordance
+    }
+
+    /// Returns the exact bounded compiler refusal, when the producer supplied one.
+    #[must_use]
+    pub const fn compiler_failure(&self) -> Option<&PackageCompilerFailure> {
+        self.compiler_failure.as_ref()
     }
 
     /// Returns a fault with a different affordance, keeping its identity.
@@ -531,6 +542,9 @@ impl Fault {
                 detail.clone(),
                 Affordance::None,
             ),
+            CommandFailure::CompilerRefused { failure, .. } => {
+                return Self::compiler_refusal(failure, operand);
+            }
             CommandFailure::CursorMismatch => (
                 FaultSlug::CursorMismatch,
                 CauseSlug::Moved,
@@ -567,13 +581,58 @@ impl Fault {
         Self::new(slug, operand, Cause::new(cause, sentence), affordance)
     }
 
+    pub(crate) fn compiler_refusal(failure: &PackageCompilerFailure, operand: Operand) -> Self {
+        let phase = match failure.phase() {
+            PackageCompilerFailurePhase::Prepare => "prepare",
+            PackageCompilerFailurePhase::Write => "write",
+            PackageCompilerFailurePhase::Validate => "validate",
+            PackageCompilerFailurePhase::Setup => "setup",
+            PackageCompilerFailurePhase::Lowering => "lowering",
+            PackageCompilerFailurePhase::Authority => "authority",
+        };
+        let explanation = if let Some(tool) = failure.required_native_tool() {
+            if failure.requires_tool_configuration() {
+                let configured = failure.configured_native_tool().map_or_else(
+                    || "no tool is configured".to_owned(),
+                    |current| format!("{} is configured", current.executable()),
+                );
+                format!(
+                    "requires {}; {configured}. Set {} to an absolute path for that compiler, then retry",
+                    tool.executable(),
+                    tool.configuration_variable(),
+                )
+            } else {
+                format!(
+                    "{} is unavailable to this deployment; use a deployment that provides this tool, then retry",
+                    tool.executable(),
+                )
+            }
+        } else {
+            failure.detail().to_owned()
+        };
+        let mut fault = Self::new(
+            FaultSlug::CompilerRefused,
+            operand,
+            Cause::new(
+                CauseSlug::Refused,
+                format!(
+                    "{}: {phase}/{}; {explanation}",
+                    failure.relative_path(),
+                    failure.kind_tag(),
+                ),
+            ),
+            Affordance::None,
+        );
+        fault.compiler_failure = Some(failure.clone());
+        fault
+    }
+
     /// Lowers one shared-client transport or admission failure into a fault.
     #[must_use]
     pub fn from_client_error(error: &ClientError, operand: Operand) -> Self {
         match error {
             ClientError::CommandFailed(failure) => Self::from_command_failure(failure, operand),
-            ClientError::Protocol(message) => Self::recovered(message, &operand)
-                .unwrap_or_else(|| Self::from_simple_client_error(error, operand)),
+            ClientError::Protocol(_) => Self::from_simple_client_error(error, operand),
             ClientError::BasisMismatch { expected, observed } => Self::new(
                 FaultSlug::WrongBasis,
                 Operand::Basis {
@@ -615,58 +674,6 @@ impl Fault {
             ),
             other => Self::from_simple_client_error(other, operand),
         }
-    }
-
-    /// Recovers a typed refusal that a peer flattened into a message.
-    ///
-    /// `CommandReply::Error` is the pre-typed reply schema, and a producer that
-    /// still answers with it sends only the failure's own `Display` text. The
-    /// shared client can do nothing but call that a protocol failure — so the
-    /// commonest refusal an agent can provoke, asking for a coordinate no
-    /// revision publishes, reaches a reader as *"a frame, DTO, or identity
-    /// proof failed admission: library record not found"*. That is both wrong
-    /// and unactionable.
-    ///
-    /// The comparison below is against [`CommandFailure`]'s own rendering, not
-    /// against a spelling invented here, so it cannot silently stop matching if
-    /// the library rewords a failure: the candidate text is computed from the
-    /// same value the producer stringified. A message that matches nothing stays
-    /// a protocol failure, which is the honest answer for a peer this model does
-    /// not understand.
-    ///
-    /// The real repair belongs to the producer — `CommandFailure` already
-    /// converts from the library's error type — and this recovery becomes dead
-    /// weight the day it lands. It is here because a surface must not print an
-    /// admission failure at a person who mistyped a name.
-    fn recovered(message: &str, operand: &Operand) -> Option<Self> {
-        let closed = [
-            CommandFailure::NotFound,
-            CommandFailure::CursorMismatch,
-            CommandFailure::SequenceOverflow,
-            CommandFailure::MutationRequiresOwner,
-        ];
-        if let Some(failure) = closed
-            .into_iter()
-            .find(|failure| failure.to_string() == message)
-        {
-            return Some(Self::from_command_failure(&failure, operand.clone()));
-        }
-        let invalid = CommandFailure::InvalidQuery(String::new()).to_string();
-        if let Some(detail) = message.strip_prefix(&invalid) {
-            return Some(Self::from_command_failure(
-                &CommandFailure::InvalidQuery(detail.to_owned()),
-                operand.clone(),
-            ));
-        }
-        // A flattened wrong basis lost both revisions on the way out, so the
-        // operand stays the one the caller supplied rather than two invented
-        // digests.
-        let moved = CommandFailure::WrongBasis {
-            expected: ViewRevision::from(backend_library::view_state_root(&[])),
-            observed: ViewRevision::from(backend_library::view_state_root(&[])),
-        };
-        (moved.to_string() == message)
-            .then(|| Self::from_command_failure(&moved, operand.clone()).about(operand.clone()))
     }
 
     fn from_simple_client_error(error: &ClientError, operand: Operand) -> Self {

@@ -20,7 +20,6 @@ pub const DEFAULT_IGNORED_DIRECTORIES: &[&str] = &[
     ".git",
     ".backend",
     "target",
-    "bin",
     "obj",
     "out",
     ".gradle",
@@ -410,6 +409,21 @@ impl DiscoveryPolicy {
         if path.join(OWNER_WORKSPACE_MARKER).is_file() {
             return false;
         }
+        // `bin` is ordinary Python and npm source (for example celery/bin).
+        // The C# source loader alone treats it as build output, irrespective
+        // of filesystem case sensitivity; retain that source-specific rule.
+        let csharp_binary_output = !path.is_dir()
+            && relative
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("cs"))
+            && relative.parent().is_some_and(|parent| {
+                parent
+                    .components()
+                    .any(|component| component.as_os_str().eq_ignore_ascii_case("bin"))
+            });
+        if csharp_binary_output {
+            return false;
+        }
         let generated = relative
             .components()
             .any(|component| self.generated_component(component.as_os_str()));
@@ -754,6 +768,60 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn bin_keeps_python_and_npm_sources_but_filters_default_csharp_outputs() {
+        let scratch = Scratch::new("source-bin");
+        for path in [
+            "celery/bin/celery.py",
+            "npm/bin/cli.js",
+            "celery/bin/layout.cs/extra.py",
+            "dotnet/bin/generated.cs",
+            "dotnet/BIN/Generated.CS",
+        ] {
+            let path = scratch.0.join(path);
+            fs::create_dir_all(path.parent().expect("source parent")).expect("directory");
+            fs::write(path, b"source").expect("file");
+        }
+        let files = |policy: DiscoveryPolicy| {
+            policy
+                .walk(&scratch.0)
+                .filter_map(|entry| {
+                    let entry = entry.expect("discovery");
+                    entry.is_file().then(|| {
+                        entry
+                            .path()
+                            .strip_prefix(&scratch.0)
+                            .expect("relative")
+                            .to_owned()
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            files(DiscoveryPolicy::default()),
+            [
+                PathBuf::from("celery/bin/celery.py"),
+                PathBuf::from("celery/bin/layout.cs/extra.py"),
+                PathBuf::from("npm/bin/cli.js")
+            ]
+        );
+        assert_eq!(
+            files(DiscoveryPolicy::default().generated_defaults(false)).len(),
+            3,
+            "the C# source loader also refuses bin outputs when generic defaults are disabled"
+        );
+        assert!(
+            !files(DiscoveryPolicy::default().include("dotnet/bin/generated.cs"))
+                .contains(&PathBuf::from("dotnet/bin/generated.cs")),
+            "explicit includes cannot ask the C# loader for a file it excludes"
+        );
+        fs::write(scratch.0.join(".gitignore"), b"npm/bin/\n").expect("ignore");
+        assert!(
+            !files(DiscoveryPolicy::default()).contains(&PathBuf::from("npm/bin/cli.js")),
+            "repository ignore rules still govern bin sources"
+        );
     }
 
     #[test]

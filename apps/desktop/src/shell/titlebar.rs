@@ -58,6 +58,14 @@ struct JumpVisit {
     root: VersionedRoot,
 }
 
+impl PartialEq for JumpVisit {
+    fn eq(&self, other: &Self) -> bool {
+        self.route == other.route && self.subject == other.subject
+            && self.graph_selection == other.graph_selection && self.attachment == other.attachment
+            && self.overlay == other.overlay && self.root.same_authority(other.root)
+    }
+}
+
 impl JumpVisit {
     fn at(snapshot: &AppSnapshot, store: &DataStore) -> Self {
         Self {
@@ -82,7 +90,7 @@ impl JumpVisit {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum JumpAction {
     Ask,
     Back { visit: JumpVisit },
@@ -172,7 +180,8 @@ fn jump_target_action(action: JumpAction, links: &Links, targets: &Targets, cx: 
             Rc::new(move |app| visit.current(&links, app))
         }
     };
-    TargetAction::new(admit, jump_act(action, links, targets))
+    let payload = action.clone();
+    TargetAction::new(admit, jump_act(action, links, targets)).with_payload(payload)
 }
 
 fn segment_action(visit: &JumpVisit, index: usize, segment: &Segment, store: &DataStore, current: bool) -> Option<JumpAction> {
@@ -570,6 +579,7 @@ impl Titlebar {
             .h(height)
             .min_w(px(0.0))
             .flex_1()
+            .overflow_hidden()
             .max_w(px(520.0 * scale))
             .px(measure.space(Space::Roomy))
             .flex()
@@ -577,6 +587,12 @@ impl Titlebar {
             .gap(measure.space(Space::Snug));
         // Package › module segments before the name (the name is the last
         // segment); the narrow bar keeps the name and what is nearest it.
+        // One measured phrase owns the breadcrumb topology. Independent FLIP tracks
+        // would put a returning prefix at its new coordinate while the retained
+        // current name was still travelling through that same space.
+        let mut location = div()
+            .flex().items_center().gap(measure.space(Space::Snug))
+            .flex_shrink(1.0).min_w(px(0.0));
         let lead = segments.len().saturating_sub(1);
         let visit = JumpVisit::at(snapshot, self.links.store.read(cx));
         let keep_from = match mode {
@@ -592,9 +608,8 @@ impl Titlebar {
             // already this file's tone for the plate's own quiet line) is
             // the nearest step up that clears 4.5:1 (6.12:1 here).
             let segment = self.segment(id, index, segment, measure, palette, cx);
-            plate = plate
-                .child(self.flow.item(SharedString::from(format!("tb-flow-segment-{index}")), segment))
-                .child(self.flow.item(SharedString::from(format!("tb-flow-segment-{index}-sep")), text(ty::SMALL, measure, palette.ink3).child("›")));
+            location = location.child(segment)
+                .child(text(ty::SMALL, measure, palette.ink3).child("›"));
         }
         let last_id: SharedString = format!("jump-seg-{lead}").into();
         let action = segments.get(lead).and_then(|segment| {
@@ -626,7 +641,10 @@ impl Titlebar {
         } else {
             here_name.into_any_element()
         };
-        plate = plate.child(self.flow.item("tb-flow-name", here_name));
+        location = location.child(here_name);
+        plate = plate.child(self.flow.item(
+            "tb-flow-location", facet::probe::measure("titlebar-location", location),
+        ));
         // Not a declaration: the place names itself (`registry`, `Appearance`).
         let quiet: Option<SharedString> = if segments.is_empty() || here.path.starts_with("viewing ") {
             Some(here.path.clone())

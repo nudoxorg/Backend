@@ -1,0 +1,199 @@
+{
+  "schema": "nudox.private-owner-clone-diagnostic.v1",
+  "original_run": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f",
+  "original_state_mutated": false,
+  "cache_cleared_in_clone": false,
+  "authentic_cache_transplant_source": null,
+  "diagnostic_root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262",
+  "owner_argv": [
+    "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+    "--workspace",
+    "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/state",
+    "--endpoint",
+    "/tmp/nudox-diagnostic-8669945ea706484f.sock",
+    "--idle-timeout-ms",
+    "0"
+  ],
+  "owner_pid": 1060473,
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/home",
+    "XDG_CONFIG_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/home/.config",
+    "XDG_DATA_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/home/.local/share",
+    "XDG_STATE_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/home/.local/state",
+    "TMPDIR": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/tmp",
+    "PATH": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin:/nix/store/1xklj6dmgcpgz60c9w2ynaq7ynzfsrrq-go-1.26.4/share/go/bin:/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin:/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin:/root/nudox-corpus-20261006/corpora/next-react-alias-fixture/node_modules/typescript/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "USER": "root",
+    "LOGNAME": "root",
+    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "{\"version\":1,\"paths\":[{\"variable\":\"NUDOX_PYTHON\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,57,114,48,50,121,107,120,57,121,51,53,108,102,52,103,107,54,103,99,51,48,103,110,97,103,49,121,56,110,99,112,55,45,112,121,116,104,111,110,51,45,51,46,49,51,46,49,53,47,98,105,110,47,112,121,116,104,111,110,51,46,49,51]}},{\"variable\":\"NUDOX_TSC\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115,47,116,121,112,101,115,99,114,105,112,116,47,98,105,110,47,116,115,99]}},{\"variable\":\"NUDOX_GO\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111,47,98,105,110,47,103,111]}},{\"variable\":\"NUDOX_TYPESCRIPT_NODE\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,48,110,98,112,48,51,48,51,56,115,51,51,99,107,55,49,50,121,120,57,50,49,57,103,99,106,51,97,50,115,113,109,45,110,111,100,101,106,115,45,115,108,105,109,45,50,52,46,49,56,46,48,47,98,105,110,47,110,111,100,101]}},{\"variable\":\"NUDOX_TYPESCRIPT_MODULE_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115]}},{\"variable\":\"NUDOX_PYREFLY\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,113,100,120,122,120,107,119,104,49,51,98,103,118,53,48,48,54,54,102,107,50,107,97,51,112,49,122,112,110,106,97,112,45,112,121,114,101,102,108,121,45,49,46,50,46,48,45,100,101,118,46,49,47,98,105,110,47,112,121,114,101,102,108,121]}},{\"variable\":\"NUDOX_GO_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111]}}]}"
+  },
+  "commands": [
+    {
+      "label": "clone-health",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/state",
+        "--endpoint",
+        "/tmp/nudox-diagnostic-8669945ea706484f.sock",
+        "--passive",
+        "health"
+      ],
+      "exit": 0,
+      "seconds": 0.09231816697865725,
+      "stdout_sha256": "e19234cd524d6887f9ae37545e21d7b367b0976ef7410953ceeba9e89ba6a9fd",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": "{\"readiness\":\"ready\",\"revision\":\"1545f0c58004fa22156d5142eb5f78c8c4b185a88e937777a5738db055576433\",\"revision_tag\":\"1545f0c5\",\"source\":\"a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1\",\"source_tag\":\"a98a2689\",\"sequence\":2,\"rows\":8867,\"coverage\":[{\"lane\":\"exact\",\"state\":\"complete\"},{\"lane\":\"names\",\"state\":\"complete\"},{\"lane\":\"graph\",\"state\":\"complete\"},{\"lane\":\"semantic\",\"state\":\"unavailable\",\"reason\":\"unconfigured\"}],\"capabilities\":{\"frontends_ready\":9,\"frontends_total\":9,\"oracles_ready\":0,\"oracles_total\":18,\"embedding\":\"unconfigured\",\"unavailable\":[{\"reason\":\"no-manifest\",\"count\":11}],\"summary\":\"frontends 9/9 ready \u00b7 oracles 0/18 ready \u00b7 11 no-manifest \u00b7 embedding unconfigured\"},\"answer\":\"status\",\"detail\":\"full\",\"budget\":{\"bytes\":805,\"estimatedTokens\":202,\"bytesPerToken\":4}}",
+      "stderr": ""
+    },
+    {
+      "label": "clone-search-parse(version:",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/state",
+        "--endpoint",
+        "/tmp/nudox-diagnostic-8669945ea706484f.sock",
+        "search",
+        "parse(version:",
+        "--limit",
+        "10"
+      ],
+      "exit": 0,
+      "seconds": 1.9177630899939686,
+      "stdout_sha256": "a7cd720d15e697219fa515e629b18ee6058d59c2b95def36dd287aa4e8e1c877",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": "{\"query\":\"parse(version:\",\"coverage\":[{\"lane\":\"exact\",\"state\":\"complete\"},{\"lane\":\"names\",\"state\":\"complete\"},{\"lane\":\"graph\",\"state\":\"complete\"},{\"lane\":\"semantic\",\"state\":\"unavailable\",\"reason\":\"unconfigured\"}],\"readiness\":\"ready\",\"records\":[{\"identity\":{\"coordinate\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project::semantic::086dd0315ec8528427b1af3bc523866548571e86cb117d85b3cbe7800cca28d9::TestReleaseSegmentOrdering\",\"trail\":\"project \u203a tests/property/test_version_ordering.py:66 \u203a TestReleaseSegmentOrdering\",\"name\":\"TestReleaseSegmentOrdering\",\"shape\":\"semantic\",\"project\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project\",\"path\":\"tests/property/test_version_ordering.py\",\"line\":66,\"segments\":[\"TestReleaseSegmentOrdering\"],\"key\":\"2f7bce46\"},\"kind\":\"struct\",\"language\":\"python\",\"state\":\"ready\",\"signature\":\"class TestReleaseSegmentOrdering:\",\"summary\":\"The release segment of version identifiers MUST be sorted in\",\"score\":4294967293},{\"identity\":{\"coordinate\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project::semantic::6b75ef8582ef0b4749155667f5a915b7e81577364d70daa1c5099ad2a68740b9::Marker\",\"trail\":\"project \u203a src/packaging/markers.py:380 \u203a Marker\",\"name\":\"Marker\",\"shape\":\"semantic\",\"project\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project\",\"path\":\"src/packaging/markers.py\",\"line\":380,\"segments\":[\"Marker\"],\"key\":\"51145daa\"},\"kind\":\"struct\",\"language\":\"python\",\"state\":\"ready\",\"signature\":\"class Marker:\\n    \\\"\\\"\\\"Represents a parsed dependency marker expression.\\n\\n    Marker expressions are parsed according to the\\n    :ref:`specification of dependency specifiers <pypug:dependency-specifiers>`.\\n\\n    :param marker: The string representation of a marker expression.\\n    :raises InvalidMarker: If ``marker`` cannot be parsed.\\n\\n    Instances are safe to serialize with :mod:`pickle`. They use a stable\\n    format so the same pickle can be loaded in future packaging releases.\\n\\n    .. versionchanged:: 26.2\\n\\n        Added a stable pickle format. Pickles created with packaging 26.2+ can\\n        be unpickled with future releases.  Backward compatibility with pickles\\n        from packaging < 26.2 is supported but may be removed in a future\\n        release.\\n    \\\"\\\"\\\"\\n\\n    __slots__ = (\\\"_markers\\\",)\\n\\n    def __init__(self, marker: str) -> None:\\n        # Note: We create a Marker object without calling this constructor in\\n        #       packaging.requirements.Requirement. If any additional logic is\\n        #       added here, make sure to mirror/adapt Requirement.\\n\\n        # If this fails and throws an error, the repr still expects _markers to\\n        # be defined.\\n        self._markers: MarkerList = []\\n\\n        try:\\n            self._markers = _normalize_extra_values(_parse_marker(marker))\\n            # The attribute `_markers` can be described in terms of a recursive type:\\n            # MarkerList = List[Union[Tuple[Node, ...], str, MarkerList]]\\n            #\\n            # For example, the following expression:\\n            # python_version > \\\"3.6\\\" or (python_version == \\\"3.6\\\" and os_name == \\\"unix\\\")\\n            #\\n            # is parsed into:\\n            # [\\n            #     (<Variable('python_version')>, <Op('>')>, <Value('3.6')>),\\n            #     'and',\\n            #     [\\n            #         (<Variable('python_version')>, <Op('==')>, <Value('3.6')>),\\n            #         'or',\\n            #         (<Variable('os_name')>, <Op('==')>, <Value('unix')>)\\n            #     ]\\n            # ]\\n        except ParserSyntaxError as e:\\n            raise InvalidMarker(str(e)) from e\\n\\n    @classmethod\\n    def _from_markers(cls, markers: MarkerList) -> Marker:\\n        \\\"\\\"\\\"Create a Marker instance from a pre-parsed marker tree.\\n\\n        This avoids re-parsing serialised marker strings when combining markers.\\n        \\\"\\\"\\\"\\n        new = cls.__new__(cls)\\n        new._markers = markers\\n        return new\\n\\n    def __str__(self) -> str:\\n        return _format_marker(self._markers)\\n\\n    def __repr__(self) -> str:\\n        return f\\\"<\",\"summary\":\"Represents a parsed dependency marker expression.\",\"score\":4294967290},{\"identity\":{\"coordinate\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project::semantic::762eab6fde275b8011d2bf291762dba7b17bcc9dc382a5d3868c43a551d3d313::singleton\",\"trail\":\"project \u203a src/packaging/ranges.py:1163 \u203a singleton\",\"name\":\"singleton\",\"shape\":\"semantic\",\"project\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project\",\"path\":\"src/packaging/ranges.py\",\"line\":1163,\"segments\":[\"singleton\"],\"key\":\"65390495\"},\"kind\":\"function\",\"language\":\"python\",\"state\":\"ready\",\"signature\":\"@classmethod\\n    def singleton(\\n        cls, version: Version | str, *, prereleases: bool | None = None\\n    ) -> VersionRange:\\n        \\\"\\\"\\\"Return the strict singleton range ``\",\"summary\":\"Return the strict singleton range ``{version}``.\",\"score\":4294967286},{\"identity\":{\"coordinate\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project::semantic::a0185b01782fe623d98d6058c9feb0c1f0b940419eee3c3e90f33a7551225c25::_get_musl_version\",\"trail\":\"project \u203a src/packaging/_musllinux.py:37 \u203a _get_musl_version\",\"name\":\"_get_musl_version\",\"shape\":\"semantic\",\"project\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project\",\"path\":\"src/packaging/_musllinux.py\",\"line\":37,\"segments\":[\"_get_musl_version\"],\"key\":\"682a27ff\"},\"kind\":\"function\",\"language\":\"python\",\"state\":\"ready\",\"signature\":\"@functools.lru_cache\",\"summary\":\"Detect currently-running musl runtime version.\",\"score\":4294967287},{\"identity\":{\"coordinate\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project::semantic::51b3615f670625c399e426f5df35e7874a728eefd657ce347b2ba2db9e350fe9::Specifier\",\"trail\":\"project \u203a src/packaging/specifiers.py:220 \u203a Specifier\",\"name\":\"Specifier\",\"shape\":\"semantic\",\"project\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project\",\"path\":\"src/packaging/specifiers.py\",\"line\":220,\"segments\":[\"Specifier\"],\"key\":\"6f2e6c6c\"},\"kind\":\"struct\",\"language\":\"python\",\"state\":\"ready\",\"signature\":\"class Specifier(BaseSpecifier):\\n    \\\"\\\"\\\"This class abstracts handling of version specifiers.\\n\\n    .. tip::\\n\\n        It is generally not required to instantiate this manually. You should instead\\n        prefer to work with :class:`SpecifierSet` instead, which can parse\\n        comma-separated version specifiers (which is what package metadata contains).\\n\\n    Instances are safe to serialize with :mod:`pickle`. They use a stable\\n    format so the same pickle can be loaded in future packaging releases.\\n\\n    .. versionchanged:: 26.2\\n\\n        Added a stable pickle format. Pickles created with packaging 26.2+ can\\n        be unpickled with future releases.  Backward compatibility with pickles\\n        from packaging < 26.2 is supported but may be removed in a future\\n        release.\\n    \\\"\\\"\\\"\\n\\n    __slots__ = (\\n        \\\"_prereleases\\\",\\n        \\\"_ranges\\\",\\n        \\\"_spec\\\",\\n        \\\"_spec_version\\\",\\n    )\\n\\n    _specifier_regex_str = r\\\"\\\"\\\"\\n        (?:\\n            (?:\\n                # The identity operators allow for an escape hatch that will\\n                # do an exact string match of the version you wish to install.\\n                # This will not be parsed by PEP 440 and we cannot determine\\n                # any semantic meaning from it. This operator is discouraged\\n                # but included entirely as an escape hatch.\\n                ===  # Only match for the identity operator\\n                \\\\s*\\n                [^\\\\s;)]*  # The arbitrary version can be just about anything,\\n                          # we match everything except for whitespace, a\\n                          # semi-colon for marker support, and a closing paren\\n                          # since versions can be enclosed in them.\\n            )\\n            |\\n            (?:\\n                # The (non)equality operators allow for wild card and local\\n                # versions to be specified so we have to define these two\\n                # operators separately to enable that.\\n                (?:==|!=)            # Only match for equals and not equals\\n\\n                \\\\s*\\n                v?\\n                (?:[0-9]+!)?          # epoch\\n                [0-9]+(?:\\\\.[0-9]+)*   # release\\n\\n                # You cannot use a wild card and a pre-release, post-release, a dev or\\n                # local version together so group them with a | and make them optional.\\n                (?:\\n                    \\\\.\\\\*  # Wild card syntax of .*\\n                    |\\n                    (?a:                                  # pre release\\n                        [-_\\\\.]?\\n                        (alpha|beta|preview|pre|a|b|c|rc)\\n                        [-_\\\\.]?\\n                        [0-9]*\\n                    )?\\n                    (?a:                                  # post release\\n                        (?:-[0-9]+)|(?:[-_\\\\.]?(post|rev|r)[-_\\\\.]?[0-9]*)\\n                    )?\\n                    (?a:[-_\\\\.]?dev[-_\\\\.]?[0-9]*)?         # dev release\\n                    (?a:\\\\+[a-z0-9]+(?:[-_\\\\.][a-z0-9]+)*)? # local\\n                )?\\n            )\\n            |\\n            (?:\\n                # The compatible operator requires at least two digits in the\\n                # release segment.\\n                (?:~=)               # Only match for the compatible operator\\n\\n                \\\\s*\\n                v?\\n                (?:[0-9]+!)?          # epoch\\n                [0-9]+(?:\\\\.[0-9]+)+   # release  (We have a + instead of a *)\\n                (?:                   # pre release\\n                    [-_\\\\.]?\\n                    (alpha|beta|preview|pre|a|b|c|rc)\\n                    [-_\\\\.]?\\n                    [0-9]*\\n                )?\\n                (?:                                   # post release\\n                    (?:-[0-9]+)|(?:[-_\\\\.]?(post|rev|r)[-_\\\\.]?[0-9]*)\\n                )?\\n                (?:[-_\\\\.]?dev[-_\\\\.]?[0-9]*)?          # dev release\\n            )\\n            |\\n            (?:\\n                # All other operators only allow a sub set of what the\\n                # (non)equality operators do. Specifically they do not allow\\n                # local versions to be specified nor do the\",\"summary\":\"This class abstracts handling of version specifiers.\",\"score\":4294967295},{\"identity\":{\"coordinate\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project::semantic::2f07dab302ad661e1fb55f530c10f9939ef0f510ddf174c8a61758c71879bb7d::TestSpecifierInternal\",\"trail\":\"project \u203a tests/test_specifiers.py:1106 \u203a TestSpecifierInternal\",\"name\":\"TestSpecifierInternal\",\"shape\":\"semantic\",\"project\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project\",\"path\":\"tests/test_specifiers.py\",\"line\":1106,\"segments\":[\"TestSpecifierInternal\"],\"key\":\"7abcdfa1\"},\"kind\":\"struct\",\"language\":\"python\",\"state\":\"ready\",\"signature\":\"class TestSpecifierInternal:\",\"summary\":\"Tests for internal Specifier._spec_version cache behavior.\",\"score\":4294967294},{\"identity\":{\"coordinate\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project::semantic::8a2623ba34bbdd69b536168ef0614a24f1a0ad0307030f7e39584feb6265c6b5::RFC822Policy\",\"trail\":\"project \u203a src/packaging/metadata.py:318 \u203a RFC822Policy\",\"name\":\"RFC822Policy\",\"shape\":\"semantic\",\"project\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project\",\"path\":\"src/packaging/metadata.py\",\"line\":318,\"segments\":[\"RFC822Policy\"],\"key\":\"84ecac3c\"},\"kind\":\"struct\",\"language\":\"python\",\"state\":\"ready\",\"signature\":\"class RFC822Policy(email.policy.EmailPolicy):\",\"summary\":\"This is :class:`email.policy.EmailPolicy`, but with a simple ``header_store_parse``\",\"score\":4294967289},{\"identity\":{\"coordinate\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project::semantic::3cbbada9c7edfead9ae5504f8c1c00919a96c185483f4811796d739355b56c92::parse\",\"trail\":\"project \u203a src/packaging/version.py:110 \u203a parse\",\"name\":\"parse\",\"shape\":\"semantic\",\"project\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project\",\"path\":\"src/packaging/version.py\",\"line\":110,\"segments\":[\"parse\"],\"key\":\"a75c4a2a\"},\"kind\":\"function\",\"language\":\"python\",\"state\":\"ready\",\"signature\":\"def parse(version: str) -> Version:\",\"summary\":\"Parse the given version string.\",\"score\":4294967288},{\"identity\":{\"coordinate\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project::semantic::10e9b5abe97c834058336ab8994298f20d237f27cd68e3eeb1834edd2de182fc::Requirement\",\"trail\":\"project \u203a src/packaging/requirements.py:35 \u203a Requirement\",\"name\":\"Requirement\",\"shape\":\"semantic\",\"project\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project\",\"path\":\"src/packaging/requirements.py\",\"line\":35,\"segments\":[\"Requirement\"],\"key\":\"ca1daf7f\"},\"kind\":\"struct\",\"language\":\"python\",\"state\":\"ready\",\"signature\":\"class Requirement:\\n    \\\"\\\"\\\"Parse a requirement.\\n\\n    Parse a given requirement string into its parts, such as name, specifier,\\n    URL, and extras. Raises InvalidRequirement on a badly-formed requirement\\n    string.\\n\\n    .. versionadded:: 16.1\\n\\n    .. versionchanged:: 22.0\\n        Added equality (``__eq__``) and hashing (``__hash__``) so requirements\\n        can be compared and stored in sets / dicts.\\n\\n    .. versionchanged:: 23.2\\n        Equality and hashing began canonicalizing requirement names, so\\n        requirements whose names differ only by normalization (e.g.\\n        ``Requirement(\\\"Foo\\\")`` vs ``Requirement(\\\"foo\\\")``) now compare and hash\\n        equal.\\n\\n    Instances are safe to serialize with :mod:`pickle`. They use a stable\\n    format so the same pickle can be loaded in future packaging releases.\\n\\n    .. versionchanged:: 26.2\\n\\n        Added a stable pickle format. Pickles created with packaging 26.2+ can\\n        be unpickled with future releases.  Backward compatibility with pickles\\n        from packaging < 26.2 is supported but may be removed in a future\\n        release.\\n\\n    .. versionchanged:: 26.3\\n\\n        The dedicated pickle support introduced in 26.2 did not preserve the\\n        specifier's explicit :attr:`~packaging.specifiers.SpecifierSet.prereleases`\\n        override; it is now included again.\\n\\n        Equality and hashing normalize requirement names, extras, and\\n        equivalent specifiers. The string representation still preserves the\\n        parsed name and extras spelling.\\n    \\\"\\\"\\\"\\n\\n    # TODO: Can we test whether something is contained within a requirement?\\n    #       If so how do we do that? Do we need to test against the _name_ of\\n    #       the thing as well as the version? What about the markers?\\n    # TODO: Can we normalize the name and extra name?\\n\\n    __slots__ = (\\\"extras\\\", \\\"marker\\\", \\\"name\\\", \\\"specifier\\\", \\\"url\\\")\\n\\n    def __init__(self, requirement_string: str) -> None:\\n        try:\\n            parsed = _parse_requirement(requirement_string)\\n        except ParserSyntaxError as e:\\n            raise InvalidRequirement(str(e)) from e\\n\\n        self.name: str = parsed.name\\n        self.url: str | None = parsed.url or None\\n        self.extras: set[str] = set(parsed.extras)\\n        try:\\n            self.specifier: SpecifierSet = SpecifierSet(parsed.specifier)\\n        except InvalidSpecifier as e:\\n            raise InvalidRequirement(str(e)) from e\\n        self.marker: Marker | None = None\\n        if parsed.marker is not None:\\n            self.marker = Marker.__new__(Marker)\\n            self.marker._markers = _normalize_extra_values(parsed.marker)\\n\\n    def _iter_parts(self, name: str) -> Iterator[str]:\\n        yield name\\n\\n        if self.extras:\\n            formatted_extras = \\\",\\\".join(sorted(self.extras))\\n            yield f\\\"[\",\"summary\":\"Parse a requirement.\",\"score\":4294967291},{\"identity\":{\"coordinate\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project::semantic::b65fc025e44554ff18148f672c739d810874f422280e49b9b91e0f216cc1c68b::TestVersionPropertyConsistency\",\"trail\":\"project \u203a tests/property/test_specifier_implied.py:152 \u203a TestVersionPropertyConsistency\",\"name\":\"TestVersionPropertyConsistency\",\"shape\":\"semantic\",\"project\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project\",\"path\":\"tests/property/test_specifier_implied.py\",\"line\":152,\"segments\":[\"TestVersionPropertyConsistency\"],\"key\":\"d22e9852\"},\"kind\":\"struct\",\"language\":\"python\",\"state\":\"ready\",\"signature\":\"class TestVersionPropertyConsistency:\",\"summary\":\"Implied by the version scheme: the .public, .base_version, .major,\",\"score\":4294967292}],\"more\":true,\"semantic_search\":{\"status\":\"unavailable\",\"reason\":\"unconfigured\"},\"answer\":\"records\",\"detail\":\"full\",\"budget\":{\"bytes\":17693,\"estimatedTokens\":4424,\"bytesPerToken\":4}}",
+      "stderr": ""
+    },
+    {
+      "label": "clone-after-health",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/state",
+        "--endpoint",
+        "/tmp/nudox-diagnostic-8669945ea706484f.sock",
+        "--passive",
+        "health"
+      ],
+      "exit": 0,
+      "seconds": 0.10459542798344046,
+      "stdout_sha256": "e19234cd524d6887f9ae37545e21d7b367b0976ef7410953ceeba9e89ba6a9fd",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": "{\"readiness\":\"ready\",\"revision\":\"1545f0c58004fa22156d5142eb5f78c8c4b185a88e937777a5738db055576433\",\"revision_tag\":\"1545f0c5\",\"source\":\"a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1\",\"source_tag\":\"a98a2689\",\"sequence\":2,\"rows\":8867,\"coverage\":[{\"lane\":\"exact\",\"state\":\"complete\"},{\"lane\":\"names\",\"state\":\"complete\"},{\"lane\":\"graph\",\"state\":\"complete\"},{\"lane\":\"semantic\",\"state\":\"unavailable\",\"reason\":\"unconfigured\"}],\"capabilities\":{\"frontends_ready\":9,\"frontends_total\":9,\"oracles_ready\":0,\"oracles_total\":18,\"embedding\":\"unconfigured\",\"unavailable\":[{\"reason\":\"no-manifest\",\"count\":11}],\"summary\":\"frontends 9/9 ready \u00b7 oracles 0/18 ready \u00b7 11 no-manifest \u00b7 embedding unconfigured\"},\"answer\":\"status\",\"detail\":\"full\",\"budget\":{\"bytes\":805,\"estimatedTokens\":202,\"bytesPerToken\":4}}",
+      "stderr": ""
+    },
+    {
+      "label": "clone-full-resolve",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/state",
+        "--endpoint",
+        "/tmp/nudox-diagnostic-8669945ea706484f.sock",
+        "resolve",
+        "parse(version:",
+        "--limit",
+        "200"
+      ],
+      "exit": 0,
+      "seconds": 0.011331847053952515,
+      "stdout_sha256": "f6af5185d811f530af3ee32eaf704332553b6b1c1f0258ca8c1bf3a5a656a30c",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": "{\"query\":\"parse(version:\",\"coverage\":[{\"lane\":\"exact\",\"state\":\"complete\"},{\"lane\":\"names\",\"state\":\"complete\"},{\"lane\":\"graph\",\"state\":\"complete\"},{\"lane\":\"semantic\",\"state\":\"unavailable\",\"reason\":\"unconfigured\"}],\"readiness\":\"ready\",\"records\":[],\"more\":false,\"answer\":\"records\",\"detail\":\"full\",\"budget\":{\"bytes\":356,\"estimatedTokens\":89,\"bytesPerToken\":4}}",
+      "stderr": ""
+    },
+    {
+      "label": "clone-summary-resolve",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "summary",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f-diagnostic-06406262/state",
+        "--endpoint",
+        "/tmp/nudox-diagnostic-8669945ea706484f.sock",
+        "resolve",
+        "parse(version:",
+        "--limit",
+        "32"
+      ],
+      "exit": 0,
+      "seconds": 0.011691923951730132,
+      "stdout_sha256": "30756db8f3c0c451a07179d4ccaaae73f3812e7105d3335c92a88a0669120eef",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": "{\"query\":\"parse(version:\",\"coverage\":[{\"lane\":\"exact\",\"state\":\"complete\"},{\"lane\":\"names\",\"state\":\"complete\"},{\"lane\":\"graph\",\"state\":\"complete\"},{\"lane\":\"semantic\",\"state\":\"unavailable\",\"reason\":\"unconfigured\"}],\"readiness\":\"ready\",\"records\":[],\"more\":false,\"answer\":\"records\",\"detail\":\"summary\",\"budget\":{\"bytes\":359,\"estimatedTokens\":90,\"bytesPerToken\":4}}",
+      "stderr": ""
+    }
+  ],
+  "started_utc": "2026-10-06T12:10:34Z",
+  "candidate_manifest_path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+  "candidate_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "candidate_manifest": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "original_project_source_hash": "385e0cf974227c954bd5b01b6af98cf83a97c4bfee68a167234fa5261bdd2771",
+  "cloned_state_source": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f/state",
+  "owner_socket_ready_before_cli": true,
+  "resolved_source_witnesses": [],
+  "summary_resolution_witness_refused": {
+    "matches": 0,
+    "requested_path": "src/packaging/version.py",
+    "requested_line": 110
+  },
+  "owner_exit": -15,
+  "owner_stderr": "",
+  "owner_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "finished_utc": "2026-10-06T12:10:47Z"
+}

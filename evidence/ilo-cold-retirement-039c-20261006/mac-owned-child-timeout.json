@@ -1,0 +1,11 @@
+{
+  "host": "macOS-15.7.4-arm64-64bit-Mach-O",
+  "observer_sha256": "bd2246da2fa9a61e431adb6bcd17a0e76b2293c9dc5ffa1c33d3546007c1132b",
+  "branch": "retained-owned-Popen-child",
+  "pid": 84001,
+  "outcome": "bounded-timeout",
+  "exception": "owned process did not retire",
+  "seconds": 0.05068595799821196,
+  "child_still_alive": true,
+  "cleanup_exit": -9
+}

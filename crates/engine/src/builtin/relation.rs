@@ -1,6 +1,10 @@
 //! Typed source relations and owner-held lazy source snapshots.
 
 use super::complete_coverage;
+use super::file_facts_relation::{
+    ProductSourceFileFactsAdmission, ProductSourceFileFactsLookup, ProductSourceFileFactsRecord,
+    admit_product_source_file_facts, product_source_file_facts_relation,
+};
 use crate::workspace::{TransitionWork, WorkspaceRelationHandle, WorkspaceSnapshot};
 pub use backend_compile::{
     Container, DeclarationKind, SourceDeclaration, SourceLanguage, SourceLocation,
@@ -50,8 +54,12 @@ const SOURCE_RECORD_FORMAT_CARGO_ALIASES: &[u8; 4] = b"PSRC";
 /// independently checked membership page.
 const SOURCE_RECORD_FORMAT_MEMBERSHIP: &[u8; 4] = b"PSRD";
 
+/// Versioned format carrying paged membership references with exact prefix
+/// offsets, or one independently checked membership page.
+const SOURCE_RECORD_FORMAT_MEMBERSHIP_OFFSETS: &[u8; 4] = b"PSRE";
+
 /// Newest source-record format version, as the tags above name it.
-const SOURCE_RECORD_VERSION: u8 = 13;
+const SOURCE_RECORD_VERSION: u8 = 14;
 
 /// Minimum file keys in every non-final membership page. The shared
 /// content-defined cut policy also cuts on encoded-byte anchors; 256 remains
@@ -61,7 +69,7 @@ const MIN_PROJECT_MEMBERSHIP_PAGE_FILES: usize = 256;
 
 /// Maximum file keys in one membership page. The row-value capacity, rather
 /// than a logical project limit, remains the hard encoded-byte bound.
-const MAX_PROJECT_MEMBERSHIP_PAGE_FILES: usize = 1024;
+pub const MAX_PROJECT_MEMBERSHIP_PAGE_FILES: usize = 1024;
 
 /// Content-defined cuts use stable file-key anchors between the minimum and
 /// maximum page geometry. The forced maximum can reflow later pages in the
@@ -82,9 +90,9 @@ const PROJECT_MEMBERSHIP_CUT_POLICY: CutPolicy = CutPolicy::new(
 /// canonical integer takes the shortest form: `PSR9` means precisely "at
 /// least one declaration states where it sits, `PSRA` means "the row also
 /// states which `SourceFactDomain` content identity its exact bytes hash to",
-/// `PSRC` carries Cargo alias observations on an inline project frontier, and
+/// `PSRC` carries Cargo alias observations on an inline project frontier,
 /// `PSRD` carries paged project membership or one project-bound membership
-/// page.
+/// page, and `PSRE` adds exact page-prefix offsets.
 ///
 /// Decoding stays liberal - it admits a `PSR9` record that states no
 /// containment and normalizes it to `PSR8` on the way out - because refusing
@@ -97,6 +105,14 @@ fn source_record_format(value: &ProductSourceRecord) -> &'static [u8; 4] {
             files: ProductProjectMembership::Inline(_),
             ..
         } => SOURCE_RECORD_FORMAT_CARGO_ALIASES,
+        ProductSourceRecord::Project {
+            files:
+                ProductProjectMembership::Paged {
+                    page_offsets: Some(_),
+                    ..
+                },
+            ..
+        } => SOURCE_RECORD_FORMAT_MEMBERSHIP_OFFSETS,
         ProductSourceRecord::Project {
             files: ProductProjectMembership::Paged { .. },
             ..
@@ -141,12 +157,14 @@ fn format_version(format: &[u8]) -> Option<u8> {
         return None;
     };
     // `PSRA` is the identified format, `PSRB` adds declaration facts, `PSRC`
-    // adds source-bound Cargo aliases, and `PSRD` adds paged project membership.
+    // adds source-bound Cargo aliases, `PSRD` adds paged project membership,
+    // and `PSRE` adds exact per-page prefix offsets.
     let version = match tag {
         b'A' => 10,
         b'B' => 11,
         b'C' => 12,
         b'D' => 13,
+        b'E' => 14,
         digit if digit.is_ascii_digit() => digit.checked_sub(b'0')?,
         _ => return None,
     };
@@ -230,6 +248,9 @@ pub enum ProductProjectMembership {
         file_count: u32,
         /// Membership page relation keys in file-key range order.
         page_keys: Arc<[[u8; 32]]>,
+        /// Exact zero-based member offset at the start of each referenced
+        /// page. Historical PSRD rows omit these; cursor paging refuses them.
+        page_offsets: Option<Arc<[u32]>>,
     },
 }
 
@@ -244,6 +265,9 @@ pub enum ProductProjectFileMembership<'a> {
         file_count: usize,
         /// Page row keys in the same order as their file-key ranges.
         page_keys: &'a [[u8; 32]],
+        /// Exact zero-based member offset at the start of each page, when
+        /// retained by the selected Project row.
+        page_offsets: Option<&'a [u32]>,
     },
 }
 
@@ -478,7 +502,8 @@ where
             ProductProjectFileMembership::Paged {
                 file_count,
                 page_keys,
-            } => validate_paged_membership(file_count, page_keys).err(),
+                page_offsets,
+            } => validate_paged_membership(file_count, page_keys, page_offsets).err(),
             ProductProjectFileMembership::Inline(_) => None,
         };
         Self {
@@ -519,6 +544,7 @@ where
                 ProductProjectFileMembership::Paged {
                     file_count,
                     page_keys,
+                    page_offsets,
                 } => {
                     if let Some((_, page)) = &self.page {
                         let Some(fields) = page.membership_page_fields() else {
@@ -578,6 +604,20 @@ where
                                 "non-final project membership page is below its minimum size"
                                     .into(),
                             ));
+                        }
+                        if let Some(offsets) = page_offsets {
+                            let Some(expected_offset) = offsets.get(self.page_index - 1) else {
+                                self.failed = true;
+                                return Some(Err(
+                                    "project membership page prefix offset is missing".into(),
+                                ));
+                            };
+                            if *expected_offset as usize != self.seen {
+                                self.failed = true;
+                                return Some(Err(
+                                    "project membership page prefix offset is inconsistent".into(),
+                                ));
+                            }
                         }
                         self.page = Some((page_key, record));
                         continue;
@@ -650,6 +690,28 @@ pub struct ProductFileRef<'a> {
     pub declarations: &'a Arc<[SourceDeclaration]>,
     /// How much extracted detail this row was able to retain.
     pub retention: DeclarationRetention,
+}
+
+impl ProductFileRef<'_> {
+    /// Admits the explicit absence of extracted facts without claiming completeness.
+    ///
+    /// # Errors
+    /// Rejects an unavailable row carrying source identity, content, or declarations.
+    pub fn admitted_unavailable_reason(self) -> Result<Option<SourceUnavailableReason>, String> {
+        let DeclarationRetention::Unavailable(reason) = self.retention else {
+            return Ok(None);
+        };
+        if self.content_version != [0; 32]
+            || self.source_identity.is_some()
+            || !self.declarations.is_empty()
+        {
+            return Err(
+                "unavailable source row contradicts its retained content or declarations"
+                    .to_owned(),
+            );
+        }
+        Ok(Some(reason))
+    }
 }
 
 impl ProductSourceRecord {
@@ -849,6 +911,7 @@ impl ProductSourceRecord {
             anchored_cut_points::<ProductSourceRelation>(&files, PROJECT_MEMBERSHIP_CUT_POLICY, 0)
                 .map_err(|error| format!("project membership page cuts are invalid: {error}"))?;
         let mut page_keys = Vec::with_capacity(cuts.len());
+        let mut page_offsets = Vec::with_capacity(cuts.len());
         let mut pages = Vec::with_capacity(cuts.len());
         let mut start = 0usize;
         for end in cuts {
@@ -863,6 +926,10 @@ impl ProductSourceRecord {
             {
                 return Err("project membership page key collides with a selected row".to_owned());
             }
+            page_offsets.push(
+                u32::try_from(start)
+                    .map_err(|_| "project membership page offset exceeds u32".to_owned())?,
+            );
             page_keys.push(page_key);
             pages.push((page_key, page));
             start = end;
@@ -875,6 +942,7 @@ impl ProductSourceRecord {
             source_version,
             files.len(),
             page_keys,
+            Some(page_offsets),
             cargo_aliases,
         )?;
         Ok(ProductSourceProjectUpdate {
@@ -889,12 +957,13 @@ impl ProductSourceRecord {
         source_version: [u8; 32],
         file_count: usize,
         page_keys: Vec<[u8; 32]>,
+        page_offsets: Option<Vec<u32>>,
         cargo_aliases: Option<CargoPackageAliasEvidenceV1>,
     ) -> Result<Self, String> {
         if label.is_empty() || label.len() > ProductSourceRecord::MAX_LABEL_BYTES {
             return Err("project source coordinate is empty or oversized".to_owned());
         }
-        validate_paged_membership(file_count, &page_keys)?;
+        validate_paged_membership(file_count, &page_keys, page_offsets.as_deref())?;
         if let Some(aliases) = &cargo_aliases {
             aliases.admit().map_err(|_| {
                 "Cargo package alias evidence is malformed or exceeds its bounds".to_owned()
@@ -907,6 +976,7 @@ impl ProductSourceRecord {
                 file_count: u32::try_from(file_count)
                     .map_err(|_| "project file count exceeds u32".to_owned())?,
                 page_keys: Arc::from(page_keys.into_boxed_slice()),
+                page_offsets: page_offsets.map(|offsets| Arc::from(offsets.into_boxed_slice())),
             },
             cargo_aliases,
         };
@@ -990,6 +1060,28 @@ impl ProductSourceRecord {
         declarations: impl Into<Arc<[SourceDeclaration]>>,
         retention: DeclarationRetention,
     ) -> Result<Self, String> {
+        Self::file_with_retention_and_identity(
+            project,
+            path,
+            language,
+            content_version,
+            analysis_version,
+            declarations,
+            retention,
+            None,
+        )
+    }
+
+    fn file_with_retention_and_identity(
+        project: [u8; 32],
+        path: impl Into<String>,
+        language: SourceLanguage,
+        content_version: [u8; 32],
+        analysis_version: [u8; 32],
+        declarations: impl Into<Arc<[SourceDeclaration]>>,
+        retention: DeclarationRetention,
+        source_identity: Option<ContentId<SourceFactDomain>>,
+    ) -> Result<Self, String> {
         let path = path.into();
         let declarations = declarations.into();
         if path.is_empty() || path.len() > Self::MAX_LABEL_BYTES {
@@ -1004,7 +1096,7 @@ impl ProductSourceRecord {
             language,
             content_version,
             analysis_version,
-            source_identity: None,
+            source_identity,
             declarations,
             retention,
         };
@@ -1068,10 +1160,59 @@ impl ProductSourceRecord {
         analysis_version: [u8; 32],
         declarations: impl Into<Arc<[SourceDeclaration]>>,
     ) -> Result<Self, String> {
+        Self::file_within_row_capacity_and_identity(
+            project,
+            path,
+            language,
+            content_version,
+            analysis_version,
+            declarations,
+            None,
+        )
+    }
+
+    /// Constructs a compact row using its final source identity and wire format.
+    ///
+    /// Identity changes the encoding of every declaration's containment as well
+    /// as the row header. It must therefore participate in every capacity probe,
+    /// rather than being attached to an already compacted row. Complete facts
+    /// remain in their separate pages; this constructor bounds their summary.
+    ///
+    /// # Errors
+    /// Returns an error if the file's bare identity cannot fit a canonical row.
+    pub fn identified_file_within_row_capacity(
+        project: [u8; 32],
+        path: impl Into<String>,
+        language: SourceLanguage,
+        content_version: [u8; 32],
+        analysis_version: [u8; 32],
+        declarations: impl Into<Arc<[SourceDeclaration]>>,
+        source_identity: ContentId<SourceFactDomain>,
+    ) -> Result<Self, String> {
+        Self::file_within_row_capacity_and_identity(
+            project,
+            path,
+            language,
+            content_version,
+            analysis_version,
+            declarations,
+            Some(source_identity),
+        )
+    }
+
+    fn file_within_row_capacity_and_identity(
+        project: [u8; 32],
+        path: impl Into<String>,
+        language: SourceLanguage,
+        content_version: [u8; 32],
+        analysis_version: [u8; 32],
+        declarations: impl Into<Arc<[SourceDeclaration]>>,
+        source_identity: Option<ContentId<SourceFactDomain>>,
+    ) -> Result<Self, String> {
         let path = path.into();
         let extracted = declarations.into();
         let build = |declarations: Arc<[SourceDeclaration]>, retention| {
-            Self::file_with_retention(
+            Self::file_with_retention_and_identity(
                 project,
                 path.clone(),
                 language,
@@ -1079,6 +1220,7 @@ impl ProductSourceRecord {
                 analysis_version,
                 declarations,
                 retention,
+                source_identity,
             )
         };
         if let Ok(record) = build(Arc::clone(&extracted), DeclarationRetention::Complete) {
@@ -1157,9 +1299,11 @@ impl ProductSourceRecord {
                     ProductProjectMembership::Paged {
                         file_count,
                         page_keys,
+                        page_offsets,
                     } => ProductProjectFileMembership::Paged {
                         file_count: *file_count as usize,
                         page_keys,
+                        page_offsets: page_offsets.as_deref(),
                     },
                 },
                 cargo_aliases: cargo_aliases.as_ref(),
@@ -1216,8 +1360,9 @@ impl ProductSourceRecord {
     ///
     /// # Errors
     ///
-    /// Returns an error when this record is a project frontier, which names
-    /// no source bytes at all.
+    /// Returns an error when this is not a file record, or when binding the
+    /// identity makes the final encoding exceed the row capacity. Producers
+    /// needing compaction use [`Self::identified_file_within_row_capacity`].
     pub fn with_source_identity(
         mut self,
         identity: ContentId<SourceFactDomain>,
@@ -1227,6 +1372,13 @@ impl ProductSourceRecord {
                 source_identity, ..
             } => {
                 *source_identity = Some(identity);
+                let encoded = self.encoded_value_bytes();
+                if encoded > Self::ROW_VALUE_CAPACITY {
+                    return Err(format!(
+                        "identified source file row for {} is {encoded} bytes, above the {} byte canonical row capacity",
+                        self.label(), Self::ROW_VALUE_CAPACITY,
+                    ));
+                }
                 Ok(self)
             }
             Self::Project { .. } | Self::MembershipPage { .. } => Err(
@@ -1334,7 +1486,11 @@ fn validate_project_frontier(label: &str, files: &[[u8; 32]]) -> Result<(), Stri
     Ok(())
 }
 
-fn validate_paged_membership(file_count: usize, page_keys: &[[u8; 32]]) -> Result<(), String> {
+fn validate_paged_membership(
+    file_count: usize,
+    page_keys: &[[u8; 32]],
+    page_offsets: Option<&[u32]>,
+) -> Result<(), String> {
     if file_count == 0 || file_count > ProductSourceRecord::MAX_PROJECT_FILES {
         return Err("paged project membership has an invalid file count".to_owned());
     }
@@ -1347,6 +1503,29 @@ fn validate_paged_membership(file_count: usize, page_keys: &[[u8; 32]]) -> Resul
         || page_keys.len() > ProductSourceRecord::MAX_PROJECT_MEMBERSHIP_PAGES
     {
         return Err("project membership page references exceed their count bound".to_owned());
+    }
+    if let Some(offsets) = page_offsets {
+        if offsets.len() != page_keys.len()
+            || offsets.first() != Some(&0)
+            || offsets.windows(2).any(|pair| pair[0] >= pair[1])
+            || offsets
+                .last()
+                .is_none_or(|offset| *offset as usize >= file_count)
+        {
+            return Err("project membership page prefix offsets are malformed".to_owned());
+        }
+        for (index, start) in offsets.iter().enumerate() {
+            let end = offsets
+                .get(index + 1)
+                .map_or(file_count as u32, |offset| *offset);
+            let page_size = end.saturating_sub(*start) as usize;
+            if page_size == 0
+                || page_size > MAX_PROJECT_MEMBERSHIP_PAGE_FILES
+                || (index + 1 < offsets.len() && page_size < MIN_PROJECT_MEMBERSHIP_PAGE_FILES)
+            {
+                return Err("project membership page prefix offsets violate page bounds".to_owned());
+            }
+        }
     }
     let mut seen = std::collections::BTreeSet::new();
     if page_keys.iter().any(|key| !seen.insert(*key)) {
@@ -1454,12 +1633,16 @@ impl Relation for ProductSourceRelation {
                     ProductProjectMembership::Paged {
                         file_count,
                         page_keys,
+                        page_offsets,
                     } => {
                         output.push(1);
                         output.extend_from_slice(&file_count.to_be_bytes());
                         push_count(output, page_keys.len());
-                        for page_key in page_keys.iter() {
+                        for (index, page_key) in page_keys.iter().enumerate() {
                             output.extend_from_slice(page_key);
+                            if let Some(offsets) = page_offsets {
+                                output.extend_from_slice(&offsets[index].to_be_bytes());
+                            }
                         }
                         match cargo_aliases {
                             Some(evidence) => {
@@ -1884,8 +2067,12 @@ fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
                 let file_count = reader.u32()? as usize;
                 let page_count = reader.count(ProductSourceRecord::MAX_PROJECT_MEMBERSHIP_PAGES)?;
                 let mut page_keys = Vec::with_capacity(page_count);
+                let mut page_offsets = (version >= 14).then(|| Vec::with_capacity(page_count));
                 for _ in 0..page_count {
                     page_keys.push(reader.array()?);
+                    if let Some(offsets) = &mut page_offsets {
+                        offsets.push(reader.u32()?);
+                    }
                 }
                 let aliases = match reader.byte()? {
                     0 => None,
@@ -1897,6 +2084,7 @@ fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
                     source_version,
                     file_count,
                     page_keys,
+                    page_offsets,
                     aliases,
                 )
                 .map_err(|_| ())?
@@ -1977,7 +2165,7 @@ fn decode_file_record(
     if version == 6 {
         skip_legacy_semantics(reader)?;
     }
-    let record = ProductSourceRecord::file_with_retention(
+    ProductSourceRecord::file_with_retention_and_identity(
         project,
         path,
         language,
@@ -1985,14 +2173,9 @@ fn decode_file_record(
         analysis_version,
         declarations,
         retention,
+        source_identity,
     )
-    .map_err(|_| ())?;
-    match source_identity {
-        Some(identity) if matches!(record, ProductSourceRecord::File { .. }) => {
-            record.with_source_identity(identity).map_err(|_| ())
-        }
-        _ => Ok(record),
-    }
+    .map_err(|_| ())
 }
 
 /// Decodes one declaration, tolerating the older pre-`PSR4` field shapes.
@@ -2294,6 +2477,8 @@ pub struct ProductSourceSnapshot {
     workspace: WorkspaceRoot,
     transition: ProductSourceTransition,
     relation: WorkspaceRelationHandle<ProductSourceRelation>,
+    source_facts:
+        Option<WorkspaceRelationHandle<super::file_facts_relation::ProductSourceFileFactsRelation>>,
     manifest: Arc<[u8]>,
     authority: [u8; backend_version::ID_BYTES],
     delta: ProductSourceDeltaFacts,
@@ -2314,6 +2499,8 @@ impl ProductSourceSnapshot {
         let relation = snapshot
             .relation::<ProductSourceRelation>()
             .map_err(|error| error.to_string())?;
+        let source_facts =
+            product_source_file_facts_relation(snapshot).map_err(|error| error.to_string())?;
         let relation_root = relation.root_node().map_err(|error| error.to_string())?;
         let (base, target) = snapshot
             .transition_relation_roots::<ProductSourceRelation>()
@@ -2327,13 +2514,14 @@ impl ProductSourceSnapshot {
             workspace: snapshot.root(),
             transition: ProductSourceTransition { base, target },
             relation,
+            source_facts,
             manifest: Arc::from(snapshot.manifest().encode().into_boxed_slice()),
             authority: *snapshot.manifest().authority(),
             delta: ProductSourceDeltaFacts::from_transition(snapshot.transition_work()),
             retention: ProductSourceRetentionFacts {
                 relation_rows: relation_root.row_count(),
                 relation_level: relation_root.level(),
-                retained_objects: snapshot.closure().manifest().object_count(),
+                retained_objects: snapshot.closure().control_manifest().object_count(),
             },
         })
     }
@@ -2360,6 +2548,82 @@ impl ProductSourceSnapshot {
     #[must_use]
     pub const fn relation(&self) -> &WorkspaceRelationHandle<ProductSourceRelation> {
         &self.relation
+    }
+
+    /// Admits complete structural facts for one exact file row from the
+    /// auxiliary relation selected by this same workspace closure.
+    ///
+    /// `Some(Unavailable)` retains the checked reason for a selected source
+    /// that could not be extracted; it proves no complete declaration set.
+    /// Other `Some` variants require the manifest and every referenced page
+    /// to have been checked against the exact file identity. The returned paged
+    /// form keeps a lazy relation lookup and visits one bounded page at a
+    /// time. `None` is reserved for legacy rows whose compact retention is
+    /// already complete; a compact overflow row with no facts manifest is a
+    /// hard error and can never be presented as complete.
+    pub fn admit_complete_file_facts(
+        &self,
+        record: &ProductSourceRecord,
+    ) -> Result<Option<ProductSourceFileFactsAdmission<ProductSourceFileFactsLookup>>, String> {
+        let file = record
+            .file_fields()
+            .ok_or_else(|| "complete source facts requested for a non-file row".to_owned())?;
+        let file_key = product_source_file_key(file.project, file.path);
+        if let Some(reason) = file.admitted_unavailable_reason()? {
+            if self
+                .relation
+                .lookup(&file_key)
+                .map_err(|error| error.to_string())?
+                .as_ref()
+                != Some(record)
+            {
+                return Err("unavailable source row is not the exact selected file".to_owned());
+            }
+            if let Some(relation) = &self.source_facts
+                && relation
+                    .lookup(&file_key)
+                    .map_err(|error| error.to_string())?
+                    .is_some()
+            {
+                return Err(
+                    "unavailable source row contradicts a complete facts manifest".to_owned(),
+                );
+            }
+            return Ok(Some(ProductSourceFileFactsAdmission::Unavailable(reason)));
+        }
+        let Some(relation) = &self.source_facts else {
+            return if file.retention.is_complete() {
+                Ok(None)
+            } else {
+                Err(
+                    "compact source row is incomplete and has no selected complete facts relation"
+                        .to_owned(),
+                )
+            };
+        };
+        let Some(manifest_record) = relation
+            .lookup(&file_key)
+            .map_err(|error| error.to_string())?
+        else {
+            return if file.retention.is_complete() {
+                Ok(None)
+            } else {
+                Err(
+                    "compact source row is incomplete and has no complete facts manifest"
+                        .to_owned(),
+                )
+            };
+        };
+        let ProductSourceFileFactsRecord::Manifest(manifest) = manifest_record else {
+            return Err("source facts manifest key names another row kind".to_owned());
+        };
+        let selected_relation = relation.clone();
+        let lookup: ProductSourceFileFactsLookup = Box::new(move |key| {
+            selected_relation
+                .lookup(key)
+                .map_err(|error| error.to_string())
+        });
+        admit_product_source_file_facts(file, file_key, manifest, lookup).map(Some)
     }
 
     /// Returns exact source change facts carried by the selected head.
@@ -2565,6 +2829,7 @@ mod tests {
                 let ProductProjectFileMembership::Paged {
                     file_count,
                     page_keys,
+                    page_offsets,
                 } = project.files
                 else {
                     panic!("oversized inline row must use pages");
@@ -2572,7 +2837,11 @@ mod tests {
                 assert_eq!(file_count, count);
                 assert!(page_keys.len() <= ProductSourceRecord::MAX_PROJECT_MEMBERSHIP_PAGES);
                 assert_eq!(page_keys.len(), update.membership_pages().len());
+                let page_offsets = page_offsets.expect("new pages commit exact prefix offsets");
+                assert_eq!(page_offsets.len(), page_keys.len());
+                let mut expected_offset = 0_u32;
                 for (index, (page_key, page)) in update.membership_pages().iter().enumerate() {
+                    assert_eq!(page_offsets[index], expected_offset);
                     let fields = page.membership_page_fields().expect("page row");
                     assert_eq!(fields.project, project_key);
                     assert!(fields.files.len() <= MAX_PROJECT_MEMBERSHIP_PAGE_FILES);
@@ -2584,13 +2853,119 @@ mod tests {
                         Ok(*page_key)
                     );
                     assert!(page.encoded_value_bytes() <= ProductSourceRecord::ROW_VALUE_CAPACITY);
+                    expected_offset +=
+                        u32::try_from(fields.files.len()).expect("bounded page size fits");
                     let mut encoded = Vec::new();
                     ProductSourceRelation::encode_value(page, &mut encoded);
                     let decoded = ProductSourceRelation::decode_value(&encoded).expect("PSRD page");
                     assert_eq!(decoded, *page);
                 }
+                assert_eq!(expected_offset as usize, count);
             }
         }
+    }
+
+    #[test]
+    fn membership_prefix_offsets_round_trip_and_historical_psrd_remains_readable() {
+        let files = ordered_membership_keys(2_043);
+        let update = ProductSourceRecord::project_with_membership_pages(
+            "fixture",
+            [0x31; 32],
+            files.clone(),
+            None,
+        )
+        .expect("paged fixture");
+        let project_key = update.project_key();
+        let current = update.project_record();
+        let mut encoded = Vec::new();
+        ProductSourceRelation::encode_value(current, &mut encoded);
+        assert_eq!(&encoded[..4], b"PSRE");
+        let decoded = ProductSourceRelation::decode_value(&encoded).expect("PSRE project");
+        assert_eq!(decoded, *current);
+        let current_fields = decoded.project_fields().expect("decoded project");
+        let ProductProjectFileMembership::Paged {
+            file_count,
+            page_keys,
+            page_offsets: Some(offsets),
+        } = current_fields.files
+        else {
+            panic!("PSRE project retains prefix offsets");
+        };
+
+        let pages = page_rows(&update);
+        let page_sizes = update
+            .membership_pages()
+            .iter()
+            .map(|(_, page)| page.membership_page_fields().expect("page row").files.len())
+            .collect::<Vec<_>>();
+        let (changed_boundary, increment) = page_sizes
+            .windows(2)
+            .enumerate()
+            .find_map(|(index, pair)| {
+                if pair[0] < MAX_PROJECT_MEMBERSHIP_PAGE_FILES
+                    && pair[1] > MIN_PROJECT_MEMBERSHIP_PAGE_FILES
+                {
+                    Some((index + 1, true))
+                } else if pair[0] > MIN_PROJECT_MEMBERSHIP_PAGE_FILES
+                    && pair[1] < MAX_PROJECT_MEMBERSHIP_PAGE_FILES
+                {
+                    Some((index + 1, false))
+                } else {
+                    None
+                }
+            })
+            .expect("some page boundary can shift while remaining bounded");
+        let mut malformed_offsets = offsets.to_vec();
+        if let Some(offset) = malformed_offsets.get_mut(changed_boundary) {
+            *offset = if increment {
+                offset.checked_add(1).expect("fixture offset fits")
+            } else {
+                offset.checked_sub(1).expect("nonzero page boundary")
+            };
+        } else {
+            panic!("selected page boundary is present");
+        }
+        let malformed = ProductSourceRecord::Project {
+            label: "fixture".to_owned(),
+            source_version: [0x31; 32],
+            files: ProductProjectMembership::Paged {
+                file_count: u32::try_from(file_count).expect("bounded file count"),
+                page_keys: Arc::from(page_keys.to_vec().into_boxed_slice()),
+                page_offsets: Some(Arc::from(malformed_offsets.into_boxed_slice())),
+            },
+            cargo_aliases: None,
+        };
+        let error = malformed
+            .project_fields()
+            .expect("malformed project fields")
+            .iter_file_keys(project_key, |key| Ok(pages.get(key).cloned()))
+            .collect::<Result<Vec<_>, _>>()
+            .expect_err("a committed prefix that disagrees with page contents fails closed");
+        assert!(error.contains("prefix offset is inconsistent"));
+
+        let legacy = ProductSourceRecord::Project {
+            label: "fixture".to_owned(),
+            source_version: [0x31; 32],
+            files: ProductProjectMembership::Paged {
+                file_count: u32::try_from(file_count).expect("bounded file count"),
+                page_keys: Arc::from(page_keys.to_vec().into_boxed_slice()),
+                page_offsets: None,
+            },
+            cargo_aliases: None,
+        };
+        let mut legacy_bytes = Vec::new();
+        ProductSourceRelation::encode_value(&legacy, &mut legacy_bytes);
+        assert_eq!(&legacy_bytes[..4], b"PSRD");
+        let legacy_decoded =
+            ProductSourceRelation::decode_value(&legacy_bytes).expect("historical PSRD project");
+        assert_eq!(legacy_decoded, legacy);
+        let resolved = legacy_decoded
+            .project_fields()
+            .expect("historical project fields")
+            .iter_file_keys(project_key, |key| Ok(pages.get(key).cloned()))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("legacy full relation iteration remains available");
+        assert_eq!(resolved, files);
     }
 
     #[test]
@@ -2631,6 +3006,7 @@ mod tests {
         let ProductProjectFileMembership::Paged {
             file_count,
             page_keys,
+            ..
         } = fields.files
         else {
             panic!("maximum frontier must use pages");
@@ -2704,7 +3080,7 @@ mod tests {
 
     #[test]
     fn membership_pages_reject_duplicate_references_overlaps_and_wrong_totals() {
-        assert!(super::validate_paged_membership(512, &[[1; 32], [1; 32]]).is_err());
+        assert!(super::validate_paged_membership(512, &[[1; 32], [1; 32]], None).is_err());
 
         let project_key = backend_library::package_key("overlap").to_bytes();
         let keys = ordered_membership_keys(513);
@@ -2725,6 +3101,7 @@ mod tests {
             514,
             vec![first_key, second_key],
             None,
+            None,
         )
         .expect("bounded but overlapping project root");
         let error = overlap
@@ -2743,7 +3120,12 @@ mod tests {
         )
         .expect("valid project update");
         let fields = update.project_record().project_fields().expect("project");
-        let ProductProjectFileMembership::Paged { page_keys, .. } = fields.files else {
+        let ProductProjectFileMembership::Paged {
+            page_keys,
+            page_offsets,
+            ..
+        } = fields.files
+        else {
             panic!("fixture should be paged");
         };
         let wrong_total = ProductSourceRecord::Project {
@@ -2752,6 +3134,8 @@ mod tests {
             files: ProductProjectMembership::Paged {
                 file_count: 2_044,
                 page_keys: Arc::from(page_keys.to_vec().into_boxed_slice()),
+                page_offsets: page_offsets
+                    .map(|offsets| Arc::from(offsets.to_vec().into_boxed_slice())),
             },
             cargo_aliases: None,
         };
@@ -3061,7 +3445,13 @@ mod tests {
                 version
             );
         }
-        for (tag, version) in [(b'A', 10_u8), (b'B', 11_u8), (b'C', 12_u8), (b'D', 13_u8)] {
+        for (tag, version) in [
+            (b'A', 10_u8),
+            (b'B', 11_u8),
+            (b'C', 12_u8),
+            (b'D', 13_u8),
+            (b'E', 14_u8),
+        ] {
             assert_eq!(
                 super::format_version(&[b'P', b'S', b'R', tag]),
                 Some(version),
@@ -3069,7 +3459,7 @@ mod tests {
             );
         }
 
-        for tag in [b'0', b'1', b':', b';', b'<', b'E', b'?', 0xff] {
+        for tag in [b'0', b'1', b':', b';', b'<', b'F', b'?', 0xff] {
             assert_eq!(
                 super::format_version(&[b'P', b'S', b'R', tag]),
                 None,
@@ -3521,6 +3911,49 @@ mod tests {
         )
         .expect("a capacity-aware record");
         assert_eq!(record, again, "shedding must be a pure function");
+    }
+
+    #[test]
+    fn identified_compaction_accounts_for_header_and_each_containment() {
+        let declarations = (0..2048).map(wide_declaration).collect::<Vec<_>>();
+        let identity = fixture_source_identity();
+        let unbound = ProductSourceRecord::file_within_row_capacity(
+            [3; 32],
+            "src/lib.rs",
+            super::SourceLanguage::Rust,
+            [4; 32],
+            [5; 32],
+            Arc::from(declarations.clone()),
+        )
+        .expect("unbound compact row");
+        assert!(
+            unbound.with_source_identity(identity).is_err(),
+            "attaching identity must refuse a row that no longer fits"
+        );
+        let record = ProductSourceRecord::identified_file_within_row_capacity(
+            [3; 32],
+            "src/lib.rs",
+            super::SourceLanguage::Rust,
+            [4; 32],
+            [5; 32],
+            Arc::from(declarations),
+            identity,
+        )
+        .expect("final-format compact row");
+        assert!(encoded(&record) <= ProductSourceRecord::ROW_VALUE_CAPACITY);
+        let fields = record.file_fields().expect("file fields");
+        assert_eq!(fields.source_identity, Some(identity));
+        let DeclarationRetention::Truncated(counts) = fields.retention else {
+            panic!("expected truthful truncated retention");
+        };
+        assert_eq!(counts.extracted(), 2048);
+        assert_eq!(counts.retained() as usize, fields.declarations.len());
+        let mut bytes = Vec::new();
+        ProductSourceRelation::encode_value(&record, &mut bytes);
+        assert_eq!(
+            ProductSourceRelation::decode_value(&bytes).expect("identified round trip"),
+            record
+        );
     }
 
     #[test]

@@ -139,8 +139,7 @@ pub fn bounded_text(text: &str) -> String {
     if text.len() <= MAX_PREVIEW_TEXT_BYTES {
         return text.to_owned();
     }
-    const MARKER: &str =
-        "\n\n… output truncated; request a narrower page or detail=summary";
+    const MARKER: &str = "\n\n… output truncated; request a narrower page or detail=summary";
     let mut end = MAX_PREVIEW_TEXT_BYTES.saturating_sub(MARKER.len());
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
@@ -278,6 +277,9 @@ pub fn encode_answer(
                         index_job: product.index_job,
                         index_operation: product.index_operation,
                         selected_source_frontier: product.selected_source_frontier,
+                        package_source_membership_page: product.package_source_membership_page,
+                        semantic_data: product.semantic_data,
+                        package_discovery: product.package_discovery,
                     },
                     budget,
                 )
@@ -587,6 +589,12 @@ struct SummaryProductDto {
     index_operation: Option<backend_library::IndexOperationObservation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     selected_source_frontier: Option<backend_library::SelectedProjectSourceFrontier>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic_data: Option<crate::product::ProductSemanticData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_discovery: Option<crate::product::PackageDiscoveryProjection>,
 }
 
 #[derive(Default)]
@@ -608,6 +616,41 @@ impl Write for CountingWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn membership_answer(count: usize, path_bytes: usize) -> Answer {
+        let package = backend_library::PackageReference::parse("budget-fixture")
+            .expect("local package reference");
+        let files = (0..count)
+            .map(|index| {
+                let mut file_key = [0; 32];
+                file_key[..8].copy_from_slice(&(index as u64).to_be_bytes());
+                let prefix = format!("src/{index:03}/");
+                let path = format!("{prefix}{}", "x".repeat(path_bytes - prefix.len()));
+                backend_library::PackageSourceMembershipFileV1 {
+                    file_key,
+                    path,
+                    language: backend_library::PackageSourceMembershipLanguageV1::TypeScript,
+                    content_version: [0x5a; 32],
+                    source_identity: Some([0xa5; 32]),
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let page = backend_library::PackageSourceMembershipPageResultV1::Page {
+            package,
+            project_key: [0x11; 32],
+            source_relation_root: [0x22; 32],
+            source_version: [0x33; 32],
+            file_count: u32::try_from(count).expect("fixture count fits"),
+            start_offset: 0,
+            scope: backend_library::PackageSourceMembershipScopeV1::IndexedProjectMembership,
+            exclusions: backend_library::PackageSourceMembershipExclusionsV1::NotCaptured,
+            files,
+            next: None,
+        };
+        let reply = backend_library::SurfaceReply::PackageSourceMembershipPage(page);
+        Answer::Product(Box::new(crate::product::product_view(&reply)))
+    }
 
     #[test]
     fn token_estimate_is_deterministic() {
@@ -750,6 +793,64 @@ mod tests {
         let value: Value = serde_json::from_slice(&encoded.bytes).expect("complete JSON");
         assert_eq!(value["query"], "café 你好");
         assert!(!encoded.bytes.is_ascii(), "Unicode must remain UTF-8");
+    }
+
+    #[test]
+    fn membership_default_page_fits_reply_budget_and_oversize_refuses_atomically() {
+        let default_count =
+            usize::from(backend_library::DEFAULT_PACKAGE_SOURCE_MEMBERSHIP_PAGE_FILES);
+        assert_eq!(default_count, 32);
+        let default = membership_answer(default_count, 72);
+        for detail in [Detail::Summary, Detail::Full] {
+            let payload = encode_answer(&default, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+                .expect("default typed membership page fits the normal reply budget");
+            println!(
+                "default membership reply: detail={detail:?}, files={default_count}, bytes={}",
+                payload.budget.bytes
+            );
+            assert!(payload.budget.bytes <= DEFAULT_RESPONSE_BUDGET_BYTES);
+            assert_eq!(
+                encode_answer(&default, detail, None, payload.budget.bytes)
+                    .expect("exact membership reply boundary is admitted")
+                    .budget
+                    .bytes,
+                payload.budget.bytes
+            );
+            let below = encode_answer(&default, detail, None, payload.budget.bytes - 1)
+                .expect_err("one byte below must refuse the complete page");
+            assert_eq!(below.bytes, payload.budget.bytes);
+            assert_eq!(below.budget, payload.budget.bytes - 1);
+        }
+
+        let maximum = membership_answer(
+            usize::from(backend_library::MAX_PACKAGE_SOURCE_MEMBERSHIP_PAGE_FILES),
+            72,
+        );
+        for detail in [Detail::Summary, Detail::Full] {
+            let refused = encode_answer(&maximum, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+                .expect_err("the explicit maximum is admitted only when its full reply fits");
+            println!(
+                "maximum membership reply: detail={detail:?}, files={}, bytes={}",
+                backend_library::MAX_PACKAGE_SOURCE_MEMBERSHIP_PAGE_FILES,
+                refused.bytes
+            );
+            assert!(refused.bytes > DEFAULT_RESPONSE_BUDGET_BYTES);
+            assert_eq!(refused.budget, DEFAULT_RESPONSE_BUDGET_BYTES);
+        }
+
+        let long_paths = membership_answer(
+            default_count,
+            backend_library::MAX_PACKAGE_SOURCE_MEMBERSHIP_PATH_BYTES,
+        );
+        let refused = encode_answer(&long_paths, Detail::Full, None, MAX_RESPONSE_BUDGET_BYTES)
+            .expect_err("bounded long paths remain a typed refusal, never truncated");
+        println!(
+            "maximum-path membership reply: detail=Full, files={default_count}, path_bytes={}, bytes={}",
+            backend_library::MAX_PACKAGE_SOURCE_MEMBERSHIP_PATH_BYTES,
+            refused.bytes
+        );
+        assert!(refused.bytes > MAX_RESPONSE_BUDGET_BYTES);
+        assert_eq!(refused.budget, MAX_RESPONSE_BUDGET_BYTES);
     }
 
     #[test]

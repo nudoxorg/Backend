@@ -266,15 +266,39 @@ struct Inbound {
 /// Cancellation of the one-shot response wait only. This token is separate
 /// from request correlation and from any durable owner-operation identity.
 #[derive(Clone, Debug, Default)]
-struct ResponseWaiter(Arc<AtomicBool>);
+struct ResponseWaiter {
+    abandoned: Arc<AtomicBool>,
+    peer: Option<Arc<backend_engine::LocalStream>>,
+}
 
 impl ResponseWaiter {
+    fn for_stream(stream: &backend_engine::LocalStream) -> io::Result<Self> {
+        Ok(Self {
+            abandoned: Arc::default(),
+            peer: Some(Arc::new(stream.try_clone()?)),
+        })
+    }
+
     fn abandon(&self) {
-        self.0.store(true, Ordering::Release);
+        self.abandoned.store(true, Ordering::Release);
     }
 
     fn is_abandoned(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        if self.abandoned.load(Ordering::Acquire) {
+            return true;
+        }
+        if let Some(peer) = &self.peer {
+            self.observe_peer_state(backend_platform::local::reply_peer_state(peer));
+        }
+        self.abandoned.load(Ordering::Acquire)
+    }
+
+    fn observe_peer_state(&self, state: io::Result<backend_platform::local::ReplyPeerState>) {
+        // A probe failure has no authority to cancel delivery. Keep the
+        // bounded response deadline when the kernel witness is inconclusive.
+        if matches!(state, Ok(backend_platform::local::ReplyPeerState::Closed)) {
+            self.abandon();
+        }
     }
 }
 
@@ -885,6 +909,120 @@ mod tests {
                 .join()
                 .unwrap_or_else(|_| panic!("listener thread panicked"))
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deferred_peer_probe_errors_preserve_response_delivery() {
+        let (mut owner, mut client) =
+            backend_engine::LocalStream::pair().expect("local stream pair");
+        let waiter = super::ResponseWaiter::for_stream(&owner).expect("response capability");
+        for kind in [
+            io::ErrorKind::Interrupted,
+            io::ErrorKind::Other,
+            io::ErrorKind::NotConnected,
+        ] {
+            waiter.observe_peer_state(Err(io::Error::new(kind, "inconclusive peer probe")));
+            assert!(
+                !waiter.is_abandoned(),
+                "probe error is not a closure witness"
+            );
+        }
+        owner
+            .write_all(b"reply")
+            .expect("connected response remains deliverable");
+        let mut reply = [0_u8; 5];
+        std::io::Read::read_exact(&mut client, &mut reply)
+            .expect("receive response after probe errors");
+        assert_eq!(&reply, b"reply");
+        drop(client);
+        assert!(
+            waiter.is_abandoned(),
+            "an actual kernel closure still abandons delivery"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deferred_peer_full_close_abandons_delivery_before_owner_completion() {
+        let path = socket_path("deferred-peer-close");
+        let mut config = ListenerConfig::new(path.clone());
+        config.limits = limits();
+        config.poll_interval = Duration::from_millis(1);
+        config.idle_timeout = None;
+        let state = Arc::new(DeferredState::default());
+        let service =
+            LocaldService::new(GatedOwner(Arc::clone(&state)), config.limits).expect("gated owner");
+        let mut listener = UnixListenerService::bind(service, config).expect("listener");
+        let mut client = backend_engine::LocalStream::connect(path).expect("client");
+        client
+            .write_all(&crate::protocol::frame(&command_body(7), limits()).expect("frame"))
+            .expect("request");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while state.accepted.load(Ordering::Acquire) == 0 {
+            assert!(Instant::now() < deadline);
+            listener.run_once().expect("accept deferred frame");
+            thread::sleep(Duration::from_millis(1));
+        }
+        drop(client);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !listener.deferred.is_empty() {
+            assert!(Instant::now() < deadline);
+            listener.run_once().expect("prune disconnected response");
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(state.abandoned.lock().expect("abandon records").len(), 1);
+        assert_eq!(state.committed.load(Ordering::Acquire), 0);
+        assert_eq!(
+            state.pending.lock().expect("accepted operations").len(),
+            1,
+            "losing delivery must preserve the accepted index operation"
+        );
+        state.released.store(true, Ordering::Release);
+        listener
+            .run_once()
+            .expect("accepted operation completes independently");
+        assert_eq!(state.committed.load(Ordering::Acquire), 1);
+        listener.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deferred_peer_write_half_close_still_receives_its_response() {
+        let path = socket_path("deferred-peer-half-close");
+        let mut config = ListenerConfig::new(path.clone());
+        config.limits = limits();
+        config.poll_interval = Duration::from_millis(1);
+        config.idle_timeout = None;
+        let state = Arc::new(DeferredState::default());
+        let service =
+            LocaldService::new(GatedOwner(Arc::clone(&state)), config.limits).expect("gated owner");
+        let mut listener = UnixListenerService::bind(service, config).expect("listener");
+        let mut client = backend_engine::LocalStream::connect(path).expect("client");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("bounded reply read");
+        client
+            .write_all(&crate::protocol::frame(&command_body(7), limits()).expect("frame"))
+            .expect("request");
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("half-close request direction");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while state.accepted.load(Ordering::Acquire) == 0 {
+            assert!(Instant::now() < deadline);
+            listener.run_once().expect("accept half-closed request");
+            thread::sleep(Duration::from_millis(1));
+        }
+        for _ in 0..10 {
+            listener.run_once().expect("keep pending half-closed peer");
+        }
+        assert!(state.abandoned.lock().expect("abandon records").is_empty());
+        state.released.store(true, Ordering::Release);
+        listener.run_once().expect("complete deferred response");
+        assert_eq!(client_reply(&mut client).request_id, 7);
+        assert_eq!(state.committed.load(Ordering::Acquire), 1);
+        listener.shutdown();
     }
 
     impl Drop for RunningListener {

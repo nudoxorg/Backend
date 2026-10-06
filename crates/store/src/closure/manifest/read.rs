@@ -67,6 +67,17 @@ impl ClosureManifest {
         Ok(manifest)
     }
 
+    /// Admits a bounded workspace control frontier whose relation descendants
+    /// remain in durable relation CAS rather than in this object list.
+    pub fn new_root_only_with_registry(
+        objects: Vec<TypedObject>,
+        registry: &RelationAdmissionRegistry,
+    ) -> Result<Self, StoreError> {
+        let manifest = Self::new_index(objects)?;
+        manifest.admit_objects_with_registry(registry)?;
+        Ok(manifest)
+    }
+
     /// Builds a closure manifest from typed objects without version verification.
     pub(super) fn new_index(objects: Vec<TypedObject>) -> Result<Self, StoreError> {
         if objects.windows(2).any(|window| {

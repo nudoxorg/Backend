@@ -1,0 +1,2021 @@
+{
+  "schema": "nudox.retained-functional-journey-observation.v1",
+  "run": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd",
+  "manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "summary_sha256": "77fc2f6e3b23c83cd9200f8e8d5a42e0e01469cfffbac510874ddd5f7deb254d",
+  "wire_sha256": "29b24fa278d8adc185486c01f0fd7297826b739118ef374393a95d1c3463184d",
+  "observer_sha256": "2191c0d163ae5034a22192065a3f5660d533b31397d505f46506e0b8bea2beb4",
+  "requested_witness": {
+    "path": "toolz/functoolz.py",
+    "line": 560
+  },
+  "requested_witness_present_in_resolution": true,
+  "healths": [
+    {
+      "label": "fresh-health",
+      "exit": 0,
+      "seconds": 3.454912,
+      "sequence": 0,
+      "rows": 0,
+      "fault": null
+    },
+    {
+      "label": "post-add-health",
+      "exit": 0,
+      "seconds": 0.164706,
+      "sequence": 2,
+      "rows": 923,
+      "fault": null
+    },
+    {
+      "label": "after-job-cancel-health",
+      "exit": 0,
+      "seconds": 0.124941,
+      "sequence": 2,
+      "rows": 923,
+      "fault": null
+    },
+    {
+      "label": "retry-health",
+      "exit": 0,
+      "seconds": 0.111932,
+      "sequence": 4,
+      "rows": 923,
+      "fault": null
+    },
+    {
+      "label": "edit-health",
+      "exit": 0,
+      "seconds": 0.105255,
+      "sequence": 6,
+      "rows": 923,
+      "fault": null
+    },
+    {
+      "label": "removed-health",
+      "exit": 0,
+      "seconds": 0.155612,
+      "sequence": 7,
+      "rows": 0,
+      "fault": null
+    },
+    {
+      "label": "readded-health",
+      "exit": 0,
+      "seconds": 0.117872,
+      "sequence": 9,
+      "rows": 923,
+      "fault": null
+    },
+    {
+      "label": "cold-health",
+      "exit": 0,
+      "seconds": 4.982141,
+      "sequence": 9,
+      "rows": 923,
+      "fault": null
+    }
+  ],
+  "command_timings": [
+    {
+      "label": "tool-node",
+      "exit": 0,
+      "seconds": 0.02358,
+      "stdout_bytes": 9
+    },
+    {
+      "label": "tool-tsc",
+      "exit": 0,
+      "seconds": 0.206271,
+      "stdout_bytes": 14
+    },
+    {
+      "label": "tool-python3",
+      "exit": 0,
+      "seconds": 0.003936,
+      "stdout_bytes": 15
+    },
+    {
+      "label": "tool-pyrefly",
+      "exit": 0,
+      "seconds": 0.00416,
+      "stdout_bytes": 20
+    },
+    {
+      "label": "tool-go",
+      "exit": 0,
+      "seconds": 0.004499,
+      "stdout_bytes": 32
+    },
+    {
+      "label": "fresh-health",
+      "exit": 0,
+      "seconds": 3.454912,
+      "stdout_bytes": 802
+    },
+    {
+      "label": "fresh-add",
+      "exit": 2,
+      "seconds": 11.93169,
+      "stdout_bytes": 692
+    },
+    {
+      "label": "post-add-health",
+      "exit": 0,
+      "seconds": 0.164706,
+      "stdout_bytes": 804
+    },
+    {
+      "label": "post-add-packages",
+      "exit": 0,
+      "seconds": 0.011678,
+      "stdout_bytes": 522
+    },
+    {
+      "label": "post-add-semantic-versions",
+      "exit": 0,
+      "seconds": 0.02804,
+      "stdout_bytes": 141
+    },
+    {
+      "label": "query-search-compose",
+      "exit": 0,
+      "seconds": 1.092499,
+      "stdout_bytes": 8026
+    },
+    {
+      "label": "query-resolve",
+      "exit": 0,
+      "seconds": 0.013394,
+      "stdout_bytes": 6121
+    },
+    {
+      "label": "query-outline-bare",
+      "exit": 0,
+      "seconds": 0.030868,
+      "stdout_bytes": 16320
+    },
+    {
+      "label": "query-outline-dot",
+      "exit": 0,
+      "seconds": 0.039406,
+      "stdout_bytes": 16320
+    },
+    {
+      "label": "query-outline-absolute",
+      "exit": 0,
+      "seconds": 0.039992,
+      "stdout_bytes": 16320
+    },
+    {
+      "label": "query-source-f8fa0ba5",
+      "exit": 0,
+      "seconds": 0.01173,
+      "stdout_bytes": 2056
+    },
+    {
+      "label": "query-show-f8fa0ba5",
+      "exit": 0,
+      "seconds": 0.343749,
+      "stdout_bytes": 4077
+    },
+    {
+      "label": "query-references-f8fa0ba5",
+      "exit": 0,
+      "seconds": 0.205868,
+      "stdout_bytes": 1885
+    },
+    {
+      "label": "query-graph-f8fa0ba5",
+      "exit": 0,
+      "seconds": 0.228522,
+      "stdout_bytes": 1635
+    },
+    {
+      "label": "query-related-f8fa0ba5",
+      "exit": 0,
+      "seconds": 0.210995,
+      "stdout_bytes": 4110
+    },
+    {
+      "label": "query-source-394277e3",
+      "exit": 0,
+      "seconds": 0.012976,
+      "stdout_bytes": 2722
+    },
+    {
+      "label": "query-show-394277e3",
+      "exit": 0,
+      "seconds": 0.253106,
+      "stdout_bytes": 3239
+    },
+    {
+      "label": "query-references-394277e3",
+      "exit": 0,
+      "seconds": 0.224793,
+      "stdout_bytes": 653
+    },
+    {
+      "label": "query-graph-394277e3",
+      "exit": 0,
+      "seconds": 0.290766,
+      "stdout_bytes": 2199
+    },
+    {
+      "label": "query-related-394277e3",
+      "exit": 0,
+      "seconds": 0.278517,
+      "stdout_bytes": 2199
+    },
+    {
+      "label": "query-source-43feb1a6",
+      "exit": 0,
+      "seconds": 0.012426,
+      "stdout_bytes": 1998
+    },
+    {
+      "label": "query-show-43feb1a6",
+      "exit": 0,
+      "seconds": 0.249136,
+      "stdout_bytes": 3051
+    },
+    {
+      "label": "query-references-43feb1a6",
+      "exit": 0,
+      "seconds": 0.314247,
+      "stdout_bytes": 706
+    },
+    {
+      "label": "query-graph-43feb1a6",
+      "exit": 0,
+      "seconds": 0.240732,
+      "stdout_bytes": 1717
+    },
+    {
+      "label": "query-related-43feb1a6",
+      "exit": 0,
+      "seconds": 0.212773,
+      "stdout_bytes": 2345
+    },
+    {
+      "label": "after-job-cancel-health",
+      "exit": 0,
+      "seconds": 0.124941,
+      "stdout_bytes": 804
+    },
+    {
+      "label": "retry-add",
+      "exit": 2,
+      "seconds": 10.15851,
+      "stdout_bytes": 692
+    },
+    {
+      "label": "retry-health",
+      "exit": 0,
+      "seconds": 0.111932,
+      "stdout_bytes": 804
+    },
+    {
+      "label": "retry-search-compose",
+      "exit": 0,
+      "seconds": 0.790971,
+      "stdout_bytes": 8026
+    },
+    {
+      "label": "retry-resolve",
+      "exit": 0,
+      "seconds": 0.013265,
+      "stdout_bytes": 6121
+    },
+    {
+      "label": "edit-add",
+      "exit": 2,
+      "seconds": 10.278171,
+      "stdout_bytes": 692
+    },
+    {
+      "label": "edit-health",
+      "exit": 0,
+      "seconds": 0.105255,
+      "stdout_bytes": 804
+    },
+    {
+      "label": "edit-resolve",
+      "exit": 0,
+      "seconds": 0.013824,
+      "stdout_bytes": 6121
+    },
+    {
+      "label": "edit-source-f8fa0ba5",
+      "exit": 0,
+      "seconds": 0.009683,
+      "stdout_bytes": 2058
+    },
+    {
+      "label": "edit-document-f8fa0ba5",
+      "exit": 0,
+      "seconds": 0.317465,
+      "stdout_bytes": 4079
+    },
+    {
+      "label": "edit-source-394277e3",
+      "exit": 0,
+      "seconds": 0.014541,
+      "stdout_bytes": 2722
+    },
+    {
+      "label": "edit-document-394277e3",
+      "exit": 0,
+      "seconds": 0.269387,
+      "stdout_bytes": 3239
+    },
+    {
+      "label": "edit-source-43feb1a6",
+      "exit": 0,
+      "seconds": 0.01408,
+      "stdout_bytes": 1998
+    },
+    {
+      "label": "edit-document-43feb1a6",
+      "exit": 0,
+      "seconds": 0.238546,
+      "stdout_bytes": 3051
+    },
+    {
+      "label": "remove-project",
+      "exit": 0,
+      "seconds": 4.468937,
+      "stdout_bytes": 358
+    },
+    {
+      "label": "removed-health",
+      "exit": 0,
+      "seconds": 0.155612,
+      "stdout_bytes": 802
+    },
+    {
+      "label": "removed-source-f8fa0ba5",
+      "exit": 2,
+      "seconds": 0.012489,
+      "stdout_bytes": 314
+    },
+    {
+      "label": "removed-show-f8fa0ba5",
+      "exit": 2,
+      "seconds": 0.012347,
+      "stdout_bytes": 314
+    },
+    {
+      "label": "removed-references-f8fa0ba5",
+      "exit": 2,
+      "seconds": 0.005806,
+      "stdout_bytes": 158
+    },
+    {
+      "label": "removed-graph-f8fa0ba5",
+      "exit": 2,
+      "seconds": 0.011787,
+      "stdout_bytes": 370
+    },
+    {
+      "label": "removed-source-394277e3",
+      "exit": 2,
+      "seconds": 0.012659,
+      "stdout_bytes": 319
+    },
+    {
+      "label": "removed-show-394277e3",
+      "exit": 2,
+      "seconds": 0.011977,
+      "stdout_bytes": 319
+    },
+    {
+      "label": "removed-references-394277e3",
+      "exit": 2,
+      "seconds": 0.005648,
+      "stdout_bytes": 158
+    },
+    {
+      "label": "removed-graph-394277e3",
+      "exit": 2,
+      "seconds": 0.012186,
+      "stdout_bytes": 375
+    },
+    {
+      "label": "removed-source-43feb1a6",
+      "exit": 2,
+      "seconds": 0.013086,
+      "stdout_bytes": 319
+    },
+    {
+      "label": "removed-show-43feb1a6",
+      "exit": 2,
+      "seconds": 0.012142,
+      "stdout_bytes": 319
+    },
+    {
+      "label": "removed-references-43feb1a6",
+      "exit": 2,
+      "seconds": 0.005928,
+      "stdout_bytes": 158
+    },
+    {
+      "label": "removed-graph-43feb1a6",
+      "exit": 2,
+      "seconds": 0.012231,
+      "stdout_bytes": 375
+    },
+    {
+      "label": "readd-project",
+      "exit": 2,
+      "seconds": 9.838245,
+      "stdout_bytes": 692
+    },
+    {
+      "label": "readded-health",
+      "exit": 0,
+      "seconds": 0.117872,
+      "stdout_bytes": 804
+    },
+    {
+      "label": "readded-source-f8fa0ba5",
+      "exit": 0,
+      "seconds": 0.011502,
+      "stdout_bytes": 2058
+    },
+    {
+      "label": "readded-show-f8fa0ba5",
+      "exit": 0,
+      "seconds": 0.24994,
+      "stdout_bytes": 4079
+    },
+    {
+      "label": "readded-references-f8fa0ba5",
+      "exit": 0,
+      "seconds": 0.289554,
+      "stdout_bytes": 1885
+    },
+    {
+      "label": "readded-graph-f8fa0ba5",
+      "exit": 0,
+      "seconds": 0.235844,
+      "stdout_bytes": 1635
+    },
+    {
+      "label": "readded-source-394277e3",
+      "exit": 0,
+      "seconds": 0.013137,
+      "stdout_bytes": 2722
+    },
+    {
+      "label": "readded-show-394277e3",
+      "exit": 0,
+      "seconds": 0.286415,
+      "stdout_bytes": 3239
+    },
+    {
+      "label": "readded-references-394277e3",
+      "exit": 0,
+      "seconds": 0.233027,
+      "stdout_bytes": 653
+    },
+    {
+      "label": "readded-graph-394277e3",
+      "exit": 0,
+      "seconds": 0.221363,
+      "stdout_bytes": 2199
+    },
+    {
+      "label": "readded-source-43feb1a6",
+      "exit": 0,
+      "seconds": 0.012892,
+      "stdout_bytes": 1998
+    },
+    {
+      "label": "readded-show-43feb1a6",
+      "exit": 0,
+      "seconds": 0.314948,
+      "stdout_bytes": 3051
+    },
+    {
+      "label": "readded-references-43feb1a6",
+      "exit": 0,
+      "seconds": 0.269976,
+      "stdout_bytes": 706
+    },
+    {
+      "label": "readded-graph-43feb1a6",
+      "exit": 0,
+      "seconds": 0.210937,
+      "stdout_bytes": 1717
+    },
+    {
+      "label": "cold-health",
+      "exit": 0,
+      "seconds": 4.982141,
+      "stdout_bytes": 804
+    },
+    {
+      "label": "cold-search-compose",
+      "exit": 0,
+      "seconds": 1.196886,
+      "stdout_bytes": 8048
+    },
+    {
+      "label": "cold-source-f8fa0ba5",
+      "exit": 0,
+      "seconds": 0.011323,
+      "stdout_bytes": 2058
+    },
+    {
+      "label": "cold-show-f8fa0ba5",
+      "exit": 0,
+      "seconds": 0.266674,
+      "stdout_bytes": 4079
+    },
+    {
+      "label": "cold-references-f8fa0ba5",
+      "exit": 0,
+      "seconds": 0.325155,
+      "stdout_bytes": 1885
+    },
+    {
+      "label": "cold-graph-f8fa0ba5",
+      "exit": 0,
+      "seconds": 0.223072,
+      "stdout_bytes": 1635
+    },
+    {
+      "label": "cold-source-394277e3",
+      "exit": 0,
+      "seconds": 0.012939,
+      "stdout_bytes": 2722
+    },
+    {
+      "label": "cold-show-394277e3",
+      "exit": 0,
+      "seconds": 0.368387,
+      "stdout_bytes": 3239
+    },
+    {
+      "label": "cold-references-394277e3",
+      "exit": 0,
+      "seconds": 0.265799,
+      "stdout_bytes": 653
+    },
+    {
+      "label": "cold-graph-394277e3",
+      "exit": 0,
+      "seconds": 0.347537,
+      "stdout_bytes": 2199
+    },
+    {
+      "label": "cold-source-43feb1a6",
+      "exit": 0,
+      "seconds": 0.012846,
+      "stdout_bytes": 1998
+    },
+    {
+      "label": "cold-show-43feb1a6",
+      "exit": 0,
+      "seconds": 0.316878,
+      "stdout_bytes": 3051
+    },
+    {
+      "label": "cold-references-43feb1a6",
+      "exit": 0,
+      "seconds": 0.31776,
+      "stdout_bytes": 706
+    },
+    {
+      "label": "cold-graph-43feb1a6",
+      "exit": 0,
+      "seconds": 0.324896,
+      "stdout_bytes": 1717
+    }
+  ],
+  "source_checks": [
+    {
+      "label": "query-source-f8fa0ba5",
+      "source_version": 0,
+      "path": "toolz/functoolz.py",
+      "line": 560,
+      "source_sha256": "46715ca6e2a9745f6bae7f5762e1be088265cc97b3575ce444455733e211fb85",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 24,
+      "returned_body_bytes": 589,
+      "actual_declaration_lines": 24,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "2d50a59277dedb2efeb51e3e45af459795b1ec2d1e863f6aef9839f0dc27a2d6"
+    },
+    {
+      "label": "query-show-f8fa0ba5",
+      "source_version": 0,
+      "path": "toolz/functoolz.py",
+      "line": 560,
+      "source_sha256": "46715ca6e2a9745f6bae7f5762e1be088265cc97b3575ce444455733e211fb85",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 24,
+      "returned_body_bytes": 589,
+      "actual_declaration_lines": 24,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "3ca2b3cd0cbcef08cb6a1791c889804f67290087a5d4df493b39507a263742e3"
+    },
+    {
+      "label": "query-source-394277e3",
+      "source_version": 0,
+      "path": "toolz/functoolz.py",
+      "line": 500,
+      "source_sha256": "46715ca6e2a9745f6bae7f5762e1be088265cc97b3575ce444455733e211fb85",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 8,
+      "returned_body_bytes": 281,
+      "actual_declaration_lines": 8,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "7d7f06565b6aee778c7fe8a8cce87a870a779d417834f5eccfd2f33b3a70d3df"
+    },
+    {
+      "label": "query-show-394277e3",
+      "source_version": 0,
+      "path": "toolz/functoolz.py",
+      "line": 500,
+      "source_sha256": "46715ca6e2a9745f6bae7f5762e1be088265cc97b3575ce444455733e211fb85",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 8,
+      "returned_body_bytes": 281,
+      "actual_declaration_lines": 8,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "121c4c49e52f503730633e4fa91595015ee0cfed7dac0081e923979d66ca45cf"
+    },
+    {
+      "label": "query-source-43feb1a6",
+      "source_version": 0,
+      "path": "toolz/functoolz.py",
+      "line": 586,
+      "source_sha256": "46715ca6e2a9745f6bae7f5762e1be088265cc97b3575ce444455733e211fb85",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 19,
+      "returned_body_bytes": 506,
+      "actual_declaration_lines": 19,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "472e140d24225ffb80e5ea14f1cc28864184bff346dccc5ccdab57bc91c0bef6"
+    },
+    {
+      "label": "query-show-43feb1a6",
+      "source_version": 0,
+      "path": "toolz/functoolz.py",
+      "line": 586,
+      "source_sha256": "46715ca6e2a9745f6bae7f5762e1be088265cc97b3575ce444455733e211fb85",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 19,
+      "returned_body_bytes": 506,
+      "actual_declaration_lines": 19,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "30cad5435d6a9b2c1fb877f8049e56ff647abb715f0c0938c9009882cf1d2220"
+    },
+    {
+      "label": "edit-source-f8fa0ba5",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 560,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 24,
+      "returned_body_bytes": 591,
+      "actual_declaration_lines": 24,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "f563a6172d02a56d267fcd3d94fa3ef39c13b4b24323fa51f9d3322386ef7ab9"
+    },
+    {
+      "label": "edit-document-f8fa0ba5",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 560,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 24,
+      "returned_body_bytes": 591,
+      "actual_declaration_lines": 24,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "7f888d5042b806ecfed0df58ce332364b7bc75e59e9bb79974b9a3e67df15c2c"
+    },
+    {
+      "label": "edit-source-394277e3",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 500,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 8,
+      "returned_body_bytes": 281,
+      "actual_declaration_lines": 8,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "7d7f06565b6aee778c7fe8a8cce87a870a779d417834f5eccfd2f33b3a70d3df"
+    },
+    {
+      "label": "edit-document-394277e3",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 500,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 8,
+      "returned_body_bytes": 281,
+      "actual_declaration_lines": 8,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "121c4c49e52f503730633e4fa91595015ee0cfed7dac0081e923979d66ca45cf"
+    },
+    {
+      "label": "edit-source-43feb1a6",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 586,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 19,
+      "returned_body_bytes": 506,
+      "actual_declaration_lines": 19,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "472e140d24225ffb80e5ea14f1cc28864184bff346dccc5ccdab57bc91c0bef6"
+    },
+    {
+      "label": "edit-document-43feb1a6",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 586,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 19,
+      "returned_body_bytes": 506,
+      "actual_declaration_lines": 19,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "30cad5435d6a9b2c1fb877f8049e56ff647abb715f0c0938c9009882cf1d2220"
+    },
+    {
+      "label": "readded-source-f8fa0ba5",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 560,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 24,
+      "returned_body_bytes": 591,
+      "actual_declaration_lines": 24,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "f563a6172d02a56d267fcd3d94fa3ef39c13b4b24323fa51f9d3322386ef7ab9"
+    },
+    {
+      "label": "readded-show-f8fa0ba5",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 560,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 24,
+      "returned_body_bytes": 591,
+      "actual_declaration_lines": 24,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "7f888d5042b806ecfed0df58ce332364b7bc75e59e9bb79974b9a3e67df15c2c"
+    },
+    {
+      "label": "readded-source-394277e3",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 500,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 8,
+      "returned_body_bytes": 281,
+      "actual_declaration_lines": 8,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "7d7f06565b6aee778c7fe8a8cce87a870a779d417834f5eccfd2f33b3a70d3df"
+    },
+    {
+      "label": "readded-show-394277e3",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 500,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 8,
+      "returned_body_bytes": 281,
+      "actual_declaration_lines": 8,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "121c4c49e52f503730633e4fa91595015ee0cfed7dac0081e923979d66ca45cf"
+    },
+    {
+      "label": "readded-source-43feb1a6",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 586,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 19,
+      "returned_body_bytes": 506,
+      "actual_declaration_lines": 19,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "472e140d24225ffb80e5ea14f1cc28864184bff346dccc5ccdab57bc91c0bef6"
+    },
+    {
+      "label": "readded-show-43feb1a6",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 586,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 19,
+      "returned_body_bytes": 506,
+      "actual_declaration_lines": 19,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "30cad5435d6a9b2c1fb877f8049e56ff647abb715f0c0938c9009882cf1d2220"
+    },
+    {
+      "label": "cold-source-f8fa0ba5",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 560,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 24,
+      "returned_body_bytes": 591,
+      "actual_declaration_lines": 24,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "f563a6172d02a56d267fcd3d94fa3ef39c13b4b24323fa51f9d3322386ef7ab9"
+    },
+    {
+      "label": "cold-show-f8fa0ba5",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 560,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 24,
+      "returned_body_bytes": 591,
+      "actual_declaration_lines": 24,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "7f888d5042b806ecfed0df58ce332364b7bc75e59e9bb79974b9a3e67df15c2c"
+    },
+    {
+      "label": "cold-source-394277e3",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 500,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 8,
+      "returned_body_bytes": 281,
+      "actual_declaration_lines": 8,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "7d7f06565b6aee778c7fe8a8cce87a870a779d417834f5eccfd2f33b3a70d3df"
+    },
+    {
+      "label": "cold-show-394277e3",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 500,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 8,
+      "returned_body_bytes": 281,
+      "actual_declaration_lines": 8,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "121c4c49e52f503730633e4fa91595015ee0cfed7dac0081e923979d66ca45cf"
+    },
+    {
+      "label": "cold-source-43feb1a6",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 586,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 19,
+      "returned_body_bytes": 506,
+      "actual_declaration_lines": 19,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "472e140d24225ffb80e5ea14f1cc28864184bff346dccc5ccdab57bc91c0bef6"
+    },
+    {
+      "label": "cold-show-43feb1a6",
+      "source_version": 1,
+      "path": "toolz/functoolz.py",
+      "line": 586,
+      "source_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 19,
+      "returned_body_bytes": 506,
+      "actual_declaration_lines": 19,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "30cad5435d6a9b2c1fb877f8049e56ff647abb715f0c0938c9009882cf1d2220"
+    }
+  ],
+  "cli_mcp_parities": [
+    {
+      "cli_label": "query-source-f8fa0ba5",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "2d50a59277dedb2efeb51e3e45af459795b1ec2d1e863f6aef9839f0dc27a2d6",
+      "mcp_reply_wire_line": 100
+    },
+    {
+      "cli_label": "query-show-f8fa0ba5",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "3ca2b3cd0cbcef08cb6a1791c889804f67290087a5d4df493b39507a263742e3",
+      "mcp_reply_wire_line": 102
+    },
+    {
+      "cli_label": "query-references-f8fa0ba5",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "5132712f9ee4d5af8ba4c701f91cedd403386365654717698eb9cb5d1bbe3a3a",
+      "mcp_reply_wire_line": 104
+    },
+    {
+      "cli_label": "query-graph-f8fa0ba5",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "8140557c81f7ca7303fee4b43160ba9bd812994eb8cd753f7911844985ccaf76",
+      "mcp_reply_wire_line": 106
+    },
+    {
+      "cli_label": "query-source-394277e3",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "7d7f06565b6aee778c7fe8a8cce87a870a779d417834f5eccfd2f33b3a70d3df",
+      "mcp_reply_wire_line": 113
+    },
+    {
+      "cli_label": "query-show-394277e3",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "121c4c49e52f503730633e4fa91595015ee0cfed7dac0081e923979d66ca45cf",
+      "mcp_reply_wire_line": 115
+    },
+    {
+      "cli_label": "query-references-394277e3",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "db0fa9ea5d7e49d479fe45704003361a7e63aed202a8d0bf9269b9d71e39fada",
+      "mcp_reply_wire_line": 117
+    },
+    {
+      "cli_label": "query-graph-394277e3",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "df16e37930b7038628542ea9757204035b665611f05a34bbd91393fb97fa16c3",
+      "mcp_reply_wire_line": 119
+    },
+    {
+      "cli_label": "query-source-43feb1a6",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "472e140d24225ffb80e5ea14f1cc28864184bff346dccc5ccdab57bc91c0bef6",
+      "mcp_reply_wire_line": 126
+    },
+    {
+      "cli_label": "query-show-43feb1a6",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "30cad5435d6a9b2c1fb877f8049e56ff647abb715f0c0938c9009882cf1d2220",
+      "mcp_reply_wire_line": 128
+    },
+    {
+      "cli_label": "query-references-43feb1a6",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "97c6be8543c667524a8e2629249e08ef646c26864ea154e5cf572e7b4d4ae4e0",
+      "mcp_reply_wire_line": 130
+    },
+    {
+      "cli_label": "query-graph-43feb1a6",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "ee0fd1445ae38d8043fc4378b7ce969b32394306aabb94cc192ba530bc1bf38d",
+      "mcp_reply_wire_line": 132
+    },
+    {
+      "cli_label": "removed-source-f8fa0ba5",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "aed8d78f3331760293dbfbb3fa065c3ba8fb528f7a7cb71cb522b4958c4eb119",
+      "mcp_reply_wire_line": 174
+    },
+    {
+      "cli_label": "removed-show-f8fa0ba5",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "aed8d78f3331760293dbfbb3fa065c3ba8fb528f7a7cb71cb522b4958c4eb119",
+      "mcp_reply_wire_line": 176
+    },
+    {
+      "cli_label": "removed-references-f8fa0ba5",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1",
+      "mcp_reply_wire_line": 178
+    },
+    {
+      "cli_label": "removed-graph-f8fa0ba5",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "32c15c0a2ada1c4cdef6098e1e9dfed3c8b2c8049f635b35f4ec5de38d3cce5d",
+      "mcp_reply_wire_line": 180
+    },
+    {
+      "cli_label": "removed-source-394277e3",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "bc6d342102c7e4279d30ead29e854df8370a96660135476e094a6cf23a057fe8",
+      "mcp_reply_wire_line": 186
+    },
+    {
+      "cli_label": "removed-show-394277e3",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "bc6d342102c7e4279d30ead29e854df8370a96660135476e094a6cf23a057fe8",
+      "mcp_reply_wire_line": 188
+    },
+    {
+      "cli_label": "removed-references-394277e3",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1",
+      "mcp_reply_wire_line": 190
+    },
+    {
+      "cli_label": "removed-graph-394277e3",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "32dcb0b325f88fe95aca9a407aaa3aadeb98648d992d8ad3cd46f48fffd6555c",
+      "mcp_reply_wire_line": 192
+    },
+    {
+      "cli_label": "removed-source-43feb1a6",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "c7553779b58c9b804ffb1f0c04e2029d219d8f8bc816cd88551c3264fd00db32",
+      "mcp_reply_wire_line": 198
+    },
+    {
+      "cli_label": "removed-show-43feb1a6",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "c7553779b58c9b804ffb1f0c04e2029d219d8f8bc816cd88551c3264fd00db32",
+      "mcp_reply_wire_line": 200
+    },
+    {
+      "cli_label": "removed-references-43feb1a6",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1",
+      "mcp_reply_wire_line": 202
+    },
+    {
+      "cli_label": "removed-graph-43feb1a6",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "d86f64526eba119142fd7d0c7b37653c6bd111a779220773e54f8d424cffd976",
+      "mcp_reply_wire_line": 204
+    },
+    {
+      "cli_label": "readded-source-f8fa0ba5",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "f563a6172d02a56d267fcd3d94fa3ef39c13b4b24323fa51f9d3322386ef7ab9",
+      "mcp_reply_wire_line": 212
+    },
+    {
+      "cli_label": "readded-show-f8fa0ba5",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "7f888d5042b806ecfed0df58ce332364b7bc75e59e9bb79974b9a3e67df15c2c",
+      "mcp_reply_wire_line": 214
+    },
+    {
+      "cli_label": "readded-references-f8fa0ba5",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "ec9a6a1c7e94f72a25e19f5b843ffb97b56171089d84e0ac21a7f691529ddad3",
+      "mcp_reply_wire_line": 216
+    },
+    {
+      "cli_label": "readded-graph-f8fa0ba5",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "8140557c81f7ca7303fee4b43160ba9bd812994eb8cd753f7911844985ccaf76",
+      "mcp_reply_wire_line": 218
+    },
+    {
+      "cli_label": "readded-source-394277e3",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "7d7f06565b6aee778c7fe8a8cce87a870a779d417834f5eccfd2f33b3a70d3df",
+      "mcp_reply_wire_line": 224
+    },
+    {
+      "cli_label": "readded-show-394277e3",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "121c4c49e52f503730633e4fa91595015ee0cfed7dac0081e923979d66ca45cf",
+      "mcp_reply_wire_line": 226
+    },
+    {
+      "cli_label": "readded-references-394277e3",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "db0fa9ea5d7e49d479fe45704003361a7e63aed202a8d0bf9269b9d71e39fada",
+      "mcp_reply_wire_line": 228
+    },
+    {
+      "cli_label": "readded-graph-394277e3",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "df16e37930b7038628542ea9757204035b665611f05a34bbd91393fb97fa16c3",
+      "mcp_reply_wire_line": 230
+    },
+    {
+      "cli_label": "readded-source-43feb1a6",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "472e140d24225ffb80e5ea14f1cc28864184bff346dccc5ccdab57bc91c0bef6",
+      "mcp_reply_wire_line": 236
+    },
+    {
+      "cli_label": "readded-show-43feb1a6",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "30cad5435d6a9b2c1fb877f8049e56ff647abb715f0c0938c9009882cf1d2220",
+      "mcp_reply_wire_line": 238
+    },
+    {
+      "cli_label": "readded-references-43feb1a6",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "97c6be8543c667524a8e2629249e08ef646c26864ea154e5cf572e7b4d4ae4e0",
+      "mcp_reply_wire_line": 240
+    },
+    {
+      "cli_label": "readded-graph-43feb1a6",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "ee0fd1445ae38d8043fc4378b7ce969b32394306aabb94cc192ba530bc1bf38d",
+      "mcp_reply_wire_line": 242
+    },
+    {
+      "cli_label": "cold-source-f8fa0ba5",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "f563a6172d02a56d267fcd3d94fa3ef39c13b4b24323fa51f9d3322386ef7ab9",
+      "mcp_reply_wire_line": 263
+    },
+    {
+      "cli_label": "cold-show-f8fa0ba5",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "7f888d5042b806ecfed0df58ce332364b7bc75e59e9bb79974b9a3e67df15c2c",
+      "mcp_reply_wire_line": 265
+    },
+    {
+      "cli_label": "cold-references-f8fa0ba5",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "ec9a6a1c7e94f72a25e19f5b843ffb97b56171089d84e0ac21a7f691529ddad3",
+      "mcp_reply_wire_line": 267
+    },
+    {
+      "cli_label": "cold-graph-f8fa0ba5",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exact_parity": true,
+      "cli_stdout_sha256": "8140557c81f7ca7303fee4b43160ba9bd812994eb8cd753f7911844985ccaf76",
+      "mcp_reply_wire_line": 269
+    },
+    {
+      "cli_label": "cold-source-394277e3",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "7d7f06565b6aee778c7fe8a8cce87a870a779d417834f5eccfd2f33b3a70d3df",
+      "mcp_reply_wire_line": 275
+    },
+    {
+      "cli_label": "cold-show-394277e3",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "121c4c49e52f503730633e4fa91595015ee0cfed7dac0081e923979d66ca45cf",
+      "mcp_reply_wire_line": 277
+    },
+    {
+      "cli_label": "cold-references-394277e3",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "db0fa9ea5d7e49d479fe45704003361a7e63aed202a8d0bf9269b9d71e39fada",
+      "mcp_reply_wire_line": 279
+    },
+    {
+      "cli_label": "cold-graph-394277e3",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exact_parity": true,
+      "cli_stdout_sha256": "df16e37930b7038628542ea9757204035b665611f05a34bbd91393fb97fa16c3",
+      "mcp_reply_wire_line": 281
+    },
+    {
+      "cli_label": "cold-source-43feb1a6",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "472e140d24225ffb80e5ea14f1cc28864184bff346dccc5ccdab57bc91c0bef6",
+      "mcp_reply_wire_line": 287
+    },
+    {
+      "cli_label": "cold-show-43feb1a6",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "30cad5435d6a9b2c1fb877f8049e56ff647abb715f0c0938c9009882cf1d2220",
+      "mcp_reply_wire_line": 289
+    },
+    {
+      "cli_label": "cold-references-43feb1a6",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "97c6be8543c667524a8e2629249e08ef646c26864ea154e5cf572e7b4d4ae4e0",
+      "mcp_reply_wire_line": 291
+    },
+    {
+      "cli_label": "cold-graph-43feb1a6",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exact_parity": true,
+      "cli_stdout_sha256": "ee0fd1445ae38d8043fc4378b7ce969b32394306aabb94cc192ba530bc1bf38d",
+      "mcp_reply_wire_line": 293
+    }
+  ],
+  "references": [
+    {
+      "label": "query-references-f8fa0ba5",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exit": 0,
+      "records": [
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/functoolz.py [bytes17883..17890)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:632::complement",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:632::complement",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/functoolz.py [bytes18793..18800)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:569::test_compose",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:569::test_compose",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/tests/test_functoolz.py [bytes13861..13868)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:574::test_compose_metadata",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:574::test_compose_metadata",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/tests/test_functoolz.py [bytes16082..16089)"
+          ]
+        }
+      ],
+      "stdout_sha256": "5132712f9ee4d5af8ba4c701f91cedd403386365654717698eb9cb5d1bbe3a3a"
+    },
+    {
+      "label": "query-references-394277e3",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exit": 0,
+      "records": [
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:499::__doc__",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:499::__doc__",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/functoolz.py [bytes14785..14797)"
+          ]
+        }
+      ],
+      "stdout_sha256": "db0fa9ea5d7e49d479fe45704003361a7e63aed202a8d0bf9269b9d71e39fada"
+    },
+    {
+      "label": "query-references-43feb1a6",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exit": 0,
+      "records": [
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:677::test_compose_left",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:677::test_compose_left",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/tests/test_functoolz.py [bytes16903..16915)"
+          ]
+        }
+      ],
+      "stdout_sha256": "97c6be8543c667524a8e2629249e08ef646c26864ea154e5cf572e7b4d4ae4e0"
+    },
+    {
+      "label": "removed-references-f8fa0ba5",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exit": 2,
+      "records": [],
+      "stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1"
+    },
+    {
+      "label": "removed-references-394277e3",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exit": 2,
+      "records": [],
+      "stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1"
+    },
+    {
+      "label": "removed-references-43feb1a6",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exit": 2,
+      "records": [],
+      "stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1"
+    },
+    {
+      "label": "readded-references-f8fa0ba5",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exit": 0,
+      "records": [
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/functoolz.py [bytes17885..17892)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:632::complement",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:632::complement",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/functoolz.py [bytes18795..18802)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:569::test_compose",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:569::test_compose",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/tests/test_functoolz.py [bytes13861..13868)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:574::test_compose_metadata",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:574::test_compose_metadata",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/tests/test_functoolz.py [bytes16082..16089)"
+          ]
+        }
+      ],
+      "stdout_sha256": "ec9a6a1c7e94f72a25e19f5b843ffb97b56171089d84e0ac21a7f691529ddad3"
+    },
+    {
+      "label": "readded-references-394277e3",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exit": 0,
+      "records": [
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:499::__doc__",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:499::__doc__",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/functoolz.py [bytes14785..14797)"
+          ]
+        }
+      ],
+      "stdout_sha256": "db0fa9ea5d7e49d479fe45704003361a7e63aed202a8d0bf9269b9d71e39fada"
+    },
+    {
+      "label": "readded-references-43feb1a6",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exit": 0,
+      "records": [
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:677::test_compose_left",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:677::test_compose_left",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/tests/test_functoolz.py [bytes16903..16915)"
+          ]
+        }
+      ],
+      "stdout_sha256": "97c6be8543c667524a8e2629249e08ef646c26864ea154e5cf572e7b4d4ae4e0"
+    },
+    {
+      "label": "cold-references-f8fa0ba5",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+      "exit": 0,
+      "records": [
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/functoolz.py [bytes17885..17892)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:632::complement",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:632::complement",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/functoolz.py [bytes18795..18802)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:569::test_compose",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:569::test_compose",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/tests/test_functoolz.py [bytes13861..13868)"
+          ]
+        },
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:574::test_compose_metadata",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:574::test_compose_metadata",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/tests/test_functoolz.py [bytes16082..16089)"
+          ]
+        }
+      ],
+      "stdout_sha256": "ec9a6a1c7e94f72a25e19f5b843ffb97b56171089d84e0ac21a7f691529ddad3"
+    },
+    {
+      "label": "cold-references-394277e3",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+      "exit": 0,
+      "records": [
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:499::__doc__",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:499::__doc__",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/functoolz.py [bytes14785..14797)"
+          ]
+        }
+      ],
+      "stdout_sha256": "db0fa9ea5d7e49d479fe45704003361a7e63aed202a8d0bf9269b9d71e39fada"
+    },
+    {
+      "label": "cold-references-43feb1a6",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+      "exit": 0,
+      "records": [
+        {
+          "title": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:677::test_compose_left",
+          "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:677::test_compose_left",
+          "tags": [
+            "calls",
+            "syntactic",
+            "toolz/tests/test_functoolz.py [bytes16903..16915)"
+          ]
+        }
+      ],
+      "stdout_sha256": "97c6be8543c667524a8e2629249e08ef646c26864ea154e5cf572e7b4d4ae4e0"
+    }
+  ],
+  "largest_mcp_replies": [
+    {
+      "wire_line": 19,
+      "bytes": 18855,
+      "estimated_tokens": 4714
+    },
+    {
+      "wire_line": 251,
+      "bytes": 18855,
+      "estimated_tokens": 4714
+    },
+    {
+      "wire_line": 157,
+      "bytes": 12604,
+      "estimated_tokens": 3151
+    },
+    {
+      "wire_line": 257,
+      "bytes": 12603,
+      "estimated_tokens": 3151
+    },
+    {
+      "wire_line": 151,
+      "bytes": 12571,
+      "estimated_tokens": 3143
+    }
+  ],
+  "source_edits": [
+    {
+      "kind": "source-edit",
+      "utc": "2026-10-06T13:09:21Z",
+      "path": "toolz/functoolz.py",
+      "before_sha256": "46715ca6e2a9745f6bae7f5762e1be088265cc97b3575ce444455733e211fb85",
+      "after_sha256": "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51",
+      "tree_after": {
+        "files": [
+          [
+            "AUTHORS.md",
+            1561,
+            "d1a4cf6dfc6401595b70fdd33747bc3ccff981341e79abe258292115904e5347"
+          ],
+          [
+            "LICENSE.txt",
+            1492,
+            "053664057b295b2f0c1332291a77102f01a099d87926e449e08a117eea9660bf"
+          ],
+          [
+            "MANIFEST.in",
+            204,
+            "f4c36d84e25072f4061a129750b0e55445fff1147bddf8839e313d2102fa29df"
+          ],
+          [
+            "PKG-INFO",
+            5141,
+            "24b01cee796d9d1b679bda1b5edc8306148aa76681fafc2028fef054da29250a"
+          ],
+          [
+            "README.rst",
+            3921,
+            "4345a38ac3f8b5ce83db174679c6205209656bcbd0198fd90f029f52adce67c4"
+          ],
+          [
+            "pyproject.toml",
+            2265,
+            "8cd850541325356603cc146f19af4d31df2915b0ab85a9d09468296eebf1f8a9"
+          ],
+          [
+            "setup.cfg",
+            38,
+            "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e"
+          ],
+          [
+            "tlz/__init__.py",
+            338,
+            "287d6932f64e2a4549fd600f5fabd952c0b42862b1190073c6e9960b382f2925"
+          ],
+          [
+            "tlz/_build_tlz.py",
+            3144,
+            "4672aacfa880af6cabd60ab24f4578634a50620360d0f3c6cb5e19b0e3548738"
+          ],
+          [
+            "toolz/__init__.py",
+            543,
+            "f7d49e00a3888d25c2b691aae94aff3d87d55e65a38e1e9ad553fdc622129c8f"
+          ],
+          [
+            "toolz/_signatures.py",
+            20555,
+            "448d86b55352c98c977e7e6f7d73aac87c1789b9471752f9a4f8c01e96c25392"
+          ],
+          [
+            "toolz/compatibility.py",
+            997,
+            "822398730bf54da3960df07e0b624fda91482796195fd68fd6ce143f30909f0e"
+          ],
+          [
+            "toolz/curried/__init__.py",
+            2700,
+            "53f7749c594e5983750c97399f9276ad3a1ab8753b4047b8e42304d6344b4f56"
+          ],
+          [
+            "toolz/curried/exceptions.py",
+            337,
+            "df543d23e468f88300dde46e0c2e704905d0058969771a279c9af8169d21aae2"
+          ],
+          [
+            "toolz/curried/operator.py",
+            515,
+            "6f700bd66102db994ec0917ef184fc7074341e8fe1822da3bca614278740ee1f"
+          ],
+          [
+            "toolz/dicttoolz.py",
+            8955,
+            "b04f3094634b7b385d9a446a07681073149bc1b3baf9cfb84956d8fb2163ba81"
+          ],
+          [
+            "toolz/functoolz.py",
+            29759,
+            "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51"
+          ],
+          [
+            "toolz/itertoolz.py",
+            27697,
+            "648edb0b45df62329a7745d87844de649447046b846819291e6cb3fd7cc8f0da"
+          ],
+          [
+            "toolz/recipes.py",
+            1256,
+            "aff8fbd35520dbfa0ee1b1ee9e8cb5c62ce4d0dfa6f5007039bc8221326e1742"
+          ],
+          [
+            "toolz/sandbox/__init__.py",
+            68,
+            "cac01821a1913a96cdcb6fa56047a255f9490aa10e5fd31620700847d05ce800"
+          ],
+          [
+            "toolz/sandbox/core.py",
+            4327,
+            "90a6eb5f3a1a29433980e9b63624b88b52287251cc6082bb9b8736b7e13baab4"
+          ],
+          [
+            "toolz/sandbox/parallel.py",
+            2966,
+            "045b5e798b9d471d654040280f1b169724823ebc891dd7257671e9c42aab6e37"
+          ],
+          [
+            "toolz/sandbox/tests/__init__.py",
+            0,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          ],
+          [
+            "toolz/sandbox/tests/test_core.py",
+            3830,
+            "38ce13274e8297b8911894d09611ede9296f2a02334660d0ce9ad5b80ab1b4d7"
+          ],
+          [
+            "toolz/sandbox/tests/test_parallel.py",
+            904,
+            "2e7e4e4309c4618522fc713fd6ec242b98c6aa11e351989145b35e5bcff8a1e0"
+          ],
+          [
+            "toolz/tests/__init__.py",
+            0,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          ],
+          [
+            "toolz/tests/test_compatibility.py",
+            260,
+            "4f09a972a8917a0060a00c2bcf9f77c3bdd4b4c871c754a9dcc63a2c9e699826"
+          ],
+          [
+            "toolz/tests/test_curried.py",
+            3724,
+            "2c5d8f91b686565378274739f13ede913b96365874afb791a55da85b3b9fe233"
+          ],
+          [
+            "toolz/tests/test_curried_doctests.py",
+            274,
+            "f69fd1c0329e1bff045d4a2a285009fb3ca9e0a1e9db0de52c5c4e0795d7ab0c"
+          ],
+          [
+            "toolz/tests/test_dicttoolz.py",
+            9037,
+            "840bb05ef6e9fff47818d8d4b9846eddafa9b356052d22c81ec820d2fc7f0d84"
+          ],
+          [
+            "toolz/tests/test_functoolz.py",
+            20332,
+            "24dd33ca06709bc48f7b6e8f68aba32d66c6600c110a5275fb55b5177a9431e9"
+          ],
+          [
+            "toolz/tests/test_inspect_args.py",
+            16539,
+            "0f524a2e128272cef54993c4dfef3a3d24a2af19cfa0cf9a60eab7157cb75b95"
+          ],
+          [
+            "toolz/tests/test_itertoolz.py",
+            19626,
+            "12bce5c50eb4e0b18bd9476d4cf4d62b69e9fcaf4e63c9bf03a594b8f48b299d"
+          ],
+          [
+            "toolz/tests/test_package.py",
+            295,
+            "3e628960b505cea360fcd4af37e5a7ead208680312359f352f852876507a4825"
+          ],
+          [
+            "toolz/tests/test_recipes.py",
+            820,
+            "859fe7b8600e21a7c9ac9c279e3f7e2599da46af6cac85f23d0cb305d352d454"
+          ],
+          [
+            "toolz/tests/test_serialization.py",
+            5759,
+            "87057e30e173bef2d5c1979d5020db9b1e3bf7dacb41f0b2173993631a007471"
+          ],
+          [
+            "toolz/tests/test_signatures.py",
+            2873,
+            "5fc2bfad74b5397236db2b1c8f7cd4856c5659354823909fd912725df87fd870"
+          ],
+          [
+            "toolz/tests/test_tlz.py",
+            1593,
+            "2d2e480aa89e44b9230143fe0b94e37557a577a4bd38b5d3606807f397d8916c"
+          ],
+          [
+            "toolz/tests/test_utils.py",
+            156,
+            "d8b2214bff715de004d7fa2737cebc81978037c1378d35eda67605d16f8bd8e1"
+          ],
+          [
+            "toolz/utils.py",
+            139,
+            "24b957b7cc7f26a4957af98b64f9ede5b649b1d28c0498096f923095c7ce9ec7"
+          ],
+          [
+            "toolz.egg-info/PKG-INFO",
+            5141,
+            "24b01cee796d9d1b679bda1b5edc8306148aa76681fafc2028fef054da29250a"
+          ],
+          [
+            "toolz.egg-info/SOURCES.txt",
+            1034,
+            "de8088542a3a4255686b0330ccf37adb610c4470361dc18b6f61704e7b9f7459"
+          ],
+          [
+            "toolz.egg-info/dependency_links.txt",
+            1,
+            "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+          ],
+          [
+            "toolz.egg-info/top_level.txt",
+            10,
+            "a1eb02ce8a5807d5173d1e270f385869ff936e9910a11ea0612b17bd90e0937b"
+          ]
+        ],
+        "sha256": "2b1b4c0fb26b0f942faf34662e405f483a36a97421431b6ceabffc054b57f6fe"
+      }
+    }
+  ],
+  "pagination": [
+    {
+      "kind": "pagination-observation",
+      "utc": "2026-10-06T13:09:04Z",
+      "query": "compose",
+      "pages": 20,
+      "records": 20,
+      "coordinates": [
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:3::compose",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/curried/__init__.py:28::compose",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:473::Compose",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:527::generate_compose_test_cases",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/__init__.py:18::comp",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:547::__get__",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:663::generate_compose_left_test_cases",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:681::do",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:607::pipe",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:574::test_compose_metadata",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:569::test_compose",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:500::composed_doc",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_serialization.py:8::test_compose",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:677::test_compose_left",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:499::__doc__",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:658::method",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:3::compose_left",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/curried/__init__.py:28::compose_left"
+      ],
+      "duplicate_coordinates": false,
+      "unresolved_cursor": null
+    }
+  ],
+  "cancellation": [
+    {
+      "kind": "job-ticket-discovery",
+      "utc": "2026-10-06T13:09:10Z",
+      "ticket": {
+        "id": 2,
+        "owner_epoch": [
+          61,
+          8,
+          125,
+          245,
+          242,
+          76,
+          1,
+          247,
+          242,
+          42,
+          68,
+          150,
+          155,
+          4,
+          167,
+          255
+        ],
+        "package": {
+          "kind": "local",
+          "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project"
+        }
+      },
+      "reply": {
+        "id": 47,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "# index-start\nindex job 2 started  \u00b7  stage scanning \u00b7 poll index_progress\n`{\"id\":2,\"owner_epoch\":[61,8,125,245,242,76,1,247,242,42,68,150,155,4,167,255],\"package\":{\"kind\":\"local\",\"value\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project\"}}`\n1 row(s)\npoll `backend.index_progress` with the exact ticket shown above (after_sequence 0)\n",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "answer": "surface",
+            "budget": {
+              "bytes": 740,
+              "bytesPerToken": 4,
+              "estimatedTokens": 185
+            },
+            "detail": "full",
+            "surface": {
+              "data": {
+                "data": {
+                  "stage": "scanning",
+                  "ticket": {
+                    "id": 2,
+                    "owner_epoch": [
+                      61,
+                      8,
+                      125,
+                      245,
+                      242,
+                      76,
+                      1,
+                      247,
+                      242,
+                      42,
+                      68,
+                      150,
+                      155,
+                      4,
+                      167,
+                      255
+                    ],
+                    "package": {
+                      "kind": "local",
+                      "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project"
+                    }
+                  }
+                },
+                "state": "started"
+              },
+              "index_job": {
+                "kind": "started",
+                "value": {
+                  "data": {
+                    "stage": "scanning",
+                    "ticket": {
+                      "id": 2,
+                      "owner_epoch": [
+                        61,
+                        8,
+                        125,
+                        245,
+                        242,
+                        76,
+                        1,
+                        247,
+                        242,
+                        42,
+                        68,
+                        150,
+                        155,
+                        4,
+                        167,
+                        255
+                      ],
+                      "package": {
+                        "kind": "local",
+                        "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project"
+                      }
+                    }
+                  },
+                  "state": "started"
+                }
+              },
+              "result": "index-started"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "journey_error": null,
+  "whole_package_pass": false,
+  "original_acquired_source_mutated": false,
+  "source_witnesses_are_not_compiler_bindings": true
+}

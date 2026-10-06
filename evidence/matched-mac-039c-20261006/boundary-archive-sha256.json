@@ -1,0 +1,113 @@
+{
+  "archive_sha256": "b56e7b28b85d12921d9fda5f42b2dc95b7c68f87fb51c118d92728620d9e2bf7",
+  "members": {
+    "successor-039c-host-boundary/absent-installed/locald.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "successor-039c-host-boundary/absent-installed/locald.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "successor-039c-host-boundary/absent-installed/receipt.json": {
+      "bytes": 5541,
+      "sha256": "4d75f5e945a37ad7854e97932e0a456f6e32e7653fde51b81af05459a97171cf"
+    },
+    "successor-039c-host-boundary/absent-installed/state/registry/advisory-authority.json": {
+      "bytes": 234,
+      "sha256": "870f9e831284f7505f45158d0aae35a68d856eaad928cb4e44247aecb8cd6ff4"
+    },
+    "successor-039c-host-boundary/explicit-empty/locald.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "successor-039c-host-boundary/explicit-empty/locald.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "successor-039c-host-boundary/explicit-empty/receipt.json": {
+      "bytes": 6442,
+      "sha256": "f57859192cd97db844308956448d24ceb41a278a7ad1adf8659e2074dc46adaf"
+    },
+    "successor-039c-host-boundary/explicit-empty/state/registry/advisory-authority.json": {
+      "bytes": 234,
+      "sha256": "870f9e831284f7505f45158d0aae35a68d856eaad928cb4e44247aecb8cd6ff4"
+    },
+    "successor-039c-host-boundary/malformed/locald.stderr": {
+      "bytes": 55,
+      "sha256": "1824fa0161a5bb17ac9d33a3115f61765f78e3ea9ec9921670817c2f43046dec"
+    },
+    "successor-039c-host-boundary/malformed/locald.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "successor-039c-host-boundary/malformed/receipt.json": {
+      "bytes": 810,
+      "sha256": "5895c174f6d649fc86d2149bd918382f60c16f708b216c9e28d6a6d6f8b8ca7a"
+    },
+    "successor-039c-host-boundary/project/source.py": {
+      "bytes": 58,
+      "sha256": "185c4d2d4b551be6ccfb711b410badc4f5d5a0e6334de46766239f7eb49c4792"
+    },
+    "successor-039c-host-boundary/receipt.json": {
+      "bytes": 17030,
+      "sha256": "ab2a22c579e39623653a4184025f1d26e84c655e85a5f21ccc291afa4cf6f934"
+    },
+    "successor-039c-host-boundary/unknown-field/locald.stderr": {
+      "bytes": 55,
+      "sha256": "1824fa0161a5bb17ac9d33a3115f61765f78e3ea9ec9921670817c2f43046dec"
+    },
+    "successor-039c-host-boundary/unknown-field/locald.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "successor-039c-host-boundary/unknown-field/receipt.json": {
+      "bytes": 882,
+      "sha256": "2137edacfa497169fb956163fbbd6d7217fea0012192dbe47fdeaad01816c4c6"
+    },
+    "successor-039c-host-boundary/unknown-role/locald.stderr": {
+      "bytes": 55,
+      "sha256": "1824fa0161a5bb17ac9d33a3115f61765f78e3ea9ec9921670817c2f43046dec"
+    },
+    "successor-039c-host-boundary/unknown-role/locald.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "successor-039c-host-boundary/unknown-role/receipt.json": {
+      "bytes": 920,
+      "sha256": "50b3eb8ba206833a2c444a3c5a733a42fab3393712eb9acb9ecb9f392a58ee65"
+    },
+    "successor-039c-minimal-refused-cold/receipt.json": {
+      "bytes": 19576,
+      "sha256": "2fb45a086c9761073f3a5cfb0218f99a95267c526e19f5ca65bd1bcb65acb1e1"
+    },
+    "successor-039c-minimal-refused-cold/state/registry/advisory-authority.json": {
+      "bytes": 234,
+      "sha256": "870f9e831284f7505f45158d0aae35a68d856eaad928cb4e44247aecb8cd6ff4"
+    },
+    "successor-039c-boundary-guard/compiler-boundary.log": {
+      "bytes": 284,
+      "sha256": "afa31479f0ac7a92b8f87d09011e4b995c418fde7c3267617ee9c9f178907863"
+    },
+    "successor-039c-boundary-guard/minimal-refusal-cold.log": {
+      "bytes": 56,
+      "sha256": "343057b7c632851620c8afa26b7aa6c0215c951a4bdd226d0d4985fbf9fb6caa"
+    },
+    "successor-039c-boundary-guard/receipt.json": {
+      "bytes": 1029,
+      "sha256": "98253f6684fce5b54bd98e40570c4a436f46e00570770b7786226e845ee1cfe5"
+    },
+    "successor-039c-boundary-guard/samples.json": {
+      "bytes": 627,
+      "sha256": "5159e62e65f94239e3680ab81a4f26a2663edbe7b4d1a5146c413e70c4803f87"
+    },
+    "verify-next-host-boundary.py": {
+      "bytes": 3994,
+      "sha256": "2322ef030b91394eb4c53765fb21e7f8322c6bb10148ecde3f980e8ebc3686a4"
+    },
+    "minimal-successor-refusal-cold.py": {
+      "bytes": 2045,
+      "sha256": "a9ee3217dc0734f61cea53eb4804f660f8f48b239026a8c6321d6107403314bb"
+    }
+  }
+}

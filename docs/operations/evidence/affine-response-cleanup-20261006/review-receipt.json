@@ -1,0 +1,30 @@
+{
+  "schema": "nudox.affine-response-cleanup.source-review.v1",
+  "base": "dc6eb8fd86ce58770db3fab08fd18a325913d506",
+  "before": {
+    "test": "service::lease::publication_tests::a_reset_slower_than_its_allowance_is_abandoned_and_its_lease_released_on_the_same_socket",
+    "result": "FAIL",
+    "ledger": {
+      "active": 1,
+      "released": 0
+    },
+    "raw_bytes": 837,
+    "raw_sha256": "beaf2844e1d52c72e771f8594eb6520821542c2700f6ff10db041c4cae92b6b5"
+  },
+  "archive": {
+    "path": "before-failure.tar.gz",
+    "bytes": 606,
+    "sha256": "d4364d4be1e4453e08d3b0b23354ac560e1458a24526519dd5c4a2688bd36e03"
+  },
+  "contract": {
+    "eligible": "Cancelled/Stalled; fully written/flushed request; ReadingHeader/ReadingBody",
+    "response": "Consume exact saved offsets under existing grammar/bounds and request correlation; discard without publication admission",
+    "cleanup_allowance": "One actual monotonic 50ms deadline shared by drain and terminal Cancel; each I/O timeout uses remaining time",
+    "ownership": "Private affine held-lease/exact ConnectionId cleanup permission; no ordinary reuse, unpoisoning or redial",
+    "failure": "Partial request, ambiguous/wrong response, malformed/oversized/truncated frame, timeout or failed timeout configuration retires exact stream; original operation error preserved",
+    "practical_limits": "OS timeout granularity, native configuration, scheduling and decoding cannot be preempted"
+  },
+  "after": "Pending Root warm QA; syntax formatted and git diff checked, no compiled pass claimed",
+  "runtime_owners": 0,
+  "local_graphs_started": 0
+}

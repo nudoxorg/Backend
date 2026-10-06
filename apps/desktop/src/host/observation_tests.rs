@@ -261,6 +261,8 @@ struct RejectFirstResume {
     cursor: Box<[u8]>,
     opens: Arc<AtomicUsize>,
     resumes: Arc<AtomicUsize>,
+    reject: PublicationOperation,
+    refuse_reopen: bool,
 }
 
 impl RejectFirstResume {
@@ -287,11 +289,17 @@ impl RejectFirstResume {
             } if cursor == self.cursor => {
                 // Only this fixture's single owner loop advances the counter.
                 // A failed encoding must not consume the prospective lease.
-                let lease = if self.opens.load(Ordering::Acquire) == 0 {
-                    first
-                } else {
-                    second
-                };
+                let prior_opens = self.opens.load(Ordering::Acquire);
+                if self.refuse_reopen && prior_opens != 0 {
+                    let prepared = prepare_fixture_status(
+                        request_id,
+                        EngineStatus::Rejected("fresh Open refused".to_owned()),
+                        limits,
+                    )?;
+                    self.opens.fetch_add(1, Ordering::AcqRel);
+                    return Ok(prepared);
+                }
+                let lease = if prior_opens == 0 { first } else { second };
                 (
                     EngineStatus::Subscription(LocalSubscriptionResponse::Opened {
                         request_id,
@@ -310,12 +318,34 @@ impl RejectFirstResume {
                 credit,
                 lease_ms,
             } if cursor == self.cursor => {
-                let status = if lease == first {
+                let status = if lease == first && self.reject == PublicationOperation::Resume {
                     EngineStatus::Rejected("lease refused by producer".to_owned())
-                } else if lease != second {
+                } else if lease != first && lease != second {
                     EngineStatus::Rejected("unknown fixture lease".to_owned())
                 } else {
                     EngineStatus::Subscription(LocalSubscriptionResponse::Resumed {
+                        request_id,
+                        lease,
+                        cursor: self.cursor.clone(),
+                        credit,
+                        lease_ms,
+                    })
+                };
+                (status, false, true)
+            }
+            LocalSubscriptionOperation::Renew {
+                lease,
+                cursor,
+                credit,
+                lease_ms,
+                ..
+            } if cursor == self.cursor => {
+                let status = if lease == first && self.reject == PublicationOperation::Renew {
+                    EngineStatus::Rejected("unknown subscription lease".to_owned())
+                } else if lease != first && lease != second {
+                    EngineStatus::Rejected("unknown fixture lease".to_owned())
+                } else {
+                    EngineStatus::Subscription(LocalSubscriptionResponse::Renewed {
                         request_id,
                         lease,
                         cursor: self.cursor.clone(),
@@ -470,6 +500,8 @@ fn resume_refusal_fixture_consumes_counters_only_after_exact_response_encoding()
         cursor: cursor.clone(),
         opens: Arc::clone(&opens),
         resumes: Arc::clone(&resumes),
+        reject: PublicationOperation::Resume,
+        refuse_reopen: false,
     };
     let open = LocalSubscriptionOperation::Open {
         cursor: cursor.clone(),
@@ -734,7 +766,7 @@ fn typed_exchange_failure_distinguishes_closed_peer_from_a_stall() {
     };
     assert!(
         !recoverable(&refused),
-        "only the explicit Resume branch may fresh-Open"
+        "only the explicit lease-refusal branch may fresh-Open"
     );
 }
 
@@ -809,6 +841,20 @@ fn close_interrupts_the_blocked_exchange_before_the_owner_releases_it() {
 
 #[test]
 fn only_explicit_resume_refusal_reacquires_one_new_lease_and_certifies_same_root() {
+    assert_rejected_lease_recovery(PublicationOperation::Resume, false);
+}
+
+#[test]
+fn expired_renew_lease_reauthenticates_once_and_certifies_the_retained_cursor() {
+    assert_rejected_lease_recovery(PublicationOperation::Renew, false);
+}
+
+#[test]
+fn expired_renew_lease_with_refused_fresh_open_fails_without_reusing_or_looping() {
+    assert_rejected_lease_recovery(PublicationOperation::Renew, true);
+}
+
+fn assert_rejected_lease_recovery(rejected: PublicationOperation, refuse_reopen: bool) {
     let root = root();
     let cursor = Cursor::for_view_root_at(&root, 0);
     let gate = OwnerGate::ready(
@@ -827,6 +873,8 @@ fn only_explicit_resume_refusal_reacquires_one_new_lease_and_certifies_same_root
         cursor: cursor.encode_control(),
         opens: Arc::clone(&opens),
         resumes: Arc::clone(&resumes),
+        reject: rejected,
+        refuse_reopen,
     };
     let mut config = ListenerConfig::new(&path);
     config.idle_timeout = None;
@@ -844,7 +892,11 @@ fn only_explicit_resume_refusal_reacquires_one_new_lease_and_certifies_same_root
         freshness: Duration::from_millis(100),
         ordinary_recovery: Duration::from_secs(3),
         first_root: Duration::from_secs(2),
-        renew: Duration::from_secs(10),
+        renew: if rejected == PublicationOperation::Renew {
+            Duration::from_millis(20)
+        } else {
+            Duration::from_secs(10)
+        },
         max_reconnects: 2,
     };
     let observer =
@@ -859,6 +911,35 @@ fn only_explicit_resume_refusal_reacquires_one_new_lease_and_certifies_same_root
         server: Some(server),
     };
     let deadline = Instant::now() + Duration::from_secs(3);
+    if refuse_reopen {
+        while !matches!(gate.state(), crate::runtime::owner::OwnerState::Failed(_)) {
+            assert!(
+                Instant::now() < deadline,
+                "rejected fresh Open did not fail within its bound"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(matches!(
+            gate.state(),
+            crate::runtime::owner::OwnerState::Failed(
+                crate::runtime::owner::OwnerFault::Observation(
+                    ObservationFailure::ReacquisitionFailed(_)
+                )
+            )
+        ));
+        assert_eq!(
+            gate.ready_epoch(),
+            None,
+            "a refused new lease cannot reopen reads"
+        );
+        assert_eq!(
+            opens.load(Ordering::Acquire),
+            2,
+            "only one fresh Open is attempted"
+        );
+        running.close();
+        return;
+    }
     let new = loop {
         if let Some(epoch) = gate.ready_epoch()
             && epoch != old
@@ -878,12 +959,23 @@ fn only_explicit_resume_refusal_reacquires_one_new_lease_and_certifies_same_root
     );
     assert!(
         resumes.load(Ordering::Acquire) >= 1,
-        "the producer rejected Resume first"
+        "the producer rejected the original lease first"
     );
     let (retained, retained_cursor) = gate.publication(new).expect("reacquired root");
     assert!(Arc::ptr_eq(&retained, &root));
     assert_eq!(retained_cursor, cursor);
     running.close();
+    let report = running
+        .server
+        .take()
+        .expect("listener handle")
+        .join()
+        .expect("listener joined")
+        .expect("listener run");
+    assert_eq!(
+        report.connections, 2,
+        "fresh Open requires a newly authenticated socket"
+    );
 }
 
 #[test]

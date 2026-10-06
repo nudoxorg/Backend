@@ -219,8 +219,15 @@ fn compact_two_hundred_percent_reaches_every_declaration_and_scrolls_chrome_inde
         for text in &ledger.texts {
             if text.content.starts_with("previous_package_with_a_long_trail_label_")
                 && text.scroll_ancestors.iter().any(|key| key == "shelf-trail") && inside(&text.bounds, viewport) {
-                assert!(tests::native_bounds(&mut rig, "Link", &text.content, true).is_some(),
-                    "each reachable Trail label retains its full native link name and action");
+                let link = tests::native_bounds(&mut rig, "Link", &text.content, true)
+                    .expect("each reachable Trail label retains its full native link name and action");
+                assert!(f32::from(link.top()) >= viewport.y - 0.5
+                    && f32::from(link.bottom()) <= viewport.y + viewport.height + 0.5,
+                    "the complete native Trail hitbox is reachable through its own scroller: {link:?}, {viewport:?}");
+                assert!(text.paint_clip.as_ref().is_some_and(|clip| inside(&text.bounds, clip)),
+                    "the label's actual renderer mask admits its full measured ellipsis box");
+                assert_eq!(text.overflow, facet::probe::TextOverflow::Ellipsis,
+                    "long full accessible names have explicit visible ellipsis");
                 trail_seen.insert(text.content.clone());
             }
         }
@@ -231,6 +238,28 @@ fn compact_two_hundred_percent_reaches_every_declaration_and_scrolls_chrome_inde
     let after = fit_tests::painted(&mut rig);
     assert!((scroll(&after, "shelf-rows").offset.expect("row owner").y - rows_offset).abs() < 0.5,
         "reaching all view controls and Trail links preserves the declaration scroll owner");
+    // The actual pinned ancestor is an action, not merely a measured overlay.
+    // After reading to the end with native wheel, click it to return to the
+    // real disclosure, then collapse all descendants out of the native list.
+    let sticky = tests::native_bounds(&mut rig, "Button", "Return to Types", true)
+        .expect("the scrolled declaration list paints its actual pinned ancestor");
+    let clip = rig.cx.debug_bounds("shelf-sticky-clip").expect("mounted sticky clip");
+    assert!(sticky.top() >= clip.top() && sticky.bottom() <= clip.bottom(),
+        "the entire pinned native action fits its current-frame renderer clip");
+    rig.cx.simulate_click(sticky.center(), Modifiers::none());
+    rig.settle();
+    let collapse = tests::native_bounds(&mut rig, "Button", "Collapse Types", true)
+        .expect("clicking the pinned ancestor reaches the original collapse control");
+    let ledger = fit_tests::painted(&mut rig);
+    let viewport = &scroll(&ledger, "shelf-rows").viewport;
+    assert!(f32::from(collapse.top()) >= viewport.y - 0.5
+        && f32::from(collapse.bottom()) <= viewport.y + viewport.height + 0.5);
+    rig.cx.simulate_click(collapse.center(), Modifiers::none());
+    rig.settle();
+    assert!(tests::native_bounds(&mut rig, "Button", "Expand Types", true).is_some());
+    assert!(!fit_tests::painted(&mut rig).texts.iter().any(|text|
+        text.key.starts_with("shelf-row:") && text.content.starts_with("Declaration")),
+        "collapsing removes all old descendants from the painted native list");
 }
 
 #[gpui::test]

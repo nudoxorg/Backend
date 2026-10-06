@@ -1,0 +1,1349 @@
+{
+  "schema": "nudox.retained-functional-journey-observation.v1",
+  "run": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7",
+  "manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "summary_sha256": "e98c2e6155e966c12215ed358b76f160497dc9a42558ad1b641bec4b1a7fa072",
+  "wire_sha256": "51b2d31b2dd2781f7f5e4def37aaf57b414b3061cbb3e6d8bdc0303ec19e5961",
+  "observer_sha256": "4195bb8b8a92552121f663f1f5feee0448b2c32705bdd3dc894b37f4161c373f",
+  "requested_witness": {
+    "path": "certifi/core.py",
+    "line": 46
+  },
+  "requested_witness_present_in_resolution": false,
+  "healths": [
+    {
+      "label": "fresh-health",
+      "exit": 0,
+      "seconds": 3.650759,
+      "sequence": 0,
+      "rows": 0,
+      "fault": null
+    },
+    {
+      "label": "post-add-health",
+      "exit": 0,
+      "seconds": 0.078375,
+      "sequence": 2,
+      "rows": 55,
+      "fault": null
+    },
+    {
+      "label": "after-job-cancel-health",
+      "exit": 0,
+      "seconds": 0.085154,
+      "sequence": 4,
+      "rows": 55,
+      "fault": null
+    },
+    {
+      "label": "retry-health",
+      "exit": 0,
+      "seconds": 0.07944,
+      "sequence": 6,
+      "rows": 55,
+      "fault": null
+    },
+    {
+      "label": "edit-health",
+      "exit": 0,
+      "seconds": 0.081362,
+      "sequence": 8,
+      "rows": 55,
+      "fault": null
+    },
+    {
+      "label": "removed-health",
+      "exit": 0,
+      "seconds": 0.080697,
+      "sequence": 9,
+      "rows": 0,
+      "fault": null
+    },
+    {
+      "label": "readded-health",
+      "exit": 0,
+      "seconds": 0.095292,
+      "sequence": 11,
+      "rows": 55,
+      "fault": null
+    },
+    {
+      "label": "cold-health",
+      "exit": 0,
+      "seconds": 2.784406,
+      "sequence": 11,
+      "rows": 55,
+      "fault": null
+    }
+  ],
+  "command_timings": [
+    {
+      "label": "tool-node",
+      "exit": 0,
+      "seconds": 0.009371,
+      "stdout_bytes": 9
+    },
+    {
+      "label": "tool-tsc",
+      "exit": 0,
+      "seconds": 0.104387,
+      "stdout_bytes": 14
+    },
+    {
+      "label": "tool-python3",
+      "exit": 0,
+      "seconds": 0.002876,
+      "stdout_bytes": 15
+    },
+    {
+      "label": "tool-pyrefly",
+      "exit": 0,
+      "seconds": 0.003043,
+      "stdout_bytes": 20
+    },
+    {
+      "label": "tool-go",
+      "exit": 0,
+      "seconds": 0.002396,
+      "stdout_bytes": 32
+    },
+    {
+      "label": "fresh-health",
+      "exit": 0,
+      "seconds": 3.650759,
+      "stdout_bytes": 802
+    },
+    {
+      "label": "fresh-add",
+      "exit": 0,
+      "seconds": 3.490027,
+      "stdout_bytes": 356
+    },
+    {
+      "label": "post-add-health",
+      "exit": 0,
+      "seconds": 0.078375,
+      "stdout_bytes": 803
+    },
+    {
+      "label": "post-add-packages",
+      "exit": 0,
+      "seconds": 0.01043,
+      "stdout_bytes": 522
+    },
+    {
+      "label": "post-add-semantic-versions",
+      "exit": 0,
+      "seconds": 0.005375,
+      "stdout_bytes": 1125
+    },
+    {
+      "label": "query-search-contents",
+      "exit": 0,
+      "seconds": 0.394039,
+      "stdout_bytes": 3154
+    },
+    {
+      "label": "query-resolve",
+      "exit": 0,
+      "seconds": 0.011575,
+      "stdout_bytes": 2487
+    },
+    {
+      "label": "query-outline-bare",
+      "exit": 0,
+      "seconds": 0.023171,
+      "stdout_bytes": 10834
+    },
+    {
+      "label": "query-outline-dot",
+      "exit": 0,
+      "seconds": 0.022552,
+      "stdout_bytes": 10834
+    },
+    {
+      "label": "query-outline-absolute",
+      "exit": 0,
+      "seconds": 0.022933,
+      "stdout_bytes": 10834
+    },
+    {
+      "label": "query-source-4894d2a6",
+      "exit": 0,
+      "seconds": 0.011404,
+      "stdout_bytes": 1375
+    },
+    {
+      "label": "query-show-4894d2a6",
+      "exit": 0,
+      "seconds": 0.036304,
+      "stdout_bytes": 2222
+    },
+    {
+      "label": "query-references-4894d2a6",
+      "exit": 0,
+      "seconds": 0.004102,
+      "stdout_bytes": 339
+    },
+    {
+      "label": "query-graph-4894d2a6",
+      "exit": 0,
+      "seconds": 0.012726,
+      "stdout_bytes": 1472
+    },
+    {
+      "label": "query-related-4894d2a6",
+      "exit": 0,
+      "seconds": 0.011656,
+      "stdout_bytes": 1472
+    },
+    {
+      "label": "query-source-7a5386bc",
+      "exit": 0,
+      "seconds": 0.011078,
+      "stdout_bytes": 2420
+    },
+    {
+      "label": "query-show-7a5386bc",
+      "exit": 0,
+      "seconds": 0.034592,
+      "stdout_bytes": 3655
+    },
+    {
+      "label": "query-references-7a5386bc",
+      "exit": 0,
+      "seconds": 0.004757,
+      "stdout_bytes": 329
+    },
+    {
+      "label": "query-graph-7a5386bc",
+      "exit": 0,
+      "seconds": 0.012197,
+      "stdout_bytes": 1918
+    },
+    {
+      "label": "query-related-7a5386bc",
+      "exit": 0,
+      "seconds": 0.012256,
+      "stdout_bytes": 1918
+    },
+    {
+      "label": "query-source-5103a222",
+      "exit": 0,
+      "seconds": 0.010875,
+      "stdout_bytes": 1090
+    },
+    {
+      "label": "query-show-5103a222",
+      "exit": 0,
+      "seconds": 0.035407,
+      "stdout_bytes": 1104
+    },
+    {
+      "label": "query-references-5103a222",
+      "exit": 0,
+      "seconds": 0.004583,
+      "stdout_bytes": 329
+    },
+    {
+      "label": "query-graph-5103a222",
+      "exit": 0,
+      "seconds": 0.012784,
+      "stdout_bytes": 1069
+    },
+    {
+      "label": "query-related-5103a222",
+      "exit": 0,
+      "seconds": 0.011579,
+      "stdout_bytes": 1069
+    },
+    {
+      "label": "after-job-cancel-health",
+      "exit": 0,
+      "seconds": 0.085154,
+      "stdout_bytes": 803
+    },
+    {
+      "label": "retry-add",
+      "exit": 0,
+      "seconds": 3.482298,
+      "stdout_bytes": 356
+    },
+    {
+      "label": "retry-health",
+      "exit": 0,
+      "seconds": 0.07944,
+      "stdout_bytes": 803
+    },
+    {
+      "label": "retry-search-contents",
+      "exit": 0,
+      "seconds": 0.288636,
+      "stdout_bytes": 3154
+    },
+    {
+      "label": "retry-resolve",
+      "exit": 0,
+      "seconds": 0.011473,
+      "stdout_bytes": 2487
+    },
+    {
+      "label": "edit-add",
+      "exit": 0,
+      "seconds": 3.640624,
+      "stdout_bytes": 356
+    },
+    {
+      "label": "edit-health",
+      "exit": 0,
+      "seconds": 0.081362,
+      "stdout_bytes": 803
+    },
+    {
+      "label": "edit-resolve",
+      "exit": 0,
+      "seconds": 0.01249,
+      "stdout_bytes": 2487
+    },
+    {
+      "label": "edit-source-4894d2a6",
+      "exit": 0,
+      "seconds": 0.011008,
+      "stdout_bytes": 1375
+    },
+    {
+      "label": "edit-document-4894d2a6",
+      "exit": 0,
+      "seconds": 0.036575,
+      "stdout_bytes": 2222
+    },
+    {
+      "label": "edit-source-7a5386bc",
+      "exit": 0,
+      "seconds": 0.01035,
+      "stdout_bytes": 2420
+    },
+    {
+      "label": "edit-document-7a5386bc",
+      "exit": 0,
+      "seconds": 0.036514,
+      "stdout_bytes": 3655
+    },
+    {
+      "label": "edit-source-5103a222",
+      "exit": 0,
+      "seconds": 0.0093,
+      "stdout_bytes": 1090
+    },
+    {
+      "label": "edit-document-5103a222",
+      "exit": 0,
+      "seconds": 0.035887,
+      "stdout_bytes": 1104
+    },
+    {
+      "label": "remove-project",
+      "exit": 0,
+      "seconds": 0.656765,
+      "stdout_bytes": 358
+    },
+    {
+      "label": "removed-health",
+      "exit": 0,
+      "seconds": 0.080697,
+      "stdout_bytes": 802
+    },
+    {
+      "label": "removed-source-4894d2a6",
+      "exit": 2,
+      "seconds": 0.012275,
+      "stdout_bytes": 377
+    },
+    {
+      "label": "removed-show-4894d2a6",
+      "exit": 2,
+      "seconds": 0.011356,
+      "stdout_bytes": 377
+    },
+    {
+      "label": "removed-references-4894d2a6",
+      "exit": 2,
+      "seconds": 0.005572,
+      "stdout_bytes": 158
+    },
+    {
+      "label": "removed-graph-4894d2a6",
+      "exit": 2,
+      "seconds": 0.011869,
+      "stdout_bytes": 433
+    },
+    {
+      "label": "removed-source-7a5386bc",
+      "exit": 2,
+      "seconds": 0.012123,
+      "stdout_bytes": 367
+    },
+    {
+      "label": "removed-show-7a5386bc",
+      "exit": 2,
+      "seconds": 0.011699,
+      "stdout_bytes": 367
+    },
+    {
+      "label": "removed-references-7a5386bc",
+      "exit": 2,
+      "seconds": 0.00556,
+      "stdout_bytes": 158
+    },
+    {
+      "label": "removed-graph-7a5386bc",
+      "exit": 2,
+      "seconds": 0.011953,
+      "stdout_bytes": 423
+    },
+    {
+      "label": "removed-source-5103a222",
+      "exit": 2,
+      "seconds": 0.011847,
+      "stdout_bytes": 367
+    },
+    {
+      "label": "removed-show-5103a222",
+      "exit": 2,
+      "seconds": 0.011395,
+      "stdout_bytes": 367
+    },
+    {
+      "label": "removed-references-5103a222",
+      "exit": 2,
+      "seconds": 0.005728,
+      "stdout_bytes": 158
+    },
+    {
+      "label": "removed-graph-5103a222",
+      "exit": 2,
+      "seconds": 0.010994,
+      "stdout_bytes": 423
+    },
+    {
+      "label": "readd-project",
+      "exit": 0,
+      "seconds": 2.965972,
+      "stdout_bytes": 356
+    },
+    {
+      "label": "readded-health",
+      "exit": 0,
+      "seconds": 0.095292,
+      "stdout_bytes": 804
+    },
+    {
+      "label": "readded-source-4894d2a6",
+      "exit": 0,
+      "seconds": 0.010756,
+      "stdout_bytes": 1375
+    },
+    {
+      "label": "readded-show-4894d2a6",
+      "exit": 0,
+      "seconds": 0.03707,
+      "stdout_bytes": 2222
+    },
+    {
+      "label": "readded-references-4894d2a6",
+      "exit": 0,
+      "seconds": 0.004477,
+      "stdout_bytes": 339
+    },
+    {
+      "label": "readded-graph-4894d2a6",
+      "exit": 0,
+      "seconds": 0.012797,
+      "stdout_bytes": 1472
+    },
+    {
+      "label": "readded-source-7a5386bc",
+      "exit": 0,
+      "seconds": 0.010985,
+      "stdout_bytes": 2420
+    },
+    {
+      "label": "readded-show-7a5386bc",
+      "exit": 0,
+      "seconds": 0.034846,
+      "stdout_bytes": 3655
+    },
+    {
+      "label": "readded-references-7a5386bc",
+      "exit": 0,
+      "seconds": 0.005249,
+      "stdout_bytes": 329
+    },
+    {
+      "label": "readded-graph-7a5386bc",
+      "exit": 0,
+      "seconds": 0.012946,
+      "stdout_bytes": 1918
+    },
+    {
+      "label": "readded-source-5103a222",
+      "exit": 0,
+      "seconds": 0.011085,
+      "stdout_bytes": 1090
+    },
+    {
+      "label": "readded-show-5103a222",
+      "exit": 0,
+      "seconds": 0.035531,
+      "stdout_bytes": 1104
+    },
+    {
+      "label": "readded-references-5103a222",
+      "exit": 0,
+      "seconds": 0.004678,
+      "stdout_bytes": 329
+    },
+    {
+      "label": "readded-graph-5103a222",
+      "exit": 0,
+      "seconds": 0.01236,
+      "stdout_bytes": 1069
+    },
+    {
+      "label": "cold-health",
+      "exit": 0,
+      "seconds": 2.784406,
+      "stdout_bytes": 804
+    },
+    {
+      "label": "cold-search-contents",
+      "exit": 0,
+      "seconds": 0.361632,
+      "stdout_bytes": 3154
+    },
+    {
+      "label": "cold-source-4894d2a6",
+      "exit": 0,
+      "seconds": 0.011286,
+      "stdout_bytes": 1375
+    },
+    {
+      "label": "cold-show-4894d2a6",
+      "exit": 0,
+      "seconds": 0.035996,
+      "stdout_bytes": 2222
+    },
+    {
+      "label": "cold-references-4894d2a6",
+      "exit": 0,
+      "seconds": 0.004533,
+      "stdout_bytes": 339
+    },
+    {
+      "label": "cold-graph-4894d2a6",
+      "exit": 0,
+      "seconds": 0.012478,
+      "stdout_bytes": 1472
+    },
+    {
+      "label": "cold-source-7a5386bc",
+      "exit": 0,
+      "seconds": 0.011188,
+      "stdout_bytes": 2420
+    },
+    {
+      "label": "cold-show-7a5386bc",
+      "exit": 0,
+      "seconds": 0.035319,
+      "stdout_bytes": 3655
+    },
+    {
+      "label": "cold-references-7a5386bc",
+      "exit": 0,
+      "seconds": 0.004687,
+      "stdout_bytes": 329
+    },
+    {
+      "label": "cold-graph-7a5386bc",
+      "exit": 0,
+      "seconds": 0.012965,
+      "stdout_bytes": 1918
+    },
+    {
+      "label": "cold-source-5103a222",
+      "exit": 0,
+      "seconds": 0.010835,
+      "stdout_bytes": 1090
+    },
+    {
+      "label": "cold-show-5103a222",
+      "exit": 0,
+      "seconds": 0.034877,
+      "stdout_bytes": 1104
+    },
+    {
+      "label": "cold-references-5103a222",
+      "exit": 0,
+      "seconds": 0.004606,
+      "stdout_bytes": 329
+    },
+    {
+      "label": "cold-graph-5103a222",
+      "exit": 0,
+      "seconds": 0.012383,
+      "stdout_bytes": 1069
+    }
+  ],
+  "source_checks": [],
+  "cli_mcp_parities": [
+    {
+      "cli_label": "query-source-4894d2a6",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "982483a133ca79f39e5e8328bf728393eb21b0ded940466a01d6cccee7a9f7f2",
+      "mcp_reply_wire_line": 71
+    },
+    {
+      "cli_label": "query-show-4894d2a6",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "631e769e3caaae29572b46b9a9e91a6ca9b41913a2db2de352002339f5fffa60",
+      "mcp_reply_wire_line": 73
+    },
+    {
+      "cli_label": "query-references-4894d2a6",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "7366977d05797c338c88717e8691a8692537e51df879d212c492b52969ceab65",
+      "mcp_reply_wire_line": 75
+    },
+    {
+      "cli_label": "query-graph-4894d2a6",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "f7e787549a72c649360cd577e7f49052cf0b099e01f6ab158dff1d9af4c62f94",
+      "mcp_reply_wire_line": 77
+    },
+    {
+      "cli_label": "query-source-7a5386bc",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "2470d94e66f0ed1cb1683c31db651794f2d68a390407287b6e6db4602dc70782",
+      "mcp_reply_wire_line": 84
+    },
+    {
+      "cli_label": "query-show-7a5386bc",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "86ea96deb7d73091964bc99b7fe8302874b055c8047a0f4fabbcc7185df269c9",
+      "mcp_reply_wire_line": 86
+    },
+    {
+      "cli_label": "query-references-7a5386bc",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "2df41d1a91d7c8bc2af97b2e6294e1a27715769974af25f96701e3c194364fa7",
+      "mcp_reply_wire_line": 88
+    },
+    {
+      "cli_label": "query-graph-7a5386bc",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "6b879dcccb8280ef5f60533d15efca24feca5293316f7527d0554ea32b3f16ef",
+      "mcp_reply_wire_line": 90
+    },
+    {
+      "cli_label": "query-source-5103a222",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "5f609811e2222004adf94a68cadf1835fc6de81ab3215568a09048887ea97767",
+      "mcp_reply_wire_line": 97
+    },
+    {
+      "cli_label": "query-show-5103a222",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "9b316fda1f17acd2aa8a2f77eccea674ed9464fe73786093eba7e57bc1fda9d3",
+      "mcp_reply_wire_line": 99
+    },
+    {
+      "cli_label": "query-references-5103a222",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "970c01f7de1177779ca295fc994639497b6997d3af176c94ba3c2f98e8ea4b9d",
+      "mcp_reply_wire_line": 101
+    },
+    {
+      "cli_label": "query-graph-5103a222",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "304d41f47e6b39b24a864673ff14bd2bc8db62c23941684a32d52e4935d32ca9",
+      "mcp_reply_wire_line": 103
+    },
+    {
+      "cli_label": "removed-source-4894d2a6",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "004fcd06416f36b125e9fa3c023a740b51e91b4f0379e69d06cf0eefcecf3d0e",
+      "mcp_reply_wire_line": 146
+    },
+    {
+      "cli_label": "removed-show-4894d2a6",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "004fcd06416f36b125e9fa3c023a740b51e91b4f0379e69d06cf0eefcecf3d0e",
+      "mcp_reply_wire_line": 148
+    },
+    {
+      "cli_label": "removed-references-4894d2a6",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1",
+      "mcp_reply_wire_line": 150
+    },
+    {
+      "cli_label": "removed-graph-4894d2a6",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "342e30bb00606b40dfe664730828bcf403a72705ca52321fcdeaa93951eb4b3d",
+      "mcp_reply_wire_line": 152
+    },
+    {
+      "cli_label": "removed-source-7a5386bc",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "2102b2f1fd0a36bd3068e69740f813d202b7c94b4f4b0bada874d43a2c525d95",
+      "mcp_reply_wire_line": 158
+    },
+    {
+      "cli_label": "removed-show-7a5386bc",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "2102b2f1fd0a36bd3068e69740f813d202b7c94b4f4b0bada874d43a2c525d95",
+      "mcp_reply_wire_line": 160
+    },
+    {
+      "cli_label": "removed-references-7a5386bc",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1",
+      "mcp_reply_wire_line": 162
+    },
+    {
+      "cli_label": "removed-graph-7a5386bc",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "0f3a96173e13d8b62c9dc7e35007354a47c3331da04fcd90c85737a0994f082f",
+      "mcp_reply_wire_line": 164
+    },
+    {
+      "cli_label": "removed-source-5103a222",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "0718587be672537a75835f6cf49a8ffd4920bf5c438f0ca2e1ca51f428baa083",
+      "mcp_reply_wire_line": 170
+    },
+    {
+      "cli_label": "removed-show-5103a222",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "0718587be672537a75835f6cf49a8ffd4920bf5c438f0ca2e1ca51f428baa083",
+      "mcp_reply_wire_line": 172
+    },
+    {
+      "cli_label": "removed-references-5103a222",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1",
+      "mcp_reply_wire_line": 174
+    },
+    {
+      "cli_label": "removed-graph-5103a222",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "d3c8febc889207985cc239d7a9f46825d50210c2024cf06731895d3fea2be391",
+      "mcp_reply_wire_line": 176
+    },
+    {
+      "cli_label": "readded-source-4894d2a6",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "982483a133ca79f39e5e8328bf728393eb21b0ded940466a01d6cccee7a9f7f2",
+      "mcp_reply_wire_line": 184
+    },
+    {
+      "cli_label": "readded-show-4894d2a6",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "631e769e3caaae29572b46b9a9e91a6ca9b41913a2db2de352002339f5fffa60",
+      "mcp_reply_wire_line": 186
+    },
+    {
+      "cli_label": "readded-references-4894d2a6",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "7366977d05797c338c88717e8691a8692537e51df879d212c492b52969ceab65",
+      "mcp_reply_wire_line": 188
+    },
+    {
+      "cli_label": "readded-graph-4894d2a6",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "f7e787549a72c649360cd577e7f49052cf0b099e01f6ab158dff1d9af4c62f94",
+      "mcp_reply_wire_line": 190
+    },
+    {
+      "cli_label": "readded-source-7a5386bc",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "2470d94e66f0ed1cb1683c31db651794f2d68a390407287b6e6db4602dc70782",
+      "mcp_reply_wire_line": 196
+    },
+    {
+      "cli_label": "readded-show-7a5386bc",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "95d4af7830dcfef898a6ee48f4173642fd8c5b9a3250d28cf6176218f6091267",
+      "mcp_reply_wire_line": 198
+    },
+    {
+      "cli_label": "readded-references-7a5386bc",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "2df41d1a91d7c8bc2af97b2e6294e1a27715769974af25f96701e3c194364fa7",
+      "mcp_reply_wire_line": 200
+    },
+    {
+      "cli_label": "readded-graph-7a5386bc",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "4427c7e8a4b6565c3467efdc74c1c4048b59002e3ac5ec2027c66a9dde041b33",
+      "mcp_reply_wire_line": 202
+    },
+    {
+      "cli_label": "readded-source-5103a222",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "5f609811e2222004adf94a68cadf1835fc6de81ab3215568a09048887ea97767",
+      "mcp_reply_wire_line": 208
+    },
+    {
+      "cli_label": "readded-show-5103a222",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "9b316fda1f17acd2aa8a2f77eccea674ed9464fe73786093eba7e57bc1fda9d3",
+      "mcp_reply_wire_line": 210
+    },
+    {
+      "cli_label": "readded-references-5103a222",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "970c01f7de1177779ca295fc994639497b6997d3af176c94ba3c2f98e8ea4b9d",
+      "mcp_reply_wire_line": 212
+    },
+    {
+      "cli_label": "readded-graph-5103a222",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "304d41f47e6b39b24a864673ff14bd2bc8db62c23941684a32d52e4935d32ca9",
+      "mcp_reply_wire_line": 214
+    },
+    {
+      "cli_label": "cold-source-4894d2a6",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "982483a133ca79f39e5e8328bf728393eb21b0ded940466a01d6cccee7a9f7f2",
+      "mcp_reply_wire_line": 235
+    },
+    {
+      "cli_label": "cold-show-4894d2a6",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "631e769e3caaae29572b46b9a9e91a6ca9b41913a2db2de352002339f5fffa60",
+      "mcp_reply_wire_line": 237
+    },
+    {
+      "cli_label": "cold-references-4894d2a6",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "7366977d05797c338c88717e8691a8692537e51df879d212c492b52969ceab65",
+      "mcp_reply_wire_line": 239
+    },
+    {
+      "cli_label": "cold-graph-4894d2a6",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "f7e787549a72c649360cd577e7f49052cf0b099e01f6ab158dff1d9af4c62f94",
+      "mcp_reply_wire_line": 241
+    },
+    {
+      "cli_label": "cold-source-7a5386bc",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "2470d94e66f0ed1cb1683c31db651794f2d68a390407287b6e6db4602dc70782",
+      "mcp_reply_wire_line": 247
+    },
+    {
+      "cli_label": "cold-show-7a5386bc",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "95d4af7830dcfef898a6ee48f4173642fd8c5b9a3250d28cf6176218f6091267",
+      "mcp_reply_wire_line": 249
+    },
+    {
+      "cli_label": "cold-references-7a5386bc",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "2df41d1a91d7c8bc2af97b2e6294e1a27715769974af25f96701e3c194364fa7",
+      "mcp_reply_wire_line": 251
+    },
+    {
+      "cli_label": "cold-graph-7a5386bc",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "4427c7e8a4b6565c3467efdc74c1c4048b59002e3ac5ec2027c66a9dde041b33",
+      "mcp_reply_wire_line": 253
+    },
+    {
+      "cli_label": "cold-source-5103a222",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "5f609811e2222004adf94a68cadf1835fc6de81ab3215568a09048887ea97767",
+      "mcp_reply_wire_line": 259
+    },
+    {
+      "cli_label": "cold-show-5103a222",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "9b316fda1f17acd2aa8a2f77eccea674ed9464fe73786093eba7e57bc1fda9d3",
+      "mcp_reply_wire_line": 261
+    },
+    {
+      "cli_label": "cold-references-5103a222",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "970c01f7de1177779ca295fc994639497b6997d3af176c94ba3c2f98e8ea4b9d",
+      "mcp_reply_wire_line": 263
+    },
+    {
+      "cli_label": "cold-graph-5103a222",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exact_parity": true,
+      "cli_stdout_sha256": "304d41f47e6b39b24a864673ff14bd2bc8db62c23941684a32d52e4935d32ca9",
+      "mcp_reply_wire_line": 265
+    }
+  ],
+  "references": [
+    {
+      "label": "query-references-4894d2a6",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "7366977d05797c338c88717e8691a8692537e51df879d212c492b52969ceab65"
+    },
+    {
+      "label": "query-references-7a5386bc",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "2df41d1a91d7c8bc2af97b2e6294e1a27715769974af25f96701e3c194364fa7"
+    },
+    {
+      "label": "query-references-5103a222",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "970c01f7de1177779ca295fc994639497b6997d3af176c94ba3c2f98e8ea4b9d"
+    },
+    {
+      "label": "removed-references-4894d2a6",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exit": 2,
+      "records": [],
+      "stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1"
+    },
+    {
+      "label": "removed-references-7a5386bc",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exit": 2,
+      "records": [],
+      "stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1"
+    },
+    {
+      "label": "removed-references-5103a222",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exit": 2,
+      "records": [],
+      "stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1"
+    },
+    {
+      "label": "readded-references-4894d2a6",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "7366977d05797c338c88717e8691a8692537e51df879d212c492b52969ceab65"
+    },
+    {
+      "label": "readded-references-7a5386bc",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "2df41d1a91d7c8bc2af97b2e6294e1a27715769974af25f96701e3c194364fa7"
+    },
+    {
+      "label": "readded-references-5103a222",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "970c01f7de1177779ca295fc994639497b6997d3af176c94ba3c2f98e8ea4b9d"
+    },
+    {
+      "label": "cold-references-4894d2a6",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "7366977d05797c338c88717e8691a8692537e51df879d212c492b52969ceab65"
+    },
+    {
+      "label": "cold-references-7a5386bc",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "2df41d1a91d7c8bc2af97b2e6294e1a27715769974af25f96701e3c194364fa7"
+    },
+    {
+      "label": "cold-references-5103a222",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "970c01f7de1177779ca295fc994639497b6997d3af176c94ba3c2f98e8ea4b9d"
+    }
+  ],
+  "largest_mcp_replies": [
+    {
+      "wire_line": 19,
+      "bytes": 18855,
+      "estimated_tokens": 4714
+    },
+    {
+      "wire_line": 223,
+      "bytes": 18855,
+      "estimated_tokens": 4714
+    },
+    {
+      "wire_line": 86,
+      "bytes": 4730,
+      "estimated_tokens": 1183
+    },
+    {
+      "wire_line": 198,
+      "bytes": 4730,
+      "estimated_tokens": 1183
+    },
+    {
+      "wire_line": 249,
+      "bytes": 4730,
+      "estimated_tokens": 1183
+    }
+  ],
+  "source_edits": [
+    {
+      "kind": "source-edit",
+      "utc": "2026-10-06T12:30:27Z",
+      "path": "certifi/core.py",
+      "before_sha256": "5c55f2727746e697f7edac9e17c377d8752e0da7ecca191531b3b80403d61dad",
+      "after_sha256": "1785558b249cbf157945445fc49fa3bc2bc92b0ac37153b30a8d1eb4387d8fd1",
+      "tree_after": {
+        "files": [
+          [
+            "LICENSE",
+            989,
+            "e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7"
+          ],
+          [
+            "MANIFEST.in",
+            200,
+            "7dffab8a578e0cf98fead81ebe76a32bcde30b650519f50f55d9e7ddb5c950ee"
+          ],
+          [
+            "PKG-INFO",
+            2474,
+            "ef5af1638fbb23676ac3c5777dfcfc2cd9c348fe4172ed5ba3d277655b248090"
+          ],
+          [
+            "README.rst",
+            1157,
+            "b36c3a5405b444d155327a647cce2ec27b564bb04710359e6322205ee04994e4"
+          ],
+          [
+            "certifi/__init__.py",
+            94,
+            "7a52e5f4205f9b3d12a31898ceaa7e3f6837d19cc230700bcae1a9d91d1486c1"
+          ],
+          [
+            "certifi/__main__.py",
+            243,
+            "c410688fdd394d45812d118034e71fee88ba7beddd30fe1c1281bd3b232cd758"
+          ],
+          [
+            "certifi/cacert.pem",
+            240216,
+            "9cc2a774b5198dcff14d9be1e66091f538975d867ce029a96bce15a55dfd730f"
+          ],
+          [
+            "certifi/core.py",
+            3396,
+            "1785558b249cbf157945445fc49fa3bc2bc92b0ac37153b30a8d1eb4387d8fd1"
+          ],
+          [
+            "certifi/py.typed",
+            0,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          ],
+          [
+            "certifi/tests/__init__.py",
+            0,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          ],
+          [
+            "certifi/tests/test_certify.py",
+            467,
+            "7c179d1edf37f7e912b133663735fb46c6338d5d0e5f8915d11c3bc287d227b8"
+          ],
+          [
+            "certifi.egg-info/PKG-INFO",
+            2474,
+            "ef5af1638fbb23676ac3c5777dfcfc2cd9c348fe4172ed5ba3d277655b248090"
+          ],
+          [
+            "certifi.egg-info/SOURCES.txt",
+            356,
+            "52a6f6268c2986594afbc178e2d9dab9fba7c420de07570fff929d49a648163d"
+          ],
+          [
+            "certifi.egg-info/dependency_links.txt",
+            1,
+            "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+          ],
+          [
+            "certifi.egg-info/not-zip-safe",
+            1,
+            "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+          ],
+          [
+            "certifi.egg-info/top_level.txt",
+            8,
+            "28cbb8bd409fb232eb90f6d235d81d7a44bea552730402453bffe723c345ebe5"
+          ],
+          [
+            "pyproject.toml",
+            91,
+            "81562b11a9a84cb5d47f66a78e7338546fddb7f5c62f4308b337e891f7d8a0d7"
+          ],
+          [
+            "setup.cfg",
+            38,
+            "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e"
+          ],
+          [
+            "setup.py",
+            2221,
+            "0467d673b39e7cd81f6289cbb7b6ac50c2f7f5ba0f79b9241e51bc07af3dc061"
+          ]
+        ],
+        "sha256": "f4297b84672ae3fd91bca3e45b96682f7f33412597e97b65a6039212d47191ce"
+      }
+    }
+  ],
+  "pagination": [
+    {
+      "kind": "pagination-observation",
+      "utc": "2026-10-06T12:30:21Z",
+      "query": "contents",
+      "pages": 5,
+      "records": 5,
+      "coordinates": [
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::1c754b72602d1321aa5c31440de9700cf5f4540bbdef48fe50d5c3be7c223e1a::contents",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+        "external semantic target"
+      ],
+      "duplicate_coordinates": false,
+      "unresolved_cursor": null
+    }
+  ],
+  "cancellation": [
+    {
+      "kind": "job-ticket-discovery",
+      "utc": "2026-10-06T12:30:22Z",
+      "ticket": {
+        "id": 2,
+        "owner_epoch": [
+          68,
+          52,
+          184,
+          189,
+          183,
+          55,
+          76,
+          140,
+          176,
+          155,
+          105,
+          167,
+          228,
+          122,
+          25,
+          132
+        ],
+        "package": {
+          "kind": "local",
+          "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project"
+        }
+      },
+      "reply": {
+        "id": 32,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "# index-start\nindex job 2 started  \u00b7  stage scanning \u00b7 poll index_progress\n`{\"id\":2,\"owner_epoch\":[68,52,184,189,183,55,76,140,176,155,105,167,228,122,25,132],\"package\":{\"kind\":\"local\",\"value\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project\"}}`\n1 row(s)\npoll `backend.index_progress` with the exact ticket shown above (after_sequence 0)\n",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "answer": "surface",
+            "budget": {
+              "bytes": 750,
+              "bytesPerToken": 4,
+              "estimatedTokens": 188
+            },
+            "detail": "full",
+            "surface": {
+              "data": {
+                "data": {
+                  "stage": "scanning",
+                  "ticket": {
+                    "id": 2,
+                    "owner_epoch": [
+                      68,
+                      52,
+                      184,
+                      189,
+                      183,
+                      55,
+                      76,
+                      140,
+                      176,
+                      155,
+                      105,
+                      167,
+                      228,
+                      122,
+                      25,
+                      132
+                    ],
+                    "package": {
+                      "kind": "local",
+                      "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project"
+                    }
+                  }
+                },
+                "state": "started"
+              },
+              "index_job": {
+                "kind": "started",
+                "value": {
+                  "data": {
+                    "stage": "scanning",
+                    "ticket": {
+                      "id": 2,
+                      "owner_epoch": [
+                        68,
+                        52,
+                        184,
+                        189,
+                        183,
+                        55,
+                        76,
+                        140,
+                        176,
+                        155,
+                        105,
+                        167,
+                        228,
+                        122,
+                        25,
+                        132
+                      ],
+                      "package": {
+                        "kind": "local",
+                        "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project"
+                      }
+                    }
+                  },
+                  "state": "started"
+                }
+              },
+              "result": "index-started"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "journey_error": null,
+  "whole_package_pass": false,
+  "original_acquired_source_mutated": false,
+  "source_witnesses_are_not_compiler_bindings": true
+}

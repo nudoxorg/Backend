@@ -1,0 +1,94 @@
+{
+  "schema": "nudox.source-unavailable-focused-validation.v1",
+  "source_commit": "18fba4e4663dc243e3458d3202c60e43e6fadd51",
+  "source_tree": "f5fb6670415727ba44901733c41ef7c0ef53b3d1",
+  "workspace": "/Users/mileswirht/Downloads/nudox-active-20261005/durable-compiler-failure",
+  "product_reopen_of_retained_msgspec_state": "not_run",
+  "steps": [
+    {
+      "name": "metadata",
+      "argv": [
+        "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/run-cargo",
+        "mcp",
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-engine",
+        "-p",
+        "backend-local-service",
+        "--tests"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 10.781,
+      "log_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/source-unavailable-18fba4e46/metadata.log",
+      "log_sha256": "3931221f4f41cf2d8f58abc406eb1bf154038986eb7066a1d438f70f491c5e35",
+      "log_bytes": 428497
+    },
+    {
+      "name": "typed-unavailable",
+      "argv": [
+        "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/run-cargo",
+        "mcp",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "typed_unavailable_source_facts_do_not_promote_compacted_rows",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 193.724,
+      "log_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/source-unavailable-18fba4e46/typed-unavailable.log",
+      "log_sha256": "ca24819539d1cc281b72a446a56c8a9c2b68f1dfa3ee9b1e762611977dc3df01",
+      "log_bytes": 277509
+    },
+    {
+      "name": "cold-capture",
+      "argv": [
+        "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/run-cargo",
+        "mcp",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 8.237,
+      "log_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/source-unavailable-18fba4e46/cold-capture.log",
+      "log_sha256": "319ed2a9517bf8f0afc80ec25dbeb09daceca7e1440acc159441ee9bc266b67d",
+      "log_bytes": 277379
+    },
+    {
+      "name": "existing-facts-lifecycle",
+      "argv": [
+        "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/run-cargo",
+        "mcp",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "warm_complete_facts_survive_real_commits_and_shrinking_pages_are_retired",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 5.228,
+      "log_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/source-unavailable-18fba4e46/existing-facts-lifecycle.log",
+      "log_sha256": "1055e77315f5a0448b9696ad325894ea2450cdba0059d8713bed0832596a2374",
+      "log_bytes": 277380
+    }
+  ],
+  "source_after": "18fba4e4663dc243e3458d3202c60e43e6fadd51",
+  "working_tree_after": ""
+}

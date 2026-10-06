@@ -629,9 +629,9 @@ impl RegistryGateway {
         // Open owners hold the previous authority as their resolver; they
         // reopen lazily with the new one.
         self.slots.clear();
-        // Keep old callers' Arcs valid, but make the next catalog read project
-        // the newly committed feed generation immediately.
-        self.projection = None;
+        // The advisory generation in the projection key invalidates the row
+        // overlay and search index. Retain the previous projection so its
+        // unchanged dependency facts can be borrowed by that rebuild.
         Ok(states)
     }
 
@@ -5116,14 +5116,8 @@ mod tests {
             .path()
             .file_name()
             .ok_or_else(|| std::io::Error::other("staged Cargo package path has a file name"))?;
-        assert_eq!(
-            package_name.to_string_lossy(),
-            "serde-1.0.228"
-        );
-        assert_eq!(
-            fs::read(staged.path().join("Cargo.toml"))?,
-            manifest
-        );
+        assert_eq!(package_name.to_string_lossy(), "serde-1.0.228");
+        assert_eq!(fs::read(staged.path().join("Cargo.toml"))?, manifest);
         assert_eq!(
             fs::read(staged.path().join("build.rs"))?,
             SERDE_BUILD_SCRIPT
@@ -5137,8 +5131,7 @@ mod tests {
         let workspace: toml::Value = workspace_manifest
             .strip_prefix(GENERATED_CARGO_WORKSPACE_HEADER)
             .ok_or_else(|| std::io::Error::other("generated workspace header is present"))?
-            .parse()
-            ?;
+            .parse()?;
         let first_member = workspace["workspace"]["members"]
             .as_array()
             .and_then(|members| members.first())
@@ -5166,10 +5159,7 @@ mod tests {
         ]);
         let staged = stage_archive(&coordinate, &archive, &root.0)
             .map_err(|error| std::io::Error::other(error.to_string()))?;
-        assert_eq!(
-            fs::read(staged.path().join("Cargo.toml"))?,
-            manifest
-        );
+        assert_eq!(fs::read(staged.path().join("Cargo.toml"))?, manifest);
         let member = staged
             .path()
             .file_name()

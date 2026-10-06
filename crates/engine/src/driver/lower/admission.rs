@@ -9,7 +9,8 @@ use backend_semantic::ir::{
     SemanticTypeTag, TypeCell,
 };
 use backend_semantic::vocabulary::{
-    ProjectionAdmissionFault, ProjectionChildRole, ProjectionConstructorFault,
+    ProjectionAdmissionFault, ProjectionAnonymousCallableAnchorFault,
+    ProjectionAnonymousCallableAnchorPool, ProjectionChildRole, ProjectionConstructorFault,
     ProjectionConstructorTag, ProjectionParentageState, ProjectionSemanticTypeFault,
     ProjectionSemanticTypeTag, ProjectionSpan, ProjectionTypeCell, ProjectionTypeChildLane,
 };
@@ -117,6 +118,9 @@ fn portable_type_tag(tag: SemanticTypeTag) -> ProjectionSemanticTypeTag {
         SemanticTypeTag::ArrayConstExpression => ProjectionSemanticTypeTag::ArrayConstExpression,
         SemanticTypeTag::ArrayIncomplete => ProjectionSemanticTypeTag::ArrayIncomplete,
         SemanticTypeTag::CQualified => ProjectionSemanticTypeTag::CQualified,
+        SemanticTypeTag::KeyOf => ProjectionSemanticTypeTag::KeyOf,
+        SemanticTypeTag::IndexedAccess => ProjectionSemanticTypeTag::IndexedAccess,
+        SemanticTypeTag::TypeOf => ProjectionSemanticTypeTag::TypeOf,
     }
 }
 
@@ -224,6 +228,39 @@ fn portable_span(span: SourceSpanFact) -> ProjectionSpan {
 pub(crate) fn portable_admission(fault: FactFault) -> ProjectionAdmissionFault {
     match fault {
         FactFault::EmptyName => ProjectionAdmissionFault::EmptyName,
+        FactFault::AnonymousCallableAnchor { .. } => {
+            ProjectionAdmissionFault::AnonymousCallableAnchor {
+                cause: ProjectionAnonymousCallableAnchorFault::InvalidRoute,
+            }
+        }
+        FactFault::AnonymousCallableAnchorEncoding { .. } => {
+            ProjectionAdmissionFault::AnonymousCallableAnchor {
+                cause: ProjectionAnonymousCallableAnchorFault::Encoding,
+            }
+        }
+        FactFault::AnonymousCallableAnchorPoolCapacity {
+            used,
+            requested,
+            capacity,
+        } => ProjectionAdmissionFault::AnonymousCallableAnchorPoolCapacity {
+            pool: ProjectionAnonymousCallableAnchorPool::Bytes,
+            used: portable_count(used),
+            requested: portable_count(requested),
+            capacity: portable_count(capacity),
+        },
+        FactFault::AnonymousCallableAnchorEntryCapacity { used, capacity } => {
+            ProjectionAdmissionFault::AnonymousCallableAnchorPoolCapacity {
+                pool: ProjectionAnonymousCallableAnchorPool::Entries,
+                used: portable_count(used),
+                requested: 1,
+                capacity: portable_count(capacity),
+            }
+        }
+        FactFault::AnonymousCallableSourceUnavailable => {
+            ProjectionAdmissionFault::AnonymousCallableAnchor {
+                cause: ProjectionAnonymousCallableAnchorFault::SourceIdentityUnavailable,
+            }
+        }
         FactFault::Capacity => ProjectionAdmissionFault::Capacity,
         FactFault::ChildCapacity => ProjectionAdmissionFault::ChildCapacity,
         FactFault::ProductChildPoolCapacity {
@@ -286,6 +323,24 @@ pub(crate) fn portable_admission(fault: FactFault) -> ProjectionAdmissionFault {
         },
         FactFault::TypeRowCapacity => ProjectionAdmissionFault::TypeRowCapacity,
         FactFault::ComputedRowCapacity => ProjectionAdmissionFault::ComputedRowCapacity,
+        FactFault::TypeProjectionDepthLimit { depth, maximum } => {
+            ProjectionAdmissionFault::TypeProjectionDepthLimit {
+                depth: u64::from(depth),
+                maximum: u64::from(maximum),
+            }
+        }
+        FactFault::TypeProjectionCycle { type_id } => {
+            ProjectionAdmissionFault::TypeProjectionCycle { type_id }
+        }
+        FactFault::TypeProjectionRecursiveReference { distance } => {
+            ProjectionAdmissionFault::TypeProjectionRecursiveReference { distance }
+        }
+        FactFault::TypeProjectionWidth { actual, maximum } => {
+            ProjectionAdmissionFault::TypeProjectionWidth {
+                actual: portable_count(actual),
+                maximum: portable_count(maximum),
+            }
+        }
         FactFault::OccurrenceOwner { owner, fact_count } => {
             ProjectionAdmissionFault::OccurrenceOwner {
                 owner,
@@ -337,6 +392,21 @@ pub(crate) fn portable_admission(fault: FactFault) -> ProjectionAdmissionFault {
             entity: entity.raw,
             existing: portable_span(existing),
             requested: portable_span(requested),
+        },
+        FactFault::ConflictingMemberInventory {
+            entity,
+            existing_count,
+            requested_count,
+            first_difference,
+            existing_member,
+            requested_member,
+        } => ProjectionAdmissionFault::ConflictingMemberInventory {
+            entity: entity.raw,
+            existing_count,
+            requested_count,
+            first_difference,
+            existing_member,
+            requested_member,
         },
         FactFault::ConflictingParentage {
             entity,

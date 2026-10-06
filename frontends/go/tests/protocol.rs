@@ -110,8 +110,8 @@ fn golden_transcript_decodes_decl_and_promotion() -> Result<(), OracleError> {
 #[test]
 fn unknown_field_is_a_decode_fault() {
     let mutated = GOLDEN.replacen(
-        "\"schemaVersion\":4",
-        "\"schemaVersion\":4,\"surprise\":true",
+        "\"schemaVersion\":5",
+        "\"schemaVersion\":5,\"surprise\":true",
         1,
     );
     let error = adapter()
@@ -135,24 +135,24 @@ fn unknown_decl_kind_is_retained_in_decode_fault() {
 
 #[test]
 fn stale_schema_names_both_versions() {
-    let mutated = GOLDEN.replacen("\"schemaVersion\":4", "\"schemaVersion\":2", 1);
+    let mutated = GOLDEN.replacen("\"schemaVersion\":5", "\"schemaVersion\":2", 1);
     assert!(matches!(
         adapter().decode(mutated.as_bytes()),
         Err(OracleError::Staleness {
             found: 2,
-            expected: 4
+            expected: 5
         })
     ));
 }
 
 #[test]
 fn newer_schema_is_rejected_by_the_single_schema_owner() {
-    let mutated = GOLDEN.replacen("\"schemaVersion\":4", "\"schemaVersion\":5", 1);
+    let mutated = GOLDEN.replacen("\"schemaVersion\":5", "\"schemaVersion\":6", 1);
     assert!(matches!(
         adapter().decode(mutated.as_bytes()),
         Err(OracleError::Staleness {
-            found: 5,
-            expected: 4
+            found: 6,
+            expected: 5
         })
     ));
 }

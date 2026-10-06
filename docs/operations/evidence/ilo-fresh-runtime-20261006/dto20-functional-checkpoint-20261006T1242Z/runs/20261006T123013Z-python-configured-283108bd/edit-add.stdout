@@ -1,0 +1,1 @@
+{"heading":"index","records":[{"title":"index request accepted","operand":"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project","tags":["intent c9cb3c81","pending","read `backend health` for readiness"]}],"answer":"product","detail":"full","budget":{"bytes":356,"estimatedTokens":89,"bytesPerToken":4}}

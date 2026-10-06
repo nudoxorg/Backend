@@ -34,6 +34,18 @@ pub use backend_library::{
     MAX_DISCOVERY_REVISION_BYTES, RegistryFactReadError, RegistryFactVersionId,
 };
 
+/// Maximum decoded PEP 691 project-index document size.
+///
+/// PyPI's unpaged global project set is already larger than the per-package
+/// metadata budget. Keep its bounded input allowance independent of individual
+/// package documents and discovery transactions; the parsed project count is
+/// still bounded by [`MAX_DISCOVERY_PROJECTS`].
+pub const MAX_PYPI_PROJECT_INDEX_BYTES: usize = 128 * 1024 * 1024;
+
+/// Decoded npm packument budget shared with native package acquisition.
+/// Full packuments for ordinary packages can exceed a discovery event page.
+pub const MAX_NPM_PACKUMENT_BYTES: usize = super::ecosystem::MAX_NATIVE_METADATA_BYTES;
+
 /// Derives the neutral discovery source identity from an admitted endpoint.
 #[must_use]
 pub const fn discovery_source_identity(endpoint: &RegistryEndpoint) -> DiscoverySourceIdentity {
@@ -475,7 +487,7 @@ pub fn parse_npm_packument_document(
     sequence: u64,
     max_versions: usize,
 ) -> Result<NpmPackument, DiscoveryError> {
-    if bytes.len() > 32 * 1024 * 1024 {
+    if bytes.len() > MAX_NPM_PACKUMENT_BYTES {
         return Err(DiscoveryError::Bounds);
     }
     let value: serde_json::Value =
@@ -593,7 +605,9 @@ pub fn parse_pypi_project_list(
     bytes: &[u8],
     max_projects: usize,
 ) -> Result<PypiProjectList, DiscoveryError> {
-    if bytes.len() > 32 * 1024 * 1024 || max_projects == 0 || max_projects > MAX_DISCOVERY_PROJECTS
+    if bytes.len() > MAX_PYPI_PROJECT_INDEX_BYTES
+        || max_projects == 0
+        || max_projects > MAX_DISCOVERY_PROJECTS
     {
         return Err(DiscoveryError::Bounds);
     }
@@ -760,12 +774,16 @@ pub fn parse_pypi_project_metadata(
         metadata.deprecation = DiscoveryFacet::Absent;
         let is_yanked = yanked == DiscoveryFacet::Known(true);
         metadata.yanked = yanked;
-        // This endpoint exposes package-level vulnerability evidence, not a
-        // complete affected-version interval. Keep its `fixed_in` boundaries
-        // intact and leave version ordering to a typed consumer.
-        metadata.advisories = latest_advisories
-            .clone()
-            .map_or(DiscoveryFacet::Unknown, DiscoveryFacet::Known);
+        // The project JSON endpoint scopes vulnerabilities to info.version.
+        // Even an empty list cannot establish advisory absence for another
+        // release. Preserve fixed_in evidence only within the reported scope.
+        metadata.advisories = if is_latest {
+            latest_advisories
+                .clone()
+                .map_or(DiscoveryFacet::Unknown, DiscoveryFacet::Known)
+        } else {
+            DiscoveryFacet::Unknown
+        };
         metadata.downloads = DiscoveryFacet::Absent;
         metadata.admit()?;
         let proof = hash_typed_json(files)?;
@@ -2543,6 +2561,57 @@ mod tests {
     }
 
     #[test]
+    fn npm_packument_uses_the_native_package_document_budget() {
+        let mut bytes =
+            br#"{"name":"vite","_rev":"1-fixture","versions":{"8.3.3":{"license":"MIT"}}}"#
+                .to_vec();
+        bytes.resize(32 * 1024 * 1024 + 1, b' ');
+        let packument = parse_npm_packument_document(&bytes, "vite", 1, 1)
+            .expect("ordinary package packument larger than an event page");
+        assert_eq!(packument.revision.as_deref(), Some("1-fixture"));
+        assert_eq!(packument.releases.len(), 1);
+        assert_eq!(
+            packument.releases[0].coordinate.as_str(),
+            "pkg:npm/vite@8.3.3"
+        );
+        assert_eq!(
+            packument.releases[0].metadata.license,
+            DiscoveryFacet::Known("MIT".to_owned())
+        );
+        bytes.resize(MAX_NPM_PACKUMENT_BYTES + 1, b' ');
+        assert_eq!(
+            parse_npm_packument_document(&bytes, "vite", 1, 1),
+            Err(DiscoveryError::Bounds)
+        );
+    }
+
+    #[test]
+    fn pep691_global_project_index_has_an_independent_document_budget() {
+        // The public, unpaged /simple/ document exceeds the 32 MiB allowance
+        // for individual package metadata. Valid JSON padding crosses that
+        // former boundary without requiring a huge generated project set.
+        let mut bytes = br#"{"meta":{"_last-serial":41888799},"projects":[{"name":"Requests"},{"name":"my_pkg"}]}"#
+            .to_vec();
+        bytes.resize(32 * 1024 * 1024 + 1, b' ');
+        let projects = parse_pypi_project_list(&bytes, 2).expect("global project-index budget");
+        assert_eq!(projects.serial, Some(41888799));
+        assert_eq!(projects.projects.len(), 2);
+        assert_eq!(projects.projects[0].canonical_name, "my-pkg");
+        assert_eq!(projects.projects[1].canonical_name, "requests");
+        assert!(!projects.is_truncated);
+
+        let capped = parse_pypi_project_list(&bytes, 1).expect("bounded project projection");
+        assert_eq!(capped.projects.len(), 1);
+        assert!(capped.is_truncated);
+
+        bytes.resize(MAX_PYPI_PROJECT_INDEX_BYTES + 1, b' ');
+        assert_eq!(
+            parse_pypi_project_list(&bytes, 2),
+            Err(DiscoveryError::Bounds)
+        );
+    }
+
+    #[test]
     fn pep691_and_pypi_json_preserve_yanks_and_fixed_version_advisory_scope() {
         let projects = parse_pypi_project_list(
             br#"{"meta":{},"projects":[{"name":"Django"},{"name":"my_pkg"}]}"#,
@@ -2567,6 +2636,7 @@ mod tests {
             .expect("older release");
         assert_eq!(old.standing, DiscoveryStanding::Yanked);
         assert_eq!(old.source_event_time, None);
+        assert_eq!(old.metadata.advisories, DiscoveryFacet::Unknown);
         assert_eq!(
             old.metadata.published_at,
             DiscoveryFacet::Known("2025-01-01T00:00:00Z".to_owned())
@@ -2593,6 +2663,44 @@ mod tests {
         assert_eq!(
             advisories[0].fixed_in,
             DiscoveryFacet::Known(vec!["2.0".to_owned()])
+        );
+    }
+
+    #[test]
+    fn pypi_project_empty_advisories_do_not_clear_historical_release_status() {
+        let project = parse_pypi_project_metadata(
+            br#"{"info":{"name":"scope","version":"2.0"},"vulnerabilities":[],"releases":{"1.0":[{"yanked":false}],"2.0":[{"yanked":false}]}}"#,
+            "scope",
+            10,
+        )
+        .expect("latest-release advisory scope");
+        let old = project
+            .releases
+            .iter()
+            .find(|release| release.coordinate.as_str() == "pkg:pypi/scope@1.0")
+            .expect("historical release");
+        let latest = project
+            .releases
+            .iter()
+            .find(|release| release.coordinate.as_str() == "pkg:pypi/scope@2.0")
+            .expect("reported latest release");
+        assert_eq!(old.metadata.advisories, DiscoveryFacet::Unknown);
+        assert_eq!(
+            latest.metadata.advisories,
+            DiscoveryFacet::Known(Vec::new())
+        );
+        assert_eq!(old.standing, DiscoveryStanding::Published);
+        assert_eq!(old.metadata.yanked, DiscoveryFacet::Known(false));
+
+        let unscoped = parse_pypi_project_metadata(
+            br#"{"info":{"name":"scope"},"vulnerabilities":[],"releases":{"1.0":[{"yanked":false}]}}"#,
+            "scope",
+            10,
+        )
+        .expect("no reported release scope");
+        assert_eq!(
+            unscoped.releases[0].metadata.advisories,
+            DiscoveryFacet::Unknown
         );
     }
 

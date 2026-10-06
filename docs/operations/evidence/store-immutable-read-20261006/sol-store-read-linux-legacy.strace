@@ -1,0 +1,27 @@
+771551 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-legacy.log>, "\nrunning 1 test\n", 16) = 16
+771552 write(3</tmp/backend-sealed-read-771551-0/nodes/read.ref>, "descriptor fixture", 18) = 18
+771552 fchmod(3</tmp/backend-sealed-read-771551-0/nodes/read.ref>, 0400) = 0
+771552 fsync(3</tmp/backend-sealed-read-771551-0/nodes/read.ref>) = 0
+771552 write(3</tmp/backend-sealed-read-771551-1/nodes/read.ref>, "descriptor fixture", 18) = 18
+771552 fchmod(3</tmp/backend-sealed-read-771551-1/nodes/read.ref>, 0400) = 0
+771552 fsync(3</tmp/backend-sealed-read-771551-1/nodes/read.ref>) = 0
+771552 write(3</tmp/backend-sealed-read-771551-2/nodes/read.ref>, "descriptor fixture", 18) = 18
+771552 fchmod(3</tmp/backend-sealed-read-771551-2/nodes/read.ref>, 0400) = 0
+771552 fsync(3</tmp/backend-sealed-read-771551-2/nodes/read.ref>) = 0
+771552 write(3</tmp/backend-sealed-read-771551-3/nodes/read.ref>, "descriptor fixture", 18) = 18
+771552 fchmod(3</tmp/backend-sealed-read-771551-3/nodes/read.ref>, 0400) = 0
+771552 fsync(3</tmp/backend-sealed-read-771551-3/nodes/read.ref>) = 0
+771552 write(3</tmp/backend-sealed-read-771551-4/nodes/read.ref>, "descriptor fixture", 18) = 18
+771552 fchmod(3</tmp/backend-sealed-read-771551-4/nodes/read.ref>, 0400) = 0
+771552 fsync(3</tmp/backend-sealed-read-771551-4/nodes/read.ref>) = 0
+771552 +++ exited with 0 +++
+771551 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-legacy.log>, "test durable::artifact_fs::imp::"..., 104) = 104
+771551 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-legacy.log>, "ok", 2) = 2
+771551 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-legacy.log>, "\n", 1) = 1
+771551 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-legacy.log>, "\n", 1) = 1
+771551 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-legacy.log>, "test result: ", 13) = 13
+771551 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-legacy.log>, "ok", 2) = 2
+771551 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-legacy.log>, ". 1 passed; 0 failed; 0 ignored;"..., 61) = 61
+771551 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-legacy.log>, "; finished in 0.06s", 19) = 19
+771551 write(1</root/nudox-corpus-20261006/artifacts/sol-store-read-linux-legacy.log>, "\n\n", 2) = 2
+771551 +++ exited with 0 +++

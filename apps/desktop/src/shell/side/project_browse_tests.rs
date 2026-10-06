@@ -21,7 +21,7 @@ impl PageReader for BrowseFixture {
         let ReadRequest::Browse(BrowseKey::Tree(project)) = request else { return tests::Fixture.read(request, context); };
         self.trees.lock().expect("Tree observations").push(project.clone());
         use backend_library::browse::{LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership, TreeInput, TreeSource, build_tree};
-        let tree = build_tree(&TreeInput {
+        let mut tree = build_tree(&TreeInput {
             root: project.service_coordinate().expect("exact local Tree address").to_owned(),
             source: TreeSource::Lockfile {
                 reason: "saved Shelf project fixture".into(),
@@ -31,6 +31,10 @@ impl PageReader for BrowseFixture {
             packages: Vec::new(), edges: Vec::new(), locked_inactive: 0,
             locked_inactive_coverage: LockedInactiveCoverage::Unavailable,
         }, &|_: &str, _: &str| panic!("empty fixture needs no advisory read"));
+        let binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+            &project.path(), &tree.root,
+        ).expect("exact display fixture request");
+        tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::DisplayOnly { binding });
         let mut model = crate::runtime::browse_reads::tree_model(&tree);
         model.prepared = Arc::new(facet::browse::library::Model {
             name: "Saved shelf project tree".into(),
@@ -66,6 +70,11 @@ fn already_active_saved_project_opens_its_tree_by_native_click_and_return_withou
         let project = LocalProjectId::new("/fixture/shelf-browse-project").expect("saved local project");
         rig.go(Intent::AddProject { project: project.clone() });
         rig.go(Intent::ActivateProject(project.clone()));
+        // Adding a new project starts its initial index. Browsing this saved
+        // row must preserve that operation, rather than pretending setup did
+        // not submit it.
+        let initial_indexes = indexes.load(Ordering::SeqCst);
+        assert_eq!(initial_indexes, 1, "fixture admission starts exactly one initial index");
         let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().workspace().projects[0].clone());
         let library = tests::native_bounds(&mut rig, "Button", "Library", true).expect("native Shelf way out");
         rig.cx.simulate_click(library.center(), Modifiers::none());
@@ -104,6 +113,7 @@ fn already_active_saved_project_opens_its_tree_by_native_click_and_return_withou
         });
         assert_eq!((after.phase, after.request, after.operation), (before.phase, before.request, before.operation),
             "browsing preserves the saved index lifecycle and operation claim");
-        assert_eq!(indexes.load(Ordering::SeqCst), 0, "native project browsing never submits IndexProject");
+        assert_eq!(indexes.load(Ordering::SeqCst), initial_indexes,
+            "native project browsing never submits another IndexProject");
     }
 }

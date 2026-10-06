@@ -367,7 +367,7 @@ pub(crate) mod tests {
             &tree.root,
         )
         .expect("full owner fixture binding");
-        tree.request_binding = Some(binding);
+        tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding });
         assert!(tree.has_admissible_shape());
         let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &tree
             .package(PACKAGE_NAME, PACKAGE_VERSION)
@@ -650,10 +650,28 @@ pub(crate) mod tests {
                     .effective_workspace_root_digest
             )
         );
+        let mut display_only = tree.clone();
+        display_only.observation = Some(backend_library::browse::ProjectTreeObservationV1::DisplayOnly {
+            binding: key.context.request_binding(),
+        });
+        assert!(display_only.has_admissible_shape());
+        let mut display = Cold {
+            tree: display_only,
+            final_reply: result.clone(),
+            requests: Vec::new(),
+            trees: 0,
+            cancel_after_tree: None,
+        };
+        assert!(matches!(compose(&mut display, &key, &context),
+            Err(ReadFailure::Fault(error)) if error.code() == FaultCode::Missing));
+        assert_eq!(display.trees, 1);
+        assert_eq!(display.requests.len(), 1,
+            "the same exact display binding cannot mint a second README read without a retained source observation");
+
         let mut changed = tree.clone();
         let mut binding = key.context.request_binding();
         binding.requested_root_digest = [4; 32];
-        changed.request_binding = Some(binding);
+        changed.observation = Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding });
         let mut cold = Cold {
             tree: changed,
             final_reply: result,

@@ -284,7 +284,7 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
                     IndexOperationState::Accepted => (ProjectPhase::Indexing, None),
                     IndexOperationState::Active { .. } => (ProjectPhase::Indexing, None),
                     IndexOperationState::Published(_) => (ProjectPhase::Ready, None),
-                    IndexOperationState::Failed { reason, detail } => (
+                    IndexOperationState::Failed { reason, detail, .. } => (
                         if *reason == IndexOperationFailureReason::Cancelled { ProjectPhase::Cancelled } else { ProjectPhase::Failed },
                         Some(Arc::from(detail.as_str())),
                     ),
@@ -559,6 +559,7 @@ mod tests {
             backend_library::IndexOperationState::Failed {
                 reason: backend_library::IndexOperationFailureReason::Cancelled,
                 detail: backend_library::ProductText::from_static("owner confirmed cancellation before publication"),
+                compiler_failure: None,
             },
         );
         let received = map_event(&submitted, operation_event(

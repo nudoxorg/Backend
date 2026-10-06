@@ -1,0 +1,509 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/vendor/gpui_ce_components/Cargo.toml
+workspace: /Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/Cargo.toml
+   Compiling backend-store v0.2.0 (/Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/crates/store)
+warning: unnecessary qualification
+   --> crates/store/src/durable/gc/sweep.rs:339:8
+    |
+339 |     if super::take_test_fault(2) {
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+    |
+339 -     if super::take_test_fault(2) {
+339 +     if take_test_fault(2) {
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/gc/sweep.rs:347:8
+    |
+347 |     if super::take_test_fault(3) {
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+347 -     if super::take_test_fault(3) {
+347 +     if take_test_fault(3) {
+    |
+
+warning: unnecessary qualification
+  --> crates/store/src/durable/gc/tests.rs:52:40
+   |
+52 | fn physical_pack_path(root: &Path, id: super::super::super::PackId) -> PathBuf {
+   |                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: remove the unnecessary path segments
+   |
+52 - fn physical_pack_path(root: &Path, id: super::super::super::PackId) -> PathBuf {
+52 + fn physical_pack_path(root: &Path, id: PackId) -> PathBuf {
+   |
+
+warning: unnecessary qualification
+  --> crates/store/src/durable/gc/tests.rs:66:43
+   |
+66 | fn physical_closure_path(root: &Path, id: super::super::super::ClosureId) -> PathBuf {
+   |                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: remove the unnecessary path segments
+   |
+66 - fn physical_closure_path(root: &Path, id: super::super::super::ClosureId) -> PathBuf {
+66 + fn physical_closure_path(root: &Path, id: ClosureId) -> PathBuf {
+   |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/gc/tests.rs:622:13
+    |
+622 |             super::super::super::StoredValue::new(Vec::new(), 1, vec![*target.as_bytes()]),
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+622 -             super::super::super::StoredValue::new(Vec::new(), 1, vec![*target.as_bytes()]),
+622 +             StoredValue::new(Vec::new(), 1, vec![*target.as_bytes()]),
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/objects.rs:626:39
+    |
+626 |         let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+626 -         let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+626 +         let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/streaming_closure.rs:965:21
+    |
+965 |                     super::super::ArtifactClosureClaim::from_id(expected),
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+965 -                     super::super::ArtifactClosureClaim::from_id(expected),
+965 +                     ArtifactClosureClaim::from_id(expected),
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/streaming_closure.rs:999:17
+    |
+999 |                 super::super::ArtifactClosureClaim::from_id(expected),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+999 -                 super::super::ArtifactClosureClaim::from_id(expected),
+999 +                 ArtifactClosureClaim::from_id(expected),
+    |
+
+warning: unnecessary qualification
+    --> crates/store/src/durable/streaming_closure.rs:1092:21
+     |
+1092 |                     super::super::ArtifactClosureClaim::from_id(expected),
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1092 -                     super::super::ArtifactClosureClaim::from_id(expected),
+1092 +                     ArtifactClosureClaim::from_id(expected),
+     |
+
+warning: unnecessary qualification
+    --> crates/store/src/durable/streaming_closure.rs:1160:25
+     |
+1160 |                         super::super::ArtifactClosureClaim::from_id(expected),
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1160 -                         super::super::ArtifactClosureClaim::from_id(expected),
+1160 +                         ArtifactClosureClaim::from_id(expected),
+     |
+
+warning: unnecessary qualification
+    --> crates/store/src/durable/streaming_closure.rs:1175:21
+     |
+1175 |                     super::super::ArtifactClosureClaim::from_id(expected),
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1175 -                     super::super::ArtifactClosureClaim::from_id(expected),
+1175 +                     ArtifactClosureClaim::from_id(expected),
+     |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:175:16
+    |
+175 |     assert_eq!(core::mem::align_of::<HeaderRecord>(), 1);
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+175 -     assert_eq!(core::mem::align_of::<HeaderRecord>(), 1);
+175 +     assert_eq!(align_of::<HeaderRecord>(), 1);
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:176:16
+    |
+176 |     assert_eq!(core::mem::align_of::<FrameRecord>(), 1);
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+176 -     assert_eq!(core::mem::align_of::<FrameRecord>(), 1);
+176 +     assert_eq!(align_of::<FrameRecord>(), 1);
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:411:24
+    |
+411 |     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+411 -     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+411 +     let event_offset = size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:411:66
+    |
+411 |     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+    |                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+411 -     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+411 +     let event_offset = core::mem::size_of::<WorkflowVersion>() + size_of::<StageKey>();
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/publication/owner/tests.rs:146:9
+    |
+146 |         super::super::format::ChainLink {
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+146 -         super::super::format::ChainLink {
+146 +         ChainLink {
+    |
+
+warning: unnecessary qualification
+  --> crates/store/src/journal/publication/service/tests.rs:78:17
+   |
+78 |         latest: super::LatestPublication::empty(),
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: remove the unnecessary path segments
+   |
+78 -         latest: super::LatestPublication::empty(),
+78 +         latest: LatestPublication::empty(),
+   |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/publication/service/tests.rs:120:17
+    |
+120 |         latest: super::LatestPublication::empty(),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+120 -         latest: super::LatestPublication::empty(),
+120 +         latest: LatestPublication::empty(),
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/publication/service/tests.rs:140:17
+    |
+140 |         latest: super::LatestPublication::empty(),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+140 -         latest: super::LatestPublication::empty(),
+140 +         latest: LatestPublication::empty(),
+    |
+
+warning: `backend-store` (lib test) generated 19 warnings (run `cargo fix --lib -p backend-store --tests` to apply 19 suggestions)
+    Finished `test` profile [optimized + debuginfo] target(s) in 23.92s
+     Running unittests src/lib.rs (.local/build/qa/.nudox-cargo/slot-0/debug/deps/backend_store-29301fc2d15472ae)
+
+running 268 tests
+test closure::tests::decode_rejects_recommitted_malformed_raw_relation_root ... ok
+test artifact_pack::tests::writer_rejects_an_envelope_whose_id_disagrees_with_its_extent ... ok
+test closure::tests::registered_relation_root_round_trips_through_wire_admission ... ok
+test artifact_pack::tests::verified_pack_ranges_reject_tampering_and_manifest_mutation ... ok
+test closure::tests::closure_rejects_unknown_relation_state_root_without_decoder ... ok
+test closure::tests::decode_rejects_recommitted_forged_object_version ... ok
+test closure::tests::runtime_identity_matches_backend_version_golden_vector ... ok
+test closure::tests::cloned_large_closure_shares_immutable_storage ... ok
+test closure::tests::manifest_delta_path_copies_only_changed_index_neighborhood ... ok
+test durable::artifact_fs::imp::immutable_read_tests::already_sealed_read_preserves_inode_ctime ... ok
+test durable::artifact_fs::imp::immutable_read_tests::sealed_read_still_refuses_symlink_and_hardlink ... ok
+test durable::artifact_fs::imp::immutable_read_tests::legacy_read_tightens_all_permission_bits_once ... ok
+test durable::closure_composer::tests::base_plus_add_remove_composes_exact_sorted_target ... ok
+test artifact_pack::tests::cold_paged_layout_matches_an_independent_raw_file_oracle ... ok
+test closure::tests::relation_node_cas_is_schema_parametric_and_reopens_children ... ok
+test durable::closure_composer::tests::low_metadata_budget_rejects_before_closure_publication ... ok
+test durable::closure_composer::tests::descriptor_fault_has_cold_reopenable_orphan_boundary ... ok
+test closure::tests::large_registered_relation_closure_is_transitive_and_fails_closed ... ok
+test durable::closure_composer::tests::id_only_composition_matches_canonical_closure_and_cold_reopens ... ok
+test durable::closure_composer::tests::single_member_genesis_fits_the_public_metadata_budget_helper ... ok
+test durable::closure_composer::tests::cold_reopened_closure_pin_holds_members_through_recovered_admission ... ok
+test durable::closure_composer::tests::collector_resolves_selected_roots_after_waiting_for_publication_pin ... ok
+test durable::closure_composer::tests::composer_gc_pin_survives_until_selection_owner_drops_receipt ... ok
+test durable::gc::tests::gc_pin_child_process_holds_shared_lease_until_killed ... ok
+test durable::gc::tests::flat_compatibility_closure_is_rejected_by_production_mark_walk ... ok
+test durable::gc::tests::killed_reader_process_does_not_leave_a_stale_gc_pin_after_reopen ... ok
+test durable::gc::tests::interrupted_quarantine_is_restored_on_reopen ... ok
+test durable::gc::tests::long_lived_product_pin_blocks_the_exclusive_metadata_gc_barrier ... ok
+test durable::gc::tests::malformed_mark_metadata_is_discarded_without_touching_objects ... ok
+test durable::gc::tests::cold_gc_fails_closed_for_missing_remote_relation_target_and_nonmember_claim ... ok
+test durable::gc::tests::live_reader_pin_retains_object_until_released ... ok
+test durable::gc::tests::candidate_index_write_crash_before_or_after_rename_recovers ... ok
+test durable::gc::tests::committed_sweep_cursor_resumes_without_revisiting_live_candidates ... ok
+test durable::gc::tests::missing_reachable_object_fails_closed_before_sweep ... ok
+test durable::gc::tests::orphan_objects_are_reclaimed_and_roots_are_retained ... ok
+test durable::gc::tests::adversarial_filename_order_is_frozen_once_and_counted ... ok
+test durable::gc::tests::mark_freeze_rename_faults_restart_without_losing_objects ... ok
+test durable::gc::tests::remote_gc_queue_records_roundtrip_and_reject_malformed_tags ... ok
+test durable::gc::tests::remote_residency_requires_scoped_verifier_and_keeps_unlisted_members ... ok
+test durable::gc::tests::root_snapshot_rejects_overflow_without_retaining_unbounded_inputs ... ok
+test durable::gc::tests::remote_allowlist_keeps_member_referenced_by_local_relation_after_cold_gc ... ok
+test durable::gc::tests::remote_allowlist_rejects_nonmembers_and_empty_allowlist_keeps_every_payload ... ok
+test durable::gc::tests::try_exclusive_metadata_gc_reports_reader_backpressure ... ok
+test durable::gc::tests::unknown_files_are_retained ... ok
+test durable::gc::tests::selected_head_collection_reclaims_old_generation ... ok
+test durable::io_error_tests::retryable_filesystem_kinds_remain_distinct_from_permanent_io ... ok
+test durable::nodes::relation::tests::dangling_relation_reference_is_a_miss ... ok
+test durable::nodes::relation::tests::relation_reference_rejects_a_corrupt_or_wrong_hash_envelope ... ok
+test durable::nodes::relation::tests::relation_reference_rejects_a_different_object_descriptor ... ok
+test durable::closure_composer::tests::add_only_delta_reuses_admitted_base_without_reverifying_its_payloads ... ok
+test durable::gc::tests::verified_remote_member_reachable_from_selected_pack_stays_local ... ok
+test durable::nodes::relation::tests::relation_reference_rejects_a_hard_linked_object_path ... ok
+test durable::nodes::relation::tests::relation_reference_rejects_an_oversized_object ... ok
+test durable::nodes::relation::tests::relation_reference_rejects_a_symlinked_object_path ... ok
+test durable::objects::tests::bounded_reader_checks_sparse_oversize_before_allocating ... ok
+test durable::objects::tests::borrowed_view_matches_the_owned_read_oracle ... ok
+test durable::gc::tests::bucketed_sweep_reclaims_all_candidates_with_tiny_pages ... ok
+test durable::objects::tests::callback_error_and_panic_release_the_convenience_pin ... ok
+test durable::objects::tests::borrowed_admission_rejects_corrupt_identity_envelope_schema_and_partial_file ... ok
+test durable::objects::tests::existing_pin_is_reused_and_rejected_for_another_store ... ok
+test durable::objects::tests::empty_and_maximum_bounded_payloads_are_admitted ... ok
+test durable::objects::tests::opened_object_admission_uses_the_supplied_descriptor ... ok
+test durable::objects::tests::owned_object_read_rejects_a_symlinked_object_path ... ok
+test durable::objects::tests::owned_object_read_rejects_a_hard_linked_object_path ... ok
+test durable::streaming_closure::tests::an_object_a_dead_process_left_linked_twice_reads_before_any_write ... ok
+test durable::gc::tests::unreferenced_allowlisted_member_is_reclaimed_across_cold_gc_while_selected_pack_survives ... ok
+test durable::streaming_closure::tests::alias_preflight_keeps_session_lease_after_two_cold_reap_attempts ... ok
+test durable::objects::tests::callback_view_survives_path_replacement_and_gc_waits_for_the_callback ... ok
+test durable::streaming_closure::tests::duplicate_member_claims_are_rejected_instead_of_silently_deduplicated ... ok
+test durable::streaming_closure::tests::capture_gc_pin_does_not_block_head_or_unrelated_object_io ... ok
+test durable::streaming_closure::tests::empty_streamed_closure_has_canonical_root ... ok
+test durable::streaming_closure::tests::interrupted_seal_leaves_only_collectable_unselected_objects ... ok
+test durable::gc::tests::all_live_candidates_are_charged_and_page_bounded ... ok
+test durable::streaming_closure::tests::readers_retry_the_short_cas_hardlink_publication_window ... ok
+test durable::streaming_closure::tests::simulated_process_crash_child ... ok
+test durable::streaming_closure::tests::legacy_artifact_session_pins_streamed_members_until_drop ... ok
+test durable::streaming_closure::tests::hard_process_exit_recovers_object_relation_and_descriptor_boundaries ... ok
+test hydration::tests::borrowed::borrowed_binding_and_scratch_failures_preserve_exact_operands ... ok
+test hydration::tests::borrowed::borrowed_complete_plan_preserves_order_routes_coverage_and_dependency_identity ... ok
+test hydration::tests::borrowed::borrowed_range_and_verification_keep_partial_and_missing_causes_exact ... ok
+test hydration::tests::borrowed::noncontiguous_absence_advances_sparse_and_selected_cursors_exactly ... ok
+test hydration::tests::planning::bound_demand_produces_exact_ordered_coverage_and_fetch_routes ... ok
+test hydration::tests::planning::overlay_and_range_coverage_remain_exact_and_small_scratch_rolls_back ... ok
+test hydration::tests::planning::planning_probe_records_one_aggregate_coverage_event ... ok
+test hydration::tests::planning::sparse_absence_state_reports_logical_and_retained_bytes::case_1 ... ok
+test hydration::tests::planning::sparse_absence_state_reports_logical_and_retained_bytes::case_2 ... ok
+test hydration::tests::planning::sparse_absence_state_reports_logical_and_retained_bytes::case_3 ... ok
+test hydration::tests::planning::sparse_absence_state_reports_logical_and_retained_bytes::case_4 ... ok
+test hydration::tests::publication::binding_and_verification_reject_adjacent_invalid_states ... ok
+test hydration::tests::publication::exact_content_under_different_metadata_cannot_verify ... ok
+test hydration::tests::publication::missing_closure_cannot_issue_a_verified_capability_and_replay_fetches_nothing ... ok
+test hydration::tests::publication::verified_generation_retains_facts_and_one_exact_evidence_reference ... ok
+test journal::format::tests::every_payload_byte_is_covered_by_the_frame_checksum ... ok
+test durable::streaming_closure::tests::one_and_two_object_streams_seal_and_reopen_cold ... ok
+test journal::journal::tests::directory_sync_failure_prevents_a_created_journal_from_escaping ... ok
+test durable::streaming_closure::tests::tentative_payload_visitor_borrows_bounded_chunks_and_mints_envelope_last ... ok
+test durable::streaming_closure::tests::zero_byte_object_finishes_without_a_payload_frame ... ok
+test durable::closure_composer::tests::asymmetric_structured_delta_matches_independent_set_oracle ... ok
+test journal::journal::tests::grouped_append_reduces_before_one_write_and_one_sync ... ok
+test journal::journal::tests::plain_group_append_preserves_original_mismatched_key_error ... ok
+test journal::journal::tests::legal_fragmented_writes_issue_one_receipt_only_after_sync ... ok
+test journal::journal::tests::sequence_and_canonical_decode_failures_remain_distinct ... ok
+test journal::publication::credit::tests::active_counter_is_the_only_admission_owner ... ok
+test journal::publication::credit::tests::active_high_water_tracks_the_peak_without_a_second_resource_counter ... ok
+test journal::publication::credit::tests::committing_lease_rejects_cancel_until_terminal_completion ... ok
+test journal::journal::tests::sync_failure_reconciles_both_absent_and_present_physical_images ... ok
+test journal::publication::credit::tests::credit_lease_retains_capacity_until_command_and_pending_drop ... ok
+test journal::publication::credit::tests::production_credit_lease_model_covers_claim_cancel_drop_and_capacity_races ... ok
+test journal::publication::owner::tests::dropped_pending_guard_cancels_queued_command_without_a_journal_effect ... ok
+test journal::publication::owner::tests::current_head_conflict_retains_stored_root_and_dep_without_new_bytes ... ok
+test journal::journal::tests::every_header_write_prefix_preserves_the_fault_and_never_constructs_a_journal ... ok
+test journal::publication::owner::tests::owner_storage_preallocates_exact_reusable_frame_and_group_bounds ... ok
+test durable::streaming_closure::tests::sealed_capture_transfers_gc_pin_into_receipt ... ok
+test journal::publication::owner::tests::grouped_owner_fanout_is_one_journal_record_and_binds_same_facts ... ok
+test journal::publication::service::tests::drop_joins_a_panicked_owner_as_last_resort_cleanup ... ok
+test journal::publication::service::tests::poison_closes_admission_before_fanning_out_accepted_commands ... ok
+test journal::publication::service::tests::response_channel_allocation_and_send_rejection_release_credit ... ok
+test journal::publication::service::tests::response_channel_unwind_after_reserve_does_not_strand_credit ... ok
+test journal::publication::owner::tests::warmed_duplicate_group_reuses_owner_storage_without_heap_allocation ... ok
+test journal::publication::service::tests::shutdown_retains_owner_panic_class_and_utf8_bounded_payload ... ok
+test memory::tests::admission::admission_probe_records_closed_success_and_failure_outcomes ... ok
+test memory::tests::admission::borrowed_view_has_no_lock_or_copy_and_exposes_store_lifetime ... ok
+test journal::publication::owner::tests::receiver_loss_still_completes_the_command_lease ... ok
+test memory::tests::admission::exact_boundary_and_rejection_preserve_accounting_and_owned_buffer ... ok
+test memory::tests::admission::byte_and_slot_n_minus_one_n_n_plus_one_transitions_roll_back_exactly ... ok
+test memory::tests::admission::colliding_identities_return_direct_occupied_borrows_with_bounded_work ... ok
+test memory::tests::admission::first_write_wins_over_bytes_and_all_descriptor_metadata ... ok
+test memory::tests::admission::generic_payload_owner_is_stored_or_rejected_without_conversion ... ok
+test memory::tests::admission::maximum_admitted_ordinal_is_exactly_bounded_by_validated_geometry ... ok
+test memory::tests::layout::capacity_rejection_returns_owner_with_zero_allocator_activity ... ok
+test memory::tests::layout::rejected_insert_is_inline_and_has_no_error_path_allocation ... ok
+test object_pack::format::tests::index_geometry_rejects_an_unrepresentable_directory ... ok
+test memory::tests::layout::static_backings_have_exact_layout_and_allocation_cliffs ... ok
+test root::locality::artifact::rows::tests::error_priority_and_ordinals_are_exact ... ok
+test root::locality::artifact::rows::tests::random_long_rows_match_every_level ... ok
+test root::locality::artifact::rows::tests::every_short_tail_and_bad_lane_matches_scalar ... ok
+test memory::tests::admission::one_hundred_thousand_object_index_has_bounded_probe_work ... ok
+test root::packed::tests::resident_row_is_exactly_sixty_four_bytes ... ok
+test root::root_view::tests::borrowed_composition_preserves_generation_and_count_mismatch_operands ... ok
+test root::root_view::tests::borrowed_root_is_pointer_backed_and_selection_matches_owned_view ... ok
+test root::root_view::tests::empty_root_and_branching_hierarchies_keep_closed_behavior ... ok
+test root::root_view::tests::exact_extent_and_compact_count_rejections_precede_row_semantics ... ok
+test root::root_view::tests::deep_borrowed_range_reports_parent_search_work ... ok
+test root::root_view::tests::key_and_every_parent_invariant_have_distinct_rejections ... ok
+test root::root_view::tests::typed_rows_report_parent_schema_and_authority_operands_exactly ... ok
+test root::root_view::tests::hundred_thousand_forward_parent_rows_use_one_linear_transient_lane ... ok
+test root::tests::locality_contracts::locality_lookup_and_selected_cursor_have_exact_sparse_bounds ... ok
+test root::tests::locality_contracts::locality_scan_uses_one_ordered_sparse_route_cursor ... ok
+test root::tests::locality_contracts::overlay_propagation_marks_root_path_and_preserves_absence ... ok
+test root::tests::locality_contracts::locality_changes_preserve_identity_and_narrow_large_ranges_touch_only_demand ... ok
+test root::tests::locality_contracts::remote_tombstone_is_a_distinct_preserved_fact ... ok
+test root::tests::root_contracts::canonical_order_and_every_hierarchy_rejection_are_exact ... ok
+test root::tests::root_contracts::changed_only_diff_omits_unchanged_rows_and_preserves_edge_transitions ... ok
+test root::tests::root_contracts::equal_identity_preserves_full_diff_across_independent_residences ... ok
+test root::tests::root_contracts::hundred_thousand_rows_have_fixed_resident_budget_and_streaming_diff ... ok
+test root::tests::root_contracts::retained_root_owner_and_construction_peak_have_exact_layout_evidence ... ok
+test root::tests::root_contracts::streaming_builder_reuses_phase_row_and_preserves_canonical_identity ... ok
+test root::tests::root_contracts::streaming_diff_has_exact_canonical_classifications ... ok
+test root::tests::selection_contracts::closure_probe_records_one_aggregate_selection_event ... ok
+test root::tests::selection_contracts::narrow_projection_selects_only_range_and_checked_ancestors ... ok
+test root::tests::selection_contracts::sparse_ordinals_remain_bound_to_the_selection_that_emitted_them ... ok
+test root::tests::selection_contracts::undersized_selected_ordinal_buffer_does_not_classify_or_mutate ... ok
+test root::tests::root_contracts::changed_only_diff_streams_a_million_unchanged_rows_without_output ... ok
+test tests::budget_failure_does_not_publish_a_partial_root ... ok
+test tests::canonical_admission_rejects_oversized_keys_and_nodes ... ok
+test tests::cas_reaps_dropped_history_and_keeps_live_deduplication ... ok
+test tests::authorityless_publish_cannot_bypass_held_owner_lease ... ok
+test tests::closure_admission_rejects_forged_object_version ... ok
+test tests::checked_workspace_publication_binds_manifest_refs_and_typed_root ... ok
+test tests::closure_extension_binds_checked_target_and_replaces_root_only_frontier ... ok
+test tests::complete_corrupt_recognized_head_temp_is_rejected_and_retained ... ok
+test root::tests::root_contracts::bolero_canonical_identity_is_independent_of_input_permutation ... ok
+test tests::diff_prunes_equal_subtrees_after_a_shared_kernel_update ... ok
+test tests::complete_head_checkpoint_corruption_is_rejected ... ok
+test durable::streaming_closure::tests::explicit_metadata_input_budget_accepts_31_members_plus_envelope_slot ... ok
+test tests::completed_journal_faults_report_typed_sync_statuses ... ok
+test tests::filesystem_complete_journal_corruption_is_rejected ... ok
+test tests::filesystem_publication_reopens_and_rejects_torn_or_corrupt_objects ... ok
+test tests::hundred_thousand_value_update_is_sublinear ... ok
+test tests::inverse_and_compose_recompute_canonical_delta_ids ... ok
+test tests::large_proof_verifies_independently_and_rejects_leaf_tampering ... ok
+test tests::every_atomic_head_boundary_reopens_the_journal_selected_publication ... ok
+test tests::lazy_bulk_frontier_publishes_every_branch_child ... ok
+test tests::malformed_delta_rejects_duplicate_or_unsorted_keys ... ok
+test tests::no_op_update_reuses_the_exact_shared_root_handle ... ok
+test tests::nonmembership_proof_authenticates_empty_key_slot ... ok
+test tests::pack_gc ... ok
+test tests::proof_and_corrupt_pack ... ok
+test journal::journal::tests::every_frame_write_prefix_returns_no_receipt_poisons_and_reopens_to_the_prior_state ... ok
+test tests::filesystem_typestate_reopens_and_rejects_interleaved_stale_publish ... ok
+test tests::randomized_histories_match_canonical_root ... ok
+test tests::range_proof_authenticates_all_selected_leaves ... ok
+test tests::relation_state_object_closes_checked_workspace_root ... ok
+test tests::publication_authority_serializes_head_writes_and_reports_pre_head_abort ... ok
+test tests::residency_is_first_write_wins_and_layout_binds_pack_identity ... ok
+test tests::root_height_changes_keep_canonical_identity ... ok
+test tests::reopen_scavenges_only_store_owned_immutable_temps ... ok
+test tests::root_only_extension_tracks_all_checked_relation_roots_by_binding ... ok
+test tests::roots_history_independent ... ok
+test tests::single_edit_reuses_unchanged_cas_subtrees ... ok
+test tests::stale ... ok
+test tests::structural_delta_merges_unequal_leaf_ranges ... ok
+test tests::structural_edits_reuse_outside_boundary ... ok
+test tests::randomized_large_structural_histories_match_canonical_root ... ok
+test tests::try_from_iter_rejects_duplicate_keys ... ok
+test tests::typed_closure_round_trips_and_binds_workspace_root ... ok
+test tests::untrusted_maps_reject_delta_preparation ... ok
+test tests::weak_root_handle_expires_with_its_map_generation ... ok
+test tests::wire_pack_admission_checks_directory_and_round_trips ... ok
+test tree::node::tests::concurrent_interns_deduplicate_one_live_node ... ok
+test tree::node::tests::dropped_history_is_reclaimed_incrementally ... ok
+test tests::root_only_extension_durably_writes_every_registered_relation_root ... ok
+test tree::node::tests::reusing_an_expired_commitment_keeps_one_reap_queue_slot ... ok
+test view::validate::frame::read_tests::post_validation_range_and_scalar_drift_are_contained ... ok
+test tree::node::tests::interning_100k_nodes_has_constant_maintenance_work_per_node ... ok
+test view::validate::raw_property::every_byte_value_has_exact_structural_provenance ... ok
+test view::validate::raw_property::hostile_ordering_truncation_and_correlated_boundaries_are_exact ... ok
+test view::validate::tests::compatibility_and_lowered_limits_have_exact_boundaries ... ok
+test view::validate::tests::decoder_policy_limits_have_n_minus_one_n_n_plus_one_provenance::case_01_frame_n_minus_one ... ok
+test view::validate::tests::decoder_policy_limits_have_n_minus_one_n_n_plus_one_provenance::case_02_frame_n ... ok
+test view::validate::tests::decoder_policy_limits_have_n_minus_one_n_n_plus_one_provenance::case_03_frame_n_plus_one ... ok
+test view::validate::tests::decoder_policy_limits_have_n_minus_one_n_n_plus_one_provenance::case_04_sections_n_minus_one ... ok
+test view::validate::tests::decoder_policy_limits_have_n_minus_one_n_n_plus_one_provenance::case_05_sections_n ... ok
+test view::validate::tests::decoder_policy_limits_have_n_minus_one_n_n_plus_one_provenance::case_06_sections_n_plus_one ... ok
+test view::validate::tests::decoder_policy_limits_have_n_minus_one_n_n_plus_one_provenance::case_07_rows_n_minus_one ... ok
+test view::validate::tests::decoder_policy_limits_have_n_minus_one_n_n_plus_one_provenance::case_08_rows_n ... ok
+test view::validate::tests::decoder_policy_limits_have_n_minus_one_n_n_plus_one_provenance::case_09_rows_n_plus_one ... ok
+test view::validate::tests::decoder_policy_limits_have_n_minus_one_n_n_plus_one_provenance::case_10_arena_n_minus_one ... ok
+test view::validate::tests::decoder_policy_limits_have_n_minus_one_n_n_plus_one_provenance::case_11_arena_n ... ok
+test view::validate::tests::decoder_policy_limits_have_n_minus_one_n_n_plus_one_provenance::case_12_arena_n_plus_one ... ok
+test view::validate::tests::descriptor_attack_matrix_preserves_every_rejected_field ... ok
+test view::validate::tests::encoder_and_reborrowed_view_are_differentially_identical_for_each_canonical_prefix::case_1_empty ... ok
+test view::validate::tests::encoder_and_reborrowed_view_are_differentially_identical_for_each_canonical_prefix::case_2_metadata_only ... ok
+test view::validate::tests::encoder_and_reborrowed_view_are_differentially_identical_for_each_canonical_prefix::case_3_metadata_and_rows ... ok
+test view::validate::tests::encoder_and_reborrowed_view_are_differentially_identical_for_each_canonical_prefix::case_4_all_known_kinds ... ok
+test view::validate::tests::every_frame_boundary_has_the_exact_truncation_provenance::case_1_empty ... ok
+test view::validate::tests::every_frame_boundary_has_the_exact_truncation_provenance::case_2_one_byte ... ok
+test view::validate::tests::every_frame_boundary_has_the_exact_truncation_provenance::case_3_last_missing_header_byte ... ok
+test view::validate::tests::every_frame_boundary_has_the_exact_truncation_provenance::case_4_header_only ... ok
+test view::validate::tests::every_frame_boundary_has_the_exact_truncation_provenance::case_5_last_missing_body_byte ... ok
+test view::validate::tests::header_mutations_report_exact_records ... ok
+test view::validate::tests::optional_descriptors_bracket_each_known_kind_without_affecting_exact_iteration::case_1_metadata ... ok
+test view::validate::tests::optional_descriptors_bracket_each_known_kind_without_affecting_exact_iteration::case_2_rows ... ok
+test view::validate::tests::optional_descriptors_bracket_each_known_kind_without_affecting_exact_iteration::case_3_data ... ok
+test view::validate::tests::padding_is_checked_but_payload_is_not_scanned ... ok
+test view::validate::tests::validated_frame_has_a_fixed_inline_metadata_budget ... ok
+test view::validate::tests::validation_returns_a_borrowed_compact_witness ... ok
+test workflow::durable::tests::canonical_bytes_boundary_is_exact ... ok
+test workflow::durable::tests::canonical_record_round_trips_and_rejects_mutated_tags ... ok
+test workflow::tests::compact_key_and_event_do_not_repeat_verbose_stage_inputs ... ok
+test workflow::tests::conflicts_and_cancellation_after_publication_start_fail_closed ... ok
+test workflow::tests::duplicate_and_output_conflict_are_exact ... ok
+test workflow::tests::every_durable_crash_prefix_derives_only_its_pending_effect ... ok
+test workflow::tests::failure_cancel_and_impossible_classes_are_exact ... ok
+test workflow::tests::foreign_key_and_version_are_rejected_exactly ... ok
+test workflow::tests::forward_transitions_return_exact_state_and_next_effect ... ok
+test workflow::tests::replay_accepts_two_committed_chained_generations ... ok
+test workflow::tests::replay_rejects_non_requested_mismatched_key_exactly ... ok
+test view::validate::raw_property::bolero_combines_structural_byte_mutations ... ok
+test durable::gc::tests::mark_freeze_external_merges_duplicates_with_bounded_records ... ok
+test journal::journal::tests::grouped_append_fault_retains_attempt_and_reopens_to_durable_prefix ... ok
+test durable::gc::tests::manifest_mark_continuation_bounds_one_page_per_work_item ... ok
+test durable::gc::tests::relation_reference_continuation_is_paged_with_mark_credits ... ok
+test durable::closure_composer::tests::bounded_path_copy_reports_peak_and_keeps_authenticated_work_bounded ... ok
+test tests::tree_cas_reopens_transitively_and_writes_one_edit_boundary ... ok
+test journal::publication::owner::tests::every_fact_and_head_short_prefix_is_rejected_by_independent_reopen ... ok
+test tests::lazy_closure_open_lookup_and_pages_are_bounded ... ok
+test tests::every_interrupted_head_temp_prefix_is_scavenged_without_hiding_other_files ... ok
+
+test result: ok. 268 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 44.10s
+

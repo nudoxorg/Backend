@@ -1,0 +1,55 @@
+{
+  "schema": "nudox.staged-intermediate-source-execution.v1",
+  "records": [
+    {
+      "source_commit": "eab055240866e3ea278885aace37afab0464c275",
+      "source_tree": "031ab44955ebb2d7bb8a7e83d0ed3fa667dd66a6",
+      "host": "h16001mac",
+      "test_executable_sha256": "8035fef670738768afce6bdb90ae5d6f566e099c7a9d6c2f22818611b8b61d95",
+      "outcome": "2 passed; 0 failed: GC continuation and missing-page prepublish/preHEAD/eager cold-open refusal",
+      "raw_log": {
+        "path": "raw/store-eab0552408.log",
+        "sha256": "1ecda769e462ed6c96a7f968ab13d257d0d304c8c6648be7ad5dcf81d34c91b3"
+      },
+      "fresh_fleet": {
+        "path": "raw/store-eab0552408-fleet.json",
+        "sha256": "ac2da8d564c5dd54c54473e14b96f1fdb861aaf753967a76e2c28435c96bee4b"
+      },
+      "test_executable_path": "/Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006/.local/build/staged-ingest/.nudox-cargo/slot-0/debug/deps/backend_store-65a87ee3f06cd377"
+    },
+    {
+      "source_commit": "eab055240866e3ea278885aace37afab0464c275",
+      "source_tree": "031ab44955ebb2d7bb8a7e83d0ed3fa667dd66a6",
+      "host": "h16001mac",
+      "test_executable_sha256": "b4519eae72e88c29dfda5dab962cadd8cbb23f91867aa0c95eee5cda3603a816",
+      "outcome": "RED 9 passed, 1 failed, 1 ignored: GC reclaimed unleased genesis base before publication",
+      "raw_log": {
+        "path": "raw/staged-eab0552408.log",
+        "sha256": "bdee0ef246706ef5ab4eba9c05fa9c928cf17cf7937189edb31efb1daf4bdfa2"
+      },
+      "fresh_fleet": {
+        "path": "raw/staged-eab0552408-fleet.json",
+        "sha256": "4d91653e06591a8194581b76c84a00d6f2316ff1917fafb7e3454f7dcd38be20"
+      }
+    },
+    {
+      "source_commit": "55da6a6e1a826e904469a4daa53d64038c85c6b9",
+      "source_tree": "93fe017737ffd90ef990e88f19f9a094dc074df8",
+      "host": "h16001mac",
+      "test_executable_sha256": "9857d6ee28db7848c1a5294447c7a73ebfea921deb809376e3b58b994af88080",
+      "outcome": "RED 9 passed, 1 failed, 1 ignored: test collector lacks product relation decoders",
+      "raw_log": {
+        "path": "raw/staged-55da6a6e1a.log",
+        "sha256": "be03bac2bad7f25fae86e30fe4b774dae5c1cd9414cbf3e47735a90776c0f840"
+      },
+      "fresh_fleet": {
+        "path": "raw/staged-55da6a6e1a-fleet.json",
+        "sha256": "87c5678228a14fec7afa4a85e7ec6878aec7257ab2f5bef54999013d52545825"
+      }
+    }
+  ],
+  "limits": [
+    "Prior RED attempts are not staged acceptance",
+    "No native/compiler semantic completeness credit"
+  ]
+}

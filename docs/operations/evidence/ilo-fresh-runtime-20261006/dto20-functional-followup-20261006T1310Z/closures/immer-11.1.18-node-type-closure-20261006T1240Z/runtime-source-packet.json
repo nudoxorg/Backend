@@ -1,0 +1,110 @@
+{
+  "consumer_manifest": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/consumer/package.json",
+  "consumer_manifest_sha256": "20667d539f141f6450feb090bd4d51a417f60b609ba7f4607c93c80f7ebb6608",
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/home",
+    "LANG": "C.UTF-8",
+    "PATH": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin",
+    "npm_config_cache": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/npm-cache",
+    "npm_config_registry": "https://registry.npmjs.org/"
+  },
+  "extra_consumer_dependencies": {
+    "@types/node": "^24.3.1"
+  },
+  "install_command": {
+    "argv": [
+      "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin/npm",
+      "ci",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund"
+    ],
+    "cwd": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/consumer",
+    "env": {
+      "HOME": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/home",
+      "LANG": "C.UTF-8",
+      "PATH": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin",
+      "npm_config_cache": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/npm-cache",
+      "npm_config_registry": "https://registry.npmjs.org/"
+    },
+    "exit": 0,
+    "seconds": 0.31443788402248174
+  },
+  "installed": [
+    {
+      "archive_sha256": "4605482935b2a8c26c53c7637fbc20665e49f9b0b6dc0db50449500e86727a82",
+      "package": {
+        "ecosystem": "npm",
+        "id": "@types/node",
+        "version": "24.19.1"
+      },
+      "path": "node_modules/@types/node",
+      "verified_files": 75
+    },
+    {
+      "archive_sha256": "2abf595a86b87dd22951218848ec4ad89c018db0e656716dc04b8b2f9290a0f4",
+      "package": {
+        "ecosystem": "npm",
+        "id": "undici-types",
+        "version": "7.24.6"
+      },
+      "path": "node_modules/undici-types",
+      "verified_files": 47
+    }
+  ],
+  "lifecycle_scripts_executed": false,
+  "lock_command": {
+    "argv": [
+      "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin/npm",
+      "install",
+      "--package-lock-only",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--lockfile-version=3"
+    ],
+    "cwd": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/consumer",
+    "env": {
+      "HOME": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/home",
+      "LANG": "C.UTF-8",
+      "PATH": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin",
+      "npm_config_cache": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/npm-cache",
+      "npm_config_registry": "https://registry.npmjs.org/"
+    },
+    "exit": 0,
+    "seconds": 0.8155802231049165
+  },
+  "lock_sha256": "a994b35fea264c3e5ddd1e86be38a5b897917914af345001d642103b1cf3a06b",
+  "product_runtime_started": false,
+  "project": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/project",
+  "resource_before": {
+    "disk_free_bytes": 56064471040,
+    "memory_available_kib": 56195532
+  },
+  "root_inventory": "/root/nudox-corpus-20261006/artifacts/stratified-typescript-library-dossiers-20261006T1238Z/npm-immer/source-inventory.json",
+  "root_inventory_sha256": "2e3556b594a7ad1fbc26cdbfa9af54e51cd2f45711b9d0ecbff2e51a4f900dc8",
+  "root_origin": "/root/nudox-corpus-20261006/artifacts/stratified-typescript-library-dossiers-20261006T1238Z/npm-immer/registry-origin.json",
+  "root_origin_sha256": "d80f0fbe005a1d137cca07189bd6c928f542d86e69c9817fc934b0d386befba0",
+  "root_package": {
+    "ecosystem": "npm",
+    "id": "immer",
+    "version": "11.1.18"
+  },
+  "schema": "nudox.official-npm-private-runtime-closure.v1",
+  "source_package_json_sha256": "0d3b8584ed366d3ac74e335e7951395b94cf7fa3ef2ba36ace152995b14100b7",
+  "source_package_json_unchanged": true,
+  "tools": {
+    "node": {
+      "path": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin/node",
+      "sha256": "47ce0b0ce242dc8a97a9c9fe5fda1d0c0ff1430457b6efe71072274b76a67c9e",
+      "version": "v24.18.0"
+    },
+    "npm": {
+      "path": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin/npm",
+      "sha256": "6761b97a075380a8977803d988ddd9fe19616b0b861bc922c9bebf66318d5e40",
+      "version": "11.16.0"
+    }
+  },
+  "unique_releases": 2,
+  "whole_package_pass": false
+}

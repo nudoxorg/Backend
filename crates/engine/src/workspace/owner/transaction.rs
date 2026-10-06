@@ -62,7 +62,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         let transition = if let Some(descriptor_id) = self.head.catalog_descriptor() {
             let transition = if transition
                 .closure()
-                .manifest()
+                .control_manifest()
                 .contains_object_id(descriptor_id)
             {
                 transition
@@ -291,7 +291,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
     /// publication recovery path uses this paired witness so it never builds
     /// the compatibility object export or traverses unrelated generations.
     pub(crate) fn selected_contains_objects(&self, output: [u8; 32], manifest: [u8; 32]) -> bool {
-        let closure = self.head.closure().manifest();
+        let closure = self.head.closure();
         let Ok(output) = self
             .store
             .read_object_claim(UntrustedObjectId::from_bytes(output))
@@ -304,6 +304,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         else {
             return false;
         };
-        closure.contains_object_id(output.id()) && closure.contains_object_id(manifest.id())
+        closure.contains(output.id()).unwrap_or(false)
+            && closure.contains(manifest.id()).unwrap_or(false)
     }
 }

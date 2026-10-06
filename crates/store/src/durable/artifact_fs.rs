@@ -8,14 +8,14 @@
 
 use super::{ClosureId, FileStore, ObjectId, StoreError, io_error, lock_error};
 use crate::UntrustedObjectId;
+#[cfg(not(unix))]
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
     path::PathBuf,
 };
-#[cfg(not(unix))]
-use std::path::Path;
 
 const LOCK_FILE: &str = "ACTIVE.lock";
 const CLOSURE_TEMP_FILE: &str = "closure-descriptor.tmp";
@@ -248,6 +248,21 @@ mod imp {
         file.sync_all().map_err(|error| io_error(&error))
     }
 
+    fn seal_immutable_read(file: &File) -> Result<(), StoreError> {
+        // Inspect the same descriptor that will supply the bytes. Already sealed
+        // immutable reads must not dirty inode metadata or flush the filesystem.
+        let metadata = file.metadata().map_err(|error| io_error(&error))?;
+        if !metadata.is_file() || metadata.nlink() != 1 {
+            return Err(StoreError::UnsafePath);
+        }
+        if metadata.mode() & 0o7777 == 0o400 {
+            return Ok(());
+        }
+        // Legacy members still become durable, owner-read-only files once.
+        // Publication uses seal_immutable_file unconditionally.
+        seal_immutable_file(file)
+    }
+
     fn open_file_at(
         directory: &File,
         name: &str,
@@ -292,7 +307,7 @@ mod imp {
         let parent = store_dir(store, directory)?;
         let file = open_file_at(&parent.file, name, OFlags::RDONLY)?;
         if let Some(file) = &file {
-            seal_immutable_file(file)?;
+            seal_immutable_read(file)?;
         }
         Ok(file)
     }
@@ -807,6 +822,172 @@ mod imp {
             return Ok(());
         }
         remove_session_at(&parent.file, name, &directory.file, Some(store))
+    }
+
+    #[cfg(test)]
+    mod immutable_read_tests {
+        #![allow(clippy::expect_used)]
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+
+        struct Fixture {
+            store: FileStore,
+            root: PathBuf,
+            path: PathBuf,
+        }
+        impl Fixture {
+            fn new(mode: u32) -> Self {
+                let root = std::env::temp_dir().join(format!(
+                    "backend-sealed-read-{}-{}",
+                    std::process::id(),
+                    NEXT_SESSION.fetch_add(1, Ordering::Relaxed)
+                ));
+                let store = FileStore::open(&root, 1 << 20).expect("open private store");
+                let path = root.join("nodes/read.ref");
+                std::fs::write(&path, b"descriptor fixture").expect("write fixture");
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+                    .expect("set exact fixture mode");
+                Self { store, root, path }
+            }
+            fn read(&self) -> Result<File, StoreError> {
+                open_immutable_child_file(&self.store, "nodes", "read.ref")?
+                    .ok_or(StoreError::Corrupt)
+            }
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.root);
+            }
+        }
+        fn identity(metadata: &std::fs::Metadata) -> (u64, u64, i64, i64) {
+            (
+                metadata.dev(),
+                metadata.ino(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+            )
+        }
+
+        #[test]
+        fn already_sealed_read_preserves_inode_ctime() {
+            let fixture = Fixture::new(0o400);
+            let before = std::fs::metadata(&fixture.path).expect("before read");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            eprintln!("SEALED_READ_BEGIN");
+            let file = fixture.read().expect("read sealed descriptor");
+            eprintln!("SEALED_READ_END");
+            assert_eq!(
+                identity(&before),
+                identity(&file.metadata().expect("same fd metadata"))
+            );
+        }
+
+        #[test]
+        fn legacy_read_tightens_all_permission_bits_once() {
+            for mode in [0o600, 0o444, 0o4400, 0o1400, 0o2400] {
+                let fixture = Fixture::new(mode);
+                let file = fixture.read().expect("seal legacy descriptor");
+                let sealed = file.metadata().expect("sealed metadata");
+                assert_eq!(sealed.mode() & 0o7777, 0o400);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                let reopened = fixture.read().expect("read newly sealed descriptor");
+                assert_eq!(
+                    identity(&sealed),
+                    identity(&reopened.metadata().expect("reopened metadata"))
+                );
+            }
+        }
+
+        #[test]
+        fn sealed_object_admission_survives_concurrent_pinned_reopen_and_rejects_corruption() {
+            use backend_version::{ObjectKey, Schema};
+            struct Bytes;
+            impl Schema for Bytes {
+                const DOMAIN: u8 = 0xf2;
+                const TYPE: u16 = 0x51f0;
+                type Value = Vec<u8>;
+                fn encode(value: &Self::Value, output: &mut Vec<u8>) {
+                    output.extend_from_slice(value);
+                }
+            }
+            let fixture = Fixture::new(0o400);
+            let bytes = b"checked sealed immutable payload".to_vec();
+            let object = crate::durable::TypedObject::from_value(
+                &ObjectKey::<Bytes>::from_value(&bytes),
+                &bytes,
+            );
+            fixture
+                .store
+                .write_object(&object)
+                .expect("publish sealed object");
+            let path = fixture.store.object_path(object.id());
+            // The generic object writer is a legacy unsealed producer. Its
+            // first admitted read must durably tighten permissions once.
+            assert_eq!(
+                fixture.store.read_object(object.id()).expect("first seal"),
+                object
+            );
+            let before = std::fs::metadata(&path).expect("published metadata");
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+            let workers: Vec<_> = (0..4)
+                .map(|_| {
+                    let root = fixture.root.clone();
+                    let expected = object.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        let store = FileStore::open(root, 1 << 20).expect("cold reopen");
+                        let pin = store.pin_garbage_collection().expect("pin reopened store");
+                        barrier.wait();
+                        for _ in 0..20 {
+                            assert_eq!(
+                                store.read_object(expected.id()).expect("owned admission"),
+                                expected
+                            );
+                            store
+                                .with_verified_object_pinned(&pin, expected.id(), |view| {
+                                    assert_eq!(view.bytes(), expected.bytes());
+                                    Ok(())
+                                })
+                                .expect("pinned borrowed admission");
+                        }
+                    })
+                })
+                .collect();
+            for worker in workers {
+                worker.join().expect("concurrent admitted reads");
+            }
+            assert_eq!(
+                identity(&before),
+                identity(&std::fs::metadata(&path).expect("after reads"))
+            );
+            let mut envelope = std::fs::read(&path).expect("read envelope");
+            let last = envelope.len() - 1;
+            envelope[last] ^= 1;
+            std::fs::remove_file(&path).expect("remove fixture object");
+            std::fs::write(&path, envelope).expect("replace corrupt fixture");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400))
+                .expect("seal corrupt fixture");
+            assert_eq!(
+                fixture.store.read_object(object.id()),
+                Err(StoreError::Corrupt)
+            );
+            assert_eq!(
+                fixture.store.with_verified_object(object.id(), |_| Ok(())),
+                Err(StoreError::Corrupt)
+            );
+        }
+
+        #[test]
+        fn sealed_read_still_refuses_symlink_and_hardlink() {
+            let fixture = Fixture::new(0o400);
+            let alias = fixture.root.join("alias");
+            std::fs::hard_link(&fixture.path, &alias).expect("hostile hardlink");
+            assert!(matches!(fixture.read(), Err(StoreError::UnsafePath)));
+            std::fs::remove_file(&alias).expect("remove alias");
+            std::fs::rename(&fixture.path, &alias).expect("move fixture");
+            std::os::unix::fs::symlink(&alias, &fixture.path).expect("hostile symlink");
+            assert!(matches!(fixture.read(), Err(StoreError::UnsafePath)));
+        }
     }
 }
 

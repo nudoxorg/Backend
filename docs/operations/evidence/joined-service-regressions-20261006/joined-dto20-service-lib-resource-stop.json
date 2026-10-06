@@ -1,0 +1,10 @@
+{
+  "time": "2026-10-06T11:13:45.740933+00:00",
+  "status": "resource_stop_not_test_verdict",
+  "reason": "shared disk below 16 GiB stop floor",
+  "free_bytes": 14141333504,
+  "exact_test_pid": 30502,
+  "head": "039c360d286962a6cf19488fb86caabd1d8c93de",
+  "log": "/Users/mileswirht/Downloads/nudox-active-20261005/typescript-global-probe/.local/joined-dto20-service-lib.txt",
+  "source_status": ""
+}

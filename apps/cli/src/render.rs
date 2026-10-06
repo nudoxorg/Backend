@@ -27,10 +27,43 @@ pub const EXIT_USAGE: u8 = 64;
 /// Renders one answer in the caller's chosen format.
 #[must_use]
 pub fn answer(answer: &Answer, options: &Options) -> String {
+    answer_with_cursor(answer, options, None)
+}
+
+/// Renders a query with the shared client-issued portable next command.
+#[must_use]
+pub fn answer_with_cursor(answer: &Answer, options: &Options, cursor: Option<&str>) -> String {
+    match try_answer_with_cursor(answer, options, cursor) {
+        Ok(rendered) => rendered,
+        Err(error) => fault(&error, options),
+    }
+}
+
+/// Renders an admitted answer, preserving response-budget refusals for the
+/// process boundary so it can return the corresponding nonzero exit status.
+///
+/// Human and Markdown output are explicitly bounded previews. JSON is a typed
+/// DTO and must be complete: an oversized page is a transport fault, never a
+/// truncated or apparently successful answer.
+pub(crate) fn try_answer_with_cursor(
+    answer: &Answer,
+    options: &Options,
+    cursor: Option<&str>,
+) -> Result<String, Fault> {
     match options.format() {
-        Format::Human => bounded_text(&text::answer(answer, options.theme())),
-        Format::Markdown => markdown_text(answer),
-        Format::Json => json_with_detail(answer, options.detail()),
+        Format::Human => Ok(bounded_text(&text::answer(answer, options.theme()))),
+        Format::Markdown => Ok(markdown_text(answer)),
+        Format::Json => {
+            let payload = encode_answer(
+                answer,
+                options.detail(),
+                cursor,
+                DEFAULT_RESPONSE_BUDGET_BYTES,
+            )
+            .map_err(oversized_fault)?;
+            String::from_utf8(payload.bytes.into_vec())
+                .map_err(|_| Fault::usage("response", "invalid UTF-8"))
+        }
     }
 }
 
@@ -49,7 +82,11 @@ pub fn json(answer: &Answer) -> String {
 /// Renders the bounded typed projection shared with MCP.
 #[must_use]
 pub fn json_with_detail(answer: &Answer, detail: Detail) -> String {
-    match encode_answer(answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES) {
+    json_with_cursor(answer, detail, None)
+}
+
+fn json_with_cursor(answer: &Answer, detail: Detail, cursor: Option<&str>) -> String {
+    match encode_answer(answer, detail, cursor, DEFAULT_RESPONSE_BUDGET_BYTES) {
         Ok(payload) => String::from_utf8(payload.bytes.into_vec())
             .unwrap_or_else(|_| bounded_fault(&Fault::usage("response", "invalid UTF-8"))),
         Err(error) => bounded_fault(&oversized_fault(error)),

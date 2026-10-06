@@ -12,13 +12,14 @@ use crate::ir::{
     AtomId, AtomListId, CSharpExtension, CSharpFacts, ClangExtension, ClangFacts,
     DeclarationIdentity, DocFragment, DocId, EntityAuthorityFacts, EntityId, EntityListId,
     EntityVersion, ExternalId, ExternalTarget, ForeignTargetOrigin, FreePredicate,
-    FreePredicateListId, GoExtension, GoFacts, ImageProvenance, Ir, JavaExtension, JavaFacts,
-    LanguageExtensionColumnView, Link, LinkId, LinkIter, LinkOccurrence, LinkOccurrenceId,
-    LinkOccurrenceIter, ObjectMember, ObjectMemberListId, OccurrenceAuthorityFacts,
-    PythonExtension, PythonFacts, RustExtension, RustFacts, SemanticImageAuthority, SourceSpan,
-    TemplatePart, TemplatePartListId, TupleElement, TupleElementListId, TypeExpr, TypeId,
-    TypeListId, TypeParameter, TypeParameterBound, TypeParameterBoundListId, TypeParameterListId,
-    TypeScriptExtension, TypeScriptFacts, VariantAvailability,
+    FreePredicateListId, GoExtension, GoFacts, ImageProvenance, Ir, ItemName, JavaExtension,
+    JavaFacts, LanguageExtensionColumnView, Link, LinkId, LinkIter, LinkOccurrence,
+    LinkOccurrenceId, LinkOccurrenceIter, ObjectMember, ObjectMemberListId,
+    OccurrenceAuthorityFacts, PythonExtension, PythonFacts, RustExtension, RustFacts,
+    SemanticImageAuthority, SourceSpan, TemplatePart, TemplatePartListId, TupleElement,
+    TupleElementListId, TypeExpr, TypeId, TypeListId, TypeParameter, TypeParameterBound,
+    TypeParameterBoundListId, TypeParameterListId, TypeScriptExtension, TypeScriptFacts,
+    VariantAvailability,
 };
 
 /// Coordinate-free identity of one external endpoint admitted from a complete
@@ -448,8 +449,8 @@ pub type SemanticCursor<'image, T> = Copied<slice::Iter<'image, T>>;
 pub struct SemanticEntity {
     /// Ordinal of this row in the image's entity table.
     pub id: EntityId,
-    /// Atom-table coordinate containing the declaration's name bytes.
-    pub name: AtomId,
+    /// Tagged atom coordinate containing the declaration name or anonymous anchor.
+    pub name: ItemName,
     /// Closed declaration-shape category used for matching and rendering.
     pub kind: crate::ir::ItemKind,
     /// Finalized visibility value; consult authority to distinguish an observed value from absence.
@@ -489,8 +490,8 @@ pub struct SemanticImageFacts {
 pub struct CoreSemanticEntity {
     /// Ordinal of this declaration in the image's entity table.
     pub id: EntityId,
-    /// Atom-table coordinate containing the declaration's name bytes.
-    pub name: AtomId,
+    /// Tagged atom coordinate containing the declaration name or anonymous anchor.
+    pub name: ItemName,
     /// Closed declaration-shape category retained in the portable core plane.
     pub kind: crate::ir::ItemKind,
     /// Finalized visibility observation; its availability is recorded separately.

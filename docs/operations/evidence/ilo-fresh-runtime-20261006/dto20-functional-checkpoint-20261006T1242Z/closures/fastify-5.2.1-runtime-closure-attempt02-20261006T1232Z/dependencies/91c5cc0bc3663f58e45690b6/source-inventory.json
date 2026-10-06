@@ -1,0 +1,30 @@
+{
+  "files": [
+    {
+      "bytes": 1114,
+      "path": "LICENSE.md",
+      "sha256": "cbf263504e800cf09f99962cce8497b76eef79c3526bca434b90c3ef4c17220d"
+    },
+    {
+      "bytes": 1735,
+      "path": "README.md",
+      "sha256": "616d5d9f9e4746e7a24ffed1e341f66cd30103462566fe528f28b9fca7018370"
+    },
+    {
+      "bytes": 1597,
+      "path": "package.json",
+      "sha256": "f60c1a0cf5710e68786a385832188c7acc717d94dba2f48f968af40b9b403199"
+    },
+    {
+      "bytes": 381,
+      "path": "src/index.js",
+      "sha256": "63c3d644a48e2e32e8f3d5aaf326db87760239b3dd6bf639a98c052ae67e2c80"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "real-require",
+    "version": "0.2.0"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

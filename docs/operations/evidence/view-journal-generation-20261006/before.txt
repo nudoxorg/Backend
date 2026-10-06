@@ -1,0 +1,18 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 3m 49s
+     Running unittests src/lib.rs (.local/build/qa/.nudox-cargo/slot-0/debug/deps/backend_local_service-89b66b0188ecc952)
+
+running 1 test
+
+thread 'builtin::view_journal::tests::capture_only_generation_rebind_cold_recovers_then_retains_compact_events' (13456076) panicked at crates/local-service/src/builtin/view_journal_tests.rs:966:10:
+new generation must survive restart
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test builtin::view_journal::tests::capture_only_generation_rebind_cold_recovers_then_retains_compact_events ... FAILED
+
+failures:
+
+failures:
+    builtin::view_journal::tests::capture_only_generation_rebind_cold_recovers_then_retains_compact_events
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1004 filtered out; finished in 0.36s
+
+error: test failed, to rerun pass `-p backend-local-service --lib`

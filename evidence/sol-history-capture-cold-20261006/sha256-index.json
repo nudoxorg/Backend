@@ -1,0 +1,306 @@
+{
+  "scope": "Historical source gates and real public embedded-owner cold lifecycle; not an installed successor image or all-language acceptance",
+  "files": [
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791271401090397000-42636.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791271401090397000-42636.json",
+      "bytes": 4566,
+      "sha256": "4be502ff8ac1be4bb9e886601e79092de0ebc80d4e26c2f02791c269b3055055"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791273171086604000-67861.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791273171086604000-67861.json",
+      "bytes": 4568,
+      "sha256": "8aaa458f26123c0cc7cfc00d16f224c447b41f1ed207209caa95ab628318a602"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791275341271242000-26700.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791275341271242000-26700.json",
+      "bytes": 4568,
+      "sha256": "db6470ef187938efd3b5849a4e931260b234907f84c2c11724634eb8ba2186b8"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791275667489332000-46268.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791275667489332000-46268.json",
+      "bytes": 4566,
+      "sha256": "885581fd9acb6c68b167790fec8c11ba9efe38e1dc67f1c9fcdbd1fc297152ca"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791276009650474000-67696.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791276009650474000-67696.json",
+      "bytes": 4566,
+      "sha256": "2b3259fa359608bd38cf1336111d1b6da46c6054da1e457ec07b0536fa90ccd9"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791276660299757000-10889.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791276660299757000-10889.json",
+      "bytes": 4566,
+      "sha256": "7e8c632b55f6e157c094e40df0eba235b8fbec3dee20cdaaf9b358be7e0d4bdb"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791276968507698000-28246.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791276968507698000-28246.json",
+      "bytes": 4568,
+      "sha256": "6d269092694d79d1a7c648be946310b931d67db57b1f40781d7ffbf820b8edb4"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791278105496790000-87161.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791278105496790000-87161.json",
+      "bytes": 4568,
+      "sha256": "6c9d99e8bff3d0fb9c7fc40f08595de8bf3e42d9788ec3fba41d764d2034599d"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791278463496799000-15779.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791278463496799000-15779.json",
+      "bytes": 4568,
+      "sha256": "2e4d0662c2359216b62ed71813f0fcbfc16215f0c5aa8af3b9d2d7ab8374c987"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791279520618070000-35433.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791279520618070000-35433.json",
+      "bytes": 4568,
+      "sha256": "2ac0eec88cb74d73499eeefc32c886b7f7ff5f609e624f30693d1a6d955fa4d3"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791280180649668000-83510.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791280180649668000-83510.json",
+      "bytes": 4566,
+      "sha256": "f97d8701d21f2304b08c82204f356d8ee470665239a0cc9c01ef120d8e4934be"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791280546098988000-1154.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791280546098988000-1154.json",
+      "bytes": 4567,
+      "sha256": "5474099317d33bc0ef9a016381dfc31f375ba7f37feb5e267a4db8535bc3fa47"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791280817507289000-7957.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791280817507289000-7957.json",
+      "bytes": 4567,
+      "sha256": "0a2db622259372e654f09203820aae581624d09644d3cc35d7d9b03845e2057a"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791281099435153000-14601.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791281099435153000-14601.json",
+      "bytes": 4568,
+      "sha256": "5a6b1c55503e946edaf523e934d0fb7adb0fbf1a75ecca09dce7154a60e400e2"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791281437315748000-29401.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791281437315748000-29401.json",
+      "bytes": 4566,
+      "sha256": "d581c76eebf4e0800c06a552f075f91e4e6fd38ed73ec3fc454fb47fd2438b8c"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791281704256238000-40725.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791281704256238000-40725.json",
+      "bytes": 4568,
+      "sha256": "87a100fe3e70b8391d2b480b00800e8e6562634aec62f648b92fe4ea76f4b5ec"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791283036525539000-32255.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791283036525539000-32255.json",
+      "bytes": 4566,
+      "sha256": "4a0ae85fce32af2ea2fc4c01841d62ddf9f2cc3bb235094229b9218c3a0d3d54"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791283589211950000-54881.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791283589211950000-54881.json",
+      "bytes": 4566,
+      "sha256": "476fd796b5d08972fe817f245c748650e2c13294412849269ccae904268bd920"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791283945105445000-69174.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791283945105445000-69174.json",
+      "bytes": 4566,
+      "sha256": "4423b6e01b1b4adabbb9fd16906236df69e3f223afd9f2b8674ee7c1c83a7c28"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791284267405248000-90471.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791284267405248000-90471.json",
+      "bytes": 4566,
+      "sha256": "208d703ceb1324d8e8e674042acf78b52096a134915991ed6f4545728d21cf57"
+    },
+    {
+      "origin": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/target/.nudox-provenance/1791284272807525000-90775.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/1791284272807525000-90775.json",
+      "bytes": 4566,
+      "sha256": "b3c29ce27036d19dbf3a0c28b79083729d46dcca81473c2b89e71bb200b6d55d"
+    },
+    {
+      "origin": "/tmp/sol-declared-members-engine-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-declared-members-engine-20261006.log",
+      "bytes": 185038,
+      "sha256": "28ab280c6e06065681de9a98099eb5d6939164885aa72dccea68cd4efe657a56"
+    },
+    {
+      "origin": "/tmp/sol-declared-members-engine-r3-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-declared-members-engine-r3-20261006.log",
+      "bytes": 194867,
+      "sha256": "39a1733d8386d619f06e84beccac0535ffe03ffa8be31b97af7d340bb0068d88"
+    },
+    {
+      "origin": "/tmp/sol-ingest-admitted-aggregate-a6fd3-20261006-disk.jsonl",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-admitted-aggregate-a6fd3-20261006-disk.jsonl",
+      "bytes": 3335,
+      "sha256": "6fd10b567d183ac4525526972c41049e66be79339e80833a57eebbef68062dac"
+    },
+    {
+      "origin": "/tmp/sol-ingest-admitted-aggregate-a6fd3-20261006-guard.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-admitted-aggregate-a6fd3-20261006-guard.json",
+      "bytes": 737,
+      "sha256": "4a8e36eb5a9e46e297c2adc56ff352a2734bc9a5ae09741992843f280572020c"
+    },
+    {
+      "origin": "/tmp/sol-ingest-admitted-aggregate-a6fd3-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-admitted-aggregate-a6fd3-20261006.log",
+      "bytes": 252676,
+      "sha256": "47c0b25437fe5c38fdbf8750e493e9bccd020ab91b165df82b96b166b4c663b1"
+    },
+    {
+      "origin": "/tmp/sol-ingest-admitted-aggregate-d67f12-20261006-disk.jsonl",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-admitted-aggregate-d67f12-20261006-disk.jsonl",
+      "bytes": 78,
+      "sha256": "7385920bedb7df77c2aba4c5ae157c0df1f09e5eccc9c0db1214e98be0e867d5"
+    },
+    {
+      "origin": "/tmp/sol-ingest-admitted-aggregate-d67f12-20261006-guard.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-admitted-aggregate-d67f12-20261006-guard.json",
+      "bytes": 735,
+      "sha256": "0df29d92d3f137f3a698dd09631e7b21ca73ab3102764537ec24b4de89a6e644"
+    },
+    {
+      "origin": "/tmp/sol-ingest-admitted-aggregate-d67f12-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-admitted-aggregate-d67f12-20261006.log",
+      "bytes": 252533,
+      "sha256": "3edb4e7ed18e0b0c17dbe016c60978ae3a105bac641a5f8bceb564b66796ba1b"
+    },
+    {
+      "origin": "/tmp/sol-ingest-admitted-capture-controls-f0cf63-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-admitted-capture-controls-f0cf63-20261006.log",
+      "bytes": 253853,
+      "sha256": "e6d89a932d368c92ee2a5ff9163a00e1578d768b22e2f6d52b5f32b318601732"
+    },
+    {
+      "origin": "/tmp/sol-ingest-admitted-capture-controls-f2f8-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-admitted-capture-controls-f2f8-20261006.log",
+      "bytes": 253116,
+      "sha256": "fa32202eec5bee0f6620e3202edd9f64d32b0ab7f247fa10e38c564b5f014f5f"
+    },
+    {
+      "origin": "/tmp/sol-ingest-cohesive-freshness-c4f743-20261006-disk.jsonl",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-cohesive-freshness-c4f743-20261006-disk.jsonl",
+      "bytes": 3013,
+      "sha256": "3ef5b6e7b04a95fa909bc7a013b86d608586940c35d780e617e517fb3bc65d2c"
+    },
+    {
+      "origin": "/tmp/sol-ingest-cohesive-freshness-c4f743-20261006-guard.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-cohesive-freshness-c4f743-20261006-guard.json",
+      "bytes": 755,
+      "sha256": "10e0d1f7bc7ed0d22878acbb2ed616294632d373b394324ec9f0ed195bb3c55b"
+    },
+    {
+      "origin": "/tmp/sol-ingest-cohesive-freshness-c4f743-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-cohesive-freshness-c4f743-20261006.log",
+      "bytes": 200963,
+      "sha256": "592626828f3e6f5efda2a5ac7b4cd6e27a29169215ffa3e7e6eeefd21d915d66"
+    },
+    {
+      "origin": "/tmp/sol-ingest-paged-cold-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-paged-cold-20261006.log",
+      "bytes": 275212,
+      "sha256": "a3fd8cf81f546c53a8bd15e22d64e55f9919d5b01980c6003fd13e406d0c7a1c"
+    },
+    {
+      "origin": "/tmp/sol-ingest-pending-view-d67f12-20261006-disk.jsonl",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-pending-view-d67f12-20261006-disk.jsonl",
+      "bytes": 3575,
+      "sha256": "21a3d3d828d14ce437256720a393b93b07735e50af34d37699ca440c63663882"
+    },
+    {
+      "origin": "/tmp/sol-ingest-pending-view-d67f12-20261006-guard.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-pending-view-d67f12-20261006-guard.json",
+      "bytes": 761,
+      "sha256": "7db8770481ba4530e072eccae9fd496ed2d9b5bb10c304c4e43a525b7e9aa90c"
+    },
+    {
+      "origin": "/tmp/sol-ingest-pending-view-d67f12-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-pending-view-d67f12-20261006.log",
+      "bytes": 252632,
+      "sha256": "977b7bcabdc93a44a1380993c1899ed9c0b75153a1b944fd8f5712e6ede4d89a"
+    },
+    {
+      "origin": "/tmp/sol-ingest-public-cold-lifecycle-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-public-cold-lifecycle-20261006.log",
+      "bytes": 196865,
+      "sha256": "caaad1f5cad0e5b3b3b2f0cf90ee08b977d32fb2a71ced8e1cc2b7d6454fc07d"
+    },
+    {
+      "origin": "/tmp/sol-ingest-public-cold-lifecycle-capture-f2f8-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-public-cold-lifecycle-capture-f2f8-20261006.log",
+      "bytes": 197960,
+      "sha256": "554d051b1fe13f0308dd65094756f3ca8209ea25fdfe3f8b29d694dd88f51a66"
+    },
+    {
+      "origin": "/tmp/sol-ingest-public-cold-lifecycle-capture-f2f8-r2-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-public-cold-lifecycle-capture-f2f8-r2-20261006.log",
+      "bytes": 197817,
+      "sha256": "ad9d7ac5e9cd925254aaedb453553980b5bd697268ebe4177effc4d8256bef30"
+    },
+    {
+      "origin": "/tmp/sol-ingest-public-cold-lifecycle-capture-reconnect-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-public-cold-lifecycle-capture-reconnect-20261006.log",
+      "bytes": 199907,
+      "sha256": "a18dbd337e016ae5beb42aaf2d869b215ccaa540626951b36851ac5546622cfa"
+    },
+    {
+      "origin": "/tmp/sol-ingest-public-cold-lifecycle-cohesive-ad108-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-public-cold-lifecycle-cohesive-ad108-20261006.log",
+      "bytes": 199123,
+      "sha256": "3acc77ec672a6ead8e728381ed7e5246e8ffd6695efbdc2e5ac54c3b5e437deb"
+    },
+    {
+      "origin": "/tmp/sol-ingest-public-cold-lifecycle-config-8b144-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-public-cold-lifecycle-config-8b144-20261006.log",
+      "bytes": 199907,
+      "sha256": "54f060ba3c3406504e14e76095936b56ef5de7e7dcdd3c0688c98bc66764d4a4"
+    },
+    {
+      "origin": "/tmp/sol-ingest-public-cold-lifecycle-members-821d-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-public-cold-lifecycle-members-821d-20261006.log",
+      "bytes": 200899,
+      "sha256": "3dc946df6f40978a20c496f0f05d9e7d9f11645e9ea9616632537e5a26a48ecb"
+    },
+    {
+      "origin": "/tmp/sol-ingest-public-cold-lifecycle-refusal-1f452-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-public-cold-lifecycle-refusal-1f452-20261006.log",
+      "bytes": 198448,
+      "sha256": "9cf5a5bcf474eb63303eebb6ab6350d268829941f97ed15d6917f493cc0999ce"
+    },
+    {
+      "origin": "/tmp/sol-ingest-public-final-d67f12-20261006-disk.jsonl",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-public-final-d67f12-20261006-disk.jsonl",
+      "bytes": 3732,
+      "sha256": "051ca304913f14501849a060ddd7c9e7752442a011f40d14eede5a8696488dda"
+    },
+    {
+      "origin": "/tmp/sol-ingest-public-final-d67f12-20261006-guard.json",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-public-final-d67f12-20261006-guard.json",
+      "bytes": 749,
+      "sha256": "c14383a721c16b42346d2a72bb10a7a97bbe7838300526d0ae51a322efbc93ec"
+    },
+    {
+      "origin": "/tmp/sol-ingest-public-final-d67f12-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-ingest-public-final-d67f12-20261006.log",
+      "bytes": 200960,
+      "sha256": "4030093828b20743473d1dee85ba7b3e3fb430c0724c7963a8d12e8af2da2f4f"
+    },
+    {
+      "origin": "/tmp/sol-unproven-config-freshness-20261006.log",
+      "saved": "evidence/sol-history-capture-cold-20261006/sol-unproven-config-freshness-20261006.log",
+      "bytes": 253619,
+      "sha256": "2483db1021e9907eabc509b32ff7ba6788bd5eedad021c7ecb68bddd392b574a"
+    }
+  ],
+  "referenced_files_not_available": []
+}

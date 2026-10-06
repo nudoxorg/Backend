@@ -1,0 +1,127 @@
+{
+  "schema": "nudox.shared-observer-stratified-source-preflight.v1",
+  "observer_path": "/root/nudox-corpus-20261006/artifacts/report7/observer-163f022c2/run-real-workspace-index-acceptance.py",
+  "observer_sha256": "491f4ab662812bb98a2c29af31382c34e9b7ab189645b56f408aad63070250f2",
+  "dossier_summary_sha256": "ac5c55b94d5fed7d3482cd6428052ad632c2e81d780707f74220ad1836141093",
+  "cases": [
+    {
+      "dossier": "/root/nudox-corpus-20261006/artifacts/stratified-pure-python-dossiers-20261006T1204Z/pypi-blinker/dossier.json",
+      "dossier_sha256": "71aaa27054d3853d74a808b20fb3192044ebe4c99c8bf316b5c530d820026504",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "pypi",
+          "id": "blinker",
+          "version": "1.9.0"
+        },
+        "target_package": {
+          "ecosystem": "pypi",
+          "id": "blinker",
+          "version": "1.9.0"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "43c97edb51a9791a0f558bc9e18efc5f40d081cd59b56b9d0141790fa8df5c1e",
+        "acquired_inventory_sha256": "39d70e5a04a69e6ee13b832b12f58328af8d2820be136d099dcd2f5b22f472c7",
+        "target_subdir": ".",
+        "target_root_identity_sha256": "f2c3a1bf2da10cb4755e0050297b7cb65f4d668747b7da9b98f23c730252fa37",
+        "corpus_manifest_sha256": "ac5c55b94d5fed7d3482cd6428052ad632c2e81d780707f74220ad1836141093",
+        "declared": {
+          "ecosystem": "pypi",
+          "id": "blinker",
+          "version": "1.9.0",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "43c97edb51a9791a0f558bc9e18efc5f40d081cd59b56b9d0141790fa8df5c1e"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "62983e48a3c28402a76bcf7c881a6587a0d3c57a09bbd0a175f3de8162e3cc08",
+          "archive_sha256": "b4ce2265a7abece45e7cc896e98dbebe6cead56bcf805a3d23136d145f5445bf",
+          "archive_membership_sha256": "43c97edb51a9791a0f558bc9e18efc5f40d081cd59b56b9d0141790fa8df5c1e",
+          "receipt_sha256": "65ac07d5eb868fa50645d9c13dac8b3f8eba0039b5ae06fb266df2df4d8e0182",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      }
+    },
+    {
+      "dossier": "/root/nudox-corpus-20261006/artifacts/stratified-pure-python-dossiers-20261006T1204Z/pypi-itsdangerous/dossier.json",
+      "dossier_sha256": "ddc2ac69084ae133feadb58e00839ef952051719648192dbe317698c91d1c4fd",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "pypi",
+          "id": "itsdangerous",
+          "version": "2.2.0"
+        },
+        "target_package": {
+          "ecosystem": "pypi",
+          "id": "itsdangerous",
+          "version": "2.2.0"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "32c4e8712ee1cf9aeb471b3c18d84c63499af4b03c6b7b00ce2e86fe1d807e84",
+        "acquired_inventory_sha256": "da380c6e97f3537f7828867a594a3ebf3d85d824f2ff38925e62446db89b1743",
+        "target_subdir": ".",
+        "target_root_identity_sha256": "1b8426baa1f3c0d115878d3d8270a53169d65303ff1242d4e6a4f327ea3ec143",
+        "corpus_manifest_sha256": "ac5c55b94d5fed7d3482cd6428052ad632c2e81d780707f74220ad1836141093",
+        "declared": {
+          "ecosystem": "pypi",
+          "id": "itsdangerous",
+          "version": "2.2.0",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "32c4e8712ee1cf9aeb471b3c18d84c63499af4b03c6b7b00ce2e86fe1d807e84"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "ded24c79f1c64c9d01948931f45efe6fce2cef68ca075cd9299f5893602ad16c",
+          "archive_sha256": "e0050c0b7da1eea53ffaf149c0cfbb5c6e2e2b69c4bef22c81fa6eb73e5f6173",
+          "archive_membership_sha256": "32c4e8712ee1cf9aeb471b3c18d84c63499af4b03c6b7b00ce2e86fe1d807e84",
+          "receipt_sha256": "755c291ac3a355c2a04f56ec083d79502555f1f9ac649a55b9595c03cbdc079c",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      }
+    },
+    {
+      "dossier": "/root/nudox-corpus-20261006/artifacts/stratified-pure-python-dossiers-20261006T1204Z/pypi-packaging/dossier.json",
+      "dossier_sha256": "fdc9be37f55cd5173b7e8d8203342446452acf18ed3a9c794b0166d5e0926f1f",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "pypi",
+          "id": "packaging",
+          "version": "26.3"
+        },
+        "target_package": {
+          "ecosystem": "pypi",
+          "id": "packaging",
+          "version": "26.3"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "3eeed86415c4bf318b1926e68f9e0ae037403ddfca3f28c62eedccd4bd4b6eac",
+        "acquired_inventory_sha256": "78169fadd8e0d92dd71dbf6f612b3801f1838b284da4af0205a39c25a96e7821",
+        "target_subdir": ".",
+        "target_root_identity_sha256": "7d331c2aa2eee1431744d4c3cb3797776d02d42341fd4d3d5e7188839438bbad",
+        "corpus_manifest_sha256": "ac5c55b94d5fed7d3482cd6428052ad632c2e81d780707f74220ad1836141093",
+        "declared": {
+          "ecosystem": "pypi",
+          "id": "packaging",
+          "version": "26.3",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "3eeed86415c4bf318b1926e68f9e0ae037403ddfca3f28c62eedccd4bd4b6eac"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "9d7a2885e9e79296598f8c943e0a94c2468e21c800abd26ed13c633465a78835",
+          "archive_sha256": "94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79",
+          "archive_membership_sha256": "3eeed86415c4bf318b1926e68f9e0ae037403ddfca3f28c62eedccd4bd4b6eac",
+          "receipt_sha256": "c0cb7f9767a15f41415408a85e5261aacb678b347afb457cb578353ec346cc52",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      }
+    }
+  ],
+  "package_code_executed": false,
+  "runtime_passes": 0
+}

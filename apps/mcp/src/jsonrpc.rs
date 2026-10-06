@@ -169,7 +169,11 @@ impl Product for SessionProduct {
         &mut self,
         continuation: PageContinuation,
     ) -> Result<String, ClientError> {
-        Ok(self.0.encode_page_continuation(continuation))
+        if self.0.has_portable_query_continuation(continuation) {
+            self.0.encode_query_continuation(continuation)
+        } else {
+            Ok(self.0.encode_page_continuation(continuation))
+        }
     }
 
     fn decode_continuation(&mut self, token: &str) -> Result<PageContinuation, ClientError> {
@@ -478,8 +482,16 @@ impl<P: Product> Server<P> {
     fn instructions(&self) -> String {
         let project = bounded_text(&self.project);
         let directory = self.working_directory.as_deref().map(bounded_text);
-        let mut instructions = String::with_capacity(INSTRUCTIONS.len() + project.len() + 160);
+        let mut instructions = String::with_capacity(INSTRUCTIONS.len() + project.len() + 400);
         instructions.push_str(INSTRUCTIONS);
+        instructions.push_str(
+            "\n\nQuick start: `nudox add .`, then `nudox search \"error handling\"`. \
+             Register this stdio server in Claude Code with `claude mcp add --scope user \
+             --transport stdio nudox -- \"$(command -v backend-mcp)\" --project \
+             '${CLAUDE_PROJECT_DIR:-.}'`, then verify with \
+             `claude mcp get nudox`. Use `backend.package` for one pinned registry package and \
+             `backend.index_search` for a name-first registry lookup.",
+        );
         instructions.push_str("\n\nMCP workspace selection:\n- selected project: ");
         instructions.push_str(&project);
         instructions.push_str(
@@ -564,6 +576,11 @@ impl<P: Product> Server<P> {
             Some(Value::Object(arguments)) => arguments,
             Some(_) => return Err(RpcError::invalid("arguments must be an object")),
         };
+        // The MCP schema requires an explicit path even though the shared CLI
+        // grammar permits its project default. Admit it before any owner call.
+        if name == "backend.index" {
+            string(arguments, "path")?;
+        }
         let detail = response_detail(name, arguments)?;
         if name == SURFACE_TOOL {
             let mut surface_arguments = arguments.clone();
@@ -681,7 +698,12 @@ impl<P: Product> Server<P> {
         let reply = self
             .product
             .graph_page(coordinate.clone(), limit(arguments)?, continuation)
-            .map_err(|error| RpcError::tool(error.to_string()))?;
+            .map_err(|error| {
+                RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    backend_present::Operand::Text(coordinate.clone()),
+                ))
+            })?;
         let backend_library::CommandReply::ProjectionPage(page) = reply.reply else {
             return Err(RpcError::tool("graph page reply changed shape"));
         };
@@ -717,9 +739,10 @@ impl<P: Product> Server<P> {
         command
             .admit()
             .map_err(|error| RpcError::invalid(format!("command: {error}")))?;
+        let operand = surface_error_operand(&command);
         let reply = self.product.surface(command).map_err(|error| match error {
             ClientError::StaleCursor => RpcError::stale_cursor(),
-            other => RpcError::tool(other.to_string()),
+            other => RpcError::from_fault(&Fault::from_client_error(&other, operand)),
         })?;
         self.surface_reply_result(&reply, detail, context)
     }
@@ -774,10 +797,11 @@ impl<P: Product> Server<P> {
         command
             .admit()
             .map_err(|error| RpcError::invalid(format!("command: {error}")))?;
+        let operand = surface_error_operand(&command);
         let reply = self
             .product
             .surface(command)
-            .map_err(|error| RpcError::tool(error.to_string()))?;
+            .map_err(|error| RpcError::from_fault(&Fault::from_client_error(&error, operand)))?;
         self.surface_reply_result(&reply, detail, context)
     }
 
@@ -833,8 +857,12 @@ impl<P: Product> Server<P> {
             .and_then(|arguments| arguments.get("query"))
             .and_then(Value::as_str)
             .map_or_else(|| "the relevant implementation".to_owned(), bounded_text);
-        let view = Engine::revision(&mut self.product)
-            .map_err(|error| RpcError::tool(error.to_string()))?;
+        let view = Engine::revision(&mut self.product).map_err(|error| {
+            RpcError::from_fault(&Fault::from_client_error(
+                &error,
+                backend_present::Operand::Text(self.project.clone()),
+            ))
+        })?;
         Ok(json!({
             "description": "Explore the current immutable code index.",
             "messages": [{
@@ -927,7 +955,12 @@ impl<P: Product> Server<P> {
             ContinuationCursor::Page(continuation) => self
                 .product
                 .encode_continuation(continuation)
-                .map_err(|error| RpcError::tool(error.to_string()))?,
+                .map_err(|error| {
+                    RpcError::from_fault(&Fault::from_client_error(
+                        &error,
+                        backend_present::Operand::Text(self.project.clone()),
+                    ))
+                })?,
             ContinuationCursor::IndexSearch(cursor) => cursor.as_str().to_owned(),
         };
         Ok(self.sign_cursor_token(&owner_token, context))
@@ -1535,6 +1568,21 @@ fn index_job_ticket(arguments: &Map<String, Value>) -> Result<IndexJobTicket, Rp
         .cloned()
         .ok_or_else(|| RpcError::invalid("ticket must be the exact owner-issued ticket object"))?;
     serde_json::from_value(encoded).map_err(|error| RpcError::invalid(format!("ticket: {error}")))
+}
+
+fn surface_error_operand(command: &SurfaceCommand) -> backend_present::Operand {
+    let package = match command {
+        SurfaceCommand::IndexStart { package, .. } => Some(package),
+        SurfaceCommand::IndexProgress { ticket, .. }
+        | SurfaceCommand::IndexCancel { ticket }
+        | SurfaceCommand::IndexAwait { ticket } => Some(ticket.package()),
+        _ => None,
+    };
+    backend_present::Operand::Text(
+        package
+            .map_or(SURFACE_TOOL, PackageReference::as_str)
+            .to_owned(),
+    )
 }
 
 /// Returns the smallest projection that fulfils a tool's advertised promise.

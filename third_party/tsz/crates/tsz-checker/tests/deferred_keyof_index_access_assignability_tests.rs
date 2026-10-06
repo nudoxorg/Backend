@@ -1,0 +1,689 @@
+//! Tests for assignability into deferred `O[K]` indexed-access targets where
+//! `K` is a generic type parameter constrained by `keyof O`.
+//!
+//! Structural rule: a concrete source is assignable to `O[K]` (with K deferred)
+//! iff it is assignable, by the same compatibility rules used elsewhere
+//! (TS2322 / TS2741), to *every* value type of `O`. The fast-path check used
+//! to route through the strict subtype relation, which rejected cases the
+//! Lawyer (`CompatChecker`) would accept — most importantly, `{}` against an
+//! object type with all-optional properties.
+//!
+//! Mirrors the line-5 false-positive shape from
+//! `errorInfoForRelatedIndexTypesNoConstraintElaboration.ts` without relying
+//! on the full JSX/react16 corpus.
+
+use tsz_checker::test_utils::check_source_diagnostics;
+
+fn count(diags: &[tsz_checker::diagnostics::Diagnostic], code: u32) -> usize {
+    diags.iter().filter(|d| d.code == code).count()
+}
+
+/// `{}` assigned into `O[K]` (K deferred, O has a single all-optional generic
+/// value type) must NOT emit TS2322.
+#[test]
+fn empty_object_assignable_to_deferred_indexed_optional_props() {
+    let source = r#"
+interface BaseProps<T> { id?: string; }
+interface Things {
+    a: BaseProps<number>;
+}
+class Holder<K extends keyof Things> {
+    M() {
+        let c1: Things[K] = {};
+    }
+}
+"#;
+    let diags = check_source_diagnostics(source);
+    assert_eq!(
+        count(&diags, 2322),
+        0,
+        "{{}} → Things[K] with all-optional value props must not emit TS2322; got: {:?}",
+        diags
+            .iter()
+            .map(|d| (d.code, d.message_text.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(count(&diags, 2741), 0, "and no TS2741 either");
+}
+
+/// Same rule with a different bound-parameter name (anti-hardcoding directive
+/// §25): the fix must not key on the literal `K`.
+#[test]
+fn empty_object_assignable_to_deferred_indexed_optional_props_alt_name() {
+    let source = r#"
+interface BaseProps<T> { id?: string; }
+interface Things {
+    a: BaseProps<number>;
+}
+class Holder<TagName extends keyof Things> {
+    M() {
+        let c1: Things[TagName] = {};
+    }
+}
+"#;
+    let diags = check_source_diagnostics(source);
+    assert_eq!(
+        count(&diags, 2322),
+        0,
+        "{{}} → Things[TagName] must not emit TS2322; got: {:?}",
+        diags
+            .iter()
+            .map(|d| (d.code, d.message_text.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(count(&diags, 2741), 0);
+}
+
+/// Sibling positive: when value types have a *required* property, `{}` IS
+/// rejected. tsc emits TS2322 on `let x: O[K] = {}`. tsz emits either TS2322
+/// or TS2741 (missing required property), both are correct.
+#[test]
+fn empty_object_rejected_against_deferred_indexed_required_props() {
+    let source = r#"
+interface BaseProps<T> { id: T; }
+interface Things {
+    a: BaseProps<number>;
+}
+class Holder<K extends keyof Things> {
+    M() {
+        let c1: Things[K] = {};
+    }
+}
+"#;
+    let diags = check_source_diagnostics(source);
+    let assignability_errors = count(&diags, 2322) + count(&diags, 2741);
+    assert!(
+        assignability_errors >= 1,
+        "{{}} → Things[K] with required value prop must emit an assignability error; got: {:?}",
+        diags
+            .iter()
+            .map(|d| (d.code, d.message_text.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Sibling positive (alt name) — same anti-hardcoding pairing.
+#[test]
+fn empty_object_rejected_against_deferred_indexed_required_props_alt_name() {
+    let source = r#"
+interface BaseProps<T> { id: T; }
+interface Things {
+    a: BaseProps<number>;
+}
+class Holder<TagName extends keyof Things> {
+    M() {
+        let c1: Things[TagName] = {};
+    }
+}
+"#;
+    let diags = check_source_diagnostics(source);
+    let assignability_errors = count(&diags, 2322) + count(&diags, 2741);
+    assert!(
+        assignability_errors >= 1,
+        "{{}} → Things[TagName] with required value prop must emit an assignability error"
+    );
+}
+
+/// Multi-element shape: when only ONE value type has a required prop,
+/// the rule still rejects (since K could pick that key). Two name choices
+/// covered to keep the fix structural.
+#[test]
+fn multi_element_one_required_rejects_empty_object_two_names() {
+    for tparam in ["K", "Tag"] {
+        let source = format!(
+            r#"
+interface OptProps {{ id?: string; }}
+interface ReqProps {{ id: string; }}
+interface Things {{
+    a: OptProps;
+    b: ReqProps;
+}}
+class Holder<{tparam} extends keyof Things> {{
+    M() {{
+        let c1: Things[{tparam}] = {{}};
+    }}
+}}
+"#
+        );
+        let diags = check_source_diagnostics(&source);
+        let assignability_errors = count(&diags, 2322) + count(&diags, 2741);
+        assert!(
+            assignability_errors >= 1,
+            "Things[{tparam}] with one required-prop value must reject {{}}; got: {:?}",
+            diags
+                .iter()
+                .map(|d| (d.code, d.message_text.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Negative companion: when ALL value types have only optional properties,
+/// no assignability error fires regardless of how many elements the indexer
+/// can hit.
+#[test]
+fn multi_element_all_optional_accepts_empty_object_two_names() {
+    for tparam in ["K", "Tag"] {
+        let source = format!(
+            r#"
+interface OptA {{ id?: string; }}
+interface OptB {{ name?: number; }}
+interface Things {{
+    a: OptA;
+    b: OptB;
+}}
+class Holder<{tparam} extends keyof Things> {{
+    M() {{
+        let c1: Things[{tparam}] = {{}};
+    }}
+}}
+"#
+        );
+        let diags = check_source_diagnostics(&source);
+        let assignability_errors = count(&diags, 2322) + count(&diags, 2741);
+        assert_eq!(
+            assignability_errors,
+            0,
+            "Things[{tparam}] with all-optional value props must accept {{}}; got: {:?}",
+            diags
+                .iter()
+                .map(|d| (d.code, d.message_text.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// For a union-valued candidate, `{}` is assignable if any union member accepts
+/// it. The fast path must mirror that rule and reject only when all members
+/// reject the empty object.
+#[test]
+fn union_value_candidate_accepts_empty_object_when_one_member_accepts_two_names() {
+    for tparam in ["K", "Tag"] {
+        let source = format!(
+            r#"
+interface OptionalProps {{ id?: string; }}
+interface RequiredProps {{ id: string; }}
+interface Things {{
+    a: OptionalProps | RequiredProps;
+}}
+class Holder<{tparam} extends keyof Things> {{
+    M() {{
+        let c1: Things[{tparam}] = {{}};
+    }}
+}}
+"#
+        );
+        let diags = check_source_diagnostics(&source);
+        let assignability_errors = count(&diags, 2322) + count(&diags, 2741);
+        assert_eq!(
+            assignability_errors,
+            0,
+            "Things[{tparam}] with a union value accepting {{}} through one member must not emit an assignability error; got: {:?}",
+            diags
+                .iter()
+                .map(|d| (d.code, d.message_text.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// JSX-like fixture: when `O[K]` values are type-alias applications
+/// (`DetailedHTMLProps<HTMLAttributes<T>, T>` style) whose expanded shapes
+/// have only optional properties, `{}` must remain assignable. The fast
+/// path must evaluate the application — without that step it sees an
+/// opaque generic and conservatively bails to the slow per-candidate
+/// relation, which is the path that produces the false positive on the
+/// `errorInfoForRelatedIndexTypesNoConstraintElaboration` corpus.
+#[test]
+fn type_alias_application_value_candidates_accept_empty_object_two_names() {
+    for tparam in ["K", "TagName"] {
+        let source = format!(
+            r#"
+interface DOMAttributes<T> {{ onClick?: () => void; }}
+interface HTMLAttributes<T> extends DOMAttributes<T> {{ id?: string; }}
+interface AnchorHTMLAttributes<T> extends HTMLAttributes<T> {{ href?: string; }}
+interface ClassAttributes<T> {{ ref?: T; }}
+type DetailedHTMLProps<E extends HTMLAttributes<T>, T> = ClassAttributes<T> & E;
+
+interface Anchor {{}}
+interface Div {{}}
+
+interface Things {{
+    a: DetailedHTMLProps<AnchorHTMLAttributes<Anchor>, Anchor>;
+    div: DetailedHTMLProps<HTMLAttributes<Div>, Div>;
+}}
+
+class Holder<{tparam} extends keyof Things> {{
+    M() {{
+        let c1: Things[{tparam}] = {{}};
+    }}
+}}
+"#
+        );
+        let diags = check_source_diagnostics(&source);
+        let assignability_errors = count(&diags, 2322) + count(&diags, 2741);
+        assert_eq!(
+            assignability_errors,
+            0,
+            "Things[{tparam}] with type-alias-application value props (all optional) must accept {{}}; got: {:?}",
+            diags
+                .iter()
+                .map(|d| (d.code, d.message_text.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// The accept-empty-object fast path must not over-accept: distinct keys
+/// against type-alias-application values must still reject the cross-key
+/// assignment with TS2322. Two name pairs guarantee the rule lives in the
+/// structural relation, not in the spelling.
+#[test]
+fn type_alias_application_value_candidates_reject_distinct_keys_two_names() {
+    for (p1, p2) in [("T1", "T2"), ("Key1", "Key2")] {
+        let source = format!(
+            r#"
+interface DOMAttributes<T> {{ onClick?: () => void; }}
+interface HTMLAttributes<T> extends DOMAttributes<T> {{ id?: string; }}
+interface AnchorHTMLAttributes<T> extends HTMLAttributes<T> {{ href?: string; }}
+interface ClassAttributes<T> {{ ref?: T; }}
+type DetailedHTMLProps<E extends HTMLAttributes<T>, T> = ClassAttributes<T> & E;
+
+interface Anchor {{}}
+interface Div {{}}
+
+interface Things {{
+    a: DetailedHTMLProps<AnchorHTMLAttributes<Anchor>, Anchor>;
+    div: DetailedHTMLProps<HTMLAttributes<Div>, Div>;
+}}
+
+class Holder<{p1} extends keyof Things, {p2} extends keyof Things> {{
+    M() {{
+        let c1: Things[{p1}] = {{}} as Things[{p1}];
+        const c2: Things[{p2}] = c1;
+    }}
+}}
+"#
+        );
+        let diags = check_source_diagnostics(&source);
+        assert!(
+            count(&diags, 2322) >= 1,
+            "Things[{p1}] -> Things[{p2}] (alias-app values) must emit TS2322; got: {:?}",
+            diags
+                .iter()
+                .map(|d| (d.code, d.message_text.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Large-object stress check that mirrors the `JSX.IntrinsicElements` shape
+/// from `errorInfoForRelatedIndexTypesNoConstraintElaboration.ts` without
+/// pulling in the react16/lib.dom corpus.
+///
+/// Before the fix, `O[T]` where T is a generic type parameter constrained by
+/// `keyof O` would eagerly evaluate to the per-key value-type union of O. For
+/// large interfaces with complex generic value types, that expansion is
+/// quadratic in `|keyof O|` and erases the per-call-site type-parameter
+/// identity needed for the TS2322 + TS5075 elaboration. The fix defers the
+/// evaluation, matching tsc's `getIndexedAccessType` behavior on generic
+/// indexes. Without the fix this test ran for >120 seconds; with it, the same
+/// shape completes in milliseconds.
+#[test]
+fn large_object_with_generic_value_types_does_not_blow_up_indexed_access_relation() {
+    use std::time::Instant;
+
+    // Build a `Things` interface with 80 keys, each mapped to an alias
+    // application that itself expands to an intersection of generic
+    // interfaces — the same overall shape `DetailedHTMLProps<HTMLAttributes<T>, T>`
+    // takes in react16's JSX.IntrinsicElements. The body is sized so the
+    // pre-fix quadratic path would take seconds even at -O3; with the fix it
+    // resolves in well under a second because `Things[T1]` and `Things[T2]`
+    // stay deferred and the pre-evaluation key-identity rejection fires.
+    let mut things_body = String::new();
+    for i in 0..80 {
+        things_body.push_str(&format!("    k{i}: Detailed<Att{}<E{i}>, E{i}>;\n", i % 20));
+    }
+    let mut elements_body = String::new();
+    for i in 0..80 {
+        elements_body.push_str(&format!("interface E{i} {{}}\n"));
+    }
+    let mut refinements_body = String::new();
+    for j in 0..20 {
+        let mut props = String::new();
+        for k in 0..25 {
+            props.push_str(&format!("    refined{j}_{k}?: string;\n"));
+        }
+        refinements_body.push_str(&format!(
+            "interface Att{j}<T> extends Base<T> {{\n{props}}}\n"
+        ));
+    }
+    let mut base_props = String::new();
+    for k in 0..40 {
+        base_props.push_str(&format!("    base{k}?: string;\n"));
+    }
+    let source = format!(
+        r#"
+interface DomAttr<T> {{ onSomething?: (e: T) => void; }}
+interface Base<T> extends DomAttr<T> {{
+{base_props}}}
+interface ClassAttr<T> {{ ref?: T; }}
+type Detailed<E extends Base<T>, T> = ClassAttr<T> & E;
+
+{refinements_body}{elements_body}interface Things {{
+{things_body}}}
+
+class Holder<T1 extends keyof Things, T2 extends keyof Things> {{
+    M() {{
+        let c1: Things[T1] = {{}};
+        const c2: Things[T2] = c1;
+    }}
+}}
+"#
+    );
+
+    let start = Instant::now();
+    let diags = check_source_diagnostics(&source);
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed.as_secs() < 10,
+        "Things[T1] -> Things[T2] with a JSX.IntrinsicElements-scale shape must complete \
+         in well under the 90s conformance timeout; actual = {elapsed:?}"
+    );
+
+    assert!(
+        diags.iter().any(|d| {
+            d.code == 2322
+                && d.message_text
+                    .contains("Type 'Things[T1]' is not assignable to type 'Things[T2]'.")
+        }),
+        "Expected TS2322 with the canonical IndexAccess type-parameter mismatch message; got: {:?}",
+        diags
+            .iter()
+            .map(|d| (d.code, d.message_text.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Renaming the bound type parameters must not change the rule (anti-hardcoding
+/// directive §25): the structural rule is "for `O[A] -> O[B]` with A != B both
+/// generic type parameters constrained by `keyof O`, emit TS2322 with the
+/// stable elaboration." A name-bound fix would silently regress when callers
+/// pick a different spelling. Uses 80 keys — above the large-object deferral
+/// threshold — so the deferral path is exercised across name choices.
+#[test]
+fn large_object_with_generic_value_types_two_names() {
+    for (p1, p2) in [("T1", "T2"), ("Key1", "Key2"), ("Alpha", "Beta")] {
+        let mut things_body = String::new();
+        for i in 0..80 {
+            things_body.push_str(&format!("    k{i}: Detailed<Base<E{i}>, E{i}>;\n"));
+        }
+        let mut elements_body = String::new();
+        for i in 0..80 {
+            elements_body.push_str(&format!("interface E{i} {{}}\n"));
+        }
+        let source = format!(
+            r#"
+interface Base<T> {{ id?: string; ref?: T; }}
+interface ClassAttr<T> {{ refClass?: T; }}
+type Detailed<E extends Base<T>, T> = ClassAttr<T> & E;
+
+{elements_body}interface Things {{
+{things_body}}}
+
+class Holder<{p1} extends keyof Things, {p2} extends keyof Things> {{
+    M() {{
+        let c1: Things[{p1}] = {{}};
+        const c2: Things[{p2}] = c1;
+    }}
+}}
+"#
+        );
+
+        let diags = check_source_diagnostics(&source);
+        assert!(
+            diags.iter().any(|d| {
+                d.code == 2322
+                    && d.message_text.contains(&format!(
+                        "Type 'Things[{p1}]' is not assignable to type 'Things[{p2}]'."
+                    ))
+            }),
+            "Renamed type parameters {p1}/{p2}: missing TS2322 with structural elaboration"
+        );
+    }
+}
+
+/// Negative companion: same shape but the source and target use the *same*
+/// type-parameter identity — `Things[T] -> Things[T]` is identity, must not
+/// emit TS2322 regardless of how many keys `Things` has. Sized above the
+/// large-object deferral threshold to verify the deferral does not reject
+/// the identity case.
+#[test]
+fn large_object_same_key_param_identity_accepts() {
+    let mut things_body = String::new();
+    for i in 0..80 {
+        things_body.push_str(&format!("    k{i}: {{ id?: string }};\n"));
+    }
+    let source = format!(
+        r#"
+interface Things {{
+{things_body}}}
+
+class Holder<K extends keyof Things> {{
+    M(arg: Things[K]) {{
+        const c2: Things[K] = arg;
+    }}
+}}
+"#
+    );
+    let diags = check_source_diagnostics(&source);
+    assert_eq!(
+        count(&diags, 2322),
+        0,
+        "Things[K] -> Things[K] (identity) must not emit TS2322; got: {:?}",
+        diags
+            .iter()
+            .map(|d| (d.code, d.message_text.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Negative companion: `{} -> Things[K]` must still detect rejection when at
+/// least one key's value type has a required property, even at large scale.
+/// The fix targets evaluation deferral, not the rejection rule itself.
+/// Sized above the large-object deferral threshold.
+#[test]
+fn large_object_with_required_member_still_rejects_empty_object() {
+    let mut things_body = String::new();
+    for i in 0..79 {
+        things_body.push_str(&format!("    k{i}: {{ a?: string }};\n"));
+    }
+    // One key with a REQUIRED prop; the rule must still fire.
+    things_body.push_str("    kReq: { required: string };\n");
+
+    let source = format!(
+        r#"
+interface Things {{
+{things_body}}}
+
+class Holder<K extends keyof Things> {{
+    M() {{
+        let c1: Things[K] = {{}};
+    }}
+}}
+"#
+    );
+    let diags = check_source_diagnostics(&source);
+    let assignability_errors = count(&diags, 2322) + count(&diags, 2741);
+    assert!(
+        assignability_errors >= 1,
+        "Even with 80 keys, the one required-prop value must reject {{}}; got: {:?}",
+        diags
+            .iter()
+            .map(|d| (d.code, d.message_text.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Coverage for the second deferral site: `visit_object_with_index` (object
+/// types that carry an index signature `[k: string]: V` alongside named
+/// properties). Without the gating, `Things[T]` for a 100-key object with a
+/// string-index signature would still expand the per-key value-type union.
+/// With the gating, `Things[T1]` and `Things[T2]` stay deferred and the
+/// pre-evaluation key-identity rejection emits TS2322 directly.
+#[test]
+fn large_object_with_index_signature_distinct_keys_still_reject() {
+    let mut things_body = String::new();
+    for i in 0..80 {
+        things_body.push_str(&format!("    k{i}: {{ tag: 'k{i}'; value?: string }};\n"));
+    }
+    let source = format!(
+        r#"
+interface Things {{
+    [arbitrary: string]: {{ tag: string; value?: string }};
+{things_body}}}
+
+class Holder<T1 extends keyof Things, T2 extends keyof Things> {{
+    M() {{
+        const c1: Things[T1] = (null as any) as Things[T1];
+        const c2: Things[T2] = c1;
+    }}
+}}
+"#
+    );
+    let diags = check_source_diagnostics(&source);
+    assert!(
+        diags.iter().any(|d| {
+            d.code == 2322
+                && d.message_text
+                    .contains("Type 'Things[T1]' is not assignable to type 'Things[T2]'.")
+        }),
+        "object-with-index Things[T1] -> Things[T2] must emit TS2322; got: {:?}",
+        diags
+            .iter()
+            .map(|d| (d.code, d.message_text.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn distinct_key_params_reject_assignment_between_deferred_indexed_accesses() {
+    let source = r#"
+interface OptA { id?: string; }
+interface OptB { name?: number; }
+interface Things {
+    a: OptA;
+    b: OptB;
+}
+class Holder<K1 extends keyof Things, K2 extends keyof Things> {
+    M() {
+        let c1: Things[K1] = {};
+        const c2: Things[K2] = c1;
+    }
+}
+"#;
+    let diags = check_source_diagnostics(source);
+    assert!(
+        diags.iter().any(|d| {
+            d.code == 2322
+                && d.message_text
+                    .contains("Type 'Things[K1]' is not assignable to type 'Things[K2]'.")
+        }),
+        "Things[K1] assigned to independent Things[K2] must emit TS2322; got: {:?}",
+        diags
+            .iter()
+            .map(|d| (d.code, d.message_text.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #12450 — index parameter whose constraint is UNAVAILABLE at the
+// indexed-access relation site.
+//
+// `errorInfoForRelatedIndexTypesNoConstraintElaboration.ts` assigns `{}` to
+// `JSX.IntrinsicElements[T1]` (T1 bound by `keyof JSX.IntrinsicElements`).
+// tsc accepts it — every intrinsic element's prop type is all-optional, so
+// `{}` is assignable for any `T1`. tsz emitted a false TS2322 because the
+// indexed-access subtype fallback (`check_generic_index_access_subtype`) bailed
+// to `false` whenever the index type parameter reached it without its
+// constraint attached. The fix falls back to `keyof O` as the effective index
+// bound (an index into `O` ranges over `keyof O`) and runs the existing
+// all-keys-must-pass distribution. A genuinely unconstrained index parameter
+// reproduces the same `constraint == None` branch in a self-contained way (no
+// react16/JSX corpus needed).
+//
+// Structural rule: when `S` is assigned into a deferred `O[K]` whose index
+// bound is unavailable, `S` is accepted iff it is assignable to `O[k]` for
+// EVERY `k` in `keyof O`. The fallback only widens which keys are checked; it
+// never widens source acceptance, so required-property and distinct-key
+// mismatches keep their TS2322.
+
+/// `{}` assigned into `O[K]` where `K`'s constraint is unavailable and every
+/// value type of `O` is all-optional must NOT emit the false `'{}' is not
+/// assignable` TS2322. Two parameter spellings keep the rule structural
+/// (anti-hardcoding directive §25).
+#[test]
+fn empty_object_into_unavailable_constraint_index_all_optional_accepts_two_names() {
+    for (p1, p2) in [("T1", "T2"), ("Tag", "Other")] {
+        let source = format!(
+            r#"
+interface Things {{
+    a: {{ id?: string }};
+    b: {{ name?: number }};
+}}
+class Holder<{p1}, {p2}> {{
+    M() {{
+        let c1: Things[{p1}] = {{}};
+    }}
+}}
+"#
+        );
+        let diags = check_source_diagnostics(&source);
+        assert!(
+            !diags.iter().any(|d| {
+                d.code == 2322 && d.message_text.contains("Type '{}' is not assignable")
+            }),
+            "{{}} -> Things[{p1}] (unavailable-constraint index, all-optional values) must \
+             NOT emit the false '{{}} not assignable' TS2322; got: {:?}",
+            diags
+                .iter()
+                .map(|d| (d.code, d.message_text.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Over-acceptance guard: the same unavailable-constraint index must STILL
+/// reject `{}` when at least one value type of `O` carries a required member,
+/// because the universally-quantified `K` could select that key.
+#[test]
+fn empty_object_into_unavailable_constraint_index_required_prop_rejects_two_names() {
+    for p1 in ["T1", "Tag"] {
+        let source = format!(
+            r#"
+interface Things {{
+    a: {{ id?: string }};
+    b: {{ req: string }};
+}}
+class Holder<{p1}, Other> {{
+    M() {{
+        let c1: Things[{p1}] = {{}};
+    }}
+}}
+"#
+        );
+        let diags = check_source_diagnostics(&source);
+        let assignability_errors = count(&diags, 2322) + count(&diags, 2741);
+        assert!(
+            assignability_errors >= 1,
+            "{{}} -> Things[{p1}] (unavailable-constraint index, one required-prop value) must \
+             still emit an assignability error; got: {:?}",
+            diags
+                .iter()
+                .map(|d| (d.code, d.message_text.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+}

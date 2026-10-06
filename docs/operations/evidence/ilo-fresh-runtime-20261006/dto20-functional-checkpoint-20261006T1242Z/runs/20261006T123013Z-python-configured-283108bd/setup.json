@@ -1,0 +1,304 @@
+{
+  "schema": "nudox.fresh-real-remote-runtime.v1",
+  "root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd",
+  "language": "python",
+  "mode": "configured",
+  "source": "/root/nudox-corpus-20261006/artifacts/stratified-async-unicode-python-dossiers-20261006T1230Z/pypi-sniffio/source",
+  "source_origin": {
+    "archive": {
+      "path": "/root/nudox-corpus-20261006/artifacts/stratified-async-unicode-python-dossiers-20261006T1230Z/pypi-sniffio/archive.tar.gz",
+      "sha256": "f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc",
+      "url": "https://files.pythonhosted.org/packages/a2/87/a6771e1546d97e7e041b6ae58d80074f81b7d5121207425c964ddf5cfdbd/sniffio-1.3.1.tar.gz"
+    },
+    "package": {
+      "ecosystem": "pypi",
+      "id": "sniffio",
+      "version": "1.3.1"
+    },
+    "registry_metadata": {
+      "path": "/root/nudox-corpus-20261006/artifacts/stratified-async-unicode-python-dossiers-20261006T1230Z/pypi-sniffio/registry-metadata.json",
+      "sha256": "e9af8ee27171c4cbf1086c7fef5119e266a219b0cac54fee61609de1eab103d9",
+      "url": "https://pypi.org/pypi/sniffio/json"
+    },
+    "schema": "nudox.registry-artifact-origin.v1",
+    "unpack": {
+      "strip_prefix": "sniffio-1.3.1/"
+    }
+  },
+  "source_before": {
+    "files": [
+      [
+        ".coveragerc",
+        113,
+        "65ffa174b8933e4880c433bc72a3c7471aef94474cca1b2828ed2cb697d46777"
+      ],
+      [
+        ".github/workflows/ci.yml",
+        2548,
+        "74a9a23e2b1d50327f97684cbc71e5772bb0a10a9ad2dcff659bec7f962b11bb"
+      ],
+      [
+        ".gitignore",
+        580,
+        "86d984e706d86c867140cd151ed44890add7d87e7b67029327a2c80f6219ee79"
+      ],
+      [
+        ".mypy.ini",
+        291,
+        "f11d0567303decadf7b7bed63bd38143a0718642f768b7b293dc84b9d8637d2f"
+      ],
+      [
+        ".readthedocs.yml",
+        217,
+        "696418eeef736ea7c2b84e55a0aa85c0b06527218f1ea32bd1ff5bd7341438c1"
+      ],
+      [
+        ".style.yapf",
+        5373,
+        "d7409ca2b0af720d00c1f22ef7ec6d42d9a6b605f9e0f6da5dcb4ca2e7318f45"
+      ],
+      [
+        "CHEATSHEET.rst",
+        793,
+        "e4f67ae7f0c936e0d7bc5a090342639040652f38a4c1256dc03f59e3bcbfe95d"
+      ],
+      [
+        "CODE_OF_CONDUCT.md",
+        98,
+        "0970720de8685d59a5a0a4eebc932c6e4077e6b1e49d9343bc2913d542e57cf8"
+      ],
+      [
+        "CONTRIBUTING.md",
+        98,
+        "53c8a65f76c2cbfbece30f67557768b50cd1cbb8d469f2df6188ef541f4ee781"
+      ],
+      [
+        "LICENSE",
+        185,
+        "652c878488d1456361e08c3f8607fd7ba59892a14103d15cce4ff93c85b5cc8b"
+      ],
+      [
+        "LICENSE.APACHE2",
+        11358,
+        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      ],
+      [
+        "LICENSE.MIT",
+        1046,
+        "3e6dae555eb92787fc82d1d48355677f454c7f65aeb38d3f9e72bf9a3daf034b"
+      ],
+      [
+        "MANIFEST.in",
+        178,
+        "770589c998ac1b3bf48f82f579590a1a6565de16004cb5c8dd38b7c6cb264fdb"
+      ],
+      [
+        "PKG-INFO",
+        3875,
+        "0b318b57098edeccf585e60a889a6b6a7b5c4086f3a9aa62eff76a1d3cee12d9"
+      ],
+      [
+        "README.rst",
+        2585,
+        "a685019fb91c5b5467957c84bee75b529fe2728fea28bf8296797c7b89fee742"
+      ],
+      [
+        "ci/rtd-requirements.txt",
+        123,
+        "dd54b80796d51cd993e8f2ff9b3dbb068f3fe4a925b99b4e5adcc6b7bf102de6"
+      ],
+      [
+        "ci.sh",
+        1339,
+        "dee8dc1d98148ccc2d6fcfa1c690327c6bde81ad8fddee2f343c28aa77fc273d"
+      ],
+      [
+        "docs/Makefile",
+        609,
+        "226c5d7667d0d7425e0c7ee7391959c2ad41cc25c76035c3e9429cc82427293e"
+      ],
+      [
+        "docs/make.bat",
+        779,
+        "1236bd760bd45d648503e5803b967f46b7ca5ed41cdb40dbbeb82d8cdf5eed11"
+      ],
+      [
+        "docs/source/_static/.gitkeep",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "docs/source/conf.py",
+        5921,
+        "ba213e319ff4bce56afa4132c8d0ae4bcbdf6106a09e474b2eb7928d2a41872f"
+      ],
+      [
+        "docs/source/history.rst",
+        1127,
+        "99bdaf068428d36d1d1f210d0226a1462b45b97180f444b2f0b1f2521dde939a"
+      ],
+      [
+        "docs/source/index.rst",
+        3381,
+        "114dd218ca69969e403fe6b59a78a900d8553601f0a12299f446698c05b57171"
+      ],
+      [
+        "newsfragments/.gitkeep",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "newsfragments/README.rst",
+        1393,
+        "38a41ac35934b971fc390c2f5d7914fb4305f84304e7a1bf31ed7a8608fe9309"
+      ],
+      [
+        "pyproject.toml",
+        1577,
+        "5570023cd5a78043e6edc8727ceb34d40124194eae2dfc419c8d3ce58542d927"
+      ],
+      [
+        "setup.cfg",
+        42,
+        "a29823dd9fbb34b0b00c45fe5823d7c25a3133805e072cad4920cf76dee85bfa"
+      ],
+      [
+        "sniffio/__init__.py",
+        335,
+        "f562442655eeef296e3f462d239490f4cf4e4d07db34791a75aacad6f5c60cf3"
+      ],
+      [
+        "sniffio/_impl.py",
+        2843,
+        "526505319a62b8eadc8e7b8786e62260cc5e08d59faaef6406568f7f4c64e97f"
+      ],
+      [
+        "sniffio/_tests/__init__.py",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "sniffio/_tests/test_sniffio.py",
+        2058,
+        "30c2596498d0ad48bde5100d34cf9aff9e4166ab80fe0bf8ac7535a5ebdc4c23"
+      ],
+      [
+        "sniffio/_version.py",
+        89,
+        "8957ace71c2c1de4734037b105a021cb1fed68db76b9c7c0ec2580a38403b7a4"
+      ],
+      [
+        "sniffio/py.typed",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "sniffio.egg-info/PKG-INFO",
+        3875,
+        "0b318b57098edeccf585e60a889a6b6a7b5c4086f3a9aa62eff76a1d3cee12d9"
+      ],
+      [
+        "sniffio.egg-info/SOURCES.txt",
+        689,
+        "2d3345d3b5675147d0b5601c222bcfbbc19ef1e5109b3ac076ef87615a2a50f3"
+      ],
+      [
+        "sniffio.egg-info/dependency_links.txt",
+        1,
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      ],
+      [
+        "sniffio.egg-info/top_level.txt",
+        8,
+        "bfd5095c6b390b275d095780a979108963aba69e96b71e86791acfb7dfa38c78"
+      ],
+      [
+        "test-requirements.txt",
+        24,
+        "7b3cb6d2163cd588ed5a77ec6f449fcb5654e07cf3bf2e71a850ce0c08641a15"
+      ]
+    ],
+    "sha256": "a4a3751578836df60a3f5c06379dde9dc66a7848965c2d9835ad7f1a77210cfb"
+  },
+  "runtime_manifest": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+  "runtime_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "runtime_manifest_content": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "binaries": {
+    "backend-cli": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+      "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d"
+    },
+    "backend-locald": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+      "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb"
+    },
+    "backend-mcp": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+      "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb"
+    }
+  },
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/home",
+    "XDG_CONFIG_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/home/.config",
+    "XDG_DATA_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/home/.local/share",
+    "XDG_STATE_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/home/.local/state",
+    "TMPDIR": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/tmp",
+    "PATH": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin:/nix/store/1xklj6dmgcpgz60c9w2ynaq7ynzfsrrq-go-1.26.4/share/go/bin:/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin:/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin:/root/nudox-corpus-20261006/corpora/next-react-alias-fixture/node_modules/typescript/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "USER": "root",
+    "LOGNAME": "root",
+    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "{\"version\":1,\"paths\":[{\"variable\":\"NUDOX_PYTHON\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,57,114,48,50,121,107,120,57,121,51,53,108,102,52,103,107,54,103,99,51,48,103,110,97,103,49,121,56,110,99,112,55,45,112,121,116,104,111,110,51,45,51,46,49,51,46,49,53,47,98,105,110,47,112,121,116,104,111,110,51,46,49,51]}},{\"variable\":\"NUDOX_TSC\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115,47,116,121,112,101,115,99,114,105,112,116,47,98,105,110,47,116,115,99]}},{\"variable\":\"NUDOX_GO\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111,47,98,105,110,47,103,111]}},{\"variable\":\"NUDOX_TYPESCRIPT_NODE\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,48,110,98,112,48,51,48,51,56,115,51,51,99,107,55,49,50,121,120,57,50,49,57,103,99,106,51,97,50,115,113,109,45,110,111,100,101,106,115,45,115,108,105,109,45,50,52,46,49,56,46,48,47,98,105,110,47,110,111,100,101]}},{\"variable\":\"NUDOX_TYPESCRIPT_MODULE_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115]}},{\"variable\":\"NUDOX_PYREFLY\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,113,100,120,122,120,107,119,104,49,51,98,103,118,53,48,48,54,54,102,107,50,107,97,51,112,49,122,112,110,106,97,112,45,112,121,114,101,102,108,121,45,49,46,50,46,48,45,100,101,118,46,49,47,98,105,110,47,112,121,114,101,102,108,121]}},{\"variable\":\"NUDOX_GO_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111]}}]}"
+  },
+  "compiler_snapshot_sha256": "0f13715f573afb87eb795bc2eb7960737abd1b7e7cd8a35ddf54a46f4a51e066",
+  "workspace_preexisting": false,
+  "endpoint_preexisting": false,
+  "fresh_home_entries": [],
+  "installer_tested": false,
+  "dependency_closure_copied": false,
+  "accepted_project_pass": false,
+  "journey_options": {
+    "skip_update_cancel": false,
+    "cancel_before_first_add": false,
+    "transport_only": false,
+    "public_compiler_variables": [],
+    "requested_queries": [
+      "current_async_library"
+    ],
+    "edit_file": "sniffio/_impl.py",
+    "keep_edited_source": true,
+    "first_publish_only": false,
+    "witness_path": "sniffio/_impl.py",
+    "witness_line": 25,
+    "resolve_detail": "summary",
+    "resolve_limit": 10
+  }
+}

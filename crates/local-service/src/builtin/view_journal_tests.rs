@@ -80,9 +80,11 @@ fn v14_view_snapshot_is_refused_by_v15_and_left_unchanged() {
         .expect("seed a complete v14 snapshot frame");
     let before = fs::read(&path).expect("read seeded v14 journal");
 
-    assert!(journal
-        .load_for_workspace(head.root(), &capability)
-        .is_err());
+    assert!(
+        journal
+            .load_for_workspace(head.root(), &capability)
+            .is_err()
+    );
     let refusal = journal
         .written_by_another_build()
         .expect("identify old wire version");
@@ -850,4 +852,213 @@ fn a_reopened_journal_keeps_every_row_fact_with_its_text() {
     assert_eq!(notice.note(), Some("use `fresh` instead"));
     assert_eq!(row.facts, facts);
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn capture_only_generation_rebind_cold_recovers_then_retains_compact_events() {
+    use backend_engine::builtin::SemanticSourceCapture;
+    use backend_engine::builtin::{ProductSemanticCaptureOutcome, ProductSemanticPublicationKey};
+    use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, TypeScriptSource};
+    let temp = tempfile::tempdir().expect("private owner workspace");
+    let profile =
+        super::super::profile_descriptor(super::super::BuiltinProfile::Product).expect("profile");
+    let dispatcher = super::super::builtin_dispatcher(
+        Some(super::super::ECHO_AUTHORITY_SECRET),
+        Arc::clone(&profile),
+        60_000,
+    )
+    .expect("dispatcher");
+    let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
+        temp.path(),
+        super::super::BuiltinModel,
+        super::super::genesis().expect("genesis"),
+        dispatcher,
+        backend_engine::DaemonConfig::default(),
+        super::super::product_relation_registry().expect("registry"),
+    )
+    .expect("owner");
+    let first_snapshot = daemon.engine().daemon().owner().snapshot();
+    let first_cap = super::super::builtin_view_capability_for_workspace(&first_snapshot)
+        .expect("first admission");
+    let (base, _) = super::super::initial_view_for_workspace(&first_snapshot).expect("base view");
+    let row = backend_engine::Row::new(
+        backend_engine::RowId::Symbol(backend_engine::symbol_key("generation::retained")),
+        base.basis(),
+        "generation::retained",
+    );
+    let (base, _) = base
+        .clone()
+        .commit(
+            base.prepare(backend_engine::ViewDelta::Upsert { row }, first_cap.clone())
+                .expect("row patch"),
+        )
+        .expect("row commit");
+    let path = temp.path().join("generation.journal");
+    let mut journal = ViewJournal::open(&path).expect("journal");
+    journal
+        .persist(
+            first_snapshot.root(),
+            &base,
+            Cursor::for_view_root(&base),
+            None,
+        )
+        .expect("first snapshot");
+    let before_bytes = fs::metadata(&path).expect("first bytes").len();
+    let stale_path = temp.path().join("stale-generation.journal");
+    fs::copy(&path, &stale_path).expect("preserve stale base");
+
+    let label = "pkg:npm/capture-only-generation@1.0.0";
+    let key = ProductSemanticPublicationKey::new(
+        backend_engine::PackageReference::parse(label.to_owned()).expect("reference"),
+        PackageUrl::parse(label.to_owned()).expect("coordinate"),
+        LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+    )
+    .expect("capture key");
+    let intent = BuiltinIntent::index_with_capture(
+        backend_engine::PackageKey::from_value(label),
+        label,
+        Vec::new(),
+        Vec::new(),
+        vec![super::super::BuiltinCaptureChange {
+            key,
+            expected: None,
+            capture: SemanticSourceCapture::new(None, [0xB3; 32], [0xB4; 32], 1, 1)
+                .expect("capture"),
+            outcome: ProductSemanticCaptureOutcome::Pending { prior: None },
+            compiler_failure: None,
+        }],
+    )
+    .expect("capture-only intent");
+    crate::builtin::commands::commit_builtin_intent(&mut daemon, 1, &intent)
+        .expect("real capture-only owner commit");
+    let selected = daemon.engine().daemon().owner().snapshot();
+    assert_eq!(selected.root(), first_snapshot.root(), "same manifest root");
+    assert_ne!(
+        selected.commit().id(),
+        first_snapshot.commit().id(),
+        "new producer context"
+    );
+    let cap = super::super::builtin_view_capability_for_workspace(&selected)
+        .expect("new exact admission");
+    assert_ne!(
+        capability_fingerprint(&cap),
+        capability_fingerprint(&first_cap)
+    );
+    let prepared = base
+        .prepare(
+            backend_engine::ViewDelta::Patch {
+                changes: Arc::from([]),
+            },
+            cap.clone(),
+        )
+        .expect("checked empty rebind");
+    let (rebound, delta) = base.clone().commit(prepared).expect("commit rebind");
+    let event = CursorEvent::View {
+        delta: Box::new(delta),
+    };
+    let cursor = Cursor::for_view_root(&rebound);
+    // A cold miss (empty or stale) must not claim an accepted compact base.
+    for recovery_path in [stale_path, temp.path().join("empty-generation.journal")] {
+        let mut missed = ViewJournal::open(&recovery_path).expect("cold miss journal");
+        assert!(
+            missed
+                .load_for_workspace(selected.root(), &cap)
+                .expect("cache miss")
+                .is_none()
+        );
+        missed
+            .persist(selected.root(), &rebound, cursor, Some(&event))
+            .expect("snapshot after miss");
+        drop(missed);
+        let cold = ViewJournal::open(&recovery_path).expect("cold missed-generation journal");
+        let recovered = cold
+            .load_for_workspace(selected.root(), &cap)
+            .expect("recover snapshot after miss")
+            .expect("accepted generation");
+        assert_eq!(recovered.view.descriptor(), rebound.descriptor());
+        assert_eq!(recovered.view.capability(), rebound.capability());
+        assert_eq!(recovered.view.rows(), rebound.rows());
+        assert!(recovered.events.is_empty());
+    }
+    journal
+        .persist(selected.root(), &rebound, cursor, Some(&event))
+        .expect("persist rebind");
+    drop(journal);
+    let mut journal = ViewJournal::open(&path).expect("cold journal");
+    let recovered = journal
+        .load_for_workspace(selected.root(), &cap)
+        .expect("cold read")
+        .expect("new generation must survive restart");
+    assert_eq!(recovered.view.descriptor(), rebound.descriptor());
+    assert_eq!(recovered.view.capability(), rebound.capability());
+    assert_eq!(recovered.view.rows(), rebound.rows());
+    assert_eq!(recovered.cursor, cursor);
+    assert_eq!(recovered.view.capability(), Some(cap.clone()));
+    assert_eq!(recovered.view.row_count(), base.row_count());
+    assert!(
+        recovered.events.is_empty(),
+        "authority change is a snapshot boundary"
+    );
+    let stale_reader = ViewJournal::open(&path).expect("independent stale-capability reader");
+    assert!(
+        stale_reader
+            .load_for_workspace(selected.root(), &first_cap)
+            .expect("stale capability is a cache miss")
+            .is_none(),
+        "retained rows cannot bypass the selected producer admission"
+    );
+    assert_eq!(
+        recovered.view.capability().as_ref(),
+        Some(&cap),
+        "retained canonical rows are recovered only under the new workspace capability"
+    );
+    let snapshot_bytes = fs::metadata(&path).expect("rebound bytes").len() - before_bytes;
+    let row = backend_engine::Row::new(
+        backend_engine::RowId::Symbol(backend_engine::symbol_key("generation::subsequent")),
+        rebound.basis(),
+        "generation::subsequent",
+    );
+    let (next, delta) = rebound
+        .clone()
+        .commit(
+            rebound
+                .prepare(backend_engine::ViewDelta::Upsert { row }, cap.clone())
+                .expect("stable-cap patch"),
+        )
+        .expect("stable-cap commit");
+    let event = CursorEvent::View {
+        delta: Box::new(delta),
+    };
+    let before_event = fs::metadata(&path).expect("before compact event").len();
+    journal
+        .persist(
+            selected.root(),
+            &next,
+            Cursor::for_view_root(&next),
+            Some(&event),
+        )
+        .expect("compact event");
+    let event_bytes = fs::metadata(&path).expect("after compact event").len() - before_event;
+    let mut kinds = Vec::new();
+    journal
+        .scan_frames(|kind, _| {
+            kinds.push(kind);
+            Ok(())
+        })
+        .expect("frames");
+    assert_eq!(kinds, vec![SNAPSHOT, SNAPSHOT, EVENT]);
+    drop(journal);
+    let cold = ViewJournal::open(&path).expect("second cold journal");
+    let recovered = cold
+        .load_for_workspace(selected.root(), &cap)
+        .expect("second recovery")
+        .expect("stable generation");
+    assert_eq!(recovered.view.descriptor(), next.descriptor());
+    assert_eq!(recovered.view.capability(), next.capability());
+    assert_eq!(recovered.view.rows(), next.rows());
+    assert_eq!(recovered.events.len(), 1);
+    println!(
+        "generation snapshot bytes={snapshot_bytes}; subsequent compact event bytes={event_bytes}; retained rows={}",
+        base.row_count()
+    );
 }

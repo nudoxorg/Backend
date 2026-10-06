@@ -304,11 +304,15 @@ struct ViewElementCacheKey {
     /// NUDOX: replayed primitives carry the transform and opacity they were painted under.
     layer_transform: crate::LayerTransform,
     opacity: f32,
+    group_opacity: f32,
     /// Inert subtrees are always freshly registered; this fence forces one fresh
     /// traversal when a retained child becomes interactive again.
     inert: bool,
     /// Cached input listeners may be replayed only for the same activation owner.
     native_activation_scope: Option<crate::NativeActivationScope>,
+    local_deferred_scope: Option<GlobalElementId>,
+    // A cached scene has a native text ledger only if tracing was enabled when painted.
+    text_trace_enabled: bool,
 }
 
 impl<V: View> Element for ViewElement<V> {
@@ -424,8 +428,11 @@ impl<V: View> Element for ViewElement<V> {
                             text_style: window.text_style(),
                             layer_transform: window.layer_transform(),
                             opacity: window.element_opacity(),
+                            group_opacity: window.group_opacity(),
                             inert: true,
                             native_activation_scope: window.native_activation_scope(),
+                            local_deferred_scope: window.local_deferred_draw_scope(),
+                            text_trace_enabled: window.text_trace_enabled(),
                         };
 
                         return window.with_element_state::<ViewElementState, _>(
@@ -464,8 +471,11 @@ impl<V: View> Element for ViewElement<V> {
                             && element_state.cache_key.text_style == text_style
                             && element_state.cache_key.layer_transform == layer_transform
                             && element_state.cache_key.opacity == opacity
+                            && element_state.cache_key.group_opacity == window.group_opacity()
                             && element_state.cache_key.inert == window.is_inert_subtree()
                             && element_state.cache_key.native_activation_scope == window.native_activation_scope()
+                            && element_state.cache_key.local_deferred_scope == window.local_deferred_draw_scope()
+                            && element_state.cache_key.text_trace_enabled == window.text_trace_enabled()
                             && !window.dirty_views.contains(&entity_id)
                             && !window.refreshing
                             // Replayed prepaint/paint ranges do not contain AccessKit nodes or
@@ -512,8 +522,11 @@ impl<V: View> Element for ViewElement<V> {
                                     text_style,
                                     layer_transform,
                                     opacity,
+                                    group_opacity: window.group_opacity(),
                                     inert: window.is_inert_subtree(),
                                     native_activation_scope: window.native_activation_scope(),
+                                    local_deferred_scope: window.local_deferred_draw_scope(),
+                                    text_trace_enabled: window.text_trace_enabled(),
                                 },
                             },
                         )

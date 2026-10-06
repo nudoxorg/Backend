@@ -1,0 +1,544 @@
+{
+  "schema": "nudox.fresh-real-remote-runtime.v1",
+  "root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T115144Z-typescript-configured-3e70353a",
+  "language": "typescript",
+  "mode": "configured",
+  "source": "/root/nudox-corpus-20261006/artifacts/npm-config-risk-intake-9f44/vite-8.3.3-attempt05/project",
+  "source_origin": {
+    "dependency_closure_path": "/root/nudox-corpus-20261006/artifacts/npm-config-risk-intake-9f44/vite-8.3.3-attempt05/npm-installed-dependency-closure.json",
+    "dependency_closure_sha256": "1479f20abe83b9ad36ffba2ff7d095fa1dc2d8ee66fdd3cf26201e352622d818",
+    "dependency_install_receipt_path": "/root/nudox-corpus-20261006/artifacts/npm-config-risk-intake-9f44/vite-8.3.3-attempt05/npm-ci-attempt05.json",
+    "dependency_install_receipt_sha256": "b6172576efb09803c7144eab5f48de0eda5c6234904a8e2347d4fe128047dd32",
+    "package": {
+      "ecosystem": "npm",
+      "id": "vite",
+      "version": "8.3.3"
+    },
+    "product_acceptance_credit": false,
+    "project_path": "/root/nudox-corpus-20261006/artifacts/npm-config-risk-intake-9f44/vite-8.3.3-attempt05/project",
+    "registry_origin_path": "/root/nudox-corpus-20261006/artifacts/npm-config-risk-intake-9f44/vite-8.3.3-attempt05/root-origin/registry-origin.json",
+    "registry_origin_sha256": "1e3e256cb37c890e64a10fe9615267d90074408053a8fee6ca4bd4c32cd29740",
+    "schema": "nudox.npm-runtime-source-packet.v1",
+    "source_inventory_path": "/root/nudox-corpus-20261006/artifacts/npm-config-risk-intake-9f44/vite-8.3.3-attempt05/root-origin/source-inventory.json",
+    "source_inventory_sha256": "bb767c64ffadf78ea2c71a1cfbddedd2435a781c7513938a0f1178e7e3c20e7b"
+  },
+  "source_before": {
+    "files": [
+      [
+        "LICENSE.md",
+        108786,
+        "a47172e44a86a7e2cd1c16282341f7726ec60caafe3a6166fe3e0602005b6fa6"
+      ],
+      [
+        "README.md",
+        1179,
+        "01cebf4365cd21396688c4dcb0dc8d360ccbafb3a36735d3849c5d8efd3cd060"
+      ],
+      [
+        "bin/openChrome.js",
+        1839,
+        "d72bfcc4e6fc7b3dd81338704895402b2b54fe725662eb82f09669aa93f36b92"
+      ],
+      [
+        "bin/vite.js",
+        2995,
+        "de5833362e640673962f16e255bf8738d4380a68601b9af26217eee4e1bac36d"
+      ],
+      [
+        "client.d.ts",
+        5231,
+        "74b98be6ab7723114273526706070ff9885fdf990d5c4e722801addca4d264e1"
+      ],
+      [
+        "dist/client/bundledDevClient.mjs",
+        51907,
+        "1e5fabf0104098682fe05faf725666d3f7d1a5c45b8c5288dab5a7ba23d6573c"
+      ],
+      [
+        "dist/client/client.mjs",
+        41953,
+        "e34ce742dc7035bd7776221ecc01c6b43d714030d10698f38236f98476ac2042"
+      ],
+      [
+        "dist/client/env.mjs",
+        612,
+        "599a7191be77f077087cde291f7906fa751a794617f42d914f54991fe7bf434f"
+      ],
+      [
+        "dist/node/chunks/build.js",
+        205735,
+        "8f70232beacfd7089c982b8e0e264b8eeb4bacde0a41d3e9789a6cda63c07ae8"
+      ],
+      [
+        "dist/node/chunks/dist.js",
+        246659,
+        "b9e97ef3e94225d562fcd8c6ca4935e69b687fc6291dc3a5bb4bbc700a3de5d6"
+      ],
+      [
+        "dist/node/chunks/lib.js",
+        11704,
+        "5cc4a65cc1147399f73ff4e5b2056179d67b25a3b94c28337004ee8f901def2d"
+      ],
+      [
+        "dist/node/chunks/moduleRunnerTransport.d.ts",
+        3088,
+        "c911b3bd083dade8fdb7775261aa25feae695d562a3b11209650b47be90043fc"
+      ],
+      [
+        "dist/node/chunks/node.js",
+        1389645,
+        "ea101c5708452f6288a10669ae06bf1a8332b1ab889a1851e08465cb429e23ac"
+      ],
+      [
+        "dist/node/chunks/postcss-import.js",
+        18320,
+        "597a8902985a42d0085c1594ebd1255e27f9db7df7d2a78dfdfbd9703f04a482"
+      ],
+      [
+        "dist/node/cli.js",
+        30099,
+        "74ad623b5e5a1fb012ff4caaf324733c19aa69cc79d95297232769598a065eec"
+      ],
+      [
+        "dist/node/index.d.ts",
+        165338,
+        "16c41a8076354dad90a65c6951ad90d1b18c42cc85a4f8edff17def380349639"
+      ],
+      [
+        "dist/node/index.js",
+        2670,
+        "f109fff88512ed5cf39503b7a4b2a1de1c95bff333cb1d3635454558e3bfefc7"
+      ],
+      [
+        "dist/node/internal.d.ts",
+        137,
+        "fe8e1632d4da52d384026fcb1f3fcf4c04f8fdfe6be4328712a09d470ed6c59d"
+      ],
+      [
+        "dist/node/internal.js",
+        138,
+        "3409ae5e59e273bc35ca96c78438717736c0f6d32eb4d8ac7ac78fdd12871530"
+      ],
+      [
+        "dist/node/module-runner.d.ts",
+        11364,
+        "93aed5bd196d1a1417d07e5c5b66a96107f0ee7d5c9027c2af12d876ab5e0f5e"
+      ],
+      [
+        "dist/node/module-runner.js",
+        54610,
+        "90ea19fcba6d8f49285a0979ec5dd5d415859b6dacfab424621ee4bfd442963c"
+      ],
+      [
+        "misc/false.js",
+        21,
+        "3f405f8c82812b5fd5a6ca325a1b9039479bf9de3ee1ef51d76ea80fba7d486c"
+      ],
+      [
+        "misc/true.js",
+        20,
+        "1ca1ff5b531880de960715f4622cb4bfe61620ad0ab56764a00f3afe2bf2981a"
+      ],
+      [
+        "package.json",
+        5081,
+        "334c8847b7f71cebb8a9c7e0fa56163941305ef13a970a15d4a43c7cdfef915b"
+      ],
+      [
+        "types/customEvent.d.ts",
+        2142,
+        "5ef1bf71c773ca3df07f0c8c126af004a8e7310a7373ba4f049e7d3fb1b21921"
+      ],
+      [
+        "types/hmrPayload.d.ts",
+        1873,
+        "24c010698f5f7a0f1c216b963994d09ecfef77d7d5b4116b248068287ddb5964"
+      ],
+      [
+        "types/hot.d.ts",
+        1063,
+        "4e003c868b0d8f8ad200b96cbc653e18e513fa23e1c19c4fe3cc25d4394efc47"
+      ],
+      [
+        "types/import-meta.d.ts",
+        249,
+        "28a9d5c4741fdd62a94faea49ef7585d825e8379e5d23a2d773f723ce56d6b50"
+      ],
+      [
+        "types/importGlob.d.ts",
+        3477,
+        "e50d04d261120f8f9d07e85698735d5b88f3a66bc395c08ce26c3d817d141a73"
+      ],
+      [
+        "types/importMeta.d.ts",
+        884,
+        "72429cda84a47f092a3bf777bbc4ece9dda492fe0f02324aa7f197f3800089c6"
+      ],
+      [
+        "types/internal/cssPreprocessorOptions.d.ts",
+        1420,
+        "d8a62a1763683460cfc7c6d66214859909d3f91f34b6e9009aa9443b241f08c0"
+      ],
+      [
+        "types/internal/devtoolsOptions.d.ts",
+        363,
+        "1f97a93af87366e65131932b6f5173b8eebfb7c3a61aa32626cc348b51c77b80"
+      ],
+      [
+        "types/internal/esbuildOptions.d.ts",
+        672,
+        "e0864480ea083087d705f9405bd6bf59b795e8474c3447f0d6413b2bce535a09"
+      ],
+      [
+        "types/internal/lightningcssOptions.d.ts",
+        520,
+        "4ec16d7a4e366c06a4573d299e15fe6207fc080f41beac5da06f4af33ea9761e"
+      ],
+      [
+        "types/internal/rollupTypeCompat.d.ts",
+        791,
+        "7d3e062a778b8f5ea4f0cac7e925e31f88e6739812ebc5f827474324a4048f14"
+      ],
+      [
+        "types/internal/terserOptions.d.ts",
+        384,
+        "f582b0fcbf1eea9b318ab92fb89ea9ab2ebb84f9b60af89328a91155e1afce72"
+      ],
+      [
+        "types/metadata.d.ts",
+        1133,
+        "e67cbea16f1994af89efd700542dbf3828a46a52b29e4d67e801bd7869dc103c"
+      ]
+    ],
+    "sha256": "aeb14912405d07d6b487136178021daa04f0ed070650efec46b9f75f1ee56d73"
+  },
+  "runtime_manifest": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+  "runtime_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "runtime_manifest_content": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "binaries": {
+    "backend-cli": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+      "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d"
+    },
+    "backend-locald": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+      "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb"
+    },
+    "backend-mcp": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+      "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb"
+    }
+  },
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T115144Z-typescript-configured-3e70353a/home",
+    "XDG_CONFIG_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T115144Z-typescript-configured-3e70353a/home/.config",
+    "XDG_DATA_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T115144Z-typescript-configured-3e70353a/home/.local/share",
+    "XDG_STATE_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T115144Z-typescript-configured-3e70353a/home/.local/state",
+    "TMPDIR": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T115144Z-typescript-configured-3e70353a/tmp",
+    "PATH": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin:/nix/store/1xklj6dmgcpgz60c9w2ynaq7ynzfsrrq-go-1.26.4/share/go/bin:/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin:/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin:/root/nudox-corpus-20261006/corpora/next-react-alias-fixture/node_modules/typescript/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "USER": "root",
+    "LOGNAME": "root",
+    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "{\"version\":1,\"paths\":[{\"variable\":\"NUDOX_PYTHON\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,57,114,48,50,121,107,120,57,121,51,53,108,102,52,103,107,54,103,99,51,48,103,110,97,103,49,121,56,110,99,112,55,45,112,121,116,104,111,110,51,45,51,46,49,51,46,49,53,47,98,105,110,47,112,121,116,104,111,110,51,46,49,51]}},{\"variable\":\"NUDOX_TSC\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115,47,116,121,112,101,115,99,114,105,112,116,47,98,105,110,47,116,115,99]}},{\"variable\":\"NUDOX_GO\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111,47,98,105,110,47,103,111]}},{\"variable\":\"NUDOX_TYPESCRIPT_NODE\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,48,110,98,112,48,51,48,51,56,115,51,51,99,107,55,49,50,121,120,57,50,49,57,103,99,106,51,97,50,115,113,109,45,110,111,100,101,106,115,45,115,108,105,109,45,50,52,46,49,56,46,48,47,98,105,110,47,110,111,100,101]}},{\"variable\":\"NUDOX_TYPESCRIPT_MODULE_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115]}},{\"variable\":\"NUDOX_PYREFLY\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,113,100,120,122,120,107,119,104,49,51,98,103,118,53,48,48,54,54,102,107,50,107,97,51,112,49,122,112,110,106,97,112,45,112,121,114,101,102,108,121,45,49,46,50,46,48,45,100,101,118,46,49,47,98,105,110,47,112,121,114,101,102,108,121]}},{\"variable\":\"NUDOX_GO_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111]}}]}"
+  },
+  "compiler_snapshot_sha256": "0f13715f573afb87eb795bc2eb7960737abd1b7e7cd8a35ddf54a46f4a51e066",
+  "workspace_preexisting": false,
+  "endpoint_preexisting": false,
+  "fresh_home_entries": [],
+  "installer_tested": false,
+  "dependency_closure_copied": true,
+  "accepted_project_pass": false,
+  "journey_options": {
+    "skip_update_cancel": false,
+    "cancel_before_first_add": false,
+    "transport_only": false,
+    "public_compiler_variables": [],
+    "requested_queries": [
+      "createServer"
+    ],
+    "edit_file": null,
+    "keep_edited_source": false,
+    "first_publish_only": true,
+    "witness_path": "dist/node/index.d.ts",
+    "witness_line": 2628,
+    "resolve_detail": "summary"
+  },
+  "first_publication_observed": true,
+  "source_after": {
+    "files": [
+      [
+        "LICENSE.md",
+        108786,
+        "a47172e44a86a7e2cd1c16282341f7726ec60caafe3a6166fe3e0602005b6fa6"
+      ],
+      [
+        "README.md",
+        1179,
+        "01cebf4365cd21396688c4dcb0dc8d360ccbafb3a36735d3849c5d8efd3cd060"
+      ],
+      [
+        "bin/openChrome.js",
+        1839,
+        "d72bfcc4e6fc7b3dd81338704895402b2b54fe725662eb82f09669aa93f36b92"
+      ],
+      [
+        "bin/vite.js",
+        2995,
+        "de5833362e640673962f16e255bf8738d4380a68601b9af26217eee4e1bac36d"
+      ],
+      [
+        "client.d.ts",
+        5231,
+        "74b98be6ab7723114273526706070ff9885fdf990d5c4e722801addca4d264e1"
+      ],
+      [
+        "dist/client/bundledDevClient.mjs",
+        51907,
+        "1e5fabf0104098682fe05faf725666d3f7d1a5c45b8c5288dab5a7ba23d6573c"
+      ],
+      [
+        "dist/client/client.mjs",
+        41953,
+        "e34ce742dc7035bd7776221ecc01c6b43d714030d10698f38236f98476ac2042"
+      ],
+      [
+        "dist/client/env.mjs",
+        612,
+        "599a7191be77f077087cde291f7906fa751a794617f42d914f54991fe7bf434f"
+      ],
+      [
+        "dist/node/chunks/build.js",
+        205735,
+        "8f70232beacfd7089c982b8e0e264b8eeb4bacde0a41d3e9789a6cda63c07ae8"
+      ],
+      [
+        "dist/node/chunks/dist.js",
+        246659,
+        "b9e97ef3e94225d562fcd8c6ca4935e69b687fc6291dc3a5bb4bbc700a3de5d6"
+      ],
+      [
+        "dist/node/chunks/lib.js",
+        11704,
+        "5cc4a65cc1147399f73ff4e5b2056179d67b25a3b94c28337004ee8f901def2d"
+      ],
+      [
+        "dist/node/chunks/moduleRunnerTransport.d.ts",
+        3088,
+        "c911b3bd083dade8fdb7775261aa25feae695d562a3b11209650b47be90043fc"
+      ],
+      [
+        "dist/node/chunks/node.js",
+        1389645,
+        "ea101c5708452f6288a10669ae06bf1a8332b1ab889a1851e08465cb429e23ac"
+      ],
+      [
+        "dist/node/chunks/postcss-import.js",
+        18320,
+        "597a8902985a42d0085c1594ebd1255e27f9db7df7d2a78dfdfbd9703f04a482"
+      ],
+      [
+        "dist/node/cli.js",
+        30099,
+        "74ad623b5e5a1fb012ff4caaf324733c19aa69cc79d95297232769598a065eec"
+      ],
+      [
+        "dist/node/index.d.ts",
+        165338,
+        "16c41a8076354dad90a65c6951ad90d1b18c42cc85a4f8edff17def380349639"
+      ],
+      [
+        "dist/node/index.js",
+        2670,
+        "f109fff88512ed5cf39503b7a4b2a1de1c95bff333cb1d3635454558e3bfefc7"
+      ],
+      [
+        "dist/node/internal.d.ts",
+        137,
+        "fe8e1632d4da52d384026fcb1f3fcf4c04f8fdfe6be4328712a09d470ed6c59d"
+      ],
+      [
+        "dist/node/internal.js",
+        138,
+        "3409ae5e59e273bc35ca96c78438717736c0f6d32eb4d8ac7ac78fdd12871530"
+      ],
+      [
+        "dist/node/module-runner.d.ts",
+        11364,
+        "93aed5bd196d1a1417d07e5c5b66a96107f0ee7d5c9027c2af12d876ab5e0f5e"
+      ],
+      [
+        "dist/node/module-runner.js",
+        54610,
+        "90ea19fcba6d8f49285a0979ec5dd5d415859b6dacfab424621ee4bfd442963c"
+      ],
+      [
+        "misc/false.js",
+        21,
+        "3f405f8c82812b5fd5a6ca325a1b9039479bf9de3ee1ef51d76ea80fba7d486c"
+      ],
+      [
+        "misc/true.js",
+        20,
+        "1ca1ff5b531880de960715f4622cb4bfe61620ad0ab56764a00f3afe2bf2981a"
+      ],
+      [
+        "package.json",
+        5081,
+        "334c8847b7f71cebb8a9c7e0fa56163941305ef13a970a15d4a43c7cdfef915b"
+      ],
+      [
+        "types/customEvent.d.ts",
+        2142,
+        "5ef1bf71c773ca3df07f0c8c126af004a8e7310a7373ba4f049e7d3fb1b21921"
+      ],
+      [
+        "types/hmrPayload.d.ts",
+        1873,
+        "24c010698f5f7a0f1c216b963994d09ecfef77d7d5b4116b248068287ddb5964"
+      ],
+      [
+        "types/hot.d.ts",
+        1063,
+        "4e003c868b0d8f8ad200b96cbc653e18e513fa23e1c19c4fe3cc25d4394efc47"
+      ],
+      [
+        "types/import-meta.d.ts",
+        249,
+        "28a9d5c4741fdd62a94faea49ef7585d825e8379e5d23a2d773f723ce56d6b50"
+      ],
+      [
+        "types/importGlob.d.ts",
+        3477,
+        "e50d04d261120f8f9d07e85698735d5b88f3a66bc395c08ce26c3d817d141a73"
+      ],
+      [
+        "types/importMeta.d.ts",
+        884,
+        "72429cda84a47f092a3bf777bbc4ece9dda492fe0f02324aa7f197f3800089c6"
+      ],
+      [
+        "types/internal/cssPreprocessorOptions.d.ts",
+        1420,
+        "d8a62a1763683460cfc7c6d66214859909d3f91f34b6e9009aa9443b241f08c0"
+      ],
+      [
+        "types/internal/devtoolsOptions.d.ts",
+        363,
+        "1f97a93af87366e65131932b6f5173b8eebfb7c3a61aa32626cc348b51c77b80"
+      ],
+      [
+        "types/internal/esbuildOptions.d.ts",
+        672,
+        "e0864480ea083087d705f9405bd6bf59b795e8474c3447f0d6413b2bce535a09"
+      ],
+      [
+        "types/internal/lightningcssOptions.d.ts",
+        520,
+        "4ec16d7a4e366c06a4573d299e15fe6207fc080f41beac5da06f4af33ea9761e"
+      ],
+      [
+        "types/internal/rollupTypeCompat.d.ts",
+        791,
+        "7d3e062a778b8f5ea4f0cac7e925e31f88e6739812ebc5f827474324a4048f14"
+      ],
+      [
+        "types/internal/terserOptions.d.ts",
+        384,
+        "f582b0fcbf1eea9b318ab92fb89ea9ab2ebb84f9b60af89328a91155e1afce72"
+      ],
+      [
+        "types/metadata.d.ts",
+        1133,
+        "e67cbea16f1994af89efd700542dbf3828a46a52b29e4d67e801bd7869dc103c"
+      ]
+    ],
+    "sha256": "aeb14912405d07d6b487136178021daa04f0ed070650efec46b9f75f1ee56d73"
+  },
+  "checks": [
+    {
+      "query": "createServer",
+      "mcp_search": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "~lanes exact\u27130 names\u27130 graph\u27130 semantic\u2717 unconfigured semantic-search unavailable (unconfigured)\nno indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword\n",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "answer": "records",
+            "budget": {
+              "bytes": 557,
+              "bytesPerToken": 4,
+              "estimatedTokens": 140
+            },
+            "coverage": [
+              {
+                "lane": "exact",
+                "state": "complete"
+              },
+              {
+                "lane": "names",
+                "state": "complete"
+              },
+              {
+                "lane": "graph",
+                "state": "complete"
+              },
+              {
+                "lane": "semantic",
+                "reason": "unconfigured",
+                "state": "unavailable"
+              }
+            ],
+            "detail": "full",
+            "empty_reason": "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword",
+            "more": false,
+            "query": "createServer",
+            "readiness": "ready",
+            "records": [],
+            "semantic_search": {
+              "reason": "unconfigured",
+              "status": "unavailable"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "owned_daemons_remaining": [],
+  "endpoint_remaining": true,
+  "source_unchanged": true
+}

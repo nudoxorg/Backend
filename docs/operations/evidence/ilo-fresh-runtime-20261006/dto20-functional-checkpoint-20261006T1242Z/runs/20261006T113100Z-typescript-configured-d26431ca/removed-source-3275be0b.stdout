@@ -1,0 +1,7 @@
+{
+  "answer": "fault",
+  "cause": "unproven",
+  "detail": "a frame, DTO, or identity proof failed admission: library record not found",
+  "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::74a695248b8a3fc6cc81a61ab9e9c6d26a0ad5661d3605c004aa382322430d8e::getHello",
+  "slug": "protocol"
+}

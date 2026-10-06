@@ -1,0 +1,80 @@
+{
+  "files": [
+    {
+      "bytes": 125,
+      "path": ".github/dependabot.yml",
+      "sha256": "9e1294283e17484923d2fb39ede6c43d9139e28bce79c986f79bc231b1ded6bc"
+    },
+    {
+      "bytes": 1775,
+      "path": ".github/workflows/ci.yml",
+      "sha256": "2518554c9d38a88c89d09c005367745909dc55db127560856cb044abbe698117"
+    },
+    {
+      "bytes": 1087,
+      "path": "LICENSE",
+      "sha256": "93a1506953b08ad4874e1cc0971a1d2ac387ca510da91e4d05e460a6c4966fa3"
+    },
+    {
+      "bytes": 3242,
+      "path": "README.md",
+      "sha256": "9df9fd0cfd741abe908f78cd5244053c86f058292c758bce8f45b70d7be51c74"
+    },
+    {
+      "bytes": 455,
+      "path": "SECURITY.md",
+      "sha256": "d0614fe0e0f9034c8a695ffffe13a4cd606473173e4cf7a4d030dd980fe40748"
+    },
+    {
+      "bytes": 590,
+      "path": "benchmarks/createNoCodeFunction.js",
+      "sha256": "970ce8755038592027209ac3b94c71f70c7640ca43372de4748b9332d278ac07"
+    },
+    {
+      "bytes": 177,
+      "path": "benchmarks/fib.js",
+      "sha256": "efe22b4adfc705e416cf42df734009d8a8792723ef2b1462edad0f21bdf0c285"
+    },
+    {
+      "bytes": 713,
+      "path": "benchmarks/reuseNoCodeFunction.js",
+      "sha256": "1a04480ba58a36764cbf746b63dea403a3a978efeea1cfd6ad301f3508884e0c"
+    },
+    {
+      "bytes": 196,
+      "path": "eslint.config.js",
+      "sha256": "6b1bca4a90543a6141a5f7e9155fd71b604c5d001499d7989dcab1a843f95390"
+    },
+    {
+      "bytes": 1074,
+      "path": "package.json",
+      "sha256": "db69497e33cebb1296cd68a9202cc4df7b8d1dc895a423f2153e8c157068aa76"
+    },
+    {
+      "bytes": 212,
+      "path": "reusify.d.ts",
+      "sha256": "9a40a92351b3725ab12d9117b87b1462f20871bffb8329e83a8ea3f54114dcab"
+    },
+    {
+      "bytes": 454,
+      "path": "reusify.js",
+      "sha256": "00894a3dd7016e3751560569cc791c15c2e0607c35a91bd3398dab675026fcf3"
+    },
+    {
+      "bytes": 1440,
+      "path": "test.js",
+      "sha256": "3ea47b07caf2b1cdfbbaf5244b343755bd0eb1d6ed2e0efd7a1506fc5eb99ff7"
+    },
+    {
+      "bytes": 156,
+      "path": "tsconfig.json",
+      "sha256": "7d6301f32f20b37b84c0bfbd3216af64f90193b0e2bac5e8eac140e9db5a40ef"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "reusify",
+    "version": "1.1.0"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

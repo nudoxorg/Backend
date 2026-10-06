@@ -1,0 +1,160 @@
+{
+  "schema": "nudox.source-verified-stratified-dossier.v1",
+  "package": {
+    "ecosystem": "pypi",
+    "id": "h11",
+    "version": "0.16.0"
+  },
+  "source_root": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-h11/source",
+  "source_tree_sha256": "c558a9f6d54b939638ac139300265cb5c615dc89e32ea87ab10628011b48a956",
+  "source_files": 58,
+  "source_bytes": 340995,
+  "inventory_sha256": "94df793f7806624c2a6dfb57d627afbdefdbd5cef2698e57c01c3ba13418599e",
+  "origin_sha256": "7cbb2b5944f5800390f1dac413e2c5427c23fd37b70b1d34626e6d551d667a84",
+  "archive_sha256": "4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1",
+  "origin_verified": true,
+  "archives_reused": false,
+  "acquisition_requests": [
+    {
+      "url": "https://pypi.org/pypi/h11/json",
+      "final_url": "https://pypi.org/pypi/h11/json",
+      "status": 200,
+      "seconds": 0.04367119702510536,
+      "bytes": 30401,
+      "sha256": "82edaa88c2cda51615d444a45e725eeaa7693f6821ab1422de1f031753d9556c",
+      "utc": "2026-10-06T13:07:33Z"
+    },
+    {
+      "url": "https://files.pythonhosted.org/packages/01/ee/02a2c011bdab74c6fb3c75474d40b3052059d95df7e73351460c8588d963/h11-0.16.0.tar.gz",
+      "final_url": "https://files.pythonhosted.org/packages/01/ee/02a2c011bdab74c6fb3c75474d40b3052059d95df7e73351460c8588d963/h11-0.16.0.tar.gz",
+      "status": 200,
+      "seconds": 0.03724720794707537,
+      "bytes": 101250,
+      "sha256": "4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1",
+      "utc": "2026-10-06T13:07:33Z"
+    }
+  ],
+  "resource_before": {
+    "memory_available_kib": 47914368,
+    "free_disk_bytes": 53987409920
+  },
+  "dependency_requirements": {
+    "requires_dist": []
+  },
+  "dependency_closure_installed": false,
+  "source_expectations": [
+    {
+      "name": "Connection",
+      "path": "h11/_connection.py",
+      "line": 151,
+      "end_line": 659,
+      "kind": "ClassDef",
+      "file_sha256": "93d61155fea4a19a9bb6d056dfac5259a26959d6706bec50554f401c4a3d0ee2",
+      "start_byte": 4475,
+      "end_byte": 26862,
+      "declaration_sha256": "49ef411c4665a00af54b658eaeeed61befbf601b62e361b9f3fdc18734422f5a",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "receive_data",
+      "path": "h11/_connection.py",
+      "line": 364,
+      "end_line": 408,
+      "kind": "FunctionDef",
+      "file_sha256": "93d61155fea4a19a9bb6d056dfac5259a26959d6706bec50554f401c4a3d0ee2",
+      "start_byte": 13268,
+      "end_byte": 15321,
+      "declaration_sha256": "4639112bd7be9a22ead010d98b36dc89f4e549855b3e80cb51a661879a7eb2eb",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "next_event",
+      "path": "h11/_connection.py",
+      "line": 438,
+      "end_line": 501,
+      "kind": "FunctionDef",
+      "file_sha256": "93d61155fea4a19a9bb6d056dfac5259a26959d6706bec50554f401c4a3d0ee2",
+      "start_byte": 16716,
+      "end_byte": 19666,
+      "declaration_sha256": "7f2e468cdc8495359314c4e27257c901b9ad3c1caed9c00df5d03e81fc16ab26",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "send",
+      "path": "h11/_connection.py",
+      "line": 504,
+      "end_line": 505,
+      "kind": "FunctionDef",
+      "file_sha256": "93d61155fea4a19a9bb6d056dfac5259a26959d6706bec50554f401c4a3d0ee2",
+      "start_byte": 19686,
+      "end_byte": 19746,
+      "declaration_sha256": "f1cfa09ef58c49adaeb52f16cb5408e7b64d636176d0a378729b524d5c058cdf",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "send",
+      "path": "h11/_connection.py",
+      "line": 508,
+      "end_line": 511,
+      "kind": "FunctionDef",
+      "file_sha256": "93d61155fea4a19a9bb6d056dfac5259a26959d6706bec50554f401c4a3d0ee2",
+      "start_byte": 19766,
+      "end_byte": 19892,
+      "declaration_sha256": "a882dfb6986e64761af7fede281a7d080983285a8e3018c16b4b332f472650cb",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "send",
+      "path": "h11/_connection.py",
+      "line": 514,
+      "end_line": 515,
+      "kind": "FunctionDef",
+      "file_sha256": "93d61155fea4a19a9bb6d056dfac5259a26959d6706bec50554f401c4a3d0ee2",
+      "start_byte": 19912,
+      "end_byte": 19972,
+      "declaration_sha256": "db191704798554507b84b8c7691424a301c655f991732f0e2dee2fabf02fd9b4",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "send",
+      "path": "h11/_connection.py",
+      "line": 517,
+      "end_line": 542,
+      "kind": "FunctionDef",
+      "file_sha256": "93d61155fea4a19a9bb6d056dfac5259a26959d6706bec50554f401c4a3d0ee2",
+      "start_byte": 19978,
+      "end_byte": 20898,
+      "declaration_sha256": "99ccf5201aedc5e7b08b45d4a1533bb010b4c184ae5747c3893b64d71dcca03d",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "Request",
+      "path": "h11/_events.py",
+      "line": 41,
+      "end_line": 125,
+      "kind": "ClassDef",
+      "file_sha256": "23deda5e86a5d56bbb7642f9e3c04034150290e21b7bec790a2a1803d201635e",
+      "start_byte": 932,
+      "end_byte": 4137,
+      "declaration_sha256": "0e41b53cce78732be8c50703be0deff4a4a7275f4123424e3d21b86528d2eb66",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "Response",
+      "path": "h11/_events.py",
+      "line": 218,
+      "end_line": 256,
+      "kind": "ClassDef",
+      "file_sha256": "23deda5e86a5d56bbb7642f9e3c04034150290e21b7bec790a2a1803d201635e",
+      "start_byte": 7004,
+      "end_byte": 8133,
+      "declaration_sha256": "e0afff264c26bb68c2ef3f42a258e1e729753cee7890d999a59bd665b73c5382",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    }
+  ],
+  "runtime_acceptance_status": "not_run",
+  "runtime_passes": 0,
+  "package_code_executed": false,
+  "observer_sha256": "d0b89b4bdef9e21f04810f2b42cdf88dedb4d833c85e613138803615d2ed0ffb",
+  "origin_verifier_sha256": "1ef8275b8e6daa9bfe711d05d367316b09635061b4cb9ca147816c6bed3a3039"
+}

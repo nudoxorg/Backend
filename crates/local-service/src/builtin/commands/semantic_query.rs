@@ -317,10 +317,8 @@ pub(super) fn semantic_entity_for_symbol(
         .canonical_entities()
         .find_map(|entity| match entity {
             Ok(entity)
-                if view_build::semantic_symbol(
-                    package,
-                    entity.entity.version.identity(),
-                ) == symbol =>
+                if view_build::semantic_symbol(package, entity.entity.version.identity())
+                    == symbol =>
             {
                 Some(Ok(entity.entity.id))
             }
@@ -385,9 +383,9 @@ fn semantic_link_row_id(
                     foreign_namespace_call_retarget(image, external, callable_index)?
                 };
                 if let Some(identity) = identity {
-                    let row_id = backend_engine::RowId::Symbol(
-                        view_build::semantic_symbol(package, identity),
-                    );
+                    let row_id = backend_engine::RowId::Symbol(view_build::semantic_symbol(
+                        package, identity,
+                    ));
                     return Ok(view.row_ref(row_id).map(|_| row_id));
                 }
             } else if matches!(link_kind, LinkKind::TypeReference | LinkKind::Imports)
@@ -401,9 +399,8 @@ fn semantic_link_row_id(
                     published,
                 )?
             {
-                let row_id = backend_engine::RowId::Symbol(
-                    view_build::semantic_symbol(package, identity),
-                );
+                let row_id =
+                    backend_engine::RowId::Symbol(view_build::semantic_symbol(package, identity));
                 return Ok(view.row_ref(row_id).map(|_| row_id));
             } else if matches!(link_kind, LinkKind::Reads) {
                 let identity = if let Some(identity) = join_project_field(
@@ -428,9 +425,9 @@ fn semantic_link_row_id(
                     )?
                 };
                 if let Some(identity) = identity {
-                    let row_id = backend_engine::RowId::Symbol(
-                        view_build::semantic_symbol(package, identity),
-                    );
+                    let row_id = backend_engine::RowId::Symbol(view_build::semantic_symbol(
+                        package, identity,
+                    ));
                     return Ok(view.row_ref(row_id).map(|_| row_id));
                 }
             }
@@ -547,11 +544,10 @@ fn project_opened_semantic_graph(
                     if target != source_id {
                         continue;
                     }
-                    let from =
-                        backend_engine::RowId::Symbol(view_build::semantic_symbol(
-                            package,
-                            source.entity.version.identity(),
-                        ));
+                    let from = backend_engine::RowId::Symbol(view_build::semantic_symbol(
+                        package,
+                        source.entity.version.identity(),
+                    ));
                     if view.row_ref(from).is_none() {
                         continue;
                     }
@@ -685,10 +681,8 @@ fn project_opened_reference_facts(
             let source = source.map_err(|error| {
                 BuiltinModelError(format!("read semantic references caller: {error}"))
             })?;
-            let caller_symbol = view_build::semantic_symbol(
-                package,
-                source.entity.version.identity(),
-            );
+            let caller_symbol =
+                view_build::semantic_symbol(package, source.entity.version.identity());
             if view
                 .row_ref(backend_engine::RowId::Symbol(caller_symbol))
                 .is_none()
@@ -749,8 +743,7 @@ fn project_opened_reference_facts(
                 let Some(identity) = identity else {
                     continue;
                 };
-                let retargeted_symbol =
-                    view_build::semantic_symbol(package, identity);
+                let retargeted_symbol = view_build::semantic_symbol(package, identity);
                 if retargeted_symbol != target_symbol {
                     continue;
                 }
@@ -1064,10 +1057,8 @@ fn append_reference_facts(
         .canonical_entities()
         .find_map(|entity| match entity {
             Ok(entity)
-                if view_build::semantic_symbol(
-                    package,
-                    entity.entity.version.identity(),
-                ) == target_symbol =>
+                if view_build::semantic_symbol(package, entity.entity.version.identity())
+                    == target_symbol =>
             {
                 Some(Ok(entity.entity.id))
             }
@@ -1264,6 +1255,7 @@ mod project_call_tests {
             };
             items.push(TreeItemInput {
                 name: ancestor.name,
+                anonymous_callable_anchor: None,
                 kind: ancestor.kind,
                 visibility: Visibility::Public,
                 authority: authority(parentage),
@@ -1286,6 +1278,7 @@ mod project_call_tests {
             .unwrap_or(ParentageAuthority::Root);
         items.push(TreeItemInput {
             name: callee_name,
+            anonymous_callable_anchor: None,
             kind: callee_kind,
             visibility: Visibility::Public,
             authority: authority(callee_parentage),
@@ -1301,6 +1294,7 @@ mod project_call_tests {
         versions.push(caller_version);
         items.push(TreeItemInput {
             name: caller_name,
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -1394,6 +1388,7 @@ mod project_call_tests {
         };
         let items = [TreeItemInput {
             name: item_name,
+            anonymous_callable_anchor: None,
             kind: item_kind,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -1537,6 +1532,7 @@ mod project_call_tests {
         };
         let items = [TreeItemInput {
             name: item_name,
+            anonymous_callable_anchor: None,
             kind: item_kind,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -1631,6 +1627,7 @@ mod project_call_tests {
         let items = [
             TreeItemInput {
                 name: b"caller",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -1644,6 +1641,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"callee",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -3286,6 +3284,7 @@ mod project_call_tests {
         };
         let items = [TreeItemInput {
             name: caller_name,
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -3664,6 +3663,7 @@ mod project_call_tests {
         let items = [
             TreeItemInput {
                 name: b"Workout",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Record,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -3677,6 +3677,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"SetNote",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Bound(workout_version.identity())),
@@ -3739,6 +3740,7 @@ mod project_call_tests {
         let items = [
             TreeItemInput {
                 name: b"Workout",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Record,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -3752,6 +3754,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"SetNote",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Bound(workout_version.identity())),
@@ -3765,6 +3768,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"Session",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Record,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -3778,6 +3782,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"SetNote",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Bound(session_version.identity())),
@@ -3839,6 +3844,7 @@ mod project_call_tests {
         let drive_version = fixture_version(drive_version_byte);
         let items = [TreeItemInput {
             name: b"Drive",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -7096,6 +7102,7 @@ mod project_call_tests {
         };
         let items = [TreeItemInput {
             name: b"drive",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -8680,6 +8687,7 @@ mod project_call_tests {
             )]),
             files: file_records,
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         })
     }
 
@@ -8766,6 +8774,7 @@ mod project_call_tests {
         let items = [
             TreeItemInput {
                 name: b"caller",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -8779,6 +8788,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"callee",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -10184,6 +10194,7 @@ mod project_call_tests {
         let items = [
             TreeItemInput {
                 name: b"Demo",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Module,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -10197,6 +10208,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"WorkoutService",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Record,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Bound(versions[0].identity())),
@@ -10210,6 +10222,7 @@ mod project_call_tests {
             },
             TreeItemInput {
                 name: b"SetNote",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Bound(versions[1].identity())),
@@ -10263,6 +10276,7 @@ mod project_call_tests {
         };
         let items = [TreeItemInput {
             name: b"Sync",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: authority(ParentageAuthority::Root),
@@ -10785,6 +10799,7 @@ mod references_tests {
         let items = [
             TreeItemInput {
                 name: b"Caller",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),
@@ -10798,6 +10813,7 @@ mod references_tests {
             },
             TreeItemInput {
                 name: b"Callee",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: authority(ParentageAuthority::Root),

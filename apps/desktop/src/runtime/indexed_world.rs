@@ -147,11 +147,33 @@ pub(crate) struct Key {
     preferred: Option<PackageRef>,
     #[cfg(test)]
     synthetic: Option<Arc<TestProjection>>,
+    #[cfg(test)]
+    production_delivery: Option<Arc<TestProjectionGate>>,
 }
 
 impl Key {
+    pub(crate) fn preferred(&self) -> Option<&PackageRef> { self.preferred.as_ref() }
+
     pub(crate) fn at_authority(&self, root: VersionedRoot) -> bool { self.authority == root.authority() }
+
+    /// Passive serving identity, independent of deriving a key or touching
+    /// Memo. Retained paint may outlive this capability, but resource input
+    /// cannot adopt a withdrawn or replaced composition at the same endpoint.
+    pub(crate) fn serving_owner(&self, _cx: &App) -> Option<ServingProjectionOwner> {
+        let current = match &self.owner {
+            OwnerIdentity::Indexed { endpoint, generation } =>
+                crate::host::registry::serving_composed().is_some_and(|composition|
+                    composition.endpoint == *endpoint && composition.generation == *generation),
+            #[cfg(test)]
+            OwnerIdentity::Synthetic(id) => _cx.try_global::<TestProjection>().is_some_and(|projection| projection.id == *id),
+        };
+        current.then_some(ServingProjectionOwner { _key: self.clone() })
+    }
 }
+
+/// A current composition for one exact projection. It does not substitute
+/// for the Store's owner attachment or rooted reply admission.
+pub(crate) struct ServingProjectionOwner { _key: Key }
 
 impl std::fmt::Debug for Key {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -365,7 +387,8 @@ impl Global for Reads {}
 /// Holds an already-started projection future while navigation supersedes it.
 /// Releasing it still returns a successful value to test Memo's discard path.
 pub(crate) struct TestProjectionGate {
-    state: Mutex<(bool, bool)>, // entered, released
+    state: Mutex<(usize, bool, usize)>, // reads entered, released, returned
+    production_rows: Mutex<Option<usize>>,
     release_sender: async_channel::Sender<()>,
     release_receiver: async_channel::Receiver<()>,
 }
@@ -375,7 +398,8 @@ impl Default for TestProjectionGate {
     fn default() -> Self {
         let (release_sender, release_receiver) = async_channel::bounded(1);
         Self {
-            state: Mutex::new((false, false)),
+            state: Mutex::new((0, false, 0)),
+            production_rows: Mutex::new(None),
             release_sender,
             release_receiver,
         }
@@ -387,20 +411,33 @@ impl TestProjectionGate {
     pub(crate) async fn wait_for_read(&self) -> Result<(), Arc<str>> {
         let already_released = {
             let mut state = self.state.lock().expect("projection gate");
-            state.0 = true;
+            state.0 += 1;
             state.1
         };
         if !already_released {
             self.release_receiver
                 .recv()
                 .await
-                .map_err(|_| Arc::<str>::from("the synthetic graph read gate closed"))?;
+                .map_err(|_| Arc::<str>::from("the graph delivery gate closed"))?;
         }
+        self.state.lock().expect("projection gate").2 += 1;
         Ok(())
     }
 
     pub(crate) fn entered(&self) -> bool {
+        self.reads_entered() > 0
+    }
+
+    pub(crate) fn reads_entered(&self) -> usize {
         self.state.lock().expect("projection gate").0
+    }
+
+    pub(crate) fn reads_returned(&self) -> usize {
+        self.state.lock().expect("projection gate").2
+    }
+
+    pub(crate) fn production_rows(&self) -> Option<usize> {
+        *self.production_rows.lock().expect("actual production projection receipt")
     }
 
     pub(crate) fn release(&self) {
@@ -424,6 +461,24 @@ struct TestProjection {
 impl Global for TestProjection {}
 
 #[cfg(test)]
+#[derive(Clone)]
+struct TestProductionDelivery {
+    owner: OwnerIdentity,
+    authority: ProducerAuthority,
+    gate: Arc<TestProjectionGate>,
+}
+#[cfg(test)]
+impl Global for TestProductionDelivery {}
+
+/// Hold only delivery of an actual successfully read indexed projection.
+/// This hook supplies no rows, root, composition, or Ready result.
+#[cfg(test)]
+pub(crate) fn install_test_production_delivery(key: &Key, gate: Arc<TestProjectionGate>, cx: &mut App) {
+    assert!(matches!(&key.owner, OwnerIdentity::Indexed { .. }), "production delivery must use the real composition path");
+    cx.set_global(TestProductionDelivery { owner: key.owner.clone(), authority: key.authority, gate });
+}
+
+#[cfg(test)]
 static NEXT_TEST_PROJECTION: AtomicU64 = AtomicU64::new(1);
 
 impl Reads {
@@ -439,6 +494,23 @@ impl Reads {
 pub(crate) fn read_in_flight(key: &Key, cx: &App) -> bool {
     cx.try_global::<Reads>()
         .is_some_and(|reads| reads.0.is_reading(key))
+}
+
+/// Withdraw every aggregate observation of the newly published package facts
+/// at this authority. In-flight reads keep their bounded slot until exit, and
+/// Memo discards their result before waking the current requester to reread.
+pub(crate) fn invalidate_publication(authority: ProducerAuthority, cx: &App) {
+    if let Some(reads) = cx.try_global::<Reads>() {
+        reads.0.retain_keys(|key| key.authority != authority);
+    }
+}
+
+/// A withdrawn composition cannot finish aggregate work into its old key.
+/// The renderer may still hold already-admitted immutable scene bytes.
+pub(crate) fn retire_owner(key: &Key, cx: &App) {
+    if let Some(reads) = cx.try_global::<Reads>() {
+        reads.0.retain_keys(|candidate| candidate.owner != key.owner);
+    }
 }
 
 #[cfg(test)]
@@ -484,6 +556,10 @@ pub(crate) fn key<T: 'static>(
     let memo = cx.global::<Reads>().0.clone();
     let authority = root.authority();
     memo.retain_keys(|previous| previous.owner == owner && previous.authority == authority);
+    #[cfg(test)]
+    let production_delivery = cx.try_global::<TestProductionDelivery>()
+        .filter(|receipt| receipt.owner == owner && receipt.authority == authority)
+        .map(|receipt| receipt.gate.clone());
     Some(Key {
         authority,
         root,
@@ -491,6 +567,8 @@ pub(crate) fn key<T: 'static>(
         preferred,
         #[cfg(test)]
         synthetic,
+        #[cfg(test)]
+        production_delivery,
     })
 }
 
@@ -874,13 +952,19 @@ async fn read(key: &Key, cancellation: &Cancellation) -> Result<Arc<Projection>,
     let identities = Arc::new(IdentityAdapter::indexed(&world, &package_index, resolved));
     let layout = facet::graph::layout::layout_of(&world);
     let scene = Arc::new(facet::graph::scene::Scene::new(Arc::clone(&world), layout));
-    Ok(Arc::new(Projection {
+    let projection = Arc::new(Projection {
         world,
         scene,
         identities,
         coverage,
         origin: Origin::IndexedOwner,
-    }))
+    });
+    #[cfg(test)]
+    if let Some(gate) = &key.production_delivery {
+        *gate.production_rows.lock().expect("actual production receipt") = Some(projection.world.len());
+        gate.wait_for_read().await?;
+    }
+    Ok(projection)
 }
 
 #[cfg(test)]
@@ -1307,6 +1391,7 @@ mod tests {
             authority: root.authority(),
             root,
             owner: OwnerIdentity::Synthetic(id),
+            production_delivery: None,
             preferred: None,
             synthetic: None,
         };

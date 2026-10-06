@@ -1,0 +1,269 @@
+{
+  "schema": "python-native-project-source-gate.v2",
+  "scope": "Native source authority only; no public CLI/MCP, complete OS read-set, purity or whole-package pass claim",
+  "session": "Two fresh committed States in one process; no kernel-cold claim",
+  "source_commit": "f91ee8a837348ee1f67531279aa3020762bab9e8",
+  "source_clean": true,
+  "producer": {
+    "path": "/root/nudox-corpus-20261006/python/project-recovery/bin/project_report-native-05",
+    "sha256": "929200a51a6e3f1dabc6cec95a61be87acc961a722602ce2fe18c2d6091b1876"
+  },
+  "selected_executable": {
+    "path": "/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin/pyrefly",
+    "sha256": "56b96f1bd0927da564f3ff6e8db01a54f8747b93a2afb076616b33892dabf0bc"
+  },
+  "native_revision": "30b5ca5250db9f2d9264d5e889662cf1224a75b7",
+  "native_upstream_files": 1716,
+  "native_changes": [
+    {
+      "path": "Cargo.toml",
+      "sha256": "4177687a46ae101cabe38149014102dba295fcbe673b9ef5d47aaa9eb9a17984",
+      "upstream_sha256": "b8024823a582e432da1b1ded3e4f5b65ff33ec5fb45d3de03f517e16425f8923"
+    }
+  ],
+  "overlay_manifest_sha256": "4177687a46ae101cabe38149014102dba295fcbe673b9ef5d47aaa9eb9a17984",
+  "lock_sha256": "2b8011b8246df2dd7f07bdd96b5ecaf3b1042e896a61320fb824da44f1425a6d",
+  "policy_id": "pyrefly-native-project-state-30b5ca52.classdef-declaration+constructor-callee.mirror-only.v4",
+  "observations": [
+    {
+      "package": "requests",
+      "raw_path": "/root/nudox-corpus-20261006/python/project-recovery/requests-native-state-06.json",
+      "raw_sha256": "6724fbc3317aabbf394580368f643ece8af00b7f3f2095b9335167fce1c37296",
+      "frontier": 35,
+      "source_root": "/root/nudox-corpus-20261006/python/packages/pypi-requests-2.34.2/source/requests-2.34.2",
+      "selected_profile": "Python314",
+      "current_frontier_matches": true,
+      "passes": [
+        {
+          "elapsed_ms": 16737,
+          "definitions": 2099,
+          "cross_file": 1562,
+          "distinct_native_callees": 269,
+          "known_returns": 325,
+          "known_fields": 2,
+          "witnesses": [
+            {
+              "module": "src/requests/api.py",
+              "native_callee": {
+                "same_module": false,
+                "target_kind": "Function",
+                "target_name": "requests.sessions.Session.__init__",
+                "target_path": "src/requests/sessions.py",
+                "target_span": {
+                  "end": 15876,
+                  "start": 15868
+                }
+              },
+              "same_module": false,
+              "source_span": {
+                "end": 3276,
+                "start": 3269
+              },
+              "spelling": "Session",
+              "target_kind": "Class",
+              "target_name": "requests.sessions.Session",
+              "target_path": "src/requests/sessions.py",
+              "target_span": {
+                "end": 14826,
+                "start": 14819
+              }
+            }
+          ]
+        },
+        {
+          "elapsed_ms": 14869,
+          "definitions": 2099,
+          "cross_file": 1562,
+          "distinct_native_callees": 269,
+          "known_returns": 325,
+          "known_fields": 2,
+          "witnesses": [
+            {
+              "module": "src/requests/api.py",
+              "native_callee": {
+                "same_module": false,
+                "target_kind": "Function",
+                "target_name": "requests.sessions.Session.__init__",
+                "target_path": "src/requests/sessions.py",
+                "target_span": {
+                  "end": 15876,
+                  "start": 15868
+                }
+              },
+              "same_module": false,
+              "source_span": {
+                "end": 3276,
+                "start": 3269
+              },
+              "spelling": "Session",
+              "target_kind": "Class",
+              "target_name": "requests.sessions.Session",
+              "target_path": "src/requests/sessions.py",
+              "target_span": {
+                "end": 14826,
+                "start": 14819
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "package": "quart",
+      "raw_path": "/root/nudox-corpus-20261006/python/project-recovery/quart-native-state-05.json",
+      "raw_sha256": "a4858e0eaf567f2839d44bbb2fb8b1488036a660bd1466108b0e7be2d7b3f290",
+      "frontier": 34,
+      "source_root": "/root/nudox-corpus-20261006/python/packages/pypi-quart-0.23.1/source/quart-0.23.1",
+      "selected_profile": "Python314",
+      "current_frontier_matches": true,
+      "passes": [
+        {
+          "elapsed_ms": 9175,
+          "definitions": 609,
+          "cross_file": 234,
+          "distinct_native_callees": 42,
+          "known_returns": 1,
+          "known_fields": 9,
+          "witnesses": [
+            {
+              "module": "src/quart/asgi.py",
+              "native_callee": null,
+              "same_module": false,
+              "source_span": {
+                "end": 14381,
+                "start": 14374
+              },
+              "spelling": "startup",
+              "target_kind": "Function",
+              "target_name": "quart.app.Quart.startup",
+              "target_path": "src/quart/app.py",
+              "target_span": {
+                "end": 64115,
+                "start": 64108
+              }
+            }
+          ]
+        },
+        {
+          "elapsed_ms": 8741,
+          "definitions": 609,
+          "cross_file": 234,
+          "distinct_native_callees": 42,
+          "known_returns": 1,
+          "known_fields": 9,
+          "witnesses": [
+            {
+              "module": "src/quart/asgi.py",
+              "native_callee": null,
+              "same_module": false,
+              "source_span": {
+                "end": 14381,
+                "start": 14374
+              },
+              "spelling": "startup",
+              "target_kind": "Function",
+              "target_name": "quart.app.Quart.startup",
+              "target_path": "src/quart/app.py",
+              "target_span": {
+                "end": 64115,
+                "start": 64108
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "package": "flask",
+      "raw_path": "/root/nudox-corpus-20261006/python/project-recovery/flask-native-state-05.json",
+      "raw_sha256": "6d2424444a8d2f05bced5c4d9774ad65a7ee431aa82e8dea7a9f339b37148d80",
+      "frontier": 83,
+      "source_root": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/pypi-flask/source",
+      "selected_profile": "Python314",
+      "current_frontier_matches": true,
+      "passes": [
+        {
+          "elapsed_ms": 13449,
+          "definitions": 1864,
+          "cross_file": 1391,
+          "distinct_native_callees": 242,
+          "known_returns": 569,
+          "known_fields": 35,
+          "witnesses": []
+        },
+        {
+          "elapsed_ms": 12796,
+          "definitions": 1864,
+          "cross_file": 1391,
+          "distinct_native_callees": 242,
+          "known_returns": 569,
+          "known_fields": 35,
+          "witnesses": []
+        }
+      ]
+    }
+  ],
+  "file_trace": {
+    "path": "/root/nudox-corpus-20261006/python/project-recovery/requests-native-state-06.files.strace",
+    "sha256": "b102570a60587dfc1288cee2d20c987b3131843513462eaf5f02b625b61d6162",
+    "bytes": 2754665,
+    "outside_source_mirror_store": {
+      "/etc/ld-nix.so.preload": 3,
+      "/proc/self/maps": 3,
+      "/proc/self/exe": 2,
+      "/etc/_rjem_malloc.conf": 2,
+      "/proc/sys/vm/overcommit_memory": 3,
+      "/sys/kernel/mm/transparent_hugepage/enabled": 2,
+      "/root": 2,
+      "/proc/self/cgroup": 1,
+      "/sys/fs/cgroup/user.slice/user-0.slice/session-30147.scope/cgroup.controllers": 1,
+      "/sys/fs/cgroup/user.slice/user-0.slice/session-30147.scope/cpu.max": 1,
+      "/sys/fs/cgroup/user.slice/user-0.slice/cpu.max": 1,
+      "/sys/fs/cgroup/user.slice/cpu.max": 1,
+      "/sys/fs/cgroup/cpu.max": 1
+    },
+    "relative_paths": {
+      "": 115,
+      "project": 2,
+      "src": 2,
+      "requests": 2,
+      "status_codes.py": 2,
+      "tests": 2,
+      "testserver": 2
+    },
+    "store_paths": {
+      "/nix/store/qdxzxkwh13bgv50066fk2": 3,
+      "/nix/store/ias8xacs1h3jy7xgwi2awvim61k2ji6c-glibc-2.42-67/etc/ld.so.cache": 1,
+      "/nix/store/ias8xacs1h3jy7xgwi2awvim61k2ji6c-glibc-2.42-67/lib/glibc-hwcaps/x86-64-v3/libgcc_s.so.1": 3,
+      "/nix/store/ias8xacs1h3jy7xgwi2awvim61k2ji6c-glibc-2.42-67/lib/glibc-hwcaps/x86-64-v3/": 3,
+      "/nix/store/ias8xacs1h3jy7xgwi2awvim61k2ji6c-glibc-2.42-67/lib/glibc-hwcaps/x86-64-v2/libgcc_s.so.1": 3,
+      "/nix/store/ias8xacs1h3jy7xgwi2awvim61k2ji6c-glibc-2.42-67/lib/glibc-hwcaps/x86-64-v2/": 3,
+      "/nix/store/ias8xacs1h3jy7xgwi2awvim61k2ji6c-glibc-2.42-67/lib/libgcc_s.so.1": 3,
+      "/nix/store/ias8xacs1h3jy7xgwi2awvim61k2ji6c-glibc-2.42-67/lib/": 3,
+      "/nix/store/hps7pxvcgq32x46yx5a2nx53js5j41vb-xgcc-15.2.0-libgcc/lib/glibc-hwcaps/x86-64-v3/libgcc_s.so.1": 1,
+      "/nix/store/hps7pxvcgq32x46yx5a2nx53js5j41vb-xgcc-15.2.0-libgcc/lib/glibc-hwcaps/x86-64-v3/": 1,
+      "/nix/store/hps7pxvcgq32x46yx5a2nx53js5j41vb-xgcc-15.2.0-libgcc/lib/glibc-hwcaps/x86-64-v2/libgcc_s.so.1": 1,
+      "/nix/store/hps7pxvcgq32x46yx5a2nx53js5j41vb-xgcc-15.2.0-libgcc/lib/glibc-hwcaps/x86-64-v2/": 1,
+      "/nix/store/hps7pxvcgq32x46yx5a2nx53js5j41vb-xgcc-15.2.0-libgcc/lib/libgcc_s.so.1": 1,
+      "/nix/store/ias8xacs1h3jy7xgwi2awvim61k2ji6c-glibc-2.42-67/lib/libm.so.6": 3,
+      "/nix/store/ias8xacs1h3jy7xgwi2awvim61k2ji6c-glibc-2.42-67/lib/libc.so.6": 3,
+      "/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin/pyrefly": 20,
+      "/nix/store/973ryygmcrl55my2jbfvm92sqbxyg0il-jemalloc-5.3.1/lib/glibc-hwcaps/x86-64-v3/libjemalloc.so.2": 2,
+      "/nix/store/973ryygmcrl55my2jbfvm92sqbxyg0il-jemalloc-5.3.1/lib/glibc-hwcaps/x86-64-v3/": 2,
+      "/nix/store/973ryygmcrl55my2jbfvm92sqbxyg0il-jemalloc-5.3.1/lib/glibc-hwcaps/x86-64-v2/libjemalloc.so.2": 2,
+      "/nix/store/973ryygmcrl55my2jbfvm92sqbxyg0il-jemalloc-5.3.1/lib/glibc-hwcaps/x86-64-v2/": 2,
+      "/nix/store/973ryygmcrl55my2jbfvm92sqbxyg0il-jemalloc-5.3.1/lib/libjemalloc.so.2": 2,
+      "/nix/store/973ryygmcrl55my2jbfvm92sqbxyg0il-jemalloc-5.3.1/lib/libgcc_s.so.1": 2,
+      "/nix/store/8lahnh9pn3lrrnhax5nk7ibvjcbjmnkm-gcc-15.2.0-lib/lib/glibc-hwcaps/x86-64-v3/libgcc_s.so.1": 2,
+      "/nix/store/8lahnh9pn3lrrnhax5nk7ibvjcbjmnkm-gcc-15.2.0-lib/lib/glibc-hwcaps/x86-64-v3/": 2,
+      "/nix/store/8lahnh9pn3lrrnhax5nk7ibvjcbjmnkm-gcc-15.2.0-lib/lib/glibc-hwcaps/x86-64-v2/libgcc_s.so.1": 2,
+      "/nix/store/8lahnh9pn3lrrnhax5nk7ibvjcbjmnkm-gcc-15.2.0-lib/lib/glibc-hwcaps/x86-64-v2/": 2,
+      "/nix/store/8lahnh9pn3lrrnhax5nk7ibvjcbjmnkm-gcc-15.2.0-lib/lib/libgcc_s.so.1": 2,
+      "/nix/store/973ryygmcrl55my2jbfvm92sqbxyg0il-jemalloc-5.3.1/lib/libm.so.6": 2,
+      "/nix/store/973ryygmcrl55my2jbfvm92sqbxyg0il-jemalloc-5.3.1/lib/libc.so.6": 2,
+      "/nix/store/ias8xacs1h3jy7xgwi2awvim61k2ji6c-glibc-2.42-67/lib/libstdc++.so.6": 2,
+      "/nix/store/8lahnh9pn3lrrnhax5nk7ibvjcbjmnkm-gcc-15.2.0-lib/lib/libstdc++.so.6": 2,
+      "/nix/store/ias8xacs1h3jy7xgwi2awvim61k2ji6c-glibc-2.42-67/lib/libpthread.so.0": 2
+    }
+  }
+}

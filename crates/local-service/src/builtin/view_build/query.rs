@@ -15,9 +15,9 @@ use super::identity::{
 };
 use super::semantic::semantic_row_content;
 use super::structural::{StructuralParent, StructuralProjectionPlan};
+use backend_engine::RowId;
 use backend_engine::application::{DocumentationSession, LocalCompilerClient};
 use backend_engine::builtin::ProductSemanticPublicationRecord;
-use backend_engine::RowId;
 use backend_semantic::ir::{
     DeclarationIdentity, ExternalId, ExternalTargetIdentity, LinkTarget, SemanticCoreReader as _,
     SemanticImageView, SemanticReader as _,
@@ -203,11 +203,7 @@ fn append_compiler_query_facts(
                             .to_owned(),
                     ));
                 }
-                let name = std::str::from_utf8(entity.name)
-                    .map_err(|_| {
-                        BuiltinModelError("semantic query declaration name is not UTF-8".to_owned())
-                    })?
-                    .to_owned();
+                let name = super::semantic_display_name(entity.name)?.to_owned();
                 let content = semantic_row_content(profile, image, &entity, package, image_digest)?;
                 let parent = entity
                     .entity

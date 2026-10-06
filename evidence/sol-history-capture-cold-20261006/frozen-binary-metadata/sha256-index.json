@@ -1,0 +1,35 @@
+{
+  "scope": "Metadata only; immutable private binaries remain in original archive and are intentionally not committed.",
+  "files": [
+    {
+      "original_path": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/frozen-verification/capture-cold-d67f12-20261006/archive-receipt.json",
+      "saved_path": "evidence/sol-history-capture-cold-20261006/frozen-binary-metadata/archive-receipt.json",
+      "bytes": 2021,
+      "sha256": "c49f894507358356a611187c2aaab9f9eeb5bc9111f782d128289b308b059f9b"
+    },
+    {
+      "original_path": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/frozen-verification/capture-cold-d67f12-20261006/backend_local_service-dae9c947bddaefd9.otool-L.txt",
+      "saved_path": "evidence/sol-history-capture-cold-20261006/frozen-binary-metadata/backend_local_service-dae9c947bddaefd9.otool-L.txt",
+      "bytes": 1087,
+      "sha256": "53e86886288a8970b56455db56ab13ad633a35ad5654f041e3b1e43baefa54e3"
+    },
+    {
+      "original_path": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/frozen-verification/capture-cold-d67f12-20261006/cleanup-receipt.json",
+      "saved_path": "evidence/sol-history-capture-cold-20261006/frozen-binary-metadata/cleanup-receipt.json",
+      "bytes": 2028,
+      "sha256": "9a6d9b468f8a6bb827be1bcca939b8c5239debddfa318dfed65d696488a967cd"
+    },
+    {
+      "original_path": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/frozen-verification/capture-cold-d67f12-20261006/index_operation_lifecycle-0c400900acdd4380.otool-L.txt",
+      "saved_path": "evidence/sol-history-capture-cold-20261006/frozen-binary-metadata/index_operation_lifecycle-0c400900acdd4380.otool-L.txt",
+      "bytes": 1091,
+      "sha256": "97b7b8b00509f3e42ddcbbc57f38d1e92c5ff96936b5680998cc3784a65754bb"
+    },
+    {
+      "original_path": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/frozen-verification/capture-cold-d67f12-20261006/nix-closure.txt",
+      "saved_path": "evidence/sol-history-capture-cold-20261006/frozen-binary-metadata/nix-closure.txt",
+      "bytes": 1774,
+      "sha256": "3f51248275ccbd8a5c0cb2560d028477371b52cda811ab862989fc4497afc0ee"
+    }
+  ]
+}

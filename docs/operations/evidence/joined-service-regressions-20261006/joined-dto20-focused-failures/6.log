@@ -1,0 +1,17 @@
+
+running 1 test
+
+thread 'builtin::browse::tests::two_real_workspaces_keep_exact_context_authority_with_bounded_lru' (14918756) panicked at crates/local-service/src/builtin/browse.rs:6358:9:
+assertion `left == right` failed
+  left: 24
+ right: 23
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test builtin::browse::tests::two_real_workspaces_keep_exact_context_authority_with_bounded_lru ... FAILED
+
+failures:
+
+failures:
+    builtin::browse::tests::two_real_workspaces_keep_exact_context_authority_with_bounded_lru
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 50.38s
+

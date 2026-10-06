@@ -1,0 +1,826 @@
+{
+  "schema": "nudox.fresh-real-remote-runtime.v1",
+  "root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd",
+  "language": "python",
+  "mode": "configured",
+  "source": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-toolz/source",
+  "source_origin": {
+    "archive": {
+      "path": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-toolz/archive.tar.gz",
+      "sha256": "27a5c770d068c110d9ed9323f24f1543e83b2f300a687b7891c1a6d56b697b5b",
+      "url": "https://files.pythonhosted.org/packages/11/d6/114b492226588d6ff54579d95847662fc69196bdeec318eb45393b24c192/toolz-1.1.0.tar.gz"
+    },
+    "package": {
+      "ecosystem": "pypi",
+      "id": "toolz",
+      "version": "1.1.0"
+    },
+    "registry_metadata": {
+      "path": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-toolz/registry-metadata.json",
+      "sha256": "8f924240c5e8b854ea720801cd3c5f1c2f3e7c98c19dc6dc15fbed7a374b0a51",
+      "url": "https://pypi.org/pypi/toolz/json"
+    },
+    "schema": "nudox.registry-artifact-origin.v1",
+    "unpack": {
+      "strip_prefix": "toolz-1.1.0/"
+    }
+  },
+  "source_before": {
+    "files": [
+      [
+        "AUTHORS.md",
+        1561,
+        "d1a4cf6dfc6401595b70fdd33747bc3ccff981341e79abe258292115904e5347"
+      ],
+      [
+        "LICENSE.txt",
+        1492,
+        "053664057b295b2f0c1332291a77102f01a099d87926e449e08a117eea9660bf"
+      ],
+      [
+        "MANIFEST.in",
+        204,
+        "f4c36d84e25072f4061a129750b0e55445fff1147bddf8839e313d2102fa29df"
+      ],
+      [
+        "PKG-INFO",
+        5141,
+        "24b01cee796d9d1b679bda1b5edc8306148aa76681fafc2028fef054da29250a"
+      ],
+      [
+        "README.rst",
+        3921,
+        "4345a38ac3f8b5ce83db174679c6205209656bcbd0198fd90f029f52adce67c4"
+      ],
+      [
+        "pyproject.toml",
+        2265,
+        "8cd850541325356603cc146f19af4d31df2915b0ab85a9d09468296eebf1f8a9"
+      ],
+      [
+        "setup.cfg",
+        38,
+        "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e"
+      ],
+      [
+        "tlz/__init__.py",
+        338,
+        "287d6932f64e2a4549fd600f5fabd952c0b42862b1190073c6e9960b382f2925"
+      ],
+      [
+        "tlz/_build_tlz.py",
+        3144,
+        "4672aacfa880af6cabd60ab24f4578634a50620360d0f3c6cb5e19b0e3548738"
+      ],
+      [
+        "toolz/__init__.py",
+        543,
+        "f7d49e00a3888d25c2b691aae94aff3d87d55e65a38e1e9ad553fdc622129c8f"
+      ],
+      [
+        "toolz/_signatures.py",
+        20555,
+        "448d86b55352c98c977e7e6f7d73aac87c1789b9471752f9a4f8c01e96c25392"
+      ],
+      [
+        "toolz/compatibility.py",
+        997,
+        "822398730bf54da3960df07e0b624fda91482796195fd68fd6ce143f30909f0e"
+      ],
+      [
+        "toolz/curried/__init__.py",
+        2700,
+        "53f7749c594e5983750c97399f9276ad3a1ab8753b4047b8e42304d6344b4f56"
+      ],
+      [
+        "toolz/curried/exceptions.py",
+        337,
+        "df543d23e468f88300dde46e0c2e704905d0058969771a279c9af8169d21aae2"
+      ],
+      [
+        "toolz/curried/operator.py",
+        515,
+        "6f700bd66102db994ec0917ef184fc7074341e8fe1822da3bca614278740ee1f"
+      ],
+      [
+        "toolz/dicttoolz.py",
+        8955,
+        "b04f3094634b7b385d9a446a07681073149bc1b3baf9cfb84956d8fb2163ba81"
+      ],
+      [
+        "toolz/functoolz.py",
+        29757,
+        "46715ca6e2a9745f6bae7f5762e1be088265cc97b3575ce444455733e211fb85"
+      ],
+      [
+        "toolz/itertoolz.py",
+        27697,
+        "648edb0b45df62329a7745d87844de649447046b846819291e6cb3fd7cc8f0da"
+      ],
+      [
+        "toolz/recipes.py",
+        1256,
+        "aff8fbd35520dbfa0ee1b1ee9e8cb5c62ce4d0dfa6f5007039bc8221326e1742"
+      ],
+      [
+        "toolz/sandbox/__init__.py",
+        68,
+        "cac01821a1913a96cdcb6fa56047a255f9490aa10e5fd31620700847d05ce800"
+      ],
+      [
+        "toolz/sandbox/core.py",
+        4327,
+        "90a6eb5f3a1a29433980e9b63624b88b52287251cc6082bb9b8736b7e13baab4"
+      ],
+      [
+        "toolz/sandbox/parallel.py",
+        2966,
+        "045b5e798b9d471d654040280f1b169724823ebc891dd7257671e9c42aab6e37"
+      ],
+      [
+        "toolz/sandbox/tests/__init__.py",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "toolz/sandbox/tests/test_core.py",
+        3830,
+        "38ce13274e8297b8911894d09611ede9296f2a02334660d0ce9ad5b80ab1b4d7"
+      ],
+      [
+        "toolz/sandbox/tests/test_parallel.py",
+        904,
+        "2e7e4e4309c4618522fc713fd6ec242b98c6aa11e351989145b35e5bcff8a1e0"
+      ],
+      [
+        "toolz/tests/__init__.py",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "toolz/tests/test_compatibility.py",
+        260,
+        "4f09a972a8917a0060a00c2bcf9f77c3bdd4b4c871c754a9dcc63a2c9e699826"
+      ],
+      [
+        "toolz/tests/test_curried.py",
+        3724,
+        "2c5d8f91b686565378274739f13ede913b96365874afb791a55da85b3b9fe233"
+      ],
+      [
+        "toolz/tests/test_curried_doctests.py",
+        274,
+        "f69fd1c0329e1bff045d4a2a285009fb3ca9e0a1e9db0de52c5c4e0795d7ab0c"
+      ],
+      [
+        "toolz/tests/test_dicttoolz.py",
+        9037,
+        "840bb05ef6e9fff47818d8d4b9846eddafa9b356052d22c81ec820d2fc7f0d84"
+      ],
+      [
+        "toolz/tests/test_functoolz.py",
+        20332,
+        "24dd33ca06709bc48f7b6e8f68aba32d66c6600c110a5275fb55b5177a9431e9"
+      ],
+      [
+        "toolz/tests/test_inspect_args.py",
+        16539,
+        "0f524a2e128272cef54993c4dfef3a3d24a2af19cfa0cf9a60eab7157cb75b95"
+      ],
+      [
+        "toolz/tests/test_itertoolz.py",
+        19626,
+        "12bce5c50eb4e0b18bd9476d4cf4d62b69e9fcaf4e63c9bf03a594b8f48b299d"
+      ],
+      [
+        "toolz/tests/test_package.py",
+        295,
+        "3e628960b505cea360fcd4af37e5a7ead208680312359f352f852876507a4825"
+      ],
+      [
+        "toolz/tests/test_recipes.py",
+        820,
+        "859fe7b8600e21a7c9ac9c279e3f7e2599da46af6cac85f23d0cb305d352d454"
+      ],
+      [
+        "toolz/tests/test_serialization.py",
+        5759,
+        "87057e30e173bef2d5c1979d5020db9b1e3bf7dacb41f0b2173993631a007471"
+      ],
+      [
+        "toolz/tests/test_signatures.py",
+        2873,
+        "5fc2bfad74b5397236db2b1c8f7cd4856c5659354823909fd912725df87fd870"
+      ],
+      [
+        "toolz/tests/test_tlz.py",
+        1593,
+        "2d2e480aa89e44b9230143fe0b94e37557a577a4bd38b5d3606807f397d8916c"
+      ],
+      [
+        "toolz/tests/test_utils.py",
+        156,
+        "d8b2214bff715de004d7fa2737cebc81978037c1378d35eda67605d16f8bd8e1"
+      ],
+      [
+        "toolz/utils.py",
+        139,
+        "24b957b7cc7f26a4957af98b64f9ede5b649b1d28c0498096f923095c7ce9ec7"
+      ],
+      [
+        "toolz.egg-info/PKG-INFO",
+        5141,
+        "24b01cee796d9d1b679bda1b5edc8306148aa76681fafc2028fef054da29250a"
+      ],
+      [
+        "toolz.egg-info/SOURCES.txt",
+        1034,
+        "de8088542a3a4255686b0330ccf37adb610c4470361dc18b6f61704e7b9f7459"
+      ],
+      [
+        "toolz.egg-info/dependency_links.txt",
+        1,
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      ],
+      [
+        "toolz.egg-info/top_level.txt",
+        10,
+        "a1eb02ce8a5807d5173d1e270f385869ff936e9910a11ea0612b17bd90e0937b"
+      ]
+    ],
+    "sha256": "3e4a05b92e78b58b13cda1c59c124d9b25570901f527693b2d21856b0cafb565"
+  },
+  "runtime_manifest": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+  "runtime_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "runtime_manifest_content": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "binaries": {
+    "backend-cli": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+      "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d"
+    },
+    "backend-locald": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+      "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb"
+    },
+    "backend-mcp": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+      "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb"
+    }
+  },
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/home",
+    "XDG_CONFIG_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/home/.config",
+    "XDG_DATA_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/home/.local/share",
+    "XDG_STATE_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/home/.local/state",
+    "TMPDIR": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/tmp",
+    "PATH": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin:/nix/store/1xklj6dmgcpgz60c9w2ynaq7ynzfsrrq-go-1.26.4/share/go/bin:/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin:/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin:/root/nudox-corpus-20261006/corpora/next-react-alias-fixture/node_modules/typescript/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "USER": "root",
+    "LOGNAME": "root",
+    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "{\"version\":1,\"paths\":[{\"variable\":\"NUDOX_PYTHON\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,57,114,48,50,121,107,120,57,121,51,53,108,102,52,103,107,54,103,99,51,48,103,110,97,103,49,121,56,110,99,112,55,45,112,121,116,104,111,110,51,45,51,46,49,51,46,49,53,47,98,105,110,47,112,121,116,104,111,110,51,46,49,51]}},{\"variable\":\"NUDOX_TSC\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115,47,116,121,112,101,115,99,114,105,112,116,47,98,105,110,47,116,115,99]}},{\"variable\":\"NUDOX_GO\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111,47,98,105,110,47,103,111]}},{\"variable\":\"NUDOX_TYPESCRIPT_NODE\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,48,110,98,112,48,51,48,51,56,115,51,51,99,107,55,49,50,121,120,57,50,49,57,103,99,106,51,97,50,115,113,109,45,110,111,100,101,106,115,45,115,108,105,109,45,50,52,46,49,56,46,48,47,98,105,110,47,110,111,100,101]}},{\"variable\":\"NUDOX_TYPESCRIPT_MODULE_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115]}},{\"variable\":\"NUDOX_PYREFLY\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,113,100,120,122,120,107,119,104,49,51,98,103,118,53,48,48,54,54,102,107,50,107,97,51,112,49,122,112,110,106,97,112,45,112,121,114,101,102,108,121,45,49,46,50,46,48,45,100,101,118,46,49,47,98,105,110,47,112,121,114,101,102,108,121]}},{\"variable\":\"NUDOX_GO_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111]}}]}"
+  },
+  "compiler_snapshot_sha256": "0f13715f573afb87eb795bc2eb7960737abd1b7e7cd8a35ddf54a46f4a51e066",
+  "workspace_preexisting": false,
+  "endpoint_preexisting": false,
+  "fresh_home_entries": [],
+  "installer_tested": false,
+  "dependency_closure_copied": false,
+  "accepted_project_pass": false,
+  "journey_options": {
+    "skip_update_cancel": false,
+    "cancel_before_first_add": false,
+    "transport_only": false,
+    "public_compiler_variables": [],
+    "requested_queries": [
+      "compose"
+    ],
+    "edit_file": "toolz/functoolz.py",
+    "keep_edited_source": true,
+    "first_publish_only": false,
+    "witness_path": "toolz/functoolz.py",
+    "witness_line": 560,
+    "resolve_detail": "summary",
+    "resolve_limit": 10
+  },
+  "source_after": {
+    "files": [
+      [
+        "AUTHORS.md",
+        1561,
+        "d1a4cf6dfc6401595b70fdd33747bc3ccff981341e79abe258292115904e5347"
+      ],
+      [
+        "LICENSE.txt",
+        1492,
+        "053664057b295b2f0c1332291a77102f01a099d87926e449e08a117eea9660bf"
+      ],
+      [
+        "MANIFEST.in",
+        204,
+        "f4c36d84e25072f4061a129750b0e55445fff1147bddf8839e313d2102fa29df"
+      ],
+      [
+        "PKG-INFO",
+        5141,
+        "24b01cee796d9d1b679bda1b5edc8306148aa76681fafc2028fef054da29250a"
+      ],
+      [
+        "README.rst",
+        3921,
+        "4345a38ac3f8b5ce83db174679c6205209656bcbd0198fd90f029f52adce67c4"
+      ],
+      [
+        "pyproject.toml",
+        2265,
+        "8cd850541325356603cc146f19af4d31df2915b0ab85a9d09468296eebf1f8a9"
+      ],
+      [
+        "setup.cfg",
+        38,
+        "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e"
+      ],
+      [
+        "tlz/__init__.py",
+        338,
+        "287d6932f64e2a4549fd600f5fabd952c0b42862b1190073c6e9960b382f2925"
+      ],
+      [
+        "tlz/_build_tlz.py",
+        3144,
+        "4672aacfa880af6cabd60ab24f4578634a50620360d0f3c6cb5e19b0e3548738"
+      ],
+      [
+        "toolz/__init__.py",
+        543,
+        "f7d49e00a3888d25c2b691aae94aff3d87d55e65a38e1e9ad553fdc622129c8f"
+      ],
+      [
+        "toolz/_signatures.py",
+        20555,
+        "448d86b55352c98c977e7e6f7d73aac87c1789b9471752f9a4f8c01e96c25392"
+      ],
+      [
+        "toolz/compatibility.py",
+        997,
+        "822398730bf54da3960df07e0b624fda91482796195fd68fd6ce143f30909f0e"
+      ],
+      [
+        "toolz/curried/__init__.py",
+        2700,
+        "53f7749c594e5983750c97399f9276ad3a1ab8753b4047b8e42304d6344b4f56"
+      ],
+      [
+        "toolz/curried/exceptions.py",
+        337,
+        "df543d23e468f88300dde46e0c2e704905d0058969771a279c9af8169d21aae2"
+      ],
+      [
+        "toolz/curried/operator.py",
+        515,
+        "6f700bd66102db994ec0917ef184fc7074341e8fe1822da3bca614278740ee1f"
+      ],
+      [
+        "toolz/dicttoolz.py",
+        8955,
+        "b04f3094634b7b385d9a446a07681073149bc1b3baf9cfb84956d8fb2163ba81"
+      ],
+      [
+        "toolz/functoolz.py",
+        29759,
+        "a0f6e73e9ba014c7bcebc344ee43b55fd8fe825387d699d5800667922818da51"
+      ],
+      [
+        "toolz/itertoolz.py",
+        27697,
+        "648edb0b45df62329a7745d87844de649447046b846819291e6cb3fd7cc8f0da"
+      ],
+      [
+        "toolz/recipes.py",
+        1256,
+        "aff8fbd35520dbfa0ee1b1ee9e8cb5c62ce4d0dfa6f5007039bc8221326e1742"
+      ],
+      [
+        "toolz/sandbox/__init__.py",
+        68,
+        "cac01821a1913a96cdcb6fa56047a255f9490aa10e5fd31620700847d05ce800"
+      ],
+      [
+        "toolz/sandbox/core.py",
+        4327,
+        "90a6eb5f3a1a29433980e9b63624b88b52287251cc6082bb9b8736b7e13baab4"
+      ],
+      [
+        "toolz/sandbox/parallel.py",
+        2966,
+        "045b5e798b9d471d654040280f1b169724823ebc891dd7257671e9c42aab6e37"
+      ],
+      [
+        "toolz/sandbox/tests/__init__.py",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "toolz/sandbox/tests/test_core.py",
+        3830,
+        "38ce13274e8297b8911894d09611ede9296f2a02334660d0ce9ad5b80ab1b4d7"
+      ],
+      [
+        "toolz/sandbox/tests/test_parallel.py",
+        904,
+        "2e7e4e4309c4618522fc713fd6ec242b98c6aa11e351989145b35e5bcff8a1e0"
+      ],
+      [
+        "toolz/tests/__init__.py",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "toolz/tests/test_compatibility.py",
+        260,
+        "4f09a972a8917a0060a00c2bcf9f77c3bdd4b4c871c754a9dcc63a2c9e699826"
+      ],
+      [
+        "toolz/tests/test_curried.py",
+        3724,
+        "2c5d8f91b686565378274739f13ede913b96365874afb791a55da85b3b9fe233"
+      ],
+      [
+        "toolz/tests/test_curried_doctests.py",
+        274,
+        "f69fd1c0329e1bff045d4a2a285009fb3ca9e0a1e9db0de52c5c4e0795d7ab0c"
+      ],
+      [
+        "toolz/tests/test_dicttoolz.py",
+        9037,
+        "840bb05ef6e9fff47818d8d4b9846eddafa9b356052d22c81ec820d2fc7f0d84"
+      ],
+      [
+        "toolz/tests/test_functoolz.py",
+        20332,
+        "24dd33ca06709bc48f7b6e8f68aba32d66c6600c110a5275fb55b5177a9431e9"
+      ],
+      [
+        "toolz/tests/test_inspect_args.py",
+        16539,
+        "0f524a2e128272cef54993c4dfef3a3d24a2af19cfa0cf9a60eab7157cb75b95"
+      ],
+      [
+        "toolz/tests/test_itertoolz.py",
+        19626,
+        "12bce5c50eb4e0b18bd9476d4cf4d62b69e9fcaf4e63c9bf03a594b8f48b299d"
+      ],
+      [
+        "toolz/tests/test_package.py",
+        295,
+        "3e628960b505cea360fcd4af37e5a7ead208680312359f352f852876507a4825"
+      ],
+      [
+        "toolz/tests/test_recipes.py",
+        820,
+        "859fe7b8600e21a7c9ac9c279e3f7e2599da46af6cac85f23d0cb305d352d454"
+      ],
+      [
+        "toolz/tests/test_serialization.py",
+        5759,
+        "87057e30e173bef2d5c1979d5020db9b1e3bf7dacb41f0b2173993631a007471"
+      ],
+      [
+        "toolz/tests/test_signatures.py",
+        2873,
+        "5fc2bfad74b5397236db2b1c8f7cd4856c5659354823909fd912725df87fd870"
+      ],
+      [
+        "toolz/tests/test_tlz.py",
+        1593,
+        "2d2e480aa89e44b9230143fe0b94e37557a577a4bd38b5d3606807f397d8916c"
+      ],
+      [
+        "toolz/tests/test_utils.py",
+        156,
+        "d8b2214bff715de004d7fa2737cebc81978037c1378d35eda67605d16f8bd8e1"
+      ],
+      [
+        "toolz/utils.py",
+        139,
+        "24b957b7cc7f26a4957af98b64f9ede5b649b1d28c0498096f923095c7ce9ec7"
+      ],
+      [
+        "toolz.egg-info/PKG-INFO",
+        5141,
+        "24b01cee796d9d1b679bda1b5edc8306148aa76681fafc2028fef054da29250a"
+      ],
+      [
+        "toolz.egg-info/SOURCES.txt",
+        1034,
+        "de8088542a3a4255686b0330ccf37adb610c4470361dc18b6f61704e7b9f7459"
+      ],
+      [
+        "toolz.egg-info/dependency_links.txt",
+        1,
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      ],
+      [
+        "toolz.egg-info/top_level.txt",
+        10,
+        "a1eb02ce8a5807d5173d1e270f385869ff936e9910a11ea0612b17bd90e0937b"
+      ]
+    ],
+    "sha256": "2b1b4c0fb26b0f942faf34662e405f483a36a97421431b6ceabffc054b57f6fe"
+  },
+  "checks": [
+    {
+      "query": "compose",
+      "mcp_search": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "~lanes exact\u271310 names\u271310 graph\u271310 semantic\u2717 unconfigured semantic-search unavailable (unconfigured)\nproject \u203a toolz/functoolz.py:547 \u203a __get__  \u00b7  method \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:547::__get__`  def __get__(self, obj, objtype=None):\nproject \u203a toolz/__init__.py:18 \u203a comp  \u00b7  constant \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/__init__.py:18::comp`  comp = compose\nproject \u203a toolz/tests/test_functoolz.py:3 \u203a compose  \u00b7  import \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:3::compose`  value\ntoolz.functoolz\ncompose\nproject \u203a toolz/curried/__init__.py:28 \u203a compose  \u00b7  import \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/curried/__init__.py:28::compose`  value\ntoolz\ncompose\nproject \u203a toolz/functoolz.py:560 \u203a compose  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose`  def compose(*funcs):\nproject \u203a toolz/tests/test_functoolz.py:663 \u203a generate_compose_left_test_cases  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:663::generate_compose_left_test_cases`  def generate_compose_left_test_cases():\nproject \u203a toolz/functoolz.py:586 \u203a compose_left  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left`  def compose_left(*funcs):\nproject \u203a toolz/functoolz.py:473 \u203a Compose  \u00b7  class \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:473::Compose`  class Compose:\n    \"\"\" A composition of functions\n\n    See Also:\n        compose\n    \"\"\"\n    __slots__ = 'first', 'funcs'\n\n    def __init__(self, funcs):\n        funcs = tuple(reversed(funcs))\n        self.first = funcs[0]\n        self.funcs = funcs[1:]\n\n    def __call__(self, *args, **kwargs):\n        ret = self.first(*args, **kwargs)\n        for f in self.funcs:\n            ret = f(ret)\n        return ret\n\n    def __getstate__(self):\n        return self.first, self.funcs\n\n    def __setstate__(self, state):\n        self.first, self.funcs = state\n\n    @instanceproperty(classval=__doc__)\n    def __doc__(self):\n        def composed_doc(*fs):\n            \"\"\"Generate a docstring for the composition of fs.\n            \"\"\"\n            if not fs:\n                # Argument name for the docstring.\n                return '*args, **kwargs'\n\n            return f'\nproject \u203a toolz/tests/test_functoolz.py:527 \u203a generate_compose_test_cases  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:527::generate_compose_test_cases`  def generate_compose_test_cases():\n    \"\"\"\n    Generate test cases for parametrized tests of the compose function.\n    \"\"\"\n\n    def add_then_multiply(a, b, c=10):\n        return (a + b) * c\n\n    return (\n        (\n            (),        # arguments to compose()\n            (0,),\nproject \u203a toolz/functoolz.py:681 \u203a do  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:681::do`  def do(func, x):\n\u2026 more rows at this revision; raise `limit` to see them\n",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "answer": "records",
+            "budget": {
+              "bytes": 8577,
+              "bytesPerToken": 4,
+              "estimatedTokens": 2145
+            },
+            "coverage": [
+              {
+                "lane": "exact",
+                "state": "complete"
+              },
+              {
+                "lane": "names",
+                "state": "complete"
+              },
+              {
+                "lane": "graph",
+                "state": "complete"
+              },
+              {
+                "lane": "semantic",
+                "reason": "unconfigured",
+                "state": "unavailable"
+              }
+            ],
+            "detail": "full",
+            "more": true,
+            "nextCursor": "mcp1-1791293044-cGMxLTAwMDM2M2YyM2IyZjRmN2I0OWNmNWJkNTZmY2EzZGU3ZmQ5ZmIyNTMzNDUyMjRhMWRjY2U1ZDQ2YmY5ZjkwYzNjYjZkYWVmNGQxOGVhZDgyZGZlNGEwNDFhNDFmNWQ5ODY0MjRjMjZhZDUwNTlhMDg4YTJmOWFiZGQ4NGY2ZTMxYjFlYjQ2NTBhNWQyZDM4YzUwN2M2MjFiYjdhZGVjOTYzYWZhYzdiZDc0MGJiYzg1MDA3YjFjZDYwOWE2N2ZiMjQ4MmYxMmE0MGIxYTlkOGIzYWYwOTJlYjk1NzQ1NzU5NjdjMTlhNWRiOWNhNDhlZGU1NDIyNmUyOGYyOTM2MWUzNzYwMDAwMzAwZTk5MGQyZDZhOWNiYzU4YjhlYmE4OTY0MTExZGVhYmQ1OTZjYTYxZDA5MGI5ZGYxMDRjMGU1OTI4YzNlY2IwMDAwMDAwMDAwMDAwMDAyMDAwMDAwMDAwMDAwMDAwYQ-9ba27ccb86d50df450d73d0b563d56d1",
+            "query": "compose",
+            "readiness": "ready",
+            "records": [
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:547::__get__",
+                  "key": "2eef900b",
+                  "line": 547,
+                  "name": "__get__",
+                  "path": "toolz/functoolz.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project",
+                  "segments": [
+                    "__get__"
+                  ],
+                  "shape": "declaration",
+                  "trail": "project \u203a toolz/functoolz.py:547 \u203a __get__"
+                },
+                "kind": "method",
+                "language": "python",
+                "score": 4294967289,
+                "signature": "def __get__(self, obj, objtype=None):",
+                "state": "ready",
+                "summary": "Mimic the descriptor behavior of python functions."
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/__init__.py:18::comp",
+                  "key": "67c0c0cc",
+                  "line": 18,
+                  "name": "comp",
+                  "path": "toolz/__init__.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project",
+                  "segments": [
+                    "comp"
+                  ],
+                  "shape": "declaration",
+                  "trail": "project \u203a toolz/__init__.py:18 \u203a comp"
+                },
+                "kind": "constant",
+                "language": "python",
+                "score": 4294967290,
+                "signature": "comp = compose",
+                "state": "ready",
+                "summary": "Aliases"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:3::compose",
+                  "key": "7b9e9176",
+                  "line": 3,
+                  "name": "compose",
+                  "path": "toolz/tests/test_functoolz.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project",
+                  "segments": [
+                    "compose"
+                  ],
+                  "shape": "declaration",
+                  "trail": "project \u203a toolz/tests/test_functoolz.py:3 \u203a compose"
+                },
+                "kind": "import",
+                "language": "python",
+                "score": 4294967294,
+                "signature": "value\ntoolz.functoolz\ncompose",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/curried/__init__.py:28::compose",
+                  "key": "97385bfb",
+                  "line": 28,
+                  "name": "compose",
+                  "path": "toolz/curried/__init__.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project",
+                  "segments": [
+                    "compose"
+                  ],
+                  "shape": "declaration",
+                  "trail": "project \u203a toolz/curried/__init__.py:28 \u203a compose"
+                },
+                "kind": "import",
+                "language": "python",
+                "score": 4294967293,
+                "signature": "value\ntoolz\ncompose",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:560::compose",
+                  "key": "b6a48246",
+                  "line": 560,
+                  "name": "compose",
+                  "path": "toolz/functoolz.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project",
+                  "segments": [
+                    "compose"
+                  ],
+                  "shape": "declaration",
+                  "trail": "project \u203a toolz/functoolz.py:560 \u203a compose"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967295,
+                "signature": "def compose(*funcs):",
+                "state": "ready",
+                "summary": "Compose functions to operate in series."
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:663::generate_compose_left_test_cases",
+                  "key": "c4d23ce0",
+                  "line": 663,
+                  "name": "generate_compose_left_test_cases",
+                  "path": "toolz/tests/test_functoolz.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project",
+                  "segments": [
+                    "generate_compose_left_test_cases"
+                  ],
+                  "shape": "declaration",
+                  "trail": "project \u203a toolz/tests/test_functoolz.py:663 \u203a generate_compose_left_test_cases"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967288,
+                "signature": "def generate_compose_left_test_cases():",
+                "state": "ready",
+                "summary": "Generate test cases for parametrized tests of the compose function."
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:586::compose_left",
+                  "key": "d0d34478",
+                  "line": 586,
+                  "name": "compose_left",
+                  "path": "toolz/functoolz.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project",
+                  "segments": [
+                    "compose_left"
+                  ],
+                  "shape": "declaration",
+                  "trail": "project \u203a toolz/functoolz.py:586 \u203a compose_left"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967286,
+                "signature": "def compose_left(*funcs):",
+                "state": "ready",
+                "summary": "Compose functions to operate in series."
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:473::Compose",
+                  "key": "e636be07",
+                  "line": 473,
+                  "name": "Compose",
+                  "path": "toolz/functoolz.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project",
+                  "segments": [
+                    "Compose"
+                  ],
+                  "shape": "declaration",
+                  "trail": "project \u203a toolz/functoolz.py:473 \u203a Compose"
+                },
+                "kind": "class",
+                "language": "python",
+                "score": 4294967292,
+                "signature": "class Compose:\n    \"\"\" A composition of functions\n\n    See Also:\n        compose\n    \"\"\"\n    __slots__ = 'first', 'funcs'\n\n    def __init__(self, funcs):\n        funcs = tuple(reversed(funcs))\n        self.first = funcs[0]\n        self.funcs = funcs[1:]\n\n    def __call__(self, *args, **kwargs):\n        ret = self.first(*args, **kwargs)\n        for f in self.funcs:\n            ret = f(ret)\n        return ret\n\n    def __getstate__(self):\n        return self.first, self.funcs\n\n    def __setstate__(self, state):\n        self.first, self.funcs = state\n\n    @instanceproperty(classval=__doc__)\n    def __doc__(self):\n        def composed_doc(*fs):\n            \"\"\"Generate a docstring for the composition of fs.\n            \"\"\"\n            if not fs:\n                # Argument name for the docstring.\n                return '*args, **kwargs'\n\n            return f'",
+                "state": "ready",
+                "summary": "A composition of functions"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/tests/test_functoolz.py:527::generate_compose_test_cases",
+                  "key": "eb516d10",
+                  "line": 527,
+                  "name": "generate_compose_test_cases",
+                  "path": "toolz/tests/test_functoolz.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project",
+                  "segments": [
+                    "generate_compose_test_cases"
+                  ],
+                  "shape": "declaration",
+                  "trail": "project \u203a toolz/tests/test_functoolz.py:527 \u203a generate_compose_test_cases"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967291,
+                "signature": "def generate_compose_test_cases():\n    \"\"\"\n    Generate test cases for parametrized tests of the compose function.\n    \"\"\"\n\n    def add_then_multiply(a, b, c=10):\n        return (a + b) * c\n\n    return (\n        (\n            (),        # arguments to compose()\n            (0,),",
+                "state": "ready",
+                "summary": "Generate test cases for parametrized tests of the compose function."
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project::toolz/functoolz.py:681::do",
+                  "key": "f9ffe31a",
+                  "line": 681,
+                  "name": "do",
+                  "path": "toolz/functoolz.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-0c54c3fd/project",
+                  "segments": [
+                    "do"
+                  ],
+                  "shape": "declaration",
+                  "trail": "project \u203a toolz/functoolz.py:681 \u203a do"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967287,
+                "signature": "def do(func, x):",
+                "state": "ready",
+                "summary": "Runs ``func`` on ``x``, returns ``x``"
+              }
+            ],
+            "semantic_search": {
+              "reason": "unconfigured",
+              "status": "unavailable"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "owned_daemons_remaining": [],
+  "endpoint_remaining": true,
+  "source_unchanged": false
+}

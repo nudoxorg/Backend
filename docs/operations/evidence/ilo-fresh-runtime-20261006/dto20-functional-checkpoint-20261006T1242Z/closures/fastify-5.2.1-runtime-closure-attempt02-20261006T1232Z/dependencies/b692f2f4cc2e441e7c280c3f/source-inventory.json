@@ -1,0 +1,70 @@
+{
+  "files": [
+    {
+      "bytes": 240,
+      "path": ".github/dependabot.yml",
+      "sha256": "13115e4d00eb9918abe256e025fd4af4ea3caa7f6d9e41e138db1568df7cf105"
+    },
+    {
+      "bytes": 901,
+      "path": ".github/workflows/ci.yml",
+      "sha256": "21cf16fd27546e41b7d28d6616d6888560b8f6d8f6a2e8acf02a91e08a86f4fe"
+    },
+    {
+      "bytes": 1071,
+      "path": "LICENSE",
+      "sha256": "47404ffc18f1267832bc0623857871de5a3a93ebb19693f5e1b963af91fab54b"
+    },
+    {
+      "bytes": 1284,
+      "path": "README.md",
+      "sha256": "4088b4e0aa64d571a70d6ee152c14635a61a473dbf027aa3f86e3cf79b9f217e"
+    },
+    {
+      "bytes": 1964,
+      "path": "index.js",
+      "sha256": "62644681c8ee5c64d2c0b5c212bd842f12150980cd2d1a4222421f5a75ecb9cf"
+    },
+    {
+      "bytes": 876,
+      "path": "package.json",
+      "sha256": "6c6b59245a8a357ba616afd6e1b9bee4caf9c0ed01a21d8f81108ee120d76eb5"
+    },
+    {
+      "bytes": 603,
+      "path": "test/base.test.js",
+      "sha256": "37cc05830f82eedf41b52f628e146090dd37759a1721b8e2e7f7a7560859cf5c"
+    },
+    {
+      "bytes": 354,
+      "path": "test/event-emitter-leak.test.js",
+      "sha256": "581ba9404bdff4fc34a015606d352b162ab2675bc87801d5b56179fb69fd4cb3"
+    },
+    {
+      "bytes": 716,
+      "path": "test/fixtures/beforeExit.js",
+      "sha256": "b847c88806d717e560afed1a4bc0a71d71c4efdda5f4e14c0c3c67553ae7b06b"
+    },
+    {
+      "bytes": 369,
+      "path": "test/fixtures/close.js",
+      "sha256": "58d96b458a39043ac005df6bf341594eaf16edcdc4d2a0efc0686ff59acb6dec"
+    },
+    {
+      "bytes": 417,
+      "path": "test/fixtures/gc-not-close.js",
+      "sha256": "d8e71b9a71b102cb9acbf8c6ef688dc1ad2af1621dc8b0933b8928091c6a6fce"
+    },
+    {
+      "bytes": 451,
+      "path": "test/fixtures/unregister.js",
+      "sha256": "a5006f0eaffcd29c2e8c3d084661b81bbe2a7ccf0ed77c7eba1135a9485804c6"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "on-exit-leak-free",
+    "version": "2.1.2"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

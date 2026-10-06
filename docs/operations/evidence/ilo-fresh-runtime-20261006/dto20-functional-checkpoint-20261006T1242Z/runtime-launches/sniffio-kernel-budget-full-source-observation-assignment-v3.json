@@ -1,0 +1,1687 @@
+{
+  "schema": "nudox.retained-functional-journey-observation.v1",
+  "run": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd",
+  "manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "summary_sha256": "5a8a34b3fec8da66cddf8ff8013fe1ba27abdc4a7429c7698f9bdc842a9e89c9",
+  "wire_sha256": "44a0310c9b8b9717d6cf47e766946bd50b1567f27d32f2e07c75d50276847ee4",
+  "observer_sha256": "2191c0d163ae5034a22192065a3f5660d533b31397d505f46506e0b8bea2beb4",
+  "requested_witness": {
+    "path": "sniffio/_impl.py",
+    "line": 25
+  },
+  "requested_witness_present_in_resolution": true,
+  "healths": [
+    {
+      "label": "fresh-health",
+      "exit": 0,
+      "seconds": 3.561151,
+      "sequence": 0,
+      "rows": 0,
+      "fault": null
+    },
+    {
+      "label": "post-add-health",
+      "exit": 0,
+      "seconds": 0.083529,
+      "sequence": 2,
+      "rows": 76,
+      "fault": null
+    },
+    {
+      "label": "after-job-cancel-health",
+      "exit": 0,
+      "seconds": 0.079099,
+      "sequence": 4,
+      "rows": 76,
+      "fault": null
+    },
+    {
+      "label": "retry-health",
+      "exit": 0,
+      "seconds": 0.081345,
+      "sequence": 6,
+      "rows": 76,
+      "fault": null
+    },
+    {
+      "label": "edit-health",
+      "exit": 0,
+      "seconds": 0.091802,
+      "sequence": 8,
+      "rows": 76,
+      "fault": null
+    },
+    {
+      "label": "removed-health",
+      "exit": 0,
+      "seconds": 0.080788,
+      "sequence": 9,
+      "rows": 0,
+      "fault": null
+    },
+    {
+      "label": "readded-health",
+      "exit": 0,
+      "seconds": 0.080477,
+      "sequence": 11,
+      "rows": 76,
+      "fault": null
+    },
+    {
+      "label": "cold-health",
+      "exit": 0,
+      "seconds": 2.935911,
+      "sequence": 11,
+      "rows": 76,
+      "fault": null
+    }
+  ],
+  "command_timings": [
+    {
+      "label": "tool-node",
+      "exit": 0,
+      "seconds": 0.00937,
+      "stdout_bytes": 9
+    },
+    {
+      "label": "tool-tsc",
+      "exit": 0,
+      "seconds": 0.105408,
+      "stdout_bytes": 14
+    },
+    {
+      "label": "tool-python3",
+      "exit": 0,
+      "seconds": 0.002858,
+      "stdout_bytes": 15
+    },
+    {
+      "label": "tool-pyrefly",
+      "exit": 0,
+      "seconds": 0.003239,
+      "stdout_bytes": 20
+    },
+    {
+      "label": "tool-go",
+      "exit": 0,
+      "seconds": 0.002825,
+      "stdout_bytes": 32
+    },
+    {
+      "label": "fresh-health",
+      "exit": 0,
+      "seconds": 3.561151,
+      "stdout_bytes": 802
+    },
+    {
+      "label": "fresh-add",
+      "exit": 0,
+      "seconds": 3.149036,
+      "stdout_bytes": 356
+    },
+    {
+      "label": "post-add-health",
+      "exit": 0,
+      "seconds": 0.083529,
+      "stdout_bytes": 803
+    },
+    {
+      "label": "post-add-packages",
+      "exit": 0,
+      "seconds": 0.010491,
+      "stdout_bytes": 522
+    },
+    {
+      "label": "post-add-semantic-versions",
+      "exit": 0,
+      "seconds": 0.005649,
+      "stdout_bytes": 1101
+    },
+    {
+      "label": "query-search-current_async_library",
+      "exit": 0,
+      "seconds": 0.408001,
+      "stdout_bytes": 6041
+    },
+    {
+      "label": "query-resolve",
+      "exit": 0,
+      "seconds": 0.011537,
+      "stdout_bytes": 3924
+    },
+    {
+      "label": "query-outline-bare",
+      "exit": 0,
+      "seconds": 0.023586,
+      "stdout_bytes": 17354
+    },
+    {
+      "label": "query-outline-dot",
+      "exit": 0,
+      "seconds": 0.022486,
+      "stdout_bytes": 17354
+    },
+    {
+      "label": "query-outline-absolute",
+      "exit": 0,
+      "seconds": 0.021372,
+      "stdout_bytes": 17354
+    },
+    {
+      "label": "query-source-264ca80a",
+      "exit": 0,
+      "seconds": 0.010744,
+      "stdout_bytes": 8246
+    },
+    {
+      "label": "query-show-264ca80a",
+      "exit": 0,
+      "seconds": 0.036429,
+      "stdout_bytes": 11004
+    },
+    {
+      "label": "query-references-264ca80a",
+      "exit": 0,
+      "seconds": 0.003555,
+      "stdout_bytes": 342
+    },
+    {
+      "label": "query-graph-264ca80a",
+      "exit": 0,
+      "seconds": 0.013719,
+      "stdout_bytes": 5196
+    },
+    {
+      "label": "query-related-264ca80a",
+      "exit": 0,
+      "seconds": 0.011994,
+      "stdout_bytes": 5196
+    },
+    {
+      "label": "query-source-41658d6d",
+      "exit": 0,
+      "seconds": 0.00945,
+      "stdout_bytes": 1144
+    },
+    {
+      "label": "query-show-41658d6d",
+      "exit": 0,
+      "seconds": 0.035891,
+      "stdout_bytes": 1162
+    },
+    {
+      "label": "query-references-41658d6d",
+      "exit": 0,
+      "seconds": 0.003807,
+      "stdout_bytes": 347
+    },
+    {
+      "label": "query-graph-41658d6d",
+      "exit": 0,
+      "seconds": 0.012232,
+      "stdout_bytes": 1240
+    },
+    {
+      "label": "query-related-41658d6d",
+      "exit": 0,
+      "seconds": 0.012134,
+      "stdout_bytes": 1240
+    },
+    {
+      "label": "query-source-13a835a3",
+      "exit": 0,
+      "seconds": 0.011205,
+      "stdout_bytes": 1155
+    },
+    {
+      "label": "query-show-13a835a3",
+      "exit": 0,
+      "seconds": 0.037836,
+      "stdout_bytes": 1169
+    },
+    {
+      "label": "query-references-13a835a3",
+      "exit": 0,
+      "seconds": 0.008621,
+      "stdout_bytes": 342
+    },
+    {
+      "label": "query-graph-13a835a3",
+      "exit": 0,
+      "seconds": 0.012099,
+      "stdout_bytes": 1134
+    },
+    {
+      "label": "query-related-13a835a3",
+      "exit": 0,
+      "seconds": 0.011789,
+      "stdout_bytes": 1134
+    },
+    {
+      "label": "after-job-cancel-health",
+      "exit": 0,
+      "seconds": 0.079099,
+      "stdout_bytes": 803
+    },
+    {
+      "label": "retry-add",
+      "exit": 0,
+      "seconds": 3.224852,
+      "stdout_bytes": 356
+    },
+    {
+      "label": "retry-health",
+      "exit": 0,
+      "seconds": 0.081345,
+      "stdout_bytes": 803
+    },
+    {
+      "label": "retry-search-current_async_library",
+      "exit": 0,
+      "seconds": 0.310765,
+      "stdout_bytes": 6041
+    },
+    {
+      "label": "retry-resolve",
+      "exit": 0,
+      "seconds": 0.011914,
+      "stdout_bytes": 3924
+    },
+    {
+      "label": "edit-add",
+      "exit": 0,
+      "seconds": 3.52131,
+      "stdout_bytes": 356
+    },
+    {
+      "label": "edit-health",
+      "exit": 0,
+      "seconds": 0.091802,
+      "stdout_bytes": 803
+    },
+    {
+      "label": "edit-resolve",
+      "exit": 0,
+      "seconds": 0.011914,
+      "stdout_bytes": 3924
+    },
+    {
+      "label": "edit-source-264ca80a",
+      "exit": 0,
+      "seconds": 0.011412,
+      "stdout_bytes": 8248
+    },
+    {
+      "label": "edit-document-264ca80a",
+      "exit": 0,
+      "seconds": 0.039666,
+      "stdout_bytes": 11006
+    },
+    {
+      "label": "edit-source-41658d6d",
+      "exit": 0,
+      "seconds": 0.013965,
+      "stdout_bytes": 1144
+    },
+    {
+      "label": "edit-document-41658d6d",
+      "exit": 0,
+      "seconds": 0.037242,
+      "stdout_bytes": 1162
+    },
+    {
+      "label": "edit-source-13a835a3",
+      "exit": 0,
+      "seconds": 0.008574,
+      "stdout_bytes": 1155
+    },
+    {
+      "label": "edit-document-13a835a3",
+      "exit": 0,
+      "seconds": 0.036985,
+      "stdout_bytes": 1169
+    },
+    {
+      "label": "remove-project",
+      "exit": 0,
+      "seconds": 0.883071,
+      "stdout_bytes": 358
+    },
+    {
+      "label": "removed-health",
+      "exit": 0,
+      "seconds": 0.080788,
+      "stdout_bytes": 802
+    },
+    {
+      "label": "removed-source-264ca80a",
+      "exit": 2,
+      "seconds": 0.01165,
+      "stdout_bytes": 380
+    },
+    {
+      "label": "removed-show-264ca80a",
+      "exit": 2,
+      "seconds": 0.01075,
+      "stdout_bytes": 380
+    },
+    {
+      "label": "removed-references-264ca80a",
+      "exit": 2,
+      "seconds": 0.005096,
+      "stdout_bytes": 158
+    },
+    {
+      "label": "removed-graph-264ca80a",
+      "exit": 2,
+      "seconds": 0.010885,
+      "stdout_bytes": 436
+    },
+    {
+      "label": "removed-source-41658d6d",
+      "exit": 2,
+      "seconds": 0.011838,
+      "stdout_bytes": 385
+    },
+    {
+      "label": "removed-show-41658d6d",
+      "exit": 2,
+      "seconds": 0.010882,
+      "stdout_bytes": 385
+    },
+    {
+      "label": "removed-references-41658d6d",
+      "exit": 2,
+      "seconds": 0.004963,
+      "stdout_bytes": 158
+    },
+    {
+      "label": "removed-graph-41658d6d",
+      "exit": 2,
+      "seconds": 0.010886,
+      "stdout_bytes": 441
+    },
+    {
+      "label": "removed-source-13a835a3",
+      "exit": 2,
+      "seconds": 0.011353,
+      "stdout_bytes": 380
+    },
+    {
+      "label": "removed-show-13a835a3",
+      "exit": 2,
+      "seconds": 0.010832,
+      "stdout_bytes": 380
+    },
+    {
+      "label": "removed-references-13a835a3",
+      "exit": 2,
+      "seconds": 0.005162,
+      "stdout_bytes": 158
+    },
+    {
+      "label": "removed-graph-13a835a3",
+      "exit": 2,
+      "seconds": 0.010907,
+      "stdout_bytes": 436
+    },
+    {
+      "label": "readd-project",
+      "exit": 0,
+      "seconds": 2.842982,
+      "stdout_bytes": 356
+    },
+    {
+      "label": "readded-health",
+      "exit": 0,
+      "seconds": 0.080477,
+      "stdout_bytes": 804
+    },
+    {
+      "label": "readded-source-264ca80a",
+      "exit": 0,
+      "seconds": 0.010702,
+      "stdout_bytes": 8248
+    },
+    {
+      "label": "readded-show-264ca80a",
+      "exit": 0,
+      "seconds": 0.036163,
+      "stdout_bytes": 11006
+    },
+    {
+      "label": "readded-references-264ca80a",
+      "exit": 0,
+      "seconds": 0.003599,
+      "stdout_bytes": 342
+    },
+    {
+      "label": "readded-graph-264ca80a",
+      "exit": 0,
+      "seconds": 0.014558,
+      "stdout_bytes": 5196
+    },
+    {
+      "label": "readded-source-41658d6d",
+      "exit": 0,
+      "seconds": 0.010644,
+      "stdout_bytes": 1144
+    },
+    {
+      "label": "readded-show-41658d6d",
+      "exit": 0,
+      "seconds": 0.036121,
+      "stdout_bytes": 1162
+    },
+    {
+      "label": "readded-references-41658d6d",
+      "exit": 0,
+      "seconds": 0.004935,
+      "stdout_bytes": 347
+    },
+    {
+      "label": "readded-graph-41658d6d",
+      "exit": 0,
+      "seconds": 0.013984,
+      "stdout_bytes": 1240
+    },
+    {
+      "label": "readded-source-13a835a3",
+      "exit": 0,
+      "seconds": 0.011066,
+      "stdout_bytes": 1155
+    },
+    {
+      "label": "readded-show-13a835a3",
+      "exit": 0,
+      "seconds": 0.034943,
+      "stdout_bytes": 1169
+    },
+    {
+      "label": "readded-references-13a835a3",
+      "exit": 0,
+      "seconds": 0.004982,
+      "stdout_bytes": 342
+    },
+    {
+      "label": "readded-graph-13a835a3",
+      "exit": 0,
+      "seconds": 0.01209,
+      "stdout_bytes": 1134
+    },
+    {
+      "label": "cold-health",
+      "exit": 0,
+      "seconds": 2.935911,
+      "stdout_bytes": 804
+    },
+    {
+      "label": "cold-search-current_async_library",
+      "exit": 0,
+      "seconds": 0.413641,
+      "stdout_bytes": 6041
+    },
+    {
+      "label": "cold-source-264ca80a",
+      "exit": 0,
+      "seconds": 0.011332,
+      "stdout_bytes": 8248
+    },
+    {
+      "label": "cold-show-264ca80a",
+      "exit": 0,
+      "seconds": 0.039311,
+      "stdout_bytes": 11006
+    },
+    {
+      "label": "cold-references-264ca80a",
+      "exit": 0,
+      "seconds": 0.004534,
+      "stdout_bytes": 342
+    },
+    {
+      "label": "cold-graph-264ca80a",
+      "exit": 0,
+      "seconds": 0.01578,
+      "stdout_bytes": 5196
+    },
+    {
+      "label": "cold-source-41658d6d",
+      "exit": 0,
+      "seconds": 0.011409,
+      "stdout_bytes": 1144
+    },
+    {
+      "label": "cold-show-41658d6d",
+      "exit": 0,
+      "seconds": 0.03554,
+      "stdout_bytes": 1162
+    },
+    {
+      "label": "cold-references-41658d6d",
+      "exit": 0,
+      "seconds": 0.005209,
+      "stdout_bytes": 347
+    },
+    {
+      "label": "cold-graph-41658d6d",
+      "exit": 0,
+      "seconds": 0.012406,
+      "stdout_bytes": 1240
+    },
+    {
+      "label": "cold-source-13a835a3",
+      "exit": 0,
+      "seconds": 0.011173,
+      "stdout_bytes": 1155
+    },
+    {
+      "label": "cold-show-13a835a3",
+      "exit": 0,
+      "seconds": 0.036796,
+      "stdout_bytes": 1169
+    },
+    {
+      "label": "cold-references-13a835a3",
+      "exit": 0,
+      "seconds": 0.003724,
+      "stdout_bytes": 342
+    },
+    {
+      "label": "cold-graph-13a835a3",
+      "exit": 0,
+      "seconds": 0.012355,
+      "stdout_bytes": 1134
+    }
+  ],
+  "source_checks": [
+    {
+      "label": "query-source-264ca80a",
+      "source_version": 0,
+      "path": "sniffio/_impl.py",
+      "line": 25,
+      "source_sha256": "526505319a62b8eadc8e7b8786e62260cc5e08d59faaef6406568f7f4c64e97f",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 71,
+      "returned_body_bytes": 2291,
+      "actual_declaration_lines": 71,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "ba200a86340251d90c3ae62c878b79cd01262627ec3cc258a5078c2c41900f92"
+    },
+    {
+      "label": "query-show-264ca80a",
+      "source_version": 0,
+      "path": "sniffio/_impl.py",
+      "line": 25,
+      "source_sha256": "526505319a62b8eadc8e7b8786e62260cc5e08d59faaef6406568f7f4c64e97f",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 71,
+      "returned_body_bytes": 2291,
+      "actual_declaration_lines": 71,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "0e2396dccfa3b391174252c8fbc25a975b29706f905d7928311cb6fcb5a62a6b"
+    },
+    {
+      "label": "query-source-41658d6d",
+      "source_version": 0,
+      "path": "sniffio/_impl.py",
+      "line": 6,
+      "source_sha256": "526505319a62b8eadc8e7b8786e62260cc5e08d59faaef6406568f7f4c64e97f",
+      "source_node_kind": "Assign",
+      "returned_lines": 3,
+      "returned_body_bytes": 89,
+      "actual_declaration_lines": 3,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "9bf78e2d20715c80b71ffe2bb919e51f1e6fcdd5f92bff2bee2f90e667d3a15d"
+    },
+    {
+      "label": "query-show-41658d6d",
+      "source_version": 0,
+      "path": "sniffio/_impl.py",
+      "line": 6,
+      "source_sha256": "526505319a62b8eadc8e7b8786e62260cc5e08d59faaef6406568f7f4c64e97f",
+      "source_node_kind": "Assign",
+      "returned_lines": 3,
+      "returned_body_bytes": 89,
+      "actual_declaration_lines": 3,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "10db922d13d17a15439450d292d32fe3870a03488b29a51af02b20fc0c44a7f3"
+    },
+    {
+      "label": "edit-source-264ca80a",
+      "source_version": 1,
+      "path": "sniffio/_impl.py",
+      "line": 25,
+      "source_sha256": "0dc3b4c63a9974c53588e9da2e193ca2f640dbaabb15d392fbca5f363c962f65",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 71,
+      "returned_body_bytes": 2293,
+      "actual_declaration_lines": 71,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "a2dc18e97d24ede3088f8d0740aa62f9d6013c764165e6f86d0053ab9d8e58bf"
+    },
+    {
+      "label": "edit-document-264ca80a",
+      "source_version": 1,
+      "path": "sniffio/_impl.py",
+      "line": 25,
+      "source_sha256": "0dc3b4c63a9974c53588e9da2e193ca2f640dbaabb15d392fbca5f363c962f65",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 71,
+      "returned_body_bytes": 2293,
+      "actual_declaration_lines": 71,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "b7fc0a2cd54dd07c8ee3e0858f00b51cd262cd282ffc2df833ab991629704465"
+    },
+    {
+      "label": "edit-source-41658d6d",
+      "source_version": 1,
+      "path": "sniffio/_impl.py",
+      "line": 6,
+      "source_sha256": "0dc3b4c63a9974c53588e9da2e193ca2f640dbaabb15d392fbca5f363c962f65",
+      "source_node_kind": "Assign",
+      "returned_lines": 3,
+      "returned_body_bytes": 89,
+      "actual_declaration_lines": 3,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "9bf78e2d20715c80b71ffe2bb919e51f1e6fcdd5f92bff2bee2f90e667d3a15d"
+    },
+    {
+      "label": "edit-document-41658d6d",
+      "source_version": 1,
+      "path": "sniffio/_impl.py",
+      "line": 6,
+      "source_sha256": "0dc3b4c63a9974c53588e9da2e193ca2f640dbaabb15d392fbca5f363c962f65",
+      "source_node_kind": "Assign",
+      "returned_lines": 3,
+      "returned_body_bytes": 89,
+      "actual_declaration_lines": 3,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "10db922d13d17a15439450d292d32fe3870a03488b29a51af02b20fc0c44a7f3"
+    },
+    {
+      "label": "readded-source-264ca80a",
+      "source_version": 1,
+      "path": "sniffio/_impl.py",
+      "line": 25,
+      "source_sha256": "0dc3b4c63a9974c53588e9da2e193ca2f640dbaabb15d392fbca5f363c962f65",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 71,
+      "returned_body_bytes": 2293,
+      "actual_declaration_lines": 71,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "a2dc18e97d24ede3088f8d0740aa62f9d6013c764165e6f86d0053ab9d8e58bf"
+    },
+    {
+      "label": "readded-show-264ca80a",
+      "source_version": 1,
+      "path": "sniffio/_impl.py",
+      "line": 25,
+      "source_sha256": "0dc3b4c63a9974c53588e9da2e193ca2f640dbaabb15d392fbca5f363c962f65",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 71,
+      "returned_body_bytes": 2293,
+      "actual_declaration_lines": 71,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "b7fc0a2cd54dd07c8ee3e0858f00b51cd262cd282ffc2df833ab991629704465"
+    },
+    {
+      "label": "readded-source-41658d6d",
+      "source_version": 1,
+      "path": "sniffio/_impl.py",
+      "line": 6,
+      "source_sha256": "0dc3b4c63a9974c53588e9da2e193ca2f640dbaabb15d392fbca5f363c962f65",
+      "source_node_kind": "Assign",
+      "returned_lines": 3,
+      "returned_body_bytes": 89,
+      "actual_declaration_lines": 3,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "9bf78e2d20715c80b71ffe2bb919e51f1e6fcdd5f92bff2bee2f90e667d3a15d"
+    },
+    {
+      "label": "readded-show-41658d6d",
+      "source_version": 1,
+      "path": "sniffio/_impl.py",
+      "line": 6,
+      "source_sha256": "0dc3b4c63a9974c53588e9da2e193ca2f640dbaabb15d392fbca5f363c962f65",
+      "source_node_kind": "Assign",
+      "returned_lines": 3,
+      "returned_body_bytes": 89,
+      "actual_declaration_lines": 3,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "10db922d13d17a15439450d292d32fe3870a03488b29a51af02b20fc0c44a7f3"
+    },
+    {
+      "label": "cold-source-264ca80a",
+      "source_version": 1,
+      "path": "sniffio/_impl.py",
+      "line": 25,
+      "source_sha256": "0dc3b4c63a9974c53588e9da2e193ca2f640dbaabb15d392fbca5f363c962f65",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 71,
+      "returned_body_bytes": 2293,
+      "actual_declaration_lines": 71,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "a2dc18e97d24ede3088f8d0740aa62f9d6013c764165e6f86d0053ab9d8e58bf"
+    },
+    {
+      "label": "cold-show-264ca80a",
+      "source_version": 1,
+      "path": "sniffio/_impl.py",
+      "line": 25,
+      "source_sha256": "0dc3b4c63a9974c53588e9da2e193ca2f640dbaabb15d392fbca5f363c962f65",
+      "source_node_kind": "FunctionDef",
+      "returned_lines": 71,
+      "returned_body_bytes": 2293,
+      "actual_declaration_lines": 71,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "b7fc0a2cd54dd07c8ee3e0858f00b51cd262cd282ffc2df833ab991629704465"
+    },
+    {
+      "label": "cold-source-41658d6d",
+      "source_version": 1,
+      "path": "sniffio/_impl.py",
+      "line": 6,
+      "source_sha256": "0dc3b4c63a9974c53588e9da2e193ca2f640dbaabb15d392fbca5f363c962f65",
+      "source_node_kind": "Assign",
+      "returned_lines": 3,
+      "returned_body_bytes": 89,
+      "actual_declaration_lines": 3,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "9bf78e2d20715c80b71ffe2bb919e51f1e6fcdd5f92bff2bee2f90e667d3a15d"
+    },
+    {
+      "label": "cold-show-41658d6d",
+      "source_version": 1,
+      "path": "sniffio/_impl.py",
+      "line": 6,
+      "source_sha256": "0dc3b4c63a9974c53588e9da2e193ca2f640dbaabb15d392fbca5f363c962f65",
+      "source_node_kind": "Assign",
+      "returned_lines": 3,
+      "returned_body_bytes": 89,
+      "actual_declaration_lines": 3,
+      "extent": "complete",
+      "exact_source_prefix": true,
+      "exact_complete_declaration": true,
+      "stdout_sha256": "10db922d13d17a15439450d292d32fe3870a03488b29a51af02b20fc0c44a7f3"
+    }
+  ],
+  "cli_mcp_parities": [
+    {
+      "cli_label": "query-source-264ca80a",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "ba200a86340251d90c3ae62c878b79cd01262627ec3cc258a5078c2c41900f92",
+      "mcp_reply_wire_line": 74
+    },
+    {
+      "cli_label": "query-show-264ca80a",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "0e2396dccfa3b391174252c8fbc25a975b29706f905d7928311cb6fcb5a62a6b",
+      "mcp_reply_wire_line": 76
+    },
+    {
+      "cli_label": "query-references-264ca80a",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "1cf6f5be426fdae7caf1c70cd9592e33efabbe7379c0f10c225319a93ebc85a9",
+      "mcp_reply_wire_line": 78
+    },
+    {
+      "cli_label": "query-graph-264ca80a",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "48dc53f6cd54cbb43f17c39308d92b9779352ef3efef0c6aa34731c1c1371f8e",
+      "mcp_reply_wire_line": 80
+    },
+    {
+      "cli_label": "query-source-41658d6d",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "9bf78e2d20715c80b71ffe2bb919e51f1e6fcdd5f92bff2bee2f90e667d3a15d",
+      "mcp_reply_wire_line": 87
+    },
+    {
+      "cli_label": "query-show-41658d6d",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "10db922d13d17a15439450d292d32fe3870a03488b29a51af02b20fc0c44a7f3",
+      "mcp_reply_wire_line": 89
+    },
+    {
+      "cli_label": "query-references-41658d6d",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "7b20e283a129430a32d9efacb395813656528e914c77f303502888531f2f52d2",
+      "mcp_reply_wire_line": 91
+    },
+    {
+      "cli_label": "query-graph-41658d6d",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "f1347b525524774df1386d1884406615aaa8643812039d766287fa309907763d",
+      "mcp_reply_wire_line": 93
+    },
+    {
+      "cli_label": "query-source-13a835a3",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "29380d0b4166ff1247849229e0e7848bb3a35e9ae6765941384f62cbb0445e79",
+      "mcp_reply_wire_line": 100
+    },
+    {
+      "cli_label": "query-show-13a835a3",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "775a3cc4f2b41041b20bdaeb3320626c9ea3f91d5455ad044c5df60747e2d1e1",
+      "mcp_reply_wire_line": 102
+    },
+    {
+      "cli_label": "query-references-13a835a3",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "b2b21e68955663a11236939e608fd032116c4ba9ab0e0c9c04370a42134b02ab",
+      "mcp_reply_wire_line": 104
+    },
+    {
+      "cli_label": "query-graph-13a835a3",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "560b9a161acce0d68ce909b8ed011f402451c1a1cece5f3dbb167111ea3c13b4",
+      "mcp_reply_wire_line": 106
+    },
+    {
+      "cli_label": "removed-source-264ca80a",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "0bcc859627c7aff3b937e75fb9f4f76362eeeb1347c21bf5d9fdb9ce029f3b95",
+      "mcp_reply_wire_line": 148
+    },
+    {
+      "cli_label": "removed-show-264ca80a",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "0bcc859627c7aff3b937e75fb9f4f76362eeeb1347c21bf5d9fdb9ce029f3b95",
+      "mcp_reply_wire_line": 150
+    },
+    {
+      "cli_label": "removed-references-264ca80a",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1",
+      "mcp_reply_wire_line": 152
+    },
+    {
+      "cli_label": "removed-graph-264ca80a",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "550aa8cf0643a27e1e0a4bc181e19c5c194c3ef9a60512ce8d64a0c85ede56d0",
+      "mcp_reply_wire_line": 154
+    },
+    {
+      "cli_label": "removed-source-41658d6d",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "0a47fb1cafaadcb9fec2c0854684bf886b4d293be01f7a81789b56bf8da387ca",
+      "mcp_reply_wire_line": 160
+    },
+    {
+      "cli_label": "removed-show-41658d6d",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "0a47fb1cafaadcb9fec2c0854684bf886b4d293be01f7a81789b56bf8da387ca",
+      "mcp_reply_wire_line": 162
+    },
+    {
+      "cli_label": "removed-references-41658d6d",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1",
+      "mcp_reply_wire_line": 164
+    },
+    {
+      "cli_label": "removed-graph-41658d6d",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "e870a15cd6be3ac191f48db7b0ea7f3d4e9e80f32446b158828f6327d2426f9f",
+      "mcp_reply_wire_line": 166
+    },
+    {
+      "cli_label": "removed-source-13a835a3",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "01913ec2b813ff317eff2665240f2aa8bfff95e7b17930fe04ce79793a87238a",
+      "mcp_reply_wire_line": 172
+    },
+    {
+      "cli_label": "removed-show-13a835a3",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "01913ec2b813ff317eff2665240f2aa8bfff95e7b17930fe04ce79793a87238a",
+      "mcp_reply_wire_line": 174
+    },
+    {
+      "cli_label": "removed-references-13a835a3",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1",
+      "mcp_reply_wire_line": 176
+    },
+    {
+      "cli_label": "removed-graph-13a835a3",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "00ae925aefe87d134c260cfbebec01211e4c146b26e9806ad540df727d8ac62c",
+      "mcp_reply_wire_line": 178
+    },
+    {
+      "cli_label": "readded-source-264ca80a",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "a2dc18e97d24ede3088f8d0740aa62f9d6013c764165e6f86d0053ab9d8e58bf",
+      "mcp_reply_wire_line": 186
+    },
+    {
+      "cli_label": "readded-show-264ca80a",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "b7fc0a2cd54dd07c8ee3e0858f00b51cd262cd282ffc2df833ab991629704465",
+      "mcp_reply_wire_line": 188
+    },
+    {
+      "cli_label": "readded-references-264ca80a",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "1cf6f5be426fdae7caf1c70cd9592e33efabbe7379c0f10c225319a93ebc85a9",
+      "mcp_reply_wire_line": 190
+    },
+    {
+      "cli_label": "readded-graph-264ca80a",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "d49a85de797043c4f559bdf2433ab25ae25690c1491c07eb1e8fba91f83f1a25",
+      "mcp_reply_wire_line": 192
+    },
+    {
+      "cli_label": "readded-source-41658d6d",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "9bf78e2d20715c80b71ffe2bb919e51f1e6fcdd5f92bff2bee2f90e667d3a15d",
+      "mcp_reply_wire_line": 198
+    },
+    {
+      "cli_label": "readded-show-41658d6d",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "10db922d13d17a15439450d292d32fe3870a03488b29a51af02b20fc0c44a7f3",
+      "mcp_reply_wire_line": 200
+    },
+    {
+      "cli_label": "readded-references-41658d6d",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "7b20e283a129430a32d9efacb395813656528e914c77f303502888531f2f52d2",
+      "mcp_reply_wire_line": 202
+    },
+    {
+      "cli_label": "readded-graph-41658d6d",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "f1347b525524774df1386d1884406615aaa8643812039d766287fa309907763d",
+      "mcp_reply_wire_line": 204
+    },
+    {
+      "cli_label": "readded-source-13a835a3",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "29380d0b4166ff1247849229e0e7848bb3a35e9ae6765941384f62cbb0445e79",
+      "mcp_reply_wire_line": 210
+    },
+    {
+      "cli_label": "readded-show-13a835a3",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "775a3cc4f2b41041b20bdaeb3320626c9ea3f91d5455ad044c5df60747e2d1e1",
+      "mcp_reply_wire_line": 212
+    },
+    {
+      "cli_label": "readded-references-13a835a3",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "b2b21e68955663a11236939e608fd032116c4ba9ab0e0c9c04370a42134b02ab",
+      "mcp_reply_wire_line": 214
+    },
+    {
+      "cli_label": "readded-graph-13a835a3",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "560b9a161acce0d68ce909b8ed011f402451c1a1cece5f3dbb167111ea3c13b4",
+      "mcp_reply_wire_line": 216
+    },
+    {
+      "cli_label": "cold-source-264ca80a",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "a2dc18e97d24ede3088f8d0740aa62f9d6013c764165e6f86d0053ab9d8e58bf",
+      "mcp_reply_wire_line": 237
+    },
+    {
+      "cli_label": "cold-show-264ca80a",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "b7fc0a2cd54dd07c8ee3e0858f00b51cd262cd282ffc2df833ab991629704465",
+      "mcp_reply_wire_line": 239
+    },
+    {
+      "cli_label": "cold-references-264ca80a",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "1cf6f5be426fdae7caf1c70cd9592e33efabbe7379c0f10c225319a93ebc85a9",
+      "mcp_reply_wire_line": 241
+    },
+    {
+      "cli_label": "cold-graph-264ca80a",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "d49a85de797043c4f559bdf2433ab25ae25690c1491c07eb1e8fba91f83f1a25",
+      "mcp_reply_wire_line": 243
+    },
+    {
+      "cli_label": "cold-source-41658d6d",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "9bf78e2d20715c80b71ffe2bb919e51f1e6fcdd5f92bff2bee2f90e667d3a15d",
+      "mcp_reply_wire_line": 249
+    },
+    {
+      "cli_label": "cold-show-41658d6d",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "10db922d13d17a15439450d292d32fe3870a03488b29a51af02b20fc0c44a7f3",
+      "mcp_reply_wire_line": 251
+    },
+    {
+      "cli_label": "cold-references-41658d6d",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "7b20e283a129430a32d9efacb395813656528e914c77f303502888531f2f52d2",
+      "mcp_reply_wire_line": 253
+    },
+    {
+      "cli_label": "cold-graph-41658d6d",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exact_parity": true,
+      "cli_stdout_sha256": "f1347b525524774df1386d1884406615aaa8643812039d766287fa309907763d",
+      "mcp_reply_wire_line": 255
+    },
+    {
+      "cli_label": "cold-source-13a835a3",
+      "tool": "source",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "29380d0b4166ff1247849229e0e7848bb3a35e9ae6765941384f62cbb0445e79",
+      "mcp_reply_wire_line": 261
+    },
+    {
+      "cli_label": "cold-show-13a835a3",
+      "tool": "document",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "775a3cc4f2b41041b20bdaeb3320626c9ea3f91d5455ad044c5df60747e2d1e1",
+      "mcp_reply_wire_line": 263
+    },
+    {
+      "cli_label": "cold-references-13a835a3",
+      "tool": "references",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "b2b21e68955663a11236939e608fd032116c4ba9ab0e0c9c04370a42134b02ab",
+      "mcp_reply_wire_line": 265
+    },
+    {
+      "cli_label": "cold-graph-13a835a3",
+      "tool": "graph",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exact_parity": true,
+      "cli_stdout_sha256": "560b9a161acce0d68ce909b8ed011f402451c1a1cece5f3dbb167111ea3c13b4",
+      "mcp_reply_wire_line": 267
+    }
+  ],
+  "references": [
+    {
+      "label": "query-references-264ca80a",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "1cf6f5be426fdae7caf1c70cd9592e33efabbe7379c0f10c225319a93ebc85a9"
+    },
+    {
+      "label": "query-references-41658d6d",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "7b20e283a129430a32d9efacb395813656528e914c77f303502888531f2f52d2"
+    },
+    {
+      "label": "query-references-13a835a3",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "b2b21e68955663a11236939e608fd032116c4ba9ab0e0c9c04370a42134b02ab"
+    },
+    {
+      "label": "removed-references-264ca80a",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exit": 2,
+      "records": [],
+      "stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1"
+    },
+    {
+      "label": "removed-references-41658d6d",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exit": 2,
+      "records": [],
+      "stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1"
+    },
+    {
+      "label": "removed-references-13a835a3",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exit": 2,
+      "records": [],
+      "stdout_sha256": "69cb83cff8b2a9c6ad689db2d19bc0c0ecc7658439e501b08c31b8b3ec21b1a1"
+    },
+    {
+      "label": "readded-references-264ca80a",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "1cf6f5be426fdae7caf1c70cd9592e33efabbe7379c0f10c225319a93ebc85a9"
+    },
+    {
+      "label": "readded-references-41658d6d",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "7b20e283a129430a32d9efacb395813656528e914c77f303502888531f2f52d2"
+    },
+    {
+      "label": "readded-references-13a835a3",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "b2b21e68955663a11236939e608fd032116c4ba9ab0e0c9c04370a42134b02ab"
+    },
+    {
+      "label": "cold-references-264ca80a",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "1cf6f5be426fdae7caf1c70cd9592e33efabbe7379c0f10c225319a93ebc85a9"
+    },
+    {
+      "label": "cold-references-41658d6d",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "7b20e283a129430a32d9efacb395813656528e914c77f303502888531f2f52d2"
+    },
+    {
+      "label": "cold-references-13a835a3",
+      "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+      "exit": 0,
+      "records": [],
+      "stdout_sha256": "b2b21e68955663a11236939e608fd032116c4ba9ab0e0c9c04370a42134b02ab"
+    }
+  ],
+  "largest_mcp_replies": [
+    {
+      "wire_line": 19,
+      "bytes": 18855,
+      "estimated_tokens": 4714
+    },
+    {
+      "wire_line": 225,
+      "bytes": 18855,
+      "estimated_tokens": 4714
+    },
+    {
+      "wire_line": 188,
+      "bytes": 17735,
+      "estimated_tokens": 4434
+    },
+    {
+      "wire_line": 239,
+      "bytes": 17734,
+      "estimated_tokens": 4434
+    },
+    {
+      "wire_line": 76,
+      "bytes": 17731,
+      "estimated_tokens": 4433
+    }
+  ],
+  "source_edits": [
+    {
+      "kind": "source-edit",
+      "utc": "2026-10-06T12:30:26Z",
+      "path": "sniffio/_impl.py",
+      "before_sha256": "526505319a62b8eadc8e7b8786e62260cc5e08d59faaef6406568f7f4c64e97f",
+      "after_sha256": "0dc3b4c63a9974c53588e9da2e193ca2f640dbaabb15d392fbca5f363c962f65",
+      "tree_after": {
+        "files": [
+          [
+            ".coveragerc",
+            113,
+            "65ffa174b8933e4880c433bc72a3c7471aef94474cca1b2828ed2cb697d46777"
+          ],
+          [
+            ".github/workflows/ci.yml",
+            2548,
+            "74a9a23e2b1d50327f97684cbc71e5772bb0a10a9ad2dcff659bec7f962b11bb"
+          ],
+          [
+            ".gitignore",
+            580,
+            "86d984e706d86c867140cd151ed44890add7d87e7b67029327a2c80f6219ee79"
+          ],
+          [
+            ".mypy.ini",
+            291,
+            "f11d0567303decadf7b7bed63bd38143a0718642f768b7b293dc84b9d8637d2f"
+          ],
+          [
+            ".readthedocs.yml",
+            217,
+            "696418eeef736ea7c2b84e55a0aa85c0b06527218f1ea32bd1ff5bd7341438c1"
+          ],
+          [
+            ".style.yapf",
+            5373,
+            "d7409ca2b0af720d00c1f22ef7ec6d42d9a6b605f9e0f6da5dcb4ca2e7318f45"
+          ],
+          [
+            "CHEATSHEET.rst",
+            793,
+            "e4f67ae7f0c936e0d7bc5a090342639040652f38a4c1256dc03f59e3bcbfe95d"
+          ],
+          [
+            "CODE_OF_CONDUCT.md",
+            98,
+            "0970720de8685d59a5a0a4eebc932c6e4077e6b1e49d9343bc2913d542e57cf8"
+          ],
+          [
+            "CONTRIBUTING.md",
+            98,
+            "53c8a65f76c2cbfbece30f67557768b50cd1cbb8d469f2df6188ef541f4ee781"
+          ],
+          [
+            "LICENSE",
+            185,
+            "652c878488d1456361e08c3f8607fd7ba59892a14103d15cce4ff93c85b5cc8b"
+          ],
+          [
+            "LICENSE.APACHE2",
+            11358,
+            "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          ],
+          [
+            "LICENSE.MIT",
+            1046,
+            "3e6dae555eb92787fc82d1d48355677f454c7f65aeb38d3f9e72bf9a3daf034b"
+          ],
+          [
+            "MANIFEST.in",
+            178,
+            "770589c998ac1b3bf48f82f579590a1a6565de16004cb5c8dd38b7c6cb264fdb"
+          ],
+          [
+            "PKG-INFO",
+            3875,
+            "0b318b57098edeccf585e60a889a6b6a7b5c4086f3a9aa62eff76a1d3cee12d9"
+          ],
+          [
+            "README.rst",
+            2585,
+            "a685019fb91c5b5467957c84bee75b529fe2728fea28bf8296797c7b89fee742"
+          ],
+          [
+            "ci/rtd-requirements.txt",
+            123,
+            "dd54b80796d51cd993e8f2ff9b3dbb068f3fe4a925b99b4e5adcc6b7bf102de6"
+          ],
+          [
+            "ci.sh",
+            1339,
+            "dee8dc1d98148ccc2d6fcfa1c690327c6bde81ad8fddee2f343c28aa77fc273d"
+          ],
+          [
+            "docs/Makefile",
+            609,
+            "226c5d7667d0d7425e0c7ee7391959c2ad41cc25c76035c3e9429cc82427293e"
+          ],
+          [
+            "docs/make.bat",
+            779,
+            "1236bd760bd45d648503e5803b967f46b7ca5ed41cdb40dbbeb82d8cdf5eed11"
+          ],
+          [
+            "docs/source/_static/.gitkeep",
+            0,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          ],
+          [
+            "docs/source/conf.py",
+            5921,
+            "ba213e319ff4bce56afa4132c8d0ae4bcbdf6106a09e474b2eb7928d2a41872f"
+          ],
+          [
+            "docs/source/history.rst",
+            1127,
+            "99bdaf068428d36d1d1f210d0226a1462b45b97180f444b2f0b1f2521dde939a"
+          ],
+          [
+            "docs/source/index.rst",
+            3381,
+            "114dd218ca69969e403fe6b59a78a900d8553601f0a12299f446698c05b57171"
+          ],
+          [
+            "newsfragments/.gitkeep",
+            0,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          ],
+          [
+            "newsfragments/README.rst",
+            1393,
+            "38a41ac35934b971fc390c2f5d7914fb4305f84304e7a1bf31ed7a8608fe9309"
+          ],
+          [
+            "pyproject.toml",
+            1577,
+            "5570023cd5a78043e6edc8727ceb34d40124194eae2dfc419c8d3ce58542d927"
+          ],
+          [
+            "setup.cfg",
+            42,
+            "a29823dd9fbb34b0b00c45fe5823d7c25a3133805e072cad4920cf76dee85bfa"
+          ],
+          [
+            "sniffio/__init__.py",
+            335,
+            "f562442655eeef296e3f462d239490f4cf4e4d07db34791a75aacad6f5c60cf3"
+          ],
+          [
+            "sniffio/_impl.py",
+            2845,
+            "0dc3b4c63a9974c53588e9da2e193ca2f640dbaabb15d392fbca5f363c962f65"
+          ],
+          [
+            "sniffio/_tests/__init__.py",
+            0,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          ],
+          [
+            "sniffio/_tests/test_sniffio.py",
+            2058,
+            "30c2596498d0ad48bde5100d34cf9aff9e4166ab80fe0bf8ac7535a5ebdc4c23"
+          ],
+          [
+            "sniffio/_version.py",
+            89,
+            "8957ace71c2c1de4734037b105a021cb1fed68db76b9c7c0ec2580a38403b7a4"
+          ],
+          [
+            "sniffio/py.typed",
+            0,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          ],
+          [
+            "sniffio.egg-info/PKG-INFO",
+            3875,
+            "0b318b57098edeccf585e60a889a6b6a7b5c4086f3a9aa62eff76a1d3cee12d9"
+          ],
+          [
+            "sniffio.egg-info/SOURCES.txt",
+            689,
+            "2d3345d3b5675147d0b5601c222bcfbbc19ef1e5109b3ac076ef87615a2a50f3"
+          ],
+          [
+            "sniffio.egg-info/dependency_links.txt",
+            1,
+            "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+          ],
+          [
+            "sniffio.egg-info/top_level.txt",
+            8,
+            "bfd5095c6b390b275d095780a979108963aba69e96b71e86791acfb7dfa38c78"
+          ],
+          [
+            "test-requirements.txt",
+            24,
+            "7b3cb6d2163cd588ed5a77ec6f449fcb5654e07cf3bf2e71a850ce0c08641a15"
+          ]
+        ],
+        "sha256": "1ab430c35d92c124b0590ee7d4edfc971c1d4e95ed112ca0efbd1b97ef603cf1"
+      }
+    }
+  ],
+  "pagination": [
+    {
+      "kind": "pagination-observation",
+      "utc": "2026-10-06T12:30:21Z",
+      "query": "current_async_library",
+      "pages": 7,
+      "records": 7,
+      "coordinates": [
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1cd82202b690e4e285c3bca481c8a3fffe1c03d422279128d3cd5f555f7e3f81::current_async_library",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::811710de04b8329d6d7c78943652a5f4f93b31132c705003e069c60e9cbd0603::current_async_library",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::06e32a4449d4381dc7138996dc835132f93b31132c705003e069c60e9cbd0603::current_async_library",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::29be368cd7d26fff49c0249e34ba01821281dfc8361fa2e743d74829ddfb18df::current_async_library_cvar",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::31eab7ec5614a85642e111afc034a6b31281dfc8361fa2e743d74829ddfb18df::current_async_library_cvar",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project::semantic::1aaf0d38b327aab77fac9afe6e448f23bc29de303fa51f3fe8479df8e71c5e1f::current_async_library_cvar",
+        "external semantic target"
+      ],
+      "duplicate_coordinates": false,
+      "unresolved_cursor": null
+    }
+  ],
+  "cancellation": [
+    {
+      "kind": "job-ticket-discovery",
+      "utc": "2026-10-06T12:30:21Z",
+      "ticket": {
+        "id": 2,
+        "owner_epoch": [
+          198,
+          169,
+          244,
+          64,
+          40,
+          8,
+          207,
+          227,
+          203,
+          139,
+          92,
+          37,
+          201,
+          231,
+          117,
+          104
+        ],
+        "package": {
+          "kind": "local",
+          "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project"
+        }
+      },
+      "reply": {
+        "id": 34,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "# index-start\nindex job 2 started  \u00b7  stage scanning \u00b7 poll index_progress\n`{\"id\":2,\"owner_epoch\":[198,169,244,64,40,8,207,227,203,139,92,37,201,231,117,104],\"package\":{\"kind\":\"local\",\"value\":\"/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project\"}}`\n1 row(s)\npoll `backend.index_progress` with the exact ticket shown above (after_sequence 0)\n",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "answer": "surface",
+            "budget": {
+              "bytes": 748,
+              "bytesPerToken": 4,
+              "estimatedTokens": 187
+            },
+            "detail": "full",
+            "surface": {
+              "data": {
+                "data": {
+                  "stage": "scanning",
+                  "ticket": {
+                    "id": 2,
+                    "owner_epoch": [
+                      198,
+                      169,
+                      244,
+                      64,
+                      40,
+                      8,
+                      207,
+                      227,
+                      203,
+                      139,
+                      92,
+                      37,
+                      201,
+                      231,
+                      117,
+                      104
+                    ],
+                    "package": {
+                      "kind": "local",
+                      "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project"
+                    }
+                  }
+                },
+                "state": "started"
+              },
+              "index_job": {
+                "kind": "started",
+                "value": {
+                  "data": {
+                    "stage": "scanning",
+                    "ticket": {
+                      "id": 2,
+                      "owner_epoch": [
+                        198,
+                        169,
+                        244,
+                        64,
+                        40,
+                        8,
+                        207,
+                        227,
+                        203,
+                        139,
+                        92,
+                        37,
+                        201,
+                        231,
+                        117,
+                        104
+                      ],
+                      "package": {
+                        "kind": "local",
+                        "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-283108bd/project"
+                      }
+                    }
+                  },
+                  "state": "started"
+                }
+              },
+              "result": "index-started"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "journey_error": null,
+  "whole_package_pass": false,
+  "original_acquired_source_mutated": false,
+  "source_witnesses_are_not_compiler_bindings": true
+}

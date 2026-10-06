@@ -1,0 +1,119 @@
+{
+  "schema": "nudox.source-verified-stratified-dossier.v1",
+  "package": {
+    "ecosystem": "pypi",
+    "id": "idna",
+    "version": "3.20"
+  },
+  "source_root": "/root/nudox-corpus-20261006/artifacts/stratified-async-unicode-python-dossiers-20261006T1230Z/pypi-idna/source",
+  "source_tree_sha256": "97646c20dd3c23e4398da6bfb2947fdd886d40282d4d6c6df74aefca96369cdc",
+  "source_files": 31,
+  "source_bytes": 1944577,
+  "inventory_sha256": "8373839c51fa51b45fb0ec9b1bf35fd7843662d5a5b2154a9f1babd76d8f01b1",
+  "origin_sha256": "828f46063bc1f0b5906da5143af8bb2626ebd22660100466cdbbfe991d10f6fc",
+  "archive_sha256": "a7db850025b95ded1eae8a46181a1a6c56c92c96f0e2b005d9ff8dc0210cab44",
+  "origin_verified": true,
+  "archives_reused": false,
+  "acquisition_requests": [
+    {
+      "url": "https://pypi.org/pypi/idna/json",
+      "final_url": "https://pypi.org/pypi/idna/json",
+      "status": 200,
+      "seconds": 0.05392443004529923,
+      "bytes": 65706,
+      "sha256": "724599748057193c3fa6f98e11c76d7acc14a7b0d005bc2a506fc8e2ec41c117",
+      "utc": "2026-10-06T12:28:42Z"
+    },
+    {
+      "url": "https://files.pythonhosted.org/packages/f5/08/8eea9d4b8302028f3abb2c0813953f7aec26d33b7a8960ed760e65ff29fa/idna-3.20.tar.gz",
+      "final_url": "https://files.pythonhosted.org/packages/f5/08/8eea9d4b8302028f3abb2c0813953f7aec26d33b7a8960ed760e65ff29fa/idna-3.20.tar.gz",
+      "status": 200,
+      "seconds": 0.04177626594901085,
+      "bytes": 216463,
+      "sha256": "a7db850025b95ded1eae8a46181a1a6c56c92c96f0e2b005d9ff8dc0210cab44",
+      "utc": "2026-10-06T12:28:42Z"
+    }
+  ],
+  "resource_before": {
+    "memory_available_kib": 58879012,
+    "free_disk_bytes": 54024515584
+  },
+  "dependency_requirements": {
+    "requires_dist": [
+      "ruff>=0.16.0; extra == \"all\"",
+      "mypy>=1.11.2; extra == \"all\"",
+      "ty>=0.0.37; extra == \"all\"",
+      "pytest>=8.3.2; extra == \"all\"",
+      "hypothesis>=6.141.1; extra == \"all\"",
+      "coverage>=7.10.0; extra == \"all\""
+    ]
+  },
+  "dependency_closure_installed": false,
+  "source_expectations": [
+    {
+      "name": "encode",
+      "path": "idna/codec.py",
+      "line": 20,
+      "end_line": 27,
+      "kind": "FunctionDef",
+      "file_sha256": "7dff4247d75e6e265cbea1261f10d122ba9299a371429cfa018e091ec0b7602d",
+      "start_byte": 575,
+      "end_byte": 903,
+      "declaration_sha256": "2e8c5db9fcca140e420410d046aebdb68b6448b3840eea3784f5b40e053789fd",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "decode",
+      "path": "idna/codec.py",
+      "line": 29,
+      "end_line": 36,
+      "kind": "FunctionDef",
+      "file_sha256": "7dff4247d75e6e265cbea1261f10d122ba9299a371429cfa018e091ec0b7602d",
+      "start_byte": 909,
+      "end_byte": 1236,
+      "declaration_sha256": "19db0bd617abd4c35213ccb415bb4a44c29d68524bca4ec6255eb8dc3baf2178",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "check_label",
+      "path": "idna/core.py",
+      "line": 442,
+      "end_line": 521,
+      "kind": "FunctionDef",
+      "file_sha256": "3dd4c3ffee4ff223207fac65f3812a1e6895ae8ad1e7a6ed60115768f3551520",
+      "start_byte": 15401,
+      "end_byte": 18890,
+      "declaration_sha256": "3de54fdfa77f9ef126e2c26e4e3b0c6e53c3699c65f81423d83f440c75de81ba",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "encode",
+      "path": "idna/core.py",
+      "line": 732,
+      "end_line": 796,
+      "kind": "FunctionDef",
+      "file_sha256": "3dd4c3ffee4ff223207fac65f3812a1e6895ae8ad1e7a6ed60115768f3551520",
+      "start_byte": 27453,
+      "end_byte": 29976,
+      "declaration_sha256": "fe17295498a6265a3bf4f0f10c5dfd5c7caf34159ddec559587a323310d65271",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "decode",
+      "path": "idna/core.py",
+      "line": 799,
+      "end_line": 863,
+      "kind": "FunctionDef",
+      "file_sha256": "3dd4c3ffee4ff223207fac65f3812a1e6895ae8ad1e7a6ed60115768f3551520",
+      "start_byte": 29979,
+      "end_byte": 32579,
+      "declaration_sha256": "5f6339918dc6ada0b91ad9783cb1f3ee6dd1180aa58427d0140a473ca921ec48",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    }
+  ],
+  "runtime_acceptance_status": "not_run",
+  "runtime_passes": 0,
+  "package_code_executed": false,
+  "observer_sha256": "a6376b24c31c9a2b12cec4ed9d77a970fd3590e611cb885832ce28542688ef58",
+  "origin_verifier_sha256": "1ef8275b8e6daa9bfe711d05d367316b09635061b4cb9ca147816c6bed3a3039"
+}

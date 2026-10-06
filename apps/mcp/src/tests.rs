@@ -129,18 +129,12 @@ fn request_encoding_rejects_a_certificate_for_another_package() {
 
 #[test]
 fn injected_transport_checks_basis_and_freshness() {
-    let request = CommandDto::new(
-        9,
-        Command::Search(Query::new(
-            "Thing",
-            view_state_root(&[]),
-            QueryLimit::default(),
-        )),
-    );
+    let query = Query::new("Thing", view_state_root(&[]), QueryLimit::default());
+    let request = CommandDto::new(9, Command::Search(query.clone()));
     let basis = Basis::new(view_state_root(&[]), object_version(b"source"));
     let snapshot = ViewSnapshot {
         root: ViewRoot::new_incomplete(
-            view_key(b"view"),
+            backend_library::QueryPageRecipe::search(basis.root, &query).identity(),
             basis,
             Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
             Vec::new(),

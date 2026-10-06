@@ -1,0 +1,202 @@
+
+running 1 test
+
+thread 'builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations' (14915124) panicked at crates/local-service/src/builtin/generation_residence.rs:891:9:
+all isolated compiler-backed fixture pairs failed:
+/nix/store/fph2n9bsdydhbrllwzybvb7diqilqvqj-clang-wrapper-21.1.8/bin/clang + /nix/store/1vq4acka3qk51gk5sxhyf1a93i9vmfdk-clang-21.1.8-lib/lib/libclang.dylib:
+
+running 1 test
+test builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations ... FAILED
+
+failures:
+
+failures:
+    builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 2.16s
+
+
+thread 'builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations' (14915557) panicked at crates/local-service/src/builtin/generation_residence.rs:1943:33:
+generation B marker commits after generation A CAS: BuiltinModelError("open history after generation A CAS: semantic range CAS requires 16 KiB chunks and frame headroom")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+/nix/store/rwsbw420hcq148hifv7fga6r4g0k1dw8-clang-wrapper-21.1.8/bin/clang + /nix/store/s8dm60kfi55qlwk1j1whp0jj7j11s29d-clang-21.1.8-lib/lib/libclang.dylib:
+
+running 1 test
+test builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations ... FAILED
+
+failures:
+
+failures:
+    builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 2.18s
+
+
+thread 'builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations' (14916038) panicked at crates/local-service/src/builtin/generation_residence.rs:1943:33:
+generation B marker commits after generation A CAS: BuiltinModelError("open history after generation A CAS: semantic range CAS requires 16 KiB chunks and frame headroom")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+/nix/store/wzp8w4j2vadz23gxic4xhb8mw3g46rv6-clang-wrapper-21.1.8/bin/clang + /nix/store/gzrdifibqh51c5yhz6zw50yadwzycvlb-clang-21.1.8-lib/lib/libclang.dylib:
+
+running 1 test
+test builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations ... FAILED
+
+failures:
+
+failures:
+    builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 1.99s
+
+
+thread 'builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations' (14916382) panicked at crates/local-service/src/builtin/generation_residence.rs:1943:33:
+generation B marker commits after generation A CAS: BuiltinModelError("open history after generation A CAS: semantic range CAS requires 16 KiB chunks and frame headroom")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+/nix/store/yn81qpksaxk576qb807fsck5ch7zmj6c-clang-wrapper-21.1.8/bin/clang + /nix/store/wrz4cazjhkpkjdcms0wxilaid0vzp5gg-clang-21.1.8-lib/lib/libclang.dylib:
+
+running 1 test
+test builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations ... FAILED
+
+failures:
+
+failures:
+    builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 1.88s
+
+
+thread 'builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations' (14916716) panicked at crates/local-service/src/builtin/generation_residence.rs:1943:33:
+generation B marker commits after generation A CAS: BuiltinModelError("open history after generation A CAS: semantic range CAS requires 16 KiB chunks and frame headroom")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+/nix/store/0ypy29sk95sj1nv9gybidhxp4871a3v8-clang-22.1.8/bin/clang-22 + /nix/store/k96r415w891gpaym31jb6zjkwady7mfd-clang-22.1.8-lib/lib/libclang.dylib:
+
+running 1 test
+test builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations ... FAILED
+
+failures:
+
+failures:
+    builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 1.91s
+
+
+thread 'builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations' (14917060) panicked at crates/local-service/src/builtin/generation_residence.rs:1943:33:
+generation B marker commits after generation A CAS: BuiltinModelError("open history after generation A CAS: semantic range CAS requires 16 KiB chunks and frame headroom")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+/nix/store/10g0cwy9gcp4b0pw2znpgndbbzwdh1kv-clang-21.1.8/bin/clang-21 + /nix/store/1vq4acka3qk51gk5sxhyf1a93i9vmfdk-clang-21.1.8-lib/lib/libclang.dylib:
+
+running 1 test
+test builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations ... FAILED
+
+failures:
+
+failures:
+    builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 1.76s
+
+
+thread 'builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations' (14917271) panicked at crates/local-service/src/builtin/generation_residence.rs:1943:33:
+generation B marker commits after generation A CAS: BuiltinModelError("open history after generation A CAS: semantic range CAS requires 16 KiB chunks and frame headroom")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+/nix/store/by209pw85kb3x9wq1dd70fbizx2rzw2x-clang-21.1.8/bin/clang-21 + /nix/store/wrz4cazjhkpkjdcms0wxilaid0vzp5gg-clang-21.1.8-lib/lib/libclang.dylib:
+
+running 1 test
+test builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations ... FAILED
+
+failures:
+
+failures:
+    builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 1.78s
+
+
+thread 'builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations' (14917442) panicked at crates/local-service/src/builtin/generation_residence.rs:1943:33:
+generation B marker commits after generation A CAS: BuiltinModelError("open history after generation A CAS: semantic range CAS requires 16 KiB chunks and frame headroom")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+/nix/store/q87hv65x5q7fclsshw34i7i1nky8ml7x-clang-21.1.8/bin/clang-21 + /nix/store/s8dm60kfi55qlwk1j1whp0jj7j11s29d-clang-21.1.8-lib/lib/libclang.dylib:
+
+running 1 test
+test builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations ... FAILED
+
+failures:
+
+failures:
+    builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 5.20s
+
+
+thread 'builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations' (14917578) panicked at crates/local-service/src/builtin/generation_residence.rs:1943:33:
+generation B marker commits after generation A CAS: BuiltinModelError("open history after generation A CAS: semantic range CAS requires 16 KiB chunks and frame headroom")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+/nix/store/v3f2y03xn6a84p5yz6dqqcvkv8bqxrkd-clang-21.1.8/bin/clang-21 + /nix/store/gzrdifibqh51c5yhz6zw50yadwzycvlb-clang-21.1.8-lib/lib/libclang.dylib:
+
+running 1 test
+test builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations ... FAILED
+
+failures:
+
+failures:
+    builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 3.06s
+
+
+thread 'builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations' (14918051) panicked at crates/local-service/src/builtin/generation_residence.rs:1943:33:
+generation B marker commits after generation A CAS: BuiltinModelError("open history after generation A CAS: semantic range CAS requires 16 KiB chunks and frame headroom")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+/Library/Developer/CommandLineTools/usr/bin/clang + /Library/Developer/CommandLineTools/usr/lib/libclang.dylib:
+
+running 1 test
+test builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations ... FAILED
+
+failures:
+
+failures:
+    builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 1.94s
+
+
+thread 'builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations' (14918255) panicked at crates/local-service/src/builtin/generation_residence.rs:1943:33:
+generation B marker commits after generation A CAS: BuiltinModelError("open history after generation A CAS: semantic range CAS requires 16 KiB chunks and frame headroom")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang + /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libclang.dylib:
+
+running 1 test
+test builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations ... FAILED
+
+failures:
+
+failures:
+    builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 1.88s
+
+
+thread 'builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations' (14918469) panicked at crates/local-service/src/builtin/generation_residence.rs:1943:33:
+generation B marker commits after generation A CAS: BuiltinModelError("open history after generation A CAS: semantic range CAS requires 16 KiB chunks and frame headroom")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations ... FAILED
+
+failures:
+
+failures:
+    builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 26.70s
+

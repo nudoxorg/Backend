@@ -943,8 +943,11 @@ mod tests {
         root: ViewRoot,
         context: [u8; 32],
         evidence: Vec<u8>,
-        revision: bool,
+        query: Option<&Query>,
     ) -> Vec<u8> {
+        let revision = query.is_none();
+        let page_recipe =
+            query.map(|query| backend_library::QueryPageRecipe::search(root.root(), query));
         let basis_relation = if revision {
             backend_library::empty_view_relation_preimage()
         } else {
@@ -956,7 +959,7 @@ mod tests {
         } else {
             let basis = Basis::new(root.root(), root.basis().object);
             ViewRoot::empty_checked(
-                root.recipe(),
+                page_recipe.as_ref().expect("query recipe").identity(),
                 basis,
                 Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
                 root.capability().expect("owner source capability"),
@@ -979,15 +982,30 @@ mod tests {
                 rich_graph: None,
             })
         };
-        serde_json::to_vec(
-            &ReplyDto::new(request_id, reply).with_certificate(owner_certificate(
-                &root,
-                &basis_relation,
-                context,
-                &evidence,
-            )),
-        )
-        .expect("encode owner reply")
+        let mut certificate = owner_certificate(&root, &basis_relation, context, &evidence);
+        if let Some(recipe) = page_recipe {
+            certificate.claims = certificate
+                .claims
+                .into_vec()
+                .into_iter()
+                .filter(|claim| {
+                    !matches!(
+                        claim,
+                        WireClaim::KeyBytes {
+                            schema: WireSchema::ViewRecipe,
+                            ..
+                        }
+                    )
+                })
+                .collect();
+            certificate = certificate.with_claim(WireClaim::KeyBytes {
+                schema: WireSchema::ViewRecipe,
+                id: encode_id(recipe.identity().as_bytes()),
+                value: recipe.canonical_preimage().into(),
+            });
+        }
+        serde_json::to_vec(&ReplyDto::new(request_id, reply).with_certificate(certificate))
+            .expect("encode owner reply")
     }
 
     #[test]
@@ -1092,12 +1110,14 @@ mod tests {
                                 ))
                                 .expect("encode identity-free owner error")
                             } else {
-                                let (reply, reply_context, reply_evidence) = match command.command {
-                                    Command::Revision => (true, context, evidence.clone()),
-                                    Command::Search(_) if request.request_id == 3 => {
-                                        (false, [0x99; 32], evidence.clone())
+                                let (query, reply_context, reply_evidence) = match command.command {
+                                    Command::Revision => (None, context, evidence.clone()),
+                                    Command::Search(query) if request.request_id == 3 => {
+                                        (Some(query), [0x99; 32], evidence.clone())
                                     }
-                                    Command::Search(_) => (false, context, evidence.clone()),
+                                    Command::Search(query) => {
+                                        (Some(query), context, evidence.clone())
+                                    }
                                     other => panic!("unexpected product command: {other:?}"),
                                 };
                                 view_reply(
@@ -1105,7 +1125,7 @@ mod tests {
                                     root.clone(),
                                     reply_context,
                                     reply_evidence,
-                                    reply,
+                                    query.as_ref(),
                                 )
                             };
                             let response = RemoteIndexResponse {

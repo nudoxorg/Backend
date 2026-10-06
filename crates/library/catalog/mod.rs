@@ -9,6 +9,8 @@ mod command;
 mod projection;
 mod subscription;
 
+pub use projection::QueryPageRecipe;
+
 use crate::arrangement::{ProjectionArrangement, WorkCounters};
 use crate::{
     Basis, CommittedViewDelta, CoverageCapability, Cursor, Frontier, Lane, LibraryError,

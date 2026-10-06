@@ -37,7 +37,7 @@ pub use codec::{
 };
 pub use command::{CommandDto, ReplyDto, ViewDto};
 pub use event_dto::EventDto;
-pub use reply::semantic_shape_batch_key;
+pub use reply::{SemanticShapeExport, semantic_shape_batch_key};
 pub use subscription::{SubscriptionDto, encode_compact_subscription};
 pub use subscription_snapshot::{
     SnapshotHydrator, SnapshotPageClaim, SnapshotPageDto, encode_view_root_descriptor,
@@ -65,9 +65,9 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version; version 16 adds the selected local Project
-/// membership frontier to strict semantic-generation replies. Version 15's
-/// registry-advisory alias coverage remains intact. Clients and services must
-/// use the same version rather than treating missing frontier evidence as a
-/// verified indexed-file count.
-pub const DTO_VERSION: u16 = 16;
+/// Current transport DTO version. Version 21 distinguishes anonymous callable
+/// shape members from source names and adds exact registry discovery outcomes.
+/// Version 20 bound continuations to their query family and page credit and
+/// added required-tool refusals; version 19 added complete-package history and
+/// durable compiler failures. Clients and services must use matching contracts.
+pub const DTO_VERSION: u16 = 21;

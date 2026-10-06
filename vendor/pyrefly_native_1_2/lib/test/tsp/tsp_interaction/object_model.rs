@@ -1,0 +1,660 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+/// This file contains a new implementation of the tsp_interaction test suite that follows
+/// the same pattern as the LSP object model tests.
+use std::io;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::thread::JoinHandle;
+use std::thread::{self};
+use std::time::Duration;
+
+use crossbeam_channel::RecvTimeoutError;
+use lsp_server::RequestId;
+use lsp_types::Url;
+use lsp_types::notification::Exit;
+use lsp_types::notification::Notification as _;
+use lsp_types::request::Request as _;
+use pretty_assertions::assert_eq;
+use pyrefly_util::fs_anyhow::read_to_string;
+use pyrefly_util::telemetry::NoTelemetry;
+use pyrefly_util::thread_pool::TEST_THREAD_COUNT;
+use serde_json::Value;
+
+use crate::commands::lsp::IndexingMode;
+use crate::commands::tsp::TspArgs;
+use crate::commands::tsp::run_tsp;
+use crate::lsp::non_wasm::protocol::JsonRpcMessage;
+use crate::lsp::non_wasm::protocol::Message;
+use crate::lsp::non_wasm::protocol::Notification;
+use crate::lsp::non_wasm::protocol::Request;
+use crate::lsp::non_wasm::protocol::Response;
+use crate::lsp::non_wasm::server::Connection;
+use crate::test::util::init_test;
+
+#[derive(Default)]
+pub struct InitializeSettings {
+    pub workspace_folders: Option<Vec<(String, Url)>>,
+    // initial configuration to send after initialization
+    // When Some, configuration will be sent after initialization
+    // When None, no configuration will be sent
+    // When Some(None), empty configuration will be sent
+    pub configuration: Option<Option<serde_json::Value>>,
+    pub file_watch: bool,
+}
+
+pub struct TestTspServer {
+    sender: crossbeam_channel::Sender<Message>,
+    timeout: Duration,
+    /// Handle to the spawned server thread
+    server_thread: Option<JoinHandle<Result<(), io::Error>>>,
+    root: Option<PathBuf>,
+    /// Request ID for requests sent to the server
+    request_idx: Arc<Mutex<i32>>,
+}
+
+impl TestTspServer {
+    pub fn new(sender: crossbeam_channel::Sender<Message>, request_idx: Arc<Mutex<i32>>) -> Self {
+        Self {
+            sender,
+            timeout: Duration::from_secs(25),
+            server_thread: None,
+            root: None,
+            request_idx,
+        }
+    }
+
+    /// Send a message to this server
+    pub fn send_message(&self, msg: Message) {
+        eprintln!(
+            "client--->server {}",
+            serde_json::to_string(&JsonRpcMessage::from_message(msg.clone())).unwrap()
+        );
+        if let Err(err) = self.sender.send_timeout(msg, self.timeout) {
+            panic!("Failed to send message to TSP server: {err:?}");
+        }
+    }
+
+    pub fn send_initialize(&mut self, params: Value) {
+        let id = self.next_request_id();
+        self.send_message(Message::Request(Request {
+            id,
+            method: "initialize".to_owned(),
+            params,
+            activity_key: None,
+        }))
+    }
+
+    pub fn send_initialized(&self) {
+        self.send_message(Message::Notification(Notification {
+            method: "initialized".to_owned(),
+            params: serde_json::json!({}),
+            activity_key: None,
+        }));
+    }
+
+    pub fn send_shutdown(&self, id: RequestId) {
+        self.send_message(Message::Request(Request {
+            id,
+            method: lsp_types::request::Shutdown::METHOD.to_owned(),
+            params: serde_json::json!(null),
+            activity_key: None,
+        }));
+    }
+
+    pub fn send_exit(&self) {
+        self.send_message(Message::Notification(Notification {
+            method: Exit::METHOD.to_owned(),
+            params: serde_json::json!(null),
+            activity_key: None,
+        }));
+    }
+
+    pub fn get_supported_protocol_version(&mut self) {
+        let id = self.next_request_id();
+        self.send_message(Message::Request(Request {
+            id,
+            method: "typeServer/getSupportedProtocolVersion".to_owned(),
+            params: serde_json::json!(null),
+            activity_key: None,
+        }));
+    }
+
+    pub fn get_snapshot(&mut self) {
+        let id = self.next_request_id();
+        self.send_message(Message::Request(Request {
+            id,
+            method: "typeServer/getSnapshot".to_owned(),
+            params: serde_json::json!(null),
+            activity_key: None,
+        }));
+    }
+
+    /// Send a `typeServer/resolveImport` request.
+    pub fn resolve_import(
+        &mut self,
+        source_uri: &str,
+        name_parts: Vec<&str>,
+        leading_dots: i32,
+        snapshot: i32,
+    ) {
+        let id = self.next_request_id();
+        self.send_message(Message::Request(Request {
+            id,
+            method: "typeServer/resolveImport".to_owned(),
+            params: serde_json::json!({
+                "sourceUri": source_uri,
+                "moduleDescriptor": {
+                    "nameParts": name_parts,
+                    "leadingDots": leading_dots,
+                },
+                "snapshot": snapshot,
+            }),
+            activity_key: None,
+        }));
+    }
+
+    /// Send a `typeServer/getPythonSearchPaths` request.
+    pub fn get_python_search_paths(&mut self, from_uri: &str, snapshot: i32) {
+        let id = self.next_request_id();
+        self.send_message(Message::Request(Request {
+            id,
+            method: "typeServer/getPythonSearchPaths".to_owned(),
+            params: serde_json::json!({
+                "fromUri": from_uri,
+                "snapshot": snapshot,
+            }),
+            activity_key: None,
+        }));
+    }
+
+    /// Send a `typeServer/getDeclaredType` request with a Node arg.
+    pub fn get_declared_type(&mut self, uri: &str, line: u32, character: u32, snapshot: i32) {
+        self.send_get_type_request("typeServer/getDeclaredType", uri, line, character, snapshot);
+    }
+
+    /// Send a `typeServer/getComputedType` request with a Node arg.
+    pub fn get_computed_type(&mut self, uri: &str, line: u32, character: u32, snapshot: i32) {
+        self.send_get_type_request("typeServer/getComputedType", uri, line, character, snapshot);
+    }
+
+    /// Send a `typeServer/getComputedType` request whose node arg spans an
+    /// explicit `[start, end)` range rather than a single (empty) position.
+    /// Used to exercise the range-aware call-expression handling.
+    pub fn get_computed_type_range(
+        &mut self,
+        uri: &str,
+        start_line: u32,
+        start_character: u32,
+        end_line: u32,
+        end_character: u32,
+        snapshot: i32,
+    ) {
+        let id = self.next_request_id();
+        self.send_message(Message::Request(Request {
+            id,
+            method: "typeServer/getComputedType".to_owned(),
+            params: serde_json::json!({
+                "arg": {
+                    "uri": uri,
+                    "range": {
+                        "start": { "line": start_line, "character": start_character },
+                        "end": { "line": end_line, "character": end_character },
+                    },
+                },
+                "snapshot": snapshot,
+            }),
+            activity_key: None,
+        }));
+    }
+
+    /// Send a `typeServer/getExpectedType` request with a Node arg.
+    pub fn get_expected_type(&mut self, uri: &str, line: u32, character: u32, snapshot: i32) {
+        self.send_get_type_request("typeServer/getExpectedType", uri, line, character, snapshot);
+    }
+
+    /// Shared helper for getDeclaredType/getComputedType/getExpectedType.
+    fn send_get_type_request(
+        &mut self,
+        method: &str,
+        uri: &str,
+        line: u32,
+        character: u32,
+        snapshot: i32,
+    ) {
+        let id = self.next_request_id();
+        self.send_message(Message::Request(Request {
+            id,
+            method: method.to_owned(),
+            params: serde_json::json!({
+                "arg": {
+                    "uri": uri,
+                    "range": {
+                        "start": { "line": line, "character": character },
+                        "end": { "line": line, "character": character },
+                    },
+                },
+                "snapshot": snapshot,
+            }),
+            activity_key: None,
+        }));
+    }
+
+    /// Returns the `vscode-notebook-cell:` URI for a notebook cell.
+    pub fn cell_uri(&self, file_name: &str, cell_name: &str) -> Url {
+        let root = self.get_root_or_panic();
+        let file_uri = Url::from_file_path(root.join(file_name)).unwrap();
+        Url::parse(&format!(
+            "vscode-notebook-cell://{}#{}",
+            file_uri.path(),
+            cell_name
+        ))
+        .unwrap()
+    }
+
+    /// Open a notebook document with the given cell contents.
+    /// Each string becomes a separate code cell. The notebook is
+    /// registered via `notebookDocument/didOpen` so the server tracks
+    /// the cell URIs in `open_notebook_cells`.
+    pub fn open_notebook(&self, file_name: &str, cell_contents: Vec<&str>) {
+        let root = self.get_root_or_panic();
+        let notebook_path = root.join(file_name);
+        let notebook_uri = Url::from_file_path(&notebook_path).unwrap().to_string();
+
+        let mut cells = Vec::new();
+        let mut cell_text_documents = Vec::new();
+
+        for (i, text) in cell_contents.iter().enumerate() {
+            let cell_uri = self.cell_uri(file_name, &format!("cell{}", i + 1));
+            cells.push(serde_json::json!({
+                "kind": 2,
+                "document": cell_uri,
+            }));
+            cell_text_documents.push(serde_json::json!({
+                "uri": cell_uri,
+                "languageId": "python",
+                "version": 1,
+                "text": *text,
+            }));
+        }
+
+        self.send_message(Message::Notification(Notification {
+            method: "notebookDocument/didOpen".to_owned(),
+            params: serde_json::json!({
+                "notebookDocument": {
+                    "uri": notebook_uri,
+                    "notebookType": "jupyter-notebook",
+                    "version": 1,
+                    "metadata": {
+                        "language_info": {
+                            "name": "python"
+                        }
+                    },
+                    "cells": cells,
+                },
+                "cellTextDocuments": cell_text_documents,
+            }),
+            activity_key: None,
+        }));
+    }
+
+    pub fn did_open(&self, file: &'static str) {
+        let path = self.get_root_or_panic().join(file);
+        self.send_message(Message::Notification(Notification {
+            method: "textDocument/didOpen".to_owned(),
+            params: serde_json::json!({
+                "textDocument": {
+                    "uri": Url::from_file_path(&path).unwrap().to_string(),
+                    "languageId": "python",
+                    "version": 1,
+                    "text": read_to_string(&path).unwrap(),
+                },
+            }),
+            activity_key: None,
+        }));
+    }
+
+    pub fn did_change(&self, file: &'static str, content: &str, version: i32) {
+        let path = self.get_root_or_panic().join(file);
+        self.send_message(Message::Notification(Notification {
+            method: "textDocument/didChange".to_owned(),
+            params: serde_json::json!({
+                "textDocument": {
+                    "uri": Url::from_file_path(&path).unwrap().to_string(),
+                    "version": version
+                },
+                "contentChanges": [{
+                    "text": content
+                }]
+            }),
+            activity_key: None,
+        }));
+    }
+
+    pub fn did_change_watched_files(&self, file: &'static str, change_type: &str) {
+        let path = self.get_root_or_panic().join(file);
+        let file_change_type = match change_type {
+            "created" => 1, // FileChangeType::CREATED
+            "changed" => 2, // FileChangeType::CHANGED
+            "deleted" => 3, // FileChangeType::DELETED
+            _ => 2,         // Default to changed
+        };
+        self.send_message(Message::Notification(Notification {
+            method: "workspace/didChangeWatchedFiles".to_owned(),
+            params: serde_json::json!({
+                "changes": [{
+                    "uri": Url::from_file_path(&path).unwrap().to_string(),
+                    "type": file_change_type
+                }]
+            }),
+            activity_key: None,
+        }));
+    }
+
+    pub fn get_initialize_params(&self, settings: &InitializeSettings) -> Value {
+        let mut params: Value = serde_json::json!({
+            "rootPath": "/",
+            "processId": std::process::id(),
+            "trace": "verbose",
+            "clientInfo": { "name": "debug" },
+            "capabilities": {
+                "textDocument": {
+                    "publishDiagnostics": {
+                        "relatedInformation": true,
+                        "versionSupport": false,
+                        "tagSupport": {
+                            "valueSet": [1, 2],
+                        },
+                        "codeDescriptionSupport": true,
+                        "dataSupport": true,
+                    },
+                },
+            },
+        });
+
+        if let Some(folders) = &settings.workspace_folders {
+            params["capabilities"]["workspace"]["workspaceFolders"] = serde_json::json!(true);
+            params["workspaceFolders"] = serde_json::json!(
+                folders
+                    .iter()
+                    .map(|(name, path)| serde_json::json!({"name": name, "uri": path.to_string()}))
+                    .collect::<Vec<_>>()
+            );
+        }
+        if settings.file_watch {
+            params["capabilities"]["workspace"]["didChangeWatchedFiles"] =
+                serde_json::json!({"dynamicRegistration": true});
+        }
+        if settings.configuration.is_some() {
+            params["capabilities"]["workspace"]["configuration"] = serde_json::json!(true);
+        }
+
+        params
+    }
+
+    fn next_request_id(&mut self) -> RequestId {
+        let mut idx = self.request_idx.lock().unwrap();
+        *idx += 1;
+        RequestId::from(*idx)
+    }
+
+    fn get_root_or_panic(&self) -> PathBuf {
+        self.root
+            .clone()
+            .expect("Root not set, please call set_root")
+    }
+}
+
+pub struct TestTspClient {
+    receiver: crossbeam_channel::Receiver<Message>,
+    timeout: Duration,
+    root: Option<PathBuf>,
+}
+
+impl TestTspClient {
+    pub fn new(receiver: crossbeam_channel::Receiver<Message>) -> Self {
+        Self {
+            receiver,
+            timeout: Duration::from_secs(25),
+            root: None,
+        }
+    }
+
+    pub fn expect_message_helper<F>(&self, expected_msg: Message, should_skip: F)
+    where
+        F: Fn(&Message) -> bool,
+    {
+        loop {
+            match self.receiver.recv_timeout(self.timeout) {
+                Ok(msg) => {
+                    let actual_str =
+                        serde_json::to_string(&JsonRpcMessage::from_message(msg.clone())).unwrap();
+
+                    eprintln!("client<---server {}", actual_str);
+
+                    if should_skip(&msg) {
+                        continue;
+                    }
+
+                    let expected_str =
+                        serde_json::to_string(&JsonRpcMessage::from_message(expected_msg.clone()))
+                            .unwrap();
+                    assert_eq!(&expected_str, &actual_str, "Response mismatch");
+                    return;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    panic!("Timeout waiting for response. Expected: {expected_msg:?}");
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    panic!("Channel disconnected. Expected: {expected_msg:?}");
+                }
+            }
+        }
+    }
+
+    pub fn expect_response(&self, expected_response: Response) {
+        self.expect_message_helper(Message::Response(expected_response), |msg| {
+            matches!(msg, Message::Notification(_) | Message::Request(_))
+        });
+    }
+
+    pub fn expect_any_message(&self) {
+        match self.receiver.recv_timeout(self.timeout) {
+            Ok(msg) => {
+                eprintln!(
+                    "client<---server {}",
+                    serde_json::to_string(&JsonRpcMessage::from_message(msg.clone())).unwrap()
+                );
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("Timeout waiting for response");
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!("Channel disconnected");
+            }
+        }
+    }
+
+    #[expect(dead_code)]
+    pub fn receive_any_message(&self) -> Message {
+        match self.receiver.recv_timeout(self.timeout) {
+            Ok(msg) => {
+                eprintln!(
+                    "client<---server {}",
+                    serde_json::to_string(&JsonRpcMessage::from_message(msg.clone())).unwrap()
+                );
+                msg
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("Timeout waiting for response");
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!("Channel disconnected");
+            }
+        }
+    }
+
+    /// Receive messages until a Response is found, skipping any Notification
+    /// or Request messages. Returns the Response.
+    pub fn receive_response_skip_notifications(&self) -> Response {
+        loop {
+            match self.receiver.recv_timeout(self.timeout) {
+                Ok(msg) => {
+                    eprintln!(
+                        "client<---server {}",
+                        serde_json::to_string(&JsonRpcMessage::from_message(msg.clone())).unwrap()
+                    );
+                    if let Message::Response(resp) = msg {
+                        return resp;
+                    }
+                    // Skip notifications and requests
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    panic!("Timeout waiting for response (skipping notifications)");
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    panic!("Channel disconnected while waiting for response");
+                }
+            }
+        }
+    }
+
+    /// Receive messages until a Notification with the given method is found,
+    /// skipping any other messages. Returns the notification params.
+    pub fn expect_notification(&self, method: &str) -> serde_json::Value {
+        loop {
+            match self.receiver.recv_timeout(self.timeout) {
+                Ok(msg) => {
+                    eprintln!(
+                        "client<---server {}",
+                        serde_json::to_string(&JsonRpcMessage::from_message(msg.clone())).unwrap()
+                    );
+                    if let Message::Notification(ref n) = msg
+                        && n.method == method
+                    {
+                        return n.params.clone();
+                    }
+                    // Skip non-matching messages
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    panic!("Timeout waiting for notification '{method}'");
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    panic!("Channel disconnected waiting for notification '{method}'");
+                }
+            }
+        }
+    }
+}
+
+pub struct TspInteraction {
+    pub server: TestTspServer,
+    pub client: TestTspClient,
+}
+
+impl TspInteraction {
+    pub fn new() -> Self {
+        init_test();
+
+        let ((conn_server, server_reader), (conn_client, _client_reader)) = Connection::memory();
+        let client_receiver = conn_client.channel_receiver().clone();
+
+        let args = TspArgs {
+            indexing_mode: IndexingMode::LazyBlocking,
+            workspace_indexing_limit: 0,
+            transport: "stdio".to_owned(),
+        };
+
+        let args = args.clone();
+
+        let request_idx = Arc::new(Mutex::new(0));
+
+        let mut server = TestTspServer::new(conn_client.sender, request_idx.clone());
+
+        // Spawn the server thread and store its handle
+        let thread_handle = thread::spawn(move || {
+            run_tsp(
+                conn_server,
+                server_reader,
+                args,
+                &NoTelemetry,
+                None,
+                TEST_THREAD_COUNT,
+            )
+            .map(|_| ())
+            .map_err(|e| std::io::Error::other(e.to_string()))
+        });
+
+        server.server_thread = Some(thread_handle);
+
+        let client = TestTspClient::new(client_receiver);
+
+        Self { server, client }
+    }
+
+    pub fn initialize(&mut self, settings: InitializeSettings) {
+        self.server
+            .send_initialize(self.server.get_initialize_params(&settings));
+        self.client.expect_any_message();
+        self.server.send_initialized();
+        if let Some(settings) = settings.configuration {
+            self.client.expect_any_message();
+            self.server.send_message(Message::Response(Response {
+                id: RequestId::from(1),
+                result: settings,
+                error: None,
+            }));
+        }
+    }
+
+    pub fn shutdown(&self) {
+        let shutdown_id = RequestId::from(999);
+        self.server.send_shutdown(shutdown_id.clone());
+
+        self.client.expect_response(Response {
+            id: shutdown_id,
+            result: Some(serde_json::json!(null)),
+            error: None,
+        });
+
+        self.server.send_exit();
+    }
+
+    pub fn set_root(&mut self, root: PathBuf) {
+        self.server.root = Some(root.clone());
+        self.client.root = Some(root);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared test helpers
+// ---------------------------------------------------------------------------
+
+/// Create a minimal `pyproject.toml` so pyrefly recognises the directory as a
+/// project root.
+pub fn write_pyproject(dir: &std::path::Path) {
+    let content = r#"[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "test-project"
+version = "1.0.0"
+"#;
+    std::fs::write(dir.join("pyproject.toml"), content).unwrap();
+}
+
+/// Send a `typeServer/getSnapshot` request and return the current snapshot
+/// value from the TSP server.
+pub fn get_current_snapshot(tsp: &mut TspInteraction, expected_id: i32) -> i32 {
+    tsp.server.get_snapshot();
+    let resp = tsp.client.receive_response_skip_notifications();
+    assert_eq!(resp.id, RequestId::from(expected_id));
+    serde_json::from_value(resp.result.unwrap()).unwrap()
+}

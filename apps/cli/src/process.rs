@@ -105,7 +105,21 @@ fn run_words(words: &[String], options: &Options) -> Result<String, Fault> {
             FaultSlug::Endpoint,
             Operand::Path(workspace.endpoint().to_string_lossy().into_owned()),
             Cause::new(CauseSlug::Unreachable, message),
-            Affordance::Retry,
+            if options.passive() {
+                Affordance::UseCommand {
+                    name: "health",
+                    args: Box::new([
+                        "--project".to_owned(),
+                        project.clone(),
+                        "--workspace".to_owned(),
+                        workspace.data().to_string_lossy().into_owned(),
+                        "--endpoint".to_owned(),
+                        workspace.endpoint().to_string_lossy().into_owned(),
+                    ]),
+                }
+            } else {
+                Affordance::Retry
+            },
         )
     })?;
     let mut session = Session::connect(&endpoint).map_err(|error| {
@@ -118,7 +132,23 @@ fn run_words(words: &[String], options: &Options) -> Result<String, Fault> {
     if let Request::Index(path) = &request {
         watch_readiness(&mut session, path, options);
     }
-    Ok(render::answer(&answer, options))
+    render_admitted_answer(&session, &answer, options)
+}
+
+pub(crate) fn render_admitted_answer(
+    session: &Session,
+    answer: &Answer,
+    options: &Options,
+) -> Result<String, Fault> {
+    let cursor = answer
+        .continuation()
+        .filter(|continuation| session.has_portable_query_continuation(*continuation))
+        .map(|continuation| session.encode_query_continuation(continuation))
+        .transpose()
+        .map_err(|error| {
+            Fault::from_client_error(&error, Operand::Argument("cursor".to_owned()))
+        })?;
+    render::try_answer_with_cursor(answer, options, cursor.as_deref())
 }
 
 fn plan(words: &[String], options: &Options, project: &str) -> Result<Request, Fault> {

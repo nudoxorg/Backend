@@ -2,13 +2,15 @@
 
 use super::lazy::{WorkspaceRelationError, WorkspaceRelationHandle};
 use super::owner::WorkspaceError;
-use super::transition::{PreparedTransition, TransactionId, TransitionWork};
+use super::transition::{PersistedTransition, PreparedTransition, TransactionId, TransitionWork};
 use crate::journal::ChainHash;
 use crate::schema::{RecordId, WorkspaceLog};
-use backend_store::{FileStore, ObjectId, RelationAdmissionRegistry, WorkspaceClosure};
+use backend_store::{
+    FileStore, ObjectId, RelationAdmissionRegistry, SelectedHead, WorkspaceClosure,
+};
 use backend_version::{
-    CheckedCommit, CommitProvenance, ObjectClosure as VersionObjectClosure, WorkspaceManifest,
-    WorkspaceRoot, commit_capability, commit_checked,
+    CheckedCommit, CommitProvenance, ObjectClosure as VersionObjectClosure, SchemaIdentity,
+    WorkspaceManifest, WorkspaceRoot, commit_capability, commit_checked,
 };
 use std::sync::Arc;
 
@@ -136,10 +138,75 @@ impl WorkspaceSnapshot {
         self.state.sequence
     }
 
+    /// Returns the authenticated publication selected immediately before
+    /// this snapshot, when it has a durable predecessor.
+    ///
+    /// The store verifies that this snapshot is still the selected target and
+    /// resolves its exact base descriptor through the publication journal.
+    /// This is intended for cold persisted-transition admission; it scans a
+    /// bounded journal prefix with constant memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this snapshot has no attached durable store, is no
+    /// longer the selected head, or its publication history is corrupt.
+    pub fn selected_base_publication(&self) -> Result<Option<SelectedHead>, WorkspaceError> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or(WorkspaceError::Corrupt("snapshot has no durable store"))?;
+        store
+            .workspace_base_publication(*self.root().as_bytes(), self.sequence())
+            .map_err(WorkspaceError::store)
+    }
+
+    /// Runs a read-only inspection with this snapshot's canonical persisted
+    /// transition and its paired store capability, but only while this exact
+    /// snapshot remains the selected durable head.
+    ///
+    /// The snapshot's transition and store are lent together so callers do
+    /// not accidentally combine persisted bytes with a different store. The
+    /// selected root, sequence, and closure are checked again immediately
+    /// before invoking the callback.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this snapshot has no attached durable store, is no
+    /// longer selected, or its selected publication is malformed.
+    pub fn with_persisted_transition<T>(
+        &self,
+        inspect: impl FnOnce(&PersistedTransition, &FileStore) -> T,
+    ) -> Result<T, WorkspaceError> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or(WorkspaceError::Corrupt("snapshot has no durable store"))?;
+        let selected = store
+            .head()
+            .map_err(WorkspaceError::store)?
+            .ok_or(WorkspaceError::Corrupt("store has no selected publication"))?;
+        let descriptor = selected.descriptor();
+        if descriptor.target() != *self.root().as_bytes()
+            || descriptor.target_generation() != self.sequence()
+            || descriptor.closure() != self.state.transition.closure().membership_id()
+        {
+            return Err(WorkspaceError::Corrupt(
+                "snapshot is no longer the selected durable head",
+            ));
+        }
+        Ok(inspect(self.state.transition.persisted(), store))
+    }
+
     /// Returns the owner epoch that selected this snapshot.
     #[must_use]
     pub fn owner_epoch(&self) -> u64 {
         self.state.owner_epoch
+    }
+
+    /// Borrows the durable CAS paired with this authenticated snapshot.
+    #[must_use]
+    pub fn durable_store(&self) -> Option<&FileStore> {
+        self.store.as_deref()
     }
 
     /// Returns the compact checked work facts recorded for this publication.
@@ -177,6 +244,43 @@ impl WorkspaceSnapshot {
             .find(|binding| binding.schema() == schema)
             .ok_or(WorkspaceRelationError::MissingRelation)?;
         WorkspaceRelationHandle::open(store, binding.root())
+    }
+
+    /// Opens a canonical relation root named by a typed auxiliary object in
+    /// this exact immutable closure. Auxiliary roots are useful for product
+    /// state that must commit atomically with a workspace transition while
+    /// remaining orthogonal to the selected workspace relation set.
+    ///
+    /// The pointer object is matched by its full schema identity and object
+    /// key. Its bytes must be exactly one relation-root digest, and the
+    /// returned handle re-admits that root through the snapshot's store.
+    ///
+    /// # Errors
+    /// Returns an error when the snapshot has no store, the pointer value is
+    /// malformed, or the pointed relation root fails canonical admission.
+    pub fn auxiliary_relation<R: backend_version::CanonicalRelation>(
+        &self,
+        pointer_schema: SchemaIdentity,
+        pointer_key: [u8; backend_version::ID_BYTES],
+    ) -> Result<Option<WorkspaceRelationHandle<R>>, WorkspaceRelationError> {
+        let Some(pointer) = self
+            .closure()
+            .control_manifest()
+            .objects()
+            .iter()
+            .find(|object| object.schema() == pointer_schema && object.key() == &pointer_key)
+        else {
+            return Ok(None);
+        };
+        let root: [u8; backend_version::ID_BYTES] = pointer
+            .bytes()
+            .try_into()
+            .map_err(|_| WorkspaceRelationError::InvalidRoot)?;
+        let store = self
+            .store
+            .clone()
+            .ok_or(WorkspaceRelationError::StoreUnavailable)?;
+        WorkspaceRelationHandle::open(store, root).map(Some)
     }
 
     /// Alias emphasizing the lazy, read-only relation capability.

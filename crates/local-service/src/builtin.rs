@@ -63,15 +63,40 @@ const ECHO_AUTHORITY_SECRET: [u8; 32] = [0x5a; 32];
 mod ingest;
 #[path = "builtin/profile.rs"]
 mod profile;
+#[path = "builtin/source_budget.rs"]
+mod source_budget;
 #[path = "builtin/source_frontier.rs"]
 mod source_frontier;
+#[path = "builtin/staged_intent.rs"]
+mod staged_intent;
+#[path = "builtin/staged_transport.rs"]
+mod staged_transport;
 use profile::{
-    BuiltinAuthorityVerifier, BuiltinProfile, BuiltinSemanticChange, BuiltinSemanticRelation,
-    BuiltinSourceChange, BuiltinValidator, BuiltinWorkspaceRelation, ProfileDescriptor, ProfileIds,
-    builtin_dispatcher, execution_manifest, execution_resources, product_dependency_manifest,
-    profile_descriptor,
+    BuiltinAuthorityVerifier, BuiltinCaptureBasis, BuiltinCaptureChange, BuiltinProfile,
+    BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinSourceFactsChange,
+    BuiltinValidator, BuiltinWorkspaceRelation, ProfileDescriptor, ProfileIds, builtin_dispatcher,
+    capture_basis_for_snapshot, execution_manifest, execution_resources,
+    product_dependency_manifest, profile_descriptor,
 };
 pub use profile::{BuiltinIntent, BuiltinModel, BuiltinModelError};
+
+/// Builds the exact relation admission set used by every product workspace
+/// store and cold-reopen path. Keep this in one place: a relation schema may
+/// use a root digest that is not an ordinary object-version digest, so an
+/// omitted decoder turns valid source-facts objects into corrupt objects.
+pub(super) fn product_relation_registry() -> Result<RelationAdmissionRegistry, BuiltinModelError> {
+    RelationAdmissionRegistry::new()
+        .with_relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
+        .with_relation::<BuiltinSemanticRelation>()
+        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+        .map_err(|error| {
+            BuiltinModelError(format!("register semantic capture relation: {error:?}"))
+        })?
+        .with_relation::<backend_engine::builtin::ProductSourceFileFactsRelation>()
+        .map_err(|error| BuiltinModelError(format!("register source facts relation: {error:?}")))
+}
 
 type ProductDaemon = crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>;
 
@@ -365,11 +390,7 @@ fn genesis_closure(
     // request provenance that the owner will publish.
     let checked_transition = transition.checked();
     let checked_commit = commit.clone().into_checked();
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?;
+    let registry = product_relation_registry()?;
     WorkspaceClosure::from_checked_transition_with_registry(
         manifest,
         &checked_transition,
@@ -389,6 +410,10 @@ pub(super) struct LazyClosureUpdate<'a> {
     pub(super) semantic_root: backend_engine::StateRoot<BuiltinSemanticRelation>,
     pub(super) transaction: TransactionId,
     pub(super) intent: &'a BuiltinIntent,
+    pub(super) capture_objects: &'a [TypedObject],
+    pub(super) capture_pointer: Option<&'a TypedObject>,
+    pub(super) source_facts_objects: &'a [TypedObject],
+    pub(super) source_facts_pointer: Option<&'a TypedObject>,
 }
 
 fn transition_closure_lazy(
@@ -409,12 +434,42 @@ fn transition_closure_lazy(
         &transaction_key,
         &transaction_bytes[..],
     ));
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?;
-    if update.changed_sources.is_empty() {
+    objects.extend(
+        update
+            .capture_objects
+            .iter()
+            .filter(|object| {
+                update
+                    .capture_pointer
+                    .is_some_and(|pointer| pointer.bytes() == object.version())
+            })
+            .cloned(),
+    );
+    if let Some(pointer) = update.capture_pointer {
+        objects.push(pointer.clone());
+    }
+    objects.extend(
+        update
+            .source_facts_objects
+            .iter()
+            .filter(|object| {
+                update
+                    .source_facts_pointer
+                    .is_some_and(|pointer| pointer.bytes() == object.version())
+            })
+            .cloned(),
+    );
+    if let Some(pointer) = update.source_facts_pointer {
+        objects.push(pointer.clone());
+    }
+    let registry = product_relation_registry()?;
+    let mut frontier = update
+        .capture_objects
+        .iter()
+        .chain(update.source_facts_objects)
+        .cloned()
+        .collect::<Vec<_>>();
+    let closure = if update.changed_sources.is_empty() {
         WorkspaceClosure::extend_checked_nodes_with_registry(
             base,
             manifest,
@@ -425,11 +480,14 @@ fn transition_closure_lazy(
         )
     } else {
         for node in update.changed_semantics {
-            objects.push(
+            let object =
                 TypedObject::from_state_root(node.commitment(), node).map_err(|error| {
                     BuiltinModelError(format!("retain changed semantic node: {error:?}"))
-                })?,
-            );
+                })?;
+            if node.commitment() == update.semantic_root {
+                objects.push(object.clone());
+            }
+            frontier.push(object);
         }
         WorkspaceClosure::extend_checked_nodes_with_registry(
             base,
@@ -440,7 +498,10 @@ fn transition_closure_lazy(
             &registry,
         )
     }
-    .map_err(|error| BuiltinModelError(format!("extend lazy transition closure: {error:?}")))
+    .map_err(|error| BuiltinModelError(format!("extend lazy transition closure: {error:?}")))?;
+    closure
+        .with_checked_relation_frontier(frontier, &registry)
+        .map_err(|error| BuiltinModelError(format!("retain typed publication frontier: {error:?}")))
 }
 
 fn admit_manifest(
@@ -482,11 +543,7 @@ pub(crate) type EmptyOwner = crate::service::LocaldOwner<
 pub(crate) fn open_empty_owner(workspace: &Path) -> Result<EmptyOwner, String> {
     let profile = profile_descriptor(BuiltinProfile::Product)?;
     let dispatcher = builtin_dispatcher(Some([0x3C; 32]), profile, 1)?;
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| format!("register source relation: {error:?}"))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| format!("register semantic relation: {error:?}"))?;
+    let registry = product_relation_registry().map_err(|error| error.to_string())?;
     let daemon = crate::Locald::open_with_dispatcher_and_registry(
         workspace,
         BuiltinModel,
@@ -537,11 +594,7 @@ fn head_from_relation(
         &commit,
         &empty_delta,
     )?;
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?;
+    let registry = product_relation_registry()?;
     WorkspaceHead::genesis_with_registry(manifest, closure, &registry)
         .map_err(|error| BuiltinModelError(error.to_string()))
 }
@@ -668,13 +721,20 @@ struct IndexedSources {
     projects: BTreeMap<[u8; 32], IndexedProject>,
     files: Vec<([u8; 32], ProductSourceRecord)>,
     cargo_aliases: BTreeMap<[u8; 32], backend_library::CargoPackageAliasEvidenceV1>,
+    source_snapshot: Option<backend_engine::ProductSourceSnapshot>,
 }
 
 fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, BuiltinModelError> {
     let relation = snapshot
         .relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("open indexed source relation: {error}")))?;
-    read_indexed_relation(&relation, profile::SourceFileKeyLayout::Current)
+    let mut sources = read_indexed_relation(&relation, profile::SourceFileKeyLayout::Current)?;
+    sources.source_snapshot = Some(
+        backend_engine::ProductSourceSnapshot::from_workspace(snapshot).map_err(|error| {
+            BuiltinModelError(format!("admit selected source closure: {error}"))
+        })?,
+    );
+    Ok(sources)
 }
 
 fn read_indexed_relation(
@@ -799,6 +859,7 @@ fn read_indexed_relation(
         projects,
         files: resolved_files,
         cargo_aliases,
+        source_snapshot: None,
     })
 }
 
@@ -819,6 +880,7 @@ fn empty_indexed_sources() -> IndexedSources {
         projects: BTreeMap::new(),
         files: Vec::new(),
         cargo_aliases: BTreeMap::new(),
+        source_snapshot: None,
     }
 }
 
@@ -1021,7 +1083,7 @@ fn publish_builtin_view(
             BuiltinModelError("reused publication is missing its witness".to_owned())
         })?;
         return Ok(view_publish::PublicationOutcome {
-            deltas: Vec::new(),
+            deltas: rebind_published_view(daemon)?,
             roots: prior.clone(),
             path: view_publish::PublicationPath::Reused,
         });
@@ -1111,7 +1173,7 @@ fn publish_package_view(
                 let same_basis = current.basis() == initial.basis();
                 if changes.is_empty() && same_coverage && same_basis {
                     return Ok(Some(package_publication(
-                        Vec::new(),
+                        rebind_published_view(daemon)?,
                         prior,
                         source_target,
                         semantic_target,
@@ -1188,7 +1250,7 @@ fn publish_package_view(
         ) {
             Ok(changes) if changes.is_empty() => {
                 return Ok(Some(package_publication(
-                    Vec::new(),
+                    rebind_published_view(daemon)?,
                     prior,
                     source_target,
                     semantic_target,
@@ -1259,7 +1321,12 @@ fn try_commit_row_patch(
     current: ViewRoot,
     changes: Vec<backend_engine::RowChange>,
 ) -> Result<Option<Vec<backend_engine::CommittedViewDelta>>, BuiltinModelError> {
-    let _admitted = admitted_bytes_after_row_changes(current.row_refs(), &changes)?;
+    // A capability-only rebind retains the already admitted canonical rows;
+    // scanning their documents again would turn metadata publication into a
+    // full-corpus operation.
+    if !changes.is_empty() {
+        admitted_bytes_after_row_changes(current.row_refs(), &changes)?;
+    }
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let workspace_root = snapshot.root();
     let capability = builtin_view_capability_for_workspace(&snapshot)?;
@@ -1294,6 +1361,22 @@ fn try_commit_row_patch(
         )
         .map_err(|error| BuiltinModelError(format!("{error:?}")))?;
     Ok(Some(vec![committed]))
+}
+
+fn rebind_published_view(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+) -> Result<Vec<backend_engine::CommittedViewDelta>, BuiltinModelError> {
+    let current = daemon.engine().daemon().library().view().clone();
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let capability = builtin_view_capability_for_workspace(&snapshot)?;
+    if current.capability().as_ref() == Some(&capability) {
+        return Ok(Vec::new());
+    }
+    try_commit_row_patch(daemon, current, Vec::new())?.ok_or_else(|| {
+        BuiltinModelError(
+            "the retained view could not admit its current workspace capability".to_owned(),
+        )
+    })
 }
 
 fn admit_spliced_package(
@@ -1341,7 +1424,7 @@ fn commit_published_target(
         && current.row_count() == target.row_count()
         && current.row_refs().eq(target.row_refs())
     {
-        return Ok(Vec::new());
+        return rebind_published_view(daemon);
     }
     let changes = changed_rows(&current, &target);
     let deltas = if current.row_count() == 0
@@ -1482,11 +1565,8 @@ pub(crate) fn compose_owner(
         .max(1);
     let dispatcher = builtin_dispatcher(product_secret, Arc::clone(&profile), attempt_lease_ticks)
         .map_err(ProcessError::Profile)?;
-    let relation_registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| ProcessError::Profile(format!("register builtin relation: {error:?}")))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| ProcessError::Profile(format!("register semantic relation: {error:?}")))?;
+    let relation_registry =
+        product_relation_registry().map_err(|error| ProcessError::Profile(error.to_string()))?;
     let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
         &config.workspace,
         BuiltinModel,
@@ -1511,12 +1591,33 @@ pub(crate) fn compose_owner(
             backend_frontend_rust::legacy::RustCargoMetadataPolicy::Offline
         }
     };
+    let compiler_selection = match config.compiler_environment.clone() {
+        Some(snapshot) => {
+            backend_engine::application::LocalCompilerHostSelection::from_closed_snapshot(snapshot)
+                .map_err(|error| {
+                    ProcessError::Profile(format!("admit closed compiler selection: {error}"))
+                })?
+        }
+        None => backend_engine::application::LocalCompilerHost::new(
+            embedded_host::EmbeddedCompilerEnvironment {
+                data_root: compiler_root.clone(),
+                compiler_environment: None,
+                search_path: std::env::var_os("PATH"),
+            },
+            backend_engine::application::LocalHostDiscovery::InstalledTools,
+        )
+        .capture_installed_selection()
+        .map_err(|error| {
+            ProcessError::Profile(format!("capture installed compiler selection: {error}"))
+        })?,
+    };
     let mut compiler_host = backend_engine::application::LocalCompilerHost::new(
         embedded_host::EmbeddedCompilerEnvironment {
-            data_root: compiler_root,
-            compiler_environment: config.compiler_environment.clone(),
+            data_root: compiler_root.clone(),
+            compiler_environment: Some(compiler_selection.snapshot().clone()),
+            search_path: None,
         },
-        backend_engine::application::LocalHostDiscovery::ExplicitOnly,
+        backend_engine::application::LocalHostDiscovery::ClosedSnapshot,
     )
     .with_rust_cargo_metadata_policy(cargo_metadata_policy);
     if let Ok(cache_directory) = daemon
@@ -1535,6 +1636,16 @@ pub(crate) fn compose_owner(
                 .open_with_embedding_runtime(embedding.runtime(), embedding.requirement()),
         }
         .map_err(|error| ProcessError::Profile(format!("open compiler owner: {error}")))?;
+    let selection_receipt = compiler_selection.encode_receipt().map_err(|error| {
+        ProcessError::Profile(format!("encode compiler selection receipt: {error}"))
+    })?;
+    backend_platform::durable::write_private_atomic(
+        &compiler_root.join("host-selection-v1.json"),
+        selection_receipt.as_bytes(),
+    )
+    .map_err(|error| {
+        ProcessError::Profile(format!("publish compiler selection receipt: {error}"))
+    })?;
     #[cfg(feature = "cluster-process-journey-hooks")]
     if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
         .is_some_and(|value| value.to_str() == Some("1"))
@@ -2282,11 +2393,12 @@ mod authority_tests {
 #[allow(clippy::expect_used, clippy::panic)]
 mod owner_fairness_tests {
     use super::*;
-    use crate::protocol::EngineRequest;
+    use crate::protocol::{EngineRequest, FrameLimits, ResponseFrame, decode_response};
     use crate::service::{
         LocaldOwner, NoCompletionAdmission, OwnerService, ReplicationAdmission,
         SubscriptionLeaseLimits,
     };
+    use backend_client::monotonic::ManualClock;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -2364,6 +2476,29 @@ mod owner_fairness_tests {
         Ok(Vec::new())
     }
 
+    fn prepared_status(
+        owner: &mut TestOwner,
+        request_id: u64,
+        request: backend_engine::LocalSubscriptionRequest,
+    ) -> Result<EngineStatus, crate::ProtocolError> {
+        let limits = FrameLimits::default();
+        let encoded = OwnerService::engine_prepared(
+            owner,
+            request_id,
+            EngineRequest::Subscription(request),
+            limits,
+        )?;
+        match decode_response(&encoded, limits)? {
+            ResponseFrame::Engine {
+                request_id: response_id,
+                status,
+            } if response_id == request_id => Ok(status),
+            _ => Err(crate::ProtocolError::InvalidControl(
+                "prepared test response correlation",
+            )),
+        }
+    }
+
     fn owner(
         directory: &Path,
         remote_progress: Arc<RemoteProgressState>,
@@ -2372,11 +2507,7 @@ mod owner_fairness_tests {
         let dispatcher =
             builtin_dispatcher(Some(ECHO_AUTHORITY_SECRET), Arc::clone(&profile), 60_000)
                 .expect("test dispatcher");
-        let registry = RelationAdmissionRegistry::new()
-            .with_relation::<BuiltinWorkspaceRelation>()
-            .expect("workspace relation registry")
-            .with_relation::<BuiltinSemanticRelation>()
-            .expect("semantic relation registry");
+        let registry = product_relation_registry().expect("product relation registry");
         let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
             directory,
             BuiltinModel,
@@ -2420,23 +2551,26 @@ mod owner_fairness_tests {
             pending: AtomicUsize::new(8),
             polled: AtomicUsize::new(0),
         });
+        let clock = ManualClock::new();
         let (mut owner, cursor, client) = owner(&directory, Arc::clone(&remote_progress));
-        owner = owner.with_subscription_lease_limits(
-            SubscriptionLeaseLimits::new(4, Duration::from_secs(5), 1, Duration::from_secs(5))
-                .expect("small finite lease bounds"),
-        );
+        owner = owner
+            .with_subscription_lease_limits(
+                SubscriptionLeaseLimits::new(4, Duration::from_secs(5), 1, Duration::from_secs(5))
+                    .expect("small finite lease bounds"),
+            )
+            .with_lease_clock(clock.clone());
 
-        let opened = OwnerService::engine(
+        let opened = prepared_status(
             &mut owner,
             401,
-            EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+            backend_engine::LocalSubscriptionRequest {
                 request_id: 401,
                 operation: backend_engine::LocalSubscriptionOperation::Open {
                     cursor: cursor.clone(),
                     credit: 1,
                     lease_ms: 5_000,
                 },
-            }),
+            },
         )
         .expect("open retained test lease");
         let EngineStatus::Subscription(backend_engine::LocalSubscriptionResponse::Opened {
@@ -2447,16 +2581,16 @@ mod owner_fairness_tests {
         else {
             panic!("open operation must return its owner-issued lease");
         };
-        let acknowledged = OwnerService::engine(
+        let acknowledged = prepared_status(
             &mut owner,
             402,
-            EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+            backend_engine::LocalSubscriptionRequest {
                 request_id: 402,
                 operation: backend_engine::LocalSubscriptionOperation::Ack {
                     lease,
                     cursor: cursor.clone(),
                 },
-            }),
+            },
         )
         .expect("active lease acknowledges its exact cursor");
         assert!(matches!(
@@ -2467,17 +2601,17 @@ mod owner_fairness_tests {
             }) if acknowledged_lease == lease
         ));
 
-        let expired_open = OwnerService::engine(
+        let expired_open = prepared_status(
             &mut owner,
             403,
-            EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+            backend_engine::LocalSubscriptionRequest {
                 request_id: 403,
                 operation: backend_engine::LocalSubscriptionOperation::Open {
                     cursor: cursor.clone(),
                     credit: 1,
                     lease_ms: 5,
                 },
-            }),
+            },
         )
         .expect("open short-lived test lease");
         let EngineStatus::Subscription(backend_engine::LocalSubscriptionResponse::Opened {
@@ -2487,7 +2621,7 @@ mod owner_fairness_tests {
         else {
             panic!("short lease open must return its owner-issued lease");
         };
-        std::thread::sleep(Duration::from_millis(20));
+        clock.advance(Duration::from_millis(5));
 
         // This is a real queued daemon request. The owner must continue
         // admitting productive remote work, yet service this request on its
@@ -2520,30 +2654,32 @@ mod owner_fairness_tests {
         }
         assert_eq!(remote_progress.polled.load(Ordering::Acquire), 8);
         assert_eq!(remote_progress.pending.load(Ordering::Acquire), 0);
+        assert_eq!(owner.lease_test_state(), (1, 1));
         assert!(
             !OwnerService::serve_one(&mut owner),
             "the expired lease was already swept on a productive turn, so the next idle turn does no work"
         );
         assert!(matches!(
-            OwnerService::engine(
+            prepared_status(
                 &mut owner,
                 405,
-                EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+                backend_engine::LocalSubscriptionRequest {
                     request_id: 405,
                     operation: backend_engine::LocalSubscriptionOperation::Cancel {
                         lease: expired_lease,
                     },
-                }),
+                },
             ),
             Err(crate::ProtocolError::InvalidControl(
                 "unknown subscription lease"
             ))
         ));
+        assert_eq!(owner.lease_test_state(), (1, 1));
 
-        let renewed = OwnerService::engine(
+        let renewed = prepared_status(
             &mut owner,
             406,
-            EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+            backend_engine::LocalSubscriptionRequest {
                 request_id: 406,
                 operation: backend_engine::LocalSubscriptionOperation::Renew {
                     lease,
@@ -2551,7 +2687,7 @@ mod owner_fairness_tests {
                     credit: 1,
                     lease_ms: 100,
                 },
-            }),
+            },
         )
         .expect("active lease renews after the fair query turn");
         assert!(matches!(
@@ -2561,28 +2697,31 @@ mod owner_fairness_tests {
                 ..
             }) if renewed_lease == lease
         ));
-        std::thread::sleep(Duration::from_millis(120));
+        clock.advance(Duration::from_millis(100));
         assert!(
-            OwnerService::serve_one(&mut owner),
-            "an otherwise idle owner turn reports the one expired lease"
+            !OwnerService::serve_one(&mut owner),
+            "lease expiry is idle housekeeping, not productive owner work"
         );
+        assert_eq!(owner.lease_test_state(), (0, 2));
         assert!(
             !OwnerService::serve_one(&mut owner),
             "the expired lease is reclaimed only once"
         );
+        assert_eq!(owner.lease_test_state(), (0, 2));
         assert!(matches!(
-            OwnerService::engine(
+            prepared_status(
                 &mut owner,
                 407,
-                EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+                backend_engine::LocalSubscriptionRequest {
                     request_id: 407,
                     operation: backend_engine::LocalSubscriptionOperation::Cancel { lease },
-                }),
+                },
             ),
             Err(crate::ProtocolError::InvalidControl(
                 "unknown subscription lease"
             ))
         ));
+        assert_eq!(owner.lease_test_state(), (0, 2));
         OwnerService::close(&mut owner);
     }
 }

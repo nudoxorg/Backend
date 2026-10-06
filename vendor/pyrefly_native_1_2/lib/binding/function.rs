@@ -1,0 +1,1098 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+use std::mem;
+use std::sync::Arc;
+
+use dupe::Dupe as _;
+use pyrefly_graph::index::Idx;
+use pyrefly_python::ast::Ast;
+use pyrefly_python::docstring::Docstring;
+use pyrefly_python::dunder;
+use pyrefly_python::nesting_context::NestingContext;
+use pyrefly_python::short_identifier::ShortIdentifier;
+use pyrefly_python::sys_info::SysInfo;
+use pyrefly_types::callable::PlaceholderBodyKind;
+use pyrefly_types::meta_shape_dsl::convert_shape_dsl_function;
+use pyrefly_util::prelude::VecExt;
+use pyrefly_util::visit::Visit;
+use ruff_python_ast::Decorator;
+use ruff_python_ast::ExceptHandler;
+use ruff_python_ast::Expr;
+use ruff_python_ast::ExprCall;
+use ruff_python_ast::Identifier;
+use ruff_python_ast::Parameters;
+use ruff_python_ast::Stmt;
+use ruff_python_ast::StmtExpr;
+use ruff_python_ast::StmtFunctionDef;
+use ruff_python_ast::StmtRaise;
+use ruff_python_ast::StmtReturn;
+use ruff_python_ast::name::Name;
+use ruff_text_size::Ranged;
+use ruff_text_size::TextRange;
+use starlark_map::small_map::SmallMap;
+use thin_vec::ThinVec;
+
+use crate::binding::binding::AnnotationTarget;
+use crate::binding::binding::Binding;
+use crate::binding::binding::BindingAnnotation;
+use crate::binding::binding::BindingDecoratedFunction;
+use crate::binding::binding::BindingUndecoratedFunction;
+use crate::binding::binding::BindingUndecoratedFunctionRange;
+use crate::binding::binding::BindingYield;
+use crate::binding::binding::BindingYieldFrom;
+use crate::binding::binding::ExhaustivenessKind;
+use crate::binding::binding::ExprOrBinding;
+use crate::binding::binding::FunctionDefData;
+use crate::binding::binding::FunctionStubOrImpl;
+use crate::binding::binding::IsAsync;
+use crate::binding::binding::Key;
+use crate::binding::binding::KeyAnnotation;
+use crate::binding::binding::KeyClass;
+use crate::binding::binding::KeyDecorator;
+use crate::binding::binding::KeyLegacyTypeParam;
+use crate::binding::binding::KeyUndecoratedFunction;
+use crate::binding::binding::KeyUndecoratedFunctionRange;
+use crate::binding::binding::LastStmt;
+use crate::binding::binding::MethodSelfKind;
+use crate::binding::binding::ReturnExplicit;
+use crate::binding::binding::ReturnImplicit;
+use crate::binding::binding::ReturnType;
+use crate::binding::binding::ReturnTypeKind;
+use crate::binding::bindings::BindingsBuilder;
+use crate::binding::bindings::LegacyTParamCollector;
+use crate::binding::expr::Usage;
+use crate::binding::scope::FlowStyle;
+use crate::binding::scope::InstanceAttribute;
+use crate::binding::scope::Scope;
+use crate::binding::scope::UnusedParameter;
+use crate::binding::scope::UnusedVariable;
+use crate::binding::scope::YieldsAndReturns;
+use crate::config::base::InferReturnTypes;
+use crate::config::error_kind::ErrorKind;
+use crate::export::special::SpecialExport;
+use crate::types::types::AnyStyle;
+
+struct Decorators {
+    has_no_type_check: bool,
+    is_overload: bool,
+    is_abstract_method: bool,
+    is_override: bool,
+    is_classmethod: bool,
+    decorators: Box<[Idx<KeyDecorator>]>,
+}
+
+pub struct SelfAssignments {
+    pub method_name: Name,
+    pub instance_attributes: SmallMap<Name, InstanceAttribute>,
+}
+
+/// Determine whether a function definition is annotated.
+/// Used when `check-unannotated-defs = false` to decide whether to skip checking.
+fn is_annotated<T>(returns: &Option<T>, params: &Parameters) -> bool {
+    if returns.is_some() {
+        return true;
+    }
+    for p in params.iter() {
+        if p.annotation().is_some() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Simple visitor to find `self.<attr>` assignments in unannotated methods.
+/// Used by `unchecked_function_body_scope` to discover instance attributes
+/// without fully analyzing the function body.
+struct SelfAttrNames<'a> {
+    self_name: &'a Name,
+    names: SmallMap<Name, TextRange>,
+}
+
+impl<'a> SelfAttrNames<'a> {
+    fn expr_lvalue(&mut self, x: &Expr) {
+        match x {
+            Expr::Attribute(x) => {
+                if let Expr::Name(v) = x.value.as_ref()
+                    && &v.id == self.self_name
+                    && !self.names.contains_key(&x.attr.id)
+                {
+                    self.names.insert(x.attr.id.clone(), x.attr.range());
+                }
+            }
+            Expr::Tuple(x) => {
+                for x in &x.elts {
+                    self.expr_lvalue(x);
+                }
+            }
+
+            Expr::List(x) => {
+                for x in &x.elts {
+                    self.expr_lvalue(x);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn stmt(&mut self, x: &Stmt) {
+        match x {
+            Stmt::Assign(x) => {
+                for e in x.targets.iter() {
+                    self.expr_lvalue(e);
+                }
+            }
+            Stmt::AnnAssign(x) => {
+                self.expr_lvalue(x.target.as_ref());
+            }
+            _ => {}
+        }
+        x.recurse(&mut |x| self.stmt(x))
+    }
+
+    /// Given an unannotated method (it is the caller's responsibility to
+    /// check these conditions), traverse the body to find the name and range
+    /// of `self.<attr>` assignments.
+    fn find(
+        func_name: &Identifier,
+        parameters: &mut Box<Parameters>,
+        body: ThinVec<Stmt>,
+    ) -> Option<SelfAssignments> {
+        let self_name = if let Some(p) = parameters.iter_non_variadic_params().next() {
+            &p.parameter.name.id
+        } else {
+            return None;
+        };
+        let mut finder = SelfAttrNames {
+            self_name,
+            names: SmallMap::new(),
+        };
+        for x in body.iter() {
+            finder.stmt(x);
+        }
+        let instance_attributes = finder
+            .names
+            .into_iter()
+            .map(|(n, r)| {
+                (
+                    n,
+                    InstanceAttribute(
+                        vec![ExprOrBinding::Binding(Binding::Any(AnyStyle::Implicit))],
+                        None,
+                        r,
+                        MethodSelfKind::Instance,
+                    ),
+                )
+            })
+            .collect();
+        Some(SelfAssignments {
+            method_name: func_name.id.clone(),
+            instance_attributes,
+        })
+    }
+}
+
+impl<'a> BindingsBuilder<'a> {
+    fn parameters(
+        &mut self,
+        x: &mut Parameters,
+        undecorated_idx: Idx<KeyUndecoratedFunction>,
+        class_key: Option<Idx<KeyClass>>,
+        method_self_kind: MethodSelfKind,
+        ignore_annotations: bool,
+    ) {
+        let mut self_name = None;
+        for x in x.iter_non_variadic_params() {
+            if class_key.is_some() && self_name.is_none() {
+                self_name = Some(x.parameter.name.clone());
+            }
+            self.bind_function_param(
+                AnnotationTarget::Param(x.parameter.name.id.clone()),
+                &x.parameter,
+                undecorated_idx,
+                class_key,
+                false,
+                ignore_annotations,
+            );
+        }
+        if let Some(args) = &x.vararg {
+            self.bind_function_param(
+                AnnotationTarget::ArgsParam(args.name.id.clone()),
+                args,
+                undecorated_idx,
+                class_key,
+                true,
+                ignore_annotations,
+            );
+        }
+        if let Some(kwargs) = &x.kwarg {
+            self.bind_function_param(
+                AnnotationTarget::KwargsParam(kwargs.name.id.clone()),
+                kwargs,
+                undecorated_idx,
+                class_key,
+                true,
+                ignore_annotations,
+            );
+        }
+        self.scopes
+            .set_self_name_if_applicable(self_name, method_self_kind);
+    }
+
+    fn to_return_annotation_with_range(
+        &mut self,
+        mut x: Expr,
+        func_name: &Identifier,
+        class_key: Option<Idx<KeyClass>>,
+        tparams_builder: &mut Option<LegacyTParamCollector>,
+    ) -> (TextRange, Idx<KeyAnnotation>) {
+        self.ensure_type(&mut x, tparams_builder);
+        (
+            x.range(),
+            self.insert_binding(
+                KeyAnnotation::ReturnAnnotation(ShortIdentifier::new(func_name)),
+                BindingAnnotation::AnnotateExpr(
+                    AnnotationTarget::Return(func_name.id.clone()),
+                    x,
+                    class_key,
+                ),
+            ),
+        )
+    }
+
+    fn function_header(
+        &mut self,
+        x: &mut StmtFunctionDef,
+        func_name: &Identifier,
+        class_key: Option<Idx<KeyClass>>,
+        usage: &mut Usage,
+        parent: &NestingContext,
+    ) -> (
+        Option<(TextRange, Idx<KeyAnnotation>)>,
+        Vec<Idx<KeyLegacyTypeParam>>,
+    ) {
+        let tparams = x.type_params.as_mut().map(|tparams| {
+            let owner = parent.owner_path(&self.module_info, func_name.id.as_str());
+            self.type_params_with_owner(tparams, owner)
+        });
+
+        let mut legacy = Some(LegacyTParamCollector::new(tparams.is_some()));
+
+        // We need to bind all the parameters expressions _after_ the type params, but before the parameter names,
+        // which might shadow some types.
+        for (param, default) in Ast::parameters_iter_mut(&mut x.parameters) {
+            self.ensure_type_opt(param.annotation.as_deref_mut(), &mut legacy);
+            if let Some(default) = default {
+                self.ensure_expr_opt(default.as_deref_mut(), usage);
+            }
+        }
+
+        let return_ann_with_range = mem::take(&mut x.returns)
+            .map(|e| self.to_return_annotation_with_range(*e, func_name, class_key, &mut legacy));
+
+        let legacy_tparam_collector = legacy.unwrap();
+        self.add_name_definitions(&legacy_tparam_collector);
+        let legacy_tparams = legacy_tparam_collector.lookup_keys();
+        (return_ann_with_range, legacy_tparams)
+    }
+
+    /// Handle creating a scope and binding the function body.
+    ///
+    /// Note that are some aspects of function analysis (such as implicit return analysis) that also depend on the
+    /// function body but are not handled here.
+    fn function_body_scope(
+        &mut self,
+        parameters: &mut Box<Parameters>,
+        body: ThinVec<Stmt>,
+        range: TextRange,
+        func_name: &Identifier,
+        parent: &NestingContext,
+        undecorated_idx: Idx<KeyUndecoratedFunction>,
+        class_key: Option<Idx<KeyClass>>,
+        is_async: bool,
+        method_self_kind: MethodSelfKind,
+    ) -> (
+        YieldsAndReturns,
+        Option<SelfAssignments>,
+        Vec<UnusedParameter>,
+        Vec<UnusedVariable>,
+    ) {
+        self.scopes
+            .push_function_scope(range, func_name, class_key.is_some(), is_async);
+        self.parameters(
+            parameters,
+            undecorated_idx,
+            class_key,
+            method_self_kind,
+            false,
+        );
+        self.init_static_scope(&body, false);
+        self.seed_captured_variables();
+        if class_key.is_some() && !self.scopes.current_static_contains(&dunder::CLASS) {
+            let implicit_range = TextRange::empty(range.start());
+            let dunder_class_identifier = Identifier::new(dunder::CLASS.clone(), implicit_range);
+            self.scopes
+                .add_name_to_current_static(&dunder_class_identifier);
+            let class_object_idx = self.scopes.enclosing_class_object_idx().unwrap();
+            let idx = self.insert_binding(
+                Key::Definition(ShortIdentifier::new(&dunder_class_identifier)),
+                Binding::Forward(class_object_idx),
+            );
+            self.bind_name(&dunder_class_identifier.id, idx, FlowStyle::Other);
+        }
+        self.stmts(
+            body,
+            &NestingContext::function(ShortIdentifier::new(func_name), parent.dupe()),
+        );
+        let (yields_and_returns, self_assignments, unused_parameters, unused_variables) =
+            self.scopes.pop_function_scope();
+        (
+            yields_and_returns,
+            self_assignments,
+            unused_parameters,
+            unused_variables,
+        )
+    }
+
+    /// Lightweight alternative to `function_body_scope`: creates parameter
+    /// bindings but does not analyze the body statements.  Used when
+    /// `check_unannotated_defs = false` (in CLI/batch mode) or
+    /// `@no_type_check` to avoid wasted work.
+    fn unchecked_function_body_scope(
+        &mut self,
+        parameters: &mut Box<Parameters>,
+        body: ThinVec<Stmt>,
+        range: TextRange,
+        func_name: &Identifier,
+        undecorated_idx: Idx<KeyUndecoratedFunction>,
+        class_key: Option<Idx<KeyClass>>,
+        is_async: bool,
+        method_self_kind: MethodSelfKind,
+        ignore_annotations: bool,
+    ) -> Option<SelfAssignments> {
+        // Push a scope to create the parameter keys (but do nothing else with it).
+        self.scopes
+            .push_function_scope(range, func_name, class_key.is_some(), is_async);
+        self.parameters(
+            parameters,
+            undecorated_idx,
+            class_key,
+            method_self_kind,
+            ignore_annotations,
+        );
+        self.scopes.pop();
+        // If we are in a class, use a simple visitor to find `self.<attr>` assignments.
+        if class_key.is_some() {
+            SelfAttrNames::find(func_name, parameters, body)
+        } else {
+            None
+        }
+    }
+
+    /// Compute a `Key::ReturnImplicit` / `Binding::ReturnImplicit` for the given function body.
+    ///
+    /// This function must not be called unless the function body statements will be bound;
+    /// it relies on that binding to ensure we don't have a dangling `Idx<Key>` (which could lead
+    /// to a panic).
+    fn implicit_return(&mut self, body: &[Stmt], func_name: &Identifier) -> Idx<Key> {
+        let last_exprs = function_last_expressions(body, self.sys_info).map(|x| {
+            x.into_map(|(last, x)| {
+                (
+                    last.clone(),
+                    self.last_statement_idx_for_implicit_return(last, x),
+                )
+            })
+            .into_boxed_slice()
+        });
+        self.insert_binding(
+            Key::ReturnImplicit(ShortIdentifier::new(func_name)),
+            Binding::ReturnImplicit(ReturnImplicit { last_exprs }),
+        )
+    }
+
+    /// Handles both checking yield / return expressions and binding the return type.
+    fn analyze_return_type(
+        &mut self,
+        func_name: &Identifier,
+        class_key: Option<Idx<KeyClass>>,
+        is_async: bool,
+        yields_and_returns: YieldsAndReturns,
+        return_ann_with_range: Option<(TextRange, Idx<KeyAnnotation>)>,
+        implicit_return: Option<Idx<Key>>,
+        should_infer_return_type: bool,
+        stub_or_impl: FunctionStubOrImpl,
+    ) {
+        let is_generator = yields_and_returns.is_generator;
+        let return_ann = return_ann_with_range.as_ref().map(|(_, key)| *key);
+        let implicit_dunder_new_self =
+            if func_name.id == dunder::NEW && return_ann_with_range.is_none() {
+                class_key
+            } else {
+                None
+            };
+
+        // Collect the keys of explicit returns.
+        let return_keys = yields_and_returns
+            .returns
+            .into_map(|(idx, x, is_unreachable)| {
+                self.insert_binding_idx(
+                    idx,
+                    Binding::ReturnExplicit(ReturnExplicit {
+                        annot: return_ann,
+                        expr: x.value,
+                        is_generator,
+                        is_async,
+                        range: x.range,
+                        is_unreachable,
+                    }),
+                )
+            })
+            .into_boxed_slice();
+
+        // Collect the keys of yield expressions.
+        let yield_keys = yields_and_returns
+            .yields
+            .into_map(|(idx, x, is_unreachable)| {
+                self.insert_binding_idx(
+                    idx,
+                    if is_unreachable {
+                        BindingYield::Unreachable(x)
+                    } else {
+                        BindingYield::Yield(return_ann, x)
+                    },
+                )
+            })
+            .into_boxed_slice();
+        let yield_from_keys = yields_and_returns
+            .yield_froms
+            .into_map(|(idx, x, is_unreachable)| {
+                self.insert_binding_idx(
+                    idx,
+                    if is_unreachable {
+                        BindingYieldFrom::Unreachable(x)
+                    } else {
+                        BindingYieldFrom::YieldFrom(return_ann, IsAsync::new(is_async), x)
+                    },
+                )
+            })
+            .into_boxed_slice();
+
+        let return_type_binding = {
+            let kind = match (return_ann_with_range, implicit_return, stub_or_impl) {
+                (Some((range, annotation)), Some(implicit_return), FunctionStubOrImpl::Impl) => {
+                    // We have an explicit return annotation and we want to validate it.
+                    ReturnTypeKind::ShouldValidateAnnotation {
+                        range,
+                        annotation,
+                        implicit_return,
+                        is_generator,
+                        has_explicit_return: !return_keys.is_empty(),
+                    }
+                }
+                // We have an explicit return annotation on a stub function, so we just trust it, ignoring the implicit return.
+                (Some((range, annotation)), Some(_), FunctionStubOrImpl::Stub)
+                // We have an explicit return annotation and no implicit return.
+                | (Some((range, annotation)), None, _) => {
+                    ReturnTypeKind::ShouldTrustAnnotation {
+                        annotation,
+                        range,
+                        is_generator,
+                    }
+                }
+                (None, Some(implicit_return), _) if should_infer_return_type => {
+                    // We don't have an explicit return annotation, but we want to infer it.
+                    ReturnTypeKind::ShouldInferType {
+                        returns: return_keys,
+                        implicit_return,
+                        yields: yield_keys,
+                        yield_froms: yield_from_keys,
+                    }
+                }
+                (None, _, _) => {
+                    // We don't have an explicit return annotation, or we don't want to infer return type.
+                    // Just treat the return type as `Any`.
+                    ReturnTypeKind::ShouldReturnAny {
+                        is_generator,
+                    }
+                }
+            };
+            Binding::ReturnType(Box::new(ReturnType {
+                kind,
+                is_async,
+                implicit_dunder_new_self,
+            }))
+        };
+        self.insert_binding(
+            Key::ReturnType(ShortIdentifier::new(func_name)),
+            return_type_binding,
+        );
+    }
+
+    fn mark_as_returns_any(
+        &mut self,
+        func_name: &Identifier,
+        class_key: Option<Idx<KeyClass>>,
+        is_async: bool,
+    ) {
+        // Even when body analysis is skipped, an unannotated __new__ still defaults to Self.
+        if func_name.id == dunder::NEW
+            && let Some(class_key) = class_key
+        {
+            self.insert_binding(
+                Key::ReturnType(ShortIdentifier::new(func_name)),
+                Binding::ReturnType(Box::new(ReturnType {
+                    kind: ReturnTypeKind::ShouldReturnAny {
+                        is_generator: false,
+                    },
+                    is_async,
+                    implicit_dunder_new_self: Some(class_key),
+                })),
+            );
+            return;
+        }
+        self.insert_binding(
+            Key::ReturnType(ShortIdentifier::new(func_name)),
+            // TODO(grievejia): traverse the function body and calculate the `is_generator` flag, then
+            // use ReturnTypeKind::ShouldReturnAny to get more precision here.
+            Binding::Any(AnyStyle::Implicit),
+        );
+    }
+
+    fn decorators(&mut self, decorator_list: ThinVec<Decorator>, usage: &mut Usage) -> Decorators {
+        let mut is_overload = false;
+        let mut is_override = false;
+        let mut has_no_type_check = false;
+        let mut is_abstract_method = false;
+        let mut is_classmethod = false;
+        for d in &decorator_list {
+            let special_export = self.as_special_export(&d.expression);
+            is_overload = is_overload || matches!(special_export, Some(SpecialExport::Overload));
+            is_override = is_override || matches!(special_export, Some(SpecialExport::Override));
+            is_abstract_method = is_abstract_method
+                || matches!(
+                    special_export,
+                    Some(SpecialExport::AbstractMethod | SpecialExport::AbstractClassMethod)
+                );
+            has_no_type_check =
+                has_no_type_check || matches!(special_export, Some(SpecialExport::NoTypeCheck));
+            is_classmethod = is_classmethod
+                || matches!(
+                    special_export,
+                    Some(SpecialExport::ClassMethod | SpecialExport::AbstractClassMethod)
+                );
+        }
+        let decorators = self
+            .ensure_and_bind_decorators(decorator_list, usage)
+            .into_boxed_slice();
+        Decorators {
+            has_no_type_check,
+            is_overload,
+            is_abstract_method,
+            is_override,
+            is_classmethod,
+            decorators,
+        }
+    }
+
+    fn function_body(
+        &mut self,
+        parameters: &mut Box<Parameters>,
+        body: ThinVec<Stmt>,
+        decorators: &Decorators,
+        range: TextRange,
+        is_async: bool,
+        return_ann_with_range: Option<(TextRange, Idx<KeyAnnotation>)>,
+        func_name: &Identifier,
+        parent: &NestingContext,
+        undecorated_idx: Idx<KeyUndecoratedFunction>,
+        class_key: Option<Idx<KeyClass>>,
+    ) -> (
+        FunctionStubOrImpl,
+        Option<PlaceholderBodyKind>,
+        bool,
+        Option<SelfAssignments>,
+    ) {
+        // If the first statement in the body is a docstring, remove it
+        let body_no_docstring = if let Some(s) = body.first()
+            && is_docstring(s)
+        {
+            &body.as_slice()[1..]
+        } else {
+            body.as_slice()
+        };
+        let body_is_ellipse = match body_no_docstring {
+            [Stmt::Expr(StmtExpr { value, .. })] if value.is_ellipsis_literal_expr() => true,
+            _ => false,
+        };
+        let body_is_trivial = body_is_ellipse
+            || (match body_no_docstring {
+                [] => true,
+                [Stmt::Pass(_)] => true,
+                _ => false,
+            });
+        let placeholder_body_kind = match body_no_docstring {
+            // raise NotImplementedError(...)
+            [Stmt::Raise(StmtRaise { exc: Some(exc), .. })]
+                if self.as_special_export(match &**exc {
+                    Expr::Call(ExprCall { func, .. }) => func,
+                    other => other,
+                }) == Some(SpecialExport::NotImplementedError) =>
+            {
+                Some(PlaceholderBodyKind::RaiseNotImplementedError)
+            }
+            // return NotImplemented
+            [
+                Stmt::Return(StmtReturn {
+                    value: Some(val), ..
+                }),
+            ] if self.as_special_export(val) == Some(SpecialExport::NotImplemented) => {
+                Some(PlaceholderBodyKind::ReturnNotImplemented)
+            }
+            _ => None,
+        };
+        if decorators.is_overload && !body_is_trivial && placeholder_body_kind.is_none() {
+            self.error(
+                func_name.range(),
+                ErrorKind::UselessOverloadBody,
+                "`@overload` bodies should not contain executable logic".to_owned(),
+            );
+        }
+        // A `...` body is always interpreted as a stub function.
+        // Functions with other trivial bodies are interpreted as stubs in some contexts.
+        let stub_or_impl = if body_is_ellipse
+            || ((self.scopes.is_in_protocol_class()
+                || decorators.is_abstract_method
+                || decorators.is_overload)
+                && body_is_trivial)
+        {
+            FunctionStubOrImpl::Stub
+        } else {
+            FunctionStubOrImpl::Impl
+        };
+        let should_report_unused_parameters = stub_or_impl == FunctionStubOrImpl::Impl
+            && !body_is_trivial
+            && placeholder_body_kind.is_none()
+            && !decorators.is_overload
+            && !decorators.is_override
+            && !decorators.is_abstract_method;
+        let method_self_kind = if class_key.is_some()
+            && (decorators.is_classmethod
+                || func_name.id == dunder::INIT_SUBCLASS
+                || func_name.id == dunder::NEW)
+        {
+            MethodSelfKind::Class
+        } else {
+            MethodSelfKind::Instance
+        };
+
+        let is_unannotated =
+            !self.check_unannotated_defs && !is_annotated(&return_ann_with_range, parameters);
+        let (is_return_inferred, self_assignments) = if decorators.has_no_type_check
+            || (is_unannotated && !self.analyze_unannotated_for_ide)
+        {
+            self.mark_as_returns_any(func_name, class_key, is_async);
+            let self_assignments = self.unchecked_function_body_scope(
+                parameters,
+                body,
+                range,
+                func_name,
+                undecorated_idx,
+                class_key,
+                is_async,
+                method_self_kind,
+                decorators.has_no_type_check,
+            );
+            (false, self_assignments)
+        } else if is_unannotated {
+            let implicit_return = Some(self.implicit_return(&body, func_name));
+            let (yields_and_returns, self_assignments, _, _) = self.function_body_scope(
+                parameters,
+                body,
+                range,
+                func_name,
+                parent,
+                undecorated_idx,
+                class_key,
+                is_async,
+                method_self_kind,
+            );
+            self.analyze_return_type(
+                func_name,
+                class_key,
+                is_async,
+                yields_and_returns,
+                return_ann_with_range,
+                implicit_return,
+                false,
+                stub_or_impl,
+            );
+            (false, self_assignments)
+        } else {
+            // Compute implicit_return: in this branch the body is always fully analyzed,
+            // so we can always determine whether there's an implicit return.
+            let implicit_return = Some(self.implicit_return(&body, func_name));
+            let (yields_and_returns, self_assignments, unused_parameters, unused_variables) = self
+                .function_body_scope(
+                    parameters,
+                    body,
+                    range,
+                    func_name,
+                    parent,
+                    undecorated_idx,
+                    class_key,
+                    is_async,
+                    method_self_kind,
+                );
+            if should_report_unused_parameters {
+                self.record_unused_parameters(unused_parameters);
+                self.record_unused_variables(unused_variables);
+            }
+            let should_infer = match self.infer_return_types {
+                InferReturnTypes::Checked => true,
+                InferReturnTypes::Annotated => is_annotated(&return_ann_with_range, parameters),
+                InferReturnTypes::Never => false,
+            };
+            self.analyze_return_type(
+                func_name,
+                class_key,
+                is_async,
+                yields_and_returns,
+                return_ann_with_range,
+                implicit_return,
+                should_infer,
+                stub_or_impl,
+            );
+            // Mirror the `ReturnTypeKind::ShouldInferType` arm in `analyze_return_type`:
+            // we infer iff there's no return annotation and inference was requested.
+            // `implicit_return` is always `Some` in this branch. We additionally
+            // exclude unannotated `__new__`, whose effective return type is
+            // overridden to `Self` at solve time (see `implicit_dunder_new_self`),
+            // not the body-inferred type — so callers should not treat the
+            // visible return as derived from the body.
+            let is_implicit_dunder_new = func_name.id == dunder::NEW && class_key.is_some();
+            let is_return_inferred =
+                should_infer && return_ann_with_range.is_none() && !is_implicit_dunder_new;
+            (is_return_inferred, self_assignments)
+        };
+
+        (
+            stub_or_impl,
+            placeholder_body_kind,
+            is_return_inferred,
+            self_assignments,
+        )
+    }
+
+    pub fn function_def(&mut self, mut x: StmtFunctionDef, parent: &NestingContext) {
+        // This is to handle "def" with no func name after
+        if x.name.id.is_empty() {
+            return;
+        }
+        let func_name = x.name.clone();
+        let mut def_idx =
+            self.declare_current_idx(Key::Definition(ShortIdentifier::new(&func_name)));
+
+        let func_def_index = self.func_def_index();
+
+        let undecorated_idx =
+            self.idx_for_promise(KeyUndecoratedFunction(ShortIdentifier::new(&func_name)));
+
+        // Map FuncDefIndex to ShortIdentifier for reverse lookup.
+        self.insert_binding(
+            KeyUndecoratedFunctionRange(func_def_index),
+            BindingUndecoratedFunctionRange(ShortIdentifier::new(&func_name)),
+        );
+
+        // Get preceding function definition, if any. Used for building an overload type.
+        let (function_idx, pred_idx) = self.create_function_index(&func_name);
+
+        let (class_key, metadata_key) = match self.scopes.current_class_and_metadata_keys() {
+            Some((class_key, metadata_key)) => (Some(class_key), Some(metadata_key)),
+            _ => (None, None),
+        };
+
+        // Check whether this function is decorated with `@shape_dsl_function`
+        // before `decorators()` takes the decorator list.
+        let is_shape_dsl = x.decorator_list.iter().any(|d| {
+            self.as_special_export(&d.expression) == Some(SpecialExport::ShapeDslFunction)
+        });
+
+        // Extract the IR function name from @uses_shape_dsl(ir_fn) if present.
+        let uses_shape_dsl_ir_name = x.decorator_list.iter().find_map(|d| {
+            let call = d.expression.as_call_expr()?;
+            if self.as_special_export(&call.func) != Some(SpecialExport::UsesShapeDsl) {
+                return None;
+            }
+            // The first positional argument is the IR function reference.
+            let first_arg = call.arguments.args.first()?;
+            // Must be a simple name (not a dotted path or arbitrary expression).
+            let name_expr = first_arg.as_name_expr()?;
+            Some(ShortIdentifier::expr_name(name_expr))
+        });
+
+        // Convert the function to DSL IR before `function_header` takes `returns`
+        // and before `function_body` takes `body`.
+        let shape_dsl_def = if is_shape_dsl {
+            // Warn about parameter kinds the DSL silently ignores.
+            if let Some(vararg) = &x.parameters.vararg {
+                self.error(
+                    vararg.range(),
+                    ErrorKind::InvalidArgument,
+                    "@shape_dsl_function: *args parameters are not supported in the shape DSL and will be ignored".to_owned(),
+                );
+            }
+            if let Some(kwarg) = &x.parameters.kwarg {
+                self.error(
+                    kwarg.range(),
+                    ErrorKind::InvalidArgument,
+                    "@shape_dsl_function: **kwargs parameters are not supported in the shape DSL and will be ignored".to_owned(),
+                );
+            }
+            if !x.parameters.kwonlyargs.is_empty() {
+                self.error(
+                    x.parameters.kwonlyargs[0].range(),
+                    ErrorKind::InvalidArgument,
+                    "@shape_dsl_function: keyword-only parameters are not supported in the shape DSL and will be ignored".to_owned(),
+                );
+            }
+            if !x.parameters.posonlyargs.is_empty() {
+                self.error(
+                    x.parameters.posonlyargs[0].range(),
+                    ErrorKind::InvalidArgument,
+                    "@shape_dsl_function: positional-only parameters are not supported in the shape DSL and will be ignored".to_owned(),
+                );
+            }
+
+            match convert_shape_dsl_function(&x) {
+                Ok(dsl_fn) => {
+                    let dsl_fn = Arc::new(dsl_fn);
+                    self.metadata
+                        .push_shape_dsl(func_name.id.clone(), Arc::clone(&dsl_fn));
+                    Some(dsl_fn)
+                }
+                Err(err) => {
+                    self.error(
+                        err.range,
+                        ErrorKind::InvalidArgument,
+                        format!("@shape_dsl_function: {}", err.message),
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        self.maybe_record_pytest_fixture_definition(&x, class_key);
+
+        let decorators = self.decorators(mem::take(&mut x.decorator_list), def_idx.usage());
+
+        self.scopes.push(Scope::annotation(x.range));
+        let (return_ann_with_range, legacy_tparams) =
+            self.function_header(&mut x, &func_name, class_key, def_idx.usage(), parent);
+
+        let docstring_range = Docstring::range_from_stmts(x.body.as_slice());
+        let (stub_or_impl, placeholder_body_kind, is_return_inferred, self_assignments) = self
+            .function_body(
+                &mut x.parameters,
+                mem::take(&mut x.body),
+                &decorators,
+                x.range,
+                x.is_async,
+                return_ann_with_range,
+                &func_name,
+                parent,
+                undecorated_idx,
+                class_key,
+            );
+
+        // Pop the annotation scope to get back to the parent scope, and handle this
+        // case where we need to track assignments to `self` from methods.
+        self.scopes.pop();
+        self.scopes
+            .record_self_assignments_if_applicable(self_assignments);
+        let outer_funcs = parent.ancestor_function_path(&self.module_info);
+        let undecorated_idx = self.insert_binding_idx(
+            undecorated_idx,
+            BindingUndecoratedFunction {
+                def_index: func_def_index,
+                def: FunctionDefData::new(x),
+                stub_or_impl,
+                placeholder_body_kind,
+                is_return_inferred,
+                class_key,
+                decorators: decorators.decorators,
+                legacy_tparams: legacy_tparams.into_boxed_slice(),
+                module_style: self.module_info.path().style(),
+                outer_funcs,
+                shape_dsl_def,
+                uses_shape_dsl_ir_name,
+            },
+        );
+
+        self.insert_binding_idx(
+            function_idx,
+            BindingDecoratedFunction {
+                undecorated_idx,
+                successor: None,
+                docstring_range,
+            },
+        );
+
+        self.bind_current_as(
+            &func_name,
+            def_idx,
+            Binding::Function(function_idx, pred_idx, metadata_key),
+            FlowStyle::FunctionDef {
+                function_idx,
+                has_return_annotation: return_ann_with_range.is_some(),
+                is_overload: decorators.is_overload,
+            },
+        );
+    }
+}
+
+/// Given the body of a function, what are the potential expressions that
+/// could be the last ones to be executed, where the function then falls off the end.
+///
+/// * Return None to say there are branches that fall off the end always.
+/// * Return Some([]) to say that we can never reach the end (e.g. always return, raise)
+/// * Return Some(xs) to say this set might be the last expression.
+fn function_last_expressions<'a>(
+    x: &'a [Stmt],
+    sys_info: SysInfo,
+) -> Option<Vec<(LastStmt, &'a Expr)>> {
+    fn f<'a>(sys_info: SysInfo, x: &'a [Stmt], res: &mut Vec<(LastStmt, &'a Expr)>) -> Option<()> {
+        fn loop_body_has_break_statement(statement: &Stmt, has_break: &mut bool) {
+            match statement {
+                Stmt::Break(_) => {
+                    *has_break = true;
+                }
+                Stmt::While(_) | Stmt::For(_) => {}
+                _ => statement
+                    .recurse(&mut |statement| loop_body_has_break_statement(statement, has_break)),
+            }
+        }
+
+        match x.last()? {
+            Stmt::Expr(x) => res.push((LastStmt::Expr, &x.value)),
+            Stmt::Return(_) | Stmt::Raise(_) => {}
+            Stmt::Assert(x) if sys_info.evaluate_bool(&x.test) == Some(false) => {}
+            Stmt::With(x) => {
+                let kind = IsAsync::new(x.is_async);
+                for y in &x.items {
+                    res.push((LastStmt::With(kind), &y.context_expr));
+                }
+                f(sys_info, &x.body, res)?;
+            }
+            Stmt::While(x) => {
+                let test_value = sys_info.evaluate_bool(&x.test);
+                // Only scan for breaks when the body is reachable.
+                let mut has_break = false;
+                if test_value != Some(false) {
+                    x.body
+                        .visit(&mut |stmt| loop_body_has_break_statement(stmt, &mut has_break));
+                }
+                if test_value == Some(true) && !has_break {
+                    // Infinite loop with no break never falls through.
+                } else if has_break || x.orelse.is_empty() {
+                    return None;
+                } else {
+                    f(sys_info, &x.orelse, res)?;
+                }
+            }
+            Stmt::For(x) => {
+                let mut has_break = false;
+                x.body
+                    .visit(&mut |stmt| loop_body_has_break_statement(stmt, &mut has_break));
+                if has_break || x.orelse.is_empty() {
+                    return None;
+                }
+                f(sys_info, &x.orelse, res)?;
+            }
+            Stmt::If(x) => {
+                let mut last_test = None;
+                let mut any_branch_processed = false;
+                for (test, body) in sys_info.pruned_if_branches(x) {
+                    any_branch_processed = true;
+                    last_test = test;
+                    f(sys_info, body, res)?;
+                }
+                if !any_branch_processed {
+                    // All branches were pruned, so the code falls through
+                    return None;
+                }
+                if last_test.is_some() {
+                    // The if/elif chain has no else clause, so it's not syntactically exhaustive.
+                    // But it might be type-exhaustive. Add a LastStmt::Exhaustive entry so we can check
+                    // at solve time. We use the test expression as a placeholder; the actual
+                    // exhaustiveness check uses the if range to find the Exhaustive binding.
+                    res.push((
+                        LastStmt::Exhaustive(ExhaustivenessKind::IfElif, x.range),
+                        &x.test,
+                    ));
+                }
+            }
+            Stmt::Try(x) => {
+                // If final body is not empty, _and_ contains a return statement,
+                // process it.
+                if !x.finalbody.is_empty()
+                    && x.finalbody
+                        .iter()
+                        .any(|stmt| matches!(stmt, Stmt::Return(_)))
+                {
+                    f(sys_info, &x.finalbody, res)?;
+                } else {
+                    if x.orelse.is_empty() {
+                        f(sys_info, &x.body, res)?;
+                    } else {
+                        f(sys_info, &x.orelse, res)?;
+                    }
+                    for handler in &x.handlers {
+                        match handler {
+                            ExceptHandler::ExceptHandler(x) => f(sys_info, &x.body, res)?,
+                        }
+                    }
+                    // If we don't have a matching handler, we raise an exception, which is fine.
+                }
+            }
+            Stmt::Match(x) => {
+                let mut syntactically_exhaustive = false;
+                for case in x.cases.iter() {
+                    f(sys_info, &case.body, res)?;
+                    if case.pattern.is_wildcard() || case.pattern.is_irrefutable() {
+                        syntactically_exhaustive = true;
+                        break;
+                    }
+                }
+                if !syntactically_exhaustive {
+                    // The match is not syntactically exhaustive, but might be type-exhaustive.
+                    // Add a LastStmt::Exhaustive entry so we can check at solve time.
+                    // We use the subject expression as a placeholder; the actual exhaustiveness
+                    // check uses the match range to find the Exhaustive binding.
+                    res.push((
+                        LastStmt::Exhaustive(ExhaustivenessKind::Match, x.range),
+                        x.subject.as_ref(),
+                    ));
+                }
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+
+    let mut res = Vec::new();
+    f(sys_info, x, &mut res)?;
+    Some(res)
+}
+
+fn is_docstring(x: &Stmt) -> bool {
+    match x {
+        Stmt::Expr(StmtExpr { value, .. }) => value.is_string_literal_expr(),
+        _ => false,
+    }
+}

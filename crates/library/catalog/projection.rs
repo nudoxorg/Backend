@@ -12,6 +12,118 @@ use crate::{
 use crate::{ReferenceFact, ReferenceRecord};
 use std::collections::BTreeSet;
 
+/// Query family and page credit are part of the continuation contract.
+#[derive(Clone, Copy)]
+pub(crate) enum QueryPageKind {
+    Names,
+    Search,
+}
+
+pub(crate) fn query_page_preimage(kind: QueryPageKind, text: &str, limit: QueryLimit) -> Vec<u8> {
+    let mut bytes = b"catalog-query-page-v2\0".to_vec();
+    bytes.push(match kind {
+        QueryPageKind::Names => 0,
+        QueryPageKind::Search => 1,
+    });
+    bytes.extend_from_slice(&limit.get().to_be_bytes());
+    bytes.extend_from_slice(text.as_bytes());
+    bytes
+}
+
+/// Canonical witness for a names or search page's continuation contract.
+///
+/// Producers, certificate builders, and consumers use this same encoding of
+/// query family, text, page credit, source root, and optional read manifest.
+/// Its private fields keep the identity paired with its exact preimage.
+#[derive(Debug)]
+pub struct QueryPageRecipe {
+    identity: ViewRecipeId,
+    preimage: Box<[u8]>,
+}
+
+impl QueryPageRecipe {
+    /// Binds a names request to its selected source root.
+    #[must_use]
+    pub fn names(root: ViewStateRoot, query: &NameQuery) -> Self {
+        Self::new(
+            QueryPageKind::Names,
+            query.text(),
+            query.limit(),
+            root,
+            query.read_manifest(),
+        )
+    }
+
+    /// Binds a search request to its selected source root.
+    #[must_use]
+    pub fn search(root: ViewStateRoot, query: &Query) -> Self {
+        Self::new(
+            QueryPageKind::Search,
+            query.text(),
+            query.limit(),
+            root,
+            query.read_manifest(),
+        )
+    }
+
+    fn new(
+        kind: QueryPageKind,
+        text: &str,
+        limit: QueryLimit,
+        root: ViewStateRoot,
+        manifest: Option<&ReadManifest>,
+    ) -> Self {
+        let recipe = query_page_preimage(kind, text, limit);
+        let manifest = manifest_preimage(manifest);
+        let preimage = crate::canonical::view_identity_preimage(&[
+            b"query",
+            &recipe,
+            root.as_bytes(),
+            &manifest,
+        ])
+        .into_boxed_slice();
+        let identity = ViewRecipeId::from_value(&preimage);
+        Self { identity, preimage }
+    }
+
+    /// The identity admitted by this canonical witness.
+    #[must_use]
+    pub const fn identity(&self) -> ViewRecipeId {
+        self.identity
+    }
+
+    /// Exact recipe bytes carried by a wire identity certificate.
+    #[must_use]
+    pub fn canonical_preimage(&self) -> &[u8] {
+        &self.preimage
+    }
+}
+
+fn manifest_preimage(manifest: Option<&ReadManifest>) -> Vec<u8> {
+    let mut bytes = vec![u8::from(manifest.is_some())];
+    if let Some(manifest) = manifest {
+        bytes.extend_from_slice(&manifest.canonical_bytes());
+    }
+    bytes
+}
+
+pub(crate) fn projection_recipe(
+    recipe: &[u8],
+    root: ViewStateRoot,
+    manifest: Option<&ReadManifest>,
+) -> ViewRecipeId {
+    let bytes = manifest_preimage(manifest);
+    projection_recipe_with_manifest(recipe, root, &bytes)
+}
+
+fn projection_recipe_with_manifest(
+    recipe: &[u8],
+    root: ViewStateRoot,
+    manifest: &[u8],
+) -> ViewRecipeId {
+    view_identity_bytes(&[b"query", recipe, root.as_bytes(), manifest])
+}
+
 impl Library {
     /// Reads one root/query-bound package page.
     ///
@@ -108,10 +220,10 @@ impl Library {
     /// [`LibraryError::View`] when the bounded snapshot cannot be constructed.
     pub fn names(&self, query: &NameQuery) -> Result<ViewSnapshot, LibraryError> {
         self.check_basis(query.basis)?;
-        let recipe = self.query_recipe(query.text.as_bytes(), query.read_manifest.as_ref());
+        let recipe = QueryPageRecipe::names(self.revision_root(), query).identity();
         self.work.record_seek();
         let limit = usize::from(query.limit.get());
-        let start = self.check_query_cursor(query.cursor, recipe, limit, |offset| {
+        let fetch = |offset| {
             self.arrangement.names_page(
                 query.text(),
                 offset,
@@ -119,32 +231,35 @@ impl Library {
                 |id| self.view.row(id),
                 &self.work,
             )
-        })?;
-        let page = self.arrangement.names_page(
-            query.text(),
-            start,
-            limit,
-            |id| self.view.row(id),
-            &self.work,
-        );
+        };
+        // Canonical snapshots sort identities; absolute ordinal scores preserve
+        // the selected names order in presentation across every page size.
+        let ranked_row = |id, rank| {
+            let mut row = self.view.row(id)?;
+            row.score = Some(u32::MAX.checked_sub(u32::try_from(rank).ok()?)?);
+            Some(row)
+        };
+        let start =
+            self.check_query_cursor_with_rows(query.cursor, recipe, limit, fetch, ranked_row)?;
+        let page = fetch(start);
         if query.cursor.is_some() && page.ids.is_empty() {
             return Err(LibraryError::CursorMismatch);
         }
         let rows = page
             .ids
             .iter()
-            .filter_map(|&id| self.view.row(id))
+            .enumerate()
+            .filter_map(|(at, &id)| ranked_row(id, start + at))
             .collect::<Vec<_>>();
         self.work.record_output(rows.len());
-        self.snapshot_for(
-            query.text.as_bytes(),
+        self.snapshot_with_recipe(
+            recipe,
             rows,
             if page.has_more {
                 Some(self.cursor)
             } else {
                 None
             },
-            query.read_manifest.as_ref(),
             Some(start.saturating_add(limit)),
         )
     }
@@ -319,7 +434,7 @@ impl Library {
                 "search text is empty".to_owned(),
             ));
         }
-        let recipe = self.query_recipe(query.text.as_bytes(), query.read_manifest.as_ref());
+        let recipe = QueryPageRecipe::search(self.revision_root(), query).identity();
         self.work.record_seek();
         let limit = usize::from(query.limit.get());
         let start = self.check_query_cursor(query.cursor, recipe, limit, |offset| {
@@ -347,15 +462,14 @@ impl Library {
             .filter_map(|&id| self.view.row(id))
             .collect::<Vec<_>>();
         self.work.record_output(rows.len());
-        let snapshot = self.snapshot_for(
-            query.text.as_bytes(),
+        let snapshot = self.snapshot_with_recipe(
+            recipe,
             rows,
             if page.has_more {
                 Some(self.cursor)
             } else {
                 None
             },
-            query.read_manifest.as_ref(),
             Some(start.saturating_add(limit)),
         )?;
         Ok(RankedSearchSnapshot {
@@ -364,7 +478,8 @@ impl Library {
         })
     }
 
-    /// Builds a search page from an owner-selected complete relevance order.
+    /// Builds a search page from an owner-selected relevance prefix that
+    /// includes the requested page and, when present, its first successor.
     ///
     /// This is the application-service seam for replaceable local search
     /// engines. Every identity is resolved from this library's immutable view;
@@ -397,7 +512,7 @@ impl Library {
                 "ranked search identities are not a subset of the selected view".to_owned(),
             ));
         }
-        let recipe = self.query_recipe(query.text.as_bytes(), query.read_manifest.as_ref());
+        let recipe = QueryPageRecipe::search(self.revision_root(), query).identity();
         let limit = usize::from(query.limit.get());
         let ranked_page = |start: usize| {
             let mut ids = ranked_ids
@@ -410,33 +525,43 @@ impl Library {
             ids.truncate(limit);
             ArrangementPage { ids, has_more }
         };
-        let start = self.check_query_cursor(query.cursor, recipe, limit, ranked_page)?;
+        // Scores encode absolute rank, independent of prefix length. The
+        // predecessor proof must resolve exactly these same scored rows.
+        let ranked_row = |id, rank| {
+            let mut row = self.view.row(id)?;
+            row.score = Some(u32::MAX.checked_sub(u32::try_from(rank).ok()?)?);
+            Some(row)
+        };
+        if u32::try_from(ranked_ids.len()).is_err() {
+            return Err(LibraryError::InvalidQuery(
+                "ranked search exceeds ordinal score space".to_owned(),
+            ));
+        }
+        let start = self.check_query_cursor_with_rows(
+            query.cursor,
+            recipe,
+            limit,
+            ranked_page,
+            ranked_row,
+        )?;
         let page = ranked_page(start);
         if query.cursor.is_some() && page.ids.is_empty() {
             return Err(LibraryError::CursorMismatch);
         }
-        // A snapshot's rows are held in key order, so the ranked order
-        // travels as each row's score: the rows left in the ranking after it,
-        // counted from its end (the first row of the whole ranking scores
-        // highest, on every page).
-        let total = ranked_ids.len();
+        // A snapshot holds rows in key order; stable ordinal scores carry
+        // relevance order across pages and cold reconstruction.
         let rows = page
             .ids
             .iter()
             .enumerate()
-            .filter_map(|(at, &id)| {
-                let mut row = self.view.row(id)?;
-                row.score = u32::try_from(total - (start + at)).ok();
-                Some(row)
-            })
+            .filter_map(|(at, &id)| ranked_row(id, start + at))
             .collect::<Vec<_>>();
         self.work.record_seek();
         self.work.record_output(rows.len());
-        self.snapshot_for(
-            query.text.as_bytes(),
+        self.snapshot_with_recipe(
+            recipe,
             rows,
             page.has_more.then_some(self.cursor),
-            query.read_manifest.as_ref(),
             page.has_more.then_some(start.saturating_add(limit)),
         )
     }
@@ -719,7 +844,9 @@ impl Library {
             || ids.windows(2).any(|pair| pair[0] >= pair[1])
             || ids.binary_search(&RowId::Symbol(symbol)).is_err()
         {
-            return Err(LibraryError::InvalidQuery("graph page identities violate the selected neighborhood".to_owned()));
+            return Err(LibraryError::InvalidQuery(
+                "graph page identities violate the selected neighborhood".to_owned(),
+            ));
         }
         if ids.iter().any(|id| self.view.row(*id).is_none()) {
             return Err(LibraryError::NotFound);
@@ -732,7 +859,12 @@ impl Library {
             ids: ids.iter().skip(offset).take(limit).copied().collect(),
             has_more: offset.saturating_add(limit) < ids.len(),
         };
-        let start = self.check_query_cursor(page.continuation().map(crate::PageContinuation::cursor), recipe, limit, select)?;
+        let start = self.check_query_cursor(
+            page.continuation().map(crate::PageContinuation::cursor),
+            recipe,
+            limit,
+            select,
+        )?;
         self.projection_page(&recipe_bytes, &select(start), start, limit)
     }
 
@@ -825,16 +957,21 @@ impl Library {
         read_manifest: Option<&ReadManifest>,
         next_offset: Option<usize>,
     ) -> Result<ViewSnapshot, LibraryError> {
-        let manifest_bytes = read_manifest.map_or_else(
-            || vec![0],
-            |manifest| {
-                let mut bytes = Vec::with_capacity(manifest.canonical_bytes().len() + 1);
-                bytes.push(1);
-                bytes.extend_from_slice(&manifest.canonical_bytes());
-                bytes
-            },
-        );
-        let id = self.query_recipe_with_manifest(recipe, &manifest_bytes);
+        self.snapshot_with_recipe(
+            self.query_recipe(recipe, read_manifest),
+            rows,
+            next,
+            next_offset,
+        )
+    }
+
+    fn snapshot_with_recipe(
+        &self,
+        id: ViewRecipeId,
+        rows: Vec<Row>,
+        next: Option<Cursor>,
+        next_offset: Option<usize>,
+    ) -> Result<ViewSnapshot, LibraryError> {
         let next_offset = next_offset
             .map(u64::try_from)
             .transpose()
@@ -872,25 +1009,7 @@ impl Library {
     }
 
     fn query_recipe(&self, recipe: &[u8], read_manifest: Option<&ReadManifest>) -> ViewRecipeId {
-        let manifest_bytes = read_manifest.map_or_else(
-            || vec![0],
-            |manifest| {
-                let mut bytes = Vec::with_capacity(manifest.canonical_bytes().len() + 1);
-                bytes.push(1);
-                bytes.extend_from_slice(&manifest.canonical_bytes());
-                bytes
-            },
-        );
-        self.query_recipe_with_manifest(recipe, &manifest_bytes)
-    }
-
-    fn query_recipe_with_manifest(&self, recipe: &[u8], manifest_bytes: &[u8]) -> ViewRecipeId {
-        view_identity_bytes(&[
-            b"query",
-            recipe,
-            self.revision_root().as_bytes(),
-            manifest_bytes,
-        ])
+        projection_recipe(recipe, self.revision_root(), read_manifest)
     }
 
     fn check_query_cursor(
@@ -899,6 +1018,17 @@ impl Library {
         recipe: ViewRecipeId,
         limit: usize,
         fetch: impl Fn(usize) -> ArrangementPage,
+    ) -> Result<usize, LibraryError> {
+        self.check_query_cursor_with_rows(cursor, recipe, limit, fetch, |id, _| self.view.row(id))
+    }
+
+    fn check_query_cursor_with_rows(
+        &self,
+        cursor: Option<Cursor>,
+        recipe: ViewRecipeId,
+        limit: usize,
+        fetch: impl Fn(usize) -> ArrangementPage,
+        row_at: impl Fn(RowId, usize) -> Option<Row>,
     ) -> Result<usize, LibraryError> {
         let Some(cursor) = cursor else {
             return Ok(0);
@@ -928,7 +1058,8 @@ impl Library {
         let previous_rows = previous_page
             .ids
             .iter()
-            .filter_map(|&id| self.view.row(id))
+            .enumerate()
+            .filter_map(|(at, &id)| row_at(id, previous_start + at))
             .collect::<Vec<_>>();
         let basis = self.revision_basis();
         let frontier = self.revision_frontier();

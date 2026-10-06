@@ -1,0 +1,8 @@
+{
+  "source": "353f12e9cc315b8e0e4ddf48317716f7a22ac22c",
+  "exit": 101,
+  "elapsed": 1.912,
+  "log_sha256": "b6ca241cb15956e68523f8863fadef5f63da9812b1ce8d76607db59986759e4c",
+  "configured_clang": true,
+  "dirty_after": ""
+}

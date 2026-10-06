@@ -34,7 +34,9 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         let store_base = self
             .store
             .head()
-            .map_err(WorkspaceError::store)?
+            .map_err(|error| {
+                WorkspaceError::Store(format!("read selected store publication head: {error:?}"))
+            })?
             .map(backend_store::SelectedHead::as_base);
         if let Some(base) = store_base
             && (base.target() != self.head.root().to_bytes()
@@ -60,18 +62,22 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
             // genesis could be named by the new manifest but absent from the
             // object CAS after a cold-start crash.
             let seed = ClosureManifest::new_with_registry(
-                self.head.closure().manifest().objects().to_vec(),
+                self.head.closure().control_manifest().objects().to_vec(),
                 self.store.relation_registry(),
             )
-            .map_err(WorkspaceError::store)?;
-            self.store
-                .write_closure(&seed)
-                .map_err(WorkspaceError::store)?;
+            .map_err(|error| {
+                WorkspaceError::Store(format!("admit initial genesis closure: {error:?}"))
+            })?;
+            self.store.write_closure(&seed).map_err(|error| {
+                WorkspaceError::Store(format!("seed initial genesis closure: {error:?}"))
+            })?;
         }
-        let store_prepared = transition
-            .store_publication(&self.store, store_base)
-            .map_err(WorkspaceError::store)?;
-        let store_durable = store_prepared.durable().map_err(WorkspaceError::store)?;
+        let store_prepared = transition.store_publication(&self.store, store_base)?;
+        let store_durable = store_prepared.durable().map_err(|error| {
+            WorkspaceError::Store(format!(
+                "durably prepare workspace store publication: {error:?}"
+            ))
+        })?;
         data.store_durable = Some(store_durable);
         self.faults
             .trip(Boundary::Transfer)
@@ -182,7 +188,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         let descriptor = store_durable.descriptor();
         if descriptor.target() != transition.target().to_bytes()
             || descriptor.target_generation() != sequence
-            || descriptor.closure().as_bytes() != transition.closure().manifest().id().as_bytes()
+            || descriptor.closure().as_bytes() != transition.closure().membership_id().as_bytes()
         {
             return Err(WorkspaceError::ClosureMismatch);
         }

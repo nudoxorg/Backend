@@ -1,0 +1,69 @@
+{
+  "source_checkpoint": "3add765160877acb9516527528d5edd980421011",
+  "focused_query_tests": {
+    "pass": 11,
+    "fail": 0
+  },
+  "nonquery_graph_regression": {
+    "before": "FAIL query continuation not issued by session",
+    "after": "PASS more=true/2 real rows/no nextCursor"
+  },
+  "actual_fresh_cli_process_gate": "pending matched candidate CLI binary",
+  "remaining_baseline_failures": {
+    "present": 1,
+    "mcp": 2
+  },
+  "archive": {
+    "path": "validation-receipts.tar.gz",
+    "bytes": 199271,
+    "sha256": "6aeb5d33af493e638efeb684b30b0050044c131a2de4704b92241d1d7065c767"
+  },
+  "files": [
+    {
+      "path": "focused-10-pass.log",
+      "bytes": 163871,
+      "sha256": "cf695eae92c2bc4dc04389604ae424c90816c5139c6e9063b0aeb136e480f432"
+    },
+    {
+      "path": "graph-before-fail.log",
+      "bytes": 243483,
+      "sha256": "a3707e6b779c3348d82a7510ed1291364470980975a4455875441e002d65411c"
+    },
+    {
+      "path": "graph-after-pass.log",
+      "bytes": 243432,
+      "sha256": "87be1be82fc413cc14b34293ceafddc6b9988834519ccb969566e839889a315e"
+    },
+    {
+      "path": "present-baseline-failure.log",
+      "bytes": 8383,
+      "sha256": "2642571e1744451dcfaec9cbefa12e02150ae4016b41a62bd0a9e735db0dc30e"
+    },
+    {
+      "path": "mcp-baseline-failure.log",
+      "bytes": 9243,
+      "sha256": "b0d45ed3ef87bed04efab2a143292fc3b7c529b970aff2e4b548925462ca494a"
+    },
+    {
+      "path": "surface-initial-fixture-failure.log",
+      "bytes": 249170,
+      "sha256": "724df66800a5b3572bef5b2b129c92d6f33380707a984495b34108d004db392d"
+    },
+    {
+      "path": "surface-budget-and-remote-fixture-failure.log",
+      "bytes": 255660,
+      "sha256": "7856bddc17a4517f81af91da8faa48bfb7164e3d4b60f37f2db5c0e9792f9281"
+    },
+    {
+      "path": "surface-checkpoint.log",
+      "bytes": 255926,
+      "sha256": "bcfa1e140e8a321041b686d5663dec5dfa76fd7dab3194c69d632b27ebd7e03b"
+    },
+    {
+      "path": "focused-11-pass.log",
+      "bytes": 163999,
+      "sha256": "2613fa50391e7d223a3c10fbb4a3dbd11c0a040a7375cba12400184f7dabcf32"
+    }
+  ],
+  "coherent_canonical_rehash_control": "PASS authorized equivalent current prefix; no historical issuance assertion"
+}

@@ -1,0 +1,7 @@
+{
+  "answer": "fault",
+  "cause": "unproven",
+  "detail": "a frame, DTO, or identity proof failed admission: command execution failed: index job did not publish: Refused(ProductText(\"queue builtin intent: Queue(Bytes)\"))",
+  "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T115435Z-python-configured-0683ea42/project",
+  "slug": "protocol"
+}

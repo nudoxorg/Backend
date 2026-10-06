@@ -1,0 +1,83 @@
+{
+  "schema": "nudox.ranked-search-pagination-repair.v1",
+  "source_base_commit": "1d5486d73c5c6762bbbcddd086f863601ca7a93e",
+  "branch": "codex/mcp-search-paging-20261006",
+  "tested_source_files": {
+    "crates/library/catalog/projection.rs": "12187bbf183a44d2ffa65a823fca569d0764010d6db722dbc3718712d1b4b105",
+    "crates/local-service/src/builtin/commands/graph.rs": "e025ea47bb3b70138ed3c170f2b1c7ebd7d4939306869b403f688f1f9f9dc7aa",
+    "crates/local-service/src/query/local.rs": "022a067ff9f0cf0b339f59ef89d201d818992644a1394b97b5dde0603203ea90",
+    "crates/local-service/src/query/mod.rs": "a88d8f19a0382b61f15f284354643963535e34b0b61999de034b3c95e04cea64",
+    "crates/local-service/src/query/semantic.rs": "f60c74279fbff6c5424e2a8a5d493683f1ee347c9a41ecae90495a590a638b3a",
+    "crates/local-service/src/query/tests.rs": "cc836b1b3113bac2083eac7bd38d7d249b868ac6bb06b77a91303aff5bbe3aca"
+  },
+  "checks": {
+    "before": {
+      "command": "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/run-cargo qa test --locked --offline -p backend-local-service --lib one_result_search_page_keeps_a_continuation_when_more_local_matches_exist -- --nocapture",
+      "exit_code": 101,
+      "passed": 0,
+      "failed": 1,
+      "full_log": "/tmp/mcp-search-paging-before.log",
+      "full_log_sha256": "fc4a94d996b0e9a3c6a62a5f259757afcf224c7c95685d4af6d545efb3e489cc",
+      "saved_test_output": "before.txt",
+      "saved_test_output_sha256": "23e477b28a4ab6c404f9d857744603ceac61be5621c2b7dba906c15abf4016e4"
+    },
+    "route": {
+      "command": "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/run-cargo qa test --locked --offline -p backend-local-service --lib builtin::query::tests -- --nocapture",
+      "exit_code": 0,
+      "passed": 21,
+      "failed": 0,
+      "full_log": "/tmp/mcp-search-paging-pass.log",
+      "full_log_sha256": "3a5b0d984444aee226bad9a8e596a6dc97e1d79bf00114148ef6838a5d99ed39",
+      "saved_test_output": "route.txt",
+      "saved_test_output_sha256": "9f318a0f804b387a3d90567f26f0f8aa289c949d48884edfa02f8307df3b3156"
+    },
+    "library": {
+      "command": "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/run-cargo qa test --locked --offline -p backend-library --lib continuation -- --nocapture",
+      "exit_code": 0,
+      "passed": 6,
+      "failed": 0,
+      "full_log": "/tmp/mcp-search-paging-library.log",
+      "full_log_sha256": "4fe318aaf9d5b6805786a9b4cc116e15f9e067595532a3272f390a3f3d74b94b",
+      "saved_test_output": "library.txt",
+      "saved_test_output_sha256": "ef56231c26887a77c8035e5ee125a610a2614ca9dc3ece08390875d91dd713b1"
+    }
+  },
+  "before_source": "Production source at source_base_commit; only the existing 45-line regression fixture was added before the failing run.",
+  "verified_behavior": {
+    "original_one_row_page_regression": "fails before repair; passes through the exact shared post-selection product route after repair",
+    "tied_name_rows": 4205,
+    "page_rows": 200,
+    "pages": 22,
+    "checked_retained_prefix_lengths": [
+      201,
+      401,
+      4201
+    ],
+    "full_replay": "same identities and order, no drops or duplicates",
+    "cold_reconstruction": "fresh coordinator/library reproduce the exact scored predecessor and consume its continuation",
+    "rejected_inputs": [
+      "changed selected root",
+      "changed query text",
+      "changed page size",
+      "changed rank order",
+      "oversized offset",
+      "offset arithmetic overflow",
+      "retained rank budget overflow"
+    ],
+    "semantic_order": "original page-size candidate/augmentation window remains fixed while retained rank prefix grows",
+    "bounds": "checked offset + page size + one lookahead, capped by selected relation and existing provider 64MiB retained-rank allowance; allocator refusal is typed"
+  },
+  "fixture_adjustments": [
+    "Large fixture explicitly admits exactly 4206 semantic rows; production limits and byte budgets unchanged.",
+    "Existing ambiguous can prefix case has candidate in all 3 symbol documentation fields: assert exact 3 identities and path presence; unique multi-term path queries retain first-rank assertion. No tests skipped."
+  ],
+  "delivered_runtime_replay": {
+    "status": "pending cohesive READY images containing this repair; fresh-runtime Sol owns paired real-state CLI/MCP/cold-cursor replay",
+    "before_wire_sha256": "223ffe3fcb3ba7f9d350325184b0f3dbfd4731c7be4c034dfb5266961eb2413a",
+    "before_wire_path": "ilo:/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T064856Z-typescript-configured-e1e06ac8/wire.jsonl",
+    "before_evidence_provenance": "provided by sol_fresh_remote_runtime;3 getHello rows at limit 10 versus 1 row/more:false/no cursor at limit 1, unchanged selected HEAD"
+  },
+  "limitations": [
+    "Retained rank prefix grows with the requested offset; this is a bounded correctness repair, not a provider search-after abstraction."
+  ]
+}

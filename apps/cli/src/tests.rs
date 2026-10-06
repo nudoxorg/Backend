@@ -64,15 +64,9 @@ fn injected_transport_preserves_identity_and_freshness() {
             QueryLimit::default(),
         )),
     );
-    let snapshot = ViewSnapshot {
-        root: root(),
-        freshness: Freshness::Current,
-        next: None,
-        graph_relations: None,
-        rich_graph: None,
-    };
+    let produced = backend_library::Library::new().execute_dto(request.clone());
     let mut transport = Checked {
-        reply: Some(ReplyDto::new(7, CommandReply::Search(snapshot))),
+        reply: Some(produced),
     };
     let reply = execute_dto_with_transport(&mut transport, &request).expect("reply");
     assert_eq!(reply.request_id, 7);
@@ -476,6 +470,32 @@ fn help_is_grouped_by_domain_and_names_every_domain() {
     assert!(help.contains("surface <JSON>"), "the escape hatch stays");
     assert!(help.contains("--format human|markdown|json"));
     assert!(help.contains("--passive"));
+    assert!(help.contains("nudox add ."));
+    assert!(help.contains("nudox search \"error handling\""));
+    assert!(help.contains("claude mcp add --scope user --transport stdio nudox"));
+    assert!(help.contains("--project '${CLAUDE_PROJECT_DIR:-.}'"));
+}
+
+#[test]
+fn a_global_page_bound_is_not_silently_ignored_by_unpaged_commands() {
+    for command in [
+        "packages --limit 0",
+        "packages --limit 20",
+        "health --limit 5",
+    ] {
+        let fault = options::split(&words(command)).expect_err("reject unused global page bound");
+        assert_eq!(fault.slug(), FaultSlug::Usage);
+        assert_eq!(fault.operand().render(), "--limit");
+        assert!(
+            fault
+                .cause()
+                .sentence()
+                .contains("does not take a page bound")
+        );
+    }
+    let (options, _) = options::split(&words("search requests --limit 3"))
+        .expect("paged commands keep their global bound");
+    assert_eq!(options.limit(), Some("3"));
 }
 
 #[test]
@@ -541,8 +561,31 @@ fn add_defaults_to_interactive_and_advertises_the_background_option() {
     assert_eq!(path, "/abs/project");
 
     let help = invoke::help_for(grammar_for("add").expect("Add grammar"));
+    assert!(help.contains("use `.` for the current directory"));
     assert!(help.contains("--execution-intent INTENT"));
     assert!(help.contains("bounded remote calibration"));
+}
+
+#[test]
+fn installed_quick_start_words_lower_to_the_same_add_and_search_requests() {
+    let add = invoke::parse(&words("add ."), None).expect("parse the quick-start add");
+    assert!(matches!(
+        lower(&add, "/abs/project").expect("lower add"),
+        Request::Index(path) if path == "."
+    ));
+
+    let index_alias = invoke::parse(&words("index ."), None).expect("parse the index alias");
+    assert!(matches!(
+        lower(&index_alias, "/abs/project").expect("lower index alias"),
+        Request::Index(path) if path == "."
+    ));
+
+    let search = invoke::parse(&["search".to_owned(), "error handling".to_owned()], None)
+        .expect("parse the positional search query");
+    assert!(matches!(
+        lower(&search, "/abs/project").expect("lower search"),
+        Request::Search { text, .. } if text == "error handling"
+    ));
 }
 
 #[test]
@@ -671,6 +714,176 @@ fn typed_rows_lower_without_the_json_escape_hatch() {
         let request = lower(&invocation, "/abs/project").expect("lower");
         assert!(matches(&request), "`{line}` lowered to {request:?}");
     }
+}
+
+// Authenticate only this closed projection fixture. This capability is not a
+// compiler fact or a semantic-shape certificate.
+fn fixture_projection_capability(basis: Basis) -> backend_library::CoverageCapability {
+    use backend_library::{
+        AuthorityScopeClaim, CoverageCapability, ProducerObservationClaims,
+        ProducerObservationVerifier, ScopeRoot, UntrustedProducerObservation, admit_complete_scope,
+        admit_producer_observation,
+    };
+    struct ProjectionVerifier;
+    impl ProducerObservationVerifier for ProjectionVerifier {
+        type Error = &'static str;
+        fn verify(
+            &self,
+            observation: &UntrustedProducerObservation,
+        ) -> Result<ProducerObservationClaims, Self::Error> {
+            if observation.producer_identity() != [7; 32]
+                || observation.context() != [8; 32]
+                || observation.evidence() != [9; 32]
+            {
+                return Err("foreign test projection producer");
+            }
+            Ok(ProducerObservationClaims::new(
+                observation.producer_identity(),
+                observation.scope_root(),
+                observation.context(),
+                *blake3::hash(observation.evidence()).as_bytes(),
+            ))
+        }
+    }
+    let observation = admit_producer_observation(
+        UntrustedProducerObservation::new(
+            [7; 32],
+            ScopeRoot::from_bytes(basis.object.to_bytes()),
+            [8; 32],
+            vec![9; 32],
+        ),
+        &ProjectionVerifier,
+    )
+    .expect("closed projection observation");
+    CoverageCapability::from_authorized_with_evidence(
+        admit_complete_scope(
+            AuthorityScopeClaim::from_object_version(basis.object),
+            observation,
+        )
+        .expect("projection source scope"),
+        vec![9; 32],
+    )
+    .expect("projection capability")
+}
+
+#[test]
+fn cli_resolve_selector_round_trips_into_the_shared_shape_request() {
+    use backend_library::{Coverage, Cursor, Library, Reason, Row, RowId, symbol_key};
+    struct Owner(Library);
+    impl CommandTransport for Owner {
+        fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+            let mut reply = self.0.execute_dto(request.clone());
+            if let (Command::Name(query), CommandReply::Names(page)) =
+                (&request.command, &reply.reply)
+            {
+                // Match the real producer query proof: revision scope plus the
+                // exact bounded page preimages and retained symbol commitments.
+                let recipe = backend_library::QueryPageRecipe::names(self.0.revision_root(), query);
+                let mut proof = self
+                    .0
+                    .execute_dto(CommandDto::new(1, Command::Revision))
+                    .certificate()
+                    .expect("owned revision proof")
+                    .clone();
+                let root = &page.root;
+                for claim in [
+                    WireClaim::KeyBytes {
+                        schema: WireSchema::ViewRecipe,
+                        id: encode_id(root.recipe().as_bytes()),
+                        value: recipe.canonical_preimage().into(),
+                    },
+                    WireClaim::Version {
+                        schema: WireSchema::ViewVersion,
+                        id: encode_id(root.version().as_bytes()),
+                        value: backend_library::view_version_preimage(
+                            root.recipe(),
+                            root.basis(),
+                            root.frontier(),
+                            root.root(),
+                            root.coverage(),
+                        )
+                        .into_boxed_slice(),
+                    },
+                    WireClaim::Root {
+                        schema: WireSchema::ViewRelation,
+                        id: encode_id(root.root().as_bytes()),
+                        canonical: root
+                            .canonical_relation_bytes()
+                            .expect("owned page relation")
+                            .into_boxed_slice(),
+                    },
+                ] {
+                    proof = proof.with_claim_once(claim);
+                }
+                for row in root.rows() {
+                    if let RowId::Symbol(symbol) = row.id {
+                        proof = proof.with_claim_once(WireClaim::KeyCommitment {
+                            schema: WireSchema::Symbol,
+                            id: encode_id(symbol.as_bytes()),
+                        });
+                    }
+                }
+                reply = reply.with_certificate(proof);
+            }
+            let bytes = serde_json::to_vec(&reply).expect("producer wire");
+            let reply = ReplyDto::decode_with_certificate(&bytes, self.0.view().capability())
+                .map_err(ClientError::Protocol)?;
+            admit_reply(&request, reply)
+        }
+    }
+    let key = symbol_key("retained-selected-row");
+    let basis = Basis::new(
+        backend_library::view_state_root(&[]),
+        object_version(b"library-source-v1"),
+    );
+    let root = ViewRoot::new_checked(
+        view_key(b"library-view-v1"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        vec![Row::new(
+            RowId::Symbol(key),
+            basis,
+            "/abs/p::src/lib.rs:1::ferris",
+        )],
+        vec![
+            Coverage::Complete,
+            Coverage::Unavailable {
+                lane: backend_library::Lane::Semantic,
+                reason: Reason::Unconfigured,
+            },
+        ],
+        fixture_projection_capability(basis),
+    )
+    .expect("checked projection fixture; semantic lane stays unconfigured");
+    let owner = Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("owner");
+    let mut session =
+        backend_client::Session::from_transport("/private/selector.sock", Owner(owner));
+    let invocation = invoke::parse(&words("resolve ferris"), None).expect("CLI parse");
+    let request = lower(&invocation, "/abs/p").expect("CLI lower");
+    let answer = run::execute(&mut session, &request).expect("actual admitted resolve");
+    let value: serde_json::Value =
+        serde_json::from_str(&render::json(&answer)).expect("public CLI JSON");
+    let selector = &value["records"][0]["identity"]["semantic_data"];
+    assert_eq!(selector["kind"], "selected-symbol-id");
+    assert_eq!(selector["value"], serde_json::json!(key.as_bytes()));
+    let mut operands: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../crates/library/fixtures/semantic-shape-read.json"
+    ))
+    .expect("source operand fixture; no compiler authority claim");
+    operands["symbols"] = serde_json::json!([selector["value"]]);
+    let words = vec![
+        "semantic-shapes".to_owned(),
+        serde_json::to_string(&operands).expect("operand JSON"),
+    ];
+    let invocation = invoke::parse(&words, None).expect("public shape CLI parse");
+    let Request::Surface(surface) = lower(&invocation, "/abs/p").expect("shared shape grammar")
+    else {
+        panic!("shape request must retain its typed surface route");
+    };
+    let SurfaceCommand::SemanticShapes { request } = *surface else {
+        panic!("shape request must retain its typed semantic-shapes command");
+    };
+    assert_eq!(request.symbols(), &[*key.as_bytes()]);
 }
 
 #[test]
@@ -806,5 +1019,155 @@ fn markdown_output_is_the_shared_renderer_and_json_is_the_typed_dto() {
     assert!(
         value.get("certificate").is_none(),
         "the product JSON must not leak wire proof"
+    );
+}
+
+#[test]
+fn an_oversized_json_page_is_a_nonzero_typed_transport_refusal() {
+    let snapshot = ViewSnapshot {
+        root: root(),
+        freshness: Freshness::Current,
+        next: None,
+        graph_relations: None,
+        rich_graph: None,
+    };
+    let answer = Answer::Records(Box::new(backend_present::record_list(
+        "q".repeat(backend_present::DEFAULT_RESPONSE_BUDGET_BYTES + 1),
+        &snapshot,
+    )));
+    let session = backend_client::Session::from_transport(
+        "/private/oversized-answer.sock",
+        Checked { reply: None },
+    );
+    let options = options::split(&["--json".to_owned()])
+        .expect("JSON options")
+        .0;
+
+    let fault = process::render_admitted_answer(&session, &answer, &options)
+        .expect_err("an incomplete JSON DTO cannot be reported as success");
+    assert_eq!(fault.slug(), FaultSlug::Transport);
+    assert_eq!(fault.cause().slug(), backend_present::CauseSlug::Oversized);
+    assert_eq!(render::exit_code(&fault), ExitCode::from(render::EXIT_IO));
+
+    let rendered: serde_json::Value =
+        serde_json::from_str(&render::answer(&answer, &options)).expect("bounded fault JSON");
+    assert_eq!(rendered["answer"], "fault");
+    assert_eq!(rendered["cause"]["slug"], "oversized");
+}
+
+#[test]
+fn cli_named_versions_preserves_the_captured_semver_operand_at_every_detail() {
+    let packet: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../crates/present/fixtures/semantic-versions-semver-public.json"
+    ))
+    .expect("complete captured public source packet");
+    let reply: backend_library::SurfaceReply = serde_json::from_value(packet["surface"].clone())
+        .expect("complete source DTO; no wire certificate is fabricated");
+    let view = backend_present::product_view(&reply);
+    let answer = Answer::Product(Box::new(view));
+    for detail in [
+        backend_present::Detail::Summary,
+        backend_present::Detail::Standard,
+        backend_present::Detail::Full,
+    ] {
+        let rendered = render::json_with_detail(&answer, detail);
+        let value: serde_json::Value = serde_json::from_str(&rendered).expect("public CLI JSON");
+        assert_eq!(value["answer"], "product");
+        assert_eq!(value["semantic_data"]["value"], packet["surface"]["data"]);
+        assert!(
+            value["records"][0]["history_status"]["proof"]
+                .get("images")
+                .is_none()
+        );
+        let shared = backend_present::encode_answer(
+            &answer,
+            detail,
+            None,
+            backend_present::DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .expect("shared CLI/MCP projection");
+        assert_eq!(rendered.as_bytes(), shared.bytes.as_ref());
+    }
+    assert_eq!(
+        render::markdown_text(&answer),
+        backend_present::bounded_text(&backend_present::markdown::answer(&answer))
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn cli_keeps_bounded_graph_page_without_exporting_a_query_proof() {
+    use backend_library::{Coverage, Cursor, Library, Row, RowId, symbol_key, view_state_root};
+    struct GraphTransport(Library);
+    impl CommandTransport for GraphTransport {
+        fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+            let reply = self.0.execute_dto(request.clone());
+            admit_reply(&request, reply)
+        }
+    }
+    let object = object_version(b"library-source-v1");
+    let basis = Basis::new(view_state_root(&[]), object);
+    let capability = fixture_projection_capability(basis);
+    let package = package_key("pkg");
+    let parent = symbol_key("pkg::Parent");
+    let mut rows = vec![Row::in_package(
+        RowId::Symbol(parent),
+        basis,
+        package,
+        "pkg::Parent",
+    )];
+    for i in 0..5 {
+        let mut child = Row::in_package(
+            RowId::Symbol(symbol_key(&format!("pkg::Child{i}"))),
+            basis,
+            package,
+            format!("pkg::Child{i}"),
+        );
+        child.parent = Some(parent);
+        rows.push(child);
+    }
+    let root = ViewRoot::new_checked(
+        view_key(b"library-view-v1"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        rows,
+        vec![Coverage::Complete],
+        capability,
+    )
+    .expect("graph root");
+    let owner =
+        Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("graph owner");
+    let mut session =
+        backend_client::Session::from_transport("/private/graph-owner.sock", GraphTransport(owner));
+    let reply = session
+        .graph_page("pkg::Parent", 2, None)
+        .expect("real bounded graph page");
+    let CommandReply::ProjectionPage(page) = reply.reply else {
+        panic!("graph page reply");
+    };
+    assert_eq!(page.snapshot.root.rows().len(), 2);
+    let continuation = page
+        .snapshot
+        .next
+        .expect("five children exceed graph page credit");
+    let answer = backend_present::Answer::Records(Box::new(backend_present::record_list(
+        "pkg::Parent",
+        &page.snapshot,
+    )));
+    assert!(answer.continuation().is_some());
+    assert!(!session.has_portable_query_continuation(
+        backend_library::PageContinuation::from_cursor(continuation)
+    ));
+    let options = options::split(&["--json".to_owned()])
+        .expect("JSON options")
+        .0;
+    let rendered = process::render_admitted_answer(&session, &answer, &options)
+        .expect("graph response remains successful");
+    let payload: serde_json::Value = serde_json::from_str(&rendered).expect("rendered graph JSON");
+    assert_eq!(payload["more"], true);
+    assert_eq!(payload["records"].as_array().expect("records").len(), 2);
+    assert!(
+        payload.get("nextCursor").is_none(),
+        "do not invent a portable nonquery token"
     );
 }

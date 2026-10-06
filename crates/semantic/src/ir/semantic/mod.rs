@@ -45,9 +45,10 @@ pub use packed_types::{
     WildcardBound,
 };
 pub use relations::{
-    Confidence, CorePayloadCoverage, CorePayloadHash, CorePayloadPlane, DeclarationLinkTarget,
-    DocFragment, DocInput, EntityVersion, ExternalTarget, ForeignExternalTarget,
-    ForeignTargetOrigin, Item, Link, LinkKind, LinkOccurrence, LinkTarget, SourceSpan,
+    AnonymousCallableAnchorView, Confidence, CorePayloadCoverage, CorePayloadHash,
+    CorePayloadPlane, DeclarationLinkTarget, DocFragment, DocInput, EntityVersion, ExternalTarget,
+    ForeignExternalTarget, ForeignTargetOrigin, Item, ItemName, ItemNameView, Link, LinkKind,
+    LinkOccurrence, LinkTarget, SourceSpan,
 };
 pub use tree::{BorrowedTree, FrontendTree, TreeItemInput, TreeLinkInput, TreeLinkTarget};
 pub use type_model::{

@@ -174,6 +174,16 @@ pub trait Engine {
         self.probe(probe)
     }
 
+    /// Re-admits an imported query proof against the current authenticated owner.
+    fn prepare_query_continuation(
+        &mut self,
+        _token: &str,
+    ) -> Result<PageContinuation, ClientError> {
+        Err(ClientError::Protocol(
+            "engine does not support portable query proofs".to_owned(),
+        ))
+    }
+
     /// Executes one durable product operation.
     ///
     /// # Errors
@@ -241,6 +251,21 @@ impl Answer {
 /// operand the caller supplied already attached.
 pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Fault> {
     match request {
+        Request::ResumeQuery { query, cursor } => {
+            if !matches!(
+                query.as_ref(),
+                Request::Search { .. } | Request::Resolve { .. }
+            ) {
+                return Err(Fault::usage(
+                    "cursor",
+                    "only search and names have portable query continuations",
+                ));
+            }
+            let continuation = engine.prepare_query_continuation(cursor).map_err(|error| {
+                Fault::from_client_error(&error, Operand::Argument("cursor".to_owned()))
+            })?;
+            answer_paged(engine, query, Some(continuation))
+        }
         Request::Shelf => shelf(engine),
         Request::Status => status(engine),
         Request::Index(path) => intent(engine, path, Some(CompileExecutionIntent::Interactive)),

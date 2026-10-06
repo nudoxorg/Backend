@@ -1,0 +1,42 @@
+{
+  "source": "039c360d286962a6cf19488fb86caabd1d8c93de",
+  "source_after": "039c360d286962a6cf19488fb86caabd1d8c93de",
+  "results": [
+    {
+      "filter": "builtin::commands::semantic_shapes::tests::image_atom_projection_preserves_empty_space_nul_unicode_and_padding",
+      "exit": 101,
+      "elapsed": 1.005,
+      "stop": null,
+      "source": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "log": "/Users/mileswirht/Downloads/nudox-active-20261005/typescript-global-probe/.local/joined-dto20-focused-failures/0.log",
+      "sha256": "ed1d2e5b42e759ecbde675b8c4ec494211ca43bc25351d712294947b828d297b"
+    },
+    {
+      "filter": "builtin::commands::semantic_shapes::tests::owned_callable_binding_is_captured_empty_but_nested_function_is_unavailable",
+      "exit": 101,
+      "elapsed": 1.007,
+      "stop": null,
+      "source": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "log": "/Users/mileswirht/Downloads/nudox-active-20261005/typescript-global-probe/.local/joined-dto20-focused-failures/1.log",
+      "sha256": "8813a433a96447247a376092de04f3c06f0c0fe535c5bce26f38ca58955033d0"
+    },
+    {
+      "filter": "builtin::projection::tests::shape_row_certificate_carries_only_direct_shape_and_package_identities",
+      "exit": 101,
+      "elapsed": 1.004,
+      "stop": null,
+      "source": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "log": "/Users/mileswirht/Downloads/nudox-active-20261005/typescript-global-probe/.local/joined-dto20-focused-failures/2.log",
+      "sha256": "ef9f9288081a2540fc7ea032f095fe7448b381330b63bc232e97ef774b15127c"
+    },
+    {
+      "filter": "builtin::semantic_authority::tests::freshness_key_rejects_immutable_generation_rows",
+      "exit": 101,
+      "elapsed": 1.008,
+      "stop": null,
+      "source": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "log": "/Users/mileswirht/Downloads/nudox-active-20261005/typescript-global-probe/.local/joined-dto20-focused-failures/3.log",
+      "sha256": "63aea1eb2c5a8593936e4d80170895ca745aa688bd7f7313182446bdb1d08280"
+    }
+  ]
+}

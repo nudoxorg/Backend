@@ -1,0 +1,60 @@
+{
+  "time": 1791288597.2534144,
+  "owned_endpoints": [
+    {
+      "receipt": "/root/nudox-corpus-20261006/runs/sol-mac-independent-cold-039c-20261006/quart039c/receipt.json",
+      "endpoint": "/tmp/nudox-independent-quart039c-1019511.sock",
+      "socket_file_exists": true,
+      "kernel_connect_outcome": {
+        "errno": 111,
+        "detail": "[Errno 111] Connection refused"
+      }
+    },
+    {
+      "receipt": "/root/nudox-corpus-20261006/runs/sol-mac-independent-cold-039c-20261006/typing9f-state-039c-image/receipt.json",
+      "endpoint": "/tmp/nudox-independent-typing9f-state-039c-image-1019511.sock",
+      "socket_file_exists": false,
+      "kernel_connect_outcome": {
+        "errno": 2,
+        "detail": "[Errno 2] No such file or directory"
+      }
+    },
+    {
+      "receipt": "/root/nudox-corpus-20261006/runs/sol-mac-independent-retirement-pair-039c-20261006/cmdline-observer/receipt.json",
+      "endpoint": "/tmp/nudox-retirement-cmdline-observer-1024710.sock",
+      "socket_file_exists": true,
+      "kernel_connect_outcome": {
+        "errno": 111,
+        "detail": "[Errno 111] Connection refused"
+      }
+    },
+    {
+      "receipt": "/root/nudox-corpus-20261006/runs/sol-mac-independent-retirement-pair-039c-20261006/kernel-pidfd/receipt.json",
+      "endpoint": "/tmp/nudox-retirement-kernel-pidfd-1024710.sock",
+      "socket_file_exists": true,
+      "kernel_connect_outcome": {
+        "errno": 111,
+        "detail": "[Errno 111] Connection refused"
+      }
+    },
+    {
+      "receipt": "/root/nudox-corpus-20261006/runs/sol-mac-independent-repaired-retirement-039c-20261006/click039c/receipt.json",
+      "endpoint": "/tmp/nudox-retirement-click039c-1030053.sock",
+      "socket_file_exists": true,
+      "kernel_connect_outcome": {
+        "errno": 111,
+        "detail": "[Errno 111] Connection refused"
+      }
+    },
+    {
+      "receipt": "/root/nudox-corpus-20261006/runs/sol-mac-independent-repaired-retirement-039c-20261006/quart039c/receipt.json",
+      "endpoint": "/tmp/nudox-retirement-quart039c-1030053.sock",
+      "socket_file_exists": true,
+      "kernel_connect_outcome": {
+        "errno": 111,
+        "detail": "[Errno 111] Connection refused"
+      }
+    }
+  ],
+  "no_owned_endpoint_accepts_connection": true
+}

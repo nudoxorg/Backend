@@ -64,6 +64,26 @@ pub struct LocalControlExchangeError {
     pub progress: LocalControlExchangeProgress,
 }
 
+impl LocalControlExchangeError {
+    /// Whether this terminal exchange stopped before touching the stream.
+    ///
+    /// A typed stall or cancellation in the initial sending phase with zero
+    /// request and response offsets leaves the connection at its previous
+    /// frame boundary. Every other terminal state may have admitted a request
+    /// or consumed only part of a response and must retire the stream.
+    #[must_use]
+    pub const fn request_was_not_sent(self) -> bool {
+        matches!(
+            self.failure,
+            LocalControlExchangeFailure::Stalled | LocalControlExchangeFailure::Cancelled
+        ) && matches!(self.progress.phase, LocalControlExchangePhase::Sending)
+            && self.progress.write_offset == 0
+            && self.progress.header_offset == 0
+            && self.progress.body_len.is_none()
+            && self.progress.body_offset == 0
+    }
+}
+
 impl std::fmt::Display for LocalControlExchangeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.failure {
@@ -103,7 +123,8 @@ impl std::error::Error for LocalControlExchangeError {}
 pub enum LocalControlExchangeDecision {
     /// Continue the same request at its current byte offsets.
     Continue,
-    /// Stop and retire this stream; no automatic replay is performed.
+    /// Stop this exchange without replay. The stream remains usable only if
+    /// the terminal progress proves that no bytes touched it.
     Cancel,
 }
 
@@ -111,8 +132,8 @@ pub enum LocalControlExchangeDecision {
 ///
 /// The mutable borrow prevents another request from sharing the stream until
 /// this exchange completes or is dropped. An incomplete drop poisons the
-/// underlying client so its legacy APIs fail closed.
-#[must_use = "dropping an incomplete exchange retires its client stream"]
+/// underlying client unless a typed stop proves that no bytes touched it.
+#[must_use = "dropping an incomplete exchange may retire its client stream"]
 pub struct PendingLocalControlExchange<'a, S> {
     client: &'a mut LocalControlClient<S>,
     request_id: u64,
@@ -178,7 +199,30 @@ impl<'a, S: Read + Write> PendingLocalControlExchange<'a, S> {
     /// outcome with the exact last phase and byte offsets.
     pub fn wait_with(
         &mut self,
+        tick: impl FnMut(LocalControlExchangeProgress) -> LocalControlExchangeDecision,
+    ) -> Result<LocalControlResponse, LocalControlExchangeError> {
+        self.wait_with_io_policy(tick, |_, _| Ok(()), false)
+    }
+
+    /// Drives the same frame while bounding each native I/O attempt by the
+    /// remaining absolute deadline. Unrelated frames are rejected immediately,
+    /// never queued. Configuration must not perform frame I/O.
+    ///
+    /// # Errors
+    /// Returns the exact exchange failure, including timeout configuration.
+    pub fn wait_exact_with_io_deadline(
+        &mut self,
+        tick: impl FnMut(LocalControlExchangeProgress) -> LocalControlExchangeDecision,
+        configure: impl FnMut(&S, Duration) -> std::io::Result<()>,
+    ) -> Result<LocalControlResponse, LocalControlExchangeError> {
+        self.wait_with_io_policy(tick, configure, true)
+    }
+
+    fn wait_with_io_policy(
+        &mut self,
         mut tick: impl FnMut(LocalControlExchangeProgress) -> LocalControlExchangeDecision,
+        mut configure: impl FnMut(&S, Duration) -> std::io::Result<()>,
+        strict: bool,
     ) -> Result<LocalControlResponse, LocalControlExchangeError> {
         if let Some(error) = self.terminal {
             return Err(error);
@@ -194,6 +238,16 @@ impl<'a, S: Read + Write> PendingLocalControlExchange<'a, S> {
             }
             if tick(self.progress()) == LocalControlExchangeDecision::Cancel {
                 return Err(self.stop(LocalControlExchangeFailure::Cancelled));
+            }
+            if Instant::now() >= self.deadline {
+                return Err(self.stop(LocalControlExchangeFailure::Stalled));
+            }
+            let remaining = self.deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(self.stop(LocalControlExchangeFailure::Stalled));
+            }
+            if let Err(error) = configure(&self.client.stream, remaining) {
+                return Err(self.stop(classify_io(error.kind())));
             }
             if Instant::now() >= self.deadline {
                 return Err(self.stop(LocalControlExchangeFailure::Stalled));
@@ -229,80 +283,158 @@ impl<'a, S: Read + Write> PendingLocalControlExchange<'a, S> {
                     }
                     Err(error) => return Err(self.stop(classify_io(error.kind()))),
                 },
-                LocalControlExchangePhase::ReadingHeader => {
-                    match self
-                        .client
-                        .stream
-                        .read(&mut self.header[self.header_offset..])
-                    {
-                        Ok(0) => return Err(self.stop(LocalControlExchangeFailure::Closed)),
-                        Ok(read) => {
-                            self.header_offset += read;
-                            if self.header_offset == self.header.len() {
-                                let length = usize::try_from(u32::from_be_bytes(self.header))
-                                    .map_err(|_| {
-                                        self.stop(LocalControlExchangeFailure::Protocol(
-                                            LocalControlError::FrameTooLarge,
-                                        ))
-                                    })?;
-                                if length > self.client.limits.max_frame {
-                                    return Err(self.stop(LocalControlExchangeFailure::Protocol(
-                                        LocalControlError::FrameTooLarge,
-                                    )));
-                                }
-                                self.client.receive.resize(length, 0);
-                                self.body_len = Some(length);
-                                if length == 0 {
-                                    if let Some(response) = self.decode_current()? {
-                                        return Ok(response);
-                                    }
-                                } else {
-                                    self.phase = LocalControlExchangePhase::ReadingBody;
-                                }
-                            }
-                        }
-                        Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                        Err(error) if is_retryable_wait(error.kind()) => {
-                            pause_after_readiness(error.kind());
-                            continue;
-                        }
-                        Err(error) => return Err(self.stop(classify_io(error.kind()))),
-                    }
-                }
-                LocalControlExchangePhase::ReadingBody => {
-                    let Some(body_len) = self.body_len else {
-                        return Err(self.stop(LocalControlExchangeFailure::Protocol(
-                            LocalControlError::Truncated,
-                        )));
-                    };
-                    match self
-                        .client
-                        .stream
-                        .read(&mut self.client.receive[self.body_offset..body_len])
-                    {
-                        Ok(0) => return Err(self.stop(LocalControlExchangeFailure::Closed)),
-                        Ok(read) => {
-                            self.body_offset += read;
-                            if self.body_offset == body_len {
-                                if let Some(response) = self.decode_current()? {
-                                    return Ok(response);
-                                }
-                            }
-                        }
-                        Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                        Err(error) if is_retryable_wait(error.kind()) => {
-                            pause_after_readiness(error.kind());
-                            continue;
-                        }
-                        Err(error) => return Err(self.stop(classify_io(error.kind()))),
+                LocalControlExchangePhase::ReadingHeader
+                | LocalControlExchangePhase::ReadingBody => {
+                    if let Some(response) = self.receive_step(strict)? {
+                        self.complete = true;
+                        return Ok(response);
                     }
                 }
             }
         }
     }
 
+    fn receive_step(
+        &mut self,
+        strict: bool,
+    ) -> Result<Option<LocalControlResponse>, LocalControlExchangeError> {
+        match self.phase {
+            LocalControlExchangePhase::ReadingHeader => {
+                match self
+                    .client
+                    .stream
+                    .read(&mut self.header[self.header_offset..])
+                {
+                    Ok(0) => return Err(self.stop(LocalControlExchangeFailure::Closed)),
+                    Ok(read) => {
+                        self.header_offset += read;
+                        if self.header_offset == self.header.len() {
+                            let length =
+                                usize::try_from(u32::from_be_bytes(self.header)).map_err(|_| {
+                                    self.stop(LocalControlExchangeFailure::Protocol(
+                                        LocalControlError::FrameTooLarge,
+                                    ))
+                                })?;
+                            if length > self.client.limits.max_frame {
+                                return Err(self.stop(LocalControlExchangeFailure::Protocol(
+                                    LocalControlError::FrameTooLarge,
+                                )));
+                            }
+                            self.client.receive.resize(length, 0);
+                            self.body_len = Some(length);
+                            if length == 0 {
+                                if let Some(response) = self.decode_current(strict)? {
+                                    return Ok(Some(response));
+                                }
+                            } else {
+                                self.phase = LocalControlExchangePhase::ReadingBody;
+                            }
+                        }
+                    }
+                    Err(error) if error.kind() == ErrorKind::Interrupted => return Ok(None),
+                    Err(error) if is_retryable_wait(error.kind()) => {
+                        pause_after_readiness(error.kind());
+                        return Ok(None);
+                    }
+                    Err(error) => return Err(self.stop(classify_io(error.kind()))),
+                }
+            }
+            LocalControlExchangePhase::ReadingBody => {
+                let Some(body_len) = self.body_len else {
+                    return Err(self.stop(LocalControlExchangeFailure::Protocol(
+                        LocalControlError::Truncated,
+                    )));
+                };
+                match self
+                    .client
+                    .stream
+                    .read(&mut self.client.receive[self.body_offset..body_len])
+                {
+                    Ok(0) => return Err(self.stop(LocalControlExchangeFailure::Closed)),
+                    Ok(read) => {
+                        self.body_offset += read;
+                        if self.body_offset == body_len {
+                            if let Some(response) = self.decode_current(strict)? {
+                                return Ok(Some(response));
+                            }
+                        }
+                    }
+                    Err(error) if error.kind() == ErrorKind::Interrupted => return Ok(None),
+                    Err(error) if is_retryable_wait(error.kind()) => {
+                        pause_after_readiness(error.kind());
+                        return Ok(None);
+                    }
+                    Err(error) => return Err(self.stop(classify_io(error.kind()))),
+                }
+            }
+            _ => {
+                return Err(self.stop(LocalControlExchangeFailure::Protocol(
+                    LocalControlError::Invalid("response is not pending"),
+                )));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Consumes an abandoned fully sent exchange, discarding only its exact
+    /// correlated response. No response escapes to publication admission.
+    /// Partial sends and ambiguous frames remain poisoned on drop. The cleanup
+    /// deadline is independent of, and never extends, the operation allowance.
+    pub fn discard_response_until(
+        mut self,
+        deadline: Instant,
+        mut configure_read: impl FnMut(&S, Duration) -> std::io::Result<()>,
+        expected: impl FnOnce(&LocalControlResponse) -> bool,
+    ) -> Result<(), LocalControlExchangeError> {
+        if !self.terminal.is_some_and(|error| {
+            matches!(
+                error.failure,
+                LocalControlExchangeFailure::Cancelled | LocalControlExchangeFailure::Stalled
+            )
+        }) || self.write_offset != self.request_frame.len()
+            || !matches!(
+                self.phase,
+                LocalControlExchangePhase::ReadingHeader | LocalControlExchangePhase::ReadingBody
+            )
+        {
+            return Err(self.stop(LocalControlExchangeFailure::Protocol(
+                LocalControlError::Invalid("exchange cannot discard a response"),
+            )));
+        }
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(self.stop(LocalControlExchangeFailure::Stalled));
+            }
+            if let Err(error) = configure_read(&self.client.stream, remaining) {
+                return Err(self.stop(classify_io(error.kind())));
+            }
+            if Instant::now() >= deadline {
+                return Err(self.stop(LocalControlExchangeFailure::Stalled));
+            }
+            if let Some(response) = self.receive_step(true)? {
+                if Instant::now() >= deadline {
+                    return Err(self.stop(LocalControlExchangeFailure::Stalled));
+                }
+                if !expected(&response) {
+                    return Err(self.stop(LocalControlExchangeFailure::Protocol(
+                        LocalControlError::Invalid(
+                            "discarded response is not the outstanding operation",
+                        ),
+                    )));
+                }
+                if Instant::now() >= deadline {
+                    return Err(self.stop(LocalControlExchangeFailure::Stalled));
+                }
+                self.complete = true;
+                return Ok(());
+            }
+        }
+    }
+
     fn decode_current(
         &mut self,
+        strict: bool,
     ) -> Result<Option<LocalControlResponse>, LocalControlExchangeError> {
         let response = match decode_response(&self.client.receive, self.client.limits) {
             Ok(response) => response,
@@ -311,8 +443,12 @@ impl<'a, S: Read + Write> PendingLocalControlExchange<'a, S> {
             }
         };
         if response.request_id() == self.request_id {
-            self.complete = true;
             return Ok(Some(response));
+        }
+        if strict {
+            return Err(self.stop(LocalControlExchangeFailure::Protocol(
+                LocalControlError::Invalid("discarded response correlation mismatch"),
+            )));
         }
         if let Err(error) = self.client.retain_pending(response) {
             return Err(self.stop(LocalControlExchangeFailure::Protocol(error)));
@@ -351,7 +487,11 @@ impl<'a, S: Read + Write> PendingLocalControlExchange<'a, S> {
 
 impl<S> Drop for PendingLocalControlExchange<'_, S> {
     fn drop(&mut self) {
-        if !self.complete {
+        if !self.complete
+            && !self
+                .terminal
+                .is_some_and(LocalControlExchangeError::request_was_not_sent)
+        {
             self.client.poisoned = true;
         }
     }
@@ -588,8 +728,8 @@ mod exchange_tests {
     }
 
     #[test]
-    fn elapsed_deadline_is_a_typed_zero_offset_stall() {
-        let stream = PausingStream::new(Vec::new());
+    fn elapsed_deadline_is_a_typed_zero_offset_stall_that_leaves_the_stream_usable() {
+        let stream = PausingStream::new(wire_response(19));
         let mut client = LocalControlClient::new(stream, limits());
         let request = make_request(19);
         let mut exchange = client
@@ -600,9 +740,60 @@ mod exchange_tests {
             .expect_err("expired fixed deadline");
         assert_eq!(error.failure, LocalControlExchangeFailure::Stalled);
         assert_eq!(error.progress.write_offset, 0);
+        assert!(error.request_was_not_sent());
         drop(exchange);
         assert!(client.stream().writes.is_empty());
+        assert!(!client.requires_reconnect());
+        let mut retry = client
+            .begin_exchange(&request, Instant::now() + Duration::from_secs(1))
+            .expect("begin request at untouched boundary");
+        assert_eq!(
+            retry
+                .wait_with(|_| LocalControlExchangeDecision::Continue)
+                .expect("request succeeds on preserved stream"),
+            response(19)
+        );
+        drop(retry);
+        assert!(!client.requires_reconnect());
+    }
+
+    #[test]
+    fn cancellation_after_a_partial_request_still_poisons_the_stream() {
+        let mut stream = PausingStream::new(wire_response(20));
+        stream.chunk = 2;
+        stream.write_stall_after = Some(2);
+        let mut client = LocalControlClient::new(stream, limits());
+        let request = make_request(20);
+        let mut exchange = client
+            .begin_exchange(&request, Instant::now() + Duration::from_secs(1))
+            .expect("begin exchange");
+        let error = exchange
+            .wait_with(|progress| {
+                if progress.write_offset == 0 {
+                    LocalControlExchangeDecision::Continue
+                } else {
+                    LocalControlExchangeDecision::Cancel
+                }
+            })
+            .expect_err("cancel after the first request fragment");
+        assert_eq!(error.failure, LocalControlExchangeFailure::Cancelled);
+        assert_eq!(error.progress.phase, LocalControlExchangePhase::Sending);
+        assert_eq!(error.progress.write_offset, 2);
+        assert!(!error.request_was_not_sent());
+        drop(exchange);
         assert!(client.requires_reconnect());
+        let written = client.stream().writes.len();
+        assert!(matches!(
+            client.request(&request),
+            Err(LocalControlError::Invalid(
+                "local control client retired after incomplete exchange"
+            ))
+        ));
+        assert_eq!(
+            client.stream().writes.len(),
+            written,
+            "no second frame is sent"
+        );
     }
 
     #[test]
@@ -719,5 +910,222 @@ mod exchange_tests {
             LocalControlExchangeFailure::Protocol(LocalControlError::Truncated)
         );
         assert_eq!(error.progress.phase, LocalControlExchangePhase::ReadingBody);
+    }
+    #[test]
+    fn affine_discard_resumes_partial_header_and_body_without_replaying() {
+        for (phase, offset) in [
+            (LocalControlExchangePhase::ReadingHeader, 2),
+            (LocalControlExchangePhase::ReadingBody, 1),
+        ] {
+            let first = wire_response(42);
+            let mut input = first.clone();
+            input.extend(wire_response(43));
+            let mut client = LocalControlClient::new(PausingStream::new(input), limits());
+            let mut exchange = client
+                .begin_exchange(&make_request(42), Instant::now() + Duration::from_secs(1))
+                .expect("exchange");
+            let original = exchange
+                .wait_with(|progress| {
+                    let at = if phase == LocalControlExchangePhase::ReadingHeader {
+                        progress.header_offset
+                    } else {
+                        progress.body_offset
+                    };
+                    if progress.phase == phase && at >= offset {
+                        LocalControlExchangeDecision::Cancel
+                    } else {
+                        LocalControlExchangeDecision::Continue
+                    }
+                })
+                .expect_err("abandoned inside exact frame");
+            assert_eq!(original.progress.phase, phase);
+            let deadline = Instant::now() + Duration::from_millis(50);
+            exchange
+                .discard_response_until(
+                    deadline,
+                    |_, remaining| {
+                        assert!(!remaining.is_zero() && remaining <= Duration::from_millis(50));
+                        Ok(())
+                    },
+                    |_| true,
+                )
+                .expect("discard exact response");
+            assert!(!client.requires_reconnect());
+            assert_eq!(client.stream().input.position(), first.len() as u64);
+            assert_eq!(client.pending_bytes(), 0);
+            let first_request = frame(
+                &encode_request(&make_request(42), limits()).expect("encode"),
+                limits(),
+            )
+            .expect("frame");
+            assert_eq!(
+                client.stream().writes,
+                first_request,
+                "no replay or extra request"
+            );
+            assert_eq!(
+                client
+                    .begin_exchange(&make_request(43), Instant::now() + Duration::from_secs(1))
+                    .expect("same client")
+                    .wait_with(|_| LocalControlExchangeDecision::Continue)
+                    .expect("next exact reply"),
+                response(43)
+            );
+        }
+    }
+
+    #[test]
+    fn affine_discard_rejects_unrelated_response_without_queueing_or_reading_successor() {
+        let wrong = wire_response(77);
+        let mut input = wrong.clone();
+        input.extend(wire_response(42));
+        let mut client = LocalControlClient::new(PausingStream::new(input), limits());
+        let mut exchange = client
+            .begin_exchange(&make_request(42), Instant::now() + Duration::from_secs(1))
+            .expect("exchange");
+        exchange
+            .wait_with(|p| {
+                if p.phase == LocalControlExchangePhase::ReadingHeader {
+                    LocalControlExchangeDecision::Cancel
+                } else {
+                    LocalControlExchangeDecision::Continue
+                }
+            })
+            .expect_err("stop before response");
+        let error = exchange
+            .discard_response_until(
+                Instant::now() + Duration::from_millis(50),
+                |_, _| Ok(()),
+                |_| true,
+            )
+            .expect_err("wrong correlation");
+        assert!(matches!(
+            error.failure,
+            LocalControlExchangeFailure::Protocol(_)
+        ));
+        assert!(client.requires_reconnect());
+        assert_eq!(client.pending_bytes(), 0);
+        assert_eq!(client.stream().input.position(), wrong.len() as u64);
+    }
+
+    #[test]
+    fn affine_discard_missing_or_partial_payload_expires_and_retires() {
+        for cut in [0, 2, 5] {
+            let mut stream = PausingStream::new(wire_response(42));
+            stream.read_stall_after = Some(cut);
+            let mut client = LocalControlClient::new(stream, limits());
+            let mut exchange = client
+                .begin_exchange(&make_request(42), Instant::now() + Duration::from_secs(1))
+                .expect("exchange");
+            exchange
+                .wait_with(|p| {
+                    if p.phase == LocalControlExchangePhase::ReadingHeader {
+                        LocalControlExchangeDecision::Cancel
+                    } else {
+                        LocalControlExchangeDecision::Continue
+                    }
+                })
+                .expect_err("stop before response");
+            let started = Instant::now();
+            let error = exchange
+                .discard_response_until(
+                    started + Duration::from_millis(20),
+                    |_, _| Ok(()),
+                    |_| true,
+                )
+                .expect_err("cleanup expired");
+            assert_eq!(error.failure, LocalControlExchangeFailure::Stalled);
+            assert!(client.requires_reconnect());
+            assert!(
+                started.elapsed() < Duration::from_millis(250),
+                "bounded native-free cleanup"
+            );
+        }
+    }
+
+    #[test]
+    fn affine_discard_refuses_partial_send_and_invalid_or_oversized_payloads() {
+        let mut stream = PausingStream::new(wire_response(42));
+        stream.write_stall_after = Some(2);
+        let mut client = LocalControlClient::new(stream, limits());
+        let mut exchange = client
+            .begin_exchange(&make_request(42), Instant::now() + Duration::from_secs(1))
+            .expect("exchange");
+        exchange
+            .wait_with(|p| {
+                if p.write_offset == 2 {
+                    LocalControlExchangeDecision::Cancel
+                } else {
+                    LocalControlExchangeDecision::Continue
+                }
+            })
+            .expect_err("partial send");
+        exchange
+            .discard_response_until(
+                Instant::now() + Duration::from_millis(50),
+                |_, _| Ok(()),
+                |_| true,
+            )
+            .expect_err("not fully flushed");
+        assert!(client.requires_reconnect());
+        assert_eq!(client.stream().writes.len(), 2);
+        assert_eq!(client.stream().read_calls, 0);
+        for input in [u32::MAX.to_be_bytes().to_vec(), vec![0, 0, 0, 1, 0]] {
+            let mut client = LocalControlClient::new(PausingStream::new(input), limits());
+            let mut exchange = client
+                .begin_exchange(&make_request(42), Instant::now() + Duration::from_secs(1))
+                .expect("exchange");
+            exchange
+                .wait_with(|p| {
+                    if p.phase == LocalControlExchangePhase::ReadingHeader {
+                        LocalControlExchangeDecision::Cancel
+                    } else {
+                        LocalControlExchangeDecision::Continue
+                    }
+                })
+                .expect_err("stop");
+            let error = exchange
+                .discard_response_until(
+                    Instant::now() + Duration::from_millis(50),
+                    |_, _| Ok(()),
+                    |_| true,
+                )
+                .expect_err("invalid bounded response");
+            assert!(matches!(
+                error.failure,
+                LocalControlExchangeFailure::Protocol(_)
+            ));
+            assert!(client.requires_reconnect());
+        }
+    }
+
+    #[test]
+    fn affine_discard_timeout_configuration_failure_never_preserves_a_socket() {
+        let mut client = LocalControlClient::new(PausingStream::new(wire_response(42)), limits());
+        let mut exchange = client
+            .begin_exchange(&make_request(42), Instant::now() + Duration::from_secs(1))
+            .expect("exchange");
+        exchange
+            .wait_with(|p| {
+                if p.phase == LocalControlExchangePhase::ReadingHeader {
+                    LocalControlExchangeDecision::Cancel
+                } else {
+                    LocalControlExchangeDecision::Continue
+                }
+            })
+            .expect_err("stop");
+        let error = exchange
+            .discard_response_until(
+                Instant::now() + Duration::from_millis(50),
+                |_, _| Err(ErrorKind::PermissionDenied.into()),
+                |_| true,
+            )
+            .expect_err("configuration failed");
+        assert_eq!(
+            error.failure,
+            LocalControlExchangeFailure::Io(ErrorKind::PermissionDenied)
+        );
+        assert!(client.requires_reconnect());
+        assert_eq!(client.stream().read_calls, 0);
     }
 }

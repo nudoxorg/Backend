@@ -1,0 +1,40 @@
+{
+  "files": [
+    {
+      "bytes": 101,
+      "path": ".travis.yml",
+      "sha256": "910a4b093712e3a42635c9b98e27cb8d4647359df978ea52976beee6003cdcca"
+    },
+    {
+      "bytes": 1087,
+      "path": "LICENSE",
+      "sha256": "8d58741278b289a7f4b6dde2d6273fca7711b9849452c477933d1cccd03db1e7"
+    },
+    {
+      "bytes": 1211,
+      "path": "index.js",
+      "sha256": "438d815500a2dc0c50714ad60a71407e4f2fcf16be8a090e106ac4e9ea2cb792"
+    },
+    {
+      "bytes": 883,
+      "path": "package.json",
+      "sha256": "a9cf82d72a5f240fe051ad0db112bed603df981074928291680d221b96a92d5e"
+    },
+    {
+      "bytes": 1697,
+      "path": "readme.md",
+      "sha256": "9b72af6927cdae6ccf55a94f3603ff488766759c742b8723737b43156ea47e6c"
+    },
+    {
+      "bytes": 1592,
+      "path": "test.js",
+      "sha256": "319682ddfe1389f9691b5d9fd9f9acd851d8e02f3d780b3d981b5d80d9dc2e28"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "atomic-sleep",
+    "version": "1.0.0"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

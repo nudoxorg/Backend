@@ -1,0 +1,15 @@
+
+running 1 test
+test builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations ... 
+thread 'builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations' (15245403) panicked at crates/local-service/src/builtin/generation_residence.rs:854:18:
+set both NUDOX_CLANG and LIBCLANG_PATH for the Clang fixture
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 0.00s
+

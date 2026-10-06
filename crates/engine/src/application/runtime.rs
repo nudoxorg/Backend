@@ -28,14 +28,16 @@ use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_go::legacy::{ConfiguredGoOracle, GoOracleInvocationModeV1};
 use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
+use backend_frontend_python::legacy::checker::NativePythonProjectAuthority;
 use backend_frontend_rust::legacy::{
     RustCargoMetadataPolicy, RustFeatureControl, RustToolchain, SourceByteLimit,
 };
 use backend_frontend_typescript::legacy::{ExplicitTypeScriptChecker, TypeScriptInvocationModeV1};
 use backend_library::interface::{
     CompilerCapability, CompilerReadiness, CompilerRequest, CompilerRuntimeCause, CompilerTerminal,
-    GeneratedArtifact, PackageCompilePhase, PackageCompileRequest, SemanticImageAccessError,
-    SemanticImageAuthority, SemanticImageSnapshot,
+    CompilerToolFailure, CompilerToolIssue, CompilerToolRequirement, GeneratedArtifact,
+    PackageCompilePhase, PackageCompileRequest, SemanticImageAccessError, SemanticImageAuthority,
+    SemanticImageSnapshot,
 };
 use backend_semantic::ir::SemanticInputWitness;
 use backend_semantic::vocabulary::{Language, LanguageProfile, NativeTool, Stage};
@@ -68,8 +70,9 @@ use crate::application::executor::{
     BoundedLaneQueue, LaneIdentity, LaneSendError, StagedOutputBudget, StagedOutputLease,
 };
 use crate::application::toolchain_probe::{
-    ToolchainProbeError, ToolchainProbeLimits, probe_version,
+    ToolchainProbeError, ToolchainProbeLimits, admit_typescript_script_invocation, probe_version,
 };
+use crate::application::typescript_host::TypeScriptProjectHost;
 use crate::application::{
     ActivatedSemanticPackage, CSharpPackageAuthorityConfiguration,
     JavaPackageAuthorityConfiguration, LocalCompiler, LocalCompilerConfig, LocalCompilerControl,
@@ -271,6 +274,94 @@ pub enum LocalCompilerCapabilityState {
     Ready,
 }
 
+/// Bounded, non-sensitive cause retained when the Pyrefly version probe fails.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalRuntimePythonCheckerProbeFailure {
+    /// The configured executable path was relative.
+    RelativeExecutable,
+    /// The selected executable could not be started.
+    ExecutableStart,
+    /// A bounded probe or stream worker could not be started.
+    WorkerStart,
+    /// The child process could not be observed or reaped.
+    ProcessObservation,
+    /// A promised stdout or stderr stream was unavailable.
+    MissingStream,
+    /// Reading stdout or stderr failed.
+    StreamRead,
+    /// The child exceeded the admitted time limit.
+    TimedOut,
+    /// The caller cancelled the admitted probe.
+    Cancelled,
+    /// The child exceeded the admitted output limit.
+    OutputLimit,
+    /// The child exited unsuccessfully; only its bounded exit code is retained.
+    ProcessExit {
+        /// Exit status code when the operating system reported one.
+        code: Option<i32>,
+    },
+    /// The child completed without an exit status.
+    MissingStatus,
+    /// The child succeeded but returned no version bytes.
+    EmptyVersion,
+    /// The executable identity could not be bound to the selected path.
+    IdentityResolution,
+    /// Process cleanup failed after a probe terminal.
+    Cleanup(super::toolchain_probe::ToolchainProbeCleanupAction),
+}
+
+/// One closed Python checker admission state.
+///
+/// Native authority carries its actual compiled producer identity. External `Ready`
+/// carries the adapter and bounded version proof together.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalRuntimePythonCheckerAdmission<Adapter> {
+    /// Actual compiled State producer; does not require an external executable.
+    Native {
+        /// Pinned source/manifest/policy and actual host producer bytes.
+        authority: NativePythonProjectAuthority,
+    },
+    /// The caller explicitly withheld both native and external authority.
+    Unconfigured,
+    /// The explicit Pyrefly executable failed its bounded version probe.
+    ProbeFailed {
+        /// Typed cause with no raw command output or unbounded operating-system detail.
+        cause: LocalRuntimePythonCheckerProbeFailure,
+    },
+    /// The adapter and exact version-output identity were admitted together.
+    Ready {
+        /// Checker bound to the selected absolute executable.
+        adapter: Adapter,
+        /// Exact bounded `pyrefly --version` output identity.
+        proof: PyreflyToolchainIdentity,
+    },
+}
+
+impl<Adapter> Default for LocalRuntimePythonCheckerAdmission<Adapter> {
+    fn default() -> Self {
+        Self::Unconfigured
+    }
+}
+
+impl<Adapter> LocalRuntimePythonCheckerAdmission<Adapter> {
+    /// Borrows the checker adapter while preserving the same single admission state.
+    pub fn as_ref(&self) -> LocalRuntimePythonCheckerAdmission<&Adapter> {
+        match self {
+            Self::Native { authority } => LocalRuntimePythonCheckerAdmission::Native {
+                authority: *authority,
+            },
+            Self::Unconfigured => LocalRuntimePythonCheckerAdmission::Unconfigured,
+            Self::ProbeFailed { cause } => {
+                LocalRuntimePythonCheckerAdmission::ProbeFailed { cause: *cause }
+            }
+            Self::Ready { adapter, proof } => LocalRuntimePythonCheckerAdmission::Ready {
+                adapter,
+                proof: *proof,
+            },
+        }
+    }
+}
+
 /// One compiler-owned semantic capability bound to the exact runtime configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LocalCompilerCapability {
@@ -284,6 +375,7 @@ pub struct LocalCompilerCapability {
     lineage: Option<CompilerSessionLineage>,
     manifest: Option<[u8; 32]>,
     state: LocalCompilerCapabilityState,
+    setup_issue: Option<CompilerToolIssue>,
 }
 
 /// Exact runtime identity available to a remote worker after its local
@@ -413,6 +505,40 @@ pub(crate) struct LocalCompilerPlaneExecutionSeed {
 }
 
 impl LocalCompilerPlaneExecutionSeed {
+    pub(crate) fn for_typescript_project(
+        target: ContentId<CompilationTargetDomain>,
+        profile: LanguageProfile,
+        stage: Stage,
+        toolchain_identity: ContentId<ToolchainDomain>,
+        local_authority_fingerprint: [u8; 32],
+    ) -> Option<Self> {
+        if profile.language() != Language::TypeScript {
+            return None;
+        }
+        let environment_identity = compiler_environment_identity(profile);
+        let target_platform_identity = runtime_target_platform_identity()?;
+        let toolchain = NativeTool::TypeScriptCompiler;
+        let capability_identity = semantic_recipe(
+            profile,
+            toolchain,
+            toolchain_identity,
+            local_authority_fingerprint,
+            environment_identity,
+            target_platform_identity,
+        );
+        Some(Self {
+            target,
+            profile,
+            stage,
+            toolchain,
+            toolchain_identity: *toolchain_identity.as_ref(),
+            local_authority_fingerprint,
+            environment_identity,
+            target_platform_identity,
+            capability_identity,
+        })
+    }
+
     pub(crate) const fn target(self) -> ContentId<CompilationTargetDomain> {
         self.target
     }
@@ -439,6 +565,19 @@ impl LocalCompilerPlaneExecutionSeed {
 
     fn with_local_authority_fingerprint(mut self, fingerprint: [u8; 32]) -> Self {
         self.local_authority_fingerprint = fingerprint;
+        self
+    }
+
+    /// The completed native project changes this host-local recipe before sealing.
+    pub(crate) fn with_python_project(
+        mut self,
+        fingerprint: backend_frontend_python::legacy::checker::PythonProjectFingerprint,
+    ) -> Self {
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"compiler.python.project-plane-authority.v1\0");
+        identity.update(&self.local_authority_fingerprint);
+        identity.update(&fingerprint.as_bytes());
+        self.local_authority_fingerprint = *identity.finalize().as_bytes();
         self
     }
 
@@ -654,6 +793,12 @@ impl LocalCompilerCapability {
         self.state
     }
 
+    /// Exact missing tool or failed probe that prevents this capability from becoming ready.
+    #[must_use]
+    pub const fn setup_issue(self) -> Option<CompilerToolIssue> {
+        self.setup_issue
+    }
+
     /// Binds an admitted runtime row to the exact requested package target
     /// and stage. Unsupported profiles or any unattested runtime facet fail
     /// closed with `None`.
@@ -806,10 +951,21 @@ impl LocalCompilerCapabilities {
                         platform,
                     )
                 });
-            let state = if local_authority_fingerprint.is_none() {
-                LocalCompilerCapabilityState::Unavailable
-            } else {
-                match runtime.map(|candidate| candidate.state) {
+            let setup_issue =
+                capability_setup_issue(profile, runtime, &configuration.package_authority);
+            let state = match setup_issue {
+                Some(CompilerToolIssue {
+                    failure: CompilerToolFailure::Missing,
+                    ..
+                }) => LocalCompilerCapabilityState::Unavailable,
+                Some(CompilerToolIssue {
+                    failure: CompilerToolFailure::ProbeFailed,
+                    ..
+                }) => LocalCompilerCapabilityState::ProbeFailed,
+                None if local_authority_fingerprint.is_none() => {
+                    LocalCompilerCapabilityState::Unavailable
+                }
+                None => match runtime.map(|candidate| candidate.state) {
                     Some(LocalRuntimeToolchainState::Probing) => {
                         LocalCompilerCapabilityState::Probing
                     }
@@ -823,7 +979,7 @@ impl LocalCompilerCapabilities {
                         LocalRuntimeToolchainState::Unavailable | LocalRuntimeToolchainState::Ready,
                     )
                     | None => LocalCompilerCapabilityState::Unavailable,
-                }
+                },
             };
             LocalCompilerCapability {
                 profile,
@@ -836,6 +992,7 @@ impl LocalCompilerCapabilities {
                 lineage,
                 manifest,
                 state,
+                setup_issue,
             }
         };
         Self {
@@ -925,14 +1082,29 @@ fn package_authority_fingerprint(
                     .as_ref()?
                     .local_configuration_fingerprint(),
             );
-        }
-        Language::Python => {
-            identity.update(&authority.python.as_ref()?.local_configuration_fingerprint());
-            identity.update(&[u8::from(authority.python_toolchain_identity.is_some())]);
-            if let Some(pyrefly_toolchain) = authority.python_toolchain_identity {
-                identity.update(pyrefly_toolchain.content_id().as_ref());
+            match runtime.and_then(LocalRuntimeToolchain::invocation_identities) {
+                Some((content, location)) => {
+                    identity.update(&[1]);
+                    identity.update(content.as_ref());
+                    identity.update(&location);
+                }
+                None => {
+                    identity.update(&[0]);
+                }
             }
         }
+        Language::Python => match &authority.python_checker {
+            LocalRuntimePythonCheckerAdmission::Native { authority } => {
+                identity.update(b"compiled-native-python-project\0");
+                identity.update(&authority.producer_identity().as_bytes());
+            }
+            LocalRuntimePythonCheckerAdmission::Ready { adapter, proof } => {
+                identity.update(b"external-pyrefly-per-file\0");
+                identity.update(&adapter.local_configuration_fingerprint());
+                identity.update(proof.content_id().as_ref());
+            }
+            _ => return None,
+        },
         Language::Go => {
             identity.update(&authority.go.as_ref()?.local_configuration_fingerprint());
         }
@@ -1099,6 +1271,47 @@ fn runtime_target_platform_identity() -> Option<[u8; 32]> {
 /// An adapter returns a digest only when its ordered options and selected executable can be bound
 /// to typed toolchain evidence. External module trees and classpaths fail closed until their bytes
 /// are admitted into a typed input closure. Local compilation remains available in every mode.
+fn capability_setup_issue(
+    profile: LanguageProfile,
+    runtime: Option<&LocalRuntimeToolchain>,
+    authority: &LocalRuntimePackageAuthority,
+) -> Option<CompilerToolIssue> {
+    let native_tool = CompilerToolRequirement::Native(profile.language().native_tool());
+    match runtime.map(|candidate| candidate.state) {
+        Some(LocalRuntimeToolchainState::Unavailable) | None => {
+            return Some(CompilerToolIssue {
+                requirement: native_tool,
+                failure: CompilerToolFailure::Missing,
+            });
+        }
+        Some(LocalRuntimeToolchainState::ProbeFailed) => {
+            return Some(CompilerToolIssue {
+                requirement: native_tool,
+                failure: CompilerToolFailure::ProbeFailed,
+            });
+        }
+        Some(LocalRuntimeToolchainState::Probing) => return None,
+        Some(LocalRuntimeToolchainState::Ready) => {}
+    }
+
+    if profile.language() != Language::Python {
+        return None;
+    }
+    let checker = CompilerToolRequirement::PythonChecker;
+    match &authority.python_checker {
+        LocalRuntimePythonCheckerAdmission::Unconfigured => Some(CompilerToolIssue {
+            requirement: checker,
+            failure: CompilerToolFailure::Missing,
+        }),
+        LocalRuntimePythonCheckerAdmission::ProbeFailed { .. } => Some(CompilerToolIssue {
+            requirement: checker,
+            failure: CompilerToolFailure::ProbeFailed,
+        }),
+        LocalRuntimePythonCheckerAdmission::Native { .. }
+        | LocalRuntimePythonCheckerAdmission::Ready { .. } => None,
+    }
+}
+
 fn portable_invocation_options_digest(
     profile: LanguageProfile,
     authority: &LocalRuntimePackageAuthority,
@@ -1147,23 +1360,30 @@ fn portable_invocation_options_digest(
         }
         Language::TypeScript => {
             let checker = authority.typescript.as_ref()?;
+            let runtime = runtime?;
             if checker.portable_invocation_mode() != TypeScriptInvocationModeV1::ReportProgram
-                || !checker.uses_toolchain_executable(runtime?.executable_path()?)
+                || !checker.uses_toolchain_executable(runtime.executable_path()?)
             {
                 // Node mode also depends on the external TypeScript module tree. Until that tree
                 // is admitted as a typed closure, its identity cannot be stated portably.
                 return None;
             }
             options.update(b"typescript-report-program-v1\0");
+            options.update(runtime.invocation_identity()?.as_ref());
         }
         Language::Python => {
-            let checker = authority.python.as_ref()?;
-            let pyrefly_toolchain = authority.python_toolchain_identity?;
-            options.update(b"python-pyrefly-v1\0");
-            options.update(pyrefly_toolchain.content_id().as_ref());
+            // A native project with captured local configuration is a host-local
+            // producer. It does not claim portable external invocation parity.
+            let LocalRuntimePythonCheckerAdmission::Ready { adapter, proof } =
+                &authority.python_checker
+            else {
+                return None;
+            };
+            options.update(b"external-python-pyrefly-per-file-v1\0");
+            options.update(proof.content_id().as_ref());
             update_owned_string_identity(
                 &mut options,
-                checker.portable_invocation_options().arguments(),
+                adapter.portable_invocation_options().arguments(),
             );
         }
         Language::Go => {
@@ -1392,6 +1612,85 @@ impl CompilerInputWitnessStore {
 pub struct LocalRuntimeToolchain {
     facts: LocalRuntimeToolchainFacts,
     executable: Option<Box<Path>>,
+    probe_failure: Option<Box<ToolchainProbeError>>,
+    probe_invocation: ToolchainProbeInvocation,
+}
+
+/// The admitted interpreter is part of a script probe, never an ambient PATH lookup.
+#[derive(Clone, Debug, Default)]
+enum ToolchainProbeInvocation {
+    #[default]
+    Native,
+    TypeScriptScript {
+        node: Box<Path>,
+        module_root: Box<Path>,
+        interpreter_identity: Option<ContentId<ToolchainDomain>>,
+        script_file_digest: Option<[u8; 32]>,
+        interpreter_file_digest: Option<[u8; 32]>,
+        module_closure_digest: Option<[u8; 32]>,
+    },
+}
+
+#[derive(Debug)]
+enum PendingToolchainProbe {
+    Native {
+        tool: NativeTool,
+        executable: PathBuf,
+    },
+    TypeScriptScript {
+        compiler: PathBuf,
+        node: Box<Path>,
+        module_root: Box<Path>,
+    },
+}
+
+impl PendingToolchainProbe {
+    fn tool(&self) -> NativeTool {
+        match self {
+            Self::Native { tool, .. } => *tool,
+            Self::TypeScriptScript { .. } => NativeTool::TypeScriptCompiler,
+        }
+    }
+
+    fn admit(
+        self,
+        limits: ToolchainProbeLimits,
+    ) -> Result<LocalRuntimeToolchain, ToolchainProbeError> {
+        match self {
+            Self::Native { tool, executable } => {
+                let version = probe_version(tool, &executable, limits)?;
+                LocalRuntimeToolchain::resolved(tool, executable, &version)
+                    .map_err(|source| ToolchainProbeError::Resolution { tool, source })
+            }
+            Self::TypeScriptScript {
+                compiler,
+                node,
+                module_root,
+            } => {
+                let (
+                    script_version,
+                    interpreter_version,
+                    script_digest,
+                    interpreter_digest,
+                    module_closure_digest,
+                ) = admit_typescript_script_invocation(&compiler, &node, &module_root, limits)?;
+                LocalRuntimeToolchain::resolved_typescript_script(
+                    compiler,
+                    node,
+                    module_root,
+                    &script_version,
+                    &interpreter_version,
+                    script_digest,
+                    interpreter_digest,
+                    module_closure_digest,
+                )
+                .map_err(|source| ToolchainProbeError::Resolution {
+                    tool: NativeTool::TypeScriptCompiler,
+                    source,
+                })
+            }
+        }
+    }
 }
 
 impl LocalRuntimeToolchain {
@@ -1430,6 +1729,30 @@ impl LocalRuntimeToolchain {
                 state: LocalRuntimeToolchainState::Ready,
             },
             executable: Some(executable.into_boxed_path()),
+            probe_failure: None,
+            probe_invocation: ToolchainProbeInvocation::Native,
+        })
+    }
+
+    /// The image is the actual Rust host producer, not a Python interpreter or
+    /// an external checker. Identity derives from its compiled solver receipt.
+    pub(crate) fn compiled_native_python(
+        authority: NativePythonProjectAuthority,
+    ) -> Result<Self, backend_frontend_python::legacy::checker::CheckerError> {
+        let executable = std::env::current_exe().map_err(|source| {
+            backend_frontend_python::legacy::checker::CheckerError::Workspace { source }
+        })?;
+        Ok(Self {
+            facts: LocalRuntimeToolchainFacts {
+                tool: NativeTool::Python,
+                identity: Some(ContentId::from_digest(
+                    authority.producer_identity().as_bytes(),
+                )),
+                state: LocalRuntimeToolchainState::Ready,
+            },
+            executable: Some(executable.into_boxed_path()),
+            probe_failure: None,
+            probe_invocation: ToolchainProbeInvocation::Native,
         })
     }
 
@@ -1443,6 +1766,8 @@ impl LocalRuntimeToolchain {
                 state: LocalRuntimeToolchainState::Unavailable,
             },
             executable: None,
+            probe_failure: None,
+            probe_invocation: ToolchainProbeInvocation::Native,
         }
     }
 
@@ -1455,6 +1780,79 @@ impl LocalRuntimeToolchain {
                 state: LocalRuntimeToolchainState::Probing,
             },
             executable: Some(executable.into_boxed_path()),
+            probe_failure: None,
+            probe_invocation: ToolchainProbeInvocation::Native,
+        }
+    }
+
+    pub(crate) fn probing_typescript_script(
+        compiler: PathBuf,
+        node: PathBuf,
+        module_root: PathBuf,
+    ) -> Self {
+        debug_assert!(compiler.is_absolute() && node.is_absolute() && module_root.is_absolute());
+        let mut row = Self::probing(NativeTool::TypeScriptCompiler, compiler);
+        row.probe_invocation = ToolchainProbeInvocation::TypeScriptScript {
+            node: node.into_boxed_path(),
+            module_root: module_root.into_boxed_path(),
+            interpreter_identity: None,
+            script_file_digest: None,
+            interpreter_file_digest: None,
+            module_closure_digest: None,
+        };
+        row
+    }
+
+    fn resolved_typescript_script(
+        compiler: PathBuf,
+        node: Box<Path>,
+        module_root: Box<Path>,
+        script_version: &[u8],
+        interpreter_version: &[u8],
+        script_file_digest: [u8; 32],
+        interpreter_file_digest: [u8; 32],
+        module_closure_digest: [u8; 32],
+    ) -> Result<Self, ToolchainResolutionError> {
+        let (compiler_identity, interpreter_identity) = {
+            let resolved = ResolvedToolchain::from_interpreted_script(
+                NativeTool::TypeScriptCompiler,
+                &node,
+                &compiler,
+                &module_root,
+                script_version,
+                interpreter_version,
+                script_file_digest,
+                interpreter_file_digest,
+                module_closure_digest,
+            )?;
+            (resolved.identity, resolved.interpreter_identity())
+        };
+        Ok(Self {
+            facts: LocalRuntimeToolchainFacts {
+                tool: NativeTool::TypeScriptCompiler,
+                identity: Some(compiler_identity),
+                state: LocalRuntimeToolchainState::Ready,
+            },
+            executable: Some(compiler.into_boxed_path()),
+            probe_failure: None,
+            probe_invocation: ToolchainProbeInvocation::TypeScriptScript {
+                node,
+                module_root,
+                interpreter_identity,
+                script_file_digest: Some(script_file_digest),
+                interpreter_file_digest: Some(interpreter_file_digest),
+                module_closure_digest: Some(module_closure_digest),
+            },
+        })
+    }
+
+    pub(crate) fn admit_pending(
+        self,
+        limits: ToolchainProbeLimits,
+    ) -> Result<Self, ToolchainProbeError> {
+        match self.probe_request() {
+            Some(request) => request.admit(limits),
+            None => Ok(self),
         }
     }
 
@@ -1462,7 +1860,24 @@ impl LocalRuntimeToolchain {
         self.executable.as_deref()
     }
 
-    pub(crate) const fn probe_failed(tool: NativeTool) -> Self {
+    fn invocation_identity(&self) -> Option<ContentId<ToolchainDomain>> {
+        match self.selection().ok()? {
+            ToolchainSelection::ResolvedNative(toolchain) => Some(toolchain.invocation_identity()),
+            ToolchainSelection::ExplicitlyUnavailable { .. } => None,
+        }
+    }
+
+    fn invocation_identities(&self) -> Option<(ContentId<ToolchainDomain>, [u8; 32])> {
+        match self.selection().ok()? {
+            ToolchainSelection::ResolvedNative(toolchain) => Some((
+                toolchain.invocation_identity(),
+                toolchain.invocation_location_identity()?,
+            )),
+            ToolchainSelection::ExplicitlyUnavailable { .. } => None,
+        }
+    }
+
+    pub(crate) fn probe_failed(tool: NativeTool, failure: ToolchainProbeError) -> Self {
         Self {
             facts: LocalRuntimeToolchainFacts {
                 tool,
@@ -1470,18 +1885,41 @@ impl LocalRuntimeToolchain {
                 state: LocalRuntimeToolchainState::ProbeFailed,
             },
             executable: None,
+            probe_failure: Some(Box::new(failure)),
+            probe_invocation: ToolchainProbeInvocation::Native,
         }
     }
 
-    fn probe_request(&self) -> Option<(NativeTool, PathBuf)> {
+    /// Returns the exact bounded process terminal retained by a failed admission probe.
+    #[must_use]
+    pub fn probe_failure(&self) -> Option<&ToolchainProbeError> {
+        self.probe_failure.as_deref()
+    }
+
+    fn probe_request(&self) -> Option<PendingToolchainProbe> {
         (self.facts.state == LocalRuntimeToolchainState::Probing).then(|| {
-            (
-                self.facts.tool,
-                self.executable
-                    .as_deref()
-                    .expect("probing toolchain retains its admitted executable")
-                    .to_path_buf(),
-            )
+            let executable = self
+                .executable
+                .as_deref()
+                .expect("probing toolchain retains its admitted executable")
+                .to_path_buf();
+            match &self.probe_invocation {
+                ToolchainProbeInvocation::Native => PendingToolchainProbe::Native {
+                    tool: self.facts.tool,
+                    executable,
+                },
+                ToolchainProbeInvocation::TypeScriptScript {
+                    node,
+                    module_root,
+                    ..
+                } => {
+                    PendingToolchainProbe::TypeScriptScript {
+                        compiler: executable,
+                        node: node.clone(),
+                        module_root: module_root.clone(),
+                    }
+                }
+            }
         })
     }
 
@@ -1492,9 +1930,33 @@ impl LocalRuntimeToolchain {
             self.facts.identity,
         ) {
             (LocalRuntimeToolchainState::Ready, Some(executable), Some(identity)) => {
-                Ok(ToolchainSelection::ResolvedNative(
-                    ResolvedToolchain::from_identity(self.facts.tool, executable, identity)?,
-                ))
+                let resolved = match &self.probe_invocation {
+                    ToolchainProbeInvocation::Native => {
+                        ResolvedToolchain::from_identity(self.facts.tool, executable, identity)?
+                    }
+                    ToolchainProbeInvocation::TypeScriptScript {
+                        node,
+                        module_root,
+                        interpreter_identity: Some(interpreter_identity),
+                        script_file_digest: Some(script_file_digest),
+                        interpreter_file_digest: Some(interpreter_file_digest),
+                        module_closure_digest: Some(module_closure_digest),
+                    } => ResolvedToolchain::from_interpreted_identities(
+                        self.facts.tool,
+                        node,
+                        executable,
+                        module_root,
+                        identity,
+                        *interpreter_identity,
+                        *script_file_digest,
+                        *interpreter_file_digest,
+                        *module_closure_digest,
+                    )?,
+                    ToolchainProbeInvocation::TypeScriptScript { .. } => unreachable!(
+                        "ready interpreted toolchain retains all admitted invocation facts"
+                    ),
+                };
+                Ok(ToolchainSelection::ResolvedNative(resolved))
             }
             (
                 LocalRuntimeToolchainState::Unavailable
@@ -1515,6 +1977,175 @@ impl core::ops::Deref for LocalRuntimeToolchain {
 
     fn deref(&self) -> &Self::Target {
         &self.facts
+    }
+}
+
+#[cfg(all(test, unix))]
+mod global_typescript_probe_tests {
+    use super::*;
+
+    fn executable_script(path: &Path, contents: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::write(path, contents).expect("write executable script");
+        let mut permissions = std::fs::metadata(path)
+            .expect("script metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("make executable");
+    }
+
+    fn fake_node(directory: &Path) -> PathBuf {
+        let node = directory.join("node");
+        executable_script(
+            &node,
+            "#!/bin/sh\nif [ \"$1\" = '--version' ]; then printf 'v24.21.0\\n'; exit 0; fi\ncompiler=$1\nshift\nexec /bin/sh \"$compiler\" \"$@\"\n",
+        );
+        std::fs::canonicalize(node).expect("canonical fake Node path")
+    }
+
+    fn fake_typescript_module(directory: &Path, contents: &str) -> (PathBuf, PathBuf) {
+        let module_root = directory.join("node_modules");
+        let package_root = module_root.join("typescript");
+        let script = package_root.join("bin/tsc");
+        std::fs::create_dir_all(script.parent().expect("compiler script directory"))
+            .expect("create compiler script directory");
+        std::fs::create_dir_all(package_root.join("lib")).expect("create TypeScript lib dir");
+        std::fs::write(&script, contents).expect("write fake TypeScript entry");
+        std::fs::write(package_root.join("lib/tsc.js"), "module.exports=require('./_tsc.js');\n")
+            .expect("write fake compiler launcher");
+        std::fs::write(package_root.join("lib/_tsc.js"), "module.exports={version:'5.9.3'};\n")
+            .expect("write fake compiler body");
+        (
+            std::fs::canonicalize(module_root).expect("canonical TypeScript module root"),
+            std::fs::canonicalize(script).expect("canonical TypeScript script"),
+        )
+    }
+
+    #[test]
+    fn global_typescript_probe_keeps_its_admitted_interpreter_through_async_handoff() {
+        let directory = crate::test_support::private_directory("global-ts-async-probe");
+        let node = fake_node(&directory);
+        // Deliberately not executable: the admitted interpreter must own the
+        // launch, as it does for npm's package entry on every host platform.
+        let (module_root, script) = fake_typescript_module(
+            &directory,
+            "if [ \"$1\" = '--version' ]; then printf 'Version 5.9.3\\n'; exit 0; fi\nexit 0\n",
+        );
+        let row = LocalRuntimeToolchain::probing_typescript_script(
+            script.clone(),
+            node.clone(),
+            module_root.clone(),
+        );
+        let request = row.probe_request().expect("pending script invocation");
+        let (send, receive) = channel();
+        start_toolchain_probes(vec![request], send);
+        let observed = receive
+            .recv_timeout(Duration::from_secs(10))
+            .expect("bounded async completion");
+        assert_eq!(observed.tool, NativeTool::TypeScriptCompiler);
+        let admitted = observed
+            .result
+            .expect("version through the admitted interpreter");
+        let expected = ResolvedToolchain::from_version(
+            NativeTool::TypeScriptCompiler,
+            &script,
+            b"Version 5.9.3\n",
+        )
+        .expect("expected script identity");
+        assert_eq!(admitted.state, LocalRuntimeToolchainState::Ready);
+        assert_eq!(admitted.identity, Some(expected.identity));
+        assert_eq!(admitted.executable_path(), Some(script.as_path()));
+        let ToolchainSelection::ResolvedNative(invocation) = admitted
+            .selection()
+            .expect("admitted typed script invocation")
+        else {
+            panic!("admitted TypeScript script remains available")
+        };
+        assert_eq!(
+            invocation.invocation(),
+            crate::driver::NativeInvocation::InterpretedScript {
+                interpreter: &node,
+                script: &script,
+            }
+        );
+        assert_ne!(invocation.invocation_identity(), expected.identity);
+        invocation
+            .validate_invocation()
+            .expect("admitted compiler and interpreter remain unchanged");
+        let original_script =
+            "if [ \"$1\" = '--version' ]; then printf 'Version 5.9.3\\n'; exit 0; fi\nexit 0\n";
+        std::fs::write(&script, "changed after admission\n").expect("mutate compiler script");
+        assert!(matches!(
+            invocation.validate_invocation(),
+            Err(crate::driver::NativeInvocationError::Changed {
+                role: crate::driver::NativeInvocationFileRole::Script,
+                ..
+            })
+        ));
+        std::fs::write(&script, original_script).expect("restore compiler script bytes");
+        let compiler_body = module_root.join("typescript/lib/_tsc.js");
+        std::fs::write(&compiler_body, "module.exports={version:'changed'};\n")
+            .expect("mutate selected compiler body");
+        assert!(matches!(
+            invocation.validate_invocation(),
+            Err(crate::driver::NativeInvocationError::Changed {
+                role: crate::driver::NativeInvocationFileRole::CompilerModule,
+                ..
+            })
+        ));
+        std::fs::write(&compiler_body, "module.exports={version:'5.9.3'};\n")
+            .expect("restore selected compiler body");
+        let mut changed_node = std::fs::read(&node).expect("read selected Node");
+        changed_node.extend_from_slice(b"# changed after admission\n");
+        std::fs::write(&node, changed_node).expect("mutate selected Node");
+        assert!(matches!(
+            invocation.validate_invocation(),
+            Err(crate::driver::NativeInvocationError::Changed {
+                role: crate::driver::NativeInvocationFileRole::Interpreter,
+                ..
+            })
+        ));
+        std::fs::remove_dir_all(directory).expect("remove private probe directory");
+    }
+
+    #[test]
+    fn global_typescript_probe_cannot_fall_back_after_its_selected_interpreter_fails() {
+        let directory = crate::test_support::private_directory("global-ts-failed-probe");
+        let (module_root, script) =
+            fake_typescript_module(&directory, "printf 'Version 5.9.3\\n'\n");
+        let node_path = directory.join("bad-node");
+        executable_script(&node_path, "#!/bin/sh\nexit 42\n");
+        let node = std::fs::canonicalize(node_path).expect("canonical bad Node path");
+        let row = LocalRuntimeToolchain::probing_typescript_script(script, node, module_root);
+        let limits = ToolchainProbeLimits::new(
+            Duration::from_secs(2),
+            NonZeroUsize::new(1024).expect("stream bound"),
+        )
+        .expect("probe limits");
+        let Err(ToolchainProbeError::Exit { tool, status, .. }) = row.admit_pending(limits) else {
+            panic!("the exact selected Node failure should be retained as a typed exit");
+        };
+        assert_eq!(tool, NativeTool::TypeScriptCompiler);
+        assert_eq!(status.code(), Some(42));
+        std::fs::remove_dir_all(directory).expect("remove private probe directory");
+    }
+
+    #[test]
+    fn selected_global_typescript_script_without_node_is_an_explicit_probe_refusal() {
+        let script = PathBuf::from("/canonical/global/typescript/bin/tsc");
+        let row = LocalRuntimeToolchain::probe_failed(
+            NativeTool::TypeScriptCompiler,
+            ToolchainProbeError::TypeScriptInterpreterUnavailable {
+                compiler: script.clone(),
+            },
+        );
+        assert_eq!(row.state, LocalRuntimeToolchainState::ProbeFailed);
+        assert!(matches!(
+            row.probe_failure(),
+            Some(ToolchainProbeError::TypeScriptInterpreterUnavailable { compiler })
+                if compiler == &script
+        ));
     }
 }
 
@@ -1634,11 +2265,8 @@ pub struct LocalRuntimePackageAuthority {
     pub clang: Option<backend_frontend_clang::ClangAuthorityEnvironment>,
     /// TypeScript checker authority.
     pub typescript: Option<ExplicitTypeScriptChecker>,
-    /// Python Pyrefly authority.
-    pub python: Option<Pyrefly>,
-    /// Separate bounded version identity for the configured Pyrefly executable.
-    /// Missing identity keeps local compilation available and withholds remote recipe admission.
-    pub python_toolchain_identity: Option<PyreflyToolchainIdentity>,
+    /// Compiled native State producer or explicitly selected external per-file checker.
+    pub python_checker: LocalRuntimePythonCheckerAdmission<Pyrefly>,
     /// Rust Analyzer/Cargo authority.
     pub rust: Option<LocalRuntimeRustAuthority>,
     /// Go package oracle authority.
@@ -1657,6 +2285,7 @@ pub struct LocalCompilerRuntimeConfiguration {
     toolchains: Box<[LocalRuntimeToolchain]>,
     package_roots: Box<[LocalRuntimePackageRoot]>,
     package_authority: LocalRuntimePackageAuthority,
+    typescript_project_host: Option<TypeScriptProjectHost>,
     embedding_runtime: Option<Arc<EmbeddingExecutable>>,
     embedding_cache_session: Option<EmbeddingCacheSession>,
     embedding_requirement: EmbeddingRequirement,
@@ -1688,6 +2317,7 @@ impl LocalCompilerRuntimeConfiguration {
             toolchains,
             package_roots,
             package_authority,
+            typescript_project_host: None,
             embedding_runtime: None,
             embedding_cache_session: None,
             embedding_requirement: EmbeddingRequirement::Optional,
@@ -1696,6 +2326,14 @@ impl LocalCompilerRuntimeConfiguration {
             publication_limits,
             scratch,
         })
+    }
+
+    pub(crate) fn with_typescript_project_host(
+        mut self,
+        typescript_project_host: TypeScriptProjectHost,
+    ) -> Self {
+        self.typescript_project_host = Some(typescript_project_host);
+        self
     }
 
     /// Uses an already activated bounded embedding runtime for each package source.
@@ -2716,7 +3354,7 @@ struct ToolchainProbeObservation {
 }
 
 fn start_toolchain_probes(
-    pending: Vec<(NativeTool, PathBuf)>,
+    pending: Vec<PendingToolchainProbe>,
     observations: Sender<ToolchainProbeObservation>,
 ) {
     let limits = ToolchainProbeLimits::new(
@@ -2724,17 +3362,18 @@ fn start_toolchain_probes(
         NonZeroUsize::new(16 * 1024).expect("fixed probe stream bound is nonzero"),
     )
     .expect("fixed probe deadline is nonzero");
-    for (tool, executable) in pending {
+    for request in pending {
+        let tool = request.tool();
         let probe_observations = observations.clone();
         let name = format!("nudox-toolchain-{}-probe", u8::from(tool));
         let spawn = thread::Builder::new().name(name).spawn(move || {
-            let result = LocalRuntimeToolchain::probe(tool, executable, limits);
+            let result = request.admit(limits);
             let _ = probe_observations.send(ToolchainProbeObservation { tool, result });
         });
-        if spawn.is_err() {
+        if let Err(source) = spawn {
             let _ = observations.send(ToolchainProbeObservation {
                 tool,
-                result: Ok(LocalRuntimeToolchain::probe_failed(tool)),
+                result: Err(ToolchainProbeError::ProbeWorkerSpawn { tool, source }),
             });
         }
     }
@@ -2762,9 +3401,9 @@ fn run_worker(
         ) {
             WorkerDisposition::Stop => break,
             WorkerDisposition::Reconfigure(observation) => {
-                let replacement = observation
-                    .result
-                    .unwrap_or_else(|_| LocalRuntimeToolchain::probe_failed(observation.tool));
+                let replacement = observation.result.unwrap_or_else(|failure| {
+                    LocalRuntimeToolchain::probe_failed(observation.tool, failure)
+                });
                 let Some(slot) = configuration
                     .toolchains
                     .iter_mut()
@@ -2923,7 +3562,8 @@ fn run_worker_generation(
     let authority = PackageAuthorityConfiguration {
         clang: configuration.package_authority.clang.as_ref(),
         typescript: configuration.package_authority.typescript.as_ref(),
-        python: configuration.package_authority.python.as_ref(),
+        typescript_project_host: configuration.typescript_project_host.as_ref(),
+        python_checker: configuration.package_authority.python_checker.as_ref(),
         rust,
         go: configuration.package_authority.go.as_ref(),
         csharp,
@@ -4122,14 +4762,14 @@ mod portable_recipe_tests {
         pyrefly_version: &[u8],
         arguments: Vec<String>,
     ) -> ContentId<CompileRecipeDomain> {
-        let checker = Pyrefly::from_executable(pyrefly.to_path_buf())
+        let adapter = Pyrefly::from_executable(pyrefly.to_path_buf())
             .expect("absolute Pyrefly executable")
             .with_arguments(arguments);
         let authority = LocalRuntimePackageAuthority {
-            python: Some(checker),
-            python_toolchain_identity: Some(PyreflyToolchainIdentity::from_version_output(
-                pyrefly_version,
-            )),
+            python_checker: LocalRuntimePythonCheckerAdmission::Ready {
+                adapter,
+                proof: PyreflyToolchainIdentity::from_version_output(pyrefly_version),
+            },
             ..LocalRuntimePackageAuthority::default()
         };
         let runtime = LocalRuntimeToolchain::resolved(
@@ -4152,6 +4792,62 @@ mod portable_recipe_tests {
         )
         .expect("portable invocation recipe")
         .identity()
+    }
+
+    #[test]
+    fn python_checker_admission_is_closed_and_reports_each_required_tool() {
+        let profile = LanguageProfile::Python(PythonVersion::Python314);
+        let interpreter = LocalRuntimeToolchain::resolved(
+            NativeTool::Python,
+            host_path("/test/bin/python").to_path_buf(),
+            b"python 3.14.0",
+        )
+        .expect("absolute selected toolchain");
+        let mut authority = LocalRuntimePackageAuthority::default();
+        assert_eq!(
+            capability_setup_issue(profile, None, &authority),
+            Some(CompilerToolIssue {
+                requirement: CompilerToolRequirement::Native(NativeTool::Python),
+                failure: CompilerToolFailure::Missing,
+            }),
+            "a missing interpreter remains the native Python requirement",
+        );
+        assert_eq!(
+            capability_setup_issue(profile, Some(&interpreter), &authority),
+            Some(CompilerToolIssue {
+                requirement: CompilerToolRequirement::PythonChecker,
+                failure: CompilerToolFailure::Missing,
+            }),
+            "a missing checker is surfaced separately from a ready interpreter",
+        );
+
+        authority.python_checker = LocalRuntimePythonCheckerAdmission::ProbeFailed {
+            cause: LocalRuntimePythonCheckerProbeFailure::TimedOut,
+        };
+        assert_eq!(
+            capability_setup_issue(profile, Some(&interpreter), &authority),
+            Some(CompilerToolIssue {
+                requirement: CompilerToolRequirement::PythonChecker,
+                failure: CompilerToolFailure::ProbeFailed,
+            }),
+            "a failed checker probe retains the actionable checker requirement",
+        );
+
+        let adapter = Pyrefly::from_executable(host_path("/test/bin/pyrefly").to_path_buf())
+            .expect("absolute explicit Pyrefly executable");
+        let proof = PyreflyToolchainIdentity::from_version_output(b"pyrefly 1.2.0-dev.1");
+        authority.python_checker = LocalRuntimePythonCheckerAdmission::Ready { adapter, proof };
+        assert_eq!(
+            capability_setup_issue(profile, Some(&interpreter), &authority),
+            None
+        );
+        match authority.python_checker.as_ref() {
+            LocalRuntimePythonCheckerAdmission::Ready {
+                adapter: _,
+                proof: observed,
+            } => assert_eq!(observed, proof),
+            other => panic!("ready checker admission lost its paired adapter/proof: {other:?}"),
+        }
     }
 
     #[test]

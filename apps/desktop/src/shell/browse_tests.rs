@@ -38,7 +38,7 @@ fn retained_tree_names_require_the_exact_requested_and_effective_roots() {
     wrong_root.root = "/replacement/workspace".into();
     assert!(!super::retained_tree_matches_route(&route, &wrong_root));
     let mut no_binding = tree;
-    no_binding.request_binding = None;
+    no_binding.observation = None;
     assert!(!super::retained_tree_matches_route(&route, &no_binding));
 }
 
@@ -357,6 +357,98 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
     let _ = std::fs::remove_dir_all(state);
 }
 
+#[gpui::test]
+fn real_lockfile_display_only_tree_paints_without_minting_source_or_readme_controls(
+    cx: &mut TestAppContext,
+) {
+    use backend_library::browse::ProjectTreeObservationV1;
+    let (_service, endpoint, state) = owner();
+    let project = state.join("display-only-workspace");
+    std::fs::create_dir_all(project.join("app/src")).expect("private physical workspace");
+    std::fs::write(
+        project.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"app\"]\nresolver = \"2\"\n",
+    )
+    .expect("workspace manifest");
+    // This authored dependency has no cached registry source. Cargo's offline
+    // exact-manifest read cannot resolve it, so the real owner must fall back
+    // to the workspace lockfile and truthfully expose display-only evidence.
+    std::fs::write(project.join("app/Cargo.toml"),
+        "[package]\nname = \"display-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\nnudox-display-only-uncached = \"=0.1.0\"\n").expect("physical member manifest");
+    std::fs::write(
+        project.join("app/src/lib.rs"),
+        "pub fn physical_member() {}\n",
+    )
+    .expect("physical member source");
+    std::fs::write(project.join("Cargo.lock"), format!(
+        "version = 4\n\n[[package]]\nname = \"display-app\"\nversion = \"0.1.0\"\ndependencies = [\n \"nudox-display-only-uncached\",\n]\n\n[[package]]\nname = \"nudox-display-only-uncached\"\nversion = \"0.1.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"{}\"\n", "a".repeat(64))).expect("authored physical lockfile");
+    let project = project.canonicalize().expect("exact canonical workspace");
+    let route = tree_route(&project);
+    let reader_endpoint = endpoint.clone();
+    let pool = ReadPool::start(1, move |_| SessionReader::connect(&reader_endpoint))
+        .expect("real owner reads");
+    let engine = crate::runtime::client::LocalEngineClient::new(
+        &endpoint,
+        LocalProjectId::from_path(&project).expect("exact project"),
+    );
+    let mut rig = crate::shell::tests::rig_with_engine(cx, None, 1440.0, 900.0, pool, engine);
+    rig.patience = Duration::from_secs(120);
+    rig.cx.update(|window, cx| {
+        window.set_a11y_forced(true);
+        facet::probe::enable(cx);
+    });
+    rig.go(crate::navigation::Intent::Navigate(route.clone()));
+    let model = rig.graph.store.read_with(rig.cx, |store, _| {
+        let plan = crate::runtime::store::RouteDependencies::new(&route, None);
+        plan.current_tree(store)
+            .expect("real display-only Tree is a current readable page")
+            .model()
+            .clone()
+    });
+    assert!(matches!(
+        model.observation,
+        Some(ProjectTreeObservationV1::DisplayOnly { .. })
+    ));
+    assert!(
+        model
+            .request_binding()
+            .expect("display identity")
+            .matches_requested_root(&project)
+    );
+    assert!(model.source_packages.is_empty());
+    assert!(model.inventory_links.iter().all(|row| matches!(
+        row.destination,
+        crate::model::browse::TreeDestination::Unavailable(_)
+    )));
+    let ledger = crate::shell::fit_tests::painted(&mut rig);
+    assert!(
+        ledger
+            .texts
+            .iter()
+            .any(|text| text.content == "nudox-display-only-uncached"),
+        "the real bounded lockfile dependency name actually paints"
+    );
+    assert!(
+        !ledger
+            .texts
+            .iter()
+            .any(|text| text.content.contains("READ-PROTOCOL"))
+    );
+    for label in [
+        "Open Cargo source",
+        "Open package README",
+        "Go to source line",
+    ] {
+        assert!(
+            crate::shell::tests::native_bounds(&mut rig, "Button", label, true).is_none(),
+            "display-only Tree cannot mint the native action {label}"
+        );
+    }
+    assert_eq!(rig.route(), route);
+    drop(rig);
+    let _ = std::fs::remove_dir_all(state);
+}
+
 #[test]
 fn find_invalid_input_is_distinct_from_blank_and_missing_package_is_unavailable() {
     use facet::browse::find::{QueryInput, Routability};
@@ -364,7 +456,8 @@ fn find_invalid_input_is_distinct_from_blank_and_missing_package_is_unavailable(
     assert_eq!(super::query_input("from_str"), QueryInput::Valid);
     assert!(matches!(super::query_input("bad\0query"), QueryInput::Invalid(_)));
     let unresolved = super::symbol_routability(&"unqualified::Thing".into());
-    assert!(matches!(unresolved, Routability::Unavailable(reason) if reason.contains("no addressable package")));
+    assert!(matches!(unresolved, Routability::Unavailable(_)),
+        "an unqualified declaration cannot produce an admitted package destination");
     assert_eq!(super::symbol_routability(&"/fixture/app::app.rs:1::main".into()), Routability::Available);
 }
 
@@ -461,10 +554,10 @@ fn find_source_callback_rechecks_membership_query_overlay_owner_and_root(cx: &mu
     let mut rig = rig(cx, Some(current.clone()), 1200.0, 800.0);
     land_find(&mut rig, &browse, "RelationLabel", true);
     let source = find_callback(&mut rig, &browse);
-    let open = super::find_symbol_action(source.clone(), false);
-    let open_package = super::find_package_action(source);
     let key = SharedString::from("/fixture/present::glyph.rs:138::RelationLabel");
-    let invoke = |rig: &mut crate::shell::tests::Rig, expected: &Route| {
+    let invoke = |rig: &mut crate::shell::tests::Rig, source: &super::FindActionSource, expected: &Route| {
+        let open = super::find_symbol_action(source.clone(), false);
+        let open_package = super::find_package_action(source.clone());
         rig.cx.update(|window, cx| open(key.clone(), window, cx));
         rig.cx.update(|window, cx| open_package(SharedString::from("/fixture/present"), window, cx));
         rig.cx.run_until_parked();
@@ -472,33 +565,34 @@ fn find_source_callback_rechecks_membership_query_overlay_owner_and_root(cx: &mu
     };
 
     land_find(&mut rig, &browse, "RelationLabel", false);
-    invoke(&mut rig, &current);
+    invoke(&mut rig, &source, &current);
     land_find(&mut rig, &browse, "different query", true);
-    invoke(&mut rig, &current);
+    invoke(&mut rig, &source, &current);
     land_find(&mut rig, &browse, "RelationLabel", true);
 
-    let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
-    let mut covered = original.session().clone();
-    covered.overlay = Some(Overlay::Settings(SettingsPage::Appearance));
-    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_session(covered)), cx));
-    invoke(&mut rig, &current);
-    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::clone(&original), cx));
-
-    let mut elsewhere = original.session().clone();
-    elsewhere.route = Route::Orbit(OrbitRoute::Home);
-    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_session(elsewhere.clone())), cx));
-    invoke(&mut rig, &elsewhere.route);
-    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::clone(&original), cx));
-    rig.cx.run_until_parked();
+    rig.go(crate::navigation::Intent::OpenSettings(SettingsPage::Appearance));
+    invoke(&mut rig, &source, &current);
+    rig.go(crate::navigation::Intent::DismissOverlay);
     land_find(&mut rig, &browse, "RelationLabel", true);
-
+    let source = find_callback(&mut rig, &browse);
+    assert!(rig.cx.update(|_, cx| source.current(cx, |_| Some(())).is_ok()), "fresh uncovered callback");
+    let elsewhere = Route::Orbit(OrbitRoute::Home);
+    rig.go(crate::navigation::Intent::Navigate(elsewhere.clone()));
+    invoke(&mut rig, &source, &elsewhere);
+    rig.go(crate::navigation::Intent::Navigate(current.clone()));
+    land_find(&mut rig, &browse, "RelationLabel", true);
+    let source = find_callback(&mut rig, &browse);
+    assert!(rig.cx.update(|_, cx| source.current(cx, |_| Some(())).is_ok()), "fresh returned callback");
     rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
-    invoke(&mut rig, &current);
+    invoke(&mut rig, &source, &current);
     rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
-
+    land_find(&mut rig, &browse, "RelationLabel", true);
+    let source = find_callback(&mut rig, &browse);
+    assert!(rig.cx.update(|_, cx| source.current(cx, |_| Some(())).is_ok()), "fresh owner callback");
+    let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
     let newer = VersionedRoot::synthetic(backend_library::view_state_root(&[("find".into(), "new root".into())]), 9);
     rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_key(newer, None)), cx));
-    invoke(&mut rig, &current);
+    invoke(&mut rig, &source, &current);
 }
 
 #[gpui::test]
@@ -840,11 +934,13 @@ fn compare_source_callbacks_deny_replaced_membership_selection_overlay_owner_and
     let source = compare_callback(&mut rig, &selection);
     let symbol = super::compare_symbol_action(source.clone(), false);
     let code = super::compare_symbol_action(source.clone(), true);
-    let package = super::compare_package_action(source.clone());
     let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
-    let remove = super::compare_remove_action(source.clone(), reader.downgrade());
     let member = SharedString::from("/fixture/present::glyph.rs:138::RelationLabel");
-    let invoke = |rig: &mut crate::shell::tests::Rig, expected: &Route| {
+    let invoke = |rig: &mut crate::shell::tests::Rig, source: &super::CompareActionSource, expected: &Route| {
+        let symbol = super::compare_symbol_action(source.clone(), false);
+        let code = super::compare_symbol_action(source.clone(), true);
+        let package = super::compare_package_action(source.clone());
+        let remove = super::compare_remove_action(source.clone(), reader.downgrade());
         rig.cx.update(|window, cx| symbol(member.clone(), window, cx));
         rig.cx.update(|window, cx| code(member.clone(), window, cx));
         rig.cx.update(|window, cx| package("/fixture/second".into(), window, cx));
@@ -868,31 +964,31 @@ fn compare_source_callbacks_deny_replaced_membership_selection_overlay_owner_and
     rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(
         BrowseKey::Compare(selection.clone()), compare_fixture(&another, true, true), cx,
     ));
-    invoke(&mut rig, &current);
+    invoke(&mut rig, &source, &current);
     land_compare(&mut rig, &selection, true, true);
-
-    let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
-    let mut covered = original.session().clone();
-    covered.overlay = Some(Overlay::Settings(SettingsPage::Appearance));
-    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_session(covered)), cx));
-    invoke(&mut rig, &current);
-    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::clone(&original), cx));
-
-    let mut elsewhere = original.session().clone();
-    elsewhere.route = Route::Orbit(OrbitRoute::Home);
-    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_session(elsewhere.clone())), cx));
-    invoke(&mut rig, &elsewhere.route);
-    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::clone(&original), cx));
-    rig.cx.run_until_parked();
+    rig.go(crate::navigation::Intent::OpenSettings(SettingsPage::Appearance));
+    invoke(&mut rig, &source, &current);
+    rig.go(crate::navigation::Intent::DismissOverlay);
     land_compare(&mut rig, &selection, true, true);
-
+    let source = compare_callback(&mut rig, &selection);
+    assert!(rig.cx.update(|_, cx| source.current(cx, |_| Some(())).is_ok()), "fresh uncovered callback");
+    let elsewhere = Route::Orbit(OrbitRoute::Home);
+    rig.go(crate::navigation::Intent::Navigate(elsewhere.clone()));
+    invoke(&mut rig, &source, &elsewhere);
+    rig.go(crate::navigation::Intent::Navigate(current.clone()));
+    land_compare(&mut rig, &selection, true, true);
+    let source = compare_callback(&mut rig, &selection);
+    assert!(rig.cx.update(|_, cx| source.current(cx, |_| Some(())).is_ok()), "fresh returned callback");
     rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
-    invoke(&mut rig, &current);
+    invoke(&mut rig, &source, &current);
     rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
-
+    land_compare(&mut rig, &selection, true, true);
+    let source = compare_callback(&mut rig, &selection);
+    assert!(rig.cx.update(|_, cx| source.current(cx, |_| Some(())).is_ok()), "fresh owner callback");
+    let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
     let newer = VersionedRoot::synthetic(backend_library::view_state_root(&[("compare".into(), "new root".into())]), 9);
     rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_key(newer, None)), cx));
-    invoke(&mut rig, &current);
+    invoke(&mut rig, &source, &current);
 }
 
 #[gpui::test]
@@ -918,7 +1014,8 @@ fn mounted_compare_native_choices_survive_back_forward_without_reusing_visit_act
     let ReadingPresentation::Compare { comparison, .. } = &before.presentation else { panic!("Compare visit") };
     assert_eq!(comparison.scope, Some(facet::browse::compare::Scope::Shared));
     assert!(comparison.facts, "actual native facts toggle changes visit intent");
-    assert!(rig.said().iter().any(|words| words.contains("Source")), "expanded facts paint");
+    assert!(rig.said().iter().any(|words| words == "License as declared"),
+        "expanded facts paint an actual field supplied by the typed package record");
     rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
     rig.keys("secondary-[");
     assert_eq!(rig.route(), route);

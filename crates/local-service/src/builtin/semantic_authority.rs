@@ -15,18 +15,19 @@ use super::{
 };
 use crate::compiler_trust::{TRUSTED_COMPILER_POLICY_FILE_NAME, TrustedCompilerWorkerPolicy};
 use backend_engine::builtin::{
-    PartialSemanticCoverage, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
-    SemanticPublicationClaim, SemanticPublicationCoverage,
+    PartialSemanticCoverage, ProductSemanticCaptureOutcome, ProductSemanticPublicationKey,
+    ProductSemanticPublicationRecord, SemanticPublicationClaim, SemanticPublicationCoverage,
+    semantic_capture_relation,
 };
 use backend_engine::cluster_transport::EndpointId;
 use backend_extension_turso::{
     AttemptInvalidatedByObservationProof, AuthorityHash, AuthorityNamespace,
     COMPILER_SEMANTIC_IMAGE_SCHEMA, CandidateAttempt, CandidateAttemptRecoveryClaim,
     CandidateAttemptRetirementReason, CompilerImageMember, CompilerPublicationEnvelope,
-    CompilerPublicationMetadata, ExistingGenerationSelection, ProjectionKind,
-    SelectedGeneration, SourceObservation, SourceObservationReceipt,
-    SourceObservationValue, SupersededAttemptProof, TursoAuthority, VersionedPlaneArtifactMetadata,
-    VersionedPlaneMember, VersionedPlaneMetadata, reopen_selected_compiler_metadata,
+    CompilerPublicationMetadata, ExistingGenerationSelection, ProjectionKind, SelectedGeneration,
+    SourceObservation, SourceObservationReceipt, SourceObservationValue, SupersededAttemptProof,
+    TursoAuthority, VersionedPlaneArtifactMetadata, VersionedPlaneMember, VersionedPlaneMetadata,
+    reopen_selected_compiler_metadata,
 };
 use backend_library::interface::{SemanticImageAuthority, SemanticImageSnapshot};
 use backend_semantic::ir::{ImageProvenance, SemanticCoreReader};
@@ -46,10 +47,10 @@ use backend_version::{
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, SyncSender, TrySendError};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 #[cfg(test)]
 use std::sync::Mutex;
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const LOCAL_BRANCH: &str = "locald";
@@ -353,6 +354,26 @@ fn artifact_budget() -> ArtifactBudget {
 
 type HistoryKey = (ProductSemanticPublicationKey, [u8; 32]);
 
+/// Checked selected-row capability for freshness reads.
+///
+/// Freshness observations are indexed by a mutable Selected key. Immutable
+/// Generation keys share the same underlying key type, so callers must pass
+/// through this role check before the authority can perform a lookup.
+#[derive(Clone, Copy)]
+pub(crate) struct SelectedSemanticPublicationKey<'key> {
+    key: &'key ProductSemanticPublicationKey,
+}
+
+impl<'key> SelectedSemanticPublicationKey<'key> {
+    /// Admits only a mutable selected-publication row.
+    pub(crate) fn new(key: &'key ProductSemanticPublicationKey) -> Result<Self, &'static str> {
+        if !key.is_selected() {
+            return Err("semantic freshness requires a selected publication key");
+        }
+        Ok(Self { key })
+    }
+}
+
 #[derive(Default)]
 pub(super) struct SelectedClosureSnapshot {
     by_binding: BTreeMap<HistoryKey, SelectedGeneration>,
@@ -396,8 +417,15 @@ pub(super) struct NativeHistoryPublicationWork {
 
 #[cfg(test)]
 struct NativeHistoryFenceGate {
-    reached: std::sync::mpsc::SyncSender<()>,
+    reached: std::sync::mpsc::SyncSender<NativeHistoryFenceDiagnostic>,
     release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(super) struct NativeHistoryFenceDiagnostic {
+    pub(super) target: backend_replication::SemanticTargetKey,
+    pub(super) store_root: PathBuf,
 }
 
 pub(super) struct SelectedClosureImageLoader {
@@ -481,11 +509,8 @@ impl CommittedSemanticSelectionLease<'_> {
         &self,
         image: backend_semantic::ir::SemanticPlaneImageKey,
     ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
-        self.authority.selected_native_image_identity_for(
-            self.claim,
-            &self.selected,
-            image,
-        )
+        self.authority
+            .selected_native_image_identity_for(self.claim, &self.selected, image)
     }
 }
 
@@ -493,7 +518,7 @@ impl SelectedClosureImageLoader {
     #[cfg(test)]
     pub(super) fn install_native_history_fence_gate(
         &self,
-        reached: std::sync::mpsc::SyncSender<()>,
+        reached: std::sync::mpsc::SyncSender<NativeHistoryFenceDiagnostic>,
         release: std::sync::mpsc::Receiver<()>,
     ) {
         *self
@@ -504,7 +529,11 @@ impl SelectedClosureImageLoader {
     }
 
     #[cfg(test)]
-    pub(super) fn wait_at_native_history_fence_gate(&self) {
+    pub(super) fn wait_at_native_history_fence_gate(
+        &self,
+        target: &backend_replication::SemanticTargetKey,
+        store_root: &Path,
+    ) {
         let gate = self
             .native_history_fence_gate
             .lock()
@@ -512,7 +541,10 @@ impl SelectedClosureImageLoader {
             .take();
         if let Some(gate) = gate {
             gate.reached
-                .send(())
+                .send(NativeHistoryFenceDiagnostic {
+                    target: target.clone(),
+                    store_root: store_root.to_path_buf(),
+                })
                 .expect("native-history fence test is listening");
             gate.release
                 .recv_timeout(Duration::from_secs(60))
@@ -1210,6 +1242,32 @@ impl AdmittedCompilation {
     }
 }
 
+/// Input selected by one admitted retained compiler generation.
+struct SelectedGenerationInput([u8; 32]);
+
+/// Latest input named by the capture relation of one committed owner snapshot.
+/// A candidate authority observation alone cannot construct this projection.
+struct ObservedLatestInput([u8; 32]);
+
+impl ObservedLatestInput {
+    fn from_snapshot(
+        snapshot: &backend_engine::WorkspaceSnapshot,
+        key: SelectedSemanticPublicationKey<'_>,
+    ) -> Result<Option<Self>, BuiltinModelError> {
+        let Some(relation) = semantic_capture_relation(snapshot).map_err(|error| {
+            BuiltinModelError(format!("open committed semantic input capture: {error}"))
+        })?
+        else {
+            return Ok(None);
+        };
+        relation
+            .lookup(key.key)
+            .map(|record| record.map(|record| Self(*record.capture().input_digest())))
+            .map_err(|error| {
+                BuiltinModelError(format!("read committed semantic input capture: {error}"))
+            })
+    }
+}
 /// Process-local handle to the selected semantic authority and its CAS.
 ///
 /// The mutable Turso handle stays on the local owner thread. Read misses use a
@@ -1227,9 +1285,8 @@ pub(crate) struct SemanticAuthority {
     selected_image_plans: Arc<super::selected_full_image::SelectedFullImagePlanCache>,
     history: BTreeMap<HistoryKey, HistoryFact>,
     retained_generations: BTreeMap<HistoryKey, u64>,
-    /// Only observations named by committed product selections are exposed as
-    /// semantic freshness. Newer candidate observations remain private until
-    /// their product intent commits.
+    /// Observations named by committed compiler selections. They describe the
+    /// selected generation, never the latest captured input used by freshness.
     committed_observations: BTreeMap<ProductSemanticPublicationKey, SourceObservationReceipt>,
     native_history_state: NativeHistoryOwnerState,
     native_history_sender: SyncSender<NativeHistoryPublicationWork>,
@@ -1379,7 +1436,7 @@ impl SemanticAuthority {
     #[cfg(test)]
     pub(super) fn install_native_history_fence_gate(
         &self,
-        reached: std::sync::mpsc::SyncSender<()>,
+        reached: std::sync::mpsc::SyncSender<NativeHistoryFenceDiagnostic>,
         release: std::sync::mpsc::Receiver<()>,
     ) {
         self.image_loader
@@ -1697,12 +1754,7 @@ impl SemanticAuthority {
         selected: &SelectedGeneration,
         image: backend_semantic::ir::SemanticPlaneImageKey,
     ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
-        Self::selected_native_image_identity_for_store(
-            &self.store,
-            expected_claim,
-            selected,
-            image,
-        )
+        Self::selected_native_image_identity_for_store(&self.store, expected_claim, selected, image)
     }
 
     pub(super) fn selected_native_image_identity_for_store(
@@ -3390,34 +3442,58 @@ impl SemanticAuthority {
         }
     }
 
+    /// Compares a retained generation's admitted input with the latest capture
+    /// in the exact immutable owner snapshot used by the query. Pending or
+    /// refused capture input remains factual latest input after its marker
+    /// commits; it does not select or manufacture a compiler generation.
     pub(crate) fn freshness(
         &self,
-        key: &ProductSemanticPublicationKey,
+        snapshot: &backend_engine::WorkspaceSnapshot,
+        key: SelectedSemanticPublicationKey<'_>,
         claim: SemanticPublicationClaim,
-    ) -> backend_engine::SemanticVersionFreshness {
-        let history_key = (key.clone(), *claim.binding().identity.as_ref());
+    ) -> Result<backend_engine::SemanticVersionFreshness, BuiltinModelError> {
+        let history_key = (key.key.clone(), *claim.binding().identity.as_ref());
         let Some(history) = self.history.get(&history_key) else {
-            return backend_engine::SemanticVersionFreshness::Unverified;
+            return Ok(backend_engine::SemanticVersionFreshness::Unverified);
         };
-        let Some(latest) = self.committed_observations.get(key) else {
-            return backend_engine::SemanticVersionFreshness::Unverified;
+        let relation = snapshot
+            .relation::<BuiltinSemanticRelation>()
+            .map_err(|error| {
+                BuiltinModelError(format!(
+                    "open committed freshness generation history: {error}"
+                ))
+            })?;
+        let generation_key = key.key.for_generation(claim.binding().identity);
+        let Some(ProductSemanticPublicationRecord::Published {
+            claim: committed_claim,
+            ..
+        }) = relation.lookup(&generation_key).map_err(|error| {
+            BuiltinModelError(format!(
+                "read committed freshness generation history: {error}"
+            ))
+        })?
+        else {
+            return Ok(backend_engine::SemanticVersionFreshness::Unverified);
         };
-        let selected_input = *history.selected.input_digest();
-        let Some(latest_input) = latest.observation().revision() else {
-            return backend_engine::SemanticVersionFreshness::Unverified;
+        if committed_claim != claim {
+            return Err(BuiltinModelError(
+                "semantic freshness claim differs from committed generation history".to_owned(),
+            ));
+        }
+        let selected = SelectedGenerationInput(*history.selected.input_digest());
+        let Some(latest) = ObservedLatestInput::from_snapshot(snapshot, key)? else {
+            return Ok(backend_engine::SemanticVersionFreshness::Unverified);
         };
-        if history.selected.observation().sequence() == latest.sequence()
-            && selected_input == latest_input
-        {
+        Ok(if selected.0 == latest.0 {
             backend_engine::SemanticVersionFreshness::Current {
-                input_digest: selected_input,
+                input_digest: selected.0,
             }
         } else {
             backend_engine::SemanticVersionFreshness::Historical {
-                selected_input,
-                latest_input,
+                selected_input: selected.0,
+                latest_input: latest.0,
             }
-        }
+        })
     }
 
     pub(crate) fn retained_generation(
@@ -3516,17 +3592,18 @@ impl SemanticAuthority {
         if journey_trace {
             eprintln!("journey startup phase: reconcile_workspace begin");
         }
-        let relation = daemon
-            .engine()
-            .daemon()
-            .owner()
-            .snapshot()
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let relation = snapshot
             .relation::<BuiltinSemanticRelation>()
             .map_err(|error| {
                 BuiltinModelError(format!("open semantic selection marker: {error}"))
             })?;
+        let capture_relation = semantic_capture_relation(&snapshot).map_err(|error| {
+            BuiltinModelError(format!("open semantic capture markers: {error}"))
+        })?;
         let mut selected_rows =
             BTreeMap::<ProductSemanticPublicationKey, ProductSemanticPublicationRecord>::new();
+        let mut capture_rows = BTreeMap::new();
         let mut generation_rows = BTreeMap::<HistoryKey, ProductSemanticPublicationRecord>::new();
         let mut relation_after = None;
         loop {
@@ -3568,6 +3645,25 @@ impl SemanticAuthority {
                 break;
             };
             relation_after = Some(next);
+        }
+        if let Some(capture_relation) = capture_relation {
+            let mut after = None;
+            loop {
+                let page = capture_relation
+                    .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+                    .map_err(|error| {
+                        BuiltinModelError(format!("page semantic capture markers: {error}"))
+                    })?;
+                for (key, record) in page.entries() {
+                    if key.is_selected() {
+                        capture_rows.insert(key.clone(), record.clone());
+                    }
+                }
+                let Some(next) = page.next().cloned() else {
+                    break;
+                };
+                after = Some(next);
+            }
         }
 
         // Reopen authority history only to verify exact product references and
@@ -4021,6 +4117,32 @@ mod tests {
     static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(0);
 
     #[test]
+    fn freshness_key_rejects_immutable_generation_rows() {
+        use backend_engine::publication::binding::CompilationBindingIdentity;
+
+        let coordinate = PackageUrl::parse("pkg:cargo/freshness-key-fixture@0.1.0".to_owned())
+            .expect("admit freshness fixture coordinate");
+        let selected = ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::Purl(coordinate.clone()),
+            coordinate,
+            LanguageProfile::Rust(RustEdition::Rust2021),
+        )
+        .expect("admit selected semantic key");
+        assert!(SelectedSemanticPublicationKey::new(&selected).is_ok());
+
+        assert!(selected.for_generation_bytes([7; 32]).is_err());
+        let binding =
+            CompilationBindingIdentity::from_encoded_bytes(b"freshness fixture generation");
+        let generation = selected
+            .for_generation_bytes(*binding.as_ref())
+            .expect("admit immutable generation key");
+        assert_eq!(
+            SelectedSemanticPublicationKey::new(&generation).err(),
+            Some("semantic freshness requires a selected publication key")
+        );
+    }
+
+    #[test]
     fn real_multifile_rust_publication_joins_each_image_recipe_to_its_own_source() {
         use backend_engine::application::{
             LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
@@ -4142,7 +4264,10 @@ mod tests {
                 .expect("admit complete Rust source set"),
             )
             .expect("compile real multifile Rust package");
-        assert!(!original_lock.exists(), "offline metadata must keep the generated lock private");
+        assert!(
+            !original_lock.exists(),
+            "offline metadata must keep the generated lock private"
+        );
         assert_eq!(staged.artifacts().len(), 2, "both crate sources compile");
         let planes = staged
             .versioned_planes()

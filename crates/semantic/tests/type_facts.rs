@@ -245,6 +245,91 @@ fn schema_three_rejects_invalid_computed_rows_before_publication() {
 }
 
 #[test]
+fn type_of_rows_require_an_existing_entity_target() {
+    let valid = [TypeFactInput {
+        owner: EntityId::new(0),
+        record: SemanticTypeRecord {
+            tag: SemanticTypeTag::TypeOf,
+            payload0: 0,
+            payload1: 0,
+            text: None,
+            text2: None,
+            nominal: None,
+            children: ListSpan::new(0, 0),
+        },
+    }];
+    let lane = TypeFactLane {
+        inputs: &valid,
+        computed: &[],
+        children: &[],
+    };
+    assert_eq!(lane.admit_schema(1, &[], 2), Ok(()));
+
+    let invalid = [TypeFactInput {
+        record: SemanticTypeRecord {
+            payload0: 1,
+            ..valid[0].record
+        },
+        ..valid[0]
+    }];
+    let lane = TypeFactLane {
+        inputs: &invalid,
+        computed: &[],
+        children: &[],
+    };
+    assert_eq!(
+        lane.admit_schema(1, &[], 2),
+        Err(TypeFactFault::TypeQueryTargetOutOfRange {
+            ordinal: 0,
+            target: 1,
+            entity_count: 1,
+        })
+    );
+}
+
+#[test]
+fn type_of_reopen_rejects_an_out_of_range_entity_target() -> Result<(), TestFailure> {
+    let inputs = [TypeFactInput {
+        owner: EntityId::new(0),
+        record: SemanticTypeRecord {
+            tag: SemanticTypeTag::TypeOf,
+            payload0: 0,
+            payload1: 0,
+            text: None,
+            text2: None,
+            nominal: None,
+            children: ListSpan::new(0, 0),
+        },
+    }];
+    let lane = TypeFactLane {
+        inputs: &inputs,
+        computed: &[],
+        children: &[],
+    };
+    let bytes = write_current(&lane)?;
+    let payload = FragmentView::validate(&bytes)?
+        .type_fact_payload()
+        .ok_or(TestFailure::Admission(TypeFactFault::TrailingBytes {
+            declared: 0,
+        }))?;
+    let offset = payload.as_ptr() as usize - bytes.as_ptr() as usize;
+    let mut malformed = bytes;
+    // Current type-fact header (declared + computed counts), owner, then tag.
+    malformed[offset + 13..offset + 17].copy_from_slice(&1_u32.to_le_bytes());
+    assert!(matches!(
+        FragmentView::validate(&malformed),
+        Err(FragmentError::TypeFacts {
+            fault: TypeFactFault::TypeQueryTargetOutOfRange {
+                ordinal: 0,
+                target: 1,
+                entity_count: 1,
+            }
+        })
+    ));
+    Ok(())
+}
+
+#[test]
 fn schema_three_reopen_reports_the_full_type_lane_for_computed_children() -> Result<(), TestFailure>
 {
     let declared = [TypeFactInput {

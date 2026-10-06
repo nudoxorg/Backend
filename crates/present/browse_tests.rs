@@ -36,10 +36,8 @@ fn owner_metadata_input(
 /// root. The request binding makes that invocation explicit without adding
 /// per-package source evidence to the historical capture.
 fn bind_workspace_root_request(tree: &mut ProjectTree) {
-    tree.request_binding = Some(
-        ProjectTreeRequestBindingV1::for_paths(Path::new(&tree.root), &tree.root)
-            .expect("fixture workspace root is an absolute UTF-8 path"),
-    );
+    tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::DisplayOnly { binding: ProjectTreeRequestBindingV1::for_paths(Path::new(&tree.root), &tree.root)
+            .expect("fixture workspace root is an absolute UTF-8 path") });
 }
 
 const METADATA: &[u8] = include_bytes!("../library/browse/fixtures/tree-2026-09-27/metadata.json");

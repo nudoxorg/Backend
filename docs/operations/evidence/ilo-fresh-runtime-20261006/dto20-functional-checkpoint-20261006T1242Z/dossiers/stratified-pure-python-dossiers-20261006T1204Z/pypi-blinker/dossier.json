@@ -1,0 +1,88 @@
+{
+  "schema": "nudox.source-verified-stratified-dossier.v1",
+  "package": {
+    "ecosystem": "pypi",
+    "id": "blinker",
+    "version": "1.9.0"
+  },
+  "source_root": "/root/nudox-corpus-20261006/artifacts/stratified-pure-python-dossiers-20261006T1204Z/pypi-blinker/source",
+  "source_tree_sha256": "43c97edb51a9791a0f558bc9e18efc5f40d081cd59b56b9d0141790fa8df5c1e",
+  "source_files": 26,
+  "source_bytes": 67544,
+  "inventory_sha256": "39d70e5a04a69e6ee13b832b12f58328af8d2820be136d099dcd2f5b22f472c7",
+  "origin_sha256": "65ac07d5eb868fa50645d9c13dac8b3f8eba0039b5ae06fb266df2df4d8e0182",
+  "archive_sha256": "b4ce2265a7abece45e7cc896e98dbebe6cead56bcf805a3d23136d145f5445bf",
+  "origin_verified": true,
+  "archives_reused": false,
+  "acquisition_requests": [
+    {
+      "url": "https://pypi.org/pypi/blinker/json",
+      "final_url": "https://pypi.org/pypi/blinker/json",
+      "status": 200,
+      "seconds": 0.13248672697227448,
+      "bytes": 24207,
+      "sha256": "62983e48a3c28402a76bcf7c881a6587a0d3c57a09bbd0a175f3de8162e3cc08",
+      "utc": "2026-10-06T12:02:09Z"
+    },
+    {
+      "url": "https://files.pythonhosted.org/packages/21/28/9b3f50ce0e048515135495f198351908d99540d69bfdc8c1d15b73dc55ce/blinker-1.9.0.tar.gz",
+      "final_url": "https://files.pythonhosted.org/packages/21/28/9b3f50ce0e048515135495f198351908d99540d69bfdc8c1d15b73dc55ce/blinker-1.9.0.tar.gz",
+      "status": 200,
+      "seconds": 0.0630018450319767,
+      "bytes": 22460,
+      "sha256": "b4ce2265a7abece45e7cc896e98dbebe6cead56bcf805a3d23136d145f5445bf",
+      "utc": "2026-10-06T12:02:09Z"
+    }
+  ],
+  "resource_before": {
+    "memory_available_kib": 57901640,
+    "free_disk_bytes": 56627507200
+  },
+  "dependency_requirements": {
+    "requires_dist": []
+  },
+  "dependency_closure_installed": false,
+  "source_expectations": [
+    {
+      "name": "Signal",
+      "path": "src/blinker/base.py",
+      "line": 24,
+      "end_line": 461,
+      "kind": "ClassDef",
+      "file_sha256": "4290eebd75dcc09178f65501707e418924f8e91cfdc121bb556fe9ecdff4dbb3",
+      "start_byte": 474,
+      "end_byte": 17489,
+      "declaration_sha256": "f9465846e61257ae4d5de7d44adde0dc84ad1e7f4d82766dd5b2367be0edc7ca",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "send",
+      "path": "src/blinker/base.py",
+      "line": 204,
+      "end_line": 253,
+      "kind": "FunctionDef",
+      "file_sha256": "4290eebd75dcc09178f65501707e418924f8e91cfdc121bb556fe9ecdff4dbb3",
+      "start_byte": 7724,
+      "end_byte": 9629,
+      "declaration_sha256": "20bd94bdab44e86fac7097d24f7c549cb09253b753fd7f29bb95f459a118d0a6",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "send_async",
+      "path": "src/blinker/base.py",
+      "line": 255,
+      "end_line": 303,
+      "kind": "AsyncFunctionDef",
+      "file_sha256": "4290eebd75dcc09178f65501707e418924f8e91cfdc121bb556fe9ecdff4dbb3",
+      "start_byte": 9635,
+      "end_byte": 11510,
+      "declaration_sha256": "f0aef3aba14931f7551261439222f7e51e4354a1d45e3855c783fff64bae2be5",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    }
+  ],
+  "runtime_acceptance_status": "not_run",
+  "runtime_passes": 0,
+  "package_code_executed": false,
+  "observer_sha256": "513e77f08a87dfb9646d16410506b705cdde13b9b2fd71620c864717081ec17d",
+  "origin_verifier_sha256": "1ef8275b8e6daa9bfe711d05d367316b09635061b4cb9ca147816c6bed3a3039"
+}

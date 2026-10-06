@@ -165,12 +165,19 @@ pub fn admit_reply_with_capability(
             if let CommandReply::ProjectionPage(page) = &reply.reply {
                 admit_projection_page(&request.command, page)?;
             }
-            // A projection-page continuation names the preceding page. The
-            // owner admits it while selecting the next page; it cannot also
-            // name the newly returned page root. The page recipe, basis, and
-            // returned continuation are checked above and below.
+            if matches!(
+                &reply.reply,
+                CommandReply::Names(_) | CommandReply::Search(_)
+            ) {
+                admit_query_page(&request.command, snapshot)?;
+            }
+            // Query continuations certify the predecessor, not the successor
+            // page. The owner checks its exact predecessor rows while selecting
+            // this page; shared admission checks the query contract separately.
             let response_cursor = match &reply.reply {
-                CommandReply::ProjectionPage(_) => None,
+                CommandReply::ProjectionPage(_)
+                | CommandReply::Names(_)
+                | CommandReply::Search(_) => None,
                 _ => command_cursor(&request.command),
             };
             ViewProjection::from_snapshot(snapshot, materialized_basis, response_cursor)
@@ -229,6 +236,70 @@ pub fn admit_reply_with_capability(
         | CommandReply::Resolved(_)
         | CommandReply::Surface(_) => {}
     }
+    Ok(())
+}
+
+fn admit_query_page(
+    command: &Command,
+    snapshot: &crate::ViewSnapshot,
+) -> Result<(), ReplyAdmissionError> {
+    use crate::QueryPageRecipe;
+    let source_root = snapshot.root.basis().root;
+    let (recipe, limit, predecessor) = match command {
+        Command::Name(query) => (
+            QueryPageRecipe::names(source_root, query),
+            query.limit(),
+            query.cursor(),
+        ),
+        Command::Search(query) => (
+            QueryPageRecipe::search(source_root, query),
+            query.limit(),
+            query.cursor(),
+        ),
+        _ => {
+            return Err(ReplyAdmissionError::Protocol(
+                "query page does not match its command".to_owned(),
+            ));
+        }
+    };
+    let expected_recipe = recipe.identity();
+    let invalid = || {
+        ReplyAdmissionError::Protocol(
+            "query page does not match its continuation contract".to_owned(),
+        )
+    };
+    if snapshot.root.recipe() != expected_recipe
+        || snapshot.root.row_count() > u64::from(limit.get())
+    {
+        return Err(invalid());
+    }
+    let offset = predecessor.map_or(0, Cursor::query_offset);
+    if let Some(cursor) = predecessor {
+        let frontier = snapshot.root.frontier();
+        if cursor.recipe() != expected_recipe
+            || cursor.branch() != frontier.branch
+            || cursor.log() != frontier.log
+            || cursor.schema() != crate::CURSOR_SCHEMA
+            || (offset == 0 && cursor.root() != snapshot.root.basis().root)
+            || (offset > 0 && (offset < u64::from(limit.get()) || snapshot.root.row_count() == 0))
+        {
+            return Err(invalid());
+        }
+    }
+    if let Some(next) = snapshot.next {
+        let expected_offset = offset
+            .checked_add(snapshot.root.row_count())
+            .ok_or_else(invalid)?;
+        if snapshot.root.row_count() != u64::from(limit.get())
+            || next.query_offset() != expected_offset
+            || predecessor.is_some_and(|cursor| next.sequence() < cursor.sequence())
+        {
+            return Err(invalid());
+        }
+    }
+    // Intent events can advance the admitted owner stream without changing
+    // the retained view frontier. Never compare stream sequence with that
+    // frontier; from_snapshot checks the successor's own root/cursor pair.
     Ok(())
 }
 
@@ -543,6 +614,19 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
             reply
                 .admit(command.id())
                 .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+            if let (
+                crate::SurfaceCommand::ProjectTree { root },
+                crate::SurfaceReply::ProjectTree(tree),
+            ) = (command, reply)
+                && !tree.request_binding().is_some_and(|binding| {
+                    binding.matches_requested_root(std::path::Path::new(root.as_str()))
+                })
+            {
+                return Err(ReplyAdmissionError::Protocol(
+                    "project Tree observation does not match the exact requested directory"
+                        .to_owned(),
+                ));
+            }
             true
         }
         (Command::Add { package, .. }, CommandReply::Added(intent)) => {

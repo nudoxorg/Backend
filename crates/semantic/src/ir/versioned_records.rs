@@ -1259,9 +1259,7 @@ where
     let key_capacity = keys
         .rows
         .capacity()
-        .checked_mul(size_of::<
-            CanonicalSemanticPlaneRowKey<Encoder::Handle>,
-        >())
+        .checked_mul(size_of::<CanonicalSemanticPlaneRowKey<Encoder::Handle>>())
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
     let key_sort_rows =
@@ -1986,6 +1984,40 @@ where
     )
 }
 
+pub(super) fn jumbo_descriptors_for_record_with_row_limit(
+    family: SemanticIrPlane,
+    record: CanonicalSemanticPlaneRecordView<'_>,
+    maximum_inline_row_bytes: usize,
+) -> Result<[Option<crate::ir::CheckedJumboValueDescriptor>; 3], SemanticPlaneRecordError> {
+    let mut descriptors = [None; 3];
+    match family {
+        SemanticIrPlane::Core => {
+            if let Some(core) = declarations::core_jumbo_descriptors_for_record_with_row_limit(
+                record,
+                maximum_inline_row_bytes,
+            )? {
+                descriptors[0] = core.name;
+                descriptors[1] = Some(core.members);
+                descriptors[2] = Some(core.attributes);
+            }
+        }
+        SemanticIrPlane::Documentation => {
+            descriptors[0] = declarations::jumbo_descriptor_for_record_with_row_limit(
+                record,
+                maximum_inline_row_bytes,
+            )?;
+        }
+        SemanticIrPlane::SourceProvenance => {
+            descriptors[0] = source_provenance::jumbo_descriptor_for_record_with_row_limit(
+                record,
+                maximum_inline_row_bytes,
+            )?;
+        }
+        _ => {}
+    }
+    Ok(descriptors)
+}
+
 fn verify_jumbo_plane_family_closures_with_row_limit<S>(
     kind: SemanticPlaneKind,
     descriptors: &[SemanticPlaneSegment],
@@ -2029,41 +2061,51 @@ where
         )?;
         hasher.update(segment_id.as_bytes());
         for record in view.records() {
-            let jumbo = match family {
-                SemanticIrPlane::Documentation => {
-                    declarations::jumbo_descriptor_for_record_with_row_limit(
-                        record,
-                        maximum_inline_row_bytes,
-                    )?
-                }
-                SemanticIrPlane::SourceProvenance => {
-                    source_provenance::jumbo_descriptor_for_record_with_row_limit(
-                        record,
-                        maximum_inline_row_bytes,
-                    )?
-                }
-                _ => None,
-            };
-            let Some(jumbo) = jumbo else {
-                continue;
-            };
-            let verified = if family == SemanticIrPlane::Documentation {
-                let mut validator = declarations::DocsWireValidator::new();
-                let verified = jumbo
-                    .admit_stored_closure_to(source, &mut validator)
-                    .map_err(map_jumbo_source_error)?;
-                validator.finish()?;
-                verified
-            } else {
-                jumbo
-                    .admit_stored_closure(source)
-                    .map_err(map_jumbo_source_error)?
-            };
-            hasher.update(&record.key());
-            hasher.update(verified.descriptor_id().as_bytes());
-            jumbo_value_count = jumbo_value_count
-                .checked_add(1)
-                .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+            let descriptors = jumbo_descriptors_for_record_with_row_limit(
+                family,
+                record,
+                maximum_inline_row_bytes,
+            )?;
+            for jumbo in descriptors.into_iter().flatten() {
+                let verified = match (family, jumbo.encoding()) {
+                    (SemanticIrPlane::Documentation, _) => {
+                        let mut validator = declarations::DocsWireValidator::new();
+                        let verified = jumbo
+                            .admit_stored_closure_to(source, &mut validator)
+                            .map_err(map_jumbo_source_error)?;
+                        validator.finish()?;
+                        verified
+                    }
+                    (
+                        SemanticIrPlane::Core,
+                        crate::ir::JumboValueEncoding::CoreMemberIdentityList,
+                    ) => {
+                        let mut validator =
+                            declarations::CoreMembersWireValidator::new(u64::MAX, None);
+                        let verified = jumbo
+                            .admit_stored_closure_to(source, &mut validator)
+                            .map_err(map_jumbo_source_error)?;
+                        validator.finish()?;
+                        verified
+                    }
+                    (SemanticIrPlane::Core, crate::ir::JumboValueEncoding::CoreAttributeList) => {
+                        let mut validator = declarations::CoreAttributesWireValidator::new();
+                        let verified = jumbo
+                            .admit_stored_closure_to(source, &mut validator)
+                            .map_err(map_jumbo_source_error)?;
+                        validator.finish()?;
+                        verified
+                    }
+                    _ => jumbo
+                        .admit_stored_closure(source)
+                        .map_err(map_jumbo_source_error)?,
+                };
+                hasher.update(&record.key());
+                hasher.update(verified.descriptor_id().as_bytes());
+                jumbo_value_count = jumbo_value_count
+                    .checked_add(1)
+                    .ok_or(SemanticPlaneRecordError::MetricsOverflow)?;
+            }
         }
     }
     Ok(VerifiedJumboPlaneClosure {
@@ -2464,12 +2506,12 @@ mod tests {
         JumboRopeObjectSink, JumboRopeObjectSource, ROPE_NODE_WIRE_BYTES,
     };
     use crate::ir::{
-        BorrowedTree, Confidence, CorePayloadHash, DeclarationFamilyId, DocInput,
-        EntityAuthorityFacts, EntityVersion, FactAvailability, Ir, IrBuilder, ItemKind, LinkKind,
-        OccurrenceAuthorityFacts, ParentageAuthority, SemanticCoreReader, SemanticInputWitness,
-        SemanticIrPlane, SemanticPlaneKind, SemanticPlaneSegment, SemanticReader,
-        SemanticSegmentId, SourceSpan, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
-        VariantFingerprint, Visibility,
+        BorrowedTree, CheckedJumboValueDescriptor, Confidence, CorePayloadHash,
+        DeclarationFamilyId, DocInput, EntityAuthorityFacts, EntityVersion, FactAvailability, Ir,
+        IrBuilder, ItemKind, JumboValueEncoding, LinkKind, OccurrenceAuthorityFacts,
+        ParentageAuthority, SemanticInputWitness, SemanticIrPlane, SemanticPlaneKind,
+        SemanticPlaneSegment, SemanticReader, SemanticSegmentId, SourceSpan, TreeEntityId,
+        TreeItemInput, TreeLinkInput, TreeLinkTarget, VariantFingerprint, Visibility,
     };
     use backend_version::ScopeRoot;
 
@@ -2506,6 +2548,7 @@ mod tests {
         let items: Vec<TreeItemInput<'_>> = (0..count)
             .map(|index| TreeItemInput {
                 name: names[index].as_bytes(),
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
@@ -2558,6 +2601,7 @@ mod tests {
         let items = [
             TreeItemInput {
                 name: b"caller",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
@@ -2571,6 +2615,7 @@ mod tests {
             },
             TreeItemInput {
                 name: b"callee",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
@@ -2650,6 +2695,7 @@ mod tests {
         let items = [
             TreeItemInput {
                 name: b"from",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
@@ -2663,6 +2709,7 @@ mod tests {
             },
             TreeItemInput {
                 name: b"to",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
@@ -2715,6 +2762,7 @@ mod tests {
         let docs = [DocInput::Text(text)];
         let item = TreeItemInput {
             name: b"jumbo_docs",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -2779,6 +2827,7 @@ mod tests {
         let items = [
             TreeItemInput {
                 name: b"small_first",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
@@ -2792,6 +2841,7 @@ mod tests {
             },
             TreeItemInput {
                 name: b"jumbo_second",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
@@ -2834,6 +2884,7 @@ mod tests {
         };
         let item = TreeItemInput {
             name: b"jumbo_source",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -4449,6 +4500,7 @@ mod tests {
         let source = SourceSpan::new(file, 3, 17).expect("valid half-open span");
         let item = TreeItemInput {
             name: b"source_item",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -4569,5 +4621,645 @@ mod tests {
             "representative relation source cannot disappear behind occurrences"
         );
         Ok(())
+    }
+
+    fn core_fixture_version(index: usize) -> EntityVersion {
+        let byte = u8::try_from(index + 1).expect("fixture row index fits u8");
+        EntityVersion {
+            family: DeclarationFamilyId::from_raw([byte; 16]),
+            variant: VariantFingerprint::from_raw([byte.wrapping_add(64); 16]),
+            core_payload: CorePayloadHash::from_raw([byte.wrapping_add(128); 16]),
+        }
+    }
+
+    fn core_members_image(
+        member_count: usize,
+        replace_member: Option<usize>,
+    ) -> (Ir, DeclarationIdentity) {
+        let entity_count = member_count + usize::from(replace_member.is_some());
+        let versions: Vec<_> = (0..=entity_count).map(core_fixture_version).collect();
+        let root_identity = versions[0].identity();
+        let mut member_ids: Vec<_> = (1..=member_count)
+            .map(|index| TreeEntityId::new(u32::try_from(index).expect("fixture ID fits u32")))
+            .collect();
+        if let Some(index) = replace_member {
+            assert!(index < member_ids.len());
+            member_ids[index] =
+                TreeEntityId::new(u32::try_from(entity_count).expect("fixture ID fits u32"));
+        }
+        let names: Vec<Vec<u8>> = (0..=entity_count)
+            .map(|index| {
+                if index == 0 {
+                    b"TestRequests".to_vec()
+                } else {
+                    format!("member_{index:03}").into_bytes()
+                }
+            })
+            .collect();
+        let empty_members: [TreeEntityId; 0] = [];
+        let authority = EntityAuthorityFacts {
+            parentage: ParentageAuthority::Root,
+            members: FactAvailability::Captured,
+            documentation: FactAvailability::Captured,
+            visibility: FactAvailability::Captured,
+            attributes: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let items: Vec<_> = (0..=entity_count)
+            .map(|index| TreeItemInput {
+                anonymous_callable_anchor: None,
+                name: &names[index],
+                kind: if index == 0 {
+                    ItemKind::Record
+                } else {
+                    ItemKind::Function
+                },
+                visibility: Visibility::Public,
+                authority: if index == 0 {
+                    authority
+                } else {
+                    EntityAuthorityFacts {
+                        parentage: ParentageAuthority::Bound(root_identity),
+                        ..authority
+                    }
+                },
+                parent: if index == 0 {
+                    None
+                } else {
+                    Some(TreeEntityId::new(0))
+                },
+                semantic_type: None,
+                members: if index == 0 {
+                    &member_ids
+                } else {
+                    &empty_members
+                },
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            })
+            .collect();
+        let mut builder = IrBuilder::new();
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &[],
+            })
+            .expect("Core member fixture is valid");
+        (
+            builder.finish().expect("Core member IR is valid"),
+            root_identity,
+        )
+    }
+
+    fn core_attribute_image(attribute: &[u8]) -> (Ir, DeclarationIdentity) {
+        let versions = [core_fixture_version(0), core_fixture_version(1)];
+        let root_identity = versions[0].identity();
+        let members = [TreeEntityId::new(1)];
+        let attributes: [&[u8]; 1] = [attribute];
+        let empty_members: [TreeEntityId; 0] = [];
+        let authority = EntityAuthorityFacts {
+            parentage: ParentageAuthority::Root,
+            members: FactAvailability::Captured,
+            documentation: FactAvailability::Captured,
+            visibility: FactAvailability::Captured,
+            attributes: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let items = [
+            TreeItemInput {
+                anonymous_callable_anchor: None,
+                name: b"Package",
+                kind: ItemKind::Module,
+                visibility: Visibility::Public,
+                authority,
+                parent: None,
+                semantic_type: None,
+                members: &members,
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                anonymous_callable_anchor: None,
+                name: b"test_normalized_versions",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: EntityAuthorityFacts {
+                    parentage: ParentageAuthority::Bound(root_identity),
+                    ..authority
+                },
+                parent: Some(TreeEntityId::new(0)),
+                semantic_type: None,
+                members: &empty_members,
+                docs: &[],
+                attributes: &attributes,
+                source: None,
+                extension: None,
+            },
+        ];
+        let mut builder = IrBuilder::new();
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &[],
+            })
+            .expect("Core attribute fixture is valid");
+        (
+            builder.finish().expect("Core attribute IR is valid"),
+            root_identity,
+        )
+    }
+
+    fn core_row<'a>(
+        captured: &'a CapturedFamily,
+        key: [u8; 32],
+        maximum: usize,
+    ) -> (CanonicalSemanticPlaneRecordView<'a>, usize) {
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        for (descriptor, payload) in &captured.rows {
+            let view =
+                decode_semantic_plane_segment_with_row_limit(kind, descriptor, payload, maximum)
+                    .expect("captured Core segment is canonical");
+            for record in view.records() {
+                if record.key() == key {
+                    let framed_size = HEADER_BYTES + RECORD_HEADER_BYTES + record.payload().len();
+                    return (record, framed_size);
+                }
+            }
+        }
+        panic!("requested Core declaration key was not emitted")
+    }
+
+    fn core_capture(ir: &Ir, maximum: usize) -> (CapturedFamily, InMemoryJumboObjects) {
+        let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(
+            512,
+            1024,
+            u32::try_from(maximum).expect("fixture row limit fits u32"),
+        )
+        .expect("Core policy is valid");
+        let mut captured = CapturedFamily::default();
+        let mut objects = InMemoryJumboObjects::default();
+        stream_canonical_plane_family_with_jumbo_and_stable_key_anchors(
+            ir,
+            &CoreDeclarationRows,
+            witness(),
+            policy,
+            &mut objects,
+            &mut captured,
+        )
+        .expect("Core rows fit or spill under the configured maximum");
+        (captured, objects)
+    }
+
+    fn legacy_core_row_size(ir: &Ir, identity: DeclarationIdentity) -> usize {
+        let rows = encode_canonical_plane_family(ir, &CoreDeclarationRows, witness(), 16_384)
+            .expect("unspilled source image fits the diagnostic segment");
+        let key = declaration_plane_key(SemanticPlaneKind::Ir(SemanticIrPlane::Core), identity);
+        for row in rows {
+            let descriptor = row.metadata().expect("Core segment descriptor");
+            let view = decode_semantic_plane_segment(
+                SemanticPlaneKind::Ir(SemanticIrPlane::Core),
+                &descriptor,
+                row.bytes(),
+            )
+            .expect("legacy Core rows remain readable");
+            for record in view.records() {
+                if record.key() == key {
+                    assert_eq!(record.tag(), 1);
+                    return HEADER_BYTES + RECORD_HEADER_BYTES + record.payload().len();
+                }
+            }
+        }
+        panic!("legacy Core row was not emitted")
+    }
+
+    fn jumbo_wire_value(
+        descriptor: CheckedJumboValueDescriptor,
+        objects: &mut InMemoryJumboObjects,
+    ) -> Vec<u8> {
+        let mut value = Vec::new();
+        descriptor
+            .admit_stored_closure_to(objects, &mut value)
+            .expect("typed Core value closure is complete");
+        value
+    }
+
+    fn identity_wire(identity: DeclarationIdentity) -> [u8; 32] {
+        let mut bytes = [0; 32];
+        bytes[..16].copy_from_slice(identity.family.as_bytes());
+        bytes[16..].copy_from_slice(identity.variant.as_bytes());
+        bytes
+    }
+
+    #[test]
+    fn core_member_overflow_preserves_the_6037_byte_tag_one_row_losslessly() {
+        let (ir, root_identity) = core_members_image(185, None);
+        assert_eq!(legacy_core_row_size(&ir, root_identity), 6037);
+        let (captured, mut objects) = core_capture(&ir, 4096);
+        let key =
+            declaration_plane_key(SemanticPlaneKind::Ir(SemanticIrPlane::Core), root_identity);
+        let (record, jumbo_row_bytes) = core_row(&captured, key, 4096);
+        assert_eq!(record.tag(), declarations::CORE_JUMBO_TAG);
+        assert!(jumbo_row_bytes <= 4096);
+        let fields = declarations::core_jumbo_descriptors_for_record_with_row_limit(record, 4096)
+            .expect("Core field visitor accepts exact descriptors")
+            .expect("overflow row has typed fields");
+        assert!(fields.name.is_none());
+        assert_eq!(
+            fields.members.encoding(),
+            JumboValueEncoding::CoreMemberIdentityList
+        );
+        assert_eq!(
+            fields.attributes.encoding(),
+            JumboValueEncoding::CoreAttributeList
+        );
+        assert_eq!(fields.members.byte_length(), 4 + 185 * 32);
+        assert_eq!(fields.attributes.byte_length(), 4);
+
+        let member_wire = jumbo_wire_value(fields.members, &mut objects);
+        assert_eq!(
+            u32::from_be_bytes(member_wire[..4].try_into().unwrap()),
+            185
+        );
+        let decoded: Vec<[u8; 32]> = member_wire[4..]
+            .chunks_exact(32)
+            .map(|chunk| chunk.try_into().unwrap())
+            .collect();
+        let expected = (1..=185)
+            .map(|index| identity_wire(core_fixture_version(index).identity()))
+            .collect::<Vec<_>>();
+        assert_eq!(decoded, expected);
+
+        let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+            .expect("Core policy is valid");
+        let closure = verify_captured_jumbo_family_with_policy(
+            SemanticIrPlane::Core,
+            &captured,
+            policy,
+            &mut objects,
+        );
+        assert_eq!(closure.jumbo_value_count(), 2);
+    }
+
+    #[test]
+    fn core_overflow_is_field_local_and_preserves_arbitrary_attribute_bytes() {
+        let (base_ir, root_identity) = core_members_image(185, None);
+        let (edited_ir, edited_identity) = core_members_image(185, Some(17));
+        assert_eq!(root_identity, edited_identity);
+        let (base, mut base_objects) = core_capture(&base_ir, 4096);
+        let (edited, mut edited_objects) = core_capture(&edited_ir, 4096);
+        let key =
+            declaration_plane_key(SemanticPlaneKind::Ir(SemanticIrPlane::Core), root_identity);
+        let (base_record, _) = core_row(&base, key, 4096);
+        let (edited_record, _) = core_row(&edited, key, 4096);
+        let base_fields =
+            declarations::core_jumbo_descriptors_for_record_with_row_limit(base_record, 4096)
+                .expect("base descriptors")
+                .expect("base Core overflow");
+        let edited_fields =
+            declarations::core_jumbo_descriptors_for_record_with_row_limit(edited_record, 4096)
+                .expect("edited descriptors")
+                .expect("edited Core overflow");
+        assert_ne!(base_fields.members.id(), edited_fields.members.id());
+        assert_eq!(base_fields.attributes.id(), edited_fields.attributes.id());
+        assert_eq!(
+            jumbo_wire_value(base_fields.attributes, &mut base_objects),
+            jumbo_wire_value(edited_fields.attributes, &mut edited_objects),
+            "one member edit rewrites only the member-list value"
+        );
+
+        let invalid_utf8 = [0xf0, 0x9f, 0x8d, 0x89, 0xff];
+        let mut wire = Vec::from([0, 0, 0, 1, 0, 0, 0, 0, 5]);
+        wire.extend_from_slice(&invalid_utf8);
+        let mut validator = declarations::CoreAttributesWireValidator::new();
+        validator
+            .write_all(&wire[..11])
+            .expect("split value prefix accepted");
+        validator
+            .write_all(&wire[11..12])
+            .expect("split multibyte byte accepted");
+        validator
+            .write_all(&wire[12..])
+            .expect("arbitrary atom bytes accepted");
+        validator
+            .finish()
+            .expect("Core attribute grammar does not impose UTF-8");
+    }
+
+    #[test]
+    fn core_attribute_overflow_preserves_the_4314_byte_tag_one_row_and_raw_value() {
+        let attribute = vec![b'a'; 4117];
+        let (ir, _root_identity) = core_attribute_image(&attribute);
+        let child_identity = core_fixture_version(1).identity();
+        assert_eq!(legacy_core_row_size(&ir, child_identity), 4314);
+        let (captured, mut objects) = core_capture(&ir, 4096);
+        let key =
+            declaration_plane_key(SemanticPlaneKind::Ir(SemanticIrPlane::Core), child_identity);
+        let (record, row_size) = core_row(&captured, key, 4096);
+        assert_eq!(record.tag(), declarations::CORE_JUMBO_TAG);
+        assert!(row_size <= 4096);
+        let fields = declarations::core_jumbo_descriptors_for_record_with_row_limit(record, 4096)
+            .expect("Core descriptors")
+            .expect("Core tag two");
+        assert!(fields.name.is_none());
+        assert_eq!(fields.members.byte_length(), 4);
+        assert_eq!(fields.attributes.byte_length(), 4 + 4 + 4117);
+        let attribute_wire = jumbo_wire_value(fields.attributes, &mut objects);
+        assert_eq!(
+            u32::from_be_bytes(attribute_wire[..4].try_into().unwrap()),
+            1
+        );
+        assert_eq!(
+            u32::from_be_bytes(attribute_wire[4..8].try_into().unwrap()),
+            4117
+        );
+        assert_eq!(&attribute_wire[8..], attribute.as_slice());
+
+        let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+            .expect("Core policy is valid");
+        let closure = verify_captured_jumbo_family_with_policy(
+            SemanticIrPlane::Core,
+            &captured,
+            policy,
+            &mut objects,
+        );
+        assert_eq!(closure.jumbo_value_count(), 2);
+    }
+
+    #[test]
+    fn core_wire_validators_reject_partial_members_attributes_and_trailing_bytes() {
+        for wire in [Vec::from([0, 0, 0, 1]), Vec::from([0, 0, 0, 1, 0])] {
+            let mut validator = declarations::CoreMembersWireValidator::new(1, None);
+            validator
+                .write_all(&wire)
+                .expect("member bytes are consumed");
+            assert!(matches!(
+                validator.finish(),
+                Err(SemanticPlaneRecordError::RowGrammar)
+            ));
+        }
+        let mut attributes = declarations::CoreAttributesWireValidator::new();
+        attributes
+            .write_all(&[0, 0, 0, 1, 0, 0, 0, 2, 0xff])
+            .expect("attribute bytes are consumed");
+        assert!(matches!(
+            attributes.finish(),
+            Err(SemanticPlaneRecordError::RowGrammar)
+        ));
+        let mut trailing = declarations::CoreMembersWireValidator::new(1, None);
+        trailing
+            .write_all(&[0, 0, 0, 0, 0])
+            .expect("trailing bytes are consumed");
+        assert!(matches!(
+            trailing.finish(),
+            Err(SemanticPlaneRecordError::RowGrammar)
+        ));
+    }
+
+    fn core_named_image(name: &[u8]) -> (Ir, DeclarationIdentity) {
+        core_callable_image(name, None, &[])
+    }
+
+    fn core_callable_image(
+        name: &[u8],
+        anchor: Option<&[u8]>,
+        attributes: &[&[u8]],
+    ) -> (Ir, DeclarationIdentity) {
+        let version = core_fixture_version(0);
+        let item = TreeItemInput {
+            anonymous_callable_anchor: anchor,
+            name,
+            kind: ItemKind::Function,
+            visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Root,
+                members: FactAvailability::Captured,
+                documentation: FactAvailability::Captured,
+                visibility: FactAvailability::Captured,
+                attributes: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes,
+            source: None,
+            extension: None,
+        };
+        let mut builder = IrBuilder::new();
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &[version],
+                items: &[item],
+                links: &[],
+            })
+            .expect("Core name fixture is valid");
+        (
+            builder.finish().expect("Core name IR is valid"),
+            version.identity(),
+        )
+    }
+
+    #[test]
+    fn core_jumbo_stream_preserves_anonymous_callable_identity_and_name_tag() {
+        use crate::ir::{
+            AnonymousCallableAnchor, AnonymousCallableFamilyMultiplicity, CallableAnchorStep,
+            CallableChildRole, CallableParentShape,
+        };
+        let route = [CallableAnchorStep {
+            child_role: CallableChildRole::CallArgument,
+            parent: CallableParentShape::Call,
+        }];
+        let mut storage = [0; 32];
+        let length = AnonymousCallableAnchor { steps: &route }
+            .write_storage(AnonymousCallableFamilyMultiplicity::Unique, &mut storage)
+            .expect("bounded canonical anchor");
+        let anchor = &storage[..length];
+        for overflow in [false, true] {
+            let attribute = vec![b'a'; if overflow { 5000 } else { 2 }];
+            let (ir, identity) = core_callable_image(b"", Some(anchor), &[&attribute]);
+            let (captured, mut objects) = core_capture(&ir, 4096);
+            let key = declaration_plane_key(SemanticPlaneKind::Ir(SemanticIrPlane::Core), identity);
+            let (record, framed) = core_row(&captured, key, 4096);
+            assert!(framed <= 4096);
+            assert_eq!(
+                record.tag(),
+                if overflow {
+                    declarations::CORE_ANONYMOUS_CALLABLE_JUMBO_TAG
+                } else {
+                    declarations::CORE_ANONYMOUS_CALLABLE_TAG
+                }
+            );
+            let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+                .expect("Core policy");
+            let closure = verify_captured_jumbo_family_with_policy(
+                SemanticIrPlane::Core,
+                &captured,
+                policy,
+                &mut objects,
+            );
+            assert_eq!(closure.jumbo_value_count(), if overflow { 2 } else { 0 });
+            if overflow {
+                let fields =
+                    declarations::core_jumbo_descriptors_for_record_with_row_limit(record, 4096)
+                        .unwrap()
+                        .unwrap();
+                assert!(
+                    fields.name.is_none(),
+                    "anonymous anchor keeps its typed inline grammar"
+                );
+                let wire = jumbo_wire_value(fields.attributes, &mut objects);
+                assert_eq!(&wire[8..], attribute.as_slice());
+            }
+        }
+    }
+
+    #[test]
+    fn core_name_uses_ordinal_zero_only_when_the_inline_tag_two_row_would_overflow() {
+        let name = vec![0xff; 5000];
+        let (ir, identity) = core_named_image(&name);
+        assert!(legacy_core_row_size(&ir, identity) > 4096);
+        let (captured, mut objects) = core_capture(&ir, 4096);
+        let key = declaration_plane_key(SemanticPlaneKind::Ir(SemanticIrPlane::Core), identity);
+        let (record, framed_size) = core_row(&captured, key, 4096);
+        assert_eq!(record.tag(), declarations::CORE_JUMBO_TAG);
+        assert!(framed_size <= 4096);
+        let fields = declarations::core_jumbo_descriptors_for_record_with_row_limit(record, 4096)
+            .expect("Core field visitor accepts the canonical large name")
+            .expect("large Core row uses typed fields");
+        let name_descriptor = fields.name.expect("large name has ordinal zero descriptor");
+        assert_eq!(name_descriptor.encoding(), JumboValueEncoding::Bytes);
+        assert_eq!(name_descriptor.byte_length(), name.len() as u64);
+        assert_eq!(jumbo_wire_value(name_descriptor, &mut objects), name);
+
+        let mut malformed = record.payload().to_vec();
+        let member_offset = malformed.len() - 2 * crate::ir::JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES;
+        malformed[member_offset + 7..member_offset + 11].copy_from_slice(&99_u32.to_be_bytes());
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"SPIR");
+        bytes.extend_from_slice(&VERSION.to_be_bytes());
+        bytes.push(ir_plane_code(kind).expect("Core plane code"));
+        bytes.extend_from_slice(&1_u32.to_be_bytes());
+        bytes.extend_from_slice(&key);
+        bytes.push(record.tag());
+        bytes.extend_from_slice(&(malformed.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&malformed);
+        let descriptor =
+            SemanticPlaneSegment::from_payload_with_witness(kind, key, key, 1, &bytes, witness())
+                .expect("malformed field context still has a self-consistent segment hash");
+        assert!(matches!(
+            decode_semantic_plane_segment_with_row_limit(
+                SemanticPlaneKind::Ir(SemanticIrPlane::Core),
+                &descriptor,
+                &bytes,
+                4096,
+            ),
+            Err(SemanticPlaneRecordError::RowGrammar)
+        ));
+    }
+
+    fn single_core_record_segment(
+        key: [u8; 32],
+        tag: u8,
+        payload: &[u8],
+    ) -> (Vec<u8>, SemanticPlaneSegment) {
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"SPIR");
+        bytes.extend_from_slice(&VERSION.to_be_bytes());
+        bytes.push(ir_plane_code(kind).expect("Core plane code"));
+        bytes.extend_from_slice(&1_u32.to_be_bytes());
+        bytes.extend_from_slice(&key);
+        bytes.push(tag);
+        bytes.extend_from_slice(
+            &u32::try_from(payload.len())
+                .expect("test payload fits u32")
+                .to_be_bytes(),
+        );
+        bytes.extend_from_slice(payload);
+        let descriptor =
+            SemanticPlaneSegment::from_payload_with_witness(kind, key, key, 1, &bytes, witness())
+                .expect("one-row Core segment has a valid envelope");
+        (bytes, descriptor)
+    }
+
+    #[test]
+    fn core_overflow_rejects_reordered_member_and_attribute_descriptors() {
+        let (ir, identity) = core_members_image(185, None);
+        let (captured, _objects) = core_capture(&ir, 4096);
+        let key = declaration_plane_key(SemanticPlaneKind::Ir(SemanticIrPlane::Core), identity);
+        let (record, _) = core_row(&captured, key, 4096);
+        let mut payload = record.payload().to_vec();
+        let descriptor_bytes = crate::ir::JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES;
+        let member_offset = payload.len() - descriptor_bytes * 2;
+        let members = payload[member_offset..member_offset + descriptor_bytes].to_vec();
+        let attributes = payload[member_offset + descriptor_bytes..].to_vec();
+        payload[member_offset..member_offset + descriptor_bytes].copy_from_slice(&attributes);
+        payload[member_offset + descriptor_bytes..].copy_from_slice(&members);
+        let (bytes, descriptor) = single_core_record_segment(key, record.tag(), &payload);
+        assert!(matches!(
+            decode_semantic_plane_segment_with_row_limit(
+                SemanticPlaneKind::Ir(SemanticIrPlane::Core),
+                &descriptor,
+                &bytes,
+                4096,
+            ),
+            Err(SemanticPlaneRecordError::RowGrammar)
+        ));
+    }
+
+    #[test]
+    fn core_overflow_refuses_a_missing_typed_value_closure() {
+        let (ir, _) = core_members_image(185, None);
+        let (captured, _) = core_capture(&ir, 4096);
+        let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+            .expect("Core policy is valid");
+        let descriptors: Vec<_> = captured
+            .rows
+            .iter()
+            .map(|(descriptor, _)| *descriptor)
+            .collect();
+        let payloads: Vec<_> = captured
+            .rows
+            .iter()
+            .map(|(_, payload)| payload.as_slice())
+            .collect();
+        let error = verify_jumbo_plane_family_closures_with_policy(
+            SemanticPlaneKind::Ir(SemanticIrPlane::Core),
+            &descriptors,
+            &payloads,
+            policy,
+            &mut InMemoryJumboObjects::default(),
+        )
+        .expect_err("missing member/attribute leaves cannot produce a verified Core closure");
+        assert!(matches!(error, SemanticPlaneRecordError::JumboRope(_)));
+    }
+
+    #[test]
+    fn core_jumbo_reference_budget_and_attribute_trailing_bytes_are_rejected() {
+        let mut members = Vec::from([0, 0, 0, 1]);
+        members.extend_from_slice(&[0x5a; 32]);
+        let mut validator = declarations::CoreMembersWireValidator::new(0, None);
+        validator.write_all(&members).expect("member value drains");
+        assert!(matches!(
+            validator.finish(),
+            Err(SemanticPlaneRecordError::JumboReferenceLimitExceeded)
+        ));
+
+        let mut attributes = declarations::CoreAttributesWireValidator::new();
+        attributes
+            .write_all(&[0, 0, 0, 0, 0])
+            .expect("trailing attribute byte drains");
+        assert!(matches!(
+            attributes.finish(),
+            Err(SemanticPlaneRecordError::RowGrammar)
+        ));
     }
 }
