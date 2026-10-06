@@ -184,7 +184,7 @@ const fn nested(fault: NestedCompilerFaultFacts) -> CompilerFragmentFaultFacts {
     CompilerFragmentFaultFacts::Nested { fault }
 }
 
-const fn usize_u64(value: usize) -> u64 {
+fn usize_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
 
@@ -1045,9 +1045,9 @@ nested_fault_enum! {
         ProductHead { product: u32, target: u32, atom_count: u32 },
         ProductList { lane: Lane, product: u32, target: u32, list_count: u32 },
         ConstructorCount { lane: Lane, product_count: u32, constructor_count: u32 },
-        ConstructorTag { product: u32, actual: u16 },
-        ConstructorReservedPayload { product: u32, payload0: u8, payload1: u8 },
-        ConstructorArityOverflow { product: u32, payload0: u8, payload1: u8 },
+        ConstructorTag { product: u32, actual: u32 },
+        ConstructorReservedPayload { product: u32, payload0: u32, payload1: u32 },
+        ConstructorArityOverflow { product: u32, payload0: u32, payload1: u32 },
         ConstructorArity { product: u32, expected: u32, actual: u32 },
         ProductChildRole { lane: Lane, product: u32, list: u32, child_position: u64, expected: u8, actual: u8 },
         ListExtent { lane: Lane, list: u32, start: u32, length: u32, child_count: u64 },
@@ -1077,9 +1077,9 @@ nested_fault_enum! {
         ConstructorCount { product_count: u32, constructor_count: u32 },
         EntityRootCount { expected: u32, actual: u32 },
         EntityRoot { entity: u32, target: u32, product_count: u32 },
-        ConstructorTag { product: u32, actual: u16 },
-        ConstructorReservedPayload { product: u32, payload0: u8, payload1: u8 },
-        ConstructorArityOverflow { product: u32, payload0: u8, payload1: u8 },
+        ConstructorTag { product: u32, actual: u32 },
+        ConstructorReservedPayload { product: u32, payload0: u32, payload1: u32 },
+        ConstructorArityOverflow { product: u32, payload0: u32, payload1: u32 },
         ConstructorArity { product: u32, expected: u32, actual: u32 },
         ListExtent { list: u32, start: u32, length: u32, child_count: u32 },
         ChildRoleCode { child: u32, actual: u8 },
@@ -1102,7 +1102,7 @@ nested_fault_enum! {
         ReferenceKind { ordinal: u32, actual: u8 },
         Confidence { ordinal: u32, actual: u8 },
         Span { ordinal: u32, start: u32, end: u32 },
-        KindCell { ordinal: u32, actual: u8 },
+        KindCell { ordinal: u32, actual: u16 },
         EmptyPath { ordinal: u32 },
         Truncated { ordinal: u32, needed: u64 },
         TrailingBytes { declared: u32 },

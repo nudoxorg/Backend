@@ -566,27 +566,27 @@ fn fragment_entity_subcause_keeps_exact_nested_tag_and_coordinates() -> Result<(
     )?;
     expect_projection(
         "entity exact nested cause",
-        &fault["facts"]["family"],
+        &fault["facts"]["fault"]["family"],
         Value::from("entity_record"),
     )?;
     expect_projection(
         "entity exact nested variant",
-        &fault["facts"]["fault"]["fault"],
+        &fault["facts"]["fault"]["fault"]["fault"],
         Value::from("name_reference"),
     )?;
     expect_projection(
         "entity coordinate",
-        &fault["facts"]["fault"]["ordinal"],
+        &fault["facts"]["fault"]["fault"]["ordinal"],
         Value::from(2),
     )?;
     expect_projection(
         "rejected atom coordinate",
-        &fault["facts"]["fault"]["target"],
+        &fault["facts"]["fault"]["fault"]["target"],
         Value::from(9),
     )?;
     expect_projection(
         "available atom count",
-        &fault["facts"]["fault"]["atom_count"],
+        &fault["facts"]["fault"]["fault"]["atom_count"],
         Value::from(4),
     )?;
     if fault["detail"].as_str().is_none_or(|detail| {
@@ -623,27 +623,27 @@ fn fragment_semantic_budget_subcause_keeps_resource_and_operands() -> Result<(),
     )?;
     expect_projection(
         "semantic exact nested cause",
-        &fault["facts"]["family"],
+        &fault["facts"]["fault"]["family"],
         Value::from("canonical_data"),
     )?;
     expect_projection(
         "semantic exact nested variant",
-        &fault["facts"]["fault"]["fault"],
+        &fault["facts"]["fault"]["fault"]["fault"],
         Value::from("budget_exceeded"),
     )?;
     expect_projection(
         "semantic budget resource",
-        &fault["facts"]["fault"]["resource"],
+        &fault["facts"]["fault"]["fault"]["resource"],
         Value::from("work"),
     )?;
     expect_projection(
         "observed work",
-        &fault["facts"]["fault"]["observed"],
+        &fault["facts"]["fault"]["fault"]["observed"],
         Value::from(117),
     )?;
     expect_projection(
         "work budget",
-        &fault["facts"]["fault"]["limit"],
+        &fault["facts"]["fault"]["fault"]["limit"],
         Value::from(100),
     )?;
     if fault["detail"].as_str().is_none_or(|detail| {
@@ -677,10 +677,10 @@ fn fragment_validate_fault_has_a_distinct_stable_tag() -> Result<(), TestError> 
         Value::from("validate_truncated_header"),
     )?;
     let facts = &cause["fault"]["facts"];
-    if facts["family"] != "validation"
-        || facts["fault"]["fault"] != "truncated_header"
-        || facts["fault"]["required"] != 32
-        || facts["fault"]["actual"] != 7
+    if facts["fault"]["family"] != "validation"
+        || facts["fault"]["fault"]["fault"] != "truncated_header"
+        || facts["fault"]["fault"]["required"] != 32
+        || facts["fault"]["fault"]["actual"] != 7
         || cause["fault"]["detail"].as_str().is_none_or(|detail| {
             !detail.contains("\"required\":32") || !detail.contains("\"actual\":7")
         })
