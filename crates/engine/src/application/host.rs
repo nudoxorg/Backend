@@ -385,6 +385,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             self.jdk_candidates(home.as_deref()),
         )?;
         let typescript_host = self.typescript_host_selection(home.as_deref())?;
+        let use_external_python_checker = self
+            .environment
+            .value(LocalHostVariable::NudoxPyrefly)
+            .is_some();
         let executables = NativeExecutables {
             rustc: self.executable(
                 LocalHostVariable::NudoxRustc,
@@ -406,11 +410,15 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 LocalHostPathRole::Native(NativeTool::Clang),
                 self.executable_candidates(home.as_deref(), NativeTool::Clang),
             )?,
-            python: self.executable(
-                LocalHostVariable::NudoxPython,
-                LocalHostPathRole::Native(NativeTool::Python),
-                self.executable_candidates(home.as_deref(), NativeTool::Python),
-            )?,
+            python: if use_external_python_checker {
+                self.executable(
+                    LocalHostVariable::NudoxPython,
+                    LocalHostPathRole::Native(NativeTool::Python),
+                    self.executable_candidates(home.as_deref(), NativeTool::Python),
+                )?
+            } else {
+                None
+            },
             typescript: typescript_host.compiler.clone(),
             go: self.executable(
                 LocalHostVariable::NudoxGo,
@@ -428,7 +436,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 self.executable_candidates(home.as_deref(), NativeTool::CSharpCompiler),
             )?,
         };
-        let toolchains = if admit_toolchains_now {
+        let mut toolchains = if admit_toolchains_now {
             executables.admitted_toolchain_rows(
                 typescript_host
                     .node
@@ -460,6 +468,17 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             &paths.native_work_directory,
             probe_limits,
         )?;
+        if let crate::application::LocalRuntimePythonCheckerAdmission::Native { authority } =
+            &package_authority.python_checker
+        {
+            if let Some(row) = toolchains
+                .iter_mut()
+                .find(|row| row.tool == NativeTool::Python)
+            {
+                *row =
+                    crate::application::LocalRuntimeToolchain::compiled_native_python(*authority)?;
+            }
+        }
         let configuration = LocalCompilerRuntimeConfiguration::new(
             paths,
             toolchains,

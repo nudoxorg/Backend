@@ -37,8 +37,9 @@ mod project;
 #[path = "project_native.rs"]
 mod project_native;
 pub use project::{
-    DefinitionTarget, PythonProjectControl, PythonProjectReport, PythonProjectSource,
-    PythonProjectWitness,
+    DefinitionTarget, NativePythonProducerIdentity, NativePythonProjectAuthority,
+    PythonProjectControl, PythonProjectDiagnostic, PythonProjectFingerprint, PythonProjectReport,
+    PythonProjectSource, PythonProjectWitness, PythonTypeProjectionFault,
 };
 
 use std::path::{Path, PathBuf};
@@ -110,6 +111,38 @@ pub enum CheckerError {
     UncapturedDependency {
         /// Explicit unsupported dependency/source path.
         path: PathBuf,
+    },
+    /// Actual compiled producer identity differs from the admitted native identity.
+    #[error(
+        "compiled native Python producer identity changed: expected {expected:?}, observed {observed:?}"
+    )]
+    NativeProducerIdentity {
+        /// Pinned receipt, policy, and producer image identity admitted by the owner.
+        expected: [u8; 32],
+        /// Actual identity observed at the failing boundary.
+        observed: [u8; 32],
+    },
+    /// A configured internal import candidate exists outside the selected frontier.
+    #[error(
+        "native Python import {module} in {source_path:?} requires uncaptured candidate {candidate:?}"
+    )]
+    IncompleteSourceFrontier {
+        /// Exact source member carrying the import.
+        source_path: PathBuf,
+        /// Absolute native module spelling after relative import expansion.
+        module: Box<str>,
+        /// Original package-local candidate omitted from the snapshot.
+        candidate: PathBuf,
+    },
+    /// Native type projection exceeded its explicit finite contract.
+    #[error("native Python type projection {path:?} at {site:?}: {cause}")]
+    NativeTypeProjection {
+        /// Original selected module path.
+        path: PathBuf,
+        /// Exact declaration or parameter identifier.
+        site: Span,
+        /// Typed depth, work, or cycle refusal.
+        cause: PythonTypeProjectionFault,
     },
     /// A native project report failed the source or schema join.
     #[error("pyrefly project report {path:?}: {message}")]
@@ -657,18 +690,6 @@ impl Pyrefly {
         package_root: Option<&Path>,
     ) -> Result<Vec<u8>, CheckerError> {
         self.run_check_files(&[file.to_path_buf()], profile, package_root, None, false)
-    }
-
-    fn run_native_version(
-        &self,
-        profile: PythonVersion,
-        root: &Path,
-        control: PythonProjectControl<'_>,
-    ) -> Result<Vec<u8>, CheckerError> {
-        self.clone()
-            .with_timeout(Duration::from_secs(5).min(self.timeout))
-            .with_output_limit(4096)
-            .run_check_files(&[], profile, Some(root), Some(control), true)
     }
 
     fn run_check_files(

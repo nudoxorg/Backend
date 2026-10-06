@@ -18,19 +18,29 @@ use pyrefly_python::sys_info::PythonVersion as NativeVersion;
 use pyrefly_types::callable::{Callable, Param, Params};
 use pyrefly_types::literal::Lit;
 use pyrefly_types::tuple::Tuple;
-use pyrefly_types::types::{Forallable, Type};
+use pyrefly_types::types::{BoundMethodType, Forallable, Type};
 use pyrefly_util::arc_id::ArcId;
 use pyrefly_util::thread_pool::ThreadCount;
 use ruff_native_text_size::{Ranged, TextSize};
+use ruff_python_ast::visitor::{Visitor, walk_stmt};
+use ruff_text_size::Ranged as SyntaxRanged;
 
 use super::project::{
-    DefinitionTarget, PythonProjectControl, PythonProjectSource, checkpoint, project_error,
+    CandidateWitness, DefinitionTarget, PythonProjectControl, PythonProjectDiagnostic,
+    PythonProjectSource, PythonTypeProjectionFault, checkpoint, project_error,
 };
 use super::{
-    CheckerError, CheckerReport, Inference, InferenceSite, InferredType, SymbolOutcome,
-    SymbolResolution,
+    CheckerError, CheckerReport, ImportResolution, Inference, InferenceSite, InferredType,
+    SymbolOutcome, SymbolResolution,
 };
 use crate::legacy::{AnnotationPosition, DeclarationKind, ModuleFacts, Span};
+
+pub(super) struct NativeProjectResult {
+    pub(super) modules: BTreeMap<Box<str>, CheckerReport>,
+    pub(super) configuration_fingerprint: [u8; 32],
+    pub(super) candidates: Vec<CandidateWitness>,
+    pub(super) diagnostics: Vec<PythonProjectDiagnostic>,
+}
 
 pub(super) fn analyze(
     mirror: &Path,
@@ -40,14 +50,14 @@ pub(super) fn analyze(
     syntax: &BTreeMap<&str, ModuleFacts>,
     profile: backend_semantic::vocabulary::PythonVersion,
     control: PythonProjectControl<'_>,
-) -> Result<BTreeMap<Box<str>, CheckerReport>, CheckerError> {
+) -> Result<NativeProjectResult, CheckerError> {
     checkpoint(control)?;
     let minor = super::profile_tag(profile)
         .split('.')
         .nth(1)
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| project_error("", "invalid selected native Python version"))?;
-    let finder = captured_finder(
+    let (finder, configuration_fingerprint) = captured_finder(
         mirror,
         original_root,
         sources,
@@ -63,6 +73,75 @@ pub(super) fn analyze(
             config.handle_from_module_path(path)
         })
         .collect::<Vec<_>>();
+    let mut imports = BTreeMap::new();
+    let mut candidates = BTreeMap::new();
+    for (source, handle) in sources.iter().zip(&handles) {
+        checkpoint(control)?;
+        let parsed =
+            crate::legacy::parse_module(source.source, profile).map_err(|source_error| {
+                CheckerError::ProjectSyntax {
+                    path: source.relative_path.into(),
+                    source: Box::new(source_error),
+                }
+            })?;
+        let mut collector = ImportCollector {
+            module: handle.module(),
+            is_init: source.relative_path.ends_with("/__init__.py")
+                || source.relative_path.ends_with("/__init__.pyi")
+                || source.relative_path == "__init__.py"
+                || source.relative_path == "__init__.pyi",
+            imports: Vec::new(),
+        };
+        if let ruff_python_ast::Mod::Module(module) = parsed.syntax() {
+            collector.visit_body(&module.body);
+        }
+        let config = finder.python_file(handle.module_kind(), handle.path());
+        for import in &collector.imports {
+            for root in config.search_path().chain(config.site_package_path()) {
+                let relative_root = root
+                    .strip_prefix(mirror)
+                    .map_err(|_| CheckerError::UncapturedDependency { path: root.clone() })?;
+                let original_search_root = original_root.join(relative_root);
+                for module in &import.candidates {
+                    let mut prefix = original_search_root.clone();
+                    for component in module.as_str().split('.').filter(|part| !part.is_empty()) {
+                        prefix.push(component);
+                        let mut paths = vec![
+                            prefix.clone(),
+                            prefix.join("__init__.pyi"),
+                            prefix.join("__init__.py"),
+                            prefix.with_extension("pyi"),
+                            prefix.with_extension("py"),
+                        ];
+                        paths.extend(
+                            pyrefly_python::COMPILED_FILE_SUFFIXES
+                                .iter()
+                                .map(|suffix| prefix.with_extension(suffix)),
+                        );
+                        for path in paths {
+                            checkpoint(control)?;
+                            if candidates.contains_key(&path) {
+                                continue;
+                            }
+                            let probe = CandidateWitness::capture(path.clone())?;
+                            let relative = path
+                                .strip_prefix(original_root)
+                                .expect("configured package-local root");
+                            if probe.is_present() && !mirror.join(relative).exists() {
+                                return Err(CheckerError::IncompleteSourceFrontier {
+                                    source_path: source.relative_path.into(),
+                                    module: module.as_str().into(),
+                                    candidate: path,
+                                });
+                            }
+                            candidates.insert(path, probe);
+                        }
+                    }
+                }
+            }
+        }
+        imports.insert(source.relative_path, collector.imports);
+    }
     let state = State::new(finder, ThreadCount::NumThreads(std::num::NonZeroUsize::MIN));
     let mut transaction = state.new_committable_transaction(Require::Everything, None);
     let cancellation = transaction.as_mut().get_cancellation_handle();
@@ -110,6 +189,7 @@ pub(super) fn analyze(
         .map(|source| (source.relative_path, source.source))
         .collect::<BTreeMap<_, _>>();
     let mut modules = BTreeMap::new();
+    let mut projection = TypeProjection::new(control);
     for (source, handle) in sources.iter().zip(&handles) {
         checkpoint(control)?;
         let native_module = read.get_module_info(handle).ok_or_else(|| {
@@ -151,7 +231,11 @@ pub(super) fn analyze(
                     inferences.push(Inference {
                         site: declaration.name_span,
                         kind: InferenceSite::Return,
-                        observed: convert(&callable.ret),
+                        observed: projection.convert(
+                            &callable.ret,
+                            source.relative_path,
+                            declaration.name_span,
+                        )?,
                     });
                 }
                 if let Params::List(parameters) = &callable.params {
@@ -172,7 +256,11 @@ pub(super) fn analyze(
                             inferences.push(Inference {
                                 site: written.name_span,
                                 kind: InferenceSite::Parameter,
-                                observed: convert(ty),
+                                observed: projection.convert(
+                                    ty,
+                                    source.relative_path,
+                                    written.name_span,
+                                )?,
                             });
                         }
                     }
@@ -196,7 +284,11 @@ pub(super) fn analyze(
                     } else {
                         InferenceSite::ModuleBinding
                     },
-                    observed: convert(&ty),
+                    observed: projection.convert(
+                        &ty,
+                        source.relative_path,
+                        declaration.name_span,
+                    )?,
                 });
             }
         }
@@ -360,13 +452,138 @@ pub(super) fn analyze(
             source.relative_path.into(),
             CheckerReport {
                 inferences: inferences.into_boxed_slice(),
-                imports: Box::new([]),
+                imports: imports[source.relative_path]
+                    .iter()
+                    .map(|import| ImportResolution {
+                        binding: import.binding.clone(),
+                        module: import.module.as_str().to_owned(),
+                        module_span: import.span,
+                        resolved: read
+                            .import_handle(handle, import.module, None)
+                            .finding()
+                            .is_some(),
+                    })
+                    .collect(),
                 symbols: symbols.into_boxed_slice(),
             },
         );
     }
     checkpoint(control)?;
-    Ok(modules)
+    let mut diagnostics = Vec::new();
+    for error in read.get_errors(&handles).collect_display_errors() {
+        checkpoint(control)?;
+        let Ok(path) = error.path().as_path().strip_prefix(mirror) else {
+            continue;
+        };
+        let Some(path) = path.to_str().filter(|path| selected.contains_key(*path)) else {
+            continue;
+        };
+        diagnostics.push(PythonProjectDiagnostic {
+            relative_path: path.into(),
+            span: Span {
+                start: error.range().start().to_u32(),
+                end: error.range().end().to_u32(),
+            },
+            kind: error.error_kind().to_name().into(),
+            severity: error.severity().label().trim().into(),
+            message: error.msg().into_boxed_str(),
+        });
+    }
+    Ok(NativeProjectResult {
+        modules,
+        configuration_fingerprint,
+        candidates: candidates.into_values().collect(),
+        diagnostics,
+    })
+}
+
+struct ImportProbe {
+    binding: String,
+    module: ModuleName,
+    span: Span,
+    candidates: Vec<ModuleName>,
+}
+
+struct ImportCollector {
+    module: ModuleName,
+    is_init: bool,
+    imports: Vec<ImportProbe>,
+}
+
+impl<'syntax> Visitor<'syntax> for ImportCollector {
+    fn visit_stmt(&mut self, statement: &'syntax ruff_python_ast::Stmt) {
+        match statement {
+            ruff_python_ast::Stmt::Import(import) => {
+                for alias in &import.names {
+                    let module = ModuleName::from_parts(alias.name.as_str().split('.'));
+                    self.imports.push(ImportProbe {
+                        binding: alias.asname.as_ref().map_or_else(
+                            || {
+                                alias
+                                    .name
+                                    .as_str()
+                                    .split('.')
+                                    .next()
+                                    .unwrap_or_default()
+                                    .to_owned()
+                            },
+                            |name| name.as_str().to_owned(),
+                        ),
+                        module,
+                        span: Span {
+                            start: alias.name.range().start().to_u32(),
+                            end: alias.name.range().end().to_u32(),
+                        },
+                        candidates: vec![module],
+                    });
+                }
+            }
+            ruff_python_ast::Stmt::ImportFrom(import) => {
+                let mut base = if import.level == 0 {
+                    Vec::new()
+                } else {
+                    let mut parts = self.module.as_str().split('.').collect::<Vec<_>>();
+                    let remove = import.level.saturating_sub(u32::from(self.is_init)) as usize;
+                    if remove > parts.len() {
+                        return;
+                    }
+                    parts.truncate(parts.len() - remove);
+                    parts
+                };
+                if let Some(suffix) = &import.module {
+                    base.extend(suffix.as_str().split('.'));
+                }
+                let module = ModuleName::from_parts(&base);
+                for alias in &import.names {
+                    let mut candidates = vec![module];
+                    if alias.name.as_str() != "*" {
+                        let mut child = base.clone();
+                        child.push(alias.name.as_str());
+                        candidates.push(ModuleName::from_parts(child));
+                    }
+                    let module_range = import
+                        .module
+                        .as_ref()
+                        .map_or(alias.name.range(), |name| name.range());
+                    self.imports.push(ImportProbe {
+                        binding: alias
+                            .asname
+                            .as_ref()
+                            .unwrap_or(&alias.name)
+                            .as_str()
+                            .to_owned(),
+                        module,
+                        span: Span {
+                            start: module_range.start().to_u32(),
+                            end: module_range.end().to_u32(),
+                        },
+                        candidates,
+                    });
+                }
+            }
+            _ => walk_stmt(self, statement),
+        }
+    }
 }
 
 /// No ancestor discovery, interpreter/site-package probing, or external loader
@@ -378,7 +595,7 @@ fn captured_finder(
     sources: &[PythonProjectSource<'_>],
     version: NativeVersion,
     control: PythonProjectControl<'_>,
-) -> Result<ConfigFinder, CheckerError> {
+) -> Result<(ConfigFinder, [u8; 32]), CheckerError> {
     fn rebase(path: &mut PathBuf, mirror: &Path, original: &Path) -> Result<(), CheckerError> {
         if !path.is_absolute()
             || path
@@ -521,6 +738,9 @@ fn captured_finder(
         }
     }
     let mut effective = BTreeMap::new();
+    let mut scope_identity = blake3::Hasher::new();
+    scope_identity.update(b"compiler.python.effective-config-scope.v1\0");
+    scope_identity.update(b"root-isolated;native-priority;candidate-presence+absence;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
     for directory in directories {
         let mut candidates = Vec::new();
         for (depth, ancestor) in directory
@@ -534,57 +754,80 @@ fn captured_finder(
                 .enumerate()
             {
                 if let Some((priority, config)) = loaded.get(&ancestor.join(name)) {
-                    candidates.push(((*priority, depth, ordinal), config));
+                    candidates.push(((*priority, depth, ordinal), ancestor.join(name), config));
                 }
             }
         }
-        candidates.sort_by_key(|(priority, _)| *priority);
+        candidates.sort_by_key(|(priority, _, _)| *priority);
         let config = candidates
             .first()
-            .map_or_else(|| fallback.clone(), |(_, config)| (*config).clone());
+            .map_or_else(|| fallback.clone(), |(_, _, config)| (*config).clone());
+        for path in [
+            Some(directory.as_path()),
+            candidates.first().map(|(_, path, _)| path.as_path()),
+        ] {
+            if let Some(path) = path {
+                let relative = path
+                    .strip_prefix(mirror)
+                    .expect("captured configuration scope");
+                let bytes = relative.as_os_str().as_encoded_bytes();
+                scope_identity.update(&[1]);
+                scope_identity.update(&(bytes.len() as u64).to_be_bytes());
+                scope_identity.update(bytes);
+            } else {
+                scope_identity.update(&[0]);
+            }
+        }
         effective.insert(directory, config);
     }
     let before_root = mirror.to_path_buf();
     let before_fallback = fallback.clone();
     let load_fallback = fallback.clone();
-    Ok(ConfigFinder::new_custom(
-        Box::new(move |_, path| {
-            let path = path.as_path();
-            if path.is_absolute() {
-                // This cannot be reached by the validated resolver roots. A
-                // producer violation terminates before opening ambient bytes.
-                assert!(
-                    path.starts_with(&before_root),
-                    "native resolver escaped captured mirror"
-                );
-                let config = path
-                    .ancestors()
-                    .find_map(|ancestor| effective.get(ancestor))
-                    .unwrap_or(&before_fallback);
-                Ok(Some(config.clone()))
-            } else {
-                // Bundled module paths have no filesystem source path.
-                Ok(Some(before_fallback.clone()))
-            }
-        }),
-        Box::new(move |_| {
-            // python_file always returns above. No directory/config discovery
-            // can influence this producer through the fallback load callback.
-            (load_fallback.clone(), Vec::new())
-        }),
-        Box::new(move |_, _| fallback.clone()),
-        Box::new(|| {}),
+    Ok((
+        ConfigFinder::new_custom(
+            Box::new(move |_, path| {
+                let path = path.as_path();
+                if path.is_absolute() {
+                    // This cannot be reached by the validated resolver roots. A
+                    // producer violation terminates before opening ambient bytes.
+                    assert!(
+                        path.starts_with(&before_root),
+                        "native resolver escaped captured mirror"
+                    );
+                    let config = path
+                        .ancestors()
+                        .find_map(|ancestor| effective.get(ancestor))
+                        .unwrap_or(&before_fallback);
+                    Ok(Some(config.clone()))
+                } else {
+                    // Bundled module paths have no filesystem source path.
+                    Ok(Some(before_fallback.clone()))
+                }
+            }),
+            Box::new(move |_| {
+                // python_file always returns above. No directory/config discovery
+                // can influence this producer through the fallback load callback.
+                (load_fallback.clone(), Vec::new())
+            }),
+            Box::new(move |_, _| fallback.clone()),
+            Box::new(|| {}),
+        ),
+        *scope_identity.finalize().as_bytes(),
     ))
 }
 
-fn callable(ty: &Type) -> Option<Callable> {
+fn callable(ty: &Type) -> Option<&Callable> {
     match ty {
-        Type::Function(function) => Some(function.signature.clone()),
-        Type::Callable(callable) => Some((**callable).clone()),
-        Type::BoundMethod(method) => callable(&method.func.clone().as_type()),
+        Type::Function(function) => Some(&function.signature),
+        Type::Callable(callable) => Some(callable),
+        Type::BoundMethod(method) => match &method.func {
+            BoundMethodType::Function(function) => Some(&function.signature),
+            BoundMethodType::Forall(forall) => Some(&forall.body.signature),
+            BoundMethodType::Overload(_) => None,
+        },
         Type::Forall(forall) => match &forall.body {
-            Forallable::Function(function) => Some(function.signature.clone()),
-            Forallable::Callable(callable) => Some(callable.clone()),
+            Forallable::Function(function) => Some(&function.signature),
+            Forallable::Callable(callable) => Some(callable),
             _ => None,
         },
         // A source branch cannot be identified by taking an arbitrary overload.
@@ -592,53 +835,279 @@ fn callable(ty: &Type) -> Option<Callable> {
     }
 }
 
-fn convert(ty: &Type) -> InferredType {
-    match ty {
-        Type::None => InferredType::NoneType,
-        Type::Literal(literal) => match &literal.value {
-            Lit::Str(_) => InferredType::Str,
-            Lit::Int(_) => InferredType::Integer,
-            Lit::Bool(_) => InferredType::Boolean,
-            Lit::Bytes(_) => InferredType::Bytes,
-            Lit::Enum(_) => InferredType::Any,
-        },
-        Type::LiteralString(_) => InferredType::Str,
-        Type::Union(union) => InferredType::Union(union.members.iter().map(convert).collect()),
-        Type::ClassType(class) if class.is_builtin("int") => InferredType::Integer,
-        Type::ClassType(class) if class.is_builtin("float") => InferredType::Float,
-        Type::ClassType(class) if class.is_builtin("bool") => InferredType::Boolean,
-        Type::ClassType(class) if class.is_builtin("str") => InferredType::Str,
-        Type::ClassType(class) if class.is_builtin("bytes") => InferredType::Bytes,
-        Type::ClassType(class) if class.is_builtin("complex") => InferredType::Complex,
-        Type::ClassType(class) if class.is_builtin("list") => InferredType::List(
-            class
-                .targs()
-                .as_slice()
-                .first()
-                .map(|arg| Box::new(convert(arg))),
-        ),
-        Type::ClassType(class) if class.is_builtin("set") || class.is_builtin("frozenset") => {
-            InferredType::Set(
-                class
-                    .targs()
-                    .as_slice()
-                    .first()
-                    .map(|arg| Box::new(convert(arg))),
-            )
+const TYPE_DEPTH: usize = 64;
+const TYPE_WORK: usize = 262_144;
+
+/// One allowance shared by every inference in the solved transaction. The
+/// traversal borrows native nodes and keeps recursion off the thread stack.
+struct TypeProjection<'control> {
+    control: PythonProjectControl<'control>,
+    visited: usize,
+}
+
+#[derive(Clone, Copy)]
+enum TypeContainer {
+    Union,
+    Tuple,
+    List,
+    Set,
+    Dict,
+}
+
+enum TypeStep<'type_> {
+    Visit(&'type_ Type, usize),
+    Build(TypeContainer, usize),
+    Leave(usize),
+}
+
+fn queue_children<'type_>(
+    pending: &mut Vec<TypeStep<'type_>>,
+    container: TypeContainer,
+    children: &'type_ [Type],
+    depth: usize,
+    remaining: usize,
+) -> Result<(), PythonTypeProjectionFault> {
+    if children.len() > remaining {
+        return Err(PythonTypeProjectionFault::Work { limit: TYPE_WORK });
+    }
+    pending.push(TypeStep::Build(container, children.len()));
+    pending.extend(
+        children
+            .iter()
+            .rev()
+            .map(|child| TypeStep::Visit(child, depth + 1)),
+    );
+    Ok(())
+}
+
+impl<'control> TypeProjection<'control> {
+    fn new(control: PythonProjectControl<'control>) -> Self {
+        Self {
+            control,
+            visited: 0,
         }
-        Type::ClassType(class) if class.is_builtin("dict") => match class.targs().as_slice() {
-            [key, value] => {
-                InferredType::Dict(Some((Box::new(convert(key)), Box::new(convert(value)))))
+    }
+
+    fn convert(&mut self, ty: &Type, path: &str, site: Span) -> Result<InferredType, CheckerError> {
+        let refusal = |cause| CheckerError::NativeTypeProjection {
+            path: path.into(),
+            site,
+            cause,
+        };
+        let mut pending = vec![TypeStep::Visit(ty, 0)];
+        let mut active = BTreeSet::new();
+        let mut values = Vec::new();
+        while let Some(step) = pending.pop() {
+            checkpoint(self.control)?;
+            match step {
+                TypeStep::Leave(identity) => {
+                    active.remove(&identity);
+                }
+                TypeStep::Build(container, count) => {
+                    let children = values.split_off(values.len() - count);
+                    let value = match container {
+                        TypeContainer::Union => InferredType::Union(children),
+                        TypeContainer::Tuple => InferredType::Tuple(children),
+                        TypeContainer::List => {
+                            InferredType::List(children.into_iter().next().map(Box::new))
+                        }
+                        TypeContainer::Set => {
+                            InferredType::Set(children.into_iter().next().map(Box::new))
+                        }
+                        TypeContainer::Dict => {
+                            let mut children = children.into_iter();
+                            InferredType::Dict(Some((
+                                Box::new(children.next().expect("dict key")),
+                                Box::new(children.next().expect("dict value")),
+                            )))
+                        }
+                    };
+                    values.push(value);
+                }
+                TypeStep::Visit(ty, depth) => {
+                    if depth > TYPE_DEPTH {
+                        return Err(refusal(PythonTypeProjectionFault::Depth {
+                            observed: depth,
+                            limit: TYPE_DEPTH,
+                        }));
+                    }
+                    if self.visited == TYPE_WORK {
+                        return Err(refusal(PythonTypeProjectionFault::Work {
+                            limit: TYPE_WORK,
+                        }));
+                    }
+                    self.visited += 1;
+                    let identity = std::ptr::from_ref(ty) as usize;
+                    if !active.insert(identity) {
+                        return Err(refusal(PythonTypeProjectionFault::Cycle));
+                    }
+                    pending.push(TypeStep::Leave(identity));
+                    let leaf = match ty {
+                        Type::None => Some(InferredType::NoneType),
+                        Type::Literal(literal) => Some(match &literal.value {
+                            Lit::Str(_) => InferredType::Str,
+                            Lit::Int(_) => InferredType::Integer,
+                            Lit::Bool(_) => InferredType::Boolean,
+                            Lit::Bytes(_) => InferredType::Bytes,
+                            Lit::Enum(_) => InferredType::Any,
+                        }),
+                        Type::LiteralString(_) => Some(InferredType::Str),
+                        Type::Union(union) => {
+                            queue_children(
+                                &mut pending,
+                                TypeContainer::Union,
+                                &union.members,
+                                depth,
+                                TYPE_WORK - self.visited,
+                            )
+                            .map_err(refusal)?;
+                            None
+                        }
+                        Type::Tuple(Tuple::Concrete(elements)) => {
+                            queue_children(
+                                &mut pending,
+                                TypeContainer::Tuple,
+                                elements,
+                                depth,
+                                TYPE_WORK - self.visited,
+                            )
+                            .map_err(refusal)?;
+                            None
+                        }
+                        Type::Annotated(inner, _) | Type::Unpack(inner) => {
+                            pending.push(TypeStep::Visit(inner, depth + 1));
+                            None
+                        }
+                        Type::ClassType(class) => {
+                            let builtin = [
+                                ("int", InferredType::Integer),
+                                ("float", InferredType::Float),
+                                ("bool", InferredType::Boolean),
+                                ("str", InferredType::Str),
+                                ("bytes", InferredType::Bytes),
+                                ("complex", InferredType::Complex),
+                            ]
+                            .into_iter()
+                            .find(|(name, _)| class.is_builtin(name));
+                            if let Some((_, value)) = builtin {
+                                Some(value)
+                            } else if class.is_builtin("list")
+                                || class.is_builtin("set")
+                                || class.is_builtin("frozenset")
+                            {
+                                let container = if class.is_builtin("list") {
+                                    TypeContainer::List
+                                } else {
+                                    TypeContainer::Set
+                                };
+                                queue_children(
+                                    &mut pending,
+                                    container,
+                                    &class.targs().as_slice()[..class.targs().len().min(1)],
+                                    depth,
+                                    TYPE_WORK - self.visited,
+                                )
+                                .map_err(refusal)?;
+                                None
+                            } else if class.is_builtin("dict") && class.targs().len() == 2 {
+                                queue_children(
+                                    &mut pending,
+                                    TypeContainer::Dict,
+                                    class.targs().as_slice(),
+                                    depth,
+                                    TYPE_WORK - self.visited,
+                                )
+                                .map_err(refusal)?;
+                                None
+                            } else if class.is_builtin("dict") {
+                                Some(InferredType::Dict(None))
+                            } else {
+                                Some(InferredType::Named(
+                                    class.qname().module_qualified_name().into_boxed_str(),
+                                ))
+                            }
+                        }
+                        _ => Some(InferredType::Any),
+                    };
+                    if let Some(leaf) = leaf {
+                        values.push(leaf);
+                    }
+                }
             }
-            _ => InferredType::Dict(None),
-        },
-        Type::ClassType(class) => {
-            InferredType::Named(class.qname().module_qualified_name().into_boxed_str())
         }
-        Type::Tuple(Tuple::Concrete(elements)) => {
-            InferredType::Tuple(elements.iter().map(convert).collect())
+        Ok(values.pop().expect("one native type result"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn native_projection_refuses_depth_and_shared_work_with_typed_operands() {
+        let cancelled = AtomicBool::new(false);
+        let control = PythonProjectControl {
+            cancelled: &cancelled,
+            deadline: Instant::now() + Duration::from_secs(5),
+        };
+        let site = Span { start: 2, end: 7 };
+        let mut deep = Type::None;
+        for _ in 0..TYPE_DEPTH + 2 {
+            deep = Type::Tuple(Tuple::Concrete(vec![deep]));
         }
-        Type::Annotated(inner, _) | Type::Unpack(inner) => convert(inner),
-        _ => InferredType::Any,
+        assert!(matches!(
+            TypeProjection::new(control).convert(&deep, "deep.py", site),
+            Err(CheckerError::NativeTypeProjection {
+                cause: PythonTypeProjectionFault::Depth {
+                    limit: TYPE_DEPTH,
+                    ..
+                },
+                ..
+            })
+        ));
+        let mut projection = TypeProjection::new(control);
+        projection.visited = TYPE_WORK - 1;
+        assert_eq!(
+            projection
+                .convert(&Type::None, "plain.py", site)
+                .expect("last node"),
+            InferredType::NoneType
+        );
+        assert!(matches!(
+            projection.convert(&Type::None, "plain.py", site),
+            Err(CheckerError::NativeTypeProjection {
+                cause: PythonTypeProjectionFault::Work { limit: TYPE_WORK },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn native_projection_checkpoints_and_preserves_tuple_order() {
+        let cancelled = AtomicBool::new(false);
+        let control = PythonProjectControl {
+            cancelled: &cancelled,
+            deadline: std::time::Instant::now() + Duration::from_secs(5),
+        };
+        let site = Span { start: 0, end: 1 };
+        let ty = Type::Tuple(Tuple::Concrete(vec![
+            Type::None,
+            Type::Tuple(Tuple::Concrete(vec![Type::None])),
+        ]));
+        assert_eq!(
+            TypeProjection::new(control)
+                .convert(&ty, "tuple.py", site)
+                .expect("bounded type"),
+            InferredType::Tuple(vec![
+                InferredType::NoneType,
+                InferredType::Tuple(vec![InferredType::NoneType])
+            ])
+        );
+        cancelled.store(true, Ordering::Release);
+        assert!(matches!(
+            TypeProjection::new(control).convert(&ty, "tuple.py", site),
+            Err(CheckerError::Cancelled { .. })
+        ));
     }
 }

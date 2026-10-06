@@ -304,7 +304,7 @@ pub(crate) fn enter_python_project_authority(
             profile: request.profile,
         });
     }
-    require_resolved_toolchain(request.toolchain, request.profile)?;
+    let resolved = require_resolved_toolchain(request.toolchain, request.profile)?;
     request
         .source_path
         .strip_prefix(request.package_root)
@@ -319,8 +319,27 @@ pub(crate) fn enter_python_project_authority(
             stage: PackageAuthorityStage::PythonPyrefly,
         });
     };
-    let checker = require_python_checker(request.configuration.python_checker, request.profile)?;
-    let report = checker
+    let super::LocalRuntimePythonCheckerAdmission::Native { authority } =
+        request.configuration.python_checker
+    else {
+        return Err(PackageAuthorityError::RequiredTool {
+            profile: request.profile,
+            stage: PackageAuthorityStage::PythonPyrefly,
+            issue: CompilerToolIssue {
+                requirement: CompilerToolRequirement::PythonChecker,
+                failure: CompilerToolFailure::Missing,
+            },
+        });
+    };
+    if resolved.identity.as_ref() != &authority.producer_identity().as_bytes() {
+        return Err(PackageAuthorityError::PythonPyrefly(
+            PyreflyError::NativeProducerIdentity {
+                expected: authority.producer_identity().as_bytes(),
+                observed: *resolved.identity.as_ref(),
+            },
+        ));
+    }
+    let report = authority
         .analyze_project(
             request.package_root,
             package_name,
@@ -345,7 +364,8 @@ fn require_python_checker(
     profile: LanguageProfile,
 ) -> Result<&Pyrefly, PackageAuthorityError> {
     match admission {
-        super::LocalRuntimePythonCheckerAdmission::Unconfigured => {
+        super::LocalRuntimePythonCheckerAdmission::Native { .. }
+        | super::LocalRuntimePythonCheckerAdmission::Unconfigured => {
             Err(PackageAuthorityError::RequiredTool {
                 profile,
                 stage: PackageAuthorityStage::PythonPyrefly,
@@ -467,8 +487,6 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 PackageAuthorityOwner::TypeScript { profile, report }
             }
             LanguageProfile::Python(profile) => {
-                let pyrefly =
-                    require_python_checker(request.configuration.python_checker, request.profile)?;
                 let syntax = extract(request.source, profile)
                     .map_err(PackageAuthorityError::PythonSyntax)?;
                 checkpoint(
@@ -476,9 +494,57 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                     request.profile,
                     PackageAuthorityStage::PythonSyntax,
                 )?;
-                let report = pyrefly
-                    .analyze_in_package(request.source, profile, &syntax, request.package_root)
-                    .map_err(PackageAuthorityError::PythonPyrefly)?;
+                let report = match request.configuration.python_checker {
+                    super::LocalRuntimePythonCheckerAdmission::Native { authority } => {
+                        if resolved.identity.as_ref() != &authority.producer_identity().as_bytes() {
+                            return Err(PackageAuthorityError::PythonPyrefly(
+                                PyreflyError::NativeProducerIdentity {
+                                    expected: authority.producer_identity().as_bytes(),
+                                    observed: *resolved.identity.as_ref(),
+                                },
+                            ));
+                        }
+                        let relative_path = request
+                            .source_path
+                            .strip_prefix(request.package_root)
+                            .expect("source root already admitted")
+                            .to_str()
+                            .ok_or_else(|| {
+                                PackageAuthorityError::PythonPyrefly(PyreflyError::ProjectReport {
+                                    path: request.source_path.to_path_buf(),
+                                    message: "non-UTF8 selected module path".to_owned(),
+                                })
+                            })?;
+                        let source = std::str::from_utf8(request.source).map_err(|_| {
+                            PackageAuthorityError::PythonPyrefly(PyreflyError::ProjectReport {
+                                path: request.source_path.to_path_buf(),
+                                message: "non-UTF8 selected source".to_owned(),
+                            })
+                        })?;
+                        let project = authority
+                            .analyze_project(
+                                request.package_root,
+                                "selected",
+                                &[PythonProjectSource {
+                                    relative_path,
+                                    source,
+                                }],
+                                profile,
+                                PythonProjectControl {
+                                    cancelled: request.control.cancelled,
+                                    deadline: request.control.deadline,
+                                },
+                            )
+                            .map_err(PackageAuthorityError::PythonPyrefly)?;
+                        project
+                            .module(relative_path)
+                            .expect("selected native module")
+                            .clone()
+                    }
+                    admission => require_python_checker(admission, request.profile)?
+                        .analyze_in_package(request.source, profile, &syntax, request.package_root)
+                        .map_err(PackageAuthorityError::PythonPyrefly)?,
+                };
                 checkpoint(
                     request.control,
                     request.profile,

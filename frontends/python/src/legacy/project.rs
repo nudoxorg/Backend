@@ -17,6 +17,85 @@ use crate::legacy::{DeclarationKind, Span, extract};
 
 const CONFIG_BYTES: u64 = 1024 * 1024;
 
+/// The compiled native solver is a distinct producer from an external Pyrefly command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativePythonProducerIdentity([u8; 32]);
+
+impl NativePythonProducerIdentity {
+    /// Actual host producer bytes plus pinned source/manifest/policy identity.
+    #[must_use]
+    pub const fn as_bytes(self) -> [u8; 32] {
+        self.0
+    }
+}
+
+/// Admitted in-process Pyrefly State producer; no interpreter or external checker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativePythonProjectAuthority {
+    producer: NativePythonProducerIdentity,
+    timeout: std::time::Duration,
+}
+
+impl NativePythonProjectAuthority {
+    /// Captures the actual executing native producer image and pinned solver receipts.
+    ///
+    /// # Errors
+    /// Refuses unavailable producer bytes or a non-regular host executable.
+    pub fn admit() -> Result<Self, CheckerError> {
+        let (producer, _) = native_producer_capture()?;
+        Ok(Self {
+            producer,
+            timeout: super::DEFAULT_TIMEOUT,
+        })
+    }
+
+    /// Exact admitted native producer identity, independent of external commands.
+    #[must_use]
+    pub const fn producer_identity(self) -> NativePythonProducerIdentity {
+        self.producer
+    }
+
+    /// Sets the deadline bound for the complete State transaction and projection.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+}
+
+fn native_producer_capture() -> Result<(NativePythonProducerIdentity, FileWitness), CheckerError> {
+    let host = FileWitness::capture(std::env::current_exe().map_err(workspace_error)?)?;
+    let Some((digest, size)) = host.digest else {
+        return Err(project_error(
+            "",
+            "compiled native producer image is unavailable",
+        ));
+    };
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"compiler.python.compiled-native-producer.v1\0");
+    identity.update(super::PYTHON_NATIVE_PROJECT_SOURCE_REVISION.as_bytes());
+    identity.update(
+        blake3::hash(include_bytes!(
+            "../../../../vendor/pyrefly_native_1_2/Cargo.toml"
+        ))
+        .as_bytes(),
+    );
+    identity.update(
+        blake3::hash(include_bytes!(
+            "../../../../vendor/pyrefly_native_1_2/NUDOX-UPSTREAM.json"
+        ))
+        .as_bytes(),
+    );
+    identity.update(b"root-isolated;fresh-state;classdef-declaration+constructor-callee;captured-candidates;depth64;work262144\0");
+    identity.update(digest.as_bytes());
+    identity.update(&size.to_be_bytes());
+    host.validate_current()?;
+    Ok((
+        NativePythonProducerIdentity(*identity.finalize().as_bytes()),
+        host,
+    ))
+}
+
 /// Exact borrowed source member of an admitted Python package frontier.
 #[derive(Clone, Copy, Debug)]
 pub struct PythonProjectSource<'source> {
@@ -33,6 +112,20 @@ pub struct PythonProjectControl<'control> {
     pub cancelled: &'control AtomicBool,
     /// Absolute deadline for snapshotting, checking, and decoding together.
     pub deadline: Instant,
+}
+
+/// Finite native type decoding refusal; never substituted with `Any`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PythonTypeProjectionFault {
+    /// Nested constructors exceed the retained output depth contract.
+    #[error("type depth {observed} exceeds {limit}")]
+    Depth { observed: usize, limit: usize },
+    /// The shared transaction projection work allowance is exhausted.
+    #[error("type projection work exceeds {limit} nodes")]
+    Work { limit: usize },
+    /// A borrowed native type refers to an active ancestor.
+    #[error("native type graph contains a cycle")]
+    Cycle,
 }
 
 /// Exact selected declaration reached by a native Pyrefly reference.
@@ -59,27 +152,63 @@ pub struct DefinitionTarget {
 pub struct PythonProjectReport {
     modules: BTreeMap<Box<str>, CheckerReport>,
     witness: std::sync::Arc<PythonProjectWitness>,
+    diagnostics: Box<[PythonProjectDiagnostic]>,
+}
+
+/// An exact selected-source native diagnostic, retained independently of type facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PythonProjectDiagnostic {
+    /// Original package-relative module.
+    pub relative_path: Box<str>,
+    /// Native UTF-8 byte range inside the captured source.
+    pub span: Span,
+    /// Native diagnostic family, including `missing-import` and `untyped-import`.
+    pub kind: Box<str>,
+    /// Native severity label.
+    pub severity: Box<str>,
+    /// Exact native diagnostic description.
+    pub message: Box<str>,
 }
 
 impl PythonProjectReport {
+    /// Retains native selected-source diagnostics, including unavailable imports.
+    #[must_use]
+    pub fn diagnostics(&self) -> &[PythonProjectDiagnostic] {
+        &self.diagnostics
+    }
+
     /// Borrows the report bound to one exact source member.
     #[must_use]
     pub fn module(&self, relative_path: &str) -> Option<&CheckerReport> {
         self.modules.get(relative_path)
     }
 
-    /// Positive and negative source/configuration probes plus executable bytes.
+    /// Positive and negative source/configuration/import probes plus native producer bytes.
     #[must_use]
     pub fn witness(&self) -> &std::sync::Arc<PythonProjectWitness> {
         &self.witness
     }
 }
 
-/// Captured selected source, configuration, and executable file identities.
+/// Captured selected source, configuration, candidates, and native producer identities.
 /// This deliberately does not certify a complete compiler dependency read-set.
 #[derive(Debug)]
 pub struct PythonProjectWitness {
     files: Vec<FileWitness>,
+    fingerprint: PythonProjectFingerprint,
+    candidates: Vec<CandidateWitness>,
+}
+
+/// Exact host-local transaction identity for source/configuration/producer facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PythonProjectFingerprint([u8; 32]);
+
+impl PythonProjectFingerprint {
+    /// The domain-separated captured project digest; no completeness promotion.
+    #[must_use]
+    pub const fn as_bytes(self) -> [u8; 32] {
+        self.0
+    }
 }
 
 #[derive(Debug)]
@@ -140,6 +269,49 @@ impl FileWitness {
     }
 }
 
+/// Candidate membership is captured independently of any solver filesystem read.
+#[derive(Debug)]
+pub(super) struct CandidateWitness {
+    path: PathBuf,
+    kind: Option<bool>,
+}
+
+impl CandidateWitness {
+    pub(super) fn capture(path: PathBuf) -> Result<Self, CheckerError> {
+        let kind = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => Some(false),
+            Ok(metadata) if metadata.is_dir() => Some(true),
+            Ok(_) => return Err(CheckerError::UncapturedDependency { path }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(source) => return Err(workspace_error(source)),
+        };
+        Ok(Self { path, kind })
+    }
+
+    pub(super) fn is_present(&self) -> bool {
+        self.kind.is_some()
+    }
+
+    fn validate_current(&self) -> Result<(), CheckerError> {
+        if Self::capture(self.path.clone())?.kind != self.kind {
+            return Err(project_error(
+                &self.path.to_string_lossy(),
+                "configured internal import candidate membership changed",
+            ));
+        }
+        Ok(())
+    }
+
+    fn fingerprint(&self, identity: &mut blake3::Hasher) {
+        hash_field(identity, self.path.as_os_str().as_encoded_bytes());
+        identity.update(&[match self.kind {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        }]);
+    }
+}
+
 #[derive(Debug)]
 struct DirectoryWitness {
     path: PathBuf,
@@ -196,11 +368,20 @@ impl DirectoryWitness {
 }
 
 impl PythonProjectWitness {
+    /// Binds exact source/configuration probes, effective scope, and producer bytes.
+    #[must_use]
+    pub const fn fingerprint(&self) -> PythonProjectFingerprint {
+        self.fingerprint
+    }
+
     /// Revalidates both file bytes and absence before semantic image admission.
     ///
     /// # Errors
     /// Refuses any changed selected source, configuration probe, or executable.
     pub fn validate_current(&self) -> Result<(), CheckerError> {
+        for candidate in &self.candidates {
+            candidate.validate_current()?;
+        }
         for file in &self.files {
             file.validate_current()?;
         }
@@ -208,7 +389,7 @@ impl PythonProjectWitness {
     }
 }
 
-impl Pyrefly {
+impl NativePythonProjectAuthority {
     /// Checks every selected module in one fresh native State transaction.
     ///
     /// Selected sources and configuration files are captured in a private mirror
@@ -249,34 +430,18 @@ impl Pyrefly {
         let mut paths = BTreeSet::new();
         let mut directories = BTreeSet::from([PathBuf::new()]);
         let mut facts = BTreeMap::new();
-        if !self.program.is_absolute() {
-            return Err(project_error(
-                "",
-                "project authority requires an explicit absolute executable",
-            ));
-        }
-        if !self.arguments.is_empty() {
-            return Err(project_error(
-                "",
-                "native authority requires a bare selected Pyrefly executable",
-            ));
+        let (current_producer, host_witness) = native_producer_capture()?;
+        if current_producer != self.producer {
+            return Err(CheckerError::NativeProducerIdentity {
+                expected: self.producer.as_bytes(),
+                observed: current_producer.as_bytes(),
+            });
         }
         let mut witness = PythonProjectWitness {
-            files: vec![FileWitness::capture(self.program.clone())?],
+            files: vec![host_witness],
+            fingerprint: PythonProjectFingerprint([0; 32]),
+            candidates: Vec::new(),
         };
-        witness.files.push(FileWitness::capture(
-            std::env::current_exe().map_err(workspace_error)?,
-        )?);
-        if witness.files[0].digest.is_none() {
-            return Err(project_error("", "project executable is unavailable"));
-        }
-        let version = self.run_native_version(profile, &mirror, control)?;
-        if version.as_slice() != b"pyrefly 1.2.0-dev.1\n" {
-            return Err(project_error(
-                "",
-                "selected executable does not match pinned native Pyrefly 1.2.0-dev.1",
-            ));
-        }
         let mut mirror_witness = Vec::new();
         for source in sources {
             checkpoint(control)?;
@@ -401,18 +566,54 @@ impl Pyrefly {
             mirror_witness.push(FileWitness::capture(mirror.join("pyrefly.toml"))?);
         }
         let private_tree = DirectoryWitness::capture_tree(&mirror)?;
-        let modules = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            super::project_native::analyze(
-                &mirror,
-                package_root,
-                package_name,
-                sources,
-                &facts,
-                profile,
-                control,
-            )
-        }))
-        .map_err(|_| CheckerError::ProjectPanic)??;
+        let (modules, native_configuration) =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                super::project_native::analyze(
+                    &mirror,
+                    package_root,
+                    package_name,
+                    sources,
+                    &facts,
+                    profile,
+                    control,
+                )
+            }))
+            .map_err(|_| CheckerError::ProjectPanic)??;
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"compiler.python.captured-project.v1\0");
+        identity.update(&self.producer.as_bytes());
+        identity.update(&native.configuration_fingerprint);
+        hash_field(&mut identity, package_name.as_bytes());
+        hash_field(&mut identity, super::profile_tag(profile).as_bytes());
+        let mut selected = sources.iter().collect::<Vec<_>>();
+        selected.sort_by_key(|source| source.relative_path);
+        for source in selected {
+            identity.update(b"selected-source\0");
+            hash_field(&mut identity, source.relative_path.as_bytes());
+            hash_field(&mut identity, source.source.as_bytes());
+        }
+        let mut probes = witness.files.iter().collect::<Vec<_>>();
+        probes.sort_by_key(|file| &file.path);
+        for file in probes {
+            identity.update(b"original-file-probe\0");
+            hash_field(&mut identity, file.path.as_os_str().as_encoded_bytes());
+            match file.digest {
+                Some((digest, size)) => {
+                    identity.update(&[1]);
+                    identity.update(digest.as_bytes());
+                    identity.update(&size.to_be_bytes());
+                }
+                None => {
+                    identity.update(&[0]);
+                }
+            }
+        }
+        witness.candidates = native.candidates;
+        for candidate in &witness.candidates {
+            identity.update(b"internal-candidate-membership\0");
+            candidate.fingerprint(&mut identity);
+        }
+        witness.fingerprint = PythonProjectFingerprint(*identity.finalize().as_bytes());
         witness.validate_current()?;
         for directory in private_tree {
             checkpoint(control)?;
@@ -424,7 +625,8 @@ impl Pyrefly {
         }
         checkpoint(control)?;
         Ok(PythonProjectReport {
-            modules,
+            modules: native.modules,
+            diagnostics: native.diagnostics.into_boxed_slice(),
             witness: std::sync::Arc::new(witness),
         })
     }
@@ -449,4 +651,29 @@ pub(super) fn checkpoint(control: PythonProjectControl<'_>) -> Result<(), Checke
         return Err(CheckerError::Deadline { phase: "project" });
     }
     Ok(())
+}
+
+fn hash_field(identity: &mut blake3::Hasher, bytes: &[u8]) {
+    identity.update(&(bytes.len() as u64).to_be_bytes());
+    identity.update(bytes);
+}
+
+impl Pyrefly {
+    /// Compatibility entry to the compiled native project producer. External
+    /// commands are used only by `analyze`/`analyze_in_package` per-file adapters.
+    ///
+    /// # Errors
+    /// Returns the typed native admission, capture, or State failure.
+    pub fn analyze_project(
+        &self,
+        package_root: &Path,
+        package_name: &str,
+        sources: &[PythonProjectSource<'_>],
+        profile: PythonVersion,
+        control: PythonProjectControl<'_>,
+    ) -> Result<PythonProjectReport, CheckerError> {
+        NativePythonProjectAuthority::admit()?
+            .with_timeout(self.timeout)
+            .analyze_project(package_root, package_name, sources, profile, control)
+    }
 }

@@ -2157,55 +2157,78 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // One fresh native Python State owns the entire selected frontier.
         // It is deliberately not reused: external/configuration negative reads
         // have no complete observation contract yet.
-        let python_project =
-            if target.profile.language() == backend_semantic::vocabulary::Language::Python {
-                let toolchain = self
-                    .toolchain(first_application_request)
-                    .map_err(|cause| {
-                        toolchain_terminal(first_authority, first_application_request, cause)
-                    })
-                    .map_err(|terminal| PackageSemanticError::Compile {
-                        path: first_source.relative_path.into(),
-                        terminal: Box::new(terminal),
-                    })?;
-                let sources = package
-                    .sources
-                    .iter()
-                    .map(|source| PythonProjectSource {
-                        relative_path: source.relative_path,
-                        source: source.source,
-                    })
-                    .collect::<Vec<_>>();
-                let first_source_path = package.package_root.join(first_source.relative_path);
-                Some(
-                    super::package_authority::enter_python_project_authority(
-                        PackageAuthorityRequest {
-                            package_root: package.package_root,
-                            source_path: &first_source_path,
-                            source: first_source.source.as_bytes(),
-                            unit_key: package.package_target.unit_key(),
-                            profile: target.profile,
-                            toolchain,
-                            control,
-                            configuration: package_authority_configuration,
-                        },
-                        request.lineage_name(),
-                        &sources,
-                    )
-                    .map_err(|cause| PackageSemanticError::Compile {
-                        path: first_source.relative_path.into(),
-                        terminal: Box::new(package_authority_terminal(
-                            package.package_target.target(),
-                            first_application_request,
-                            first_authority,
-                            toolchain,
-                            cause,
-                        )),
-                    })?,
+        let python_project = if target.profile.language()
+            == backend_semantic::vocabulary::Language::Python
+            && matches!(
+                package_authority_configuration.python_checker,
+                super::LocalRuntimePythonCheckerAdmission::Native { .. }
+            ) {
+            let toolchain = self
+                .toolchain(first_application_request)
+                .map_err(|cause| {
+                    toolchain_terminal(first_authority, first_application_request, cause)
+                })
+                .map_err(|terminal| PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(terminal),
+                })?;
+            let sources = package
+                .sources
+                .iter()
+                .map(|source| PythonProjectSource {
+                    relative_path: source.relative_path,
+                    source: source.source,
+                })
+                .collect::<Vec<_>>();
+            let first_source_path = package.package_root.join(first_source.relative_path);
+            Some(
+                super::package_authority::enter_python_project_authority(
+                    PackageAuthorityRequest {
+                        package_root: package.package_root,
+                        source_path: &first_source_path,
+                        source: first_source.source.as_bytes(),
+                        unit_key: package.package_target.unit_key(),
+                        profile: target.profile,
+                        toolchain,
+                        control,
+                        configuration: package_authority_configuration,
+                    },
+                    request.lineage_name(),
+                    &sources,
                 )
-            } else {
-                None
-            };
+                .map_err(|cause| PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(package_authority_terminal(
+                        package.package_target.target(),
+                        first_application_request,
+                        first_authority,
+                        toolchain,
+                        cause,
+                    )),
+                })?,
+            )
+        } else {
+            None
+        };
+        // Captured configuration and actual producer facts must affect identity,
+        // including direct callers whose source-only fallback claim omits config.
+        let plane_execution_seed = if let Some(project) = python_project.as_ref() {
+            let fingerprint = project.witness().fingerprint();
+            let mut root = blake3::Hasher::new();
+            root.update(b"compiler.python.project-input.v1\0");
+            root.update(input.input_root());
+            root.update(input.read_manifest_root().as_bytes());
+            root.update(&fingerprint.as_bytes());
+            let root = *root.finalize().as_bytes();
+            input = SemanticInputWitness::claimed_state(
+                root,
+                ScopeRoot::from_bytes(root),
+                Coverage::Partial,
+            );
+            plane_execution_seed.map(|seed| seed.with_python_project(fingerprint))
+        } else {
+            plane_execution_seed
+        };
         let source_count = package.compilation_sources().count();
         if target.profile.language() == backend_semantic::vocabulary::Language::Rust
             && let Some(configuration) = self.package_authority.rust
