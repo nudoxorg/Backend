@@ -1180,9 +1180,9 @@ fn publish_native_history_commit(
     // the per-image staging-branch CAS operations above. Staging fences are
     // intentionally shorter lived and may be followed by a marker update.
     #[cfg(test)]
-    source
+    work
         .loader
-        .wait_at_native_history_fence_gate(package.target(), source.store.root());
+        .wait_at_native_history_fence_gate(package.target(), work.store.root());
     if fence.selected_target() != package.target()
         || fence.selected_stamp() != package.selected_stamp()
         || fence.selected_image() != final_member.binding().image_key()
