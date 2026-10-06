@@ -470,12 +470,13 @@ fn transition_closure_lazy(
         .cloned()
         .collect::<Vec<_>>();
     let closure = if update.changed_sources.is_empty() {
-        WorkspaceClosure::extend_checked_nodes_with_registry(
+        WorkspaceClosure::extend_checked_nodes_with_registry_and_frontier(
             base,
             manifest,
             update.semantic_root,
             update.changed_semantics,
             objects,
+            frontier,
             &registry,
         )
     } else {
@@ -489,19 +490,18 @@ fn transition_closure_lazy(
             }
             frontier.push(object);
         }
-        WorkspaceClosure::extend_checked_nodes_with_registry(
+        WorkspaceClosure::extend_checked_nodes_with_registry_and_frontier(
             base,
             manifest,
             update.source_root,
             update.changed_sources,
             objects,
+            frontier,
             &registry,
         )
     }
     .map_err(|error| BuiltinModelError(format!("extend lazy transition closure: {error:?}")))?;
-    closure
-        .with_checked_relation_frontier(frontier, &registry)
-        .map_err(|error| BuiltinModelError(format!("retain typed publication frontier: {error:?}")))
+    Ok(closure)
 }
 
 fn admit_manifest(

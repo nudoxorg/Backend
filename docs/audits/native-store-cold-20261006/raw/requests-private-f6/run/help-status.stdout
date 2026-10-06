@@ -1,0 +1,6 @@
+backend health
+
+Report every capability as ready, unreachable, unconfigured, or detached. Check this before trusting an empty result: it says which capabilities are ready and which are simply not configured.
+
+also spelled: status
+

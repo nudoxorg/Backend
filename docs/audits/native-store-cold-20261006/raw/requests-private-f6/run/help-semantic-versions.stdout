@@ -1,0 +1,7 @@
+backend semantic-versions <PACKAGE>
+
+List immutable compiler generations retained for one exact package. Use before select-semantic-version to see which compiler generations were retained.
+
+operands
+  PACKAGE         A pinned purl or an exact local package label.
+

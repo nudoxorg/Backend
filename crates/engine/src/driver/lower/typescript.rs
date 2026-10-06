@@ -4829,8 +4829,9 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         self.pass_enum_member_accesses()?;
         self.pass_property_accesses()?;
         self.pass_docs()?;
+        self.pass_declared_member_ownership(false)?;
         self.pass_parentage()?;
-        self.pass_declared_member_inventories()?;
+        self.pass_declared_member_ownership(true)?;
         Ok(())
     }
 
@@ -4839,7 +4840,10 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     /// map to one emitted declaration. Merged declarations, unsupported body
     /// elements and constructor parameter properties stay unavailable until
     /// their complete inventory has a dedicated producer proof.
-    fn pass_declared_member_inventories(&mut self) -> Result<(), TypeScriptCollectError> {
+    fn pass_declared_member_ownership(
+        &mut self,
+        capture_inventory: bool,
+    ) -> Result<(), TypeScriptCollectError> {
         let mut declarations: HashMap<(u32, u32), Option<u32>> = HashMap::new();
         for ordinal in 0..self.facts.len() {
             if matches!(
@@ -4914,7 +4918,34 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 };
                 members.push(*member);
             }
-            if complete {
+            if complete && !capture_inventory {
+                // The AST body proves direct ownership before the lexical
+                // span sweep. Native callable ranges can include trailing
+                // trivia and overlap the compatibility signature for the
+                // same member; that overlap does not create a nested owner.
+                // Never overwrite a conflicting explicit embodiment.
+                for &member in &members {
+                    let existing = self.member_parents[member as usize];
+                    if existing != UNSET && existing != owner {
+                        return Err(TypeScriptCollectError::Rejected(FactRejection {
+                            fact: owner as usize,
+                            name_len: self.facts.names[owner as usize].len(),
+                            cause: FactFault::ConflictingParentage {
+                                entity: backend_semantic::ir::EntityId::new(member),
+                                existing: crate::driver::types::ParentageState::Bound {
+                                    parent: backend_semantic::ir::EntityId::new(existing),
+                                },
+                                requested: crate::driver::types::ParentageState::Bound {
+                                    parent: backend_semantic::ir::EntityId::new(owner),
+                                },
+                            },
+                        }));
+                    }
+                }
+                for &member in &members {
+                    self.member_parents[member as usize] = owner;
+                }
+            } else if complete {
                 self.facts
                     .capture_declared_members(owner, &members)
                     .map_err(|cause| {
@@ -11672,6 +11703,55 @@ mod lane_tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_direct_overloads_keep_interface_ownership_with_conditional_aliases()
+    -> Result<(), LaneError> {
+        use backend_semantic::ir::FactAvailability;
+        let source = concat!(
+            "type Draft<T> = T extends object ? { [K in keyof T]: Draft<T[K]> } : T;\n",
+            "type Recipe<T> = (draft: Draft<T>) => void;\n",
+            "interface IProduce {\n",
+            "  /** first overload */ <Curried>(recipe: Recipe<Curried>): Curried\n",
+            "  /** second overload */ <State>(recipe: Recipe<State>): (base: State) => State\n",
+            "  named<State>(recipe: Recipe<State>): State;\n",
+            "}\n",
+            "class Other { named(value: number): number { return value; } }\n",
+        );
+        let ir = owned_tsz_ir(source)?;
+        let owner = ir
+            .items()
+            .find(|item| item.name() == b"IProduce")
+            .ok_or(LaneError::Missing("direct overload interface"))?;
+        assert_eq!(
+            ir.entity(owner.id())
+                .expect("emitted interface")
+                .authority
+                .members,
+            FactAvailability::Captured
+        );
+        assert_eq!(
+            owner.members().len(),
+            3,
+            "both overloads and the named member are direct"
+        );
+        for member in owner.members() {
+            assert_eq!(
+                ir.item(*member).expect("direct member").kind(),
+                EntityKind::Function
+            );
+        }
+        let other = ir
+            .items()
+            .find(|item| item.name() == b"Other")
+            .ok_or(LaneError::Missing("independent named class"))?;
+        assert_eq!(other.members().len(), 1);
+        assert!(
+            !owner.members().contains(&other.members()[0]),
+            "equal named members in different owners must remain distinct"
+        );
         Ok(())
     }
 

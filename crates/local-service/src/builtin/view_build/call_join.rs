@@ -628,9 +628,35 @@ pub(crate) fn foreign_package_call_retarget(
         .map_err(|_| BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned()))?;
     let display = std::str::from_utf8(display_atom)
         .map_err(|_| BuiltinModelError("semantic graph display name is not UTF-8".to_owned()))?;
+    if foreign.kind == Some(ItemKind::Record)
+        && matches!(
+            image.image_facts().provenance,
+            backend_semantic::ir::ImageProvenance::Captured { recipe, .. }
+                if matches!(recipe.profile, backend_semantic::vocabulary::LanguageProfile::Python(_))
+        )
+    {
+        // Python's primary class binding carries its qualified declaration
+        // name. The constructor remains a distinct function declaration.
+        let Some(module) = python_record_module_specifier(path, display) else {
+            return Ok(None);
+        };
+        let resolved_paths = resolve_specifier_paths(module, caller_path, project_paths);
+        return Ok(callable_index.resolve_mention(&resolved_paths, display, ItemKind::Record));
+    }
     let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
     let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
     Ok(callable_index.resolve(&resolved_paths, display))
+}
+
+fn python_record_module_specifier<'a>(path: &'a str, display: &'a str) -> Option<&'a str> {
+    let path = foreign_dotted_module_specifier(path, display)?;
+    let (prefix, terminal) = path.rsplit_once('.')?;
+    if terminal == display {
+        Some(prefix)
+    } else {
+        // Older Python package bindings carry the module path directly.
+        Some(path)
+    }
 }
 
 pub(crate) fn foreign_namespace_call_retarget(
@@ -1742,5 +1768,174 @@ mod tsz_source_coordinate_tests {
             "a fresh source coordinate joins to the current edited declaration"
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod python_native_call_tests {
+    use super::*;
+    use backend_engine::application::{
+        LocalCompilerHost, LocalHostDiscovery, LocalHostEnvironment, LocalHostVariable,
+        OwnedPackageSource, OwnedPackageSourceSet,
+    };
+    use backend_library::interface::{
+        CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
+    };
+    use backend_semantic::ir::{Confidence, LinkKind, LinkTarget};
+    use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage};
+    use std::{ffi::OsString, fs, path::PathBuf};
+
+    #[derive(Clone)]
+    struct NativePythonEnvironment(PathBuf);
+
+    impl LocalHostEnvironment for NativePythonEnvironment {
+        fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+            (variable == LocalHostVariable::NudoxDataRoot).then(|| self.0.clone().into_os_string())
+        }
+
+        fn search_path(&self) -> Option<OsString> {
+            Some(OsString::new())
+        }
+    }
+
+    #[test]
+    fn python_record_module_path_retains_exact_symbol_boundary() {
+        assert_eq!(
+            python_record_module_specifier("requests.models.Request", "Request"),
+            Some("requests.models")
+        );
+        assert_eq!(
+            python_record_module_specifier("requests.models", "Request"),
+            Some("requests.models")
+        );
+        assert_eq!(python_record_module_specifier("Request", "Request"), None);
+        assert_eq!(
+            python_record_module_specifier("requests..Request", "Request"),
+            None
+        );
+        assert_eq!(
+            python_record_module_specifier("requests/models.Request", "Request"),
+            None
+        );
+    }
+
+    #[test]
+    fn native_python_record_call_joins_class_without_retargeting_constructor() {
+        let root = tempfile::tempdir().expect("isolated native producer fixture");
+        let package_root = root.path().join("project");
+        fs::create_dir_all(package_root.join("src/requests")).expect("package source root");
+        let modules = [
+            ("src/requests/__init__.py", ""),
+            (
+                "src/requests/models.py",
+                "class Request:\n    def __init__(self):\n        self.label = 'request'\n",
+            ),
+            (
+                "src/requests/sessions.py",
+                "from .models import Request\n\ndef make():\n    # UTF-8: café\n    return Request()\n",
+            ),
+        ];
+        for (path, source) in &modules {
+            fs::write(package_root.join(path), source).expect("actual module bytes");
+        }
+        let client = LocalCompilerHost::new(
+            NativePythonEnvironment(root.path().join("compiler")),
+            LocalHostDiscovery::ExplicitOnly,
+        )
+        .open()
+        .expect("compiled native producer with empty PATH and no configured tools");
+        let request = PackageCompileRequest::new(
+            GenerateTarget {
+                correlation: CorrelationId(98),
+                profile: LanguageProfile::Python(PythonVersion::Python314),
+                stage: Stage::LowerIr,
+            },
+            PackageUrl::try_from("pkg:pypi/requests@1.0.0".to_owned())
+                .expect("exact package coordinate"),
+        )
+        .expect("native Python compilation profile");
+        let sources = modules
+            .iter()
+            .map(|(path, source)| OwnedPackageSource::new(path, source).expect("captured source"))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let staged = client
+            .compile_package_sources_staged(
+                OwnedPackageSourceSet::new(request, package_root, sources)
+                    .expect("complete actual source frontier"),
+            )
+            .expect("native Python authority and canonical lowering");
+        let images = (0..staged.artifacts().len())
+            .map(|ordinal| {
+                SemanticImageView::reopen(
+                    staged
+                        .semantic_output_object(ordinal)
+                        .expect("canonical semantic artifact")
+                        .bytes(),
+                )
+                .expect("actual canonical image")
+            })
+            .collect::<Vec<_>>();
+        let views = images.iter().collect::<Vec<_>>();
+        let index =
+            ProjectCallableIndex::build_from_views(&views).expect("actual declaration index");
+        let paths = modules.iter().map(|(path, _)| path.to_string()).collect();
+        let model_paths = BTreeSet::from(["src/requests/models.py".to_owned()]);
+        let class = index
+            .resolve_mention(&model_paths, "Request", ItemKind::Record)
+            .expect("primary native class declaration");
+        let constructor = index
+            .resolve(&model_paths, "__init__")
+            .expect("distinct native constructor declaration");
+        assert_ne!(class, constructor);
+        assert_eq!(index.resolve(&model_paths, "Request"), None);
+        let published = BTreeSet::from([class, constructor]);
+        let caller = images
+            .iter()
+            .find(|image| compiled_source_path(image).unwrap() == "src/requests/sessions.py")
+            .expect("actual caller image");
+        let expected_start = modules[2].1.rfind("Request()").unwrap() as u32;
+        let mut observed_calls = 0;
+        for (_, link) in caller.canonical_links() {
+            let LinkTarget::External(external) = link.target else {
+                continue;
+            };
+            let Some(ExternalTarget::Foreign(foreign)) = caller.external(external) else {
+                continue;
+            };
+            if link.kind != LinkKind::Calls || foreign.kind != Some(ItemKind::Record) {
+                continue;
+            }
+            assert_eq!(
+                caller.atom(foreign.path),
+                Some(b"requests.models.Request".as_slice())
+            );
+            assert_eq!(caller.atom(foreign.display), Some(b"Request".as_slice()));
+            assert_eq!(link.confidence, Confidence::Compiler);
+            let source = link.source.expect("compiler-observed call byte range");
+            assert_eq!(
+                (source.start(), source.end()),
+                (expected_start, expected_start + 7)
+            );
+            let constructor_only = BTreeSet::from([constructor]);
+            let absent_paths = BTreeSet::new();
+            let join = |paths, published| {
+                join_project_call(
+                    caller,
+                    link.kind,
+                    external,
+                    "src/requests/sessions.py",
+                    paths,
+                    &index,
+                    published,
+                )
+                .expect("exact compiler call join")
+            };
+            assert_eq!(join(&paths, &published), Some(class));
+            assert_eq!(join(&paths, &constructor_only), None);
+            assert_eq!(join(&absent_paths, &published), None);
+            observed_calls += 1;
+        }
+        assert_eq!(observed_calls, 1, "native class binding must be present");
     }
 }

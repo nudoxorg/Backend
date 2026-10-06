@@ -1,0 +1,7 @@
+{
+  "slug": "protocol",
+  "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c1a88a686c0ec0bed5b54ee996776bb30078d3ac9418e434dddb50d9ac6e97c4::request",
+  "cause": "unproven",
+  "detail": "a frame, DTO, or identity proof failed admission: command execution failed: semantic graph source is absent from the selected view",
+  "answer": "fault"
+}

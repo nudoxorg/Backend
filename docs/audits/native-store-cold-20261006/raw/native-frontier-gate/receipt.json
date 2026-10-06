@@ -1,0 +1,67 @@
+{
+  "schema": "nudox.native-stored-frontier-regression.v1",
+  "source": {
+    "production_commit": "6e32a028d6595715700b139b6fa5de1db9e6623c",
+    "commit": "69e03e7155074f1d9e56399a74cede18992a5f82",
+    "tree": "3255d716bfad66b476ba30f7486f8187907abb24",
+    "clean_before_launch": true
+  },
+  "command": "managed cargo test -p backend-store --lib stored_extension_installs_auxiliary_children_before_membership_rebind -j4 -- --test-threads=1 --nocapture",
+  "exit": 0,
+  "tests": {
+    "passed": 1,
+    "failed": 0,
+    "filtered": 274,
+    "seconds": 3.49
+  },
+  "binary": {
+    "path": "/Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006/.local/build/staged-ingest/.nudox-cargo/slot-0/debug/deps/backend_store-9a66300fbe9b1cf0",
+    "sha256": "e1a8ba732669b0e449c063636be2291810bc91ff2658c99c08fb6277339712bd"
+  },
+  "gates": [
+    "strict refusal when auxiliary branch children missing",
+    "complete typed 20000-row auxiliary frontier installed before stored rebind",
+    "control manifest exactly3",
+    "durable membership exactly3",
+    "childnodes exact CAS bytes outside logical control membership",
+    "independent cold full-membership admission"
+  ],
+  "prior_fixture_red": {
+    "source": "6e32a028d6595715700b139b6fa5de1db9e6623c",
+    "binary_sha256": "3e0ec9e62a1375ee950f49a227e8bacad9983ed42bf5c60fc383834aecddfd15",
+    "exit": 101,
+    "reason": "initial three fixture controls were not ordered canonically;69e fixture-only sorts them"
+  },
+  "raw_files": [
+    {
+      "path": "sol61-native-membership-frontier-69e03e7155-fleet-20261006.json",
+      "bytes": 17155,
+      "sha256": "90d73e2960bbdcdcf6dd736b86086b5b5ec4a1552c18056367b252b5cac4c2e4"
+    },
+    {
+      "path": "sol61-native-membership-frontier-69e03e7155-fleet-20261006.json.log",
+      "bytes": 17155,
+      "sha256": "90d73e2960bbdcdcf6dd736b86086b5b5ec4a1552c18056367b252b5cac4c2e4"
+    },
+    {
+      "path": "sol61-native-membership-frontier-69e03e7155.log",
+      "bytes": 9222,
+      "sha256": "cbbfab7b5266a4e280e7ccd16d91c617547a657ade692d57aef4566c298c590b"
+    },
+    {
+      "path": "sol61-native-membership-frontier-6e32a028d6-fleet-20261006.json",
+      "bytes": 25608,
+      "sha256": "aa804cb10bb4856c51ce8815e07eacdf50fbf2311c13ac104019fb52effac543"
+    },
+    {
+      "path": "sol61-native-membership-frontier-6e32a028d6-fleet-20261006.json.log",
+      "bytes": 25608,
+      "sha256": "aa804cb10bb4856c51ce8815e07eacdf50fbf2311c13ac104019fb52effac543"
+    },
+    {
+      "path": "sol61-native-membership-frontier-6e32a028d6.log",
+      "bytes": 9753,
+      "sha256": "45d03d155d69a8d4360335781753b184f2cf5d83a962c37932b68da28795547a"
+    }
+  ]
+}

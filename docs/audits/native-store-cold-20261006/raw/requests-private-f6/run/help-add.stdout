@@ -1,0 +1,12 @@
+backend add [PATH] [--execution-intent INTENT]
+
+Index a local project directory, or refresh its existing indexed contents. Pass the absolute local project directory to index or re-index it. The CLI also accepts index as an alias for add. Call it when packages does not list the project, or when its source changed. Use background execution when the request may be calibrated remotely.
+
+operands
+  PATH            Local project directory to index or re-index; use `.` for the current directory.
+
+options
+  --execution-intent  Compilation class: interactive protects local latency; background permits bounded remote calibration. Defaults to interactive.
+
+also spelled: index
+

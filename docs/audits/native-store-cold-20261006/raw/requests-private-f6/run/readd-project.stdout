@@ -1,0 +1,7 @@
+{
+  "slug": "protocol",
+  "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+  "cause": "unproven",
+  "detail": "a frame, DTO, or identity proof failed admission: command execution failed: index job did not publish: Refused(ProductText(\"daemon error: Workspace(\\\"workspace error: Model(\\\\\\\"extend lazy transition closure: Corrupt\\\\\\\")\\\")\"))",
+  "answer": "fault"
+}

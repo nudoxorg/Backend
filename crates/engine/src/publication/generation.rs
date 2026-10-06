@@ -206,6 +206,25 @@ pub(super) fn insert<'bytes>(
     }
 }
 
+/// A contextual semantic closure can reference one immutable content object
+/// from several distinct entry keys. MemoryStore's AlreadyPresent witness
+/// requires equality of both the complete object descriptor and exact bytes;
+/// conflicting descriptors or bytes retain its integrity rejection.
+#[allow(
+    clippy::result_large_err,
+    reason = "retains exact content-object insertion rejection"
+)]
+pub(super) fn insert_contextual_object<'bytes>(
+    store: &mut MemoryStore<ObjectDomain, &'bytes [u8]>,
+    object: ObjectRef<ObjectDomain>,
+    bytes: &'bytes [u8],
+) -> Result<(), GenerationBuildError> {
+    match store.insert_owned(object, bytes) {
+        Ok(InsertOutcome::Inserted | InsertOutcome::AlreadyPresent) => Ok(()),
+        Err(rejected) => Err(rejected_insert(rejected)),
+    }
+}
+
 fn rejected_insert(rejected: RejectedInsert<ObjectDomain, &[u8]>) -> GenerationBuildError {
     GenerationBuildError::StoreInsert {
         object: rejected.reference,

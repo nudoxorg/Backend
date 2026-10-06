@@ -57,7 +57,7 @@ pub struct SemanticPublicationScratch<
     'locality,
     'binding,
 > {
-    /// Output for the complete schema-2 package manifest.
+    /// Output for the complete contextual semantic package manifest.
     pub manifest_output: &'manifest mut [u8],
     /// Decoded manifest facts proving every paired artifact row.
     pub manifest_facts: &'facts mut [Option<StoredFragmentFacts>],

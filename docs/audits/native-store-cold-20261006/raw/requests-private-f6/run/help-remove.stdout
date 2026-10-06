@@ -1,0 +1,7 @@
+backend remove <PATH>
+
+Remove one package and its derived indexes from the shelf. Use to stop answering from a project you no longer read; its derived indexes go with it.
+
+operands
+  PATH            Project directory to drop from the shelf.
+

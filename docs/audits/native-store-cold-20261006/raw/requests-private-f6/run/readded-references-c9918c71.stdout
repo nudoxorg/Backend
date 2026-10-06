@@ -1,0 +1,7 @@
+{
+  "slug": "invalid-query",
+  "operand": "",
+  "cause": "malformed",
+  "detail": "references target is absent from the selected view",
+  "answer": "fault"
+}

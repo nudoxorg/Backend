@@ -1,0 +1,13 @@
+backend resolve <TEXT> [--limit COUNT] [--cursor CURSOR]
+
+Turn a readable address into exact declarations, reporting ambiguity instead of guessing. Use when you have a name from prose or a stack trace and need the exact coordinates it could mean.
+
+operands
+  TEXT            A readable declaration name or address.
+
+options
+  --limit         Maximum rows in this page, 1 to 200.
+  --cursor        Opaque continuation returned by the preceding page; bound to its query and index snapshot.
+
+also spelled: name
+

@@ -113,7 +113,7 @@ fn canonical_manifest_deduplicates_byte_identical_empty_module_fragments() -> Re
     clippy::result_large_err,
     reason = "focused test retains exact semantic duplicate-fragment admission diagnostics"
 )]
-fn canonical_semantic_manifest_deduplicates_matching_empty_images_and_rejects_conflicts()
+fn canonical_semantic_manifest_deduplicates_exact_pairs_and_preserves_distinct_images()
 -> Result<(), TestError> {
     let (bytes, length) = fragment(b"same-empty-source", b"empty-module")?;
     let inputs = [
@@ -141,14 +141,53 @@ fn canonical_semantic_manifest_deduplicates_matching_empty_images_and_rejects_co
         SemanticImageRegion::from_measurement(3, 3),
     ];
     let mut conflicting_scratch = [0; 2];
+    let distinct = CanonicalSemanticCompilation::prepare(
+        &inputs,
+        &conflicting_images,
+        &conflicting_bytes,
+        &mut conflicting_scratch,
+    )?;
+    let mut distinct_output = [0_u8; 1024];
+    let mut distinct_facts = [None; 2];
+    let distinct_manifest = distinct.write_into(&mut distinct_output, &mut distinct_facts)?;
+    assert_eq!(distinct_manifest.fragment_count, 2);
+    assert_eq!(
+        distinct_manifest.format,
+        super::CompilationManifestFormat::SemanticV3
+    );
+    let entries = distinct_manifest.fragments().collect::<Vec<_>>();
+    assert_eq!(entries[0].fragment, entries[1].fragment);
+    assert!(
+        entries[0].semantic_image.map(|fact| fact.identity)
+            < entries[1].semantic_image.map(|fact| fact.identity)
+    );
+    let canonical_bytes = distinct_manifest.as_ref().to_vec();
+
+    // Older semantic grammar remains strict: changing only its version cannot
+    // smuggle repeated content into a schema whose canonical key was compact-only.
+    let mut legacy = canonical_bytes.clone();
+    legacy[8..10].copy_from_slice(&2_u16.to_le_bytes());
+    let mut scratch = [None; 2];
     assert!(matches!(
-        CanonicalSemanticCompilation::prepare(
-            &inputs,
-            &conflicting_images,
-            &conflicting_bytes,
-            &mut conflicting_scratch,
-        ),
-        Err(CompilationPrepareError::DuplicateFragment { .. })
+        CompilationManifestView::validate(&legacy, &mut scratch),
+        Err(CompilationManifestError::Order { ordinal: 1, .. })
+    ));
+
+    let header = super::COMPILATION_MANIFEST_HEADER_BYTES;
+    let width = super::COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES;
+    let mut duplicate = canonical_bytes.clone();
+    let first = duplicate[header..header + width].to_vec();
+    duplicate[header + width..header + 2 * width].copy_from_slice(&first);
+    assert!(matches!(
+        CompilationManifestView::validate(&duplicate, &mut scratch),
+        Err(CompilationManifestError::SemanticOrder { ordinal: 1, .. })
+    ));
+    let mut reversed = canonical_bytes;
+    let (first_region, second_region) = reversed[header..].split_at_mut(width);
+    first_region.swap_with_slice(second_region);
+    assert!(matches!(
+        CompilationManifestView::validate(&reversed, &mut scratch),
+        Err(CompilationManifestError::SemanticOrder { ordinal: 1, .. })
     ));
     Ok(())
 }

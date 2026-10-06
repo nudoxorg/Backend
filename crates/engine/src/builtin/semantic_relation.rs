@@ -347,7 +347,7 @@ impl SemanticPublicationClaim {
         manifest: CompilationManifestFacts,
         binding: CompilationBindingFacts,
     ) -> Result<Self, &'static str> {
-        if manifest.format != CompilationManifestFormat::SemanticV2 {
+        if !manifest.format.is_semantic() {
             return Err("compiler publication does not name semantic images");
         }
         if manifest.fragment_count == 0 {
@@ -1077,6 +1077,7 @@ pub(super) fn decode_claim(bytes: &[u8]) -> Result<SemanticPublicationClaim, Rel
             identity: manifest_identity,
             format: match manifest_format {
                 2 => CompilationManifestFormat::SemanticV2,
+                3 => CompilationManifestFormat::SemanticV3,
                 _ => return Err(RelationDecodeError::Malformed),
             },
             fragment_count,
@@ -1097,6 +1098,7 @@ const fn manifest_format_tag(format: CompilationManifestFormat) -> u8 {
     match format {
         CompilationManifestFormat::CompactV1 => 1,
         CompilationManifestFormat::SemanticV2 => 2,
+        CompilationManifestFormat::SemanticV3 => 3,
     }
 }
 
@@ -1348,6 +1350,25 @@ mod tests {
             },
             *binding,
         )
+    }
+
+    #[test]
+    fn contextual_semantic_claim_round_trips_without_image_bytes() -> Result<(), &'static str> {
+        let previous = claim()?;
+        let contextual = SemanticPublicationClaim::admit(
+            CompilationManifestFacts {
+                format: CompilationManifestFormat::SemanticV3,
+                ..previous.manifest()
+            },
+            previous.binding(),
+        )?;
+        let mut bytes = Vec::new();
+        encode_claim(contextual, &mut bytes);
+        assert_eq!(
+            decode_claim(&bytes).map_err(|_| "contextual claim decode")?,
+            contextual
+        );
+        Ok(())
     }
 
     #[test]

@@ -1,0 +1,7 @@
+backend source <COORDINATE>
+
+Read the source text of one declaration with a few lines of context either side. Use when the signature and documentation are not enough and you need the code itself.
+
+operands
+  COORDINATE      Exact declaration coordinate from a search or outline result.
+

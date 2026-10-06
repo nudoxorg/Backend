@@ -15,9 +15,9 @@ use backend_version::ObjectDomain;
 use crate::publication::manifest::{CanonicalSemanticCompilation, CompilationManifestView};
 
 use super::{
-    GenerationBuildError, MANIFEST_ENTRY_KEY, fragment_object, insert, manifest_object,
-    next_fragment_bytes, next_object, next_semantic_image_bytes, push, semantic_image_object,
-    store_capacity, verify_generation,
+    GenerationBuildError, MANIFEST_ENTRY_KEY, fragment_object, insert_contextual_object as insert,
+    manifest_object, next_fragment_bytes, next_object, next_semantic_image_bytes, push,
+    semantic_image_object, store_capacity, verify_generation,
 };
 
 /// Runs a continuation while holding a complete-generation witness over each
@@ -102,7 +102,7 @@ pub(crate) fn with_verified_semantic_generation<
     Ok(visit(&root, verified))
 }
 
-/// Rebuilds and verifies a schema-2 generation from caller-owned compact and
+/// Rebuilds and verifies a paired semantic generation from caller-owned compact and
 /// semantic artifact bytes in canonical manifest order.
 #[allow(
     clippy::result_large_err,

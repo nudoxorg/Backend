@@ -1,0 +1,15 @@
+0cf54344102d96199dc82d9e1dda9612fe5db1c1
+00ddab182d427678855bedfbdf49938adbf7873b
+rustc 1.97.1 (8bab26f4f 2026-07-14)
+binary: rustc
+commit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452
+commit-date: 2026-07-14
+host: aarch64-apple-darwin
+release: 1.97.1
+LLVM version: 22.1.6
+cargo 1.97.1 (c980f4866 2026-06-30)
+.local/build/point-metadata-test/.nudox-cargo/slot-0/debug/deps/compiler_publication-5ab927cfff201778: Mach-O 64-bit executable arm64
+.local/build/point-metadata-test/.nudox-cargo/slot-0/debug/deps/backend_engine-d22ed0d1305b5b1e:       Mach-O 64-bit executable arm64
+7c19f10f1f33f7466dae191be102f147dd9811d51d4401eb05b205626ddb67f0  .local/build/point-metadata-test/.nudox-cargo/slot-0/debug/deps/compiler_publication-5ab927cfff201778
+dc7d967d5d21e217925d3451972ed1bc1ac89d8029b863bfca8452d0a7150711  .local/build/point-metadata-test/.nudox-cargo/slot-0/debug/deps/backend_engine-d22ed0d1305b5b1e
+  PID  PGID COMMAND

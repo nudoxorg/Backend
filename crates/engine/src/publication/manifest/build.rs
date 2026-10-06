@@ -4,6 +4,7 @@
 //! Canonical package manifests over complete recipe-bearing IR fragments.
 
 use core::{num::TryFromIntError, ops::Deref};
+use std::collections::TryReserveError;
 
 use crate::driver::CompiledFragment;
 use backend_semantic::ir::{
@@ -31,6 +32,7 @@ pub const COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES: usize = 440;
 pub(super) const MAGIC: [u8; 8] = *b"NUDXCPM\0";
 pub(super) const VERSION: u16 = 1;
 pub(super) const SEMANTIC_VERSION: u16 = 2;
+pub(super) const CONTEXTUAL_SEMANTIC_VERSION: u16 = 3;
 pub(super) const RANGE_COUNT: usize = 6;
 pub(super) const RANGE_BYTES: usize = 44;
 pub(super) const SOURCE_IDENTITY_OFFSET: usize = 0;
@@ -270,27 +272,39 @@ impl<'input, 'scratch, 'fragment, 'images>
                 });
             }
         }
+        // Derive both identities once from the admitted exact bytes. The
+        // temporary key storage is measured by the already checked input count
+        // and reserved fallibly; no caller-provided identity gains authority.
+        let mut keys = Vec::new();
+        keys.try_reserve_exact(inputs.len())
+            .map_err(CompilationPrepareError::CanonicalKeyAllocation)?;
         let ordinals = &mut scratch[..inputs.len()];
         for (ordinal, slot) in ordinals.iter_mut().enumerate() {
-            PublicationFragment::from_compiled(&inputs[ordinal])
+            let fragment = PublicationFragment::from_compiled(&inputs[ordinal])
                 .map_err(|source| CompilationPrepareError::Fragment { ordinal, source })?;
+            let image = images[ordinal].facts(semantic_bytes).ok_or(
+                CompilationPrepareError::SemanticImageRegion {
+                    ordinal,
+                    offset: images[ordinal].offset,
+                    byte_length: images[ordinal].byte_length,
+                    available: semantic_bytes.len(),
+                },
+            )?;
+            keys.push((fragment.manifest.fragment, image.identity));
             *slot = ordinal;
         }
-        ordinals.sort_unstable_by_key(|ordinal| fragment_identity(&inputs[*ordinal]));
+        // Compact projection identity names content; full-image identity also
+        // binds package/path provenance. Every distinct pair remains an entry.
+        ordinals.sort_unstable_by_key(|ordinal| keys[*ordinal]);
         let mut unique_len = 0_usize;
         for position in 0..ordinals.len() {
             let ordinal = ordinals[position];
-            if let Some(previous_ordinal) = unique_len
-                .checked_sub(1)
-                .map(|index| ordinals[index])
-                && fragment_identity(&inputs[previous_ordinal])
-                    == fragment_identity(&inputs[ordinal])
+            if let Some(previous_ordinal) = unique_len.checked_sub(1).map(|index| ordinals[index])
+                && keys[previous_ordinal].0 == keys[ordinal].0
             {
-                if inputs[previous_ordinal].fragment.as_ref()
-                    != inputs[ordinal].fragment.as_ref()
-                {
+                if inputs[previous_ordinal].fragment.as_ref() != inputs[ordinal].fragment.as_ref() {
                     return Err(CompilationPrepareError::DuplicateFragment {
-                        identity: fragment_identity(&inputs[ordinal]),
+                        identity: keys[ordinal].0,
                     });
                 }
                 let previous_image = images[previous_ordinal].bytes(semantic_bytes).ok_or(
@@ -309,12 +323,16 @@ impl<'input, 'scratch, 'fragment, 'images>
                         available: semantic_bytes.len(),
                     },
                 )?;
-                if previous_image != observed_image {
-                    return Err(CompilationPrepareError::DuplicateFragment {
-                        identity: fragment_identity(&inputs[ordinal]),
-                    });
+                let previous_identity = keys[previous_ordinal].1;
+                let observed_identity = keys[ordinal].1;
+                if previous_identity == observed_identity {
+                    if previous_image != observed_image {
+                        return Err(CompilationPrepareError::DuplicateSemanticImage {
+                            identity: observed_identity,
+                        });
+                    }
+                    continue;
                 }
-                continue;
             }
             ordinals[unique_len] = ordinal;
             unique_len += 1;
@@ -369,7 +387,7 @@ impl<'input, 'scratch, 'fragment, 'images>
         })?;
         let written = &mut output[..required];
         written[..8].copy_from_slice(&MAGIC);
-        written[8..10].copy_from_slice(&SEMANTIC_VERSION.to_le_bytes());
+        written[8..10].copy_from_slice(&CONTEXTUAL_SEMANTIC_VERSION.to_le_bytes());
         written[10..12].copy_from_slice(&0_u16.to_le_bytes());
         written[12..16].copy_from_slice(&count.to_le_bytes());
         for (ordinal, input_ordinal) in self.ordinals.iter().copied().enumerate() {
@@ -445,15 +463,11 @@ impl<'input, 'scratch, 'fragment> CanonicalCompilation<'input, 'scratch, 'fragme
         let mut unique_len = 0_usize;
         for position in 0..ordinals.len() {
             let ordinal = ordinals[position];
-            if let Some(previous_ordinal) = unique_len
-                .checked_sub(1)
-                .map(|index| ordinals[index])
+            if let Some(previous_ordinal) = unique_len.checked_sub(1).map(|index| ordinals[index])
                 && fragment_identity(&inputs[previous_ordinal])
                     == fragment_identity(&inputs[ordinal])
             {
-                if inputs[previous_ordinal].fragment.as_ref()
-                    != inputs[ordinal].fragment.as_ref()
-                {
+                if inputs[previous_ordinal].fragment.as_ref() != inputs[ordinal].fragment.as_ref() {
                     return Err(CompilationPrepareError::DuplicateFragment {
                         identity: fragment_identity(&inputs[ordinal]),
                     });
@@ -570,11 +584,20 @@ pub enum CompilationPrepareError {
         /// Available concatenated image bytes.
         available: usize,
     },
+    /// Exact input-count key storage could not be reserved before canonical sorting.
+    #[error("could not reserve measured semantic canonical key storage")]
+    CanonicalKeyAllocation(#[source] TryReserveError),
     /// Two inputs named the same immutable complete fragment identity.
     #[error("publication includes fragment identity {identity:?} more than once")]
     DuplicateFragment {
         /// Duplicate complete fragment identity.
         identity: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
+    },
+    /// Equal full-image identities named different exact bytes.
+    #[error("publication includes conflicting bytes for semantic image {identity:?}")]
+    DuplicateSemanticImage {
+        /// Exact full-image identity whose content disagreed.
+        identity: backend_semantic::ir::SemanticImageIdentity,
     },
     /// One driver output did not agree with its own validated compact fragment facts.
     #[error("compiler output {ordinal} cannot enter a canonical publication")]

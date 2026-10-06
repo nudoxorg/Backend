@@ -1,0 +1,30 @@
+{
+  "schema": "nudox.runtime-build-manifest.v1",
+  "source": {
+    "commit": "f6eee1512c723460844c7e563b5833717bb9f548",
+    "tree": "9e68e115eee8c225604603f5a96cc3a32a725112",
+    "clean_before_launch": true
+  },
+  "executables": {
+    "backend-locald": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/images/backend-locald",
+      "sha256": "feb4735f313c0c88df0815572aaa7c0e6f43c3878bf2127e04c73fbb919e5ce6",
+      "bytes": 684717600
+    },
+    "backend-cli": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/images/backend-cli",
+      "sha256": "532c298fcd05802e3eff7c8956e52148d351f30451b0799108534f37e7a57be9",
+      "bytes": 219025344
+    },
+    "backend-mcp": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/images/backend-mcp",
+      "sha256": "73268455dac095e27fdce8b0a1530d2968420d4bdc7cb7432e4f7e2777f79a46",
+      "bytes": 159795920
+    }
+  },
+  "root_receipt": {
+    "schema": "nudox.runtime-artifact-build-receipt.v1",
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/runtime-artifact-build-receipt.json",
+    "sha256": "f80b14fa36254ab4be3bebb689aa3656701d26492ad7f0dcd40477a9f553bf25"
+  }
+}
