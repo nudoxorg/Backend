@@ -137,6 +137,9 @@ pub(crate) struct TypeScriptDirectoryEntry {
     pub(crate) path: Box<Path>,
     pub(crate) canonical_path: Option<Box<Path>>,
     pub(crate) kind: TypeScriptDirectoryEntryKind,
+    /// Kind observed through `stat`, which follows a symbolic link like Node's
+    /// TypeScript system adapter does while enumerating a directory.
+    pub(crate) effective_kind: Option<TypeScriptDirectoryEntryKind>,
     pub(crate) identity: FileIdentity,
 }
 
@@ -488,6 +491,56 @@ impl TypeScriptResolverCapability<'_> {
         Ok(output)
     }
 
+    /// Admits one exact directory enumeration observed by the TypeScript system
+    /// adapter and returns its canonical directory key. No recursive walk or
+    /// extension filtering is performed here.
+    pub(crate) fn observe_program_directory(
+        &mut self,
+        path: &Path,
+    ) -> Result<Option<PathBuf>, TypeScriptProjectHostError> {
+        let lexical = self.witness.admit_lexical_path(path)?;
+        let Some((canonical, identity)) = self.capture_realpath(&lexical)? else {
+            self.record_missing(lexical, None)?;
+            return Ok(None);
+        };
+        if !self.witness.path_is_admitted(&canonical) {
+            return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+                path: canonical.into_boxed_path(),
+            });
+        }
+        let metadata =
+            fs::metadata(&canonical).map_err(|source| TypeScriptProjectHostError::PackagePath {
+                path: canonical.clone().into_boxed_path(),
+                source,
+            })?;
+        self.record_realpath(lexical, Some(canonical.clone()), identity)?;
+        if !metadata.is_dir() {
+            return Ok(None);
+        }
+        self.observe_directory(&canonical)?;
+        Ok(Some(canonical))
+    }
+
+    pub(crate) fn observed_program_directory_entries(
+        &self,
+        canonical_path: &Path,
+    ) -> Option<&[TypeScriptDirectoryEntry]> {
+        self.observations
+            .directories
+            .get(canonical_path)
+            .map(|snapshot| snapshot.entries.as_ref())
+    }
+
+    pub(crate) fn program_directory_entry_is_admitted(
+        &self,
+        entry: &TypeScriptDirectoryEntry,
+    ) -> bool {
+        entry
+            .canonical_path
+            .as_deref()
+            .is_none_or(|path| self.witness.path_is_admitted(path))
+    }
+
     pub(crate) fn loaded_sources(
         &self,
     ) -> &std::collections::BTreeMap<PathBuf, TypeScriptFileInput> {
@@ -580,6 +633,13 @@ impl TypeScriptResolverCapability<'_> {
                     TypeScriptDirectoryEntryKind::Directory => 2,
                     TypeScriptDirectoryEntryKind::Symlink => 3,
                     TypeScriptDirectoryEntryKind::Other => 4,
+                }]);
+                digest.update(&[match entry.effective_kind {
+                    Some(TypeScriptDirectoryEntryKind::RegularFile) => 1,
+                    Some(TypeScriptDirectoryEntryKind::Directory) => 2,
+                    Some(TypeScriptDirectoryEntryKind::Symlink) => 3,
+                    Some(TypeScriptDirectoryEntryKind::Other) => 4,
+                    None => 0,
                 }]);
                 match entry.canonical_path.as_deref() {
                     Some(path) => {
@@ -1507,10 +1567,29 @@ fn capture_directory_snapshot(
                 });
             }
         };
+        let effective_kind = match canonical_path.as_deref() {
+            Some(path) => {
+                let metadata = fs::metadata(path).map_err(|source| {
+                    TypeScriptProjectHostError::PackagePath {
+                        path: path.to_path_buf().into_boxed_path(),
+                        source,
+                    }
+                })?;
+                Some(if metadata.is_dir() {
+                    TypeScriptDirectoryEntryKind::Directory
+                } else if metadata.is_file() {
+                    TypeScriptDirectoryEntryKind::RegularFile
+                } else {
+                    TypeScriptDirectoryEntryKind::Other
+                })
+            }
+            None => None,
+        };
         entries.push(TypeScriptDirectoryEntry {
             path: entry_path.into_boxed_path(),
             canonical_path,
             kind,
+            effective_kind,
             identity: entry_identity,
         });
     }
@@ -3551,6 +3630,10 @@ pub enum TypeScriptProjectHostError {
     ConfigMissing { config: Box<Path> },
     #[error("the admitted TypeScript compiler API rejected its program input: {message}")]
     CompilerApiBridge { message: Box<str> },
+    #[error("TypeScript compiler I/O closure exceeded its {phase} budget: {detail}")]
+    CompilerIoClosureLimit { phase: Box<str>, detail: Box<str> },
+    #[error("TypeScript compiler I/O closure did not match admitted directory state: {detail}")]
+    CompilerIoClosureMismatch { detail: Box<str> },
     #[error("TypeScript configuration graph contains a cycle at {config:?}")]
     ConfigCycle { config: Box<Path> },
     #[error("TypeScript configuration {config:?} escapes workspace boundary {boundary:?}")]

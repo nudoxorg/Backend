@@ -23,7 +23,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::typescript_host::{
-    MAX_RESOLVER_DEPTH, TypeScriptProjectHostError, TypeScriptProjectInputs,
+    TypeScriptDirectoryEntryKind, TypeScriptProjectHostError, TypeScriptProjectInputs,
     TypeScriptResolverCapability, TypeScriptResolverWitness,
 };
 use super::{ToolchainProbeLimits, toolchain_probe::run_typescript_program_bridge};
@@ -32,6 +32,11 @@ use crate::application::compiler::PackageSource;
 const MAX_BRIDGE_STDOUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_BRIDGE_FILES: usize = 16_384;
 const MAX_BRIDGE_REQUESTS: usize = 131_072;
+const MAX_BRIDGE_ACCESS_OPERATIONS: usize = 131_072;
+const MAX_BRIDGE_DIRECTORY_QUERIES: usize = 16_384;
+const MAX_BRIDGE_DIRECTORY_ENUMERATIONS: usize = 65_536;
+const MAX_BRIDGE_DIRECTORY_ENTRIES: usize = 65_536;
+const MAX_CLOSURE_REPLAY_WORK_UNITS: u64 = 2_000_000;
 const MAX_PROJECT_WORK_UNITS: u64 = 16_000_000_000;
 const LIB_VIRTUAL_PREFIX: &str = "@compiler/lib.";
 
@@ -51,6 +56,8 @@ pub(crate) struct NativeTypeScriptInputs {
 pub(crate) struct TypeScriptProgramClosureWitness {
     resolver: TypeScriptResolverWitness,
     compiler_accesses: Box<[ProgramAccess]>,
+    directory_views: Box<[ProgramDirectoryView]>,
+    metrics: ProgramClosureMetrics,
     access_digest: [u8; 32],
 }
 
@@ -59,7 +66,9 @@ impl TypeScriptProgramClosureWitness {
         &self,
         witness: &super::typescript_host::TypeScriptProjectWitness,
     ) -> Result<(), TypeScriptProjectHostError> {
-        if compiler_access_digest(&self.compiler_accesses)? != self.access_digest {
+        if compiler_access_digest(&self.compiler_accesses, &self.directory_views, self.metrics)?
+            != self.access_digest
+        {
             return Err(bridge_error(
                 "retained Compiler API directory transcript changed after construction",
             ));
@@ -82,9 +91,23 @@ struct ProgramReport {
     #[serde(default)]
     accesses: Vec<ProgramAccess>,
     #[serde(default)]
+    directory_views: Vec<ProgramDirectoryView>,
+    #[serde(default)]
+    access_operations: usize,
+    #[serde(default)]
+    directory_queries: usize,
+    #[serde(default)]
+    directory_enumerations: usize,
+    #[serde(default)]
+    directory_visited_entries: usize,
+    #[serde(default)]
+    directory_verification_entries: usize,
+    #[serde(default)]
     unsupported_options: Vec<String>,
     #[serde(default)]
     error: Option<String>,
+    #[serde(default)]
+    failure_kind: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,7 +151,43 @@ struct ProgramAccess {
     #[serde(default)]
     depth: Option<usize>,
     #[serde(default)]
+    current_directory: Option<String>,
+    #[serde(default)]
+    use_case_sensitive_file_names: Option<bool>,
+    #[serde(default)]
+    directory_view_paths: Vec<String>,
+    #[serde(default)]
     entries: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProgramDirectoryView {
+    path: String,
+    files: Vec<String>,
+    directories: Vec<String>,
+    read_succeeded: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProgramClosureMetrics {
+    access_operations: usize,
+    directory_queries: usize,
+    directory_enumerations: usize,
+    directory_visited_entries: usize,
+    directory_verification_entries: usize,
+}
+
+impl ProgramReport {
+    fn closure_metrics(&self) -> ProgramClosureMetrics {
+        ProgramClosureMetrics {
+            access_operations: self.access_operations,
+            directory_queries: self.directory_queries,
+            directory_enumerations: self.directory_enumerations,
+            directory_visited_entries: self.directory_visited_entries,
+            directory_verification_entries: self.directory_verification_entries,
+        }
+    }
 }
 
 /// One script executed by the exact admitted TypeScript compiler API.
@@ -136,10 +195,131 @@ const COMPILER_API_PROGRAM_SCRIPT: &str = r#"
 'use strict';
 const path = require('path');
 const crypto = require('crypto');
+const fs = require('fs');
 const compilerApiPath = process.argv[1];
 const configPath = process.argv[2];
 const workspaceRoot = process.argv[3];
 const observations = new Map();
+const directoryViews = new Map();
+const MAX_ACCESS_OPERATIONS = 131072;
+const MAX_DIRECTORY_QUERIES = 16384;
+const MAX_DIRECTORY_ENUMERATIONS = 65536;
+const MAX_DIRECTORY_ENTRIES = 65536;
+const MAX_ENTRIES_PER_DIRECTORY = 16384;
+let accessOperations = 0;
+let directoryQueries = 0;
+let directoryEnumerations = 0;
+let directoryVisitedEntries = 0;
+let directoryVerificationEntries = 0;
+let activeDirectoryQuery = null;
+const closureFault = (kind, message) => {
+  const error = new Error(message);
+  error.closureFailureKind = kind;
+  return error;
+};
+const chargeAccess = () => {
+  if (accessOperations >= MAX_ACCESS_OPERATIONS) {
+    throw closureFault('limit', 'TypeScript compiler filesystem access count exceeded its bound');
+  }
+  accessOperations++;
+};
+const makeDirectoryView = directory => {
+  const key = path.resolve(directory || '.');
+  let view = activeDirectoryQuery.views.get(key);
+  if (!view) {
+    view = {path:key, files:new Set(), directories:new Set(), symlinks:new Map(), readSucceeded:true};
+    activeDirectoryQuery.views.set(key, view);
+  }
+  return view;
+};
+const recordDirectoryStat = (absolutePath, stat) => {
+  if (!activeDirectoryQuery) return;
+  const normalized = path.resolve(absolutePath);
+  const pair = activeDirectoryQuery.symlinks.get(normalized);
+  if (!pair) return;
+  const {view, name} = pair;
+  if (!stat) return;
+  if (stat.isFile()) view.files.add(name);
+  else if (stat.isDirectory()) view.directories.add(name);
+};
+const originalStatSync = fs.statSync;
+fs.statSync = function(file, ...args) {
+  try {
+    const stat = originalStatSync.call(this, file, ...args);
+    recordDirectoryStat(file, stat);
+    return stat;
+  } catch (error) {
+    recordDirectoryStat(file, null);
+    throw error;
+  }
+};
+const wrapRealpath = original => function(file, ...args) {
+  const lexical = path.resolve(file);
+  try {
+    const value = original.call(this, file, ...args);
+    if (activeDirectoryQuery) activeDirectoryQuery.realpaths.set(lexical, path.resolve(value));
+    return value;
+  } catch (error) {
+    if (activeDirectoryQuery) activeDirectoryQuery.realpaths.set(lexical, lexical);
+    throw error;
+  }
+};
+const originalRealpathSync = fs.realpathSync;
+const originalNativeRealpathSync = fs.realpathSync.native;
+fs.realpathSync = wrapRealpath(originalRealpathSync);
+if (typeof originalNativeRealpathSync === 'function') {
+  fs.realpathSync.native = wrapRealpath(originalNativeRealpathSync);
+}
+const originalOpendirSync = fs.opendirSync;
+const originalReaddirSync = fs.readdirSync;
+fs.readdirSync = function(directory, options) {
+  if (!activeDirectoryQuery) return originalReaddirSync.call(this, directory, options);
+  const view = makeDirectoryView(directory);
+  if (!options || options.withFileTypes !== true || typeof originalOpendirSync !== 'function') {
+    view.readSucceeded = false;
+    activeDirectoryQuery.fault = closureFault('mismatch', 'TypeScript directory enumeration could not be captured exactly');
+    return originalReaddirSync.call(this, directory, options);
+  }
+  if (directoryEnumerations >= MAX_DIRECTORY_ENUMERATIONS) {
+    activeDirectoryQuery.fault = closureFault('limit', 'TypeScript directory enumeration count exceeded its bound');
+    return [];
+  }
+  directoryEnumerations++;
+  let handle;
+  const entries = [];
+  try {
+    handle = originalOpendirSync.call(this, directory);
+    while (true) {
+      if (entries.length >= MAX_ENTRIES_PER_DIRECTORY || directoryVisitedEntries >= MAX_DIRECTORY_ENTRIES) {
+        const extra = handle.readSync();
+        if (extra) activeDirectoryQuery.fault = closureFault('limit', 'TypeScript visited-directory-entry work exceeded its bound');
+        break;
+      }
+      const entry = handle.readSync();
+      if (!entry) break;
+      directoryVisitedEntries++;
+      entries.push(entry);
+      const name = entry.name;
+      if (entry.isFile()) view.files.add(name);
+      else if (entry.isDirectory()) view.directories.add(name);
+      else if (entry.isSymbolicLink()) {
+        activeDirectoryQuery.symlinks.set(path.resolve(view.path, name), {view, name});
+      }
+    }
+    if (entries.length >= MAX_ENTRIES_PER_DIRECTORY && !activeDirectoryQuery.fault) {
+      const extra = handle.readSync();
+      if (extra) activeDirectoryQuery.fault = closureFault('limit', 'one TypeScript directory exceeded its entry bound');
+    }
+    return entries;
+  } catch (error) {
+    view.readSucceeded = false;
+    throw error;
+  } finally {
+    if (handle) {
+      try { handle.closeSync(); } catch {}
+    }
+  }
+};
 const key = (kind, p, extra) => JSON.stringify([kind, path.resolve(p), extra || null]);
 const digest = value => crypto.createHash('sha256').update(Buffer.isBuffer(value) ? value : Buffer.from(value)).digest('hex');
 const resolvedEntries = (value, root) => Array.isArray(value) ? value.map(item =>
@@ -148,14 +328,83 @@ const add = value => { const k = JSON.stringify(value); observations.set(k, valu
 const result = value => { process.stdout.write(JSON.stringify(value)); };
 try {
   const ts = require(compilerApiPath);
+  if (typeof ts.matchFiles !== 'function') throw closureFault('mismatch', 'selected TypeScript runtime does not expose its exact matchFiles implementation');
+  const finishDirectoryQuery = (context, queryPath, value, kind, args, sys) => {
+    for (const view of context.views.values()) {
+      const files = Array.from(view.files).sort();
+      const directories = Array.from(view.directories).sort();
+      const encoded = {path:view.path, files, directories, read_succeeded:view.readSucceeded};
+      const previous = directoryViews.get(view.path);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(encoded)) {
+        throw closureFault('mismatch', 'a TypeScript directory enumeration changed during program construction');
+      }
+      directoryViews.set(view.path, encoded);
+    }
+    if (context.fault) throw context.fault;
+    const queryViews = new Map(Array.from(context.views, ([viewPath, view]) => [viewPath, {
+      files:Array.from(view.files).sort(), directories:Array.from(view.directories).sort()
+    }]));
+    const viewPaths = Array.from(queryViews.keys()).sort();
+    if (kind === 'readDirectory') {
+      let verifiedEntries = 0;
+      const verified = ts.matchFiles(queryPath, args[1], args[2], args[3], !!sys.useCaseSensitiveFileNames,
+        path.resolve(process.cwd()), args[4], directory => {
+          const view = queryViews.get(path.resolve(directory));
+          if (!view) throw closureFault('mismatch', 'TypeScript matchFiles traversed an uncaptured directory');
+          verifiedEntries += view.files.length + view.directories.length;
+          if (directoryVerificationEntries + verifiedEntries > MAX_DIRECTORY_ENTRIES) {
+            throw closureFault('limit', 'TypeScript directory replay work exceeded its bound');
+          }
+          return view;
+        }, absolutePath => {
+          const canonical = context.realpaths.get(path.resolve(absolutePath));
+          if (!canonical) throw closureFault('mismatch', 'TypeScript matchFiles used an uncaptured realpath');
+          return canonical;
+        });
+      directoryVerificationEntries += verifiedEntries;
+      const expected = resolvedEntries(value, path.resolve(queryPath));
+      const replayed = resolvedEntries(verified, path.resolve(queryPath));
+      if (JSON.stringify(expected) !== JSON.stringify(replayed)) {
+        throw closureFault('mismatch', 'TypeScript readDirectory result differs from exact compiler-semantic replay');
+      }
+    } else {
+      const rootView = queryViews.get(path.resolve(queryPath));
+      if (!rootView) throw closureFault('mismatch', 'TypeScript getDirectories omitted its root enumeration');
+      const expected = resolvedEntries(value, path.resolve(queryPath));
+      const replayed = rootView.directories.map(name => path.resolve(queryPath, name)).sort();
+      if (JSON.stringify(expected) !== JSON.stringify(replayed)) {
+        throw closureFault('mismatch', 'TypeScript getDirectories result differs from exact compiler-semantic replay');
+      }
+    }
+    return viewPaths;
+  };
   const wrapSystem = sys => {
     for (const name of ['readFile', 'fileExists', 'directoryExists', 'realpath', 'readDirectory', 'getDirectories']) {
       if (typeof sys[name] !== 'function') continue;
       const original = sys[name].bind(sys);
       sys[name] = (...args) => {
+        chargeAccess();
         const p = args[0];
         const resolvedPath = path.resolve(p);
-        const value = original(...args);
+        let value;
+        let directoryViewPaths = [];
+        if (name === 'readDirectory' || name === 'getDirectories') {
+          if (directoryQueries >= MAX_DIRECTORY_QUERIES) {
+            throw closureFault('limit', 'TypeScript directory-query count exceeded its bound');
+          }
+          directoryQueries++;
+          const context = {views:new Map(), realpaths:new Map(), symlinks:new Map(), fault:null};
+          const previous = activeDirectoryQuery;
+          activeDirectoryQuery = context;
+          try {
+            value = original(...args);
+          } finally {
+            activeDirectoryQuery = previous;
+          }
+          directoryViewPaths = finishDirectoryQuery(context, p, value, name, args, sys);
+        } else {
+          value = original(...args);
+        }
         if (name === 'readFile') {
           add({kind:'file', path:resolvedPath, exists:value !== undefined, sha256:value === undefined ? null : digest(value)});
         } else if (name === 'fileExists') {
@@ -165,10 +414,12 @@ try {
         } else if (name === 'realpath') {
           add({kind:'realpath', path:resolvedPath, realpath:value === undefined ? null : path.resolve(value)});
         } else if (name === 'readDirectory') {
-          add({kind:'readDirectory', path:resolvedPath, extensions:args[1] || null, excludes:args[2] || null, includes:args[3] || null,
-            recursive:args[4] === undefined, depth:args[4] === undefined ? null : args[4], entries:resolvedEntries(value, resolvedPath)});
+          add({kind:'readDirectory', path:resolvedPath, extensions:args[1] === undefined ? null : args[1], excludes:args[2] === undefined ? null : args[2], includes:args[3] === undefined ? null : args[3],
+            recursive:args[4] === undefined, depth:args[4] === undefined ? null : args[4], current_directory:path.resolve(process.cwd()),
+            use_case_sensitive_file_names:!!sys.useCaseSensitiveFileNames, directory_view_paths:directoryViewPaths,
+            entries:resolvedEntries(value, resolvedPath)});
         } else if (name === 'getDirectories') {
-          add({kind:'getDirectories', path:resolvedPath, entries:resolvedEntries(value, resolvedPath)});
+          add({kind:'getDirectories', path:resolvedPath, directory_view_paths:directoryViewPaths, entries:resolvedEntries(value, resolvedPath)});
         }
         return value;
       };
@@ -185,7 +436,9 @@ try {
   if (parsed.projectReferences && parsed.projectReferences.length) {
     result({schema:1, version:ts.version, config_path:path.resolve(configPath), compiler_options:{compilerOptions:{}},
       project_references:parsed.projectReferences.map(r => r.path), files:[], resolutions:[], accesses:Array.from(observations.values()),
-      unsupported_options:[], error:'project references are not yet admitted as one TSZ program'});
+      directory_views:Array.from(directoryViews.values()), access_operations:accessOperations, directory_queries:directoryQueries,
+      directory_enumerations:directoryEnumerations, directory_visited_entries:directoryVisitedEntries, directory_verification_entries:directoryVerificationEntries,
+      unsupported_options:[], error:'project references are not yet admitted as one TSZ program', failure_kind:null});
   } else {
     const options = parsed.options;
     const host = ts.createCompilerHost(options, true);
@@ -298,12 +551,16 @@ try {
     }
     result({schema:1, version:ts.version, config_path:path.resolve(configPath), compiler_options:{compilerOptions:normalized},
       project_references:[], files:sourceFiles, resolutions, accesses:Array.from(observations.values()),
-      unsupported_options:Array.from(new Set(unsupported)).sort(), error:null});
+      directory_views:Array.from(directoryViews.values()), access_operations:accessOperations, directory_queries:directoryQueries,
+      directory_enumerations:directoryEnumerations, directory_visited_entries:directoryVisitedEntries, directory_verification_entries:directoryVerificationEntries,
+      unsupported_options:Array.from(new Set(unsupported)).sort(), error:null, failure_kind:null});
   }
 } catch (error) {
   result({schema:1, version:'', config_path:path.resolve(configPath), compiler_options:{compilerOptions:{}},
-    project_references:[], files:[], resolutions:[], accesses:Array.from(observations.values()),
-    unsupported_options:[], error:String(error && error.message || error)});
+    project_references:[], files:[], resolutions:[], accesses:Array.from(observations.values()), directory_views:Array.from(directoryViews.values()),
+    access_operations:accessOperations, directory_queries:directoryQueries, directory_enumerations:directoryEnumerations,
+    directory_visited_entries:directoryVisitedEntries, directory_verification_entries:directoryVerificationEntries,
+    unsupported_options:[], error:String(error && error.message || error), failure_kind:error && error.closureFailureKind || null});
 }
 "#;
 
@@ -342,7 +599,16 @@ pub(crate) fn build_native_inputs(
         return Err(bridge_error("unsupported compiler API report schema"));
     }
     if let Some(message) = report.error.as_deref() {
-        return Err(bridge_error(message));
+        return Err(match report.failure_kind.as_deref() {
+            Some("limit") => TypeScriptProjectHostError::CompilerIoClosureLimit {
+                phase: "TypeScript compiler bridge".into(),
+                detail: message.into(),
+            },
+            Some("mismatch") => TypeScriptProjectHostError::CompilerIoClosureMismatch {
+                detail: message.into(),
+            },
+            _ => bridge_error(message),
+        });
     }
     let expected_version = std::str::from_utf8(inputs.compiler_version)
         .ok()
@@ -379,8 +645,9 @@ pub(crate) fn build_native_inputs(
             "compiler API module-request count exceeds the admitted bound",
         ));
     }
-
-    replay_observations(resolver, &report.accesses)?;
+    let metrics = report.closure_metrics();
+    let closure_work_units =
+        replay_observations(resolver, &report.accesses, &report.directory_views, metrics)?;
 
     let checker = compiler_api_checker_options(&report.compiler_options)?;
     let mut virtual_by_canonical = BTreeMap::<PathBuf, String>::new();
@@ -544,7 +811,8 @@ pub(crate) fn build_native_inputs(
         sources.push(TszFileInput { path, source });
     }
     let compiler_accesses = report.accesses.into_boxed_slice();
-    let access_digest = compiler_access_digest(&compiler_accesses)?;
+    let directory_views = report.directory_views.into_boxed_slice();
+    let access_digest = compiler_access_digest(&compiler_accesses, &directory_views, metrics)?;
     let resolver_witness = resolver.seal()?;
     let environment = program_environment_fingerprint(
         inputs,
@@ -557,7 +825,7 @@ pub(crate) fn build_native_inputs(
         &resolutions,
         resolver_witness.digest(),
     )?;
-    let work_units = calculate_work_units(inputs, &sources, &libraries);
+    let work_units = calculate_work_units(inputs, &sources, &libraries, closure_work_units);
     let options = TszProjectOptions {
         checker,
         semantic_options: TszProjectSemanticOptions::declaration_scoped(),
@@ -571,6 +839,8 @@ pub(crate) fn build_native_inputs(
         closure_witness: TypeScriptProgramClosureWitness {
             resolver: resolver_witness,
             compiler_accesses,
+            directory_views,
+            metrics,
             access_digest,
         },
         package_paths,
@@ -709,11 +979,177 @@ fn normalize_compiler_api_lib_names(options: &mut serde_json::Value) {
 fn replay_observations(
     resolver: &mut TypeScriptResolverCapability<'_>,
     accesses: &[ProgramAccess],
-) -> Result<(), TypeScriptProjectHostError> {
+    directory_views: &[ProgramDirectoryView],
+    metrics: ProgramClosureMetrics,
+) -> Result<u64, TypeScriptProjectHostError> {
+    if metrics.access_operations > MAX_BRIDGE_ACCESS_OPERATIONS {
+        return Err(closure_limit(
+            "access operation",
+            metrics.access_operations,
+            MAX_BRIDGE_ACCESS_OPERATIONS,
+        ));
+    }
+    if metrics.directory_queries > MAX_BRIDGE_DIRECTORY_QUERIES {
+        return Err(closure_limit(
+            "directory query",
+            metrics.directory_queries,
+            MAX_BRIDGE_DIRECTORY_QUERIES,
+        ));
+    }
+    if metrics.directory_enumerations > MAX_BRIDGE_DIRECTORY_ENUMERATIONS {
+        return Err(closure_limit(
+            "directory enumeration",
+            metrics.directory_enumerations,
+            MAX_BRIDGE_DIRECTORY_ENUMERATIONS,
+        ));
+    }
+    if metrics.directory_visited_entries > MAX_BRIDGE_DIRECTORY_ENTRIES
+        || metrics.directory_verification_entries > MAX_BRIDGE_DIRECTORY_ENTRIES
+    {
+        return Err(closure_limit(
+            "directory entry traversal",
+            metrics
+                .directory_visited_entries
+                .max(metrics.directory_verification_entries),
+            MAX_BRIDGE_DIRECTORY_ENTRIES,
+        ));
+    }
+    if accesses.len() > MAX_BRIDGE_ACCESS_OPERATIONS {
+        return Err(closure_limit(
+            "retained filesystem access",
+            accesses.len(),
+            MAX_BRIDGE_ACCESS_OPERATIONS,
+        ));
+    }
+    if directory_views.len() > MAX_BRIDGE_DIRECTORY_ENUMERATIONS {
+        return Err(closure_limit(
+            "retained directory view",
+            directory_views.len(),
+            MAX_BRIDGE_DIRECTORY_ENUMERATIONS,
+        ));
+    }
+
+    let mut work_units = 0_u64;
+    let charge = |work_units: &mut u64,
+                  units: usize,
+                  phase: &str|
+     -> Result<(), TypeScriptProjectHostError> {
+        let next = work_units.saturating_add(u64::try_from(units).unwrap_or(u64::MAX));
+        if next > MAX_CLOSURE_REPLAY_WORK_UNITS {
+            return Err(closure_limit(
+                phase,
+                usize::try_from(next).unwrap_or(usize::MAX),
+                usize::try_from(MAX_CLOSURE_REPLAY_WORK_UNITS).unwrap_or(usize::MAX),
+            ));
+        }
+        *work_units = next;
+        Ok(())
+    };
+    charge(
+        &mut work_units,
+        metrics.access_operations,
+        "retained filesystem access",
+    )?;
+    charge(
+        &mut work_units,
+        metrics.directory_queries,
+        "directory query replay",
+    )?;
+    charge(
+        &mut work_units,
+        metrics.directory_enumerations,
+        "directory enumeration replay",
+    )?;
+    charge(
+        &mut work_units,
+        metrics.directory_visited_entries,
+        "directory entry replay",
+    )?;
+    charge(
+        &mut work_units,
+        metrics.directory_verification_entries,
+        "directory result verification",
+    )?;
+
+    let mut view_by_path = BTreeMap::new();
+    let mut view_entries = 0_usize;
+    let query_accesses = accesses
+        .iter()
+        .filter(|access| matches!(access.kind.as_str(), "readDirectory" | "getDirectories"))
+        .count();
+    if metrics.access_operations < accesses.len()
+        || metrics.directory_queries < query_accesses
+        || metrics.directory_enumerations < directory_views.len()
+    {
+        return Err(closure_mismatch(
+            "compiler filesystem work counters do not cover the retained closure",
+        ));
+    }
+    for view in directory_views {
+        let path = Path::new(&view.path);
+        if !path.is_absolute() || normalize_path(path).to_string_lossy() != view.path {
+            return Err(closure_mismatch(
+                "TypeScript directory view used a non-canonical path",
+            ));
+        }
+        if view_by_path.insert(view.path.as_str(), view).is_some() {
+            return Err(closure_mismatch(
+                "TypeScript directory transcript repeated one directory view",
+            ));
+        }
+        for (label, names) in [("file", &view.files), ("directory", &view.directories)] {
+            if names.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err(closure_mismatch(&format!(
+                    "TypeScript directory {label} view is not strictly sorted and unique"
+                )));
+            }
+            for name in names {
+                let name_path = Path::new(name);
+                if name.is_empty()
+                    || name_path.is_absolute()
+                    || name_path.components().count() != 1
+                    || name_path.file_name().and_then(|value| value.to_str()) != Some(name)
+                {
+                    return Err(closure_mismatch(
+                        "TypeScript directory view contains a non-basename entry",
+                    ));
+                }
+            }
+        }
+        if !view.read_succeeded && (!view.files.is_empty() || !view.directories.is_empty()) {
+            return Err(closure_mismatch(
+                "failed TypeScript directory enumeration retained entries",
+            ));
+        }
+        view_entries = view_entries
+            .saturating_add(view.files.len())
+            .saturating_add(view.directories.len());
+        if view_entries > MAX_BRIDGE_DIRECTORY_ENTRIES {
+            return Err(closure_limit(
+                "retained directory view entries",
+                view_entries,
+                MAX_BRIDGE_DIRECTORY_ENTRIES,
+            ));
+        }
+    }
+    if view_entries > metrics.directory_visited_entries {
+        return Err(closure_mismatch(
+            "compiler reported fewer visited entries than its retained directory views",
+        ));
+    }
+    charge(
+        &mut work_units,
+        view_entries,
+        "directory snapshot comparison",
+    )?;
+
+    let mut referenced_views = BTreeSet::new();
+    let mut checked_views = BTreeSet::new();
     for access in accesses {
+        charge(&mut work_units, 1, "filesystem access replay")?;
         let path = Path::new(&access.path);
         if !path.is_absolute() || normalize_path(path).to_string_lossy() != access.path {
-            return Err(bridge_error(
+            return Err(closure_mismatch(
                 "compiler filesystem observation used a non-canonical query path",
             ));
         }
@@ -721,7 +1157,7 @@ fn replay_observations(
             "file" | "exists" => {
                 let source = resolver.try_load_source(path)?;
                 if source.is_some() != access.exists.unwrap_or(false) {
-                    return Err(bridge_error(&format!(
+                    return Err(closure_mismatch(&format!(
                         "compiler filesystem result changed at {:?}",
                         access.path
                     )));
@@ -729,7 +1165,7 @@ fn replay_observations(
                 if let (Some(source), Some(expected)) = (source, access.sha256.as_deref())
                     && sha256_hex(&source.bytes) != expected
                 {
-                    return Err(bridge_error(&format!(
+                    return Err(closure_mismatch(&format!(
                         "compiler filesystem bytes changed at {:?}",
                         access.path
                     )));
@@ -737,7 +1173,7 @@ fn replay_observations(
             }
             "directory" => {
                 if resolver.directory_exists(path)? != access.exists.unwrap_or(false) {
-                    return Err(bridge_error(&format!(
+                    return Err(closure_mismatch(&format!(
                         "compiler directory result changed at {:?}",
                         access.path
                     )));
@@ -751,108 +1187,197 @@ fn replay_observations(
                     .map(Path::new)
                     .map(normalize_path);
                 if observed_path.as_deref().map(normalize_path) != expected {
-                    return Err(bridge_error(&format!(
+                    return Err(closure_mismatch(&format!(
                         "compiler realpath result changed at {:?}",
                         access.path
                     )));
                 }
             }
             "readDirectory" | "getDirectories" => {
-                let extensions = access
-                    .extensions
-                    .as_deref()
-                    .filter(|items| !items.is_empty())
-                    .map(|items| items.iter().map(String::as_str).collect::<Vec<_>>())
-                    .unwrap_or_else(|| {
-                        vec![
-                            ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json",
-                            ".d.ts",
-                        ]
-                    });
-                let recursive = access.kind == "readDirectory";
-                let (depth, require_complete) = match (recursive, access.depth) {
-                    (true, Some(depth)) if depth > MAX_RESOLVER_DEPTH => {
-                        return Err(bridge_error(
-                            "compiler directory query depth exceeds the admitted resolver bound",
-                        ));
-                    }
-                    (true, Some(depth)) => (depth, false),
-                    (true, None) => (MAX_RESOLVER_DEPTH, true),
-                    (false, _) => (0, false),
-                };
-                let directory_entries = resolver.read_directory(
-                    path,
-                    &extensions,
-                    recursive,
-                    depth,
-                    16_384,
-                    require_complete,
-                )?;
                 let entries = access.entries.as_deref().ok_or_else(|| {
-                    bridge_error("compiler API omitted a directory query result set")
+                    closure_mismatch("compiler API omitted a directory query result set")
                 })?;
                 if entries.windows(2).any(|pair| pair[0] >= pair[1]) {
-                    return Err(bridge_error(
+                    return Err(closure_mismatch(
                         "compiler directory query result is not strictly sorted and unique",
                     ));
                 }
+                if access.directory_view_paths.is_empty()
+                    || access
+                        .directory_view_paths
+                        .windows(2)
+                        .any(|pair| pair[0] >= pair[1])
+                {
+                    return Err(closure_mismatch(
+                        "compiler directory query omitted or repeated its exact enumeration views",
+                    ));
+                }
+                if access.kind == "readDirectory" {
+                    if access.recursive != Some(access.depth.is_none())
+                        || access.current_directory.as_deref().is_none_or(|current| {
+                            let current = Path::new(current);
+                            !current.is_absolute()
+                                || normalize_path(current).to_string_lossy()
+                                    != access.current_directory.as_deref().unwrap_or_default()
+                        })
+                        || access.use_case_sensitive_file_names.is_none()
+                    {
+                        return Err(closure_mismatch(
+                            "compiler readDirectory transcript omitted exact matcher parameters",
+                        ));
+                    }
+                }
+                let mut access_files = BTreeSet::new();
+                let mut access_directories = BTreeSet::new();
+                for view_path in &access.directory_view_paths {
+                    charge(&mut work_units, 1, "directory snapshot replay")?;
+                    let view = view_by_path
+                        .get(view_path.as_str())
+                        .copied()
+                        .ok_or_else(|| {
+                            closure_mismatch(
+                                "compiler directory query references an uncaptured view",
+                            )
+                        })?;
+                    referenced_views.insert(view_path.as_str());
+                    let view_root = Path::new(&view.path);
+                    for name in &view.files {
+                        access_files.insert(normalize_path(&view_root.join(name)));
+                    }
+                    for name in &view.directories {
+                        access_directories.insert(normalize_path(&view_root.join(name)));
+                    }
+                    if checked_views.insert(view_path.as_str()) {
+                        let canonical = resolver.observe_program_directory(Path::new(view_path))?;
+                        match canonical {
+                            Some(canonical) => {
+                                if !view.read_succeeded {
+                                    return Err(closure_mismatch(&format!(
+                                        "TypeScript could not enumerate admitted directory {:?}",
+                                        view.path
+                                    )));
+                                }
+                                let snapshot = resolver
+                                    .observed_program_directory_entries(&canonical)
+                                    .ok_or_else(|| {
+                                        closure_mismatch(
+                                            "admitted directory has no retained immutable snapshot",
+                                        )
+                                    })?;
+                                let mut files = Vec::new();
+                                let mut directories = Vec::new();
+                                for entry in snapshot {
+                                    charge(
+                                        &mut work_units,
+                                        1,
+                                        "directory snapshot entry comparison",
+                                    )?;
+                                    if !resolver.program_directory_entry_is_admitted(entry) {
+                                        return Err(
+                                            TypeScriptProjectHostError::SourceOutsideCapability {
+                                                path: entry
+                                                    .canonical_path
+                                                    .as_deref()
+                                                    .unwrap_or(entry.path.as_ref())
+                                                    .to_path_buf()
+                                                    .into_boxed_path(),
+                                            },
+                                        );
+                                    }
+                                    let name = entry
+                                        .path
+                                        .file_name()
+                                        .and_then(|name| name.to_str())
+                                        .ok_or_else(|| {
+                                            closure_mismatch(
+                                                "admitted directory contains a non-portable entry name",
+                                            )
+                                        })?;
+                                    match entry.effective_kind {
+                                        Some(TypeScriptDirectoryEntryKind::RegularFile) => {
+                                            files.push(name.to_owned());
+                                        }
+                                        Some(TypeScriptDirectoryEntryKind::Directory) => {
+                                            directories.push(name.to_owned());
+                                        }
+                                        Some(TypeScriptDirectoryEntryKind::Symlink)
+                                        | Some(TypeScriptDirectoryEntryKind::Other)
+                                        | None => {}
+                                    }
+                                }
+                                files.sort_unstable();
+                                directories.sort_unstable();
+                                if files != view.files || directories != view.directories {
+                                    return Err(closure_mismatch(&format!(
+                                        "TypeScript enumeration differs from admitted snapshot at {:?}",
+                                        view.path
+                                    )));
+                                }
+                            }
+                            None => {
+                                if view.read_succeeded
+                                    || !view.files.is_empty()
+                                    || !view.directories.is_empty()
+                                {
+                                    return Err(closure_mismatch(&format!(
+                                        "TypeScript reported directory entries for absent or non-directory path {:?}",
+                                        view.path
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
                 for entry in entries {
+                    charge(&mut work_units, 1, "directory result verification")?;
                     let entry_path = Path::new(entry);
                     if !entry_path.is_absolute()
                         || normalize_path(entry_path).to_string_lossy() != entry.as_str()
                     {
-                        return Err(bridge_error(
+                        return Err(closure_mismatch(
                             "compiler directory query returned a non-canonical path",
                         ));
                     }
-                    if access.kind == "readDirectory" {
-                        if !entry_path.starts_with(path) {
-                            return Err(bridge_error(
-                                "compiler directory result escaped its queried root",
-                            ));
-                        }
-                        let Some(source) = resolver.try_load_source(entry_path)? else {
-                            return Err(bridge_error(
-                                "compiler directory result names an absent source file",
-                            ));
-                        };
-                        if !directory_entries.iter().any(|observed| {
-                            observed
-                                .canonical_path
-                                .as_deref()
-                                .unwrap_or(observed.path.as_ref())
-                                == source.path.as_ref()
-                        }) {
-                            return Err(bridge_error(
-                                "compiler directory result is not present in the captured directory closure",
-                            ));
-                        }
+                    let admitted = if access.kind == "readDirectory" {
+                        access_files.contains(&normalize_path(entry_path))
                     } else {
-                        if entry_path.parent() != Some(path) {
-                            return Err(bridge_error(&format!(
-                                "compiler getDirectories returned {entry:?} outside immediate query directory {:?}",
-                                access.path
-                            )));
-                        }
-                        if !resolver.directory_exists(entry_path)? {
-                            return Err(bridge_error(&format!(
-                                "compiler getDirectories returned missing directory {entry:?} under {:?}",
-                                access.path
-                            )));
-                        }
+                        entry_path.parent() == Some(path)
+                            && access_directories.contains(&normalize_path(entry_path))
+                    };
+                    if !admitted {
+                        return Err(closure_mismatch(&format!(
+                            "compiler directory result {entry:?} is absent from its exact enumerated views"
+                        )));
                     }
                 }
             }
             other => {
-                return Err(bridge_error(&format!(
+                return Err(closure_mismatch(&format!(
                     "compiler reported unsupported filesystem operation {other:?}"
                 )));
             }
         }
     }
-    Ok(())
+    if referenced_views.len() != view_by_path.len() {
+        return Err(closure_mismatch(
+            "compiler returned an unreferenced directory enumeration view",
+        ));
+    }
+    Ok(work_units)
 }
 
+fn closure_limit(phase: &str, observed: usize, maximum: usize) -> TypeScriptProjectHostError {
+    TypeScriptProjectHostError::CompilerIoClosureLimit {
+        phase: phase.into(),
+        detail: format!("observed {observed}, maximum {maximum}").into_boxed_str(),
+    }
+}
+
+fn closure_mismatch(detail: &str) -> TypeScriptProjectHostError {
+    TypeScriptProjectHostError::CompilerIoClosureMismatch {
+        detail: detail.into(),
+    }
+}
 fn resolve_virtual_path(
     inputs: &TypeScriptProjectInputs<'_>,
     resolver: &mut TypeScriptResolverCapability<'_>,
@@ -943,13 +1468,33 @@ fn program_environment_fingerprint(
 
 fn compiler_access_digest(
     accesses: &[ProgramAccess],
+    directory_views: &[ProgramDirectoryView],
+    metrics: ProgramClosureMetrics,
 ) -> Result<[u8; 32], TypeScriptProjectHostError> {
     let mut digest = Sha256::new();
-    digest.update(b"compiler.typescript.api-directory-transcript.v1\0");
+    digest.update(b"compiler.typescript.api-io-closure.v2\0");
+    for value in [
+        metrics.access_operations,
+        metrics.directory_queries,
+        metrics.directory_enumerations,
+        metrics.directory_visited_entries,
+        metrics.directory_verification_entries,
+    ] {
+        digest.update(&(value as u64).to_le_bytes());
+    }
     for access in accesses {
         let encoded = serde_json::to_vec(access).map_err(|error| {
             bridge_error(&format!(
-                "Compiler API directory transcript failed to encode: {error}"
+                "Compiler API filesystem transcript failed to encode: {error}"
+            ))
+        })?;
+        digest.update(&(encoded.len() as u64).to_le_bytes());
+        digest.update(&encoded);
+    }
+    for view in directory_views {
+        let encoded = serde_json::to_vec(view).map_err(|error| {
+            bridge_error(&format!(
+                "Compiler API directory view failed to encode: {error}"
             ))
         })?;
         digest.update(&(encoded.len() as u64).to_le_bytes());
@@ -962,6 +1507,7 @@ fn calculate_work_units(
     inputs: &TypeScriptProjectInputs<'_>,
     sources: &[TszFileInput],
     libraries: &[std::sync::Arc<backend_frontend_typescript::TszLibFile>],
+    closure_work_units: u64,
 ) -> u64 {
     let source_bytes = sources
         .iter()
@@ -991,6 +1537,7 @@ fn calculate_work_units(
     1_000_000_u64
         .saturating_add(bytes.saturating_mul(48))
         .saturating_add(count.saturating_mul(65_536))
+        .saturating_add(closure_work_units.saturating_mul(256))
         .min(MAX_PROJECT_WORK_UNITS)
 }
 
@@ -1016,7 +1563,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProgramAccess, compiler_access_digest, normalize_compiler_api_lib_names};
+    use super::{
+        ProgramAccess, ProgramClosureMetrics, ProgramDirectoryView, compiler_access_digest,
+        normalize_compiler_api_lib_names,
+    };
     use serde_json::json;
 
     #[test]
@@ -1048,32 +1598,141 @@ mod tests {
     }
 
     #[test]
-    fn compiler_directory_transcript_binds_query_and_exact_result_set() {
-        let access = |includes: &str, entries: &[&str]| ProgramAccess {
-            kind: "readDirectory".to_owned(),
-            path: "/workspace/app".to_owned(),
-            exists: None,
-            sha256: None,
-            realpath: None,
-            extensions: Some(vec![".ts".to_owned()]),
-            excludes: Some(Vec::new()),
-            includes: Some(vec![includes.to_owned()]),
-            recursive: Some(true),
-            depth: None,
-            entries: Some(entries.iter().map(|entry| (*entry).to_owned()).collect()),
+    fn compiler_directory_transcript_binds_exact_matcher_parameters() {
+        let access = |extensions: Option<Vec<&str>>,
+                      excludes: Option<Vec<&str>>,
+                      includes: Option<Vec<&str>>,
+                      depth: Option<usize>,
+                      case_sensitive: bool|
+         -> ProgramAccess {
+            let entries = ["/workspace/app/src/a.ts"];
+            let depth_value = depth;
+            ProgramAccess {
+                kind: "readDirectory".to_owned(),
+                path: "/workspace/app".to_owned(),
+                exists: None,
+                sha256: None,
+                realpath: None,
+                extensions: extensions.map(|items| items.into_iter().map(str::to_owned).collect()),
+                excludes: excludes.map(|items| items.into_iter().map(str::to_owned).collect()),
+                includes: includes.map(|items| items.into_iter().map(str::to_owned).collect()),
+                recursive: Some(depth_value.is_none()),
+                depth: depth_value,
+                current_directory: Some("/workspace/app".to_owned()),
+                use_case_sensitive_file_names: Some(case_sensitive),
+                directory_view_paths: vec!["/workspace/app".to_owned()],
+                entries: Some(entries.into_iter().map(str::to_owned).collect()),
+            }
         };
-        let original = compiler_access_digest(&[access("**/*", &["/workspace/app/src/a.ts"])])
-            .expect("hash exact compiler directory transcript");
-        let changed_query =
-            compiler_access_digest(&[access("src/**", &["/workspace/app/src/a.ts"])])
-                .expect("hash changed compiler query");
-        let changed_results = compiler_access_digest(&[access(
-            "**/*",
-            &["/workspace/app/src/a.ts", "/workspace/app/src/b.ts"],
-        )])
-        .expect("hash changed compiler result set");
-        assert_ne!(original, changed_query);
-        assert_ne!(original, changed_results);
+        let metrics = ProgramClosureMetrics {
+            access_operations: 1,
+            directory_queries: 1,
+            directory_enumerations: 1,
+            directory_visited_entries: 2,
+            directory_verification_entries: 2,
+        };
+        let view = ProgramDirectoryView {
+            path: "/workspace/app".to_owned(),
+            files: vec!["a.ts".to_owned()],
+            directories: vec!["src".to_owned()],
+            read_succeeded: true,
+        };
+        let original = compiler_access_digest(
+            &[access(
+                Some(vec![".ts"]),
+                Some(vec!["**/node_modules/**"]),
+                Some(vec!["**/*"]),
+                None,
+                true,
+            )],
+            std::slice::from_ref(&view),
+            metrics,
+        )
+        .expect("hash exact compiler directory transcript");
+        let changed = [
+            access(
+                Some(vec![".tsx"]),
+                Some(vec!["**/node_modules/**"]),
+                Some(vec!["**/*"]),
+                None,
+                true,
+            ),
+            access(
+                Some(vec![".ts"]),
+                Some(Vec::new()),
+                Some(vec!["**/*"]),
+                None,
+                true,
+            ),
+            access(
+                Some(vec![".ts"]),
+                Some(vec!["**/node_modules/**"]),
+                Some(Vec::new()),
+                None,
+                true,
+            ),
+            access(
+                Some(vec![".ts"]),
+                Some(vec!["**/node_modules/**"]),
+                Some(vec!["**/*"]),
+                Some(2),
+                true,
+            ),
+            access(
+                Some(vec![".ts"]),
+                Some(vec!["**/node_modules/**"]),
+                Some(vec!["**/*"]),
+                None,
+                false,
+            ),
+        ];
+        for changed in changed {
+            assert_ne!(
+                original,
+                compiler_access_digest(&[changed], std::slice::from_ref(&view), metrics)
+                    .expect("hash changed matcher parameters")
+            );
+        }
+        let changed_results = ProgramDirectoryView {
+            path: "/workspace/app".to_owned(),
+            files: vec!["a.ts".to_owned(), "hidden.ts".to_owned()],
+            directories: vec!["src".to_owned()],
+            read_succeeded: true,
+        };
+        assert_ne!(
+            original,
+            compiler_access_digest(
+                &[access(
+                    Some(vec![".ts"]),
+                    Some(vec!["**/node_modules/**"]),
+                    Some(vec!["**/*"]),
+                    None,
+                    true
+                )],
+                &[changed_results],
+                metrics,
+            )
+            .expect("hash changed directory enumeration")
+        );
+        let changed_work = ProgramClosureMetrics {
+            directory_visited_entries: 3,
+            ..metrics
+        };
+        assert_ne!(
+            original,
+            compiler_access_digest(
+                &[access(
+                    Some(vec![".ts"]),
+                    Some(vec!["**/node_modules/**"]),
+                    Some(vec!["**/*"]),
+                    None,
+                    true
+                )],
+                std::slice::from_ref(&view),
+                changed_work,
+            )
+            .expect("hash changed closure work accounting")
+        );
     }
 }
 
