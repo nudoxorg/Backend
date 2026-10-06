@@ -573,12 +573,6 @@ fn selected_symbol_by_name_and_kind(
         return Err(io::Error::other("name lookup returned another reply shape").into());
     };
     let semantic_name_suffix = format!("::{name}");
-    let returned_rows = snapshot
-        .root
-        .rows()
-        .iter()
-        .map(|row| (row.label.as_str(), row.kind, row.package, row.id))
-        .collect::<Vec<_>>();
     snapshot
         .root
         .rows()
@@ -593,12 +587,53 @@ fn selected_symbol_by_name_and_kind(
             RowId::Symbol(symbol) => Some(symbol),
             RowId::Package(_) | RowId::Object(_) => None,
         })
-        .ok_or_else(|| {
-            io::Error::other(format!(
-                "name lookup did not return {name} with kind {kind:?}; returned rows: {returned_rows:?}"
-            ))
-            .into()
-        })
+        .map_or_else(
+            || find_symbol_in_all_names(session, name, kind, package),
+            Ok,
+        )
+}
+
+fn find_symbol_in_all_names(
+    session: &mut Session,
+    name: &str,
+    kind: DeclarationKind,
+    package: PackageKey,
+) -> Result<backend_library::SymbolKey, Box<dyn Error>> {
+    let semantic_name_suffix = format!("::{name}");
+    let mut continuation = None;
+    loop {
+        let reply = session.names_page("", 200, continuation)?;
+        let CommandReply::Names(snapshot) = reply.reply else {
+            return Err(io::Error::other("all-name page returned another reply shape").into());
+        };
+        if let Some(symbol) = snapshot
+            .root
+            .rows()
+            .iter()
+            .find(|row| {
+                (row.label == name || row.label.ends_with(&semantic_name_suffix))
+                    && row.kind == Some(kind)
+                    && row.package == Some(package)
+                    && matches!(row.id, RowId::Symbol(_))
+            })
+            .and_then(|row| match row.id {
+                RowId::Symbol(symbol) => Some(symbol),
+                RowId::Package(_) | RowId::Object(_) => None,
+            })
+        {
+            return Ok(symbol);
+        }
+        continuation = snapshot
+            .next
+            .map(backend_library::PageContinuation::from_cursor);
+        if continuation.is_none() {
+            break;
+        }
+    }
+    Err(io::Error::other(format!(
+        "name lookup did not return {name} with kind {kind:?} in package {package:?}"
+    ))
+    .into())
 }
 
 #[derive(Debug)]
