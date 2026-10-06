@@ -6,8 +6,9 @@ use std::time::Duration;
 use crate::interface::{
     CompilerAttempt, CompilerCause, CompilerDiagnostic, CompilerFragmentFailure,
     CompilerFragmentFaultFacts, CompilerFragmentFaultFamily, CompilerFragmentLayoutStep,
-    CompilerFragmentRecordLane, CompilerFragmentSemanticSpace, CompilerRuntimeCause, FragmentCause,
-    PackageCompilePhase, PackageSourceCause, PublicationCause, SourceAuthority,
+    CompilerFragmentRecordLane, CompilerFragmentSemanticSpace, CompilerRuntimeCause,
+    CompilerToolIssue, FragmentCause, PackageCompilePhase, PackageSourceCause, PublicationCause,
+    SourceAuthority,
 };
 use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, CSharpImageFault, CSharpImageHeaderFault,
@@ -117,6 +118,15 @@ pub(crate) enum CompilerTerminalWire {
         stage: Stage,
         #[serde(with = "NativeToolWire")]
         tool: NativeTool,
+    },
+    RequiredTool {
+        #[serde(with = "SourceAuthorityWire")]
+        source: SourceAuthority,
+        #[serde(with = "LanguageWire")]
+        language: Language,
+        #[serde(with = "StageWire")]
+        stage: Stage,
+        issue: CompilerToolIssue,
     },
     Cancelled {
         #[serde(with = "CompilerAttemptWire")]

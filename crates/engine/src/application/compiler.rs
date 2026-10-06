@@ -3146,17 +3146,19 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         let mut next_claim_key = 1_u64;
         for _ in prepared.canonical_ordinals.iter() {
             let fragment_key = next_claim_key;
-            next_claim_key = next_claim_key.checked_add(1).ok_or(
-                PackageSemanticError::Capacity {
-                    lane: "generation claims",
-                },
-            )?;
+            next_claim_key =
+                next_claim_key
+                    .checked_add(1)
+                    .ok_or(PackageSemanticError::Capacity {
+                        lane: "generation claims",
+                    })?;
             let image_key = next_claim_key;
-            next_claim_key = next_claim_key.checked_add(1).ok_or(
-                PackageSemanticError::Capacity {
-                    lane: "generation claims",
-                },
-            )?;
+            next_claim_key =
+                next_claim_key
+                    .checked_add(1)
+                    .ok_or(PackageSemanticError::Capacity {
+                        lane: "generation claims",
+                    })?;
             expected_claim_edges.push((fragment_key, Some(0)));
             expected_claim_edges.push((image_key, Some(0)));
             artifact_claim_keys.push((fragment_key, image_key));
@@ -3217,14 +3219,12 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                     lane: "generation claims",
                 });
             };
-            let Some((fragment_key, image_key)) = artifact_claim_keys.get(canonical_ordinal)
-            else {
+            let Some((fragment_key, image_key)) = artifact_claim_keys.get(canonical_ordinal) else {
                 return Err(PackageSemanticError::Capacity {
                     lane: "generation claims",
                 });
             };
-            let Some(fragment_claim) = claims_by_key.get(fragment_key).copied()
-            else {
+            let Some(fragment_claim) = claims_by_key.get(fragment_key).copied() else {
                 return Err(PackageSemanticError::Capacity {
                     lane: "generation claims",
                 });
@@ -3750,6 +3750,12 @@ fn package_authority_terminal(
             selected: tool,
             configured: None,
         },
+        PackageAuthorityError::RequiredTool { issue, .. } => CompilerTerminal::RequiredTool {
+            source,
+            language: request.profile.language(),
+            stage: request.stage,
+            issue,
+        },
         PackageAuthorityError::Deadline { .. } => compiler_attempt_terminal(
             request,
             source,
@@ -4119,7 +4125,8 @@ fn package_authority_projection(
         | PackageAuthorityError::ToolchainUnavailable { .. }
         | PackageAuthorityError::Cancelled { .. }
         | PackageAuthorityError::Deadline { .. }
-        | PackageAuthorityError::AdapterUnavailable { .. } => (Phase::Open, Class::Authority),
+        | PackageAuthorityError::AdapterUnavailable { .. }
+        | PackageAuthorityError::RequiredTool { .. } => (Phase::Open, Class::Authority),
     }
 }
 
@@ -4250,7 +4257,10 @@ mod tests {
         .to_string();
         assert!(message.contains("npm or pnpm"), "{message}");
         assert!(message.contains("NUDOX_TSC"), "{message}");
-        assert!(message.contains("backend-locald keeps the PATH"), "{message}");
+        assert!(
+            message.contains("backend-locald keeps the PATH"),
+            "{message}"
+        );
         assert!(message.contains("stop and restart"), "{message}");
     }
 

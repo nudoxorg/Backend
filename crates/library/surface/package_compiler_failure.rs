@@ -6,7 +6,8 @@
 
 use crate::interface::{
     AuthorityDiagnosticClass, AuthorityPhase, CompilerCause, CompilerFragmentFaultFacts,
-    CompilerFragmentFaultKind, CompilerFragmentFaultPhase, CompilerTerminal,
+    CompilerFragmentFaultKind, CompilerFragmentFaultPhase, CompilerTerminal, CompilerToolFailure,
+    CompilerToolIssue, CompilerToolRequirement,
 };
 use backend_semantic::vocabulary::{
     ClangProjectionFault, GoProjectionFault, JavaProjectionFault, LoweringUnsupported, NativeTool,
@@ -134,6 +135,12 @@ pub enum PackageCompilerFailureCause {
         stage: CompilerStageFact,
         tool: CompilerNativeToolFact,
     },
+    /// One exact native or auxiliary tool requirement is absent or failed its bounded probe.
+    RequiredTool {
+        language: CompilerLanguageFact,
+        stage: CompilerStageFact,
+        issue: CompilerToolIssue,
+    },
     /// Syntax was accepted but the exact closed lowering recipe was unavailable.
     Lowering(PackageLoweringFaultFacts),
     /// Existing compiler authority rejected the source or its semantic projection.
@@ -154,9 +161,9 @@ impl PackageCompilerFailureCause {
                 CompilerFragmentFaultPhase::Write => PackageCompilerFailurePhase::Write,
                 CompilerFragmentFaultPhase::Validate => PackageCompilerFailurePhase::Validate,
             },
-            Self::Toolchain { .. } | Self::ToolingUnavailable { .. } => {
-                PackageCompilerFailurePhase::Setup
-            }
+            Self::Toolchain { .. }
+            | Self::ToolingUnavailable { .. }
+            | Self::RequiredTool { .. } => PackageCompilerFailurePhase::Setup,
             Self::Lowering(_) => PackageCompilerFailurePhase::Lowering,
             Self::Authority { .. } => PackageCompilerFailurePhase::Authority,
         }
@@ -169,6 +176,22 @@ impl PackageCompilerFailureCause {
             Self::Fragment(fault) => fault.kind().tag(),
             Self::Toolchain { .. } => "toolchain_configuration_mismatch",
             Self::ToolingUnavailable { .. } => "tooling_unavailable",
+            Self::RequiredTool {
+                issue:
+                    CompilerToolIssue {
+                        failure: CompilerToolFailure::Missing,
+                        ..
+                    },
+                ..
+            } => "required_tool_missing",
+            Self::RequiredTool {
+                issue:
+                    CompilerToolIssue {
+                        failure: CompilerToolFailure::ProbeFailed,
+                        ..
+                    },
+                ..
+            } => "required_tool_probe_failed",
             Self::Lowering(fault) => fault.kind_tag(),
             Self::Authority { class, .. } => match class {
                 AuthorityClassFact::Syntax => "authority_syntax",
@@ -187,6 +210,22 @@ impl PackageCompilerFailureCause {
         match self {
             Self::Toolchain { selected, .. } => Some(*selected),
             Self::ToolingUnavailable { tool, .. } => Some(*tool),
+            Self::RequiredTool {
+                issue:
+                    CompilerToolIssue {
+                        requirement: CompilerToolRequirement::Native(tool),
+                        ..
+                    },
+                ..
+            } => Some(match tool {
+                NativeTool::Rustc => CompilerNativeToolFact::Rustc,
+                NativeTool::Clang => CompilerNativeToolFact::Clang,
+                NativeTool::Python => CompilerNativeToolFact::Python,
+                NativeTool::TypeScriptCompiler => CompilerNativeToolFact::TypeScriptCompiler,
+                NativeTool::GoCompiler => CompilerNativeToolFact::GoCompiler,
+                NativeTool::JavaCompiler => CompilerNativeToolFact::JavaCompiler,
+                NativeTool::CSharpCompiler => CompilerNativeToolFact::CSharpCompiler,
+            }),
             _ => None,
         }
     }
@@ -200,10 +239,35 @@ impl PackageCompilerFailureCause {
         }
     }
 
-    /// Whether the selected native tool must be configured before retrying.
+    /// Exact setup issue when a separately typed required tool blocked admission.
+    #[must_use]
+    pub const fn required_tool_issue(&self) -> Option<CompilerToolIssue> {
+        match self {
+            Self::RequiredTool { issue, .. } => Some(*issue),
+            _ => None,
+        }
+    }
+
+    /// Exact host configuration variable that remedies this required-tool failure.
+    #[must_use]
+    pub const fn required_configuration_variable(&self) -> Option<&'static str> {
+        match self {
+            Self::RequiredTool { issue, .. } => Some(issue.configuration_variable()),
+            Self::Toolchain { selected, .. }
+            | Self::ToolingUnavailable { tool: selected, .. } => {
+                Some(selected.configuration_variable())
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether a selected native or auxiliary tool must be configured or repaired before retrying.
     #[must_use]
     pub const fn requires_tool_configuration(&self) -> bool {
-        matches!(self, Self::Toolchain { .. })
+        matches!(
+            self,
+            Self::Toolchain { .. } | Self::ToolingUnavailable { .. } | Self::RequiredTool { .. }
+        )
     }
 }
 
@@ -1534,6 +1598,19 @@ pub(crate) fn package_failure_from_terminal(
                 language: (*language).into(),
                 stage: (*stage).into(),
                 tool: (*tool).into(),
+            },
+        )),
+        CompilerTerminal::RequiredTool {
+            language,
+            stage,
+            issue,
+            ..
+        } => Some((
+            None,
+            PackageCompilerFailureCause::RequiredTool {
+                language: (*language).into(),
+                stage: (*stage).into(),
+                issue: *issue,
             },
         )),
         CompilerTerminal::Compile {

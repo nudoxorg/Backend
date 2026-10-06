@@ -19,6 +19,7 @@ use backend_version::{
     IrFragmentEncoding, IrManifestDomain, IrManifestEncoding, IrSemanticImageDomain,
     IrSemanticImageEncoding, SourceFactDomain,
 };
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use crate::interface::{PackageCompilePhase, PackageCompileRequest, PackageSourceCause};
 
@@ -42,6 +43,125 @@ pub struct SourceAuthority {
     pub identity: ContentId<SourceFactDomain>,
     /// Exact input byte length bound into the compact IR fragment.
     pub byte_len: u32,
+}
+
+/// One exact executable requirement for a compiler capability.
+///
+/// Native registry tools and auxiliary semantic checkers share this vocabulary,
+/// while retaining distinct identities (`python` is not `pyrefly`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerToolRequirement {
+    /// Registry-selected native compiler or interpreter.
+    Native(NativeTool),
+    /// The Pyrefly semantic checker required alongside the Python interpreter.
+    PythonChecker,
+}
+
+impl CompilerToolRequirement {
+    /// Executable name used in setup guidance.
+    #[must_use]
+    pub const fn executable(self) -> &'static str {
+        match self {
+            Self::Native(NativeTool::Rustc) => "rustc",
+            Self::Native(NativeTool::Clang) => "clang",
+            Self::Native(NativeTool::Python) => "python3",
+            Self::Native(NativeTool::TypeScriptCompiler) => "tsc",
+            Self::Native(NativeTool::GoCompiler) => "go",
+            Self::Native(NativeTool::JavaCompiler) => "javac",
+            Self::Native(NativeTool::CSharpCompiler) => "dotnet",
+            Self::PythonChecker => "pyrefly",
+        }
+    }
+
+    /// Exact local-host variable required to select this executable.
+    #[must_use]
+    pub const fn configuration_variable(self) -> &'static str {
+        match self {
+            Self::Native(NativeTool::Rustc) => "NUDOX_RUSTC",
+            Self::Native(NativeTool::Clang) => "NUDOX_CLANG",
+            Self::Native(NativeTool::Python) => "NUDOX_PYTHON",
+            Self::Native(NativeTool::TypeScriptCompiler) => "NUDOX_TSC",
+            Self::Native(NativeTool::GoCompiler) => "NUDOX_GO",
+            Self::Native(NativeTool::JavaCompiler) => "NUDOX_JAVAC",
+            Self::Native(NativeTool::CSharpCompiler) => "NUDOX_DOTNET",
+            Self::PythonChecker => "NUDOX_PYREFLY",
+        }
+    }
+
+    /// Stable string representation for checked failure DTOs and wire terminals.
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Native(NativeTool::Rustc) => "rustc",
+            Self::Native(NativeTool::Clang) => "clang",
+            Self::Native(NativeTool::Python) => "python",
+            Self::Native(NativeTool::TypeScriptCompiler) => "typescript_compiler",
+            Self::Native(NativeTool::GoCompiler) => "go_compiler",
+            Self::Native(NativeTool::JavaCompiler) => "java_compiler",
+            Self::Native(NativeTool::CSharpCompiler) => "csharp_compiler",
+            Self::PythonChecker => "python_checker",
+        }
+    }
+}
+
+impl Serialize for CompilerToolRequirement {
+    fn serialize<Output: Serializer>(
+        &self,
+        serializer: Output,
+    ) -> Result<Output::Ok, Output::Error> {
+        serializer.serialize_str(self.wire_name())
+    }
+}
+
+impl<'de> Deserialize<'de> for CompilerToolRequirement {
+    fn deserialize<Input: Deserializer<'de>>(deserializer: Input) -> Result<Self, Input::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "rustc" => Ok(Self::Native(NativeTool::Rustc)),
+            "clang" => Ok(Self::Native(NativeTool::Clang)),
+            "python" => Ok(Self::Native(NativeTool::Python)),
+            "typescript_compiler" => Ok(Self::Native(NativeTool::TypeScriptCompiler)),
+            "go_compiler" => Ok(Self::Native(NativeTool::GoCompiler)),
+            "java_compiler" => Ok(Self::Native(NativeTool::JavaCompiler)),
+            "csharp_compiler" => Ok(Self::Native(NativeTool::CSharpCompiler)),
+            "python_checker" => Ok(Self::PythonChecker),
+            other => Err(Input::Error::custom(format!(
+                "unknown compiler tool requirement `{other}`"
+            ))),
+        }
+    }
+}
+
+/// Why an exact compiler tool requirement is not admitted.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompilerToolFailure {
+    /// The owner has no explicit selection for the required executable.
+    Missing,
+    /// The selected executable failed its bounded version probe.
+    ProbeFailed,
+}
+
+/// Exact tool requirement and setup failure carried through capability and refusal surfaces.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompilerToolIssue {
+    /// Exact executable required by this language capability.
+    pub requirement: CompilerToolRequirement,
+    /// Exact setup condition preventing admission.
+    pub failure: CompilerToolFailure,
+}
+
+impl CompilerToolIssue {
+    /// Exact configuration variable that selects the required executable.
+    #[must_use]
+    pub const fn configuration_variable(self) -> &'static str {
+        self.requirement.configuration_variable()
+    }
+
+    /// Exact executable name associated with this requirement.
+    #[must_use]
+    pub const fn executable(self) -> &'static str {
+        self.requirement.executable()
+    }
 }
 
 /// Typed verified-generation authority copied without importing the hydration planner.
@@ -520,6 +640,17 @@ pub enum CompilerTerminal {
         stage: Stage,
         /// Native tool whose absence is explicit rather than an ambient lookup failure.
         tool: NativeTool,
+    },
+    /// An exact native or auxiliary tool requirement is missing or failed admission.
+    RequiredTool {
+        /// Identity and byte length of the exact source under evaluation.
+        source: SourceAuthority,
+        /// Requested closed language family.
+        language: Language,
+        /// Requested closed compiler stage.
+        stage: Stage,
+        /// Exact tool requirement and bounded admission failure.
+        issue: CompilerToolIssue,
     },
     /// Cancellation won before an IR fragment could become visible.
     Cancelled {

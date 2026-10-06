@@ -2,7 +2,8 @@
 
 use crate::interface::{
     CompilerAttempt, CompilerFragmentFailure, CompilerFragmentFaultFacts,
-    CompilerFragmentFaultKind, MAX_COMPILER_FRAGMENT_DETAIL_BYTES,
+    CompilerFragmentFaultKind, CompilerToolFailure, CompilerToolIssue, CompilerToolRequirement,
+    MAX_COMPILER_FRAGMENT_DETAIL_BYTES,
 };
 use crate::{
     CommandId, DependencyFacts, ForgeCoordinate, ForgeObjectId, ForgeRevision,
@@ -1738,7 +1739,8 @@ impl PackageCompilerFailure {
         };
         let source = match terminal {
             crate::interface::CompilerTerminal::Toolchain { source, .. }
-            | crate::interface::CompilerTerminal::ToolingUnavailable { source, .. } => *source,
+            | crate::interface::CompilerTerminal::ToolingUnavailable { source, .. }
+            | crate::interface::CompilerTerminal::RequiredTool { source, .. } => *source,
             crate::interface::CompilerTerminal::Compile { attempted, .. } => attempted.source,
             _ => return Ok(None),
         };
@@ -1823,6 +1825,18 @@ impl PackageCompilerFailure {
         self.cause.requires_tool_configuration()
     }
 
+    /// Exact auxiliary or native tool requirement that prevented setup.
+    #[must_use]
+    pub const fn required_tool_issue(&self) -> Option<crate::interface::CompilerToolIssue> {
+        self.cause.required_tool_issue()
+    }
+
+    /// Exact environment variable to set or repair before retrying, when known.
+    #[must_use]
+    pub const fn required_configuration_variable(&self) -> Option<&'static str> {
+        self.cause.required_configuration_variable()
+    }
+
     /// Sanitized human explanation, capped at 384 UTF-8 bytes.
     #[must_use]
     pub fn detail(&self) -> &str {
@@ -1886,12 +1900,15 @@ impl PackageCompilerFailure {
                     &self.cause,
                     PackageCompilerFailureCause::Toolchain { .. }
                         | PackageCompilerFailureCause::ToolingUnavailable { .. }
+                        | PackageCompilerFailureCause::RequiredTool { .. }
                 ))
         {
             return Err(ProductAdmissionError::PackageCompilerFailureShape);
         }
         Ok(())
     }
+
+
 }
 
 fn compiler_fault_facts_match_kind(
@@ -2271,6 +2288,28 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
             );
             return sanitize_package_compiler_detail(&text, false);
         }
+        PackageCompilerFailureCause::RequiredTool { issue, .. } => {
+            let (requirement, action) = match (issue.requirement, issue.failure) {
+                (CompilerToolRequirement::PythonChecker, CompilerToolFailure::Missing) => (
+                    "pyrefly is required for Python semantic checking",
+                    "set NUDOX_PYREFLY to its absolute executable path",
+                ),
+                (CompilerToolRequirement::PythonChecker, CompilerToolFailure::ProbeFailed) => (
+                    "the configured pyrefly checker failed its bounded --version probe",
+                    "verify the NUDOX_PYREFLY executable and retry",
+                ),
+                (CompilerToolRequirement::Native(_), CompilerToolFailure::Missing) => (
+                    "a required compiler executable is not configured",
+                    "set the exact NUDOX compiler variable to its absolute executable path",
+                ),
+                (CompilerToolRequirement::Native(_), CompilerToolFailure::ProbeFailed) => (
+                    "the configured compiler executable failed its bounded --version probe",
+                    "verify the selected executable and retry",
+                ),
+            };
+            let text = format!("{requirement}; {action}");
+            return sanitize_package_compiler_detail(&text, false);
+        }
         PackageCompilerFailureCause::Lowering(_) => "lowering fault",
         PackageCompilerFailureCause::Authority { phase, .. } => match phase {
             AuthorityPhaseFact::Open => "open authority fault",
@@ -2296,6 +2335,7 @@ fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
             ..
         } => configured.is_none_or(|configured| *selected != configured),
         PackageCompilerFailureCause::ToolingUnavailable { .. }
+        | PackageCompilerFailureCause::RequiredTool { .. }
         | PackageCompilerFailureCause::Lowering(_)
         | PackageCompilerFailureCause::Authority { .. } => true,
     }
@@ -2386,6 +2426,7 @@ impl<'de> Deserialize<'de> for PackageCompilerFailure {
                 &summary.cause,
                 PackageCompilerFailureCause::Toolchain { .. }
                     | PackageCompilerFailureCause::ToolingUnavailable { .. }
+                    | PackageCompilerFailureCause::RequiredTool { .. }
             )
         {
             return Err(D::Error::custom(
@@ -5248,6 +5289,106 @@ mod tests {
         assert!(unavailable.detail().contains("NUDOX_PYTHON"));
         assert!(unavailable.detail().contains(".venv/bin/python"));
     }
+
+    #[test]
+    fn package_required_python_checker_failure_is_typed_and_actionable() {
+        use crate::interface::{
+            CompilerTerminal, CompilerToolFailure, CompilerToolIssue, CompilerToolRequirement,
+            SourceAuthority,
+        };
+        use backend_semantic::vocabulary::{Language, Stage};
+
+        let source_bytes = b"from quart import Quart";
+        let source = SourceAuthority {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source_bytes),
+            byte_len: u32::try_from(source_bytes.len()).expect("source length"),
+        };
+
+        for (failure_kind, expected_tag, expected_failure) in [
+            (
+                CompilerToolFailure::Missing,
+                "required_tool_missing",
+                "missing",
+            ),
+            (
+                CompilerToolFailure::ProbeFailed,
+                "required_tool_probe_failed",
+                "probe_failed",
+            ),
+        ] {
+            let terminal = CompilerTerminal::RequiredTool {
+                source,
+                language: Language::Python,
+                stage: Stage::LowerIr,
+                issue: CompilerToolIssue {
+                    requirement: CompilerToolRequirement::PythonChecker,
+                    failure: failure_kind,
+                },
+            };
+            let failure = PackageCompilerFailure::from_package_terminal(
+                "src/quart/__init__.py",
+                &terminal,
+            )
+            .expect("valid setup summary")
+            .expect("required checker failure is projected");
+
+            assert_eq!(failure.source_identity(), source.identity);
+            assert_eq!(failure.source_byte_len(), source.byte_len);
+            assert_eq!(failure.recipe_identity(), None);
+            assert_eq!(failure.phase(), PackageCompilerFailurePhase::Setup);
+            assert_eq!(failure.kind_tag(), expected_tag);
+            assert_eq!(
+                failure.required_tool_issue(),
+                Some(CompilerToolIssue {
+                    requirement: CompilerToolRequirement::PythonChecker,
+                    failure: failure_kind,
+                })
+            );
+            assert_eq!(
+                failure.required_configuration_variable(),
+                Some("NUDOX_PYREFLY")
+            );
+            assert!(failure.requires_tool_configuration());
+            assert!(failure.detail().contains("NUDOX_PYREFLY"));
+
+            let encoded = failure.encode_bounded_json().expect("bounded failure JSON");
+            let json: serde_json::Value =
+                serde_json::from_slice(&encoded).expect("typed failure object");
+            assert_eq!(json["phase"], "setup");
+            assert_eq!(json["kind_tag"], expected_tag);
+            assert_eq!(json["cause"]["family"], "required_tool");
+            assert_eq!(
+                json["cause"]["fault"]["issue"]["requirement"],
+                "python_checker"
+            );
+            assert_eq!(
+                json["cause"]["fault"]["issue"]["failure"],
+                expected_failure
+            );
+            assert_eq!(
+                PackageCompilerFailure::decode_bounded_json(&encoded),
+                Ok(failure.clone())
+            );
+
+            let outcome = IndexJobOutcome::RefusedWithCompilerFailure {
+                detail: ProductText::new(failure.detail()).expect("bounded setup detail"),
+                failure: failure.clone(),
+            };
+            let outcome_json = serde_json::to_value(&outcome).expect("full operation DTO");
+            assert_eq!(outcome_json["state"], "refused-with-compiler-failure");
+            assert_eq!(
+                outcome_json["detail"]["failure"]["cause"]["fault"]["issue"]["requirement"],
+                "python_checker"
+            );
+            let displayed = crate::CommandFailure::CompilerRefused {
+                detail: failure.detail().to_owned(),
+                failure,
+            }
+            .to_string();
+            assert!(displayed.contains("NUDOX_PYREFLY"));
+        }
+    }
+
 
     #[test]
     fn package_lowering_failure_keeps_nested_source_recovery_reasons_distinct() {

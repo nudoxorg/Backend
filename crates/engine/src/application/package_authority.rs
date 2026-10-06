@@ -38,6 +38,7 @@ use backend_frontend_rust::legacy::{
 use backend_frontend_typescript::legacy::{
     CheckerError as TypeScriptCheckerError, ExplicitTypeScriptChecker, Report as TypeScriptReport,
 };
+use backend_library::interface::{CompilerToolFailure, CompilerToolIssue, CompilerToolRequirement};
 use backend_semantic::vocabulary::{LanguageProfile, NativeTool, TypeScriptSource};
 use thiserror::Error;
 
@@ -56,6 +57,8 @@ pub struct PackageAuthorityConfiguration<'config> {
     pub typescript_project_host: Option<&'config TypeScriptProjectHost>,
     /// Python pyrefly adapter that owns inferred-type and resolution facts.
     pub python: Option<&'config Pyrefly>,
+    /// Exact checker selection and version-probe outcome, independent of the interpreter.
+    pub python_checker_state: super::LocalRuntimePythonCheckerState,
     /// Rust Analyzer/Cargo authority configuration.
     pub rust: Option<RustPackageAuthorityConfiguration<'config>>,
     /// Go package oracle selected by the application owner.
@@ -78,6 +81,7 @@ impl PackageAuthorityConfiguration<'static> {
         typescript: None,
         typescript_project_host: None,
         python: None,
+        python_checker_state: super::LocalRuntimePythonCheckerState::Unconfigured,
         rust: None,
         go: None,
         csharp: None,
@@ -381,12 +385,30 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 PackageAuthorityOwner::TypeScript { profile, report }
             }
             LanguageProfile::Python(profile) => {
-                let pyrefly = request.configuration.python.ok_or(
-                    PackageAuthorityError::AdapterUnavailable {
+                let Some(pyrefly) = request.configuration.python else {
+                    let failure = match request.configuration.python_checker_state {
+                        super::LocalRuntimePythonCheckerState::Unconfigured => {
+                            CompilerToolFailure::Missing
+                        }
+                        super::LocalRuntimePythonCheckerState::ProbeFailed => {
+                            CompilerToolFailure::ProbeFailed
+                        }
+                        super::LocalRuntimePythonCheckerState::Ready => {
+                            return Err(PackageAuthorityError::AdapterUnavailable {
+                                profile: request.profile,
+                                stage: PackageAuthorityStage::PythonPyrefly,
+                            });
+                        }
+                    };
+                    return Err(PackageAuthorityError::RequiredTool {
                         profile: request.profile,
                         stage: PackageAuthorityStage::PythonPyrefly,
-                    },
-                )?;
+                        issue: CompilerToolIssue {
+                            requirement: CompilerToolRequirement::PythonChecker,
+                            failure,
+                        },
+                    });
+                };
                 let syntax = extract(request.source, profile)
                     .map_err(PackageAuthorityError::PythonSyntax)?;
                 checkpoint(
@@ -782,6 +804,16 @@ pub enum PackageAuthorityError {
         /// Exact missing producer stage.
         stage: PackageAuthorityStage,
     },
+    /// A specifically named native or auxiliary producer is missing or failed its version probe.
+    #[error("required tool {issue:?} for {profile:?} is not admitted during {stage:?}")]
+    RequiredTool {
+        /// Requested profile.
+        profile: LanguageProfile,
+        /// Exact missing or unadmitted producer stage.
+        stage: PackageAuthorityStage,
+        /// Exact required executable and bounded admission failure.
+        issue: CompilerToolIssue,
+    },
     /// The selected source path was not beneath the explicitly selected root.
     #[error(
         "package authority source {source_path:?} is outside root {package_root:?} for {profile:?}"
@@ -908,6 +940,7 @@ mod tests {
             typescript: None,
             typescript_project_host: None,
             python: None,
+            python_checker_state: super::LocalRuntimePythonCheckerState::Unconfigured,
             rust: None,
             go: None,
             csharp: None,
@@ -950,6 +983,7 @@ mod tests {
             typescript: Some(&typescript),
             typescript_project_host: None,
             python: None,
+            python_checker_state: super::LocalRuntimePythonCheckerState::Unconfigured,
             rust: None,
             go: Some(&go),
             csharp: None,

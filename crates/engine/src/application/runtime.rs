@@ -34,8 +34,9 @@ use backend_frontend_rust::legacy::{
 use backend_frontend_typescript::legacy::{ExplicitTypeScriptChecker, TypeScriptInvocationModeV1};
 use backend_library::interface::{
     CompilerCapability, CompilerReadiness, CompilerRequest, CompilerRuntimeCause, CompilerTerminal,
-    GeneratedArtifact, PackageCompilePhase, PackageCompileRequest, SemanticImageAccessError,
-    SemanticImageAuthority, SemanticImageSnapshot,
+    CompilerToolFailure, CompilerToolIssue, CompilerToolRequirement, GeneratedArtifact,
+    PackageCompilePhase, PackageCompileRequest, SemanticImageAccessError, SemanticImageAuthority,
+    SemanticImageSnapshot,
 };
 use backend_semantic::ir::SemanticInputWitness;
 use backend_semantic::vocabulary::{Language, LanguageProfile, NativeTool, Stage};
@@ -272,6 +273,18 @@ pub enum LocalCompilerCapabilityState {
     Ready,
 }
 
+/// Admission state of the Python checker, independent of the Python interpreter row.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LocalRuntimePythonCheckerState {
+    /// No explicit Pyrefly path was selected.
+    #[default]
+    Unconfigured,
+    /// The explicit Pyrefly executable failed its bounded version probe.
+    ProbeFailed,
+    /// The explicit Pyrefly executable and exact version output were admitted.
+    Ready,
+}
+
 /// One compiler-owned semantic capability bound to the exact runtime configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LocalCompilerCapability {
@@ -285,6 +298,7 @@ pub struct LocalCompilerCapability {
     lineage: Option<CompilerSessionLineage>,
     manifest: Option<[u8; 32]>,
     state: LocalCompilerCapabilityState,
+    setup_issue: Option<CompilerToolIssue>,
 }
 
 /// Exact runtime identity available to a remote worker after its local
@@ -689,6 +703,12 @@ impl LocalCompilerCapability {
         self.state
     }
 
+    /// Exact missing tool or failed probe that prevents this capability from becoming ready.
+    #[must_use]
+    pub const fn setup_issue(self) -> Option<CompilerToolIssue> {
+        self.setup_issue
+    }
+
     /// Binds an admitted runtime row to the exact requested package target
     /// and stage. Unsupported profiles or any unattested runtime facet fail
     /// closed with `None`.
@@ -841,10 +861,21 @@ impl LocalCompilerCapabilities {
                         platform,
                     )
                 });
-            let state = if local_authority_fingerprint.is_none() {
-                LocalCompilerCapabilityState::Unavailable
-            } else {
-                match runtime.map(|candidate| candidate.state) {
+            let setup_issue =
+                capability_setup_issue(profile, runtime, &configuration.package_authority);
+            let state = match setup_issue {
+                Some(CompilerToolIssue {
+                    failure: CompilerToolFailure::Missing,
+                    ..
+                }) => LocalCompilerCapabilityState::Unavailable,
+                Some(CompilerToolIssue {
+                    failure: CompilerToolFailure::ProbeFailed,
+                    ..
+                }) => LocalCompilerCapabilityState::ProbeFailed,
+                None if local_authority_fingerprint.is_none() => {
+                    LocalCompilerCapabilityState::Unavailable
+                }
+                None => match runtime.map(|candidate| candidate.state) {
                     Some(LocalRuntimeToolchainState::Probing) => {
                         LocalCompilerCapabilityState::Probing
                     }
@@ -858,7 +889,7 @@ impl LocalCompilerCapabilities {
                         LocalRuntimeToolchainState::Unavailable | LocalRuntimeToolchainState::Ready,
                     )
                     | None => LocalCompilerCapabilityState::Unavailable,
-                }
+                },
             };
             LocalCompilerCapability {
                 profile,
@@ -871,6 +902,7 @@ impl LocalCompilerCapabilities {
                 lineage,
                 manifest,
                 state,
+                setup_issue,
             }
         };
         Self {
@@ -1134,6 +1166,54 @@ fn runtime_target_platform_identity() -> Option<[u8; 32]> {
 /// An adapter returns a digest only when its ordered options and selected executable can be bound
 /// to typed toolchain evidence. External module trees and classpaths fail closed until their bytes
 /// are admitted into a typed input closure. Local compilation remains available in every mode.
+fn capability_setup_issue(
+    profile: LanguageProfile,
+    runtime: Option<&LocalRuntimeToolchain>,
+    authority: &LocalRuntimePackageAuthority,
+) -> Option<CompilerToolIssue> {
+    let native_tool = CompilerToolRequirement::Native(profile.language().native_tool());
+    match runtime.map(|candidate| candidate.state) {
+        Some(LocalRuntimeToolchainState::Unavailable) | None => {
+            return Some(CompilerToolIssue {
+                requirement: native_tool,
+                failure: CompilerToolFailure::Missing,
+            });
+        }
+        Some(LocalRuntimeToolchainState::ProbeFailed) => {
+            return Some(CompilerToolIssue {
+                requirement: native_tool,
+                failure: CompilerToolFailure::ProbeFailed,
+            });
+        }
+        Some(LocalRuntimeToolchainState::Probing) => return None,
+        Some(LocalRuntimeToolchainState::Ready) => {}
+    }
+
+    if profile.language() != Language::Python {
+        return None;
+    }
+    let checker = CompilerToolRequirement::PythonChecker;
+    match authority.python_checker_state {
+        LocalRuntimePythonCheckerState::Unconfigured => Some(CompilerToolIssue {
+            requirement: checker,
+            failure: CompilerToolFailure::Missing,
+        }),
+        LocalRuntimePythonCheckerState::ProbeFailed => Some(CompilerToolIssue {
+            requirement: checker,
+            failure: CompilerToolFailure::ProbeFailed,
+        }),
+        LocalRuntimePythonCheckerState::Ready
+            if authority.python.is_none() || authority.python_toolchain_identity.is_none() =>
+        {
+            Some(CompilerToolIssue {
+                requirement: checker,
+                failure: CompilerToolFailure::ProbeFailed,
+            })
+        }
+        LocalRuntimePythonCheckerState::Ready => None,
+    }
+}
+
 fn portable_invocation_options_digest(
     profile: LanguageProfile,
     authority: &LocalRuntimePackageAuthority,
@@ -1825,8 +1905,10 @@ pub struct LocalRuntimePackageAuthority {
     /// Python Pyrefly authority.
     pub python: Option<Pyrefly>,
     /// Separate bounded version identity for the configured Pyrefly executable.
-    /// Missing identity keeps local compilation available and withholds remote recipe admission.
+    /// Missing identity keeps Python semantic capability unavailable.
     pub python_toolchain_identity: Option<PyreflyToolchainIdentity>,
+    /// Explicit Pyrefly selection and bounded version-probe result, separate from Python itself.
+    pub python_checker_state: LocalRuntimePythonCheckerState,
     /// Rust Analyzer/Cargo authority.
     pub rust: Option<LocalRuntimeRustAuthority>,
     /// Go package oracle authority.
@@ -3124,6 +3206,7 @@ fn run_worker_generation(
         typescript: configuration.package_authority.typescript.as_ref(),
         typescript_project_host: configuration.typescript_project_host.as_ref(),
         python: configuration.package_authority.python.as_ref(),
+        python_checker_state: configuration.package_authority.python_checker_state,
         rust,
         go: configuration.package_authority.go.as_ref(),
         csharp,
@@ -4330,6 +4413,7 @@ mod portable_recipe_tests {
             python_toolchain_identity: Some(PyreflyToolchainIdentity::from_version_output(
                 pyrefly_version,
             )),
+            python_checker_state: LocalRuntimePythonCheckerState::Ready,
             ..LocalRuntimePackageAuthority::default()
         };
         let runtime = LocalRuntimeToolchain::resolved(
