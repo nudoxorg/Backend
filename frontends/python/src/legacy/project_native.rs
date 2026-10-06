@@ -740,7 +740,7 @@ fn captured_finder(
     let mut effective = BTreeMap::new();
     let mut scope_identity = blake3::Hasher::new();
     scope_identity.update(b"compiler.python.effective-config-scope.v1\0");
-    scope_identity.update(b"root-isolated;native-priority;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
+    scope_identity.update(b"root-isolated;native-priority;candidate-presence+absence;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
     for directory in directories {
         let mut candidates = Vec::new();
         for (depth, ancestor) in directory
@@ -865,7 +865,11 @@ fn queue_children<'type_>(
     container: TypeContainer,
     children: &'type_ [Type],
     depth: usize,
-) {
+    remaining: usize,
+) -> Result<(), PythonTypeProjectionFault> {
+    if children.len() > remaining {
+        return Err(PythonTypeProjectionFault::Work { limit: TYPE_WORK });
+    }
     pending.push(TypeStep::Build(container, children.len()));
     pending.extend(
         children
@@ -873,6 +877,7 @@ fn queue_children<'type_>(
             .rev()
             .map(|child| TypeStep::Visit(child, depth + 1)),
     );
+    Ok(())
 }
 
 impl<'control> TypeProjection<'control> {
@@ -953,11 +958,20 @@ impl<'control> TypeProjection<'control> {
                                 TypeContainer::Union,
                                 &union.members,
                                 depth,
-                            );
+                                TYPE_WORK - self.visited,
+                            )
+                            .map_err(refusal)?;
                             None
                         }
                         Type::Tuple(Tuple::Concrete(elements)) => {
-                            queue_children(&mut pending, TypeContainer::Tuple, elements, depth);
+                            queue_children(
+                                &mut pending,
+                                TypeContainer::Tuple,
+                                elements,
+                                depth,
+                                TYPE_WORK - self.visited,
+                            )
+                            .map_err(refusal)?;
                             None
                         }
                         Type::Annotated(inner, _) | Type::Unpack(inner) => {
@@ -991,7 +1005,9 @@ impl<'control> TypeProjection<'control> {
                                     container,
                                     &class.targs().as_slice()[..class.targs().len().min(1)],
                                     depth,
-                                );
+                                    TYPE_WORK - self.visited,
+                                )
+                                .map_err(refusal)?;
                                 None
                             } else if class.is_builtin("dict") && class.targs().len() == 2 {
                                 queue_children(
@@ -999,7 +1015,9 @@ impl<'control> TypeProjection<'control> {
                                     TypeContainer::Dict,
                                     class.targs().as_slice(),
                                     depth,
-                                );
+                                    TYPE_WORK - self.visited,
+                                )
+                                .map_err(refusal)?;
                                 None
                             } else if class.is_builtin("dict") {
                                 Some(InferredType::Dict(None))

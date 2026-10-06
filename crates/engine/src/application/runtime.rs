@@ -28,6 +28,7 @@ use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_go::legacy::{ConfiguredGoOracle, GoOracleInvocationModeV1};
 use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
+use backend_frontend_python::legacy::checker::NativePythonProjectAuthority;
 use backend_frontend_rust::legacy::{
     RustCargoMetadataPolicy, RustFeatureControl, RustToolchain, SourceByteLimit,
 };
@@ -309,11 +310,16 @@ pub enum LocalRuntimePythonCheckerProbeFailure {
 
 /// One closed Python checker admission state.
 ///
-/// `Ready` always carries both the adapter and its bounded version proof, so callers cannot
-/// accidentally pair a checker with a missing or unrelated identity.
+/// Native authority carries its actual compiled producer identity. External `Ready`
+/// carries the adapter and bounded version proof together.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LocalRuntimePythonCheckerAdmission<Adapter> {
-    /// No explicit Pyrefly path was selected.
+    /// Actual compiled State producer; does not require an external executable.
+    Native {
+        /// Pinned source/manifest/policy and actual host producer bytes.
+        authority: NativePythonProjectAuthority,
+    },
+    /// The caller explicitly withheld both native and external authority.
     Unconfigured,
     /// The explicit Pyrefly executable failed its bounded version probe.
     ProbeFailed {
@@ -339,6 +345,9 @@ impl<Adapter> LocalRuntimePythonCheckerAdmission<Adapter> {
     /// Borrows the checker adapter while preserving the same single admission state.
     pub fn as_ref(&self) -> LocalRuntimePythonCheckerAdmission<&Adapter> {
         match self {
+            Self::Native { authority } => LocalRuntimePythonCheckerAdmission::Native {
+                authority: *authority,
+            },
             Self::Unconfigured => LocalRuntimePythonCheckerAdmission::Unconfigured,
             Self::ProbeFailed { cause } => {
                 LocalRuntimePythonCheckerAdmission::ProbeFailed { cause: *cause }
@@ -1072,16 +1081,18 @@ fn package_authority_fingerprint(
                     .local_configuration_fingerprint(),
             );
         }
-        Language::Python => {
-            let LocalRuntimePythonCheckerAdmission::Ready { adapter, proof } =
-                &authority.python_checker
-            else {
-                return None;
-            };
-            identity.update(&adapter.local_configuration_fingerprint());
-            identity.update(&[1]);
-            identity.update(proof.content_id().as_ref());
-        }
+        Language::Python => match &authority.python_checker {
+            LocalRuntimePythonCheckerAdmission::Native { authority } => {
+                identity.update(b"compiled-native-python-project\0");
+                identity.update(&authority.producer_identity().as_bytes());
+            }
+            LocalRuntimePythonCheckerAdmission::Ready { adapter, proof } => {
+                identity.update(b"external-pyrefly-per-file\0");
+                identity.update(&adapter.local_configuration_fingerprint());
+                identity.update(proof.content_id().as_ref());
+            }
+            _ => return None,
+        },
         Language::Go => {
             identity.update(&authority.go.as_ref()?.local_configuration_fingerprint());
         }
@@ -1284,7 +1295,8 @@ fn capability_setup_issue(
             requirement: checker,
             failure: CompilerToolFailure::ProbeFailed,
         }),
-        LocalRuntimePythonCheckerAdmission::Ready { .. } => None,
+        LocalRuntimePythonCheckerAdmission::Native { .. }
+        | LocalRuntimePythonCheckerAdmission::Ready { .. } => None,
     }
 }
 
@@ -1346,12 +1358,14 @@ fn portable_invocation_options_digest(
             options.update(b"typescript-report-program-v1\0");
         }
         Language::Python => {
+            // A native project with captured local configuration is a host-local
+            // producer. It does not claim portable external invocation parity.
             let LocalRuntimePythonCheckerAdmission::Ready { adapter, proof } =
                 &authority.python_checker
             else {
                 return None;
             };
-            options.update(b"python-pyrefly-v1\0");
+            options.update(b"external-python-pyrefly-per-file-v1\0");
             options.update(proof.content_id().as_ref());
             update_owned_string_identity(
                 &mut options,
@@ -1627,6 +1641,27 @@ impl LocalRuntimeToolchain {
         })
     }
 
+    /// The image is the actual Rust host producer, not a Python interpreter or
+    /// an external checker. Identity derives from its compiled solver receipt.
+    pub(crate) fn compiled_native_python(
+        authority: NativePythonProjectAuthority,
+    ) -> Result<Self, backend_frontend_python::legacy::checker::CheckerError> {
+        let executable = std::env::current_exe().map_err(|source| {
+            backend_frontend_python::legacy::checker::CheckerError::Workspace { source }
+        })?;
+        Ok(Self {
+            facts: LocalRuntimeToolchainFacts {
+                tool: NativeTool::Python,
+                identity: Some(ContentId::from_digest(
+                    authority.producer_identity().as_bytes(),
+                )),
+                state: LocalRuntimeToolchainState::Ready,
+            },
+            executable: Some(executable.into_boxed_path()),
+            probe_failure: None,
+        })
+    }
+
     /// Retains the intentional absence of one registry-selected tool.
     #[must_use]
     pub const fn unavailable(tool: NativeTool) -> Self {
@@ -1837,7 +1872,7 @@ pub struct LocalRuntimePackageAuthority {
     pub clang: Option<backend_frontend_clang::ClangAuthorityEnvironment>,
     /// TypeScript checker authority.
     pub typescript: Option<ExplicitTypeScriptChecker>,
-    /// Closed explicit Pyrefly selection, probe result, or admitted adapter and version proof.
+    /// Compiled native State producer or explicitly selected external per-file checker.
     pub python_checker: LocalRuntimePythonCheckerAdmission<Pyrefly>,
     /// Rust Analyzer/Cargo authority.
     pub rust: Option<LocalRuntimeRustAuthority>,

@@ -12,6 +12,7 @@ use backend_frontend_go::legacy::oracle::GoOracleChildEnvironment;
 use backend_frontend_go::legacy::{GoOracle, GoOracleConfiguration};
 use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
+use backend_frontend_python::legacy::checker::NativePythonProjectAuthority;
 use backend_frontend_rust::legacy::{RustToolchain, SourceByteLimit};
 use backend_frontend_typescript::legacy::Checker as TypeScriptChecker;
 use backend_library::interface::PackageEcosystem;
@@ -118,7 +119,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let pyrefly = self.executable(
             LocalHostVariable::NudoxPyrefly,
             LocalHostPathRole::Pyrefly,
-            self.auxiliary_candidates(home, "pyrefly"),
+            ArrayVec::new(),
         )?;
         let python_checker = match pyrefly.as_deref() {
             Some(executable) => {
@@ -132,7 +133,9 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                     },
                 }
             }
-            None => LocalRuntimePythonCheckerAdmission::Unconfigured,
+            None => LocalRuntimePythonCheckerAdmission::Native {
+                authority: NativePythonProjectAuthority::admit()?,
+            },
         };
         let rust = match (
             executables.rustc.as_deref(),

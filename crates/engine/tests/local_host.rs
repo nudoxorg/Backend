@@ -35,12 +35,8 @@ impl LocalHostEnvironment for PythonToolEnvironment {
     fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
         match variable {
             LocalHostVariable::NudoxDataRoot => Some(self.root.clone().into_os_string()),
-            LocalHostVariable::NudoxPython => {
-                self.python.clone().map(PathBuf::into_os_string)
-            }
-            LocalHostVariable::NudoxPyrefly => {
-                self.pyrefly.clone().map(PathBuf::into_os_string)
-            }
+            LocalHostVariable::NudoxPython => self.python.clone().map(PathBuf::into_os_string),
+            LocalHostVariable::NudoxPyrefly => self.pyrefly.clone().map(PathBuf::into_os_string),
             _ => None,
         }
     }
@@ -136,14 +132,20 @@ fn python_checker_setup_is_explicit_typed_and_distinct_from_python_interpreter()
         })
     );
 
-    // A helper present on PATH is not selected under ExplicitOnly.
-    let missing_checker = inspect(Some(python_path.clone()), None);
+    // The compiled State producer works with no external checker/interpreter.
+    let native = inspect(None, None);
     assert_eq!(
-        missing_checker.setup_issue(),
-        Some(CompilerToolIssue {
-            requirement: CompilerToolRequirement::PythonChecker,
-            failure: CompilerToolFailure::Missing,
-        })
+        native.state(),
+        backend_engine::application::LocalCompilerCapabilityState::Ready
+    );
+    assert_eq!(native.setup_issue(), None);
+    assert!(native.toolchain_identity().is_some());
+    assert!(native.local_authority_fingerprint().is_some());
+    assert!(native.manifest().is_some());
+    assert_ne!(
+        native.toolchain_identity(),
+        inspect(Some(python_path.clone()), Some(pyrefly_ok.clone())).toolchain_identity(),
+        "compiled native producer and external interpreter are distinct identities"
     );
 
     let failed_probe = inspect(Some(python_path.clone()), Some(pyrefly_bad));
@@ -156,7 +158,10 @@ fn python_checker_setup_is_explicit_typed_and_distinct_from_python_interpreter()
     );
 
     let admitted = inspect(Some(python_path), Some(pyrefly_ok));
-    assert_eq!(admitted.state(), backend_engine::application::LocalCompilerCapabilityState::Ready);
+    assert_eq!(
+        admitted.state(),
+        backend_engine::application::LocalCompilerCapabilityState::Ready
+    );
     assert_eq!(admitted.setup_issue(), None);
     assert!(admitted.toolchain_identity().is_some());
     assert!(admitted.local_authority_fingerprint().is_some());
@@ -164,15 +169,24 @@ fn python_checker_setup_is_explicit_typed_and_distinct_from_python_interpreter()
 
     let changed_checker = inspect(Some(bin.join("python3")), Some(pyrefly_changed));
     assert_eq!(changed_checker.state(), admitted.state());
-    assert_eq!(changed_checker.toolchain_identity(), admitted.toolchain_identity());
+    assert_eq!(
+        changed_checker.toolchain_identity(),
+        admitted.toolchain_identity()
+    );
     assert_ne!(
         changed_checker.local_authority_fingerprint(),
         admitted.local_authority_fingerprint(),
         "the exact Pyrefly version remains bound separately from Python",
     );
 
-    assert!(!root.join("artifacts").exists(), "inspection must not create artifacts");
-    assert!(!root.join("journal").exists(), "inspection must not create a journal");
+    assert!(
+        !root.join("artifacts").exists(),
+        "inspection must not create artifacts"
+    );
+    assert!(
+        !root.join("journal").exists(),
+        "inspection must not create a journal"
+    );
     fs::remove_dir_all(&root).expect("remove isolated tool fixture");
 }
 
@@ -261,4 +275,32 @@ fn explicit_rust_toolchain_selected_through_its_proxies_starts_a_ready_owner() {
     assert_eq!(client.readiness(), CompilerReadiness::Ready);
     drop(client);
     fs::remove_dir_all(root).expect("the stopped owner releases its exact fixture root");
+}
+
+#[test]
+fn compiled_python_authority_is_ready_with_empty_path_and_no_external_tools() {
+    let root = fresh_root("native-python-empty-path");
+    let host = LocalCompilerHost::new(
+        PythonToolEnvironment {
+            root: root.clone(),
+            python: None,
+            pyrefly: None,
+            search_path: OsString::new(),
+        },
+        LocalHostDiscovery::ExplicitOnly,
+    );
+    let native = host
+        .inspect_capabilities()
+        .expect("actual compiled producer admission")
+        .for_profile(LanguageProfile::Python(PythonVersion::Python314));
+    assert_eq!(
+        native.state(),
+        backend_engine::application::LocalCompilerCapabilityState::Ready
+    );
+    assert_eq!(native.setup_issue(), None);
+    assert!(native.manifest().is_some());
+    assert!(
+        !root.exists(),
+        "inspection does not create durable setup state"
+    );
 }

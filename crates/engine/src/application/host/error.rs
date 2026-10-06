@@ -176,6 +176,9 @@ pub enum LocalCompilerHostError {
     /// Pyrefly authority rejected its explicit executable.
     #[error(transparent)]
     PythonAuthority(#[from] PyreflyExecutableError),
+    /// The actual compiled native Python producer could not be admitted.
+    #[error(transparent)]
+    NativePythonAuthority(#[from] backend_frontend_python::legacy::checker::CheckerError),
     /// Go authority rejected its explicit producer.
     #[error(transparent)]
     GoAuthority(#[from] GoOracleConfigurationError),

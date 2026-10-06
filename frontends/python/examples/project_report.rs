@@ -5,8 +5,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use backend_frontend_python::legacy::checker::{
-    PYTHON_NATIVE_PROJECT_SOURCE_REVISION, Pyrefly, PythonProjectControl, PythonProjectSource,
-    SymbolOutcome,
+    NativePythonProjectAuthority, PYTHON_NATIVE_PROJECT_SOURCE_REVISION, PythonProjectControl,
+    PythonProjectSource, SymbolOutcome,
 };
 use backend_semantic::vocabulary::PythonVersion;
 use serde_json::json;
@@ -43,11 +43,11 @@ fn files(root: &Path, directory: &Path, output: &mut Vec<PathBuf>) -> std::io::R
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().collect::<Vec<_>>();
-    if args.len() != 4 {
-        return Err("usage: project_report ABS_PYREFLY ABS_PACKAGE_ROOT PACKAGE_NAME".into());
+    if args.len() != 3 {
+        return Err("usage: project_report ABS_PACKAGE_ROOT PACKAGE_NAME".into());
     }
-    let checker = Pyrefly::from_executable(PathBuf::from(&args[1]))?;
-    let root = PathBuf::from(&args[2]);
+    let checker = NativePythonProjectAuthority::admit()?;
+    let root = PathBuf::from(&args[1]);
     let mut paths = Vec::new();
     files(&root, &root, &mut paths)?;
     paths.sort();
@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let started = Instant::now();
         let report = checker.analyze_project(
             &root,
-            &args[3],
+            &args[2],
             &sources,
             PythonVersion::Python314,
             PythonProjectControl {
@@ -101,7 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &json!({"schema":"python-native-project-comparison.v1","package":args[3],"native_source_revision":PYTHON_NATIVE_PROJECT_SOURCE_REVISION,
+            &json!({"schema":"python-native-project-comparison.v1","package":args[2],"native_source_revision":PYTHON_NATIVE_PROJECT_SOURCE_REVISION,
         "selected_profile":"Python314","scope":"native authority only; no public CLI/MCP or precise read-set purity claim",
         "source_frontier":sources.iter().map(|source| json!({"path":source.relative_path,"bytes":source.source.len(),"blake3":blake3::hash(source.source.as_bytes()).to_hex().to_string()})).collect::<Vec<_>>(),"passes":passes})
         )?

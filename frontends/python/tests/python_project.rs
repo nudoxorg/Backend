@@ -4,21 +4,17 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use backend_frontend_python::legacy::checker::{
-    CheckerError, InferenceSite, InferredType, Pyrefly, PythonProjectControl, PythonProjectSource,
-    SymbolOutcome,
+    CheckerError, InferenceSite, InferredType, NativePythonProjectAuthority, PythonProjectControl,
+    PythonProjectSource, SymbolOutcome,
 };
 use backend_semantic::vocabulary::PythonVersion;
 
 #[test]
 fn native_project_restores_cross_module_definitions_preserving_utf8() {
-    let Some(executable) = std::env::var_os("NUDOX_PYREFLY_BIN") else {
-        eprintln!("live project test requires explicit NUDOX_PYREFLY_BIN");
-        return;
-    };
     let root =
         std::env::temp_dir().join(format!("nudox-python-project-test-{}", std::process::id()));
     std::fs::create_dir_all(&root).expect("fixture root");
-    let checker = Pyrefly::from_executable(executable.into()).expect("absolute checker");
+    let checker = NativePythonProjectAuthority::admit().expect("compiled native producer");
     let sources = [
         PythonProjectSource {
             relative_path: "pkg/__init__.py",
@@ -215,8 +211,7 @@ fn native_project_restores_cross_module_definitions_preserving_utf8() {
 
 #[test]
 fn cancelled_project_cannot_spawn_or_return_an_admitted_report() {
-    let checker =
-        Pyrefly::from_executable("/definitely/missing/pyrefly".into()).expect("absolute path");
+    let checker = NativePythonProjectAuthority::admit().expect("compiled native producer");
     let cancelled = AtomicBool::new(true);
     let result = checker.analyze_project(
         std::path::Path::new("/tmp"),
@@ -236,9 +231,6 @@ fn cancelled_project_cannot_spawn_or_return_an_admitted_report() {
 
 #[test]
 fn native_project_cannot_bind_uncaptured_files_or_external_configured_roots() {
-    let Some(executable) = std::env::var_os("NUDOX_PYREFLY_BIN") else {
-        return;
-    };
     let root = std::env::temp_dir().join(format!(
         "nudox-python-project-closure-test-{}",
         std::process::id()
@@ -254,7 +246,7 @@ fn native_project_cannot_bind_uncaptured_files_or_external_configured_roots() {
         relative_path: "core.py",
         source: "import omitted\n\ndef result():\n    return omitted.answer()\n",
     }];
-    let checker = Pyrefly::from_executable(executable.into()).expect("absolute checker");
+    let checker = NativePythonProjectAuthority::admit().expect("compiled native producer");
     let cancelled = AtomicBool::new(false);
     let refused = checker.analyze_project(
         &root,
