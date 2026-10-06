@@ -520,6 +520,12 @@ fn selected_symbol_by_name(
     let CommandReply::Names(snapshot) = reply.reply else {
         return Err(io::Error::other("name lookup returned another reply shape").into());
     };
+    let returned_labels = snapshot
+        .root
+        .rows()
+        .iter()
+        .map(|row| row.label.as_str())
+        .collect::<Vec<_>>();
     snapshot
         .root
         .rows()
@@ -529,7 +535,12 @@ fn selected_symbol_by_name(
             RowId::Symbol(symbol) => Some(symbol),
             RowId::Package(_) | RowId::Object(_) => None,
         })
-        .ok_or_else(|| io::Error::other(format!("name lookup did not return {name}")).into())
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "name lookup did not return {name}; returned labels: {returned_labels:?}"
+            ))
+            .into()
+        })
 }
 
 fn selected_package_by_symbol(
