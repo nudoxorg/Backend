@@ -1090,7 +1090,9 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
             let old_capture = persisted
                 .relation::<ProductSemanticCaptureRelation>(
                     store,
-                    basis_before_unrelated.capture_root(),
+                    basis_before_unrelated
+                        .capture_root()
+                        .expect("earlier capture root is present"),
                 )
                 .expect("open the valid earlier capture relation root");
             assert_eq!(
@@ -1116,7 +1118,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
                 terminal_snapshot.commit().id().as_bytes(),
                 persisted_objects.objects(),
             )
-            .expect_err("top-level persisted admission rejects the hybrid basis");
+            .expect_err("top-level persisted admission rejects the hybrid basis")
         })
         .expect("pair the actual persisted transition with its selected store");
     assert!(
