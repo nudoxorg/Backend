@@ -20,6 +20,7 @@ pub struct DurableClosureManifest {
     pin: Arc<MembershipPin>,
     budget: ClosureCompositionBudget,
     cancellation: Option<Arc<std::sync::atomic::AtomicBool>>,
+    allocation_budget: Option<crate::PhysicalAllocationBudget>,
 }
 
 #[derive(Debug)]
@@ -67,6 +68,7 @@ impl DurableClosureManifest {
             }),
             budget,
             cancellation: None,
+            allocation_budget: None,
         })
     }
 
@@ -75,6 +77,24 @@ impl DurableClosureManifest {
     pub fn with_cancellation(mut self, cancellation: Arc<std::sync::atomic::AtomicBool>) -> Self {
         self.cancellation = Some(cancellation);
         self
+    }
+
+    /// Retains an explicit actual filesystem-allocation policy through rebind
+    /// and the durable pre-HEAD validation gate.
+    pub fn with_physical_allocation_budget(
+        mut self,
+        budget: crate::PhysicalAllocationBudget,
+    ) -> Result<Self, StoreError> {
+        budget.admit(&self.store)?;
+        self.allocation_budget = Some(budget);
+        Ok(self)
+    }
+
+    pub(crate) fn validate_physical_allocation(&self) -> Result<(), StoreError> {
+        if let Some(budget) = self.allocation_budget {
+            budget.admit(&self.store)?;
+        }
+        Ok(())
     }
 
     fn check_cancellation(&self) -> Result<(), StoreError> {
@@ -127,6 +147,8 @@ impl DurableClosureManifest {
         };
         let mut rebound = Self::from_pinned(&self.store, receipt, self.budget)?;
         rebound.cancellation.clone_from(&self.cancellation);
+        rebound.allocation_budget = self.allocation_budget;
+        rebound.validate_physical_allocation()?;
         Ok(rebound)
     }
 

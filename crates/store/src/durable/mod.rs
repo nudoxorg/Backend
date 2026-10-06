@@ -26,6 +26,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+mod allocation;
 mod artifact;
 mod artifact_fs;
 mod closure_composer;
@@ -40,6 +41,7 @@ mod recovery;
 mod store_api;
 mod streaming_closure;
 
+pub use allocation::PhysicalAllocationBudget;
 pub use artifact::{
     ArtifactBudget, ArtifactChunkReceipt, ArtifactClosureClaim, ArtifactHaveBitmap,
     ArtifactObjectClaim, ArtifactObjectReader, ArtifactPlan, ArtifactSession, ArtifactSink,

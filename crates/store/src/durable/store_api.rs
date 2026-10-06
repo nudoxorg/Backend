@@ -435,7 +435,8 @@ impl FileStore {
                 return Err(StoreError::Corrupt);
             }
             self.verify_closure_member_limited(id, None).map(|_| ())
-        })
+        })?;
+        membership.validate_physical_allocation()
     }
 
     /// Reads and admits a complete immutable closure manifest.

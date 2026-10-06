@@ -1181,6 +1181,48 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn physical_allocation_charges_immutable_index_files_across_cold_handles() {
+        let test = TestStore::new();
+        let item = object(&vec![0x5a; 64 * 1024]);
+        test.store.write_object(&item).unwrap();
+        let unlimited = crate::PhysicalAllocationBudget::new(u64::MAX, 4096);
+        let objects_only = unlimited.admit(&test.store).unwrap();
+        let receipt = compose(
+            &test.store,
+            None,
+            &[ClosureMembershipChange::add(item.id())],
+        );
+        let with_index = unlimited.admit(&test.store).unwrap();
+        assert!(
+            with_index > objects_only,
+            "index nodes and descriptor allocate real filesystem blocks"
+        );
+        drop(receipt);
+        let cold = FileStore::open(&test.path, 1024 * 1024).unwrap();
+        assert_eq!(unlimited.admit(&cold).unwrap(), with_index);
+        assert!(
+            crate::PhysicalAllocationBudget::new(with_index, 4096)
+                .admit(&cold)
+                .is_ok()
+        );
+        assert!(matches!(
+            crate::PhysicalAllocationBudget::new(with_index - 1, 4096).admit(&cold),
+            Err(StoreError::Bounds)
+        ));
+        cold.write_object(&item).unwrap();
+        assert_eq!(
+            unlimited.admit(&cold).unwrap(),
+            with_index,
+            "same immutable bytes do not allocate another payload"
+        );
+        assert!(matches!(
+            crate::PhysicalAllocationBudget::new(u64::MAX, 1).admit(&cold),
+            Err(StoreError::Bounds)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn durable_membership_clones_retain_old_roots_while_orphans_are_collected() {
         let test = TestStore::new();
         let retained = object(b"retained old snapshot member");

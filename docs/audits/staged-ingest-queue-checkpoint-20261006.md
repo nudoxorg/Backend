@@ -50,5 +50,5 @@ pin lifetime contract with root, compile this checkpoint under fresh fleet
 admission, run meaningful queue/fence/identity/quota/cancellation/restart and
 missing-page gates, and reproduce the actual 596-file Zod 8,092,105-byte red
 through the public path. Staged page/manifest allocation is charged; durable
-index node allocation accounting still requires review before claiming a
+index node allocation accounting was still outstanding at this checkpoint; a
 whole-store physical quota.

@@ -118,6 +118,17 @@ pub(super) struct StagePool {
 }
 
 impl StagePool {
+    fn admit_physical_allocation(&self, store: &FileStore) -> Result<(), StoreError> {
+        backend_store::PhysicalAllocationBudget::new(
+            self.max_reserved_bytes,
+            self.max_pages
+                .checked_mul(32)
+                .and_then(|n| n.checked_add(4096))
+                .ok_or(StoreError::Bounds)?,
+        )
+        .admit(store)
+        .map(|_| ())
+    }
     #[cfg(unix)]
     fn write_object(
         &self,
@@ -250,6 +261,7 @@ impl StagePool {
             Err(error) => return Err(StoreError::Io(error.to_string())),
         }
         let written = store.write_object(object)?;
+        self.admit_physical_allocation(store)?;
         let actual = fs::symlink_metadata(&target)
             .map_err(|e| StoreError::Io(e.to_string()))?
             .blocks()
@@ -328,6 +340,7 @@ impl StagePool {
             bytes: reserved_bytes,
         };
         let pin = store.pin_garbage_collection()?;
+        self.admit_physical_allocation(store)?;
         Ok(StageWriter {
             store: store.clone(),
             pool: self.clone(),
@@ -505,6 +518,7 @@ impl StageWriter {
                 self.pool.max_metadata_bytes,
             ),
         )?;
+        self.pool.admit_physical_allocation(&self.store)?;
         Ok(StagedEvidence {
             manifest_id,
             receipt,

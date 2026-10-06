@@ -79,6 +79,10 @@ fn pool() -> Result<&'static StagePool, StoreError> {
     Ok(POOL.get_or_init(|| StagePool::new(4, 4 * MAX_STAGE_BYTES, MAX_STAGE_PAGES, metadata)))
 }
 
+fn allocation_budget() -> backend_store::PhysicalAllocationBudget {
+    backend_store::PhysicalAllocationBudget::new(4 * MAX_STAGE_BYTES, MAX_STAGE_PAGES * 32 + 4096)
+}
+
 fn basis(snapshot: &WorkspaceSnapshot, request: [u8; 32]) -> StageBasis {
     StageBasis {
         owner_epoch: snapshot.owner_epoch(),
@@ -387,7 +391,9 @@ pub(super) fn stage(
         composition_budget().map_err(|e| error("stage composition budget", e))?,
     )
     .map_err(|e| error("admit staged membership", e))?
-    .with_cancellation(Arc::clone(&cancellation));
+    .with_cancellation(Arc::clone(&cancellation))
+    .with_physical_allocation_budget(allocation_budget())
+    .map_err(|e| error("admit staged physical allocation", e))?;
     let staged = Arc::new(StagedIntent {
         basis: bound,
         manifest: admission.manifest_id,
@@ -478,7 +484,9 @@ impl StagedIntent {
             pin,
             composition_budget().map_err(|e| error("staged reopen budget", e))?,
         )
-        .map_err(|e| error("admit selected staged membership", e))?;
+        .map_err(|e| error("admit selected staged membership", e))?
+        .with_physical_allocation_budget(allocation_budget())
+        .map_err(|e| error("admit selected physical allocation", e))?;
         if !membership
             .contains(manifest.id())
             .map_err(|e| error("prove stage manifest membership", e))?
