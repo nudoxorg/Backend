@@ -623,7 +623,9 @@ fn select_config<'a>(
 fn compiler_api_checker_options(
     options: &serde_json::Value,
 ) -> Result<TszCheckerOptions, TypeScriptProjectHostError> {
-    let json = serde_json::to_string(options).map_err(|error| {
+    let mut normalized = options.clone();
+    normalize_compiler_api_lib_names(&mut normalized);
+    let json = serde_json::to_string(&normalized).map_err(|error| {
         bridge_error(&format!(
             "normalized TypeScript options could not be encoded: {error}"
         ))
@@ -633,6 +635,34 @@ fn compiler_api_checker_options(
             "normalized TypeScript checker options are unsupported: {error}"
         ))
     })
+}
+
+fn normalize_compiler_api_lib_names(options: &mut serde_json::Value) {
+    let Some(libraries) = options
+        .get_mut("compilerOptions")
+        .and_then(|options| options.get_mut("lib"))
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for library in libraries {
+        let Some(name) = library.as_str() else {
+            continue;
+        };
+        let Some(without_prefix) = name
+            .get(..4)
+            .filter(|prefix| prefix.eq_ignore_ascii_case("lib."))
+            .map(|_| &name[4..])
+        else {
+            continue;
+        };
+        let without_suffix = without_prefix
+            .get(..without_prefix.len().saturating_sub(5))
+            .filter(|_| without_prefix.to_ascii_lowercase().ends_with(".d.ts"));
+        if let Some(canonical) = without_suffix {
+            *library = serde_json::Value::String(canonical.to_owned());
+        }
+    }
 }
 
 fn replay_observations(
@@ -852,6 +882,40 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     hex_digest(&Sha256::digest(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_compiler_api_lib_names;
+    use serde_json::json;
+
+    #[test]
+    fn compiler_api_library_filenames_map_to_tsconfig_library_names() {
+        let mut options = json!({
+            "compilerOptions": {
+                "lib": ["lib.dom.d.ts", "lib.dom.iterable.d.ts", "lib.esnext.d.ts"]
+            }
+        });
+        normalize_compiler_api_lib_names(&mut options);
+        assert_eq!(
+            options["compilerOptions"]["lib"],
+            json!(["dom", "dom.iterable", "esnext"])
+        );
+    }
+
+    #[test]
+    fn compiler_api_library_normalizer_preserves_unrecognized_values() {
+        let mut options = json!({
+            "compilerOptions": {
+                "lib": ["DOM", "@typescript/lib-dom", 7]
+            }
+        });
+        normalize_compiler_api_lib_names(&mut options);
+        assert_eq!(
+            options["compilerOptions"]["lib"],
+            json!(["DOM", "@typescript/lib-dom", 7])
+        );
+    }
 }
 
 fn hex_digest(bytes: &[u8]) -> String {
