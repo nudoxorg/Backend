@@ -1220,12 +1220,16 @@ impl UiRootEntity {
             }
         }
         self.publish_snapshot(cx);
-        if before.as_ref().is_some_and(|before| self.snapshot().workspace().projects.iter().any(|row|
-            row.phase == crate::model::ProjectPhase::Ready && row.operation.as_ref().is_some_and(|operation|
-                matches!(operation.observation.as_ref(), Some(backend_library::IndexOperationObservation::Known(status))
-                    if matches!(status.state, backend_library::IndexOperationState::Published(_))))
-            && !before.workspace().projects.iter().any(|old| old.id == row.id && old.phase == crate::model::ProjectPhase::Ready)))
-        {
+        let published = before.as_deref().map_or_else(BTreeSet::new, |before| {
+            newly_published_local_projects(before, &self.snapshot())
+        });
+        if !published.is_empty() {
+            if let Some(store) = &self.store {
+                // A durable local receipt withdraws old page/graph reads just
+                // like an acquired release. It must not wait for hydration or
+                // force the person to leave and reopen their current place.
+                store.update(cx, |store, cx| store.local_projects_published(&published, cx));
+            }
             // Hydration has its own read authority. Failure here cannot undo an
             // already admitted durable publication receipt.
             let basis = self.snapshot().key();
@@ -1242,6 +1246,33 @@ impl UiRootEntity {
     }
 
 
+}
+
+/// Exact newly admitted local publications; repeated receipt observations
+/// and ordinary Ready rows cannot announce another content change.
+fn newly_published_local_projects(
+    before: &AppSnapshot,
+    after: &AppSnapshot,
+) -> BTreeSet<crate::core::LocalProjectId> {
+    after.workspace().projects.iter().filter_map(|row| {
+        if row.phase != crate::model::ProjectPhase::Ready {
+            return None;
+        }
+        let operation = row.operation.as_ref()?;
+        if !matches!(
+            operation.observation.as_ref(),
+            Some(backend_library::IndexOperationObservation::Known(status))
+                if matches!(status.state, backend_library::IndexOperationState::Published(_))
+        ) {
+            return None;
+        }
+        let already_admitted = before.workspace().projects.iter().any(|old| {
+            old.id == row.id
+                && old.phase == crate::model::ProjectPhase::Ready
+                && old.operation.as_ref() == Some(operation)
+        });
+        (!already_admitted).then(|| row.id.clone())
+    }).collect()
 }
 
 fn overlay_claims(mut state: crate::model::PersistedDesktopState, claims: Vec<(crate::core::LocalProjectId, crate::model::IndexOperationClaim)>) -> crate::model::PersistedDesktopState {

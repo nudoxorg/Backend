@@ -14,6 +14,29 @@ impl DataStore {
         cx: &mut Context<Self>,
     ) {
         if packages.is_empty() { return; }
+        self.invalidate_package_observations(packages, cx);
+    }
+
+    pub(crate) fn local_projects_published(
+        &mut self,
+        projects: &BTreeSet<crate::core::LocalProjectId>,
+        cx: &mut Context<Self>,
+    ) {
+        if projects.is_empty() { return; }
+        let packages = projects.iter().filter_map(|project| {
+            // A native path with no lossless package spelling still changes
+            // shared discovery and the graph frontier. Never drop that wake
+            // or invent a package coordinate from its display label.
+            project.service_coordinate().ok().and_then(|path| PackageRef::parse(path).ok())
+        }).collect();
+        self.invalidate_package_observations(&packages, cx);
+    }
+
+    fn invalidate_package_observations(
+        &mut self,
+        packages: &BTreeSet<PackageRef>,
+        cx: &mut Context<Self>,
+    ) {
         let changed = self.pages.keys().into_iter()
             .filter(|key| affected(key, packages))
             .collect::<Vec<_>>();
