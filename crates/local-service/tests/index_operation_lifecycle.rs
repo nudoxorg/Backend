@@ -1055,7 +1055,16 @@ fn wait_for_published(
     loop {
         let status = status_for_exact_start(observation, &initial_status)?;
         match &status.state {
-            IndexOperationState::Published(_) => return Ok(status),
+            IndexOperationState::Published(_) => {
+                // Status polling deliberately retires bounded frame streams.
+                // Ordinary Session reads are one-shot, so start their phase
+                // on a freshly authenticated stream without replaying Start.
+                with_phase_context(
+                    "reconnect after exact keyed publication polling before ordinary reads",
+                    session.reconnect(),
+                )?;
+                return Ok(status);
+            }
             IndexOperationState::Accepted | IndexOperationState::Active { .. } => {
                 check_poll_deadline(deadline)?;
                 thread::sleep(Duration::from_millis(50));
