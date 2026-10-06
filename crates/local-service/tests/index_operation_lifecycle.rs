@@ -199,6 +199,13 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
     );
     assert!(receipt.workspace_sequence() > 0);
     assert_ne!(receipt.commit_identity(), &[0; 32]);
+    let first_capture = published.source_capture.as_ref().ok_or_else(|| {
+        io::Error::other("initial publication omitted its durable source capture")
+    })?;
+    assert!(first_capture.profiles().iter().all(|profile| matches!(
+        profile.state,
+        backend_library::IndexOperationSemanticProfileState::Published { .. }
+    )));
     assert!(
         !package_lock.exists(),
         "Cargo metadata must keep its generated lock out of the source package"
@@ -311,7 +318,7 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
 
     let shapes = with_phase_context(
         "query the published callable and aggregate shapes",
-        session.semantic_shapes(selected_source, &[cadence, signal], shape_budget),
+        session.semantic_shapes(selected_source.clone(), &[cadence, signal], shape_budget),
     )?;
     assert_eq!(shapes.entries.len(), 2);
     let cadence_shape = &shapes.entries[0];
@@ -424,7 +431,7 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
     assert_eq!(restored_key, operation_key);
     let restarted_owner = with_phase_context(
         "restart embedded owner from the same durable workspace paths",
-        EmbeddedLocalService::start(config),
+        EmbeddedLocalService::start(config.clone()),
     )?;
     assert!(
         fs::read(&authority_secret)? == authority_credential,
@@ -441,6 +448,19 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
     )?;
     assert_eq!(after_restart, first_observation);
     assert_same_publication_receipt(&after_restart, &first_receipt);
+    let cold_source = selected_rust_source(&mut restarted_session, &package)?;
+    assert_eq!(cold_source.generation, selected_source.generation);
+    assert!(matches!(
+        cold_source.freshness,
+        backend_library::SemanticVersionFreshness::Current { .. }
+    ));
+    assert_shape_facts_preserved(
+        &mut restarted_session,
+        cold_source,
+        &[cadence, signal],
+        shape_budget,
+        &shapes,
+    )?;
     let replay = with_phase_context(
         "replay the exact caller-keyed request after restart",
         restarted_session.start_index_operation(
@@ -473,7 +493,7 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
 
     let conflict = restarted_session.start_index_operation(
         restored_key,
-        package,
+        package.clone(),
         CompileExecutionIntent::Background,
     );
     match conflict {
@@ -512,8 +532,162 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
         "a conflicting replay must not change the published view root"
     );
 
+    // A new caller key is a new operation even when the package inputs are
+    // unchanged. It may legitimately reuse a proved generation or perform a
+    // fresh capture; either path must leave terminal receipts and usable shapes.
+    let same_add_key = IndexOperationKey::from_bytes([0x6e; 32])
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let same_add_started = with_phase_context(
+        "submit same package under a distinct caller key",
+        restarted_session.start_index_operation(
+            same_add_key,
+            package.clone(),
+            CompileExecutionIntent::Interactive,
+        ),
+    )?;
+    let same_add_status = with_phase_context(
+        "publish same package under a distinct caller key",
+        wait_for_published(&mut restarted_session, same_add_key, same_add_started),
+    )?;
+    if let Some(capture) = &same_add_status.source_capture {
+        assert!(capture.profiles().iter().all(|profile| matches!(
+            profile.state,
+            backend_library::IndexOperationSemanticProfileState::Published { .. }
+        )));
+    }
+    let same_add_source = selected_rust_source(&mut restarted_session, &package)?;
+    assert!(matches!(
+        same_add_source.freshness,
+        backend_library::SemanticVersionFreshness::Current { .. }
+    ));
+    assert_shape_facts_preserved(
+        &mut restarted_session,
+        same_add_source.clone(),
+        &[cadence, signal],
+        shape_budget,
+        &shapes,
+    )?;
+    let same_add_observation = IndexOperationObservation::Known(same_add_status);
+
+    // This is a real Cargo project-authority refusal, after a successful
+    // publication from the same configured compiler. The Rust source stays
+    // valid while Cargo must reject the nonexistent path dependency.
+    fs::write(
+        package_root.join("Cargo.toml"),
+        "[package]\nname = \"public_operation_lifecycle_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\nmissing_dependency = { path = \"missing_dependency\" }\n",
+    )?;
+    let failed_key = IndexOperationKey::from_bytes([0x6f; 32])
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let failed_started = with_phase_context(
+        "submit actual failed Cargo dependency refresh",
+        restarted_session.start_index_operation(
+            failed_key,
+            package.clone(),
+            CompileExecutionIntent::Interactive,
+        ),
+    )?;
+    let failed_status = with_phase_context(
+        "await actual failed Cargo dependency refresh",
+        wait_for_failed(&mut restarted_session, failed_key, failed_started),
+    )?;
+    let failed_capture = failed_status
+        .source_capture
+        .as_ref()
+        .ok_or_else(|| io::Error::other("failed compiler refresh omitted its source capture"))?;
+    assert!(failed_capture.profiles().iter().all(|profile| matches!(
+        profile.state,
+        backend_library::IndexOperationSemanticProfileState::Failed { prior, .. }
+            if prior.generation == same_add_source.generation.to_bytes()
+    )));
+    let failed_source = selected_rust_source(&mut restarted_session, &package)?;
+    assert_eq!(failed_source.generation, same_add_source.generation);
+    assert!(matches!(
+        failed_source.freshness,
+        backend_library::SemanticVersionFreshness::Historical {
+            selected_input,
+            latest_input,
+        } if selected_input != latest_input
+    ));
+    assert_shape_facts_preserved(
+        &mut restarted_session,
+        failed_source.clone(),
+        &[cadence, signal],
+        shape_budget,
+        &shapes,
+    )?;
+    let failed_observation = IndexOperationObservation::Known(failed_status);
     drop(restarted_session);
     with_phase_context("close restarted embedded owner", restarted_owner.close())?;
+
+    let cold_owner = with_phase_context(
+        "cold reopen after same-add and actual compiler refusal",
+        EmbeddedLocalService::start(config),
+    )?;
+    let mut cold_session = with_phase_context(
+        "connect after failed compiler cold reopen",
+        Session::connect(cold_owner.endpoint()),
+    )?;
+    assert_eq!(
+        cold_session.index_operation_status(same_add_key)?,
+        same_add_observation
+    );
+    assert_eq!(
+        cold_session.index_operation_status(failed_key)?,
+        failed_observation
+    );
+    let failed_cold_source = selected_rust_source(&mut cold_session, &package)?;
+    assert_eq!(failed_cold_source.generation, failed_source.generation);
+    assert_eq!(failed_cold_source.freshness, failed_source.freshness);
+    assert_shape_facts_preserved(
+        &mut cold_session,
+        failed_cold_source,
+        &[cadence, signal],
+        shape_budget,
+        &shapes,
+    )?;
+    let before_failed_replay = cold_session.revision()?.root;
+    assert_eq!(
+        cold_session.start_index_operation(
+            failed_key,
+            package,
+            CompileExecutionIntent::Interactive,
+        )?,
+        failed_observation,
+        "exact-key replay must preserve the failed operation and its source receipt"
+    );
+    assert_eq!(cold_session.revision()?.root, before_failed_replay);
+    drop(cold_session);
+    with_phase_context("close failed compiler cold owner", cold_owner.close())?;
+    Ok(())
+}
+
+fn selected_rust_source(
+    session: &mut Session,
+    package: &PackageReference,
+) -> Result<backend_library::SemanticVersionRecord, Box<dyn Error>> {
+    session
+        .semantic_versions(package.clone())?
+        .into_vec()
+        .into_iter()
+        .find(|record| record.selected && record.complete && record.profile.name() == Some("rust"))
+        .ok_or_else(|| {
+            io::Error::other("fixture lost its selected complete Rust generation").into()
+        })
+}
+
+fn assert_shape_facts_preserved(
+    session: &mut Session,
+    source: backend_library::SemanticVersionRecord,
+    symbols: &[backend_library::SymbolKey],
+    budget: SemanticShapeBudget,
+    expected: &backend_library::SemanticShapeBatch,
+) -> Result<(), Box<dyn Error>> {
+    let actual = session.semantic_shapes(source, symbols, budget)?;
+    assert_eq!(actual.entries.len(), expected.entries.len());
+    for (actual, expected) in actual.entries.iter().zip(expected.entries.iter()) {
+        assert_eq!(actual.identity, expected.identity);
+        assert_eq!(actual.fact, expected.fact);
+    }
     Ok(())
 }
 
@@ -892,6 +1066,46 @@ fn wait_for_published(
                     "poll durable operation status while awaiting publication",
                     format!(
                         "the real Cargo operation reached a non-published terminal state: {:?}",
+                        status.state
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn wait_for_failed(
+    session: &mut Session,
+    operation_key: IndexOperationKey,
+    mut observation: IndexOperationObservation,
+) -> Result<backend_library::IndexOperationStatus, PhaseError> {
+    let deadline = Instant::now() + Duration::from_secs(660);
+    let initial_status = known_status_for_key(observation.clone(), operation_key)?;
+    let mut diagnostic_ticket = None;
+    loop {
+        let status = status_for_exact_start(observation, &initial_status)?;
+        match &status.state {
+            IndexOperationState::Failed { .. } => {
+                let terminal = diagnostic_ticket.map(|ticket| session.await_index_job(ticket));
+                eprintln!(
+                    "intentional Cargo refusal: {:?}; retained job terminal: {terminal:?}",
+                    status.state
+                );
+                return Ok(status);
+            }
+            IndexOperationState::Accepted | IndexOperationState::Active { .. } => {
+                if let IndexOperationState::Active { ticket, .. } = &status.state {
+                    diagnostic_ticket = Some(ticket.clone());
+                }
+                check_poll_deadline(deadline)?;
+                thread::sleep(Duration::from_millis(50));
+                observation = read_status_with_keyed_reconnect(session, operation_key, deadline)?;
+            }
+            IndexOperationState::Published(_) | IndexOperationState::Unresolved { .. } => {
+                return Err(PhaseError::message(
+                    "await actual failed Cargo dependency refresh",
+                    format!(
+                        "expected durable Failed after the invalid dependency, got {:?}",
                         status.state
                     ),
                 ));
