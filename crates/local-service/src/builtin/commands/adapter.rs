@@ -4286,8 +4286,8 @@ mod tests {
             let dispatcher =
                 builtin_dispatcher(Some(ECHO_AUTHORITY_SECRET), Arc::clone(&profile), 60_000)
                     .expect("test dispatcher");
-            let registry =
-                super::super::product_relation_registry().expect("product relation registry");
+            let registry = super::super::super::product_relation_registry()
+                .expect("product relation registry");
             let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
                 &workspace,
                 BuiltinModel,

@@ -24,7 +24,7 @@ struct RetiredLayoutEvidence {
 }
 
 fn probe_retired_layout(workspace: &std::path::Path) -> Result<RetiredLayoutEvidence, String> {
-    use super::profile::RetiredSourceProbe;
+    use super::profile::{BuiltinWorkspaceRelation, RetiredSourceProbe};
     use backend_engine::WorkspaceOwner;
 
     let registry = super::product_relation_registry().map_err(|error| error.to_string())?;
