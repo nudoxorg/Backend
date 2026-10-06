@@ -6,9 +6,8 @@ use std::time::Duration;
 use crate::interface::{
     CompilerAttempt, CompilerCause, CompilerDiagnostic, CompilerFragmentFailure,
     CompilerFragmentFaultFacts, CompilerFragmentFaultFamily, CompilerFragmentLayoutStep,
-    CompilerFragmentRecordLane, CompilerFragmentSemanticSpace,
-    CompilerRuntimeCause, FragmentCause, PackageCompilePhase, PackageSourceCause, PublicationCause,
-    SourceAuthority,
+    CompilerFragmentRecordLane, CompilerFragmentSemanticSpace, CompilerRuntimeCause, FragmentCause,
+    PackageCompilePhase, PackageSourceCause, PublicationCause, SourceAuthority,
 };
 use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, CSharpImageFault, CSharpImageHeaderFault,
@@ -1681,7 +1680,10 @@ pub(crate) enum FragmentCauseWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "crate::interface::CompilerFragmentLayoutStep", rename_all = "snake_case")]
+#[serde(
+    remote = "crate::interface::CompilerFragmentLayoutStep",
+    rename_all = "snake_case"
+)]
 enum FragmentLayoutStepWire {
     Directory,
     EntityLane,
@@ -1935,36 +1937,10 @@ impl Serialize for FragmentFaultFactsRef {
                 state.serialize_field("ordinal", &ordinal)?;
                 state.end()
             }
-            CompilerFragmentFaultFacts::Nested {
-                fault,
-                lane,
-                resource,
-                ordinal,
-                owner,
-                target,
-                second_coordinate,
-                expected,
-                actual,
-                count,
-                limit,
-                required,
-                available,
-            } => {
-                let mut state = serializer.serialize_struct("CompilerFragmentFaultFacts", 14)?;
+            CompilerFragmentFaultFacts::Nested { fault } => {
+                let mut state = serializer.serialize_struct("CompilerFragmentFaultFacts", 2)?;
                 state.serialize_field("kind", "nested")?;
                 state.serialize_field("fault", &fault)?;
-                state.serialize_field("lane", &lane)?;
-                state.serialize_field("resource", &resource)?;
-                state.serialize_field("ordinal", &ordinal)?;
-                state.serialize_field("owner", &owner)?;
-                state.serialize_field("target", &target)?;
-                state.serialize_field("second_coordinate", &second_coordinate)?;
-                state.serialize_field("expected", &expected)?;
-                state.serialize_field("actual", &actual)?;
-                state.serialize_field("count", &count)?;
-                state.serialize_field("limit", &limit)?;
-                state.serialize_field("required", &required)?;
-                state.serialize_field("available", &available)?;
                 state.end()
             }
         }

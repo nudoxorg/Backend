@@ -9,6 +9,7 @@ use crate::{
 };
 use backend_semantic::ReadManifest;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// Why the optional semantic-search lane could not supply an authoritative
 /// result for a query.

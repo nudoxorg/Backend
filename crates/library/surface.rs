@@ -1,19 +1,19 @@
 //! Typed commands and results owned by the durable product service.
 
+use crate::interface::{
+    CompilerAttempt, CompilerFragmentFailure, CompilerFragmentFaultFacts,
+    CompilerFragmentFaultKind, CompilerFragmentFaultPhase, MAX_COMPILER_FRAGMENT_DETAIL_BYTES,
+};
 use crate::{
     CommandId, DependencyFacts, ForgeCoordinate, ForgeObjectId, ForgeRevision,
     PackageDependencyRecord, RegistryForgeAssociation, RegistryNativeMetadata,
 };
-use crate::interface::{
-    CompilerAttempt, CompilerFragmentFailure, CompilerFragmentFaultFacts,
-    CompilerFragmentFaultKind, CompilerFragmentFaultPhase,
-};
 use backend_advisory::{AdvisoryPackageDto, OverrideEvidence};
 pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
-use backend_version::{
-    CompileRecipeDomain, ContentId, Domain, HASH_BYTES, SourceFactDomain,
+use backend_version::{CompileRecipeDomain, ContentId, Domain, HASH_BYTES, SourceFactDomain};
+use serde::{
+    Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::SerializeStruct,
 };
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::SerializeStruct};
 use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::num::NonZeroU64;
@@ -1696,11 +1696,44 @@ impl PackageCompilerFailure {
         Self::MAX_ENCODED_BYTES
     }
 
+    /// Encodes this summary as canonical bounded JSON for operation receipts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an admission error when the DTO is inconsistent, JSON
+    /// serialization fails, or the encoded value exceeds the fixed cap.
+    pub fn encode_bounded_json(&self) -> Result<Vec<u8>, ProductAdmissionError> {
+        self.validate()?;
+        let encoded = serde_json::to_vec(self)
+            .map_err(|_| ProductAdmissionError::PackageCompilerFailureShape)?;
+        if encoded.len() > Self::MAX_ENCODED_BYTES {
+            return Err(ProductAdmissionError::PackageCompilerFailureShape);
+        }
+        Ok(encoded)
+    }
+
+    /// Decodes a bounded receipt payload and revalidates every closed field.
+    ///
+    /// # Errors
+    ///
+    /// Returns an admission error for oversized, malformed, unknown-field, or
+    /// internally inconsistent input.
+    pub fn decode_bounded_json(bytes: &[u8]) -> Result<Self, ProductAdmissionError> {
+        if bytes.len() > Self::MAX_ENCODED_BYTES {
+            return Err(ProductAdmissionError::PackageCompilerFailureShape);
+        }
+        serde_json::from_slice(bytes)
+            .map_err(|_| ProductAdmissionError::PackageCompilerFailureShape)
+    }
+
     fn validate(&self) -> Result<(), ProductAdmissionError> {
         if !is_canonical_package_relative_source_path(self.relative_path.as_str())
             || self.detail.len() > MAX_COMPILER_FRAGMENT_DETAIL_BYTES
             || self.detail.chars().any(char::is_control)
-            || self.detail.chars().any(|character| matches!(character, '"' | '\\'))
+            || self
+                .detail
+                .chars()
+                .any(|character| matches!(character, '"' | '\\'))
             || (self.detail.is_empty() && !self.detail_truncated)
             || !compiler_fault_facts_match_kind(self.kind, self.facts)
         {
@@ -1715,25 +1748,51 @@ fn compiler_fault_facts_match_kind(
     facts: CompilerFragmentFaultFacts,
 ) -> bool {
     use crate::interface::{
-        BuildFaultKind as B, CompilerFragmentNestedFaultKind as N,
-        PrepareFaultKind as P, WriteFaultKind as W, ValidateFaultKind as V,
+        BuildFaultKind as B, CompilerFragmentNestedFaultKind as N, PrepareFaultKind as P,
+        ValidateFaultKind as V, WriteFaultKind as W,
     };
     use CompilerFragmentFaultFacts as F;
     match kind {
-        CompilerFragmentFaultKind::Build(B::InvalidTreeEntity) => matches!(facts, F::TreeEntity { .. }),
+        CompilerFragmentFaultKind::Build(B::InvalidTreeEntity) => {
+            matches!(facts, F::TreeEntity { .. })
+        }
         CompilerFragmentFaultKind::Build(B::Dangling) => matches!(facts, F::Dangling { .. }),
-        CompilerFragmentFaultKind::Build(B::InvalidOccurrenceSpan) => matches!(facts, F::OccurrenceSpan { .. }),
-        CompilerFragmentFaultKind::Build(B::SignatureCarrierRoleCount) => nested_fault_is(facts, N::SignatureCarrierRoleCount),
-        CompilerFragmentFaultKind::Build(B::SignatureCarrierRoleKind) => nested_fault_is(facts, N::SignatureCarrierRoleKind),
-        CompilerFragmentFaultKind::Build(B::SignatureCarrierRoleOwnerKind) => nested_fault_is(facts, N::SignatureCarrierRoleOwnerKind),
-        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingOwnerSet) => nested_fault_is(facts, N::SignatureCarrierBindingOwnerSet),
-        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingSignature) => nested_fault_is(facts, N::SignatureCarrierBindingSignature),
-        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingCounts) => nested_fault_is(facts, N::SignatureCarrierBindingCounts),
-        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingEdgeRole) => nested_fault_is(facts, N::SignatureCarrierBindingEdgeRole),
-        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingTargetCount) => nested_fault_is(facts, N::SignatureCarrierBindingTargetCount),
-        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingTargetKind) => nested_fault_is(facts, N::SignatureCarrierBindingTargetKind),
-        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingType) => nested_fault_is(facts, N::SignatureCarrierBindingType),
-        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingEdgeMismatch) => nested_fault_is(facts, N::SignatureCarrierBindingEdgeMismatch),
+        CompilerFragmentFaultKind::Build(B::InvalidOccurrenceSpan) => {
+            matches!(facts, F::OccurrenceSpan { .. })
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierRoleCount) => {
+            nested_fault_is(facts, N::SignatureCarrierRoleCount)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierRoleKind) => {
+            nested_fault_is(facts, N::SignatureCarrierRoleKind)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierRoleOwnerKind) => {
+            nested_fault_is(facts, N::SignatureCarrierRoleOwnerKind)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingOwnerSet) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingOwnerSet)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingSignature) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingSignature)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingCounts) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingCounts)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingEdgeRole) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingEdgeRole)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingTargetCount) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingTargetCount)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingTargetKind) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingTargetKind)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingType) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingType)
+        }
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingEdgeMismatch) => {
+            nested_fault_is(facts, N::SignatureCarrierBindingEdgeMismatch)
+        }
         CompilerFragmentFaultKind::Build(
             B::Capacity
             | B::RecursiveType
@@ -1768,37 +1827,195 @@ fn compiler_fault_facts_match_kind(
         ) => matches!(facts, F::None),
         CompilerFragmentFaultKind::Prepare(P::Count) => matches!(facts, F::Count { .. }),
         CompilerFragmentFaultKind::Prepare(P::AtomBytePoolOverflow) => {
-            matches!(facts, F::RecordCoordinate { lane: crate::interface::CompilerFragmentRecordLane::Atom, .. })
+            matches!(
+                facts,
+                F::RecordCoordinate {
+                    lane: crate::interface::CompilerFragmentRecordLane::Atom,
+                    ..
+                }
+            )
         }
-        CompilerFragmentFaultKind::Prepare(P::LayoutOverflow) => matches!(facts, F::LayoutOverflow { .. }),
-        CompilerFragmentFaultKind::Prepare(P::NativeCount) => matches!(facts, F::NativeCount { .. }),
-        CompilerFragmentFaultKind::Prepare(P::OutputLength) => matches!(facts, F::OutputLength { .. }),
-        CompilerFragmentFaultKind::Prepare(P::Entity) => nested_fault_is_one_of(facts, &[N::EntityTypeReference, N::EntityNameReference, N::EntityKindTag, N::EntityReservedBits]),
-        CompilerFragmentFaultKind::Prepare(P::TypeNode) => nested_fault_is_one_of(facts, &[N::TypeNodeReservedBytes, N::TypeNodeTag, N::TypeNodePrimitive, N::TypeNodeEdge]),
-        CompilerFragmentFaultKind::Prepare(P::SemanticData) => nested_fault_is_one_of(facts, &[N::CanonicalDataCount, N::CanonicalDataNativeCount, N::CanonicalDataNativeWork, N::CanonicalDataCanonicalCountOverflow, N::CanonicalDataCanonicalCountMismatch, N::CanonicalDataScratch, N::CanonicalDataOutputTooSmall, N::CanonicalDataProductHead, N::CanonicalDataProductList, N::CanonicalDataConstructorCount, N::CanonicalDataConstructorTag, N::CanonicalDataConstructorReservedPayload, N::CanonicalDataConstructorArityOverflow, N::CanonicalDataConstructorArity, N::CanonicalDataProductChildRole, N::CanonicalDataListExtent, N::CanonicalDataNativeExtent, N::CanonicalDataProductChild, N::CanonicalDataOutputLength, N::CanonicalDataCanonicalListExtent, N::CanonicalDataCanonicalAtom, N::CanonicalDataCanonicalProduct, N::CanonicalDataCanonicalList, N::CanonicalDataRefinementBound, N::CanonicalDataInternTableFull, N::CanonicalDataInternEntry, N::CanonicalDataResourceCounterOverflow, N::CanonicalDataBudgetAdmission, N::CanonicalDataBudgetExceeded]),
-        CompilerFragmentFaultKind::Prepare(P::SemanticDataOverflow) => matches!(facts, F::SemanticDataOverflow { .. }),
-        CompilerFragmentFaultKind::Prepare(P::SemanticEntityRoots) => matches!(facts, F::SemanticEntityRoots { .. }),
-        CompilerFragmentFaultKind::Prepare(P::SemanticAtomLength) => matches!(facts, F::AtomLength { .. }),
-        CompilerFragmentFaultKind::Prepare(P::OccurrenceLane) => {
-            nested_fault_is_one_of(facts, &[N::OccurrenceOwner, N::OccurrenceLocalTarget, N::OccurrenceTargetTag, N::OccurrenceOriginTag, N::OccurrenceReferenceKind, N::OccurrenceConfidence, N::OccurrenceSpan, N::OccurrenceKindCell, N::OccurrenceEmptyPath, N::OccurrenceTruncated, N::OccurrenceTrailingBytes, N::OccurrenceLegacyStableTarget, N::OccurrenceAuthorityDomain, N::OccurrenceAuthorityWidth])
+        CompilerFragmentFaultKind::Prepare(P::LayoutOverflow) => {
+            matches!(facts, F::LayoutOverflow { .. })
         }
-        CompilerFragmentFaultKind::Prepare(P::TypeFacts | P::Documentation | P::ExtensionPools | P::ExtensionPoolsMismatch) => matches!(facts, F::None),
-        CompilerFragmentFaultKind::Write(W::OutputTooSmall) => matches!(facts, F::OutputTooSmall { .. }),
-        CompilerFragmentFaultKind::Write(W::AtomLength | W::SemanticAtomLength) => matches!(facts, F::AtomLength { .. }),
-        CompilerFragmentFaultKind::Write(W::AtomExtent) => matches!(facts, F::AtomCoordinate { .. }),
+        CompilerFragmentFaultKind::Prepare(P::NativeCount) => {
+            matches!(facts, F::NativeCount { .. })
+        }
+        CompilerFragmentFaultKind::Prepare(P::OutputLength) => {
+            matches!(facts, F::OutputLength { .. })
+        }
+        CompilerFragmentFaultKind::Prepare(P::Entity) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::EntityTypeReference,
+                N::EntityNameReference,
+                N::EntityKindTag,
+                N::EntityReservedBits,
+            ],
+        ),
+        CompilerFragmentFaultKind::Prepare(P::TypeNode) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::TypeNodeReservedBytes,
+                N::TypeNodeTag,
+                N::TypeNodePrimitive,
+                N::TypeNodeEdge,
+            ],
+        ),
+        CompilerFragmentFaultKind::Prepare(P::SemanticData) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::CanonicalDataCount,
+                N::CanonicalDataNativeCount,
+                N::CanonicalDataNativeWork,
+                N::CanonicalDataCanonicalCountOverflow,
+                N::CanonicalDataCanonicalCountMismatch,
+                N::CanonicalDataScratch,
+                N::CanonicalDataOutputTooSmall,
+                N::CanonicalDataProductHead,
+                N::CanonicalDataProductList,
+                N::CanonicalDataConstructorCount,
+                N::CanonicalDataConstructorTag,
+                N::CanonicalDataConstructorReservedPayload,
+                N::CanonicalDataConstructorArityOverflow,
+                N::CanonicalDataConstructorArity,
+                N::CanonicalDataProductChildRole,
+                N::CanonicalDataListExtent,
+                N::CanonicalDataNativeExtent,
+                N::CanonicalDataProductChild,
+                N::CanonicalDataOutputLength,
+                N::CanonicalDataCanonicalListExtent,
+                N::CanonicalDataCanonicalAtom,
+                N::CanonicalDataCanonicalProduct,
+                N::CanonicalDataCanonicalList,
+                N::CanonicalDataRefinementBound,
+                N::CanonicalDataInternTableFull,
+                N::CanonicalDataInternEntry,
+                N::CanonicalDataResourceCounterOverflow,
+                N::CanonicalDataBudgetAdmission,
+                N::CanonicalDataBudgetExceeded,
+            ],
+        ),
+        CompilerFragmentFaultKind::Prepare(P::SemanticDataOverflow) => {
+            matches!(facts, F::SemanticDataOverflow { .. })
+        }
+        CompilerFragmentFaultKind::Prepare(P::SemanticEntityRoots) => {
+            matches!(facts, F::SemanticEntityRoots { .. })
+        }
+        CompilerFragmentFaultKind::Prepare(P::SemanticAtomLength) => {
+            matches!(facts, F::AtomLength { .. })
+        }
+        CompilerFragmentFaultKind::Prepare(P::OccurrenceLane) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::OccurrenceOwner,
+                N::OccurrenceLocalTarget,
+                N::OccurrenceTargetTag,
+                N::OccurrenceOriginTag,
+                N::OccurrenceReferenceKind,
+                N::OccurrenceConfidence,
+                N::OccurrenceSpan,
+                N::OccurrenceKindCell,
+                N::OccurrenceEmptyPath,
+                N::OccurrenceTruncated,
+                N::OccurrenceTrailingBytes,
+                N::OccurrenceLegacyStableTarget,
+                N::OccurrenceAuthorityDomain,
+                N::OccurrenceAuthorityWidth,
+            ],
+        ),
+        CompilerFragmentFaultKind::Prepare(
+            P::TypeFacts | P::Documentation | P::ExtensionPools | P::ExtensionPoolsMismatch,
+        ) => matches!(facts, F::None),
+        CompilerFragmentFaultKind::Write(W::OutputTooSmall) => {
+            matches!(facts, F::OutputTooSmall { .. })
+        }
+        CompilerFragmentFaultKind::Write(W::AtomLength | W::SemanticAtomLength) => {
+            matches!(facts, F::AtomLength { .. })
+        }
+        CompilerFragmentFaultKind::Write(W::AtomExtent) => {
+            matches!(facts, F::AtomCoordinate { .. })
+        }
         CompilerFragmentFaultKind::Write(W::ExtensionSection) => matches!(facts, F::None),
-        CompilerFragmentFaultKind::Validate(V::Entity) => nested_fault_is(facts, N::EntityTypeReference),
-        CompilerFragmentFaultKind::Validate(V::EntityRecord) => nested_fault_is_one_of(facts, &[N::EntityTypeReference, N::EntityNameReference, N::EntityKindTag, N::EntityReservedBits]),
-        CompilerFragmentFaultKind::Validate(V::Atom) => nested_fault_is_one_of(facts, &[N::AtomRange, N::AtomEmpty]),
-        CompilerFragmentFaultKind::Validate(V::TypeNode) => nested_fault_is_one_of(facts, &[N::TypeNodeReservedBytes, N::TypeNodeTag, N::TypeNodePrimitive, N::TypeNodeEdge]),
-        CompilerFragmentFaultKind::Validate(V::SemanticData) => nested_fault_is_one_of(facts, &[N::SemanticDataHeader, N::SemanticDataAtomLength, N::SemanticDataProductHead, N::SemanticDataProductList, N::SemanticDataConstructorCount, N::SemanticDataEntityRootCount, N::SemanticDataEntityRoot, N::SemanticDataConstructorTag, N::SemanticDataConstructorReservedPayload, N::SemanticDataConstructorArityOverflow, N::SemanticDataConstructorArity, N::SemanticDataListExtent, N::SemanticDataChildRoleCode, N::SemanticDataChildRole, N::SemanticDataChildTag, N::SemanticDataLocalChild, N::SemanticDataLocalReserved, N::SemanticDataExternalAuthority, N::SemanticDataTrailing]),
-        CompilerFragmentFaultKind::Validate(V::Occurrences) => nested_fault_is_one_of(facts, &[N::OccurrenceOwner, N::OccurrenceLocalTarget, N::OccurrenceTargetTag, N::OccurrenceOriginTag, N::OccurrenceReferenceKind, N::OccurrenceConfidence, N::OccurrenceSpan, N::OccurrenceKindCell, N::OccurrenceEmptyPath, N::OccurrenceTruncated, N::OccurrenceTrailingBytes, N::OccurrenceLegacyStableTarget, N::OccurrenceAuthorityDomain, N::OccurrenceAuthorityWidth]),
-        CompilerFragmentFaultKind::Validate(V::TruncatedHeader) => nested_fault_is(facts, N::ValidateTruncatedHeader),
+        CompilerFragmentFaultKind::Validate(V::Entity) => {
+            nested_fault_is(facts, N::EntityTypeReference)
+        }
+        CompilerFragmentFaultKind::Validate(V::EntityRecord) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::EntityTypeReference,
+                N::EntityNameReference,
+                N::EntityKindTag,
+                N::EntityReservedBits,
+            ],
+        ),
+        CompilerFragmentFaultKind::Validate(V::Atom) => {
+            nested_fault_is_one_of(facts, &[N::AtomRange, N::AtomEmpty])
+        }
+        CompilerFragmentFaultKind::Validate(V::TypeNode) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::TypeNodeReservedBytes,
+                N::TypeNodeTag,
+                N::TypeNodePrimitive,
+                N::TypeNodeEdge,
+            ],
+        ),
+        CompilerFragmentFaultKind::Validate(V::SemanticData) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::SemanticDataHeader,
+                N::SemanticDataAtomLength,
+                N::SemanticDataProductHead,
+                N::SemanticDataProductList,
+                N::SemanticDataConstructorCount,
+                N::SemanticDataEntityRootCount,
+                N::SemanticDataEntityRoot,
+                N::SemanticDataConstructorTag,
+                N::SemanticDataConstructorReservedPayload,
+                N::SemanticDataConstructorArityOverflow,
+                N::SemanticDataConstructorArity,
+                N::SemanticDataListExtent,
+                N::SemanticDataChildRoleCode,
+                N::SemanticDataChildRole,
+                N::SemanticDataChildTag,
+                N::SemanticDataLocalChild,
+                N::SemanticDataLocalReserved,
+                N::SemanticDataExternalAuthority,
+                N::SemanticDataTrailing,
+            ],
+        ),
+        CompilerFragmentFaultKind::Validate(V::Occurrences) => nested_fault_is_one_of(
+            facts,
+            &[
+                N::OccurrenceOwner,
+                N::OccurrenceLocalTarget,
+                N::OccurrenceTargetTag,
+                N::OccurrenceOriginTag,
+                N::OccurrenceReferenceKind,
+                N::OccurrenceConfidence,
+                N::OccurrenceSpan,
+                N::OccurrenceKindCell,
+                N::OccurrenceEmptyPath,
+                N::OccurrenceTruncated,
+                N::OccurrenceTrailingBytes,
+                N::OccurrenceLegacyStableTarget,
+                N::OccurrenceAuthorityDomain,
+                N::OccurrenceAuthorityWidth,
+            ],
+        ),
+        CompilerFragmentFaultKind::Validate(V::TruncatedHeader) => {
+            nested_fault_is(facts, N::ValidateTruncatedHeader)
+        }
         CompilerFragmentFaultKind::Validate(V::Magic) => nested_fault_is(facts, N::ValidateMagic),
         CompilerFragmentFaultKind::Validate(V::Schema) => nested_fault_is(facts, N::ValidateSchema),
-        CompilerFragmentFaultKind::Validate(V::DeclaredLength) => nested_fault_is(facts, N::ValidateDeclaredLength),
+        CompilerFragmentFaultKind::Validate(V::DeclaredLength) => {
+            nested_fault_is(facts, N::ValidateDeclaredLength)
+        }
         CompilerFragmentFaultKind::Validate(V::Extent) => nested_fault_is(facts, N::ValidateExtent),
-        CompilerFragmentFaultKind::Validate(V::WireWidth) => nested_fault_is(facts, N::ValidateWireWidth),
+        CompilerFragmentFaultKind::Validate(V::WireWidth) => {
+            nested_fault_is(facts, N::ValidateWireWidth)
+        }
         CompilerFragmentFaultKind::Validate(
             V::ExtensionPoolPair
             | V::Documentation
@@ -1817,14 +2034,14 @@ fn nested_fault_is(
     facts: CompilerFragmentFaultFacts,
     expected: crate::interface::CompilerFragmentNestedFaultKind,
 ) -> bool {
-    matches!(facts, CompilerFragmentFaultFacts::Nested { fault, .. } if fault == expected)
+    matches!(facts, CompilerFragmentFaultFacts::Nested { fault } if fault.kind() == expected)
 }
 
 fn nested_fault_is_one_of(
     facts: CompilerFragmentFaultFacts,
     expected: &[crate::interface::CompilerFragmentNestedFaultKind],
 ) -> bool {
-    matches!(facts, CompilerFragmentFaultFacts::Nested { fault, .. } if expected.contains(&fault))
+    matches!(facts, CompilerFragmentFaultFacts::Nested { fault } if expected.contains(&fault.kind()))
 }
 
 fn package_relative_source_path(value: &str) -> Result<ProductText, ProductAdmissionError> {
@@ -1843,14 +2060,21 @@ fn sanitize_package_compiler_detail(value: &str, source_truncated: bool) -> (Str
     {
         return (retained, true);
     }
+    let mut truncated = source_truncated;
     for character in value.chars() {
-        retained.push(if character.is_control() || matches!(character, '"' | '\\') {
+        let character = if character.is_control() || matches!(character, '"' | '\\') {
             ' '
         } else {
             character
-        });
+        };
+        if retained.len().saturating_add(character.len_utf8()) > MAX_COMPILER_FRAGMENT_DETAIL_BYTES
+        {
+            truncated = true;
+            break;
+        }
+        retained.push(character);
     }
-    (retained, source_truncated)
+    (retained, truncated)
 }
 
 fn is_canonical_package_relative_source_path(value: &str) -> bool {
@@ -1907,8 +2131,8 @@ impl Serialize for PackageCompilerFailure {
 impl<'de> Deserialize<'de> for PackageCompilerFailure {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = PackageCompilerFailureWire::deserialize(deserializer)?;
-        let relative_path = package_relative_source_path(&wire.relative_path)
-            .map_err(D::Error::custom)?;
+        let relative_path =
+            package_relative_source_path(&wire.relative_path).map_err(D::Error::custom)?;
         let source_identity = parse_content_identity::<SourceFactDomain>(&wire.source_identity)
             .map_err(D::Error::custom)?;
         let recipe_identity = parse_content_identity::<CompileRecipeDomain>(&wire.recipe_identity)
@@ -1933,8 +2157,12 @@ impl<'de> Deserialize<'de> for PackageCompilerFailure {
     }
 }
 
-fn parse_content_identity<DomainTag: Domain>(value: &str) -> Result<ContentId<DomainTag>, &'static str> {
-    let encoded = value.strip_prefix("content:").ok_or("content identity prefix is invalid")?;
+fn parse_content_identity<DomainTag: Domain>(
+    value: &str,
+) -> Result<ContentId<DomainTag>, &'static str> {
+    let encoded = value
+        .strip_prefix("content:")
+        .ok_or("content identity prefix is invalid")?;
     if encoded.len() != HASH_BYTES * 2 {
         return Err("content identity width is invalid");
     }
@@ -4562,8 +4790,7 @@ mod tests {
         assert_eq!(decoded.phase(), CompilerFragmentFaultPhase::Prepare);
         assert!(decoded.detail().contains("occurrence span"));
 
-        let json: serde_json::Value =
-            serde_json::from_slice(&encoded).expect("JSON object");
+        let json: serde_json::Value = serde_json::from_slice(&encoded).expect("JSON object");
         assert_eq!(json["kind"]["family"], "build");
         assert_eq!(json["kind"]["kind"], "invalid_occurrence_span");
         assert_eq!(json["facts"]["kind"], "occurrence_span");

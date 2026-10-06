@@ -429,7 +429,9 @@ fn fragment_failure_projects_source_span_coordinates_without_authority_reclassif
     )?;
     expect_projection("occurrence end", &fault["facts"]["end"], Value::from(24))?;
     if !fault["detail"].as_str().is_some_and(|detail| {
-        detail.contains("occurrence span") && detail.contains("escapes entity")
+        detail.contains("occurrence span")
+            && detail.contains("\"owner\":7")
+            && detail.contains("\"end\":24")
     }) {
         return Err(TestError::Projection {
             channel: "fragment human detail",
@@ -564,28 +566,34 @@ fn fragment_entity_subcause_keeps_exact_nested_tag_and_coordinates() -> Result<(
     )?;
     expect_projection(
         "entity exact nested cause",
-        &fault["facts"]["fault"],
-        Value::from("entity_name_reference"),
+        &fault["facts"]["family"],
+        Value::from("entity_record"),
+    )?;
+    expect_projection(
+        "entity exact nested variant",
+        &fault["facts"]["fault"]["fault"],
+        Value::from("name_reference"),
     )?;
     expect_projection(
         "entity coordinate",
-        &fault["facts"]["ordinal"],
+        &fault["facts"]["fault"]["ordinal"],
         Value::from(2),
     )?;
     expect_projection(
         "rejected atom coordinate",
-        &fault["facts"]["target"],
+        &fault["facts"]["fault"]["target"],
         Value::from(9),
     )?;
     expect_projection(
         "available atom count",
-        &fault["facts"]["count"],
+        &fault["facts"]["fault"]["atom_count"],
         Value::from(4),
     )?;
     if fault["detail"].as_str().is_none_or(|detail| {
         detail.len() > backend_library::interface::MAX_COMPILER_FRAGMENT_DETAIL_BYTES
-            || !detail.contains("entity 2")
-            || !detail.contains("outside atom count 4")
+            || !detail.contains("prepare entity")
+            || !detail.contains("name_reference")
+            || !detail.contains("atom_count")
     }) {
         return Err(TestError::Projection {
             channel: "entity fragment detail omits the nested cause",
@@ -615,20 +623,34 @@ fn fragment_semantic_budget_subcause_keeps_resource_and_operands() -> Result<(),
     )?;
     expect_projection(
         "semantic exact nested cause",
-        &fault["facts"]["fault"],
-        Value::from("canonical_data_budget_exceeded"),
+        &fault["facts"]["family"],
+        Value::from("canonical_data"),
+    )?;
+    expect_projection(
+        "semantic exact nested variant",
+        &fault["facts"]["fault"]["fault"],
+        Value::from("budget_exceeded"),
     )?;
     expect_projection(
         "semantic budget resource",
-        &fault["facts"]["resource"],
+        &fault["facts"]["fault"]["resource"],
         Value::from("work"),
     )?;
-    expect_projection("observed work", &fault["facts"]["actual"], Value::from(117))?;
-    expect_projection("work budget", &fault["facts"]["limit"], Value::from(100))?;
+    expect_projection(
+        "observed work",
+        &fault["facts"]["fault"]["observed"],
+        Value::from(117),
+    )?;
+    expect_projection(
+        "work budget",
+        &fault["facts"]["fault"]["limit"],
+        Value::from(100),
+    )?;
     if fault["detail"].as_str().is_none_or(|detail| {
         detail.len() > backend_library::interface::MAX_COMPILER_FRAGMENT_DETAIL_BYTES
-            || !detail.contains("Work budget 100")
-            || !detail.contains("observed 117")
+            || !detail.contains("budget_exceeded")
+            || !detail.contains("\"limit\":100")
+            || !detail.contains("\"observed\":117")
     }) {
         return Err(TestError::Projection {
             channel: "semantic fragment detail omits the nested cause",
@@ -654,9 +676,14 @@ fn fragment_validate_fault_has_a_distinct_stable_tag() -> Result<(), TestError> 
         &cause["fault"]["kind"],
         Value::from("validate_truncated_header"),
     )?;
-    if cause["fault"]["detail"]
-        .as_str()
-        .is_none_or(|detail| !detail.contains("32 bytes") || !detail.contains("7 are present"))
+    let facts = &cause["fault"]["facts"];
+    if facts["family"] != "validation"
+        || facts["fault"]["fault"] != "truncated_header"
+        || facts["fault"]["required"] != 32
+        || facts["fault"]["actual"] != 7
+        || cause["fault"]["detail"].as_str().is_none_or(|detail| {
+            !detail.contains("\"required\":32") || !detail.contains("\"actual\":7")
+        })
     {
         return Err(TestError::Projection {
             channel: "validation detail omits required/actual byte lengths",
