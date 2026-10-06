@@ -9447,6 +9447,7 @@ mod lane_tests {
         let options = TszProjectOptions {
             checker,
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+            module_resolutions: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
         };
         let mut authority = TszProjectAuthority::new();

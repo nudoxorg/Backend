@@ -30,6 +30,12 @@ pub use tsz::checker::state::CheckerState as TszCheckerState;
 pub use tsz_common::ProjectSemanticOptions as TszProjectSemanticOptions;
 pub use tsz::common::{ModuleKind as TszModuleKind, ScriptTarget as TszScriptTarget};
 pub use tsz::parser::{NodeIndex as TszNodeIndex, ParseDiagnostic as TszParseDiagnostic};
+pub use tsz::parallel::{
+    ProjectModuleRequestKind as TszProjectModuleRequestKind,
+    ProjectModuleResolution as TszProjectModuleResolution,
+    ProjectModuleResolutionError as TszProjectModuleResolutionError,
+    ProjectModuleResolutionTarget as TszProjectModuleResolutionTarget,
+};
 pub use tsz::tsz_solver::type_handles::TypeId as TszTypeId;
 pub use tsz_common::options::module_detection::ModuleDetectionKind as TszModuleDetectionKind;
 
@@ -164,6 +170,10 @@ pub enum TszAuthorityError {
         /// Stable source path selected by the package authority.
         path: String,
     },
+    /// Exact compiler module-resolution authority could not be attached to
+    /// the merged program without guessing a path or weakening a request.
+    #[error(transparent)]
+    ModuleResolution(#[from] TszProjectModuleResolutionError),
 }
 
 /// Explicit TSZ checker/binder options resolved by the project configuration layer.
@@ -176,6 +186,10 @@ pub struct TszProjectOptions {
     /// Keep semantic policy on this project value so type-origin behavior is
     /// stable across Rayon workers and direct per-file query caches.
     pub semantic_options: TszProjectSemanticOptions,
+    /// Exact compiler-resolved outcome for every observed program import.
+    /// Empty is an explicit declaration that the admitted program has no
+    /// requests; it does not enable filename-based fallback.
+    pub module_resolutions: Vec<TszProjectModuleResolution>,
     /// Identity for all configuration and dependency inputs described above.
     pub environment: TszEnvironmentFingerprint,
 }
@@ -217,6 +231,7 @@ pub struct TszProject {
     options: TszProjectOptions,
     checker_options_digest: [u8; 32],
     semantic_options_digest: [u8; 32],
+    module_resolution_digest: [u8; 32],
     library_digest: [u8; 32],
     bound_sources: BTreeMap<String, Arc<tsz::parallel::BindResult>>,
     lib_files: Vec<Arc<tsz::lib_loader::LibFile>>,
@@ -304,15 +319,20 @@ impl TszProjectAuthority {
             .project
             .as_ref()
             .is_some_and(|current| current.semantic_options_digest != semantic_digest);
+        let module_resolution_digest = module_resolution_digest(&options.module_resolutions);
+        let module_resolutions_changed = self
+            .project
+            .as_ref()
+            .is_some_and(|current| current.module_resolution_digest != module_resolution_digest);
         if environment_changed || checker_options_changed {
             self.bound_sources.clear();
             self.project = None;
             self.environment = Some(options.environment);
             self.libraries = Some(library_digest);
-        } else if semantic_options_changed {
-            // Semantic options affect merged type identities and checking,
-            // but not parser/binder output. Reuse exact source binds while
-            // rebuilding only the merged/checker project result.
+        } else if semantic_options_changed || module_resolutions_changed {
+            // Semantic options and exact resolution outcomes affect merged
+            // identities/checking, but not parser/binder output. Reuse exact
+            // source binds while rebuilding the merged/checker project.
             self.project = None;
         }
 
@@ -344,6 +364,7 @@ impl TszProjectAuthority {
                 current.options.environment == options.environment
                     && current.checker_options_digest == checker_digest
                     && current.semantic_options_digest == semantic_digest
+                    && current.module_resolution_digest == module_resolution_digest
                     && current.library_digest == library_digest
             })
             && report.removed_sources == 0
@@ -384,10 +405,11 @@ impl TszProjectAuthority {
             .map(|(path, cached)| (path.clone(), Arc::clone(&cached.result)))
             .collect();
         let bind_refs: Vec<_> = bound_sources.values().map(Arc::as_ref).collect();
-        let program = tsz::parallel::merge_bind_results_ref_with_project_semantic_options(
+        let mut program = tsz::parallel::merge_bind_results_ref_with_project_semantic_options(
             &bind_refs,
             options.semantic_options,
         );
+        program.set_project_module_resolutions(&options.module_resolutions)?;
         let check = tsz::parallel::check_files_parallel_with_project_semantic_options(
             &program,
             &options.checker,
@@ -397,6 +419,7 @@ impl TszProjectAuthority {
         self.project = Some(TszProject {
             checker_options_digest: checker_digest,
             semantic_options_digest: semantic_digest,
+            module_resolution_digest,
             library_digest,
             lib_files: lib_files.to_vec(),
             options,
@@ -769,6 +792,16 @@ fn semantic_options_digest(options: TszProjectSemanticOptions) -> [u8; 32] {
     Sha256::digest(format!("{options:?}").as_bytes()).into()
 }
 
+fn module_resolution_digest(resolutions: &[TszProjectModuleResolution]) -> [u8; 32] {
+    // DTO Debug is a same-revision cache key only. The caller's durable
+    // environment fingerprint remains responsible for resolved compiler
+    // options, source closure, and resolver/toolchain identity.
+    let mut digest = Sha256::new();
+    digest.update(b"compiler.typescript.tsz-module-resolutions.v1\0");
+    digest_part(&mut digest, format!("{resolutions:?}").as_bytes());
+    digest.finalize().into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -779,6 +812,7 @@ mod tests {
         TszProjectOptions {
             checker,
             semantic_options: TszProjectSemanticOptions::structural(),
+            module_resolutions: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
         }
     }
@@ -924,12 +958,79 @@ mod tests {
                 TszProjectOptions {
                     checker: options().checker,
                     semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+                    module_resolutions: Vec::new(),
                     environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
                 },
                 &[],
             )
             .expect("exact semantic project revision is reusable");
         assert!(exact.reused_project_result);
+    }
+
+    #[test]
+    fn exact_module_resolutions_are_attached_and_change_project_identity_only() {
+        let sources = vec![
+            input(
+                "src/main.ts",
+                "import { value } from './value'; export const result = value;",
+            ),
+            input("src/value.ts", "export const value = 42;"),
+        ];
+        let resolution = |target| TszProjectModuleResolution {
+            importer_path: "src/main.ts".to_owned(),
+            specifier: "./value".to_owned(),
+            request_kind: TszProjectModuleRequestKind::EsmImport,
+            resolution_mode: None,
+            target,
+        };
+        let mut initial_options = options();
+        initial_options.module_resolutions = vec![resolution(
+            TszProjectModuleResolutionTarget::File {
+                path: "src/value.ts".to_owned(),
+            },
+        )];
+        let mut authority = TszProjectAuthority::new();
+        let initial = authority
+            .update(sources.clone(), initial_options, &[])
+            .expect("exact file resolution builds");
+        assert_eq!(initial.parsed_and_bound, 2);
+        assert!(authority
+            .project()
+            .expect("initial project exists")
+            .program()
+            .project_module_resolution_outcomes
+            .is_some());
+
+        let mut external_options = options();
+        external_options.module_resolutions = vec![resolution(
+            TszProjectModuleResolutionTarget::External {
+                identity: "npm:fixture/value@1".to_owned(),
+            },
+        )];
+        let changed = authority
+            .update(sources.clone(), external_options.clone(), &[])
+            .expect("changed exact outcome rechecks the same binds");
+        assert_eq!(changed.parsed_and_bound, 0);
+        assert_eq!(changed.reused_binds, 2);
+        assert!(!changed.reused_project_result);
+
+        let repeated = authority
+            .update(sources.clone(), external_options, &[])
+            .expect("exact module-resolution revision reuses the project");
+        assert!(repeated.reused_project_result);
+
+        let mut invalid_options = options();
+        invalid_options.module_resolutions = vec![resolution(
+            TszProjectModuleResolutionTarget::File {
+                path: "src/not-admitted.ts".to_owned(),
+            },
+        )];
+        assert!(matches!(
+            authority.update(sources, invalid_options, &[]),
+            Err(TszAuthorityError::ModuleResolution(
+                TszProjectModuleResolutionError::TargetNotInProgram { .. }
+            ))
+        ));
     }
 
     #[test]
