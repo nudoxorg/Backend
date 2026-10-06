@@ -19,8 +19,6 @@ use std::{
     },
 };
 
-const MAX_STAGE_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_STAGE_PAGES: usize = 1024;
 const QUEUE_STAGE_THRESHOLD: usize = 1024 * 1024;
 const POINTER_MAGIC: &[u8; 4] = b"BPS1";
 
@@ -52,35 +50,52 @@ fn error(context: &str, error: impl std::fmt::Debug) -> BuiltinModelError {
     BuiltinModelError(format!("{context}: {error:?}"))
 }
 
-pub(super) fn artifact_budget() -> ArtifactBudget {
-    ArtifactBudget::new(
-        MAX_STAGE_PAGES + 256,
-        MAX_STAGE_PAGES + 128,
-        MAX_STAGE_BYTES + 16 * 1024 * 1024,
-        64 * 1024 + 44,
-        MAX_STAGE_PAGES + 256,
-    )
+fn configured_limits() -> Result<(u64, usize), StoreError> {
+    let source = super::source_budget::SourceAdmissionPolicy::from_environment()
+        .map_err(StoreError::Io)?
+        .limits();
+    let bytes = source
+        .max_project_source_bytes
+        .checked_add(source.max_project_record_bytes)
+        .and_then(|n| n.checked_add(128 * 64 * 1024))
+        .ok_or(StoreError::Bounds)?;
+    let pages = bytes
+        .div_ceil(64 * 1024)
+        .checked_add(3)
+        .ok_or(StoreError::Bounds)?;
+    Ok((u64::try_from(bytes).map_err(|_| StoreError::Bounds)?, pages))
 }
 
-pub(super) fn composition_budget() -> Result<ClosureCompositionBudget, StoreError> {
-    Ok(ClosureCompositionBudget::new(
-        MAX_STAGE_PAGES + 128,
-        MAX_STAGE_PAGES + 256,
-        MAX_STAGE_BYTES + 16 * 1024 * 1024,
-        ClosureCompositionBudget::metadata_bytes_for(MAX_STAGE_PAGES + 256)?,
+fn budgets(
+    pages: usize,
+    payload: u64,
+) -> Result<(ArtifactBudget, ClosureCompositionBudget), StoreError> {
+    let members = pages.checked_add(128).ok_or(StoreError::Bounds)?;
+    let changes = pages.checked_add(256).ok_or(StoreError::Bounds)?;
+    let verified = payload
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(128 * 64 * 1024))
+        .and_then(|n| n.checked_add((pages as u64).checked_mul(44)?))
+        .ok_or(StoreError::Bounds)?;
+    Ok((
+        ArtifactBudget::new(changes, members, verified, 64 * 1024 + 44, changes),
+        ClosureCompositionBudget::new(
+            members,
+            changes,
+            verified,
+            ClosureCompositionBudget::metadata_bytes_for(changes)?,
+        ),
     ))
 }
 
 fn pool() -> Result<&'static StagePool, StoreError> {
     static POOL: OnceLock<StagePool> = OnceLock::new();
-    let metadata = ClosureCompositionBudget::metadata_bytes_for(MAX_STAGE_PAGES + 256)?
-        .checked_add(64 * 1024 * 8 + MAX_STAGE_PAGES * size_of::<ObjectId>() * 4)
+    let (bytes, pages) = configured_limits()?;
+    let metadata = ClosureCompositionBudget::metadata_bytes_for(pages + 256)?
+        .checked_add(64 * 1024 * 8 + pages * size_of::<ObjectId>() * 4)
         .ok_or(StoreError::Bounds)?;
-    Ok(POOL.get_or_init(|| StagePool::new(4, 4 * MAX_STAGE_BYTES, MAX_STAGE_PAGES, metadata)))
-}
-
-fn allocation_budget() -> backend_store::PhysicalAllocationBudget {
-    backend_store::PhysicalAllocationBudget::new(4 * MAX_STAGE_BYTES, MAX_STAGE_PAGES * 32 + 4096)
+    let total = bytes.checked_mul(4).ok_or(StoreError::Bounds)?;
+    Ok(POOL.get_or_init(|| StagePool::new(4, total, pages, metadata)))
 }
 
 fn basis(snapshot: &WorkspaceSnapshot, request: [u8; 32]) -> StageBasis {
@@ -121,14 +136,22 @@ impl Read for AdmissionReader<'_> {
     }
 }
 
-#[derive(Default)]
 struct RawSourceAdmission {
     header: Vec<u8>,
     active: Option<(String, [u8; 32], u64, ObjectVersionHasher)>,
     records: BTreeMap<String, [u8; 32]>,
+    max_bytes: u64,
 }
 
 impl RawSourceAdmission {
+    fn new(max_bytes: u64) -> Self {
+        Self {
+            header: Vec::new(),
+            active: None,
+            records: BTreeMap::new(),
+            max_bytes,
+        }
+    }
     fn append(&mut self, mut bytes: &[u8]) -> Result<(), StoreError> {
         while !bytes.is_empty() {
             if let Some((_, _, remaining, hasher)) = &mut self.active {
@@ -183,7 +206,7 @@ impl RawSourceAdmission {
                     .try_into()
                     .map_err(|_| StoreError::Corrupt)?,
             );
-            if length > MAX_STAGE_BYTES {
+            if length > self.max_bytes {
                 return Err(StoreError::Bounds);
             }
             let expected = self.header[12 + path_length..]
@@ -256,7 +279,11 @@ pub(super) fn stage(
     if bytes.len() <= QUEUE_STAGE_THRESHOLD {
         return Ok(intent);
     }
-    if bytes.len() as u64 > MAX_STAGE_BYTES {
+    let (maximum_bytes, maximum_pages) =
+        configured_limits().map_err(|e| error("stage source admission policy", e))?;
+    let (artifact_budget, composition_budget) =
+        budgets(maximum_pages, maximum_bytes).map_err(|e| error("stage budgets", e))?;
+    if bytes.len() as u64 > maximum_bytes {
         return Err(error("stage intent byte budget", StoreError::Bounds));
     }
     let store = snapshot.durable_store().ok_or_else(|| {
@@ -266,7 +293,7 @@ pub(super) fn stage(
     let bound = basis(snapshot, request);
     let mut writer = pool()
         .map_err(|e| error("stage pool", e))?
-        .begin(store, bound, MAX_STAGE_BYTES)
+        .begin(store, bound, maximum_bytes)
         .map_err(|e| error("admit staged intent", e))?;
     cancelled(&cancellation).map_err(|e| error("stage cancelled", e))?;
     writer
@@ -316,7 +343,7 @@ pub(super) fn stage(
                 .metadata()
                 .map_err(|e| error("stat captured staged source", e))?;
             let length = usize::try_from(before.len()).map_err(|e| error("source length", e))?;
-            if length as u64 > MAX_STAGE_BYTES {
+            if length as u64 > maximum_bytes {
                 return Err(error("stage source byte budget", StoreError::Bounds));
             }
             let mut hasher = ObjectVersionHasher::new(
@@ -382,18 +409,12 @@ pub(super) fn stage(
     let pin = store
         .reopen_pinned_stored_closure(
             ArtifactClosureClaim::from_id(admission.receipt.receipt().closure()),
-            artifact_budget(),
+            artifact_budget,
         )
         .map_err(|e| error("reopen staged scope", e))?;
-    let membership = DurableClosureManifest::from_pinned(
-        store,
-        pin,
-        composition_budget().map_err(|e| error("stage composition budget", e))?,
-    )
-    .map_err(|e| error("admit staged membership", e))?
-    .with_cancellation(Arc::clone(&cancellation))
-    .with_physical_allocation_budget(allocation_budget())
-    .map_err(|e| error("admit staged physical allocation", e))?;
+    let membership = DurableClosureManifest::from_pinned(store, pin, composition_budget)
+        .map_err(|e| error("admit staged membership", e))?
+        .with_cancellation(Arc::clone(&cancellation));
     let staged = Arc::new(StagedIntent {
         basis: bound,
         manifest: admission.manifest_id,
@@ -473,20 +494,24 @@ impl StagedIntent {
             .map_err(|e| error("read stage manifest", e))?;
         let basis = staged_intent::admit_manifest_object(&manifest)
             .map_err(|e| error("admit stage manifest", e))?;
+        let (pages, payload) = staged_intent::staged_scope_limits(&manifest)
+            .map_err(|e| error("staged replay scope", e))?;
+        let index = store
+            .open_closure(closure)
+            .map_err(|e| error("selected stage index", e))?;
+        if index.object_count() < pages as u64 + 1 || index.object_count() > pages as u64 + 128 {
+            return Err(error("staged replay union bound", StoreError::Corrupt));
+        }
+        let (_, composition_budget) =
+            budgets(pages, payload).map_err(|e| error("staged replay budgets", e))?;
         let pin = store
             .reopen_pinned_workspace_closure(
                 ArtifactClosureClaim::from_id(closure),
-                composition_budget().map_err(|e| error("staged reopen budget", e))?,
+                composition_budget,
             )
             .map_err(|e| error("reopen selected staged membership", e))?;
-        let membership = DurableClosureManifest::from_pinned(
-            store,
-            pin,
-            composition_budget().map_err(|e| error("staged reopen budget", e))?,
-        )
-        .map_err(|e| error("admit selected staged membership", e))?
-        .with_physical_allocation_budget(allocation_budget())
-        .map_err(|e| error("admit selected physical allocation", e))?;
+        let membership = DurableClosureManifest::from_pinned(store, pin, composition_budget)
+            .map_err(|e| error("admit selected staged membership", e))?;
         if !membership
             .contains(manifest.id())
             .map_err(|e| error("prove stage manifest membership", e))?
@@ -536,13 +561,21 @@ impl StagedIntent {
             return Err(error("staged intent fence changed", StoreError::WrongBase));
         }
         let mut bytes = Vec::new();
-        let mut raw = RawSourceAdmission::default();
+        let manifest = self
+            .store
+            .read_object(self.manifest)
+            .map_err(|e| error("staged replay manifest", e))?;
+        let (pages, payload_bytes) = staged_intent::staged_scope_limits(&manifest)
+            .map_err(|e| error("staged replay scope", e))?;
+        let (artifact_budget, _) =
+            budgets(pages, payload_bytes).map_err(|e| error("staged replay budgets", e))?;
+        let mut raw = RawSourceAdmission::new(payload_bytes);
         staged_intent::visit_staged_scope(
             &self.store,
             self.manifest,
             self.membership.id(),
             self.basis,
-            artifact_budget(),
+            artifact_budget,
             None,
             |kind, payload| {
                 cancelled(&self.cancelled)?;
@@ -553,7 +586,7 @@ impl StagedIntent {
                         .len()
                         .checked_add(payload.len())
                         .ok_or(StoreError::Bounds)?;
-                    if length as u64 > MAX_STAGE_BYTES {
+                    if length as u64 > payload_bytes {
                         return Err(StoreError::Bounds);
                     }
                     bytes

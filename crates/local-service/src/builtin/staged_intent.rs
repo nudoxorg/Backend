@@ -57,6 +57,23 @@ pub(super) fn staged_member_count(object: &TypedObject) -> Result<u64, StoreErro
     })
 }
 
+pub(super) fn staged_scope_limits(object: &TypedObject) -> Result<(usize, u64), StoreError> {
+    admit_manifest_object(object)?;
+    let (_, chains) = decode_manifest(object.bytes())?;
+    let (pages, bytes) = chains
+        .iter()
+        .try_fold((0_u64, 0_u64), |(pages, bytes), chain| {
+            Ok::<_, StoreError>((
+                pages.checked_add(chain.pages).ok_or(StoreError::Bounds)?,
+                bytes.checked_add(chain.bytes).ok_or(StoreError::Bounds)?,
+            ))
+        })?;
+    Ok((
+        usize::try_from(pages).map_err(|_| StoreError::Bounds)?,
+        bytes,
+    ))
+}
+
 /// Different kinds remain separated even for identical payload bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum EvidenceKind {
@@ -118,17 +135,6 @@ pub(super) struct StagePool {
 }
 
 impl StagePool {
-    fn admit_physical_allocation(&self, store: &FileStore) -> Result<(), StoreError> {
-        backend_store::PhysicalAllocationBudget::new(
-            self.max_reserved_bytes,
-            self.max_pages
-                .checked_mul(32)
-                .and_then(|n| n.checked_add(4096))
-                .ok_or(StoreError::Bounds)?,
-        )
-        .admit(store)
-        .map(|_| ())
-    }
     #[cfg(unix)]
     fn write_object(
         &self,
@@ -173,6 +179,10 @@ impl StagePool {
             .open(lock_path)
             .map_err(|e| StoreError::Io(e.to_string()))?;
         lock.lock().map_err(|e| StoreError::Io(e.to_string()))?;
+        let selected = store
+            .head()?
+            .map(|head| store.open_closure(head.descriptor().closure()))
+            .transpose()?;
         let mut allocated = 0_u64;
         for entry in fs::read_dir(&markers).map_err(|e| StoreError::Io(e.to_string()))? {
             let entry = entry.map_err(|e| StoreError::Io(e.to_string()))?;
@@ -194,6 +204,26 @@ impl StagePool {
                 return Err(StoreError::Corrupt);
             }
             let path = store.root().join("objects").join(format!("{name}.object"));
+            let mut raw_id = [0_u8; 32];
+            for (slot, pair) in name.as_bytes().chunks_exact(2).enumerate() {
+                raw_id[slot] = u8::from_str_radix(
+                    std::str::from_utf8(pair).map_err(|_| StoreError::Corrupt)?,
+                    16,
+                )
+                .map_err(|_| StoreError::Corrupt)?;
+            }
+            if selected
+                .as_ref()
+                .map(|index| index.contains_object_id(ObjectId::from_bytes(raw_id)))
+                .transpose()?
+                .unwrap_or(false)
+            {
+                // Selection transfers this allocation out of the pending
+                // admission catalog. Its CAS bytes remain under HEAD and
+                // retained reader closure leases, with normal GC ownership.
+                fs::remove_file(entry.path()).map_err(|e| StoreError::Io(e.to_string()))?;
+                continue;
+            }
             match fs::symlink_metadata(path) {
                 Ok(metadata) => {
                     if !metadata.is_file()
@@ -261,7 +291,6 @@ impl StagePool {
             Err(error) => return Err(StoreError::Io(error.to_string())),
         }
         let written = store.write_object(object)?;
-        self.admit_physical_allocation(store)?;
         let actual = fs::symlink_metadata(&target)
             .map_err(|e| StoreError::Io(e.to_string()))?
             .blocks()
@@ -340,7 +369,6 @@ impl StagePool {
             bytes: reserved_bytes,
         };
         let pin = store.pin_garbage_collection()?;
-        self.admit_physical_allocation(store)?;
         Ok(StageWriter {
             store: store.clone(),
             pool: self.clone(),
@@ -518,7 +546,6 @@ impl StageWriter {
                 self.pool.max_metadata_bytes,
             ),
         )?;
-        self.pool.admit_physical_allocation(&self.store)?;
         Ok(StagedEvidence {
             manifest_id,
             receipt,
