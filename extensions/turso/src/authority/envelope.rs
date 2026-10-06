@@ -15,6 +15,12 @@ use super::versioned::{
 };
 #[cfg(test)]
 use super::versioned::{VersionedPlaneArtifactMetadata, VersionedPlanePublication};
+use backend_semantic::ir::{
+    COMPILATION_MANIFEST_HEADER_BYTES as SEMANTIC_MANIFEST_HEADER_BYTES,
+    COMPILATION_MANIFEST_MAGIC,
+    COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES as SEMANTIC_MANIFEST_ENTRY_BYTES,
+    CompilationManifestFormat,
+};
 use backend_store::{
     ArtifactBudget, ArtifactClosureClaim, ArtifactObjectClaim, FileStore, TypedObject,
     UntrustedObjectId, VerifiedObjectEnvelope,
@@ -32,13 +38,11 @@ const METADATA_MAGIC: &[u8] = b"BACKEND_COMPILER_PUBLICATION_METADATA\0";
 const METADATA_VERSION: u16 = 4;
 const MAX_PROFILE_BYTES: usize = 256;
 const MAX_MEMBER_IDS: usize = 100_000;
-const MAX_MANIFEST_BYTES: usize = 16 + MAX_MEMBER_IDS * 440;
+const MAX_MANIFEST_BYTES: usize =
+    SEMANTIC_MANIFEST_HEADER_BYTES + MAX_MEMBER_IDS * SEMANTIC_MANIFEST_ENTRY_BYTES;
 const PACK_DOMAIN: &[u8] = b"backend.turso.compiler-inner-pack.v1\0";
 const COMPILATION_BINDING_BYTES: usize = 108;
-const SEMANTIC_MANIFEST_HEADER_BYTES: usize = 16;
-const SEMANTIC_MANIFEST_ENTRY_BYTES: usize = 440;
-const SEMANTIC_MANIFEST_VERSION: u16 = 2;
-const SEMANTIC_MANIFEST_MAGIC: &[u8; 8] = b"NUDXCPM\0";
+const SEMANTIC_MANIFEST_MAGIC: &[u8; 8] = &COMPILATION_MANIFEST_MAGIC;
 const SEMANTIC_MANIFEST_IMAGE_IDENTITY_OFFSET: usize = 404;
 const SEMANTIC_MANIFEST_IMAGE_LENGTH_OFFSET: usize = 436;
 
@@ -184,6 +188,7 @@ impl ReopenedCompilerImage {
 pub struct CompilerPublicationMetadata {
     manifest_bytes: Box<[u8]>,
     manifest_identity: AuthorityHash,
+    manifest_format: CompilationManifestFormat,
     manifest_fragment_count: u32,
     manifest_byte_length: u32,
     binding_bytes: [u8; COMPILATION_BINDING_BYTES],
@@ -196,7 +201,7 @@ pub struct CompilerPublicationMetadata {
 }
 
 impl CompilerPublicationMetadata {
-    /// Admits the exact semantic-v2 manifest, canonical binding bytes, and image members.
+    /// Admits the exact semantic manifest, canonical binding bytes, and image members.
     pub fn new(
         manifest_bytes: &[u8],
         binding_bytes: [u8; COMPILATION_BINDING_BYTES],
@@ -215,7 +220,7 @@ impl CompilerPublicationMetadata {
         mut images: Vec<CompilerImageMember>,
         versioned_planes: Option<VersionedPlaneMetadata>,
     ) -> Result<Self, CompilerEnvelopeError> {
-        let (manifest_identity, manifest_fragment_count, manifest_byte_length) =
+        let (manifest_identity, manifest_format, manifest_fragment_count, manifest_byte_length) =
             inspect_semantic_manifest(manifest_bytes)?;
         let binding_identity = validate_binding(&binding_bytes, &manifest_identity)?;
         for image in &images {
@@ -274,6 +279,7 @@ impl CompilerPublicationMetadata {
         Ok(Self {
             manifest_bytes: manifest_bytes.to_vec().into_boxed_slice(),
             manifest_identity,
+            manifest_format,
             manifest_fragment_count,
             manifest_byte_length,
             binding_bytes,
@@ -294,10 +300,10 @@ impl CompilerPublicationMetadata {
         &self.manifest_identity
     }
 
-    /// Semantic-v2 manifest format version.
+    /// Exact admitted semantic manifest wire generation.
     #[must_use]
     pub const fn manifest_version(&self) -> u16 {
-        SEMANTIC_MANIFEST_VERSION
+        self.manifest_format.wire_version()
     }
 
     /// Exact compiler artifact count in the semantic manifest.
@@ -362,7 +368,7 @@ impl CompilerPublicationMetadata {
         self.semantic_catalog_root()
     }
 
-    /// Exact canonical semantic-v2 manifest bytes bound by this publication.
+    /// Exact canonical semantic manifest bytes bound by this publication.
     #[must_use]
     pub fn manifest_bytes(&self) -> &[u8] {
         &self.manifest_bytes
@@ -1454,7 +1460,7 @@ pub enum CompilerEnvelopeError {
     MetadataMagic,
     /// Compiler metadata version is unsupported.
     MetadataVersion,
-    /// Metadata does not preserve a valid semantic-v2 manifest fact tuple.
+    /// Metadata does not preserve a valid semantic manifest fact tuple.
     ManifestFacts,
     /// Compiler manifest identity has the wrong typed authority bytes.
     ManifestIdentity,
@@ -1501,15 +1507,17 @@ fn validate_binding(
 
 fn inspect_semantic_manifest(
     bytes: &[u8],
-) -> Result<(AuthorityHash, u32, u32), CompilerEnvelopeError> {
+) -> Result<(AuthorityHash, CompilationManifestFormat, u32, u32), CompilerEnvelopeError> {
     if bytes.len() < SEMANTIC_MANIFEST_HEADER_BYTES
         || bytes.len() > MAX_MANIFEST_BYTES
         || &bytes[..8] != SEMANTIC_MANIFEST_MAGIC
-        || u16::from_le_bytes([bytes[8], bytes[9]]) != SEMANTIC_MANIFEST_VERSION
         || bytes[10..12] != [0, 0]
     {
         return Err(CompilerEnvelopeError::ManifestFacts);
     }
+    let format = CompilationManifestFormat::from_version(u16::from_le_bytes([bytes[8], bytes[9]]))
+        .filter(|format| format.is_semantic())
+        .ok_or(CompilerEnvelopeError::ManifestFacts)?;
     let fragment_count = u32::from_le_bytes(
         bytes[12..16]
             .try_into()
@@ -1535,14 +1543,14 @@ fn inspect_semantic_manifest(
     let identity = ManifestIdentity::from_encoded_bytes(bytes);
     let identity = *identity.as_ref();
     ManifestIdentity::try_from(identity).map_err(|_| CompilerEnvelopeError::ManifestIdentity)?;
-    Ok((identity, fragment_count, manifest_byte_length))
+    Ok((identity, format, fragment_count, manifest_byte_length))
 }
 
 fn verify_manifest_image_inventory(
     manifest_bytes: &[u8],
     images: &[CompilerImageMember],
 ) -> Result<(), CompilerEnvelopeError> {
-    let (_, fragment_count, _) = inspect_semantic_manifest(manifest_bytes)?;
+    let (_, _, fragment_count, _) = inspect_semantic_manifest(manifest_bytes)?;
     if usize::try_from(fragment_count).ok() != Some(images.len()) {
         return Err(CompilerEnvelopeError::ManifestFacts);
     }
@@ -1887,7 +1895,11 @@ mod tests {
                 + images.len() * SEMANTIC_MANIFEST_ENTRY_BYTES
         ];
         manifest_bytes[..8].copy_from_slice(SEMANTIC_MANIFEST_MAGIC);
-        manifest_bytes[8..10].copy_from_slice(&SEMANTIC_MANIFEST_VERSION.to_le_bytes());
+        manifest_bytes[8..10].copy_from_slice(
+            &CompilationManifestFormat::SemanticV2
+                .wire_version()
+                .to_le_bytes(),
+        );
         manifest_bytes[12..16].copy_from_slice(&image_count.to_le_bytes());
         for (ordinal, image) in images.iter().enumerate() {
             let entry_start =
@@ -2103,6 +2115,271 @@ mod tests {
         }
         let receipt = session.finish().expect("finish complete closure");
         (store, receipt)
+    }
+
+    #[test]
+    fn engine_contextual_manifest_round_trips_versioned_closure_and_ordinals() {
+        use backend_engine::driver::{CompiledFragment, CompiledSemantic};
+        use backend_engine::publication::manifest::SemanticImageRegion;
+        use backend_engine::publication::publication::publish_semantic;
+        use backend_engine::publication::semantic_immutable::ImmutableSemanticImageStore;
+        use backend_engine::publication::{PublishControl, SemanticPublicationScratch};
+        use backend_semantic::ir::{
+            FragmentView, IrBuilder, PackageLineage, PreparedFragment, SourceIdentity,
+        };
+        use backend_semantic::vocabulary::{
+            CompileRecipeFact, LanguageProfile, NativeTool, PythonVersion, Stage,
+        };
+        use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+        use backend_version::{SourceFactDomain, ToolchainDomain};
+        use std::num::NonZeroUsize;
+
+        let directory = scratch_store();
+        std::fs::create_dir(&directory).expect("create Engine publication directory");
+        let artifacts = directory.join("artifacts");
+        let publisher = DurablePublisher::create(
+            &PublicationPaths::in_directory(&directory.join("journal")),
+            PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)
+                .expect("publication limits"),
+        )
+        .expect("create compiler publication owner");
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b""),
+            byte_len: 0,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::Python(PythonVersion::Python314),
+            Stage::LowerIr,
+            NativeTool::Python,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"contextual-toolchain"),
+        );
+        let mut compact = [0_u8; 256];
+        let length = PreparedFragment::prepare(source, recipe, &[], &[], &[])
+            .expect("prepare same empty compact module")
+            .write_into(&mut compact)
+            .expect("encode compact module")
+            .len();
+        let make = |path| {
+            let fragment =
+                FragmentView::validate(&compact[..length]).expect("admit compact module");
+            let mut builder = IrBuilder::new();
+            builder
+                .set_image_provenance(
+                    source,
+                    recipe,
+                    PackageLineage::new("pypi", "httpie").expect("package lineage"),
+                    path,
+                )
+                .expect("capture distinct module path");
+            CompiledSemantic {
+                artifact: CompiledFragment {
+                    source,
+                    recipe,
+                    fragment,
+                },
+                ir: builder.finish().expect("finish context-bound image"),
+            }
+        };
+        let mut manifest = [0_u8; 1024];
+        let mut facts = [None; 2];
+        let mut ordinals = [0_usize; 2];
+        let mut plan = [SemanticImageRegion::EMPTY; 2];
+        let mut semantic_bytes = [0_u8; 16_384];
+        let mut locality = [0_u8; 1024];
+        let mut binding = [0_u8; COMPILATION_BINDING_BYTES];
+        let compiled = [
+            make("httpie/cli/__init__.py"),
+            make("httpie/output/__init__.py"),
+        ];
+        let published = publish_semantic(
+            &publisher,
+            &artifacts,
+            &compiled,
+            PublishControl::Continue,
+            SemanticPublicationScratch {
+                manifest_output: &mut manifest,
+                manifest_facts: &mut facts,
+                ordinals: &mut ordinals,
+                semantic_image_plan: &mut plan,
+                semantic_image_output: &mut semantic_bytes,
+                locality_output: &mut locality,
+                binding_output: &mut binding,
+            },
+        )
+        .expect("Engine publishes both identical-content contextual modules");
+        assert_eq!(
+            published.manifest.format,
+            CompilationManifestFormat::SemanticV3
+        );
+        assert_eq!(published.manifest.fragment_count, 2);
+        assert_eq!(
+            facts[0].expect("first fact").fragment,
+            facts[1].expect("second fact").fragment
+        );
+        let manifest =
+            &manifest[..usize::try_from(published.manifest.byte_length).expect("manifest length")];
+        let image_store =
+            ImmutableSemanticImageStore::new(&artifacts).expect("open Engine image store");
+        let mut image_output = [0_u8; 16_384];
+        let mut images = Vec::new();
+        let mut image_objects = Vec::new();
+        let mut plane_publications = Vec::new();
+        for (ordinal, fact) in facts.iter().enumerate() {
+            let image_fact = fact
+                .expect("canonical fact")
+                .semantic_image
+                .expect("paired image");
+            let image = image_store
+                .open(image_fact, &mut image_output)
+                .expect("reopen actual Engine image");
+            let (member, object) = CompilerImageMember::from_bytes_for_ordinal(
+                u32::try_from(ordinal).expect("ordinal"),
+                image.as_ref(),
+                *image_fact.identity.as_ref(),
+            )
+            .expect("admit actual Engine image");
+            plane_publications.push(semantic_planes(
+                backend_semantic::ir::GenerationId::from_canonical_bytes(image.as_ref()),
+            ));
+            images.push(member);
+            image_objects.push(object);
+        }
+        let planes = VersionedPlaneMetadata::from_artifacts(
+            plane_publications
+                .iter()
+                .enumerate()
+                .map(|(ordinal, planes)| {
+                    plane_artifact_at(planes, u32::try_from(ordinal).expect("ordinal"))
+                })
+                .collect(),
+        )
+        .expect("complete exact per-image catalog");
+        let metadata = CompilerPublicationMetadata::new_with_versioned_planes(
+            manifest,
+            binding,
+            images.clone(),
+            Some(planes.clone()),
+        )
+        .expect("Turso admits actual contextual compiler manifest");
+        assert_eq!(metadata.manifest_version(), 3);
+        assert_eq!(
+            CompilerPublicationMetadata::decode(&metadata.canonical_bytes())
+                .expect("metadata roundtrip"),
+            metadata
+        );
+        let attempt = attempt();
+        let envelope =
+            CompilerPublicationEnvelope::new(&attempt, &metadata).expect("contextual envelope");
+        assert_eq!(
+            CompilerPublicationEnvelope::decode(&envelope.canonical_bytes())
+                .expect("envelope roundtrip"),
+            envelope
+        );
+        let plane_objects = combine_plane_objects(&plane_publications.iter().collect::<Vec<_>>());
+        let closure_directory = scratch_store();
+        let (store, receipt) = publish_envelope_closure_with_images(
+            &closure_directory,
+            &envelope,
+            &metadata,
+            &image_objects,
+            &plane_objects,
+            false,
+        );
+        let candidate = envelope
+            .candidate(attempt.clone(), *receipt.closure().as_bytes())
+            .expect("contextual candidate");
+        FileStoreCompilerPublicationVerifier::new(
+            &store,
+            ArtifactBudget::new(8, 64, 1024 * 1024, 1024 * 1024, 8),
+            &envelope,
+            &metadata,
+        )
+        .verify_closure(&ClosureClaim::for_candidate(&candidate))
+        .expect("exact contextual closure proof");
+        let selected = selected_generation(&attempt, &candidate, 1);
+        drop(store);
+        let reopened_store = FileStore::open(&closure_directory, 1024 * 1024)
+            .expect("kernel-cold closure store reopen");
+        let reopened = reopen_selected_compiler_publication(
+            &reopened_store,
+            ArtifactBudget::new(8, 64, 1024 * 1024, 1024 * 1024, 8),
+            &selected,
+        )
+        .expect("cold contextual selected publication");
+        assert_eq!(reopened.metadata().manifest_version(), 3);
+        assert_eq!(reopened.images().len(), 2);
+        for image in reopened.images() {
+            let ordinal = usize::try_from(image.member().artifact_ordinal()).expect("ordinal");
+            assert_eq!(image.bytes(), image_objects[ordinal].bytes());
+            assert_eq!(image.member(), &images[ordinal]);
+        }
+        let mut wrong_ordinals = images;
+        wrong_ordinals[0].artifact_ordinal = 1;
+        wrong_ordinals[1].artifact_ordinal = 0;
+        assert_eq!(
+            CompilerPublicationMetadata::new_with_versioned_planes(
+                manifest,
+                binding,
+                wrong_ordinals,
+                Some(planes)
+            ),
+            Err(CompilerEnvelopeError::MetadataMismatch)
+        );
+        drop(reopened_store);
+        publisher
+            .shutdown()
+            .expect("retire compiler publication owner");
+        std::fs::remove_dir_all(directory).expect("remove compiler artifacts");
+        std::fs::remove_dir_all(closure_directory).expect("remove contextual closure");
+    }
+
+    #[test]
+    fn semantic_manifest_generations_preserve_v2_and_reject_unknown_or_malformed() {
+        let (image, _) = compiler_image();
+        let legacy = metadata(image);
+        assert_eq!(legacy.manifest_version(), 2);
+        assert_eq!(
+            CompilerPublicationMetadata::decode(&legacy.canonical_bytes())
+                .expect("legacy metadata roundtrip"),
+            legacy
+        );
+        for version in [0_u16, 1, 4, u16::MAX] {
+            let mut bytes = legacy.manifest_bytes().to_vec();
+            bytes[8..10].copy_from_slice(&version.to_le_bytes());
+            assert_eq!(
+                inspect_semantic_manifest(&bytes),
+                Err(CompilerEnvelopeError::ManifestFacts)
+            );
+        }
+        for version in [2_u16, 3] {
+            let mut bytes = legacy.manifest_bytes().to_vec();
+            bytes[8..10].copy_from_slice(&version.to_le_bytes());
+            assert_eq!(
+                inspect_semantic_manifest(&bytes)
+                    .expect("supported semantic generation")
+                    .1
+                    .wire_version(),
+                version
+            );
+            let mut reserved = bytes.clone();
+            reserved[10] = 1;
+            assert_eq!(
+                inspect_semantic_manifest(&reserved),
+                Err(CompilerEnvelopeError::ManifestFacts)
+            );
+            let mut trailing = bytes.clone();
+            trailing.push(0);
+            assert_eq!(
+                inspect_semantic_manifest(&trailing),
+                Err(CompilerEnvelopeError::ManifestFacts)
+            );
+            bytes.pop();
+            assert_eq!(
+                inspect_semantic_manifest(&bytes),
+                Err(CompilerEnvelopeError::ManifestFacts)
+            );
+        }
     }
 
     #[test]

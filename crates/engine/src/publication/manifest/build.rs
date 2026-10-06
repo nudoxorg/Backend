@@ -21,18 +21,15 @@ use super::{
 };
 use crate::publication::semantic_immutable::SemanticImageArtifactFacts;
 
-/// Typed identity of one complete canonical compiler package manifest.
-/// Fixed header width of the compiler package manifest wire format.
-pub const COMPILATION_MANIFEST_HEADER_BYTES: usize = 16;
-/// Fixed width of one complete recipe-bearing fragment entry.
-pub const COMPILATION_MANIFEST_ENTRY_BYTES: usize = 404;
-/// Fixed width of one fragment entry that also binds its complete semantic image.
-pub const COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES: usize = 440;
-
-pub(super) const MAGIC: [u8; 8] = *b"NUDXCPM\0";
-pub(super) const VERSION: u16 = 1;
-pub(super) const SEMANTIC_VERSION: u16 = 2;
-pub(super) const CONTEXTUAL_SEMANTIC_VERSION: u16 = 3;
+pub use backend_semantic::ir::{
+    COMPILATION_MANIFEST_ENTRY_BYTES, COMPILATION_MANIFEST_HEADER_BYTES,
+    COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES,
+};
+pub(super) const MAGIC: [u8; 8] = backend_semantic::ir::COMPILATION_MANIFEST_MAGIC;
+pub(super) const VERSION: u16 =
+    backend_semantic::ir::CompilationManifestFormat::CompactV1.wire_version();
+pub(super) const CONTEXTUAL_SEMANTIC_VERSION: u16 =
+    backend_semantic::ir::CompilationManifestFormat::SemanticV3.wire_version();
 pub(super) const RANGE_COUNT: usize = 6;
 pub(super) const RANGE_BYTES: usize = 44;
 pub(super) const SOURCE_IDENTITY_OFFSET: usize = 0;

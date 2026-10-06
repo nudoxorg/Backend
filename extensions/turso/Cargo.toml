@@ -16,6 +16,7 @@ blake3.workspace = true
 turso = { workspace = true }
 
 [dev-dependencies]
+backend-engine = { path = "../../crates/engine" }
 futures-executor.workspace = true
 
 [lints]
