@@ -521,9 +521,12 @@ where
     }
 }
 
-/// Closed admission result: every file is either complete inline or complete
-/// and verified through its page tree.
+/// Closed admission result: checked unavailable extraction, complete inline,
+/// or complete facts verified through their page tree.
 pub enum ProductSourceFileFactsAdmission<Lookup> {
+    /// The selected source could not be extracted, for this exact typed reason.
+    /// This carries no complete facts or compiler source authority.
+    Unavailable(super::relation::SourceUnavailableReason),
     /// Complete inline facts verified against a source file row.
     InlineComplete(ProductSourceFileFactsInline),
     /// Complete bounded pages verified against a source file row and every
@@ -782,6 +785,9 @@ where
 {
     let mut keys = vec![manifest_key];
     match admit_product_source_file_facts(file, manifest_key, manifest, lookup)? {
+        ProductSourceFileFactsAdmission::Unavailable(_) => {
+            return Err("unavailable source has no complete facts row keys".to_owned());
+        }
         ProductSourceFileFactsAdmission::InlineComplete(_) => {}
         ProductSourceFileFactsAdmission::PagedVerified(mut paged) => {
             for directory_ref in paged.directories.iter() {
@@ -1986,6 +1992,9 @@ mod tests {
             ProductSourceFileFactsAdmission::InlineComplete(admitted) => {
                 assert_eq!(admitted.declarations(), declarations);
             }
+            ProductSourceFileFactsAdmission::Unavailable(_) => {
+                panic!("complete fixture was unavailable")
+            }
             ProductSourceFileFactsAdmission::PagedVerified(_) => panic!("small set is inline"),
         }
         let wrong_file = source_row(project, path, [9; 32], [4; 32], identity, declarations);
@@ -2116,6 +2125,9 @@ mod tests {
         .expect("admit actual paged TSX facts")
         {
             ProductSourceFileFactsAdmission::PagedVerified(paged) => paged,
+            ProductSourceFileFactsAdmission::Unavailable(_) => {
+                panic!("complete fixture was unavailable")
+            }
             ProductSourceFileFactsAdmission::InlineComplete(_) => {
                 panic!("900 declaration TSX inventory must use bounded pages")
             }
@@ -2392,6 +2404,9 @@ mod tests {
         .expect("admit maximum-sized declaration pages")
         {
             ProductSourceFileFactsAdmission::PagedVerified(paged) => paged,
+            ProductSourceFileFactsAdmission::Unavailable(_) => {
+                panic!("complete fixture was unavailable")
+            }
             ProductSourceFileFactsAdmission::InlineComplete(_) => {
                 panic!("maximum-sized facts must use pages")
             }

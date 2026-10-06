@@ -180,6 +180,9 @@ fn assert_complete(
         }
     };
     match admitted {
+        ProductSourceFileFactsAdmission::Unavailable(_) => {
+            panic!("complete fixture was unavailable")
+        }
         ProductSourceFileFactsAdmission::InlineComplete(inline) => {
             for declaration in inline.declarations() {
                 record_function(declaration);
@@ -368,5 +371,104 @@ fn warm_complete_facts_survive_real_commits_and_shrinking_pages_are_retired() {
             ))
             .expect("deleted manifest")
             .is_none()
+    );
+}
+
+#[test]
+fn typed_unavailable_source_facts_reopen_without_promoting_compacted_rows() {
+    use backend_engine::builtin::{DeclarationRetention, RetainedDeclarations};
+    let workspace = TempWorkspace::new();
+    let label = "pkg:npm/unavailable-cold-control@1.0.0";
+    let package = PackageKey::from_value(label);
+    let mut daemon = open_daemon(workspace.0.path());
+    let reasons = [
+        backend_library::SourceUnavailableReason::Unreadable,
+        backend_library::SourceUnavailableReason::NotText,
+        backend_library::SourceUnavailableReason::TooLarge,
+        backend_library::SourceUnavailableReason::Unparsed,
+    ];
+    let rows = reasons
+        .iter()
+        .enumerate()
+        .map(|(index, reason)| {
+            (
+                ProductSourceRecord::file_unavailable(
+                    package.to_bytes(),
+                    format!("unavailable_{index}.c"),
+                    SourceLanguage::Clang,
+                    [7; 32],
+                    *reason,
+                )
+                .expect("explicit unavailable row"),
+                None,
+            )
+        })
+        .collect::<Vec<_>>();
+    commit_files(&mut daemon, package, label, 1, &rows);
+    drop(daemon);
+    let daemon = open_daemon(workspace.0.path());
+    let snapshot = backend_engine::ProductSourceSnapshot::from_workspace(
+        &daemon.engine().daemon().owner().snapshot(),
+    )
+    .expect("cold source snapshot");
+    for ((expected, _), reason) in rows.iter().zip(reasons) {
+        let path = expected.file_fields().expect("file").path;
+        let key = backend_engine::product_source_file_key(package.to_bytes(), path);
+        let row = snapshot
+            .relation()
+            .lookup(&key)
+            .expect("lookup")
+            .expect("selected file");
+        assert_eq!(&row, expected);
+        match snapshot
+            .admit_complete_file_facts(&row)
+            .expect("typed unavailable admission")
+            .expect("typed outcome")
+        {
+            ProductSourceFileFactsAdmission::Unavailable(actual) => assert_eq!(actual, reason),
+            _ => panic!("unavailable source was promoted to complete facts"),
+        }
+        for retention in [
+            DeclarationRetention::ExcerptsElided,
+            DeclarationRetention::NamesOnly,
+            DeclarationRetention::Truncated(RetainedDeclarations::new(1, 2).expect("counts")),
+        ] {
+            let mut corrupt = row.clone();
+            let ProductSourceRecord::File {
+                retention: actual, ..
+            } = &mut corrupt
+            else {
+                panic!("file")
+            };
+            *actual = retention;
+            assert!(
+                snapshot.admit_complete_file_facts(&corrupt).is_err(),
+                "compacted source requires its complete facts manifest"
+            );
+        }
+        let mut contradictory = row.clone();
+        let ProductSourceRecord::File {
+            content_version, ..
+        } = &mut contradictory
+        else {
+            panic!("file")
+        };
+        *content_version = [1; 32];
+        assert!(
+            snapshot.admit_complete_file_facts(&contradictory).is_err(),
+            "Unavailable cannot carry known source content"
+        );
+    }
+    let foreign = ProductSourceRecord::file_unavailable(
+        package.to_bytes(),
+        "foreign.c",
+        SourceLanguage::Clang,
+        [7; 32],
+        backend_library::SourceUnavailableReason::Unparsed,
+    )
+    .expect("foreign row");
+    assert!(
+        snapshot.admit_complete_file_facts(&foreign).is_err(),
+        "unavailability must bind the exact selected row"
     );
 }

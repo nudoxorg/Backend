@@ -692,6 +692,28 @@ pub struct ProductFileRef<'a> {
     pub retention: DeclarationRetention,
 }
 
+impl ProductFileRef<'_> {
+    /// Admits the explicit absence of extracted facts without claiming completeness.
+    ///
+    /// # Errors
+    /// Rejects an unavailable row carrying source identity, content, or declarations.
+    pub fn admitted_unavailable_reason(self) -> Result<Option<SourceUnavailableReason>, String> {
+        let DeclarationRetention::Unavailable(reason) = self.retention else {
+            return Ok(None);
+        };
+        if self.content_version != [0; 32]
+            || self.source_identity.is_some()
+            || !self.declarations.is_empty()
+        {
+            return Err(
+                "unavailable source row contradicts its retained content or declarations"
+                    .to_owned(),
+            );
+        }
+        Ok(Some(reason))
+    }
+}
+
 impl ProductSourceRecord {
     /// Maximum admitted coordinate or relative-path length.
     pub const MAX_LABEL_BYTES: usize = 4096;
@@ -2531,8 +2553,10 @@ impl ProductSourceSnapshot {
     /// Admits complete structural facts for one exact file row from the
     /// auxiliary relation selected by this same workspace closure.
     ///
-    /// `Some` is returned only after the manifest and every referenced page
-    /// have been checked against the exact file identity. The returned paged
+    /// `Some(Unavailable)` retains the checked reason for a selected source
+    /// that could not be extracted; it proves no complete declaration set.
+    /// Other `Some` variants require the manifest and every referenced page
+    /// to have been checked against the exact file identity. The returned paged
     /// form keeps a lazy relation lookup and visits one bounded page at a
     /// time. `None` is reserved for legacy rows whose compact retention is
     /// already complete; a compact overflow row with no facts manifest is a
@@ -2545,6 +2569,28 @@ impl ProductSourceSnapshot {
             .file_fields()
             .ok_or_else(|| "complete source facts requested for a non-file row".to_owned())?;
         let file_key = product_source_file_key(file.project, file.path);
+        if let Some(reason) = file.admitted_unavailable_reason()? {
+            if self
+                .relation
+                .lookup(&file_key)
+                .map_err(|error| error.to_string())?
+                .as_ref()
+                != Some(record)
+            {
+                return Err("unavailable source row is not the exact selected file".to_owned());
+            }
+            if let Some(relation) = &self.source_facts
+                && relation
+                    .lookup(&file_key)
+                    .map_err(|error| error.to_string())?
+                    .is_some()
+            {
+                return Err(
+                    "unavailable source row contradicts a complete facts manifest".to_owned(),
+                );
+            }
+            return Ok(Some(ProductSourceFileFactsAdmission::Unavailable(reason)));
+        }
         let Some(relation) = &self.source_facts else {
             return if file.retention.is_complete() {
                 Ok(None)

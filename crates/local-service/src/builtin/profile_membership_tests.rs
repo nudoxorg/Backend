@@ -687,10 +687,39 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     let analysis_version = [0x61; 32];
     let project_key = package.to_bytes();
     let file_key = backend_engine::product_source_file_key(project_key, path);
-    let frontier = vec![(file_key, path.to_owned(), content_version)];
+    // Exact retained msgspec cold-failure row shape: PSR8 Unavailable(Unparsed),
+    // zero content, no source identity or declarations. These Clang files are
+    // not TSX compiler inputs and make no complete-extraction claim.
+    let unavailable_paths = ["src/msgspec/_core.c", "src/msgspec/itoa.h"];
+    let unavailable_rows = unavailable_paths.map(|unavailable_path| {
+        (
+            backend_engine::product_source_file_key(project_key, unavailable_path),
+            ProductSourceRecord::file_unavailable(
+                project_key,
+                unavailable_path,
+                SourceLanguage::Clang,
+                analysis_version,
+                backend_library::SourceUnavailableReason::Unparsed,
+            )
+            .expect("typed unavailable source row"),
+        )
+    });
+    let mut frontier = vec![(file_key, path.to_owned(), content_version)];
+    frontier.extend(unavailable_rows.iter().map(|(key, row)| {
+        (
+            *key,
+            row.file_fields().expect("unavailable file").path.to_owned(),
+            [0; 32],
+        )
+    }));
+    frontier.sort_by_key(|(key, _, _)| *key);
     let source_version = source_version(&frontier);
-    let project_record = BuiltinPackageRecord::project(label, source_version, vec![file_key])
-        .expect("one-file project frontier");
+    let project_record = BuiltinPackageRecord::project(
+        label,
+        source_version,
+        frontier.iter().map(|(key, _, _)| *key).collect::<Vec<_>>(),
+    )
+    .expect("complete source frontier including unavailable files");
     let file_record = backend_engine::ProductSourceRecord::identified_file_within_row_capacity(
         project_key,
         path,
@@ -788,6 +817,14 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
             BuiltinSourceChange {
                 key: file_key,
                 after: Some(file_record),
+            },
+            BuiltinSourceChange {
+                key: unavailable_rows[0].0,
+                after: Some(unavailable_rows[0].1.clone()),
+            },
+            BuiltinSourceChange {
+                key: unavailable_rows[1].0,
+                after: Some(unavailable_rows[1].1.clone()),
             },
         ],
         Vec::new(),
@@ -1233,6 +1270,31 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     let source_snapshot =
         ProductSourceSnapshot::from_workspace(&snapshot).expect("cold selected source closure");
     let source_relation = source_snapshot.relation();
+    for (key, expected) in &unavailable_rows {
+        let selected = source_snapshot
+            .relation()
+            .lookup(key)
+            .expect("cold unavailable lookup")
+            .expect("unavailable row selected");
+        assert_eq!(&selected, expected);
+        assert!(
+            !selected
+                .file_fields()
+                .expect("file")
+                .retention
+                .is_complete()
+        );
+        match source_snapshot
+            .admit_complete_file_facts(&selected)
+            .expect("unavailable is admissible, not corrupt")
+            .expect("typed extraction status")
+        {
+            ProductSourceFileFactsAdmission::Unavailable(reason) => {
+                assert_eq!(reason, backend_library::SourceUnavailableReason::Unparsed)
+            }
+            _ => panic!("unavailable source was promoted to complete facts"),
+        }
+    }
     let source_row = source_relation
         .lookup(&file_key)
         .expect("cold source file lookup")
@@ -1243,6 +1305,9 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         .expect("overflow source row requires its complete facts manifest")
     {
         ProductSourceFileFactsAdmission::PagedVerified(paged) => paged,
+        ProductSourceFileFactsAdmission::Unavailable(_) => {
+            panic!("complete fixture was unavailable")
+        }
         ProductSourceFileFactsAdmission::InlineComplete(_) => {
             panic!("900 declarations must remain page bounded")
         }

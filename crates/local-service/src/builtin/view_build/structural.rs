@@ -40,6 +40,9 @@ pub(super) fn visit_complete_declarations(
             .admit_complete_file_facts(record)
             .map_err(|error| BuiltinModelError(format!("admit complete source facts: {error}")))?
         {
+            Some(backend_engine::ProductSourceFileFactsAdmission::Unavailable(_reason)) => {
+                // The row retains the reason; there is no extracted declaration to visit.
+            }
             Some(backend_engine::ProductSourceFileFactsAdmission::InlineComplete(inline)) => {
                 for declaration in inline.declarations() {
                     visit(declaration)?;
@@ -71,6 +74,13 @@ pub(super) fn visit_complete_declarations(
         }
         return Ok(());
     }
+    if file
+        .admitted_unavailable_reason()
+        .map_err(BuiltinModelError)?
+        .is_some()
+    {
+        return Ok(());
+    }
     if !file.retention.is_complete() {
         return Err(BuiltinModelError(
             "compact source row is incomplete and has no selected complete facts relation"
@@ -100,6 +110,9 @@ pub(super) fn complete_declarations_for_file(
             .admit_complete_file_facts(record)
             .map_err(|error| BuiltinModelError(format!("admit complete source facts: {error}")))?
         {
+            Some(backend_engine::ProductSourceFileFactsAdmission::Unavailable(_reason)) => {
+                return Ok(Vec::new());
+            }
             Some(backend_engine::ProductSourceFileFactsAdmission::InlineComplete(inline)) => {
                 return Ok(inline.declarations().to_vec());
             }
@@ -133,6 +146,13 @@ pub(super) fn complete_declarations_for_file(
             }
             None => return Ok(file.declarations.to_vec()),
         }
+    }
+    if file
+        .admitted_unavailable_reason()
+        .map_err(BuiltinModelError)?
+        .is_some()
+    {
+        return Ok(Vec::new());
     }
     if !file.retention.is_complete() {
         return Err(BuiltinModelError(
