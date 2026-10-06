@@ -458,49 +458,54 @@ different_dirs="$(cut -d '|' -f 2 "$different_log" | sort -u | wc -l | tr -d ' '
 assert_eq 2 "$different_dirs"
 [ "$elapsed" -le 2 ] || fail "independent worktrees were serialized (${elapsed}s)"
 
-# The default machine-wide pool admits at most four active Cargo processes.
-# Start four independent roots, wait until each reaches fake Cargo, and verify
-# a fifth caller fails at the zero-wait boundary without reaching Cargo.
-four_cache="$test_root/four-cache"
-four_log="$test_root/four.log"
-: > "$four_log"
-four_pids=""
-for root_name in c d e f; do
-  four_root="$test_root/roots/$root_name"
-  mkdir -p "$four_root"
-  NUDOX_TEST_WORKTREE="$four_root" NUDOX_TEST_LOG="$four_log" \
-    NUDOX_BUILD_CACHE_ROOT="$four_cache" NUDOX_CARGO_BUILD_SLOTS=4 \
-    NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=3 \
-    SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build &
-  four_pids="$four_pids $!"
+# The default remains four permits; a larger host can explicitly admit six.
+# For both capacities, fill every permit and prove one extra caller cannot
+# reach Cargo. Role-local graph retention is a separate four-graph bound.
+for capacity in 4 6; do
+  capacity_cache="$test_root/capacity-$capacity-cache"
+  capacity_log="$test_root/capacity-$capacity.log"
+  : > "$capacity_log"
+  capacity_pids=""
+  member=0
+  while [ "$member" -lt "$capacity" ]; do
+    capacity_root="$test_root/roots/capacity-$capacity-$member"
+    mkdir -p "$capacity_root"
+    NUDOX_TEST_WORKTREE="$capacity_root" NUDOX_TEST_LOG="$capacity_log" \
+      NUDOX_BUILD_CACHE_ROOT="$capacity_cache" NUDOX_CARGO_BUILD_SLOTS="$capacity" \
+      NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=4 \
+      SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build &
+    capacity_pids="$capacity_pids $!"
+    member="$((member + 1))"
+  done
+  capacity_waited=0
+  while [ "$capacity_waited" -lt 120 ] && [ "$(wc -l < "$capacity_log" 2>/dev/null | tr -d ' ')" != "$capacity" ]; do
+    sleep 0.05
+    capacity_waited="$((capacity_waited + 1))"
+  done
+  assert_file_lines "$capacity_log" "$capacity"
+  capacity_extra="$test_root/roots/capacity-$capacity-extra"
+  mkdir -p "$capacity_extra"
+  if NUDOX_TEST_WORKTREE="$capacity_extra" NUDOX_TEST_LOG="$capacity_log" \
+    NUDOX_BUILD_CACHE_ROOT="$capacity_cache" NUDOX_CARGO_BUILD_SLOTS="$capacity" \
+    NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=0 \
+    SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build; then
+    fail "$capacity-slot ceiling admitted an extra Cargo process"
+  fi
+  assert_file_lines "$capacity_log" "$capacity"
+  for capacity_pid in $capacity_pids; do wait "$capacity_pid"; done
 done
-four_waited=0
-while [ "$four_waited" -lt 120 ] && [ "$(wc -l < "$four_log" 2>/dev/null | tr -d ' ')" != 4 ]; do
-  sleep 0.05
-  four_waited="$((four_waited + 1))"
-done
-assert_file_lines "$four_log" 4
-if NUDOX_TEST_WORKTREE="$test_root/roots/g" NUDOX_TEST_LOG="$four_log" \
-  NUDOX_BUILD_CACHE_ROOT="$four_cache" NUDOX_CARGO_BUILD_SLOTS=4 \
-  NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=0 \
-  SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build; then
-  fail "default four-slot ceiling admitted a fifth Cargo process"
-fi
-assert_file_lines "$four_log" 4
-for four_pid in $four_pids; do wait "$four_pid"; done
 
-# A caller cannot raise the host-wide cap beyond four, even by setting the
-# wrapper's configurable slot count directly.
-five_cache="$test_root/five-cache"
-five_log="$test_root/five.log"
-if NUDOX_TEST_WORKTREE="$test_root/roots/g" NUDOX_TEST_LOG="$five_log" \
-  NUDOX_BUILD_CACHE_ROOT="$five_cache" NUDOX_CARGO_BUILD_SLOTS=5 \
+# Overrides above the supported host-wide cap fail before reaching Cargo.
+invalid_cache="$test_root/invalid-capacity-cache"
+invalid_log="$test_root/invalid-capacity.log"
+if NUDOX_TEST_WORKTREE="$test_root/roots/g" NUDOX_TEST_LOG="$invalid_log" \
+  NUDOX_BUILD_CACHE_ROOT="$invalid_cache" NUDOX_CARGO_BUILD_SLOTS=7 \
   SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build; then
-  fail "five-slot override bypassed the hard machine-wide cap"
+  fail "seven-slot override bypassed the hard machine-wide cap"
 else
   assert_eq 64 "$?"
 fi
-[ ! -e "$five_log" ] || fail "invalid five-slot override reached Cargo"
+[ ! -e "$invalid_log" ] || fail "invalid seven-slot override reached Cargo"
 
 # An explicit build-dir is a role root. Its leased child is stamped, isolated
 # between worktrees, and the caller's parent directory remains intact.
