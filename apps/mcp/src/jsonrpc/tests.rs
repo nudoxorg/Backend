@@ -621,7 +621,7 @@ fn adapter_errors_keep_continuation_transport_refusal_separate_from_compiler_fac
         adapter_error_routes().pop().expect("continuation route");
     let mut server = ready(Fake {
         adapter_error: Some(ClientError::Transport(
-            "owner packet exceeds transport bound".to_owned(),
+            backend_replication::ReplicationError::MessageTooLarge,
         )),
         graph_continue: true,
         ..Fake::default()
