@@ -173,6 +173,42 @@ class FleetCapacityTests(unittest.TestCase):
         self.assertEqual(set(result), set(fleet.DEFAULT_HOSTS))
         self.assertEqual(counts, Counter({name: 1 for name in fleet.DEFAULT_HOSTS}))
 
+    def test_authorized_remote_exception_retains_every_other_gate(self) -> None:
+        self.samples["local"]["census"]["compiler_groups"] = [
+            compiler_group(3000 + index) for index in range(9)
+        ]
+
+        def authorized(destination: str = "h16001mac") -> dict[str, object]:
+            return fleet.evaluate_fleet(
+                self.samples, destination=destination, requested_jobs=4,
+                now=self.now, allow_local_over_cap_for_remote=True,
+            )
+
+        self.assertFalse(self.evaluate("h16001mac")["advisory_allowed"])
+        result = authorized()
+        self.assertTrue(result["advisory_allowed"])
+        self.assertEqual(result["current_fleet_compiler_group_count"], 9)
+        self.assertIn("local:over-host-cap-remote-admission-authorized", result["limitations"])
+        self.assertFalse(authorized("local")["advisory_allowed"])
+
+        for host in fleet.DEFAULT_HOSTS:
+            resources = self.samples[host]["census"]["resource_snapshot"]
+            resources["available_memory_bytes"] = fleet.MIN_AVAILABLE_MEMORY - 1
+            self.assertFalse(authorized()["advisory_allowed"], host)
+            resources["available_memory_bytes"] = 9 * fleet.GIB
+
+        self.samples["h16001mac"]["census"]["compiler_groups"] = [
+            compiler_group(4000 + index) for index in range(8)
+        ]
+        self.assertFalse(authorized()["advisory_allowed"])
+        self.samples["h16001mac"]["census"]["compiler_groups"] = [
+            compiler_group(5000, kind="cargo", classification="build", jobs=5)
+        ]
+        self.assertFalse(authorized()["advisory_allowed"])
+        self.samples["h16001mac"]["census"]["compiler_groups"] = []
+        self.samples["ilo"]["transport_complete"] = False
+        self.assertFalse(authorized()["advisory_allowed"])
+
 
 if __name__ == "__main__":
     unittest.main()

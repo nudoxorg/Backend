@@ -178,6 +178,7 @@ def evaluate_fleet(
     hosts: Mapping[str, Mapping[str, Any]] = DEFAULT_HOSTS,
     now: dt.datetime | None = None,
     max_age_seconds: int = MAX_SAMPLE_AGE_SECONDS,
+    allow_local_over_cap_for_remote: bool = False,
 ) -> dict[str, Any]:
     """Fail closed on missing/stale/incomplete evidence and enforce fleet caps."""
     now = (now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc)
@@ -274,7 +275,10 @@ def evaluate_fleet(
         if type(limit) is not int or limit < 1:
             reasons.append(f"{name}:host-limit-invalid")
         elif count + (1 if name == destination else 0) > limit:
-            reasons.append(f"{name}:host-compiler-group-limit-reached")
+            if allow_local_over_cap_for_remote and name == "local" and destination != "local":
+                limitations.append("local:over-host-cap-remote-admission-authorized")
+            else:
+                reasons.append(f"{name}:host-compiler-group-limit-reached")
         memory = resources.get("available_memory_bytes")
         if type(memory) is not int or memory < MIN_AVAILABLE_MEMORY:
             reasons.append(f"{name}:available-memory-below-8-gib-or-missing")
@@ -308,6 +312,7 @@ def evaluate_fleet(
         "schema": "compiler-capacity-admission.v5",
         "sampled_at_utc": now.isoformat(),
         "destination": destination,
+        "allow_local_over_cap_for_remote": allow_local_over_cap_for_remote,
         "requested_cargo_jobs": requested_jobs,
         "current_fleet_compiler_group_count": total_groups,
         "fleet_compiler_group_limit": FLEET_GROUP_LIMIT,
@@ -347,6 +352,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--destination", choices=tuple(DEFAULT_HOSTS), required=True)
     parser.add_argument("--jobs", type=int, default=MAX_CARGO_JOBS)
+    parser.add_argument(
+        "--allow-local-over-cap-for-remote", action="store_true",
+        help="Permit remote admission despite local occupancy; all other fleet, host, job, freshness and memory limits still apply.",
+    )
     parser.add_argument("--max-age-seconds", type=int, default=MAX_SAMPLE_AGE_SECONDS)
     parser.add_argument("--output", type=pathlib.Path)
     parser.add_argument("--ilo-target", default=DEFAULT_HOSTS["ilo"]["ssh_target"])
@@ -372,6 +381,7 @@ def main(argv: list[str] | None = None) -> int:
         requested_jobs=args.jobs,
         hosts=hosts,
         max_age_seconds=args.max_age_seconds,
+        allow_local_over_cap_for_remote=args.allow_local_over_cap_for_remote,
     )
     report["collector_started_at_utc"] = started.isoformat()
     report["sampler_path"] = str(census_path.resolve())
