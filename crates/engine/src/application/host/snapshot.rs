@@ -197,7 +197,8 @@ fn selection_issues(
     if !has(LocalHostVariable::NudoxTypeScriptNode) {
         issues.push(LocalCompilerHostSelectionIssue::MissingTypeScriptNode);
     }
-    if has(LocalHostVariable::NudoxTypeScriptCompiler)
+    if (has(LocalHostVariable::NudoxTypeScriptCompiler)
+        || has(LocalHostVariable::NudoxTypeScriptDefaultCompiler))
         && !has(LocalHostVariable::NudoxTypeScriptModuleRoot)
     {
         issues.push(LocalCompilerHostSelectionIssue::MissingTypeScriptModuleRoot);

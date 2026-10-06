@@ -44,6 +44,7 @@ pub(super) struct TypeScriptNodeSelection {
 #[derive(Clone, Debug)]
 pub(super) struct TypeScriptHostSelection {
     pub(super) compiler: Option<PathBuf>,
+    pub(super) compiler_explicit: bool,
     pub(super) node: Option<TypeScriptNodeSelection>,
     pub(super) module_root: Option<PathBuf>,
 }
@@ -130,8 +131,25 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let variable = LocalHostVariable::NudoxTypeScriptCompiler;
         let role = LocalHostPathRole::Native(NativeTool::TypeScriptCompiler);
         let explicit_compiler = self.optional_absolute_path(variable)?;
+        let captured_default_compiler = if self.discovery == LocalHostDiscovery::ClosedSnapshot {
+            self.optional_absolute_path(LocalHostVariable::NudoxTypeScriptDefaultCompiler)?
+                .map(|path| {
+                    self.validate_file(
+                        role,
+                        LocalHostVariable::NudoxTypeScriptDefaultCompiler,
+                        path,
+                    )
+                })
+                .transpose()?
+        } else {
+            None
+        };
         let compiler_candidates = match explicit_compiler.as_ref() {
             Some(path) => vec![self.validate_file(role, variable, path.clone())?],
+            None if captured_default_compiler.is_some() => captured_default_compiler
+                .clone()
+                .into_iter()
+                .collect(),
             None if self.discovery == LocalHostDiscovery::ClosedSnapshot => Vec::new(),
             None => typescript_compiler_candidates(home, self.environment.search_path()),
         };
@@ -152,6 +170,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             if explicit_compiler.is_some() || (module_root.is_some() && node.is_some()) {
                 return Ok(TypeScriptHostSelection {
                     compiler: Some(compiler),
+                    compiler_explicit: explicit_compiler.is_some(),
                     node,
                     module_root,
                 });
@@ -160,6 +179,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
 
         Ok(TypeScriptHostSelection {
             compiler: None,
+            compiler_explicit: false,
             node: self.typescript_node_executable(home, None)?,
             module_root: self.typescript_module_root(None)?,
         })
@@ -1432,6 +1452,10 @@ mod tests {
         );
         assert_eq!(
             snapshot.path(LocalHostVariable::NudoxTypeScriptCompiler),
+            None,
+        );
+        assert_eq!(
+            snapshot.path(LocalHostVariable::NudoxTypeScriptDefaultCompiler),
             Some(
                 fs::canonicalize(root.join("lib/node_modules/typescript/bin/tsc"))
                     .unwrap()
@@ -1536,8 +1560,35 @@ mod tests {
             .typescript_host_selection(None)
             .expect("inspect closed TypeScript roles");
         assert!(selection.compiler.is_some());
+        assert!(selection.compiler_explicit);
         assert!(selection.node.is_none());
         assert!(selection.module_root.is_none());
+
+        let mut captured_default = environment;
+        captured_default.values.clear();
+        captured_default.set(LocalHostVariable::NudoxTypeScriptDefaultCompiler, &compiler);
+        captured_default.set(
+            LocalHostVariable::NudoxTypeScriptNode,
+            &root.join("bin/node"),
+        );
+        captured_default.set(
+            LocalHostVariable::NudoxTypeScriptModuleRoot,
+            &root.join("lib/node_modules"),
+        );
+        let host = LocalCompilerHost::new(captured_default, LocalHostDiscovery::ClosedSnapshot);
+        let selection = host
+            .typescript_host_selection(None)
+            .expect("inspect captured default TypeScript roles");
+        assert_eq!(selection.compiler.as_deref(), Some(compiler.as_path()));
+        assert!(!selection.compiler_explicit);
+        assert_eq!(
+            selection.node.as_ref().map(|node| node.path.as_path()),
+            Some(root.join("bin/node").as_path())
+        );
+        assert_eq!(
+            selection.module_root.as_deref(),
+            Some(root.join("lib/node_modules").as_path())
+        );
         assert!(
             host.executable(
                 LocalHostVariable::NudoxPython,

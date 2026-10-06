@@ -92,19 +92,29 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             None => (None, None),
         };
         let typescript_module_root = typescript_host.module_root;
+        let installed_default_compiler = (!typescript_host.compiler_explicit)
+            .then(|| executables.typescript.clone())
+            .flatten();
+        let explicit_module_root = typescript_host
+            .compiler_explicit
+            .then(|| typescript_module_root.clone())
+            .flatten();
+        let installed_default_module_root = (!typescript_host.compiler_explicit)
+            .then(|| typescript_module_root.clone())
+            .flatten();
         let typescript_project_host = TypeScriptProjectHost::new_with_node_origin(
-            self.environment
-                .value(LocalHostVariable::NudoxTypeScriptCompiler)
-                .and(executables.typescript.clone()),
+            typescript_host
+                .compiler_explicit
+                .then(|| executables.typescript.clone())
+                .flatten(),
             node.clone(),
             node_origin,
             home.map(Path::to_path_buf),
-            self.environment
-                .value(LocalHostVariable::NudoxTypeScriptModuleRoot)
-                .and(typescript_module_root.clone()),
+            explicit_module_root,
             typescript_report.clone(),
             probe_limits,
-        );
+        )
+        .with_installed_default(installed_default_compiler, installed_default_module_root);
         let typescript = if executables.typescript.is_some() {
             match (typescript_report, node, typescript_module_root) {
                 (Some(program), _, _) => Some(TypeScriptChecker::default().with_program(program)?),

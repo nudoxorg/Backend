@@ -197,6 +197,8 @@ pub(crate) enum TypeScriptSelectionOrigin {
     ValidatedApplicationBundle = 5,
     /// A Node runtime in the same executable directory as a selected global `tsc`.
     PairedHostInstall = 6,
+    /// A host-installed compiler selected once and carried by the closed locald snapshot.
+    InstalledHostSelection = 7,
 }
 
 impl TypeScriptProjectInputs<'_> {
@@ -2564,6 +2566,8 @@ fn collect_regular_module_paths(
 #[derive(Clone, Debug)]
 pub struct TypeScriptProjectHost {
     explicit_compiler: Option<Box<Path>>,
+    installed_default_compiler: Option<Box<Path>>,
+    installed_default_module_root: Option<Box<Path>>,
     node: Option<Box<Path>>,
     node_origin: Option<TypeScriptSelectionOrigin>,
     home_root: Option<Box<Path>>,
@@ -2613,6 +2617,8 @@ impl TypeScriptProjectHost {
     ) -> Self {
         Self {
             explicit_compiler: explicit_compiler.map(PathBuf::into_boxed_path),
+            installed_default_compiler: None,
+            installed_default_module_root: None,
             node: node.map(PathBuf::into_boxed_path),
             node_origin,
             home_root: home_root.map(PathBuf::into_boxed_path),
@@ -2621,6 +2627,18 @@ impl TypeScriptProjectHost {
             probe_limits,
             node_identity: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// Supplies the exact installed-host compiler pair as a fallback for packages without a
+    /// project-local TypeScript installation. Project-local modules retain precedence.
+    pub(crate) fn with_installed_default(
+        mut self,
+        compiler: Option<PathBuf>,
+        module_root: Option<PathBuf>,
+    ) -> Self {
+        self.installed_default_compiler = compiler.map(PathBuf::into_boxed_path);
+        self.installed_default_module_root = module_root.map(PathBuf::into_boxed_path);
+        self
     }
 
     fn admit_node_runtime(
@@ -2707,7 +2725,9 @@ impl TypeScriptProjectHost {
         let project = match find_project_typescript_with_home(&project_root, home_root.as_deref())?
         {
             ProjectTypeScriptSearch::Found(project) => Some(project),
-            ProjectTypeScriptSearch::NotFound => None,
+            ProjectTypeScriptSearch::NotFound => {
+                self.installed_host_project(&project_root, home_root.as_deref())?
+            }
             ProjectTypeScriptSearch::Pnp(marker) => {
                 return Err(TypeScriptProjectHostError::YarnPnpUnsupported {
                     marker: marker.into_boxed_path(),
@@ -2719,10 +2739,10 @@ impl TypeScriptProjectHost {
             return Ok(None);
         };
 
-        let selected_compiler = self
-            .explicit_compiler
-            .as_deref()
-            .unwrap_or(project.compiler.as_path());
+        let (selected_compiler, compiler_origin) = match self.explicit_compiler.as_deref() {
+            Some(compiler) => (compiler, TypeScriptSelectionOrigin::ExplicitConfiguration),
+            None => (project.compiler.as_path(), project.compiler_origin),
+        };
         let compiler = fs::canonicalize(selected_compiler).map_err(|source| {
             TypeScriptProjectHostError::PackagePath {
                 path: selected_compiler.to_path_buf().into_boxed_path(),
@@ -2844,11 +2864,7 @@ impl TypeScriptProjectHost {
             &node_version,
             checker.local_configuration_fingerprint(),
             witness.fingerprint,
-            if self.explicit_compiler.is_some() {
-                TypeScriptSelectionOrigin::ExplicitConfiguration
-            } else {
-                TypeScriptSelectionOrigin::ProjectLocalInstallation
-            },
+            compiler_origin,
             self.node_origin
                 .unwrap_or(TypeScriptSelectionOrigin::PlatformLocation),
         );
@@ -2856,11 +2872,7 @@ impl TypeScriptProjectHost {
             checker,
             compiler: compiler.to_path_buf().into_boxed_path(),
             compiler_version: version,
-            compiler_origin: if self.explicit_compiler.is_some() {
-                TypeScriptSelectionOrigin::ExplicitConfiguration
-            } else {
-                TypeScriptSelectionOrigin::ProjectLocalInstallation
-            },
+            compiler_origin,
             node: node.to_path_buf().into_boxed_path(),
             node_version,
             node_origin: self
@@ -2869,6 +2881,54 @@ impl TypeScriptProjectHost {
             module_root: module_root.into_boxed_path(),
             fingerprint,
             witness: std::sync::Arc::new(witness),
+        }))
+    }
+
+    fn installed_host_project(
+        &self,
+        project_root: &Path,
+        home_root: Option<&Path>,
+    ) -> Result<Option<ProjectTypeScript>, TypeScriptProjectHostError> {
+        let compiler = self
+            .explicit_compiler
+            .as_deref()
+            .or(self.installed_default_compiler.as_deref());
+        let Some(compiler) = compiler else {
+            return Ok(None);
+        };
+        let module_root = self
+            .explicit_module_root
+            .as_deref()
+            .or(self.installed_default_module_root.as_deref())
+            .map(Path::to_path_buf)
+            .map(Ok)
+            .unwrap_or_else(|| find_module_root_for_compiler(compiler))?;
+        let Some(module_root) = module_root else {
+            if self.explicit_compiler.is_some() {
+                return Err(TypeScriptProjectHostError::ExplicitModuleRootRequired {
+                    compiler: compiler.to_path_buf().into_boxed_path(),
+                });
+            }
+            return Ok(None);
+        };
+        let (module_root, version) = read_typescript_module(&module_root)?;
+        let compiler = fs::canonicalize(compiler).map_err(|source| {
+            TypeScriptProjectHostError::PackagePath {
+                path: compiler.to_path_buf().into_boxed_path(),
+                source,
+            }
+        })?;
+        let workspace = discover_workspace_boundary(project_root, home_root)?;
+        Ok(Some(ProjectTypeScript {
+            module_root,
+            compiler,
+            version,
+            workspace,
+            compiler_origin: if self.explicit_compiler.is_some() {
+                TypeScriptSelectionOrigin::ExplicitConfiguration
+            } else {
+                TypeScriptSelectionOrigin::InstalledHostSelection
+            },
         }))
     }
 }
@@ -2943,6 +3003,7 @@ struct ProjectTypeScript {
     compiler: PathBuf,
     version: String,
     workspace: Option<WorkspaceBoundary>,
+    compiler_origin: TypeScriptSelectionOrigin,
 }
 
 enum ProjectTypeScriptSearch {
@@ -3114,6 +3175,7 @@ fn inspect_project_package(
         compiler,
         version,
         workspace,
+        compiler_origin: TypeScriptSelectionOrigin::ProjectLocalInstallation,
     }))
 }
 
@@ -4692,6 +4754,96 @@ printf 'Version 5.9.3\n'
                 _ => unreachable!(),
             }
         }
+    }
+
+    #[test]
+    fn installed_host_typescript_admits_packages_without_local_modules() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = Fixture::new();
+        let host_root = fixture.0.join("host");
+        let modules = host_root.join("node_modules");
+        install_at(&modules, "5.9.3");
+        let compiler = fs::canonicalize(modules.join("typescript/bin/tsc"))
+            .expect("canonical installed-host compiler");
+        let workspace = fixture.0.join("workspace");
+        fs::create_dir_all(&workspace).expect("create project without local TypeScript");
+        let node = host_root.join("node");
+        fs::write(
+            &node,
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'v22.0.0\n'; elif [ "$2" = "--version" ]; then printf 'Version 5.9.3\n'; else exit 9; fi
+"#,
+        )
+        .expect("write deterministic Node probe fixture");
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755))
+            .expect("make Node probe executable");
+
+        let admitted = TypeScriptProjectHost::new(
+            None,
+            Some(node),
+            None,
+            None,
+            Fixture::limits(),
+        )
+        .with_installed_default(Some(compiler.clone()), Some(modules.clone()))
+        .admit(&workspace)
+        .expect("admit captured installed-host TypeScript")
+        .expect("installed host compiler is usable without a project-local copy");
+
+        assert_eq!(admitted.compiler.as_ref(), compiler);
+        assert_eq!(admitted.compiler_origin, TypeScriptSelectionOrigin::InstalledHostSelection);
+        assert_eq!(
+            admitted.inputs().typescript_module_root,
+            fs::canonicalize(modules).expect("canonical TypeScript module root")
+        );
+        assert_eq!(admitted.inputs().compiler_version, b"Version 5.9.3\n");
+    }
+
+    #[test]
+    fn project_local_typescript_keeps_precedence_over_installed_host_default() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = Fixture::new();
+        let host_root = fixture.0.join("host");
+        let host_modules = host_root.join("node_modules");
+        install_at(&host_modules, "5.9.3");
+        let workspace = fixture.0.join("workspace");
+        fs::create_dir_all(&workspace).expect("create project root");
+        let local_modules = workspace.join("node_modules");
+        install_at(&local_modules, "5.8.4");
+        let node = host_root.join("node");
+        fs::create_dir_all(&host_root).expect("create host tools directory");
+        fs::write(
+            &node,
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'v22.0.0\n'; elif [ "$2" = "--version" ]; then printf 'Version 5.8.4\n'; else exit 9; fi
+"#,
+        )
+        .expect("write deterministic Node probe fixture");
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755))
+            .expect("make Node probe executable");
+        let installed_compiler = fs::canonicalize(host_modules.join("typescript/bin/tsc"))
+            .expect("canonical installed-host compiler");
+
+        let admitted = TypeScriptProjectHost::new(
+            None,
+            Some(node),
+            None,
+            None,
+            Fixture::limits(),
+        )
+        .with_installed_default(Some(installed_compiler), Some(host_modules))
+        .admit(&workspace)
+        .expect("admit project-local TypeScript ahead of host default")
+        .expect("project-local compiler is usable");
+
+        assert_eq!(admitted.compiler_origin, TypeScriptSelectionOrigin::ProjectLocalInstallation);
+        assert_eq!(
+            admitted.inputs().typescript_module_root,
+            fs::canonicalize(local_modules).expect("canonical project-local module root")
+        );
+        assert_eq!(admitted.inputs().compiler_version, b"Version 5.8.4\n");
     }
 
     fn install_at(modules: &Path, version: &str) {

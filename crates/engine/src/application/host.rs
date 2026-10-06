@@ -83,6 +83,9 @@ pub enum LocalHostVariable {
     NudoxPython,
     /// Explicit TypeScript compiler.
     NudoxTypeScriptCompiler,
+    /// TypeScript compiler selected from the installed host toolchain rather than NUDOX_TSC.
+    /// This internal snapshot role preserves default-versus-explicit precedence across locald.
+    NudoxTypeScriptDefaultCompiler,
     /// Explicit Go compiler.
     NudoxGo,
     /// Explicit Java compiler.
@@ -125,7 +128,7 @@ impl LocalHostVariable {
     /// The order is the stable order used by closed host-environment snapshots. Keep this list
     /// exhaustive when adding a new variant. Renaming an existing variable's process spelling or
     /// changing its role meaning requires a snapshot protocol version change.
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::NudoxDataRoot,
         Self::Home,
         Self::XdgDataHome,
@@ -138,6 +141,7 @@ impl LocalHostVariable {
         Self::LibclangPath,
         Self::NudoxPython,
         Self::NudoxTypeScriptCompiler,
+        Self::NudoxTypeScriptDefaultCompiler,
         Self::NudoxGo,
         Self::NudoxJavaCompiler,
         Self::NudoxDotnet,
@@ -343,6 +347,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 LocalHostVariable::Home
                     | LocalHostVariable::NudoxPython
                     | LocalHostVariable::NudoxTypeScriptCompiler
+                    | LocalHostVariable::NudoxTypeScriptDefaultCompiler
                     | LocalHostVariable::NudoxTypeScriptNode
                     | LocalHostVariable::NudoxTypeScriptModuleRoot
                     | LocalHostVariable::NudoxPyrefly
@@ -369,7 +374,12 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
 
         let typescript = self.typescript_host_selection(home.as_deref())?;
         if let Some(compiler) = typescript.compiler {
-            paths.push((LocalHostVariable::NudoxTypeScriptCompiler, compiler));
+            let variable = if typescript.compiler_explicit {
+                LocalHostVariable::NudoxTypeScriptCompiler
+            } else {
+                LocalHostVariable::NudoxTypeScriptDefaultCompiler
+            };
+            paths.push((variable, compiler));
         }
         if let Some(node) = typescript.node {
             paths.push((LocalHostVariable::NudoxTypeScriptNode, node.path));
@@ -872,6 +882,7 @@ const fn variable_name(variable: LocalHostVariable) -> &'static str {
         LocalHostVariable::LibclangPath => "LIBCLANG_PATH",
         LocalHostVariable::NudoxPython => "NUDOX_PYTHON",
         LocalHostVariable::NudoxTypeScriptCompiler => "NUDOX_TSC",
+        LocalHostVariable::NudoxTypeScriptDefaultCompiler => "BACKEND_LOCALD_DEFAULT_TSC",
         LocalHostVariable::NudoxGo => "NUDOX_GO",
         LocalHostVariable::NudoxJavaCompiler => "NUDOX_JAVAC",
         LocalHostVariable::NudoxDotnet => "NUDOX_DOTNET",
