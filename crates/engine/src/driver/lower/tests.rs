@@ -60,6 +60,9 @@ fn declared_member_inventory_excludes_other_children_and_rejects_conflicts() -> 
     );
     assert!(owned_topology_projection(&facts)?.members[0].is_empty());
     facts
+        .capture_declared_members(0, &[1; 5])
+        .map_err(lane_fault)?;
+    facts
         .capture_declared_members(0, &[1, 1])
         .map_err(lane_fault)?;
     facts

@@ -221,9 +221,6 @@ impl Provenance {
                 fact_count,
             });
         }
-        if members.len() > fact_count {
-            return Err(FactFault::RefListElements);
-        }
         for &member in members {
             if member as usize >= fact_count || member == entity {
                 return Err(FactFault::RefTarget {
@@ -244,9 +241,16 @@ impl Provenance {
                 });
             }
         }
-        let mut canonical = members.to_vec();
-        canonical.sort_unstable();
-        canonical.dedup();
+        // Native redeclarations may repeat one admitted representative more
+        // often than there are emitted rows. Validate coordinates first, then
+        // allocate only distinct IDs: the set is bounded by the fact plan,
+        // independent of the number of repeated authority observations.
+        let canonical = members
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
         if let Some(existing) = self.declared_members[entity as usize].as_deref() {
             if existing == canonical {
                 return Ok(());
