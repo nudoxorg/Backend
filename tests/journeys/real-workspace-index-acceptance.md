@@ -72,6 +72,8 @@ The capture mode is for a future explicitly admitted build only. It is not part 
 
 ## Run and evidence
 
+`--setup-mode configured` is the default and injects the admitted closed compiler snapshot. `--setup-mode stock` omits that injection and excludes ambient compiler overrides; the supplied snapshot is still validated as a tooling witness and is not claimed as the product's selected authority. The result's closed `runtime_setup` records the mode, actual snapshot injection, compiler override names, and the same owner-environment digest as `environment_witnesses`. `runtime_tooling` separately reports whether PATH contains a Nix-store runtime, the environment key names, and the absence of exposed typed selected-tool authority. Stock launch mode alone does not prove a stock installation; these private candidate binaries have `installation_acceptance=false`. Preserve stock setup and product failures as measured outcomes.
+
 After Root admits exact binaries and the local owner/MCP workflow, run:
 
 ```sh

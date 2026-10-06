@@ -1778,18 +1778,21 @@ def minimal_environment(
     *,
     compiler_snapshot: str | None = None,
     compiler_key: str | None = None,
+    setup_mode: str = "configured",
     policy: str | None = None,
     policy_key: str | None = None,
     client: bool = False,
     temp_root: Path,
 ) -> tuple[dict[str, str], str]:
+    if setup_mode not in {"stock", "configured"}:
+        raise Blocked("runtime setup mode must be stock or configured")
     captured: dict[str, str] = {}
     for name in ("PATH", "LANG", "LC_ALL", "TMPDIR"):
         value = os.environ.get(name)
         if value is not None:
             captured[name] = value
     captured["TMPDIR"] = str(temp_root)
-    if compiler_snapshot is not None and compiler_key is not None:
+    if setup_mode == "configured" and compiler_snapshot is not None and compiler_key is not None:
         captured[compiler_key] = compiler_snapshot
     if policy is not None and policy_key is not None:
         captured[policy_key] = policy
@@ -1804,6 +1807,18 @@ def minimal_environment(
         if name not in {"BACKEND_LOCALD_COMPILER_ENVIRONMENT"}
     }
     return captured, sha256_bytes(canonical_json(safe_witness))
+
+
+def runtime_setup_receipt(mode: str, environment: dict[str, str], environment_sha: str,
+                          compiler_key: str, compiler_roles: list[str]) -> dict[str, Any]:
+    overrides = sorted(set(environment) & {compiler_key, *compiler_roles})
+    injected = compiler_key in environment
+    if mode == "stock" and (injected or overrides):
+        raise AcceptanceError("stock runtime environment contains compiler overrides")
+    if mode == "configured" and (not injected or not overrides):
+        raise AcceptanceError("configured runtime environment is missing its compiler snapshot")
+    return {"mode": mode, "compiler_snapshot_injected": injected,
+            "compiler_override_keys": overrides, "owner_environment_sha256": environment_sha}
 
 
 def make_operation_keys(cases: list[ProjectCase], output: Path) -> dict[str, str]:
@@ -2597,6 +2612,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cli", type=Path, required=True)
     parser.add_argument("--mcp", type=Path, required=True)
     parser.add_argument("--compiler-snapshot", type=Path, required=True)
+    parser.add_argument("--setup-mode", choices=["configured", "stock"], default="configured",
+                        help="stock omits compiler environment injection; snapshot remains a tooling witness")
     parser.add_argument("--corpus-manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
@@ -2861,6 +2878,7 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
     owner_environment, owner_env_hash = minimal_environment(
         compiler_snapshot=compiler_snapshot,
         compiler_key=compiler_key,
+        setup_mode=args.setup_mode,
         policy=policy,
         policy_key=policy_key,
         temp_root=temp_root,
@@ -2871,6 +2889,16 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
     result["environment_witnesses"] = {
         "owner_allowlisted_environment_sha256": owner_env_hash,
         "client_allowlisted_environment_sha256": client_env_hash,
+    }
+    result["runtime_setup"] = runtime_setup_receipt(
+        args.setup_mode, owner_environment, owner_env_hash, compiler_key, role_names)
+    result["runtime_tooling"] = {
+        "path_contains_nix_store": "/nix/store/" in owner_environment.get("PATH", ""),
+        "owner_environment_keys": sorted(owner_environment),
+        "compiler_snapshot_role": "configured-authority" if args.setup_mode == "configured" else "tooling-witness-only",
+        "selected_tool_authority": None,
+        "selection_evidence": "runtime selected-tool identity is not exposed by this product route",
+        "installation_acceptance": False,
     }
     result["network_policy"] = {
         "registry_network_allowed": False,

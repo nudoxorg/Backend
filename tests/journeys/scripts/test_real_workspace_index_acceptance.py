@@ -782,6 +782,38 @@ class PackageProvenanceMetadataTests(unittest.TestCase):
                 runner.validate_corpus_manifest(manifest, root / "evidence", extensions, 2046)
 
 
+class RuntimeSetupBoundaryTests(unittest.TestCase):
+    def test_stock_environment_omits_ambient_and_snapshot_compiler_pins(self) -> None:
+        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "NUDOX_TSC": "/hidden/tsc",
+                                    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "ambient"}, clear=True):
+            stock, digest = runner.minimal_environment(
+                compiler_snapshot="closed-snapshot", compiler_key="BACKEND_LOCALD_COMPILER_ENVIRONMENT",
+                setup_mode="stock", temp_root=Path("/owned/tmp"))
+        proof = runner.runtime_setup_receipt("stock", stock, digest,
+                                            "BACKEND_LOCALD_COMPILER_ENVIRONMENT", ["NUDOX_TSC"])
+        self.assertEqual(proof, {"mode": "stock", "compiler_snapshot_injected": False,
+                                 "compiler_override_keys": [], "owner_environment_sha256": digest})
+        self.assertEqual(stock, {"PATH": "/usr/bin:/bin", "TMPDIR": "/owned/tmp"})
+        stock["NUDOX_TSC"] = "/hidden/tsc"
+        with self.assertRaises(runner.AcceptanceError):
+            runner.runtime_setup_receipt("stock", stock, digest,
+                                         "BACKEND_LOCALD_COMPILER_ENVIRONMENT", ["NUDOX_TSC"])
+
+    def test_configured_snapshot_is_explicit_and_client_spawn_guard_is_not_a_compiler_override(self) -> None:
+        environment, digest = runner.minimal_environment(
+            compiler_snapshot="closed-snapshot", compiler_key="BACKEND_LOCALD_COMPILER_ENVIRONMENT",
+            client=True, temp_root=Path("/owned/tmp"))
+        proof = runner.runtime_setup_receipt("configured", environment, digest,
+                                            "BACKEND_LOCALD_COMPILER_ENVIRONMENT", ["NUDOX_TSC"])
+        self.assertEqual(proof["compiler_override_keys"], ["BACKEND_LOCALD_COMPILER_ENVIRONMENT"])
+        self.assertTrue(proof["compiler_snapshot_injected"])
+        self.assertIn("BACKEND_LOCALD_BIN", environment)
+        del environment["BACKEND_LOCALD_COMPILER_ENVIRONMENT"]
+        with self.assertRaises(runner.AcceptanceError):
+            runner.runtime_setup_receipt("configured", environment, digest,
+                                         "BACKEND_LOCALD_COMPILER_ENVIRONMENT", ["NUDOX_TSC"])
+
+
 class AcquiredSourceInventoryTests(unittest.TestCase):
     def fixture(self, root: Path, *, subdir: str = ".") -> tuple:
         source = root / "acquired"
