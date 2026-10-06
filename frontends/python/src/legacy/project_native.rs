@@ -864,7 +864,9 @@ fn captured_finder(
                 "interpreter dependency sources are outside the captured native contract",
             ));
         }
-        config.preset = Some(Preset::Off);
+        // Preserve explicit captured diagnostic policy. The native authority
+        // must not silence missing dependencies by imposing an IDE-only preset.
+        config.preset.get_or_insert(Preset::Default);
         config.root.check_unannotated_defs = Some(true);
         config.root.infer_return_types = Some(InferReturnTypes::Checked);
         config.interpreters.skip_interpreter_query = true;
