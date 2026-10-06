@@ -1,0 +1,13 @@
+nudox cargo: explicit build or target directory aliases pooled slot 1
+nudox cargo: explicit build or target directory aliases pooled slot 1
+nudox cargo: all 4 build slots are busy; waited 0ms
+nudox cargo: all 6 build slots are busy; waited 0ms
+NUDOX_CARGO_BUILD_SLOTS must be an integer from 1 through 6
+nudox cargo: explicit target directory belongs to another worktree
+nudox cargo: refusing unmarked mutable role graph
+nudox cargo: refusing unmarked explicit target directory
+nudox cargo: explicit target directory belongs to another worktree
+nudox cargo: all 1 build slots are busy; waited 0ms
+nudox cargo: all 1 build slots are busy; waited 0ms
+nudox cargo: refusing Cargo result; selected tool identity changed or became unreadable: /tmp/nudox-cargo-cache.vEVdT0/mutation-target/.nudox-provenance/1791304417281635000-50125.json
+cargo-shared-cache: PASS (affinity, role-graph leases, isolation, hard ceiling, stamps, provenance, daemon protocol isolation, exit propagation, stale recovery)
