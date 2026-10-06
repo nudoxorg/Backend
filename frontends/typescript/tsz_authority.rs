@@ -180,6 +180,10 @@ pub enum TszAuthorityError {
     /// the merged program without guessing a path or weakening a request.
     #[error(transparent)]
     ModuleResolution(#[from] TszProjectModuleResolutionError),
+    /// The merged TSZ project could not lend the configured project-scoped
+    /// checker for one exact file query.
+    #[error(transparent)]
+    ProjectCheckerSession(#[from] tsz::parallel::ProjectCheckerSessionError),
 }
 
 /// Explicit TSZ checker/binder options resolved by the project configuration layer.

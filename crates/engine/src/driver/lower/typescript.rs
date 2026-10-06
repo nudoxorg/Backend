@@ -74,11 +74,6 @@ pub(crate) enum TypeScriptCollectError {
     Span { start: u32, end: u32 },
     /// Native TSZ could not provide the requested project/file authority.
     TszAuthority(TszAuthorityError),
-    /// The temporary semantic-session regression adapter could not lend its
-    /// exact project-scoped checker. It exists only in unit-test builds; the
-    /// production path requires the budgeted session for admission.
-    #[cfg(test)]
-    TszQuerySession(backend_frontend_typescript::TszProjectQuerySessionError),
 }
 
 /// The lane's one coarse terminal, shared by every bounded-lane rejection
@@ -4229,7 +4224,11 @@ pub(crate) fn collect_with_tsz<'source>(
     let lowered = {
         let mut session = project
             .checked_query_session_unmetered_for_test()
-            .map_err(TypeScriptCollectError::TszQuerySession)?;
+            .map_err(|error| {
+                TypeScriptCollectError::TszAuthority(TszAuthorityError::ProjectCheckerSession(
+                    error,
+                ))
+            })?;
         let session_file_index = session
             .file_index(source_path)
             .map_err(TypeScriptCollectError::TszAuthority)?;
@@ -4240,7 +4239,11 @@ pub(crate) fn collect_with_tsz<'source>(
         }
         session
             .with_file_checker_and_types(session_file_index, consume)
-            .map_err(TypeScriptCollectError::TszQuerySession)?
+            .map_err(|error| {
+                TypeScriptCollectError::TszAuthority(TszAuthorityError::ProjectCheckerSession(
+                    error,
+                ))
+            })?
     };
     #[cfg(not(test))]
     let lowered = project
@@ -10468,7 +10471,7 @@ mod lane_tests {
             &[
                 ("src/app.controller.ts", controller),
                 ("src/app.service.ts", service),
-                ("src/app.controller.spec.ts", spec),
+                ("src/app.controller.spec.ts", &spec),
             ],
             &module_resolutions,
         )?;
@@ -10504,7 +10507,7 @@ mod lane_tests {
             "controller call must name the exact service declaration: {controller_targets:?}"
         );
 
-        let spec_facts = collect_native_tsz_file(project, "src/app.controller.spec.ts", spec)?;
+        let spec_facts = collect_native_tsz_file(project, "src/app.controller.spec.ts", &spec)?;
         let spec_targets = staged_tsz_coordinates(&spec_facts)?;
         let controller_start = u32::try_from(controller.find("getHello(): string").ok_or(
             LaneError::Missing("Nest controller method source coordinate"),
