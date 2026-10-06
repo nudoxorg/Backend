@@ -1767,6 +1767,8 @@ mod tests {
         let staged_a: StagedSemanticPackage = fixture
             .stage_selected_generation(false)
             .expect("stage generation A with the real compiler");
+        let generation_a_image_count = staged_a.artifacts().len();
+        assert_eq!(generation_a_image_count, SOURCE_A.len());
         let staged_b: StagedSemanticPackage = fixture
             .stage_selected_generation(true)
             .expect("stage generation B with the real compiler");
@@ -1951,7 +1953,6 @@ mod tests {
                             ))
                         })?;
                     if replay.commit().selected_stamp() != stamp_a
-                        || !replay.commit().parents().is_empty()
                         || replay.input_replay_status()
                             != TypedV3HistoryInputReplayStatus::Unproven
                     {
@@ -1959,6 +1960,48 @@ mod tests {
                             "generation A branch commit has the wrong stamp, ancestry, or input status"
                                 .to_owned(),
                         ));
+                    }
+                    // A complete package tip is the last image, not its first
+                    // commit. Verify every image in the exact expected chain
+                    // before permitting the marker writer to install B.
+                    let mut image_commit = commit_a;
+                    for ordinal in (0..generation_a_image_count).rev() {
+                        let proof = history
+                            .history_ref_ancestry_proof(
+                                &writer_target,
+                                HistoryRefKind::Branch,
+                                &writer_branch,
+                                image_commit,
+                            )
+                            .map_err(super::super::BuiltinModelError)?;
+                        let image = history
+                            .replay_typed_v3_history(
+                                &writer_target,
+                                HistoryRefKind::Branch,
+                                &writer_branch,
+                                image_commit,
+                                &proof,
+                                SemanticTypedPlaneVerificationTierV2::Standard,
+                                JumboRopeLimits::default(),
+                            )
+                            .map_err(super::super::BuiltinModelError)?;
+                        if image.commit().selected_stamp() != stamp_a
+                            || image.input_replay_status()
+                                != TypedV3HistoryInputReplayStatus::Unproven
+                        {
+                            return Err(super::super::BuiltinModelError(
+                                "generation A image has the wrong stamp or input status".to_owned(),
+                            ));
+                        }
+                        match (ordinal, image.commit().parents()) {
+                            (0, []) => {}
+                            (1.., [parent]) => image_commit = *parent,
+                            _ => {
+                                return Err(super::super::BuiltinModelError(
+                                    "generation A package has the wrong image ancestry".to_owned(),
+                                ));
+                            }
+                        }
                     }
                     super::super::commands::commit_builtin_intent(&mut daemon, 2, &intent_b)?;
                     Ok(commit_a)

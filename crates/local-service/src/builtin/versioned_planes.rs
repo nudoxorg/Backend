@@ -1180,8 +1180,7 @@ fn publish_native_history_commit(
     // the per-image staging-branch CAS operations above. Staging fences are
     // intentionally shorter lived and may be followed by a marker update.
     #[cfg(test)]
-    work
-        .loader
+    work.loader
         .wait_at_native_history_fence_gate(package.target(), work.store.root());
     if fence.selected_target() != package.target()
         || fence.selected_stamp() != package.selected_stamp()
@@ -2223,7 +2222,11 @@ mod tests {
     fn staging_anchor_refuses_unknown_commit_and_stale_expected_tip() {
         let directory = path();
         let store = FileStore::open(&directory, 8 * 1024 * 1024).expect("open history CAS");
-        let history = FileSemanticRangeStore::open(store.clone(), TransportLimits::default())
+        let history_limits = TransportLimits {
+            max_chunk: MAX_RANGE_BYTES,
+            ..TransportLimits::default()
+        };
+        let history = FileSemanticRangeStore::open(store.clone(), history_limits)
             .expect("open history facade");
         let branch = selected_native_history_staging_branch()
             .unwrap_or_else(|_| panic!("valid staging branch"));
