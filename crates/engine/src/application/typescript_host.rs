@@ -244,7 +244,7 @@ impl TypeScriptResolverCapability<'_> {
             return Ok(self.observations.loaded_sources.get(&canonical));
         }
         let input = self.witness.load_source(&canonical)?;
-        if input.identity != identity {
+        if Some(input.identity) != identity {
             return Err(TypeScriptProjectHostError::WitnessChanged {
                 path: canonical.into_boxed_path(),
             });
