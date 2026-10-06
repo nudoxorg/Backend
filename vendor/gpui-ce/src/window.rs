@@ -5921,8 +5921,7 @@ impl Window {
         if !cx.has_global::<TextTrace>() {
             return;
         }
-        let placed = self.layer_transform.apply_bounds(bounds);
-        let visible = placed.intersect(&self.window_content_mask().bounds);
+        let visible = self.visible_bounds(bounds);
         if visible.size.width <= Pixels::ZERO || visible.size.height <= Pixels::ZERO {
             return;
         }
@@ -5931,6 +5930,14 @@ impl Window {
             bounds: visible,
             alpha: alpha * self.element_opacity * self.group_opacity,
         });
+    }
+
+    /// The rectangular visible extent of an element in window space. Native accessibility
+    /// geometry and painted-text evidence use the same layer placement and ancestor mask.
+    pub(crate) fn visible_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+        self.layer_transform
+            .apply_bounds(bounds)
+            .intersect(&self.window_content_mask().bounds)
     }
 
     /// Obtain the current content mask. This method should only be called during element drawing.
@@ -8838,6 +8845,9 @@ impl Window {
         match request.action {
             accesskit::Action::Click => {
                 if let Some(bounds) = self.a11y.node_bounds.get(&request.target_node).copied() {
+                    if bounds.size.width <= Pixels::ZERO || bounds.size.height <= Pixels::ZERO {
+                        return;
+                    }
                     let center = bounds.center();
                     let mouse_down = PlatformInput::MouseDown(crate::MouseDownEvent {
                         button: MouseButton::Left,
@@ -10640,8 +10650,13 @@ mod deferred_clip_tests {
                     window.with_local_deferred_draw_scope(
                         id.expect("actual native owner"),
                         |window| {
-                            let result = self.child.prepaint(id, inspector, bounds, state, window, cx);
-                            window.prepaint_local_deferred_draws(id.expect("actual native owner"), cx);
+                            let result = self
+                                .child
+                                .prepaint(id, inspector, bounds, state, window, cx);
+                            window.prepaint_local_deferred_draws(
+                                id.expect("actual native owner"),
+                                cx,
+                            );
                             result
                         },
                     )
@@ -11061,8 +11076,12 @@ mod deferred_clip_tests {
                 inside,
                 covered: true,
             });
-            let mut first_renders = None;
+            // Native press/release deliberately refresh Div's clicked state. Drain those
+            // frames before measuring reuse caused only by the parent's plate change.
+            cx.update(|window, cx| window.draw(cx).clear(cx));
             for covered in [true, true, false, true, false] {
+                let before_renders = renders.get();
+                let before_hit = hit.borrow().as_ref().expect("cached native hitbox").id;
                 root.update(cx, |root, cx| {
                     root.covered = covered;
                     cx.notify();
@@ -11077,15 +11096,22 @@ mod deferred_clip_tests {
                     assert_eq!(quads.len(), if covered { 2 } else { 1 });
                     if covered { assert!(quads[0].order < quads[1].order); }
                 });
-                if let Some(first) = first_renders {
-                    assert_eq!(
-                        renders.get(),
-                        first,
-                        "native child remains cached across cover changes"
-                    );
-                } else {
-                    first_renders = Some(renders.get());
-                }
+                assert_eq!(
+                    renders.get(),
+                    before_renders,
+                    "a cover-only change reuses the native child before any new press"
+                );
+                assert_eq!(
+                    hit.borrow().as_ref().expect("replayed native hitbox").id,
+                    before_hit,
+                    "cached paint listeners and hitboxes retain the same native event identity"
+                );
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                assert_eq!(
+                    renders.get(),
+                    before_renders,
+                    "an unchanged frame also replays the native child"
+                );
                 let before = downs.get();
                 cx.simulate_event(crate::MouseDownEvent {
                     position: point(px(100.0), px(40.0)),
@@ -11105,6 +11131,7 @@ mod deferred_clip_tests {
                     before + usize::from(!covered),
                     "native delivery reaches one current local listener only when the plate is uncovered"
                 );
+                cx.update(|window, cx| window.draw(cx).clear(cx));
             }
         }
     }
@@ -11120,6 +11147,9 @@ mod deferred_clip_tests {
                     .h(px(120.0))
                     .child(
                         div()
+                            .id("direct-ancestor-control")
+                            .role(crate::Role::Button)
+                            .aria_label("Direct ancestor comparison")
                             .absolute()
                             .left(px(40.0))
                             .top(px(30.0))
@@ -11131,6 +11161,9 @@ mod deferred_clip_tests {
                     )
                     .child(DeferredNative::new(
                         div()
+                            .id("local-ancestor-control")
+                            .role(crate::Role::Button)
+                            .aria_label("Local ancestor comparison")
                             .absolute()
                             .left(px(40.0))
                             .top(px(30.0))
@@ -11152,6 +11185,7 @@ mod deferred_clip_tests {
         cx.update(|cx| cx.set_global(TextTrace));
         let (_, cx) = cx.add_window_view(|_, _| LocalAncestor);
         cx.update(|window, cx| {
+            window.set_a11y_forced(true);
             window.draw(cx).clear(cx);
             let quads = &window.rendered_scene_for_test().quads;
             assert_eq!(
@@ -11181,6 +11215,21 @@ mod deferred_clip_tests {
             assert_eq!(direct.bounds.origin, local.bounds.origin);
             assert_eq!(direct.alpha, local.alpha);
             assert!(local.alpha > 0.0 && local.alpha < 1.0);
+            let expected = quads[0]
+                .bounds
+                .map(|p| px(p.as_f32() / window.scale_factor()));
+            let tree = window.a11y_tree().expect("transformed native controls");
+            for label in ["Direct ancestor comparison", "Local ancestor comparison"] {
+                let (id, node) = tree
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.label() == Some(label))
+                    .expect("actual role-bearing transformed control");
+                assert_eq!(window.a11y_node_bounds(*id), Some(expected));
+                let native = node.bounds().expect("actual native geometry");
+                assert_eq!(native.x0, quads[0].bounds.origin.x.as_f32() as f64);
+                assert_eq!(native.y0, quads[0].bounds.origin.y.as_f32() as f64);
+            }
         });
     }
 
@@ -11287,6 +11336,8 @@ mod deferred_clip_tests {
 
     struct NestedClip {
         inherit: bool,
+        clicks: Rc<Cell<usize>>,
+        left: Pixels,
     }
     impl Render for NestedClip {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -11295,10 +11346,11 @@ mod deferred_clip_tests {
             } else {
                 Clip::Unclipped
             };
+            let clicks = self.clicks.clone();
             div().relative().size_full().child(DeferredNative::new(
                 div()
                     .absolute()
-                    .left(px(40.0))
+                    .left(self.left)
                     .top(px(30.0))
                     .w(px(300.0))
                     .h(px(80.0))
@@ -11307,6 +11359,7 @@ mod deferred_clip_tests {
                             .id("nested-deferred-control")
                             .role(crate::Role::Button)
                             .aria_label("Nested clipped decision")
+                            .on_click(move |_, _, _| clicks.set(clicks.get() + 1))
                             .w(px(300.0))
                             .h(px(80.0))
                             .bg(crate::rgb(0xffffff))
@@ -11322,7 +11375,12 @@ mod deferred_clip_tests {
     #[gpui::test]
     fn nested_deferred_prepaint_preserves_parent_native_clip(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_global(TextTrace));
-        let (fixture, cx) = cx.add_window_view(|_, _| NestedClip { inherit: true });
+        let clicks = Rc::new(Cell::new(0));
+        let (fixture, cx) = cx.add_window_view(|_, _| NestedClip {
+            inherit: true,
+            clicks: clicks.clone(),
+            left: px(40.0),
+        });
         cx.update(|window, cx| {
             window.set_a11y_forced(true);
             window.draw(cx).clear(cx);
@@ -11350,7 +11408,7 @@ mod deferred_clip_tests {
                 assert_eq!(run.bounds.intersect(&expected), run.bounds);
             }
             let tree = window.a11y_tree().expect("native deferred tree");
-            let (id, _) = tree
+            let (id, node) = tree
                 .nodes
                 .iter()
                 .find(|(_, node)| node.label() == Some("Nested clipped decision"))
@@ -11358,9 +11416,78 @@ mod deferred_clip_tests {
             let bounds = window
                 .a11y_node_bounds(*id)
                 .expect("actual native control bounds");
+            assert_eq!(
+                bounds, expected,
+                "AX describes the actual visible native decision"
+            );
             assert_eq!(bounds.intersect(&expected), bounds);
+            let native = node.bounds().expect("native AccessKit rectangle");
+            let scale = window.scale_factor() as f64;
+            assert_eq!(
+                native,
+                accesskit::Rect {
+                    x0: expected.origin.x.0 as f64 * scale,
+                    y0: expected.origin.y.0 as f64 * scale,
+                    x1: expected.bottom_right().x.0 as f64 * scale,
+                    y1: expected.bottom_right().y.0 as f64 * scale,
+                }
+            );
+            assert!(node.supports_action(accesskit::Action::Click));
+            let id = *id;
+            window.simulate_a11y_action(
+                accesskit::ActionRequest {
+                    action: accesskit::Action::Click,
+                    target_tree: accesskit::TreeId::ROOT,
+                    target_node: id,
+                    data: None,
+                },
+                cx,
+            );
+            assert_eq!(
+                clicks.get(),
+                1,
+                "native AX fallback activates the visible clipped decision exactly once"
+            );
         });
         fixture.update(cx, |fixture, cx| {
+            fixture.left = px(400.0);
+            cx.notify();
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(window.rendered_scene_for_test().quads.is_empty());
+            assert!(window.painted_texts().is_empty());
+            let tree = window
+                .a11y_tree()
+                .expect("offscreen control stays semantic");
+            let (id, node) = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Nested clipped decision"))
+                .expect("offscreen native decision retains its role and label");
+            assert_eq!(node.role(), crate::Role::Button);
+            let bounds = window
+                .a11y_node_bounds(*id)
+                .expect("empty visible native extent");
+            assert!(bounds.size.width <= Pixels::ZERO || bounds.size.height <= Pixels::ZERO);
+            let id = *id;
+            window.simulate_a11y_action(
+                accesskit::ActionRequest {
+                    action: accesskit::Action::Click,
+                    target_tree: accesskit::TreeId::ROOT,
+                    target_node: id,
+                    data: None,
+                },
+                cx,
+            );
+            assert_eq!(
+                clicks.get(),
+                1,
+                "AX fallback cannot synthesize a click on fully clipped ink"
+            );
+        });
+        fixture.update(cx, |fixture, cx| {
+            fixture.left = px(40.0);
             fixture.inherit = false;
             cx.notify();
         });

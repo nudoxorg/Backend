@@ -408,15 +408,21 @@ impl<E: Element> Drawable<E> {
                         if let Some(role) = self.element.a11y_role() {
                             let node_id = global_id.accesskit_node_id();
                             let mut node = accesskit::Node::new(role);
+                            // Native geometry follows the same placement and ancestor clip as
+                            // pixels and hitboxes. Keep the semantic node even when it is offscreen;
+                            // its visible extent then has no area for fallback pointer activation.
+                            let visible_bounds = window.visible_bounds(bounds);
                             let scale = window.scale_factor();
                             node.set_bounds(accesskit::Rect {
-                                x0: (bounds.origin.x.0 * scale) as f64,
-                                y0: (bounds.origin.y.0 * scale) as f64,
-                                x1: ((bounds.origin.x.0 + bounds.size.width.0) * scale) as f64,
-                                y1: ((bounds.origin.y.0 + bounds.size.height.0) * scale) as f64,
+                                x0: (visible_bounds.origin.x.0 * scale) as f64,
+                                y0: (visible_bounds.origin.y.0 * scale) as f64,
+                                x1: ((visible_bounds.origin.x.0 + visible_bounds.size.width.0)
+                                    * scale) as f64,
+                                y1: ((visible_bounds.origin.y.0 + visible_bounds.size.height.0)
+                                    * scale) as f64,
                             });
                             self.element.write_a11y_info(&mut node);
-                            window.a11y.node_bounds.insert(node_id, bounds);
+                            window.a11y.node_bounds.insert(node_id, visible_bounds);
                             pushed_a11y_node = window.a11y.nodes.push(node_id, node);
                             if pushed_a11y_node && is_inert_subtree {
                                 window.a11y.nodes.mark_current_inert();
