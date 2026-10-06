@@ -581,7 +581,7 @@ impl Fault {
         Self::new(slug, operand, Cause::new(cause, sentence), affordance)
     }
 
-    fn compiler_refusal(failure: &PackageCompilerFailure, operand: Operand) -> Self {
+    pub(crate) fn compiler_refusal(failure: &PackageCompilerFailure, operand: Operand) -> Self {
         let phase = match failure.phase() {
             PackageCompilerFailurePhase::Prepare => "prepare",
             PackageCompilerFailurePhase::Write => "write",

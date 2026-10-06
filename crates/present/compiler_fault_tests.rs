@@ -187,3 +187,51 @@ fn compiler_fault_packet_is_bounded_and_inconsistent_typed_facts_are_refused() {
     invalid["compiler_failure"]["kind_tag"] = serde_json::json!("tooling_unavailable");
     assert!(serde_json::from_value::<FaultDto>(invalid).is_err());
 }
+
+#[test]
+fn compiler_index_receipt_uses_shared_human_sentence_and_keeps_exact_machine_facts() {
+    use backend_library::{
+        IndexJobOutcome, IndexJobTerminal, IndexJobTicket, PackageReference, ProductText,
+        SurfaceReply,
+    };
+    let failure = setup_failure("src/main.ts", None);
+    let terminal = IndexJobTerminal {
+        ticket: IndexJobTicket::new(
+            std::num::NonZeroU64::new(1).expect("nonzero job"),
+            [7; 16],
+            PackageReference::parse(
+                std::env::temp_dir()
+                    .join("tiny-ts")
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+            .expect("absolute project"),
+        ),
+        outcome: IndexJobOutcome::RefusedWithCompilerFailure {
+            detail: ProductText::new("RAW LEGACY JSON AND DIAGNOSTIC")
+                .expect("bounded legacy detail"),
+            failure: failure.clone(),
+        },
+    };
+    for reply in [
+        SurfaceReply::IndexTerminal(terminal.clone()),
+        SurfaceReply::IndexProgress(backend_library::IndexJobObservation::Terminal(
+            terminal.clone(),
+        )),
+    ] {
+        let dto = ProductDto::new(&product_view(&reply));
+        let tags = dto.records[0].tags.join(" ");
+        assert!(tags.contains(compiler_fault(&failure).cause().sentence()));
+        assert!(!tags.contains("RAW LEGACY"));
+        assert!(!tags.contains("content:"));
+        assert!(!tags.contains("compiler_failure {"));
+        let projection = dto.index_job.expect("exact job projection remains");
+        let value = serde_json::to_value(projection).expect("machine job facts");
+        let expected = serde_json::to_value(&terminal).expect("exact terminal");
+        match &reply {
+            SurfaceReply::IndexTerminal(_) => assert_eq!(value["value"], expected),
+            SurfaceReply::IndexProgress(_) => assert_eq!(value["value"]["detail"], expected),
+            _ => unreachable!(),
+        }
+    }
+}

@@ -13,7 +13,7 @@
 //! reader learns it once.
 
 use crate::drive::ContinuationCursor;
-use crate::fault::Fault;
+use crate::fault::{Fault, Operand};
 use backend_library::{
     AcquisitionDecision, AdvisoryPackageDto, DeclarationChange, DeclarationRecord, DependencyFacts,
     DiffRecord, ForgeFact, ForgePackageDetailRecord, ForgePackagePin, ForgePackageRecord,
@@ -724,9 +724,7 @@ fn index_terminal_view(terminal: &IndexJobTerminal) -> ProductView {
     let (state, detail) = match &terminal.outcome {
         IndexJobOutcome::Published => ("published", None),
         IndexJobOutcome::Refused(reason) => ("refused", Some(reason.as_str())),
-        IndexJobOutcome::RefusedWithCompilerFailure { detail, .. } => {
-            ("refused", Some(detail.as_str()))
-        }
+        IndexJobOutcome::RefusedWithCompilerFailure { .. } => ("refused", None),
         IndexJobOutcome::Cancelled => ("cancelled", None),
         IndexJobOutcome::Failed(reason) => ("failed", Some(reason.as_str())),
     };
@@ -735,10 +733,9 @@ fn index_terminal_view(terminal: &IndexJobTerminal) -> ProductView {
         tags.push(detail.to_owned());
     }
     if let IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } = &terminal.outcome {
-        tags.push(format!(
-            "compiler_failure {}",
-            serde_json::to_string(failure).unwrap_or_else(|_| "{}".to_owned())
-        ));
+        let fault =
+            Fault::compiler_refusal(failure, Operand::Text(index_ticket_json(&terminal.ticket)));
+        tags.push(fault.cause().sentence().to_owned());
     }
     ProductView::rows(
         "index-job-terminal",
