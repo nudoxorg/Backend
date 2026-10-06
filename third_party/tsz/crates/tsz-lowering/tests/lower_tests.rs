@@ -1,4 +1,4 @@
-use crate::TypeLowering;
+use tsz_lowering::TypeLowering;
 use tsz_parser::parser::NodeArena;
 use tsz_parser::parser::NodeIndex;
 use tsz_parser::parser::ParserState;
