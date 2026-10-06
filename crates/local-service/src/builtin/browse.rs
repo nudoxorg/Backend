@@ -282,6 +282,10 @@ struct RequestedCargoManifest {
 #[derive(Clone)]
 struct CachedRequestBinding {
     binding: backend_library::browse::ProjectTreeRequestBindingV1,
+    /// Literal submitted address committed by the wire request. Never used as
+    /// a Cargo invocation or source-file root after initial resolution.
+    submitted_root: Box<Path>,
+    /// Pinned physical Cargo invocation, independent of submitted spelling.
     request_root: PathBuf,
     last_used: u64,
 }
@@ -318,9 +322,15 @@ impl BrowseCache {
         if !root.is_absolute() {
             return Err("project-tree needs an absolute project directory".to_owned());
         }
-        // Resolve a caller-provided symlink once. The exact canonical
-        // invocation used for Cargo, the cache key, and the route binding must
-        // remain the same even if the caller's symlink changes during Cargo.
+        if root
+            .to_str()
+            .is_none_or(|path| path.len() > backend_library::MAX_PRODUCT_TEXT_BYTES)
+        {
+            return Err("project-tree request directory exceeds the product path bound".to_owned());
+        }
+        // Resolve the physical invocation once, but bind the reply to the
+        // literal submitted address. Source rechecks use this pinned directory
+        // and separately refuse a submitted alias that now resolves elsewhere.
         let request_root = root
             .canonicalize()
             .map_err(|error| format!("cannot resolve Cargo request directory: {error}"))?;
@@ -341,13 +351,11 @@ impl BrowseCache {
             authority.observe(&package, version, false, false, now, false)
         };
         let mut tree = build_tree(input.as_ref(), &observe);
-        let binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
-            &request_root,
-            &tree.root,
-        )
-        .ok_or_else(|| {
-            "Cargo project tree could not bind its requested and resolved roots".to_owned()
-        })?;
+        let binding =
+            backend_library::browse::ProjectTreeRequestBindingV1::for_paths(root, &tree.root)
+                .ok_or_else(|| {
+                    "Cargo project tree could not bind its requested and resolved roots".to_owned()
+                })?;
         if !binding.matches_effective_workspace_root(&input.root) {
             return Err("Cargo project tree root differs from its retained observation".to_owned());
         }
@@ -360,10 +368,14 @@ impl BrowseCache {
         // not retained (for example, a lockfile fallback or cache-size limit),
         // but issue no source route without an exact owner-held observation.
         use backend_library::browse::ProjectTreeObservationV1;
-        tree.observation = Some(match self.admit_request_binding(&context, binding, request_root)? {
-            RequestBindingAdmission::Retained => ProjectTreeObservationV1::Retained { binding },
-            RequestBindingAdmission::NoRetainedObservation => ProjectTreeObservationV1::DisplayOnly { binding },
-        });
+        tree.observation = Some(
+            match self.admit_request_binding(&context, binding, root.into(), request_root)? {
+                RequestBindingAdmission::Retained => ProjectTreeObservationV1::Retained { binding },
+                RequestBindingAdmission::NoRetainedObservation => {
+                    ProjectTreeObservationV1::DisplayOnly { binding }
+                }
+            },
+        );
         Ok(tree)
     }
 
@@ -526,7 +538,9 @@ impl BrowseCache {
                 };
             }
         };
-        if second.as_slice() != contents.as_bytes() {
+        if second.as_slice() != contents.as_bytes()
+            || !self.has_current_binding(&bound_request.context, request_binding)
+        {
             return CargoPackageSourceFileResultV1::Stale {
                 package,
                 request_binding,
@@ -574,6 +588,12 @@ impl BrowseCache {
         if expected_workspace_root_digest
             .is_some_and(|expected| expected != request_binding.effective_workspace_root_digest)
         {
+            return CargoPackageReadmeResultV1::Stale {
+                package,
+                request_binding: Some(request_binding),
+            };
+        }
+        if !self.has_current_binding(&bound_request.context, request_binding) {
             return CargoPackageReadmeResultV1::Stale {
                 package,
                 request_binding: Some(request_binding),
@@ -700,17 +720,18 @@ impl BrowseCache {
                 request_binding: Some(request_binding),
             };
         }
-        let still_current = self
-            .package_row_index(&bound_request.context, &package)
-            .and_then(|index| current.packages.get(index))
-            .is_some_and(|row| {
-                matches!(
-                    &row.source_authority,
-                    CargoPackageSourceAuthorityStateV1::Admitted(current)
-                        if current.authority_digest() == authority.authority_digest()
-                            && current.matches_package_reference(&package)
-                )
-            });
+        let still_current = self.has_current_binding(&bound_request.context, request_binding)
+            && self
+                .package_row_index(&bound_request.context, &package)
+                .and_then(|index| current.packages.get(index))
+                .is_some_and(|row| {
+                    matches!(
+                        &row.source_authority,
+                        CargoPackageSourceAuthorityStateV1::Admitted(current)
+                            if current.authority_digest() == authority.authority_digest()
+                                && current.matches_package_reference(&package)
+                    )
+                });
         if !still_current {
             return CargoPackageReadmeResultV1::Stale {
                 package,
@@ -1423,9 +1444,15 @@ impl BrowseCache {
         &mut self,
         context: &BrowseContextKey,
         binding: backend_library::browse::ProjectTreeRequestBindingV1,
+        submitted_root: Box<Path>,
         request_root: PathBuf,
     ) -> Result<RequestBindingAdmission, String> {
-        if context.invocation_root != request_root {
+        if !binding.matches_requested_root(&submitted_root)
+            || submitted_root
+                .to_str()
+                .is_none_or(|path| path.len() > backend_library::MAX_PRODUCT_TEXT_BYTES)
+            || context.invocation_root != request_root
+        {
             return Err(
                 "request binding does not match the observed Cargo invocation root".to_owned(),
             );
@@ -1505,6 +1532,7 @@ impl BrowseCache {
             key,
             CachedRequestBinding {
                 binding,
+                submitted_root,
                 request_root,
                 last_used,
             },
@@ -1602,7 +1630,13 @@ impl BrowseCache {
             .get(context)
             .and_then(|entry| entry.request_bindings.get(&request_binding_key(binding)))
             .is_some_and(|cached| {
-                cached.binding == binding && cached.request_root == context.invocation_root
+                cached.binding == binding
+                    && cached.request_root == context.invocation_root
+                    && binding.matches_requested_root(&cached.submitted_root)
+                    && cached
+                        .submitted_root
+                        .canonicalize()
+                        .is_ok_and(|current| current == cached.request_root)
             })
             && self
                 .bindings
@@ -1732,7 +1766,10 @@ fn browse_entry_retained_bytes(
     let binding_path_budget = MAX_BROWSE_REQUEST_BINDINGS_PER_CONTEXT.saturating_mul(
         workspace
             .capacity()
-            .saturating_add(invocation_root.capacity().saturating_mul(2)),
+            .saturating_add(invocation_root.capacity().saturating_mul(2))
+            // A boxed literal path has no spare capacity. Admission bounds it
+            // independently of its possibly much shorter canonical spelling.
+            .saturating_add(backend_library::MAX_PRODUCT_TEXT_BYTES),
     );
     let mut bytes = size_of::<CacheEntry>()
         .saturating_add(workspace.capacity())
@@ -5413,7 +5450,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn project_tree_keeps_route_bound_to_root_canonicalized_before_cargo() {
+    fn project_tree_binds_submitted_alias_but_keeps_cargo_pinned_during_retarget() {
         fn write_package(root: &Path, name: &str, contents: &str) {
             std::fs::create_dir_all(root.join("src")).expect("package source directory");
             std::fs::write(
@@ -5459,14 +5496,14 @@ mod tests {
         let binding_a = tree_a.retained_request_binding().expect("retained A request binding");
         assert_eq!(
             binding_a,
-            backend_library::browse::ProjectTreeRequestBindingV1::for_paths(&a, &tree_a.root)
-                .expect("binding for the exact canonical A request")
+            backend_library::browse::ProjectTreeRequestBindingV1::for_paths(&alias, &tree_a.root)
+                .expect("binding for the exact submitted alias request")
         );
         let context_a = BrowseContextKey {
             workspace: a.clone(),
             invocation_root: a.clone(),
         };
-        assert!(owner.has_current_binding(&context_a, binding_a));
+        assert!(!owner.has_current_binding(&context_a, binding_a));
 
         let request_a = {
             let entry = owner.entries.get(&context_a).expect("retained A context");
@@ -5496,8 +5533,7 @@ mod tests {
         );
         assert!(matches!(
             source_a,
-            CargoPackageSourceFileResultV1::Read { contents, .. }
-                if contents.as_ref() == "pub fn selected() { /* A */ }\n"
+            CargoPackageSourceFileResultV1::Stale { .. }
         ));
 
         let tree_b = owner
@@ -5505,17 +5541,14 @@ mod tests {
             .expect("later request follows the changed symlink to B");
         assert_eq!(tree_b.root, b.to_string_lossy().into_owned());
         let binding_b = tree_b.retained_request_binding().expect("retained B request binding");
-        assert_ne!(
-            binding_a.requested_root_digest,
-            binding_b.requested_root_digest
-        );
+        assert_eq!(binding_a.requested_root_digest, binding_b.requested_root_digest);
+        assert_ne!(binding_a.effective_workspace_root_digest, binding_b.effective_workspace_root_digest);
         assert!(matches!(
             owner.source_file(
                 request_a,
                 CargoPackageSourcePathV1::new("src/lib.rs").expect("source path"),
             ),
-            CargoPackageSourceFileResultV1::Read { contents, .. }
-                if contents.as_ref() == "pub fn selected() { /* A */ }\n"
+            CargoPackageSourceFileResultV1::Stale { .. }
         ));
         assert_eq!(owner.workspace_count(), 2);
     }
@@ -5583,6 +5616,148 @@ mod tests {
         assert!(owner.entries.is_empty());
         assert!(owner.bindings.is_empty());
         assert!(owner.requested_bindings.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn submitted_alias_roundtrips_exactly_and_retarget_revokes_source_inventory_and_readme() {
+        let scratch = scratch("backend-browse-literal-alias");
+        let a = scratch.0.join("a");
+        let b = scratch.0.join("b");
+        for (root, name) in [(&a, "literal-a"), (&b, "literal-b")] {
+            std::fs::create_dir_all(root.join("src")).expect("physical package source");
+            std::fs::write(root.join("Cargo.toml"), format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\nreadme = \"README.md\"\n"
+            )).expect("physical package manifest");
+            std::fs::write(
+                root.join("Cargo.lock"),
+                format!("version = 4\n\n[[package]]\nname = \"{name}\"\nversion = \"0.1.0\"\n"),
+            )
+            .expect("locked physical package");
+            std::fs::write(
+                root.join("src/lib.rs"),
+                format!("pub fn {name}() {{}}\n").replace('-', "_"),
+            )
+            .expect("physical source bytes");
+            std::fs::write(root.join("README.md"), format!("# {name}\n"))
+                .expect("manifest-selected README");
+        }
+        let a = a.canonicalize().expect("canonical A");
+        let b = b.canonicalize().expect("canonical B");
+        let alias = scratch.0.join("submitted");
+        std::os::unix::fs::symlink(&a, &alias).expect("submitted alias to A");
+        let request = |root: &Path| {
+            backend_library::CommandDto::new(
+                63,
+                backend_library::Command::Surface(backend_library::SurfaceCommand::ProjectTree {
+                    root: backend_library::ProductText::new(root.to_str().expect("UTF-8 request"))
+                        .expect("bounded exact submitted address"),
+                }),
+            )
+        };
+        let roundtrip = |tree: &ProjectTree| {
+            let reply = backend_library::ReplyDto::new(
+                63,
+                backend_library::CommandReply::Surface(backend_library::SurfaceReply::ProjectTree(
+                    Box::new(tree.clone()),
+                )),
+            );
+            backend_library::decode_reply_body(
+                &serde_json::to_vec(&reply).expect("owner reply wire"),
+            )
+            .expect("strict current tree DTO")
+        };
+        let mut owner = BrowseCache::default();
+        let tree = owner
+            .project_tree(&alias, None)
+            .expect("real aliased Cargo observation");
+        let binding = tree
+            .retained_request_binding()
+            .expect("retained alias observation");
+        assert!(binding.matches_requested_root(&alias));
+        assert!(
+            !binding.matches_requested_root(&a),
+            "physical equivalence cannot replace submitted identity"
+        );
+        assert!(binding.matches_effective_workspace_root(a.to_str().expect("canonical root")));
+        let wire = roundtrip(&tree);
+        assert!(backend_library::admit_reply(&request(&alias), &wire).is_ok());
+        assert!(backend_library::admit_reply(&request(&a), &wire).is_err());
+        let context = BrowseContextKey {
+            workspace: a.clone(),
+            invocation_root: a.clone(),
+        };
+        let package = owner
+            .entries
+            .get(&context)
+            .expect("owner-held physical A observation")
+            .input
+            .packages
+            .iter()
+            .find_map(|row| match &row.source_authority {
+                CargoPackageSourceAuthorityStateV1::Admitted(authority)
+                    if authority.name() == "literal-a" =>
+                {
+                    authority.package_reference().ok()
+                }
+                _ => None,
+            })
+            .expect("exact physical A package");
+        let source_request =
+            backend_library::CargoPackageSourceRequestV1::from_tree(package.clone(), binding);
+        let readme_request = CargoPackageReadmeRequestV1::from_tree(package.clone(), binding);
+        let path = CargoPackageSourcePathV1::new("src/lib.rs").expect("source path");
+        assert!(
+            matches!(owner.source_file(source_request.clone(), path.clone()),
+            CargoPackageSourceFileResultV1::Read { contents, .. } if contents.as_ref() == "pub fn literal_a() {}\n")
+        );
+        assert!(matches!(
+            owner.source_inventory(source_request.clone()),
+            CargoPackageSourceInventoryResultV1::Listed(_)
+        ));
+        assert!(matches!(owner.package_readme(readme_request.clone()),
+            CargoPackageReadmeResultV1::Read { ref readme, .. } if readme.contents.as_ref() == "# literal-a\n"));
+        std::fs::remove_file(&alias).expect("remove submitted alias to A");
+        std::os::unix::fs::symlink(&b, &alias).expect("retarget submitted alias to B");
+        assert!(!owner.has_current_binding(&context, binding));
+        assert!(matches!(
+            owner.source_file(source_request.clone(), path),
+            CargoPackageSourceFileResultV1::Stale { .. }
+        ));
+        assert!(matches!(
+            owner.source_inventory(source_request),
+            CargoPackageSourceInventoryResultV1::Stale { .. }
+        ));
+        assert!(matches!(
+            owner.package_readme(readme_request),
+            CargoPackageReadmeResultV1::Stale { .. }
+        ));
+        // A fresh display-only observation is also committed to the exact
+        // submitted alias, even when source retention has no remaining budget.
+        owner.byte_budget = BROWSE_CACHE_INDEX_RETAINED_BYTES;
+        let display = owner
+            .project_tree(&alias, None)
+            .expect("bounded fresh alias display");
+        assert!(matches!(
+            display.observation,
+            Some(backend_library::browse::ProjectTreeObservationV1::DisplayOnly { .. })
+        ));
+        let display_binding = display.request_binding().expect("display request identity");
+        assert!(display_binding.matches_requested_root(&alias));
+        assert!(display_binding.matches_effective_workspace_root(b.to_str().expect("physical B")));
+        assert_eq!(
+            binding.requested_root_digest,
+            display_binding.requested_root_digest
+        );
+        assert_ne!(
+            binding.effective_workspace_root_digest,
+            display_binding.effective_workspace_root_digest
+        );
+        let wire = roundtrip(&display);
+        assert!(backend_library::admit_reply(&request(&alias), &wire).is_ok());
+        assert!(backend_library::admit_reply(&request(&b), &wire).is_err());
+        assert!(owner.entries.is_empty() && owner.bindings.is_empty());
+        assert!(owner.cached_bytes <= owner.byte_budget);
     }
 
     #[test]
