@@ -8,6 +8,8 @@ use backend_semantic::vocabulary::NativeTool;
 use backend_version::{ContentId, ToolchainDomain};
 use thiserror::Error;
 
+use crate::application::TypeScriptProjectInvocationLease;
+
 /// Exact native launch form admitted for one toolchain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeInvocation<'path> {
@@ -44,7 +46,14 @@ enum ResolvedInvocation<'path> {
         script: &'path Path,
         module_root: &'path Path,
         witness: InterpretedScriptWitness,
+        validation: InvocationValidation<'path>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InvocationValidation<'path> {
+    PerLaunch,
+    ProjectPackage(&'path TypeScriptProjectInvocationLease),
 }
 
 /// Immutable, caller-resolved native executable facts.
@@ -118,7 +127,7 @@ pub enum NativeInvocationError {
         #[source]
         source: std::io::Error,
     },
-    /// The exact selected file's content changed after admission.
+    /// The exact selected file or package no longer matches its admitted witness.
     #[error("selected TypeScript {role:?} changed after toolchain admission at {path:?}")]
     Changed {
         /// Which selected invocation file changed.
@@ -220,13 +229,83 @@ impl<'path> ResolvedToolchain<'path> {
                     script_file_digest,
                     module_closure_digest,
                 },
+                validation: InvocationValidation::PerLaunch,
+            },
+        })
+    }
+
+    /// Binds a compiler launch to the private witness already admitted for one project package.
+    /// The host rechecks its complete file-content closure at package boundaries; each spawn does
+    /// only same-object checks, avoiding a second full Node/package hash for every source file.
+    pub(crate) fn from_project_invocation(
+        tool: NativeTool,
+        interpreter: &'path Path,
+        script: &'path Path,
+        module_root: &'path Path,
+        script_version_bytes: &[u8],
+        interpreter_version_bytes: &[u8],
+        lease: &'path TypeScriptProjectInvocationLease,
+    ) -> Result<Self, ToolchainResolutionError> {
+        if !lease.matches_invocation(script, interpreter, module_root) {
+            return Err(ToolchainResolutionError::CompilerModuleMismatch);
+        }
+        Self::from_project_identities(
+            tool,
+            interpreter,
+            script,
+            module_root,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(script_version_bytes),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(interpreter_version_bytes),
+            lease,
+        )
+    }
+
+    fn from_project_identities(
+        tool: NativeTool,
+        interpreter: &'path Path,
+        script: &'path Path,
+        module_root: &'path Path,
+        script_identity: ContentId<ToolchainDomain>,
+        interpreter_identity: ContentId<ToolchainDomain>,
+        lease: &'path TypeScriptProjectInvocationLease,
+    ) -> Result<Self, ToolchainResolutionError> {
+        if !interpreter.is_absolute() || !script.is_absolute() || !module_root.is_absolute() {
+            return Err(ToolchainResolutionError::RelativeInvocationPath);
+        }
+        if tool != NativeTool::TypeScriptCompiler
+            || script != module_root.join("typescript/bin/tsc")
+            || !lease.matches_invocation(script, interpreter, module_root)
+        {
+            return Err(ToolchainResolutionError::CompilerModuleMismatch);
+        }
+        Ok(Self {
+            view: ResolvedToolchainView {
+                tool,
+                identity: script_identity,
+            },
+            invocation: ResolvedInvocation::InterpretedScript {
+                interpreter,
+                script,
+                module_root,
+                witness: InterpretedScriptWitness {
+                    interpreter_identity,
+                    interpreter_file_digest: lease.node_digest(),
+                    script_file_digest: lease.compiler_digest(),
+                    module_closure_digest: lease.module_closure_digest(),
+                },
+                validation: InvocationValidation::ProjectPackage(lease),
             },
         })
     }
 
     /// Identity bound to the exact executable(s) that will perform this compile.
     pub(crate) fn invocation_identity(self) -> ContentId<ToolchainDomain> {
-        let ResolvedInvocation::InterpretedScript { witness, .. } = self.invocation else {
+        let ResolvedInvocation::InterpretedScript {
+            witness,
+            validation,
+            ..
+        } = self.invocation
+        else {
             return self.identity;
         };
         let mut identity = blake3::Hasher::new();
@@ -285,17 +364,26 @@ impl<'path> ResolvedToolchain<'path> {
         }
     }
 
-    /// Rechecks every file in an interpreted launch against its admission digest.
+    /// Rechecks an interpreted launch before spawning.
+    ///
+    /// Standalone invocations rehash each selected input. A private project lease checks the
+    /// same file/package objects here and relies on the host witness for full content revalidation
+    /// at package boundaries. A concurrent in-place mutation restored before that boundary is
+    /// outside this guarantee; this does not attest which bytes the operating system executed.
     pub(crate) fn validate_invocation(self) -> Result<(), NativeInvocationError> {
         let ResolvedInvocation::InterpretedScript {
             interpreter,
             script,
             module_root,
             witness,
+            validation,
         } = self.invocation
         else {
             return Ok(());
         };
+        if let InvocationValidation::ProjectPackage(lease) = validation {
+            return lease.validate_launch_objects();
+        }
         for (role, path, expected) in [
             (
                 NativeInvocationFileRole::Script,

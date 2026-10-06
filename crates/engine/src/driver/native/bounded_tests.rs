@@ -365,13 +365,7 @@ fn admitted_global_typescript_script_compiles_through_node_with_env_cleared() {
         std::num::NonZeroUsize::new(16 * 1024).expect("nonzero version-output bound"),
     )
     .expect("bounded TypeScript invocation admission");
-    let (
-        script_version,
-        interpreter_version,
-        script_digest,
-        interpreter_digest,
-        module_digest,
-    ) =
+    let (script_version, interpreter_version, script_digest, interpreter_digest, module_digest) =
         crate::application::admit_typescript_script_invocation(
             &compiler_script,
             &interpreter,

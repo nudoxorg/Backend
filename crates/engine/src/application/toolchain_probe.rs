@@ -22,6 +22,16 @@ use crate::driver::ToolchainResolutionError;
 use backend_semantic::vocabulary::{NativeTool, NativeWorker, NativeWorkerPanic};
 use thiserror::Error;
 
+#[cfg(test)]
+std::thread_local! {
+    static EXECUTABLE_CONTENT_HASH_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn executable_content_hash_bytes_for_test() -> u64 {
+    EXECUTABLE_CONTENT_HASH_BYTES.with(std::cell::Cell::get)
+}
+
 /// Stable identity for the direct compiler and version-probe environment contract.
 ///
 /// Native lower-IR compiler children start with no inherited variables. The
@@ -113,6 +123,10 @@ pub(crate) fn executable_content_digest(path: &Path) -> io::Result<[u8; 32]> {
             ));
         }
         hasher.update(&buffer[..count]);
+        #[cfg(test)]
+        EXECUTABLE_CONTENT_HASH_BYTES.with(|bytes| {
+            bytes.set(bytes.get().saturating_add(count as u64));
+        });
     }
     let after = file.metadata()?;
     let path_metadata = std::fs::metadata(path)?;
@@ -181,9 +195,9 @@ pub(crate) fn typescript_module_files_digest<'path>(
         .into_iter()
         .map(|(path, length, digest)| {
             if path.is_absolute()
-                || path.components().any(|component| {
-                    !matches!(component, std::path::Component::Normal(_))
-                })
+                || path
+                    .components()
+                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -350,15 +364,56 @@ fn invocation_file_identity(metadata: &std::fs::Metadata) -> io::Result<(u64, u6
     Ok((metadata.dev(), metadata.ino()))
 }
 
+/// Returns the identity of one already-selected regular file without rereading its contents.
+/// Callers use this only inside a package lease whose full content witness is revalidated at
+/// package boundaries.
+pub(crate) fn executable_object_identity(path: &Path) -> io::Result<(u64, u64)> {
+    if !path.is_absolute() || std::fs::canonicalize(path)? != path {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected executable path is no longer canonical and absolute",
+        ));
+    }
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected executable is no longer a regular file",
+        ));
+    }
+    invocation_file_identity(&metadata)
+}
+
+/// Returns the identity of one already-selected compiler package directory.
+pub(crate) fn compiler_directory_object_identity(path: &Path) -> io::Result<(u64, u64)> {
+    if !path.is_absolute() || std::fs::canonicalize(path)? != path {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected compiler directory is no longer canonical and absolute",
+        ));
+    }
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected compiler package is no longer a directory",
+        ));
+    }
+    invocation_file_identity(&metadata)
+}
+
 #[cfg(windows)]
 fn invocation_file_identity(metadata: &std::fs::Metadata) -> io::Result<(u64, u64)> {
     use std::os::windows::fs::MetadataExt;
     let volume = metadata.volume_serial_number().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Unsupported, "file volume identity is unavailable")
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "file volume identity is unavailable",
+        )
     })?;
-    let index = metadata.file_index().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Unsupported, "file index is unavailable")
-    })?;
+    let index = metadata
+        .file_index()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "file index is unavailable"))?;
     Ok((u64::from(volume), index))
 }
 
