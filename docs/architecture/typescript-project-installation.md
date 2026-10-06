@@ -10,12 +10,14 @@ pnpm add --save-dev typescript
 yarn add --dev typescript
 ```
 
-The selected project must also have a Node runtime supported by its TypeScript release. Nudox uses an explicitly configured
-`NUDOX_TYPESCRIPT_NODE` when present; otherwise it resolves `node` from the host’s ordinary
-`PATH`, then checks its finite platform locations. Host setup canonicalizes the executable and
-records its version and bytes; it does not install Node or override the TypeScript release’s own
-runtime compatibility checks. Compiler child processes receive only that admitted Node path, not
-the host’s `PATH` or shell environment.
+The selected project must also have a Node runtime supported by its TypeScript release. An
+explicit `NUDOX_TYPESCRIPT_NODE` value takes precedence. Otherwise, a recognized Nudox macOS app
+launch admits the bundled Node only after the app manifest binds both the running executable and
+Node payload by size and digest. Other launches resolve `node` from the process `PATH`, then check
+finite platform locations. Setup canonicalizes the executable, records its version and bytes, and
+rechecks that identity before publishing compiler results. Nudox does not install Node or override
+the TypeScript release’s runtime compatibility checks. Compiler child processes receive only the
+admitted Node path, not the host’s `PATH` or shell environment.
 
 For npm and Yarn workspaces, Nudox stops project discovery at the nearest `package.json` that
 declares `workspaces`. For pnpm, it uses the nearest valid `pnpm-workspace.yaml`. It looks for the
