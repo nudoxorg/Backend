@@ -262,7 +262,7 @@ def main() -> int:
         "runtime_acceptance": "external_native_qa_record_required",
     }
     (root / "packaging-manifest.json").write_text(json.dumps(package, indent=2, sort_keys=True) + "\n")
-    readme = f"""NuDox Linux x86_64 CLI/MCP/locald\n\nSource revision: {revision}\nRequires Linux x86_64 with glibc >= {minimum_glibc} and {INTERPRETER}.\nThe CLI, MCP and locald executables must remain siblings in bin/.\n\nVerify the supplied SHA-256 sidecar before extracting. For manual use:\n  tar -xzf nudox-linux-x86_64-{revision[:10]}.tar.gz\n  export PATH=\"$PWD/nudox-linux-x86_64/bin:$PATH\"\n  backend-cli --help\n  backend-mcp --help\n\nTypeScript requires Node on PATH and the typescript package installed in the project.\nPython and Go tools are optional and must be installed when those projects need them.\nDefault project discovery does not require hidden NUDOX_* environment variables.\n"""
+    readme = f"""NuDox Linux x86_64 CLI/MCP/locald\n\nSource revision: {revision}\nRequires Linux x86_64 with glibc >= {minimum_glibc} and {INTERPRETER}.\nThe CLI, MCP and locald executables must remain siblings in bin/.\n\nVerify the supplied SHA-256 sidecar before extracting. For manual use:\n  tar -xzf nudox-linux-x86_64-{revision[:10]}.tar.gz\n  export PATH=\"$PWD/nudox-linux-x86_64/bin:$PATH\"\n  backend-cli --help\n  backend-mcp --help\n\nLanguage compiler integrations are discovered separately from this CLI package.\nTypeScript indexing uses host Node and the project's installed typescript package when configured.\nDefault project discovery does not require hidden NUDOX_* environment variables.\n"""
     (root / "README.txt").write_text(readme)
 
     archive_name = f"nudox-linux-x86_64-{revision[:10]}.tar.gz"
