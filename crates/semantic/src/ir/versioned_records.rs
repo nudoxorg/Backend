@@ -5022,9 +5022,17 @@ mod tests {
     }
 
     fn core_named_image(name: &[u8]) -> (Ir, DeclarationIdentity) {
+        core_callable_image(name, None, &[])
+    }
+
+    fn core_callable_image(
+        name: &[u8],
+        anchor: Option<&[u8]>,
+        attributes: &[&[u8]],
+    ) -> (Ir, DeclarationIdentity) {
         let version = core_fixture_version(0);
         let item = TreeItemInput {
-            anonymous_callable_anchor: None,
+            anonymous_callable_anchor: anchor,
             name,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
@@ -5040,7 +5048,7 @@ mod tests {
             semantic_type: None,
             members: &[],
             docs: &[],
-            attributes: &[],
+            attributes,
             source: None,
             extension: None,
         };
@@ -5056,6 +5064,60 @@ mod tests {
             builder.finish().expect("Core name IR is valid"),
             version.identity(),
         )
+    }
+
+    #[test]
+    fn core_jumbo_stream_preserves_anonymous_callable_identity_and_name_tag() {
+        use crate::ir::{
+            AnonymousCallableAnchor, AnonymousCallableFamilyMultiplicity, CallableAnchorStep,
+            CallableChildRole, CallableParentShape,
+        };
+        let route = [CallableAnchorStep {
+            child_role: CallableChildRole::CallArgument,
+            parent: CallableParentShape::Call,
+        }];
+        let mut storage = [0; 32];
+        let length = AnonymousCallableAnchor { steps: &route }
+            .write_storage(AnonymousCallableFamilyMultiplicity::Unique, &mut storage)
+            .expect("bounded canonical anchor");
+        let anchor = &storage[..length];
+        for overflow in [false, true] {
+            let attribute = vec![b'a'; if overflow { 5000 } else { 2 }];
+            let (ir, identity) = core_callable_image(b"", Some(anchor), &[&attribute]);
+            let (captured, mut objects) = core_capture(&ir, 4096);
+            let key = declaration_plane_key(SemanticPlaneKind::Ir(SemanticIrPlane::Core), identity);
+            let (record, framed) = core_row(&captured, key, 4096);
+            assert!(framed <= 4096);
+            assert_eq!(
+                record.tag(),
+                if overflow {
+                    declarations::CORE_ANONYMOUS_CALLABLE_JUMBO_TAG
+                } else {
+                    declarations::CORE_ANONYMOUS_CALLABLE_TAG
+                }
+            );
+            let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+                .expect("Core policy");
+            let closure = verify_captured_jumbo_family_with_policy(
+                SemanticIrPlane::Core,
+                &captured,
+                policy,
+                &mut objects,
+            );
+            assert_eq!(closure.jumbo_value_count(), if overflow { 2 } else { 0 });
+            if overflow {
+                let fields =
+                    declarations::core_jumbo_descriptors_for_record_with_row_limit(record, 4096)
+                        .unwrap()
+                        .unwrap();
+                assert!(
+                    fields.name.is_none(),
+                    "anonymous anchor keeps its typed inline grammar"
+                );
+                let wire = jumbo_wire_value(fields.attributes, &mut objects);
+                assert_eq!(&wire[8..], attribute.as_slice());
+            }
+        }
     }
 
     #[test]
