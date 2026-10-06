@@ -196,8 +196,7 @@ fn first_token(
         .expect("export")
 }
 fn token_value(token: &str) -> serde_json::Value {
-    serde_json::from_slice(&decode_hex(token.strip_prefix("pc2-").expect("version")).expect("hex"))
-        .expect("envelope")
+    serde_json::from_slice(&decode_portable_body(token).expect("bounded proof")).expect("envelope")
 }
 fn token_bytes(bytes: &[u8]) -> String {
     let mut token = String::from("pc2-");
@@ -208,7 +207,7 @@ fn token_bytes(bytes: &[u8]) -> String {
     token
 }
 fn token(value: &serde_json::Value) -> String {
-    token_bytes(&serde_json::to_vec(value).expect("wire"))
+    encode_compact_proof(&serde_json::to_vec(value).expect("wire")).expect("bounded compact tamper")
 }
 
 #[test]
@@ -471,7 +470,7 @@ fn portable_query_tampered_contract_cursor_scope_and_preimage_fields_refuse() {
 fn portable_query_duplicate_json_fields_are_not_normalized_into_a_proof() {
     let (owner, requests) = fixture();
     let good = first_token(&owner, &requests, false, 3);
-    let body = decode_hex(good.strip_prefix("pc2-").expect("version")).expect("hex");
+    let body = decode_portable_body(&good).expect("bounded proof");
     let original = String::from_utf8(body).expect("JSON");
     let duplicate = format!(
         "{{\"request_id\":1,{}",
@@ -500,7 +499,7 @@ fn portable_query_full_credit_can_export_a_compact_predecessor() {
 }
 
 #[test]
-fn portable_query_export_budget_refuses_instead_of_hiding_a_successor() {
+fn portable_query_compressible_long_proof_preserves_every_canonical_byte() {
     let text = "x".repeat(backend_library::MAX_COMMAND_TEXT);
     let owner = Arc::new(Mutex::new(owner_with_label(1, 4, 0, &text)));
     let requests = Arc::new(Mutex::new(vec![]));
@@ -510,13 +509,10 @@ fn portable_query_export_budget_refuses_instead_of_hiding_a_successor() {
         .expect("admitted bounded long query");
     let next = page(&reply).next.expect("successor exists");
     let exported = session.encode_query_continuation(PageContinuation::from_cursor(next));
-    assert!(
-        matches!(
-            exported,
-            Err(ClientError::Transport(ReplicationError::MessageTooLarge))
-        ),
-        "oversized existing canonical proof must refuse: {exported:?}"
-    );
+    let token = exported.expect("bounded compact proof");
+    assert!(token.starts_with("pc3-"));
+    let body = decode_portable_body(&token).expect("bounded expansion");
+    backend_library::decode_command_body(&body).expect("strict canonical proof remains intact");
 }
 
 struct RebindingTransport(Transport);
@@ -566,10 +562,9 @@ fn portable_query_coherently_rederived_authorized_prefix_is_content_proof_not_is
             page(&first).next.expect("successor"),
         ))
         .expect("original token");
-    let mut body: serde_json::Value = serde_json::from_slice(
-        &decode_hex(original.strip_prefix("pc2-").expect("version")).expect("hex"),
-    )
-    .expect("existing DTO");
+    let mut body: serde_json::Value =
+        serde_json::from_slice(&decode_portable_body(&original).expect("bounded proof"))
+            .expect("existing DTO");
     let projected = &page(&first).root;
     let selected_root = owner.lock().expect("owner").revision_root();
     let new_query = NameQuery::new("thing", selected_root, QueryLimit::new(3).expect("credit"));
@@ -648,4 +643,107 @@ fn portable_query_coherently_rederived_authorized_prefix_is_content_proof_not_is
             .collect::<Vec<_>>(),
         expected
     );
+}
+
+#[test]
+fn portable_compact_proof_rejects_expansion_truncation_and_trailing_bytes() {
+    let oversized = vec![b'x'; backend_library::MAX_COMMAND_BODY + 1];
+    assert!(encode_compact_proof(&oversized).is_err());
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, &oversized).expect("compressed adversary");
+    let compressed = encoder.finish().expect("compressed adversary");
+    let bomb = format!("pc3-{}", URL_SAFE_NO_PAD.encode(&compressed));
+    assert!(bomb.len() < MAX_PORTABLE_QUERY_TOKEN_BYTES);
+    assert!(matches!(
+        decode_portable_body(&bomb),
+        Err(ClientError::Transport(ReplicationError::MessageTooLarge))
+    ));
+    let good = encode_compact_proof(b"bounded canonical body").expect("compact");
+    let mut compressed = URL_SAFE_NO_PAD
+        .decode(good.strip_prefix("pc3-").expect("version"))
+        .expect("base64");
+    compressed.push(0);
+    assert!(decode_portable_body(&format!("pc3-{}", URL_SAFE_NO_PAD.encode(&compressed))).is_err());
+    compressed.truncate(compressed.len() - 3);
+    assert!(decode_portable_body(&format!("pc3-{}", URL_SAFE_NO_PAD.encode(&compressed))).is_err());
+}
+
+#[test]
+fn portable_names_public_rank_reproduces_full_rows_across_fresh_pages() {
+    let (owner, requests) = fixture();
+    let reference = owner.lock().expect("owner");
+    let mut expected = reference
+        .names(&NameQuery::new(
+            "Thing",
+            reference.revision_root(),
+            QueryLimit::new(200).expect("credit"),
+        ))
+        .expect("complete reference")
+        .root
+        .rows()
+        .to_vec();
+    drop(reference);
+    expected.sort_by_key(|row| std::cmp::Reverse(row.score));
+    let mut seen = Vec::new();
+    let mut token = None;
+    loop {
+        let mut fresh = session(&owner, &requests);
+        let continuation = token
+            .as_deref()
+            .map(|token| fresh.decode_page_continuation(token).expect("fresh scope"));
+        let reply = fresh.names_page("Thing", 3, continuation).expect("page");
+        let mut rows = page(&reply).root.rows().to_vec();
+        rows.sort_by_key(|row| std::cmp::Reverse(row.score));
+        seen.extend(rows);
+        token = page(&reply).next.map(|cursor| {
+            fresh
+                .encode_query_continuation(PageContinuation::from_cursor(cursor))
+                .expect("bounded token")
+        });
+        if token.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        seen, expected,
+        "all public row fields, ranks, order and multiplicities must match"
+    );
+}
+
+#[test]
+fn portable_compact_proof_retains_real_cachetools_dto_and_exact_expansion_bound() {
+    let value: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../../../evidence/sol61-public-tantivy-20261006/first-token-decoded.json"
+    ))
+    .expect("retained actual DTO");
+    let body = serde_json::to_vec(&value).expect("canonical JSON");
+    let token = encode_compact_proof(&body).expect("ordinary real proof fits");
+    assert!(
+        token.len() < 4096,
+        "ordinary canonical proof should fit compact presentation"
+    );
+    assert_eq!(decode_portable_body(&token).expect("compact bytes"), body);
+    backend_library::decode_command_body(&body).expect("all real canonical claims rehash strictly");
+    assert_eq!(
+        decode_portable_body(&token_bytes(&body)).expect("legacy pc2 bytes"),
+        body
+    );
+    let exact = vec![b'x'; backend_library::MAX_COMMAND_BODY];
+    let token = encode_compact_proof(&exact).expect("exact decoded ceiling");
+    assert_eq!(
+        decode_portable_body(&token).expect("exact decoded ceiling"),
+        exact
+    );
+    let (owner, requests) = fixture();
+    let good = first_token(&owner, &requests, false, 3);
+    let mut body = decode_portable_body(&good).expect("canonical body");
+    body.extend_from_slice(b" {}");
+    let extra = encode_compact_proof(&body).expect("bounded extra JSON");
+    let before = requests.lock().expect("requests").len();
+    assert!(
+        session(&owner, &requests)
+            .decode_page_continuation(&extra)
+            .is_err()
+    );
+    assert_eq!(requests.lock().expect("requests").len(), before);
 }
