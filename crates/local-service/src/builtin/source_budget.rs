@@ -11,7 +11,7 @@
 //! (8 MiB), `NUDOX_SOURCE_MAX_PROJECT_BYTES` (512 MiB),
 //! `NUDOX_SOURCE_MAX_RETAINED_BYTES` (256 MiB),
 //! `NUDOX_SOURCE_MAX_IN_FLIGHT_BYTES` (64 MiB),
-//! `NUDOX_SOURCE_MAX_PROJECT_RECORD_BYTES` (128 MiB), and
+//! `NUDOX_SOURCE_MAX_PROJECT_RECORD_BYTES` (512 MiB), and
 //! `NUDOX_SOURCE_MAX_PROJECT_RECORDS` (500,000). Invalid values refuse the
 //! scan before it starts; changing a valid value changes the warm-cache key.
 
@@ -49,7 +49,10 @@ impl Default for SourceAdmissionLimits {
             max_project_source_bytes: 512 * 1024 * 1024,
             max_retained_compiler_source_bytes: 256 * 1024 * 1024,
             max_in_flight_source_bytes: 64 * 1024 * 1024,
-            max_project_record_bytes: 128 * 1024 * 1024,
+            // Complete declaration/fact pages are part of the admitted project,
+            // including projects whose ordinary source text already exceeds
+            // 128 MiB. Keep this total bounded independently of worker reads.
+            max_project_record_bytes: 512 * 1024 * 1024,
             max_project_records: MAX_CONFIGURED_RECORDS,
             // A persisted row cannot exceed this storage format's capacity.
             max_encoded_record_bytes: backend_engine::ProductSourceRecord::ROW_VALUE_CAPACITY,
@@ -643,5 +646,70 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.resource, "project record bytes");
         assert_eq!(ledger, before);
+    }
+
+    #[test]
+    fn home_assistant_record_frontier_exceeds_the_old_default_without_widening_reads() {
+        // Authentic core ddf4c61 public add refused at this exact charge on
+        // 4c04: 19,215 Python files / 127,245,456 source bytes. Exercise the
+        // admission boundary without allocating its real 128 MiB fact pages.
+        const OBSERVED_RECORD_BYTES: usize = 134_270_703;
+        let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default()).unwrap();
+        let mut former_limits = policy.limits();
+        former_limits.max_project_record_bytes = 128 * 1024 * 1024;
+        let former = SourceAdmissionPolicy::new(former_limits).unwrap();
+        let source = 4096;
+        let compact_row = 128;
+        let fact_pages = OBSERVED_RECORD_BYTES - compact_row;
+
+        let mut rejected = SourceAdmissionLedger::default();
+        let error = rejected
+            .admit_with_fact_pages(
+                former,
+                former.admit_actual_file(source).unwrap(),
+                compact_row,
+                fact_pages,
+                false,
+            )
+            .unwrap_err();
+        assert_eq!(error.resource, "project record bytes");
+        assert_eq!(error.attempted, OBSERVED_RECORD_BYTES);
+        assert_eq!(rejected, SourceAdmissionLedger::default());
+
+        let mut admitted = SourceAdmissionLedger::default();
+        admitted
+            .admit_with_fact_pages(
+                policy,
+                policy.admit_actual_file(source).unwrap(),
+                compact_row,
+                fact_pages,
+                false,
+            )
+            .unwrap();
+        assert_eq!(admitted.encoded_record_bytes(), OBSERVED_RECORD_BYTES);
+        assert_eq!(admitted.source_bytes(), source);
+        assert_eq!(admitted.retained_compiler_bytes(), 0);
+        assert_eq!(
+            policy.worker_count(32, 19_215),
+            former.worker_count(32, 19_215)
+        );
+        assert_eq!(
+            policy.limits().max_in_flight_source_bytes,
+            former.limits().max_in_flight_source_bytes
+        );
+        assert_ne!(policy.identity(), former.identity());
+
+        let before = admitted;
+        let error = admitted
+            .admit_with_fact_pages(
+                policy,
+                policy.admit_actual_file(0).unwrap(),
+                compact_row,
+                policy.limits().max_project_record_bytes - OBSERVED_RECORD_BYTES,
+                false,
+            )
+            .unwrap_err();
+        assert_eq!(error.resource, "project record bytes");
+        assert_eq!(admitted, before, "the finite total remains an atomic bound");
     }
 }

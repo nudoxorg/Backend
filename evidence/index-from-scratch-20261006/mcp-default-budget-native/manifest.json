@@ -1,0 +1,194 @@
+{
+  "schema": "nudox.native-mcp-default-budget-gates.v1",
+  "host": "h16001mac",
+  "architecture": "aarch64-apple-darwin",
+  "workspace": "/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006",
+  "base_source": "4c04d0984c9853a8c1892ca52c3d68a406033423",
+  "scope": "Native MCP libtests over incomplete catalog fixture projections; no live Requests default, archive, compilation, or runtime-trio credit.",
+  "compiler_identity_observed_after_gate": {
+    "rustc": "1.97.1",
+    "rustc_commit": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
+    "cargo": "1.97.1 (c980f4866 2026-06-30)",
+    "llvm": "22.1.6"
+  },
+  "final_executable": {
+    "path": ".local/build/point-metadata-test/.nudox-cargo/slot-0/debug/deps/backend_mcp-d67bde356dc9bc51",
+    "sha256": "cfe248fe1d6156c228a430b343d8759e435cd1250ddb7babb7bf23b9a16f014b",
+    "source": "bbbb06ee62e02ceb6dd6559d72b95508a0ac0f94",
+    "source_tree": "d1a066d8fe7990fa014ccfacb6c72e5da3a22237",
+    "architecture": "Mach-O 64-bit executable arm64",
+    "tracked_source_clean_after_gate": true
+  },
+  "gates": [
+    {
+      "label": "c9",
+      "source": "c9c50b4b8343229a58571faf7c689a0608b6855a",
+      "outcome": "original ordering fixture: 1 pass, 1 fail",
+      "admission_allowed": true,
+      "fleet_groups_before": 6,
+      "host_groups_before": {
+        "h16001mac": 2,
+        "ilo": 2,
+        "local": 2
+      },
+      "complete": {
+        "schema": "nudox.allocated-index-compiler.v1",
+        "permit_pid": 21632,
+        "cargo_launcher_pid": 21633,
+        "started": "2026-10-06T19:42:10.968678+00:00",
+        "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/compiler-index.lock",
+        "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/mcp-default-c9-admission.json",
+        "admission_age_seconds": 19.833756,
+        "argv": [
+          "/bin/bash",
+          "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-mcp-default-c9.sh"
+        ],
+        "allocation": "Root allocated one private Mac compiler group; explicit -j4",
+        "exit": 101,
+        "ended": "2026-10-06T19:47:22.401329+00:00"
+      }
+    },
+    {
+      "label": "055",
+      "source": "055195b596667ac934c80c1c8a4efde77aad9324",
+      "outcome": "ranked producer ordering: 2 pass, 0 fail",
+      "admission_allowed": true,
+      "fleet_groups_before": 7,
+      "host_groups_before": {
+        "h16001mac": 2,
+        "ilo": 2,
+        "local": 3
+      },
+      "complete": {
+        "schema": "nudox.allocated-index-compiler.v1",
+        "permit_pid": 54496,
+        "cargo_launcher_pid": 54497,
+        "started": "2026-10-06T19:48:19.514378+00:00",
+        "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/compiler-index.lock",
+        "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/mcp-default-055-admission.json",
+        "admission_age_seconds": 24.454361,
+        "argv": [
+          "/bin/bash",
+          "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-mcp-default-055.sh"
+        ],
+        "allocation": "Root allocated one private Mac compiler group; explicit -j4",
+        "exit": 0,
+        "ended": "2026-10-06T19:48:31.635222+00:00"
+      }
+    },
+    {
+      "label": "bbbb-full",
+      "source": "bbbb06ee62e02ceb6dd6559d72b95508a0ac0f94",
+      "outcome": "complete MCP suite: 105 pass, 0 fail, 0 filtered",
+      "admission_allowed": true,
+      "fleet_groups_before": 4,
+      "host_groups_before": {
+        "h16001mac": 1,
+        "ilo": 1,
+        "local": 2
+      },
+      "complete": {
+        "schema": "nudox.allocated-index-compiler.v1",
+        "permit_pid": 57672,
+        "cargo_launcher_pid": 57679,
+        "started": "2026-10-06T19:55:25.232557+00:00",
+        "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/compiler-index.lock",
+        "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/mcp-default-bbbb-full-admission.json",
+        "admission_age_seconds": 35.01702,
+        "argv": [
+          "/bin/bash",
+          "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-mcp-default-bbbb-full.sh"
+        ],
+        "allocation": "Root allocated one private Mac compiler group; explicit -j4",
+        "exit": 0,
+        "ended": "2026-10-06T19:55:41.140924+00:00"
+      }
+    }
+  ],
+  "files": {
+    "locked_cargo_mcp_default_055.py": {
+      "sha256": "6b84ba823aac943a890a5c01fd3d19ff5e6170de261cb10cbb616e76583d575c",
+      "bytes": 1950
+    },
+    "locked_cargo_mcp_default_bbbb_full.py": {
+      "sha256": "a36e3dba7e0b4ac50a8922b5d16c45719adaf335761ff988c2ecb6d40971ac4f",
+      "bytes": 1974
+    },
+    "locked_cargo_mcp_default_c9.py": {
+      "sha256": "b1ad747ce685a5767523f716af47ec0b0b0f60472a5b58e4a3a027e9fbba64b9",
+      "bytes": 1946
+    },
+    "mcp-default-055-admission.json": {
+      "sha256": "b1f17ea8cf17912cdaed467079285c5c1651fc2bb7f816b32abac20364254a1e",
+      "bytes": 17925
+    },
+    "mcp-default-055-tests.complete.json": {
+      "sha256": "e573134b29ffda06f3960363d56ccc02c3bbd10d3a0cd301d32a660d3e14699c",
+      "bytes": 681
+    },
+    "mcp-default-055-tests.launch.json": {
+      "sha256": "26dc52f51cca400af2edffc14835d36d94ba4592d48efa5c425380442b2a4c45",
+      "bytes": 621
+    },
+    "mcp-default-055-tests.stderr": {
+      "sha256": "27b4997ddb2fe7e1af007f293ac91bd9481bf0ce56de4f5afb078f253a118889",
+      "bytes": 185821
+    },
+    "mcp-default-055-tests.stdout": {
+      "sha256": "36f88688564ffab739ff697352c2c3201887830639781b38ffff879e622cc3aa",
+      "bytes": 327
+    },
+    "mcp-default-bbbb-full-admission.json": {
+      "sha256": "7105eddc90c3aa25e089a2ecb35a27c33a5057b649d8aca1e30a24ad4dedd318",
+      "bytes": 14270
+    },
+    "mcp-default-bbbb-full-tests.complete.json": {
+      "sha256": "21d169d2cec8f3a7c821d5f2dcbdec28696545ae191fb68d6536583691c7f1f7",
+      "bytes": 692
+    },
+    "mcp-default-bbbb-full-tests.launch.json": {
+      "sha256": "28a83f08f220fcd09b19e917a423af33ab90d57290aca7141904550a81c261a5",
+      "bytes": 632
+    },
+    "mcp-default-bbbb-full-tests.stderr": {
+      "sha256": "c3ed062eabde9702cb710d148f89b1159414fbb0496d8069a7f1acdfc03986b9",
+      "bytes": 185822
+    },
+    "mcp-default-bbbb-full-tests.stdout": {
+      "sha256": "4361d252d3d5f20e69c8b277f19d8f2fa4bf4ae3638e5bd41944f2ccaed58624",
+      "bytes": 9187
+    },
+    "mcp-default-c9-admission.json": {
+      "sha256": "bf50fe6ba0e7897a4ba7a36c2fba94a367af9a6c6926f51463c5aa818f31386f",
+      "bytes": 17953
+    },
+    "mcp-default-c9-tests.complete.json": {
+      "sha256": "dbdb3bacbba6b171a5c95320b28cba940e0a402b9d89d3478a2274a4641ba98d",
+      "bytes": 681
+    },
+    "mcp-default-c9-tests.launch.json": {
+      "sha256": "6f1faa8f85e9f3b383802c769a6eaabc9198d5b17ac5a9a521132cace28b3452",
+      "bytes": 619
+    },
+    "mcp-default-c9-tests.stderr": {
+      "sha256": "18d419574af4b5df2bea3367557519a865033c2bb0429182d4d4e52315aa651a",
+      "bytes": 212610
+    },
+    "mcp-default-c9-tests.stdout": {
+      "sha256": "28159ed49a39a414d29384b960e7b3ccf2023fc0c978d488c276b26a8e801103",
+      "bytes": 457
+    },
+    "run-mcp-default-055.sh": {
+      "sha256": "b80f5b4e18344cd6cd647d8163069083e1e287cd87c4021771e15281ec8ba345",
+      "bytes": 998
+    },
+    "run-mcp-default-bbbb-full.sh": {
+      "sha256": "3f2a56456846b5ec5f4cf282f5e9ddc88b49bc93fc669b70e0f4d00bd03a68f3",
+      "bytes": 842
+    },
+    "run-mcp-default-c9.sh": {
+      "sha256": "aa042c39822580489fabc20772ab3d80e69b51cb9abb13d36c4a80b61a38528f",
+      "bytes": 998
+    }
+  }
+}

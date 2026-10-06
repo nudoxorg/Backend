@@ -68,6 +68,30 @@ fn owned_bulk_builder_matches_borrowed_canonical_tree() -> Result<(), Box<dyn st
     Ok(())
 }
 
+#[test]
+fn multilevel_retained_shrink_has_the_same_root_as_independent_bulk_rows()
+-> Result<(), Box<dyn std::error::Error>> {
+    let rows: Vec<_> = (0..70_000u64).map(|key| (key, key * 2)).collect();
+    let tree = PersistentTree::<RelationFixture>::from_sorted_items(&rows)?;
+    assert!(tree.root().level() >= 2);
+    for retained in [1_u64, 2, 1_025] {
+        let changes = (retained..70_000)
+            .map(|key| TreeChange { key, after: None })
+            .collect::<Vec<_>>();
+        let shrunk = tree.prepare_update(&changes)?.commit();
+        let expected = PersistentTree::<RelationFixture>::from_sorted_items(
+            &rows[..usize::try_from(retained)?],
+        )?;
+        assert_eq!(shrunk.root().commitment(), expected.root().commitment());
+        assert_eq!(shrunk.root().level(), expected.root().level());
+        assert_eq!(
+            shrunk.iter().collect::<Vec<_>>(),
+            expected.iter().collect::<Vec<_>>()
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct CountedValue {
     bytes: Vec<u8>,

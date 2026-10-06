@@ -1,0 +1,14 @@
+{
+  "schema": "nudox.allocated-index-compiler.v1",
+  "permit_pid": 57672,
+  "cargo_launcher_pid": 57679,
+  "started": "2026-10-06T19:55:25.232557+00:00",
+  "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/compiler-index.lock",
+  "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/mcp-default-bbbb-full-admission.json",
+  "admission_age_seconds": 35.01702,
+  "argv": [
+    "/bin/bash",
+    "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-mcp-default-bbbb-full.sh"
+  ],
+  "allocation": "Root allocated one private Mac compiler group; explicit -j4"
+}

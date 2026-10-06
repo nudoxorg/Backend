@@ -1,0 +1,5674 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/vendor/gpui_ce_components/Cargo.toml
+workspace: /Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/Cargo.toml
+warning: unused import: `history::TypedV3HistoryPublicationSnapshot`
+   --> crates/replication/src/ir_generation_store.rs:146:16
+    |
+146 | pub(crate) use history::TypedV3HistoryPublicationSnapshot;
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary qualification
+    --> crates/replication/src/ir_hydration_store/history_v3.rs:1438:26
+     |
+1438 |             .with_gc_pin(std::sync::Arc::new(guard))
+     |                          ^^^^^^^^^^^^^^^^^^^
+     |
+     = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+     |
+1438 -             .with_gc_pin(std::sync::Arc::new(guard))
+1438 +             .with_gc_pin(Arc::new(guard))
+     |
+
+warning: unnecessary qualification
+    --> crates/replication/src/ir_hydration_store/history_v3.rs:1652:13
+     |
+1652 |             std::sync::Arc::new(pin.into_guard()),
+     |             ^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1652 -             std::sync::Arc::new(pin.into_guard()),
+1652 +             Arc::new(pin.into_guard()),
+     |
+
+warning: unused imports: `TypedV3HistoryAdmissionMetrics`, `TypedV3HistoryAdmission`, and `TypedV3HistoryGcPin`
+  --> crates/replication/src/ir_hydration_store.rs:67:5
+   |
+67 |     TypedV3HistoryAdmission, TypedV3HistoryAdmissionMetrics, TypedV3HistoryGcPin,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^
+
+warning: methods `manifest_root` and `plane_root` are never used
+   --> crates/replication/src/ir_generation_store.rs:232:25
+    |
+203 | impl HistoricalSemanticPlaneBinding {
+    | ----------------------------------- methods in this implementation
+...
+232 |     pub(crate) const fn manifest_root(self) -> SemanticManifestRoot {
+    |                         ^^^^^^^^^^^^^
+...
+238 |     pub(crate) const fn plane_root(self) -> SemanticPlaneRoot {
+    |                         ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `append_history_index_entry_typed` is never used
+   --> crates/replication/src/ir_generation_store/history/codec.rs:679:15
+    |
+679 | pub(crate) fn append_history_index_entry_typed(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated functions `from_produced` and `from_selected_native_history` are never used
+   --> crates/replication/src/ir_generation_store/history/v3.rs:223:19
+    |
+219 | impl TypedV3HistoryLocator {
+    | -------------------------- associated functions in this implementation
+...
+223 |     pub(crate) fn from_produced(
+    |                   ^^^^^^^^^^^^^
+...
+233 |     pub(crate) fn from_selected_native_history(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `stage_typed_v3_locator_bytes` is never used
+   --> crates/replication/src/ir_generation_store/history/v3.rs:501:4
+    |
+501 | fn stage_typed_v3_locator_bytes(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `stage_typed_v3_locator`, `finish_typed_v3_locator_admission`, and `typed_v3_locator` are never used
+   --> crates/replication/src/ir_generation_store/history/v3.rs:665:19
+    |
+657 | impl LocalSemanticGenerationFiles {
+    | --------------------------------- methods in this implementation
+...
+665 |     pub(crate) fn stage_typed_v3_locator(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+689 |     pub(crate) fn finish_typed_v3_locator_admission(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+733 |     pub(crate) fn typed_v3_locator(
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: fields `root_claim` and `metrics` are never read
+   --> crates/replication/src/ir_hydration_store/history_v3.rs:743:5
+    |
+736 | pub(crate) struct TypedV3HistoryAdmission<'pin> {
+    |                   ----------------------- fields in this struct
+...
+743 |     root_claim: HistoryTypedV3RootClaim,
+    |     ^^^^^^^^^^
+744 |     metrics: TypedV3HistoryAdmissionMetrics,
+    |     ^^^^^^^
+
+warning: methods `root_claim` and `metrics` are never used
+   --> crates/replication/src/ir_hydration_store/history_v3.rs:756:25
+    |
+747 | impl TypedV3HistoryAdmission<'_> {
+    | -------------------------------- methods in this implementation
+...
+756 |     pub(crate) const fn root_claim(&self) -> HistoryTypedV3RootClaim {
+    |                         ^^^^^^^^^^
+...
+764 |     pub(crate) const fn metrics(&self) -> TypedV3HistoryAdmissionMetrics {
+    |                         ^^^^^^^
+
+warning: methods `verify_produced_typed_v3` and `verify_produced_typed_v3_content` are never used
+   --> crates/replication/src/ir_hydration_store/history_v3.rs:808:19
+    |
+777 | impl FileSemanticRangeStore {
+    | --------------------------- methods in this implementation
+...
+808 |     pub(crate) fn verify_produced_typed_v3<'pin>(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+837 |     pub(crate) fn verify_produced_typed_v3_content<'pin>(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `segment_pins`, `jumbo_pin`, `encoding_metrics`, `segment_store_metrics`, `jumbo_store_metrics`, and `verifier_io_metrics` are never read
+    --> crates/replication/src/ir_producer_store.rs:1595:5
+     |
+1589 | pub(crate) struct ProducedSelectedNativeTypedPlaneHistoryV3 {
+     |                   ----------------------------------------- fields in this struct
+...
+1595 |     segment_pins: Vec<DurableSemanticObjectPin>,
+     |     ^^^^^^^^^^^^
+1596 |     jumbo_pin: DurableSemanticObjectPin,
+     |     ^^^^^^^^^
+1597 |     encoding_metrics: [CanonicalPlaneEncodingMetrics; TYPED_V2_FAMILY_COUNT],
+     |     ^^^^^^^^^^^^^^^^
+1598 |     segment_store_metrics: [SemanticProducerStoreMetrics; TYPED_V2_FAMILY_COUNT],
+     |     ^^^^^^^^^^^^^^^^^^^^^
+1599 |     jumbo_store_metrics: SemanticProducerStoreMetrics,
+     |     ^^^^^^^^^^^^^^^^^^^
+1600 |     verifier_io_metrics: SemanticProducerVerifierIoMetrics,
+     |     ^^^^^^^^^^^^^^^^^^^
+
+warning: methods `segment_pins` and `jumbo_pin` are never used
+    --> crates/replication/src/ir_producer_store.rs:1624:19
+     |
+1603 | impl ProducedSelectedNativeTypedPlaneHistoryV3 {
+     | ---------------------------------------------- methods in this implementation
+...
+1624 |     pub(crate) fn segment_pins(&self) -> &[DurableSemanticObjectPin] {
+     |                   ^^^^^^^^^^^^
+...
+1628 |     pub(crate) const fn jumbo_pin(&self) -> &DurableSemanticObjectPin {
+     |                         ^^^^^^^^^
+
+warning: field `input_witness` is never read
+    --> crates/replication/src/ir_producer_store.rs:1635:5
+     |
+1633 | struct TypedV3ProducedArtifacts {
+     |        ------------------------ field in this struct
+1634 |     image_facts: SemanticImageFacts,
+1635 |     input_witness: SemanticInputWitness,
+     |     ^^^^^^^^^^^^^
+
+warning: function `produce_semantic_typed_plane_v3` is never used
+    --> crates/replication/src/ir_producer_store.rs:1656:15
+     |
+1656 | pub(crate) fn produce_semantic_typed_plane_v3<Reader: SemanticReader + ?Sized>(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `backend-replication` (lib) generated 16 warnings (run `cargo fix --lib -p backend-replication` to apply 4 suggestions)
+warning: method `contains_unnameable_self_referential_application` is never used
+   --> third_party/tsz/crates/tsz-emitter/src/emitter/types/printer/type_printing.rs:783:19
+    |
+ 51 | impl<'a> TypePrinter<'a> {
+    | ------------------------ method in this implementation
+...
+783 |     pub(crate) fn contains_unnameable_self_referential_application(&self, type_id: TypeId) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `tsz-emitter` (lib) generated 1 warning
+warning: unnecessary qualification
+   --> crates/library/interface/compiler_fragment/nested.rs:845:32
+    |
+845 |     pub const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+    |
+845 -     pub const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+845 +     pub const fn kind(self) -> CompilerFragmentNestedFaultKind {
+    |
+
+warning: unnecessary qualification
+   --> crates/library/interface/compiler_fragment/nested.rs:860:28
+    |
+860 |     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+860 -     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+860 +     const fn kind(self) -> CompilerFragmentNestedFaultKind {
+    |
+
+warning: unnecessary qualification
+   --> crates/library/interface/compiler_fragment/nested.rs:872:28
+    |
+872 |     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+872 -     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+872 +     const fn kind(self) -> CompilerFragmentNestedFaultKind {
+    |
+
+warning: unnecessary qualification
+   --> crates/library/interface/compiler_fragment/nested.rs:884:28
+    |
+884 |     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+884 -     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+884 +     const fn kind(self) -> CompilerFragmentNestedFaultKind {
+    |
+
+warning: unnecessary qualification
+   --> crates/library/interface/compiler_fragment/nested.rs:894:28
+    |
+894 |     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+894 -     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+894 +     const fn kind(self) -> CompilerFragmentNestedFaultKind {
+    |
+
+warning: unnecessary qualification
+   --> crates/library/interface/compiler_fragment/nested.rs:931:28
+    |
+931 |     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+931 -     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+931 +     const fn kind(self) -> CompilerFragmentNestedFaultKind {
+    |
+
+warning: unnecessary qualification
+   --> crates/library/interface/compiler_fragment/nested.rs:958:28
+    |
+958 |     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+958 -     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+958 +     const fn kind(self) -> CompilerFragmentNestedFaultKind {
+    |
+
+warning: unnecessary qualification
+   --> crates/library/interface/compiler_fragment/nested.rs:980:28
+    |
+980 |     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+980 -     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+980 +     const fn kind(self) -> CompilerFragmentNestedFaultKind {
+    |
+
+warning: unnecessary qualification
+   --> crates/library/interface/compiler_fragment/nested.rs:999:28
+    |
+999 |     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+999 -     const fn kind(self) -> super::CompilerFragmentNestedFaultKind {
+999 +     const fn kind(self) -> CompilerFragmentNestedFaultKind {
+    |
+
+warning: unused import: `CompilerToolIssue`
+ --> crates/library/surface.rs:5:53
+  |
+5 |     CompilerFragmentFaultKind, CompilerToolFailure, CompilerToolIssue, CompilerToolRequirement,
+  |                                                     ^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `PackageAnonymousCallableAnchorFaultFacts` and `PackageAnonymousCallableAnchorPoolFact`
+  --> crates/library/surface.rs:27:48
+   |
+27 |     CompilerNativeToolFact, CompilerStageFact, PackageAnonymousCallableAnchorFaultFacts,
+   |                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+28 |     PackageAnonymousCallableAnchorPoolFact, PackageCompilerFailureCause,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unnecessary qualification
+    --> crates/library/surface.rs:4060:31
+     |
+4060 |         let mut coordinates = std::collections::BTreeSet::new();
+     |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+4060 -         let mut coordinates = std::collections::BTreeSet::new();
+4060 +         let mut coordinates = BTreeSet::new();
+     |
+
+warning: unused variable: `ordinal`
+   --> crates/library/interface/compiler_fragment.rs:385:75
+    |
+385 |             CompilerFragmentFault::Prepare(PrepareError::OccurrenceLane { ordinal, fault }) => {
+    |                                                                           ^^^^^^^ help: try ignoring the field: `ordinal: _`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:719:5
+    |
+719 |     AnonymousCallableName,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:720:5
+    |
+720 |     Capacity,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:721:5
+    |
+721 |     InvalidTreeEntity,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:722:5
+    |
+722 |     Dangling,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:723:5
+    |
+723 |     RecursiveType,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:724:5
+    |
+724 |     CallableElement,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:725:5
+    |
+725 |     MissingTypedVariadicParameter,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:726:5
+    |
+726 |     EmptyQualifiedPath,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:727:5
+    |
+727 |     TypeParameterRequirements,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:728:5
+    |
+728 |     EmptyCxxQualification,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:729:5
+    |
+729 |     IllegalCQualifierTarget,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:730:5
+    |
+730 |     IllegalCxxMemberPointerOwner,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:731:5
+    |
+731 |     InvalidDocumentationUtf8,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:732:5
+    |
+732 |     InvalidOccurrenceSpan,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:733:5
+    |
+733 |     SignatureCarrierRoleCount,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:734:5
+    |
+734 |     SignatureCarrierRoleKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:735:5
+    |
+735 |     SignatureCarrierRoleOwnerKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:736:5
+    |
+736 |     SignatureCarrierRoleAlreadyCaptured,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:737:5
+    |
+737 |     SignatureCarrierBindingsAlreadyCaptured,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:738:5
+    |
+738 |     SignatureCarrierBindingOwnerSet,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:739:5
+    |
+739 |     SignatureCarrierBindingSignature,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:740:5
+    |
+740 |     SignatureCarrierBindingCounts,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:741:5
+    |
+741 |     SignatureCarrierBindingEdgeRole,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:742:5
+    |
+742 |     SignatureCarrierBindingTargetCount,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:743:5
+    |
+743 |     SignatureCarrierBindingTargetKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:744:5
+    |
+744 |     SignatureCarrierBindingType,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:745:5
+    |
+745 |     SignatureCarrierBindingEdgeMismatch,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:746:5
+    |
+746 |     ParentCycle,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:747:5
+    |
+747 |     DeclarationKey,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:748:5
+    |
+748 |     TypedDeclarationKey,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:749:5
+    |
+749 |     AnonymousCallableSourceUnavailable,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:750:5
+    |
+750 |     AnonymousCallableAnchorInvalid,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:751:5
+    |
+751 |     AnonymousCallableSourceCoordinate,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:752:5
+    |
+752 |     AnonymousCallableInstance,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:753:5
+    |
+753 |     ScopedDeclarationPreimage,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:754:5
+    |
+754 |     ForeignKeyPreimage,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:755:5
+    |
+755 |     DuplicateDeclarationIdentity,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:756:5
+    |
+756 |     TreeVersionCount,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:757:5
+    |
+757 |     AuthorityRowCount,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:758:5
+    |
+758 |     OccurrenceAuthorityRowCount,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:759:5
+    |
+759 |     AuthorityFacts,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:760:5
+    |
+760 |     OccurrenceAuthorityFacts,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:761:5
+    |
+761 |     ImageProvenanceLineage,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:762:5
+    |
+762 |     ImageProvenanceScope,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:763:5
+    |
+763 |     ImageProvenanceScopePreimage,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:764:5
+    |
+764 |     ImageProvenanceRecipe,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:765:5
+    |
+765 |     ImageProvenanceRebind,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:766:5
+    |
+766 |     LanguageExtension,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:767:5
+    |
+767 |     LanguageProfileMismatch,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:768:5
+    |
+768 |     LanguageProfileRebind,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:775:5
+    |
+775 |     Count,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:776:5
+    |
+776 |     AtomBytePoolOverflow,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:777:5
+    |
+777 |     LayoutOverflow,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:778:5
+    |
+778 |     NativeCount,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:779:5
+    |
+779 |     OutputLength,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:780:5
+    |
+780 |     Entity,
+    |     ^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:781:5
+    |
+781 |     TypeNode,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:782:5
+    |
+782 |     SemanticDataOverflow,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:783:5
+    |
+783 |     SemanticEntityRoots,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:784:5
+    |
+784 |     SemanticAtomLength,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:785:5
+    |
+785 |     SemanticData,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:786:5
+    |
+786 |     OccurrenceLane,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:787:5
+    |
+787 |     TypeFacts,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:788:5
+    |
+788 |     Documentation,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:789:5
+    |
+789 |     ExtensionPools,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:790:5
+    |
+790 |     ExtensionPoolsMismatch,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:797:5
+    |
+797 |     OutputTooSmall,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:798:5
+    |
+798 |     ExtensionSection,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:799:5
+    |
+799 |     AtomLength,
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:800:5
+    |
+800 |     AtomExtent,
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:801:5
+    |
+801 |     SemanticAtomLength,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:808:5
+    |
+808 |     ExtensionPoolPair,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:809:5
+    |
+809 |     Documentation,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:810:5
+    |
+810 |     ExtensionPools,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:811:5
+    |
+811 |     LanguageExtensions,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:812:5
+    |
+812 |     TruncatedHeader,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:813:5
+    |
+813 |     Magic,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:814:5
+    |
+814 |     Schema,
+    |     ^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:815:5
+    |
+815 |     DeclaredLength,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:816:5
+    |
+816 |     Extent,
+    |     ^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:817:5
+    |
+817 |     WireWidth,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:818:5
+    |
+818 |     Directory,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:819:5
+    |
+819 |     MissingSection,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:820:5
+    |
+820 |     Entity,
+    |     ^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:821:5
+    |
+821 |     EntityRecord,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:822:5
+    |
+822 |     Atom,
+    |     ^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:823:5
+    |
+823 |     TypeNode,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:824:5
+    |
+824 |     SourceIdentity,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:825:5
+    |
+825 |     RecipeFact,
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:826:5
+    |
+826 |     SemanticData,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:827:5
+    |
+827 |     Occurrences,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:828:5
+    |
+828 |     TypeFacts,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:849:5
+    |
+849 |     Atom,
+    |     ^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:850:5
+    |
+850 |     Text,
+    |     ^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:851:5
+    |
+851 |     Type,
+    |     ^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:852:5
+    |
+852 |     Entity,
+    |     ^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:853:5
+    |
+853 |     External,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:854:5
+    |
+854 |     Link,
+    |     ^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:855:5
+    |
+855 |     LinkOccurrence,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:856:5
+    |
+856 |     TypeList,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:857:5
+    |
+857 |     EntityList,
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:858:5
+    |
+858 |     AtomList,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:859:5
+    |
+859 |     Docs,
+    |     ^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:860:5
+    |
+860 |     TupleElements,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:861:5
+    |
+861 |     ObjectMembers,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:862:5
+    |
+862 |     TemplateParts,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:863:5
+    |
+863 |     TypeParameterBounds,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:864:5
+    |
+864 |     TypeParameters,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:865:5
+    |
+865 |     FreePredicates,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:872:5
+    |
+872 |     Directory,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:873:5
+    |
+873 |     EntityLane,
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:874:5
+    |
+874 |     TypeNodeLane,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:875:5
+    |
+875 |     AtomRecordLane,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:876:5
+    |
+876 |     AtomByteLane,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:877:5
+    |
+877 |     SourceIdentityLane,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:878:5
+    |
+878 |     RecipeFactLane,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:879:5
+    |
+879 |     SemanticData,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:880:5
+    |
+880 |     Occurrences,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:881:5
+    |
+881 |     TypeFacts,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:882:5
+    |
+882 |     Documentation,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:883:5
+    |
+883 |     LanguageExtensions,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:884:5
+    |
+884 |     ExtensionPools,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:891:5
+    |
+891 |     Prepare,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:892:5
+    |
+892 |     Write,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment.rs:893:5
+    |
+893 |     Validate,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:15:5
+   |
+15 |     Atoms,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:16:5
+   |
+16 |     Products,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:17:5
+   |
+17 |     Constructors,
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:18:5
+   |
+18 |     Lists,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:19:5
+   |
+19 |     Children,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:20:5
+   |
+20 |     AtomOrder,
+   |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:21:5
+   |
+21 |     AtomMap,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:22:5
+   |
+22 |     ProductOrder,
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:23:5
+   |
+23 |     ProductMap,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:24:5
+   |
+24 |     Colors,
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:25:5
+   |
+25 |     NextColors,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:26:5
+   |
+26 |     Hashes,
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:27:5
+   |
+27 |     NextHashes,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:28:5
+   |
+28 |     Representatives,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:29:5
+   |
+29 |     InternSlots,
+   |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:36:5
+   |
+36 |     RefinementRounds,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:37:5
+   |
+37 |     SortComparisons,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:38:5
+   |
+38 |     HashEvaluations,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:39:5
+   |
+39 |     InternProbes,
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:40:5
+   |
+40 |     Work,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:53:5
+   |
+53 |     EntityRecord(EntityRecordFaultFacts),
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:54:5
+   |
+54 |     TypeNode(TypeNodeFaultFacts),
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:55:5
+   |
+55 |     Atom(AtomFaultFacts),
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:56:5
+   |
+56 |     CanonicalData(CanonicalDataFaultFacts),
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:57:5
+   |
+57 |     SemanticData(SemanticDataFaultFacts),
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:58:5
+   |
+58 |     Occurrence(OccurrenceFaultFacts),
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:59:5
+   |
+59 |     SignatureCarrier(SignatureCarrierFaultFacts),
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:60:5
+   |
+60 |     Validation(ValidationFaultFacts),
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:68:5
+   |
+68 |     EntityTypeReference,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:69:5
+   |
+69 |     EntityNameReference,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:70:5
+   |
+70 |     EntityKindTag,
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:71:5
+   |
+71 |     EntityReservedBits,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:72:5
+   |
+72 |     TypeNodeReservedBytes,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:73:5
+   |
+73 |     TypeNodeTag,
+   |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:74:5
+   |
+74 |     TypeNodePrimitive,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:75:5
+   |
+75 |     TypeNodeEdge,
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:76:5
+   |
+76 |     AtomRange,
+   |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:77:5
+   |
+77 |     AtomEmpty,
+   |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:78:5
+   |
+78 |     CanonicalDataCount,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:79:5
+   |
+79 |     CanonicalDataNativeCount,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:80:5
+   |
+80 |     CanonicalDataNativeWork,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:81:5
+   |
+81 |     CanonicalDataCanonicalCountOverflow,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:82:5
+   |
+82 |     CanonicalDataCanonicalCountMismatch,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:83:5
+   |
+83 |     CanonicalDataScratch,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:84:5
+   |
+84 |     CanonicalDataOutputTooSmall,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:85:5
+   |
+85 |     CanonicalDataProductHead,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:86:5
+   |
+86 |     CanonicalDataProductList,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:87:5
+   |
+87 |     CanonicalDataConstructorCount,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:88:5
+   |
+88 |     CanonicalDataConstructorTag,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:89:5
+   |
+89 |     CanonicalDataConstructorReservedPayload,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:90:5
+   |
+90 |     CanonicalDataConstructorArityOverflow,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:91:5
+   |
+91 |     CanonicalDataConstructorArity,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:92:5
+   |
+92 |     CanonicalDataProductChildRole,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:93:5
+   |
+93 |     CanonicalDataListExtent,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:94:5
+   |
+94 |     CanonicalDataNativeExtent,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:95:5
+   |
+95 |     CanonicalDataProductChild,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:96:5
+   |
+96 |     CanonicalDataOutputLength,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:97:5
+   |
+97 |     CanonicalDataCanonicalListExtent,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:98:5
+   |
+98 |     CanonicalDataCanonicalAtom,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/interface/compiler_fragment/nested.rs:99:5
+   |
+99 |     CanonicalDataCanonicalProduct,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:100:5
+    |
+100 |     CanonicalDataCanonicalList,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:101:5
+    |
+101 |     CanonicalDataRefinementBound,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:102:5
+    |
+102 |     CanonicalDataInternTableFull,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:103:5
+    |
+103 |     CanonicalDataInternEntry,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:104:5
+    |
+104 |     CanonicalDataResourceCounterOverflow,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:105:5
+    |
+105 |     CanonicalDataBudgetAdmission,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:106:5
+    |
+106 |     CanonicalDataBudgetExceeded,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:107:5
+    |
+107 |     SemanticDataHeader,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:108:5
+    |
+108 |     SemanticDataAtomLength,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:109:5
+    |
+109 |     SemanticDataProductHead,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:110:5
+    |
+110 |     SemanticDataProductList,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:111:5
+    |
+111 |     SemanticDataConstructorCount,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:112:5
+    |
+112 |     SemanticDataEntityRootCount,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:113:5
+    |
+113 |     SemanticDataEntityRoot,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:114:5
+    |
+114 |     SemanticDataConstructorTag,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:115:5
+    |
+115 |     SemanticDataConstructorReservedPayload,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:116:5
+    |
+116 |     SemanticDataConstructorArityOverflow,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:117:5
+    |
+117 |     SemanticDataConstructorArity,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:118:5
+    |
+118 |     SemanticDataListExtent,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:119:5
+    |
+119 |     SemanticDataChildRoleCode,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:120:5
+    |
+120 |     SemanticDataChildRole,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:121:5
+    |
+121 |     SemanticDataChildTag,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:122:5
+    |
+122 |     SemanticDataLocalChild,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:123:5
+    |
+123 |     SemanticDataLocalReserved,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:124:5
+    |
+124 |     SemanticDataExternalAuthority,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:125:5
+    |
+125 |     SemanticDataTrailing,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:126:5
+    |
+126 |     OccurrenceOwner,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:127:5
+    |
+127 |     OccurrenceLocalTarget,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:128:5
+    |
+128 |     OccurrenceTargetTag,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:129:5
+    |
+129 |     OccurrenceOriginTag,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:130:5
+    |
+130 |     OccurrenceReferenceKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:131:5
+    |
+131 |     OccurrenceConfidence,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:132:5
+    |
+132 |     OccurrenceSpan,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:133:5
+    |
+133 |     OccurrenceKindCell,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:134:5
+    |
+134 |     OccurrenceEmptyPath,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:135:5
+    |
+135 |     OccurrenceTruncated,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:136:5
+    |
+136 |     OccurrenceTrailingBytes,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:137:5
+    |
+137 |     OccurrenceLegacyStableTarget,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:138:5
+    |
+138 |     OccurrenceAuthorityDomain,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:139:5
+    |
+139 |     OccurrenceAuthorityWidth,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:140:5
+    |
+140 |     ValidateTruncatedHeader,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:141:5
+    |
+141 |     ValidateMagic,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:142:5
+    |
+142 |     ValidateSchema,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:143:5
+    |
+143 |     ValidateDeclaredLength,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:144:5
+    |
+144 |     ValidateExtent,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:145:5
+    |
+145 |     ValidateWireWidth,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:146:5
+    |
+146 |     SignatureCarrierRoleCount,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:147:5
+    |
+147 |     SignatureCarrierRoleKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:148:5
+    |
+148 |     SignatureCarrierRoleOwnerKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:149:5
+    |
+149 |     SignatureCarrierBindingOwnerSet,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:150:5
+    |
+150 |     SignatureCarrierBindingSignature,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:151:5
+    |
+151 |     SignatureCarrierBindingCounts,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:152:5
+    |
+152 |     SignatureCarrierBindingEdgeRole,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:153:5
+    |
+153 |     SignatureCarrierBindingTargetCount,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:154:5
+    |
+154 |     SignatureCarrierBindingTargetKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:155:5
+    |
+155 |     SignatureCarrierBindingType,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:156:5
+    |
+156 |     SignatureCarrierBindingEdgeMismatch,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/interface/compiler_fragment/nested.rs:168:15
+    |
+168 |               $($variant { $($field: $ty),* }),*
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+173 | / nested_fault_enum! {
+174 | |     /// Entity-record and entity-coordinate validation subcauses.
+175 | |     EntityRecordFaultFacts {
+176 | |         TypeReference { ordinal: u32, target: u32, node_count: u32 },
+...   |
+181 | | }
+    | |_- in this macro invocation
+    |
+    = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct field
+   --> crates/library/interface/compiler_fragment/nested.rs:168:28
+    |
+168 |               $($variant { $($field: $ty),* }),*
+    |                              ^^^^^^^^^^^
+...
+173 | / nested_fault_enum! {
+174 | |     /// Entity-record and entity-coordinate validation subcauses.
+175 | |     EntityRecordFaultFacts {
+176 | |         TypeReference { ordinal: u32, target: u32, node_count: u32 },
+...   |
+181 | | }
+    | |_- in this macro invocation
+    |
+    = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a variant
+    --> crates/library/interface/compiler_fragment/nested.rs:168:15
+     |
+ 168 |               $($variant { $($field: $ty),* }),*
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1017 | / nested_fault_enum! {
+1018 | |     /// Type-node validation subcauses.
+1019 | |     TypeNodeFaultFacts {
+1020 | |         ReservedBytes { ordinal: u32, packed: u32 },
+...    |
+1025 | | }
+     | |_- in this macro invocation
+     |
+     = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct field
+    --> crates/library/interface/compiler_fragment/nested.rs:168:28
+     |
+ 168 |               $($variant { $($field: $ty),* }),*
+     |                              ^^^^^^^^^^^
+...
+1017 | / nested_fault_enum! {
+1018 | |     /// Type-node validation subcauses.
+1019 | |     TypeNodeFaultFacts {
+1020 | |         ReservedBytes { ordinal: u32, packed: u32 },
+...    |
+1025 | | }
+     | |_- in this macro invocation
+     |
+     = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a variant
+    --> crates/library/interface/compiler_fragment/nested.rs:168:15
+     |
+ 168 |               $($variant { $($field: $ty),* }),*
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1027 | / nested_fault_enum! {
+1028 | |     /// Atom-record validation subcauses.
+1029 | |     AtomFaultFacts {
+1030 | |         Range { ordinal: u32, start: u32, length: u32, byte_count: u32 },
+...    |
+1033 | | }
+     | |_- in this macro invocation
+     |
+     = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct field
+    --> crates/library/interface/compiler_fragment/nested.rs:168:28
+     |
+ 168 |               $($variant { $($field: $ty),* }),*
+     |                              ^^^^^^^^^^^
+...
+1027 | / nested_fault_enum! {
+1028 | |     /// Atom-record validation subcauses.
+1029 | |     AtomFaultFacts {
+1030 | |         Range { ordinal: u32, start: u32, length: u32, byte_count: u32 },
+...    |
+1033 | | }
+     | |_- in this macro invocation
+     |
+     = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a variant
+    --> crates/library/interface/compiler_fragment/nested.rs:168:15
+     |
+ 168 |               $($variant { $($field: $ty),* }),*
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1035 | / nested_fault_enum! {
+1036 | |     /// Canonical semantic graph preparation subcauses.
+1037 | |     CanonicalDataFaultFacts {
+1038 | |         Count { lane: Lane, actual: u64 },
+...    |
+1068 | | }
+     | |_- in this macro invocation
+     |
+     = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct field
+    --> crates/library/interface/compiler_fragment/nested.rs:168:28
+     |
+ 168 |               $($variant { $($field: $ty),* }),*
+     |                              ^^^^^^^^^^^
+...
+1035 | / nested_fault_enum! {
+1036 | |     /// Canonical semantic graph preparation subcauses.
+1037 | |     CanonicalDataFaultFacts {
+1038 | |         Count { lane: Lane, actual: u64 },
+...    |
+1068 | | }
+     | |_- in this macro invocation
+     |
+     = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a variant
+    --> crates/library/interface/compiler_fragment/nested.rs:168:15
+     |
+ 168 |               $($variant { $($field: $ty),* }),*
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1070 | / nested_fault_enum! {
+1071 | |     /// Semantic-data reopening subcauses.
+1072 | |     SemanticDataFaultFacts {
+1073 | |         Header { required: u64, actual: u64 },
+...    |
+1093 | | }
+     | |_- in this macro invocation
+     |
+     = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct field
+    --> crates/library/interface/compiler_fragment/nested.rs:168:28
+     |
+ 168 |               $($variant { $($field: $ty),* }),*
+     |                              ^^^^^^^^^^^
+...
+1070 | / nested_fault_enum! {
+1071 | |     /// Semantic-data reopening subcauses.
+1072 | |     SemanticDataFaultFacts {
+1073 | |         Header { required: u64, actual: u64 },
+...    |
+1093 | | }
+     | |_- in this macro invocation
+     |
+     = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a variant
+    --> crates/library/interface/compiler_fragment/nested.rs:168:15
+     |
+ 168 |               $($variant { $($field: $ty),* }),*
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1095 | / nested_fault_enum! {
+1096 | |     /// Occurrence-plane reopening subcauses.
+1097 | |     OccurrenceFaultFacts {
+1098 | |         Owner { ordinal: u32, owner: u32, entity_count: u32 },
+...    |
+1113 | | }
+     | |_- in this macro invocation
+     |
+     = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct field
+    --> crates/library/interface/compiler_fragment/nested.rs:168:28
+     |
+ 168 |               $($variant { $($field: $ty),* }),*
+     |                              ^^^^^^^^^^^
+...
+1095 | / nested_fault_enum! {
+1096 | |     /// Occurrence-plane reopening subcauses.
+1097 | |     OccurrenceFaultFacts {
+1098 | |         Owner { ordinal: u32, owner: u32, entity_count: u32 },
+...    |
+1113 | | }
+     | |_- in this macro invocation
+     |
+     = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a variant
+    --> crates/library/interface/compiler_fragment/nested.rs:168:15
+     |
+ 168 |               $($variant { $($field: $ty),* }),*
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1115 | / nested_fault_enum! {
+1116 | |     /// Signature-carrier binding subcauses.
+1117 | |     SignatureCarrierFaultFacts {
+1118 | |         RoleCount { expected: u64, observed: u64 },
+...    |
+1130 | | }
+     | |_- in this macro invocation
+     |
+     = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct field
+    --> crates/library/interface/compiler_fragment/nested.rs:168:28
+     |
+ 168 |               $($variant { $($field: $ty),* }),*
+     |                              ^^^^^^^^^^^
+...
+1115 | / nested_fault_enum! {
+1116 | |     /// Signature-carrier binding subcauses.
+1117 | |     SignatureCarrierFaultFacts {
+1118 | |         RoleCount { expected: u64, observed: u64 },
+...    |
+1130 | | }
+     | |_- in this macro invocation
+     |
+     = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a variant
+    --> crates/library/interface/compiler_fragment/nested.rs:168:15
+     |
+ 168 |               $($variant { $($field: $ty),* }),*
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1132 | / nested_fault_enum! {
+1133 | |     /// Fragment header and extent validation subcauses.
+1134 | |     ValidationFaultFacts {
+1135 | |         TruncatedHeader { required: u64, actual: u64 },
+...    |
+1147 | | }
+     | |_- in this macro invocation
+     |
+     = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct field
+    --> crates/library/interface/compiler_fragment/nested.rs:168:28
+     |
+ 168 |               $($variant { $($field: $ty),* }),*
+     |                              ^^^^^^^^^^^
+...
+1132 | / nested_fault_enum! {
+1133 | |     /// Fragment header and extent validation subcauses.
+1134 | |     ValidationFaultFacts {
+1135 | |         TruncatedHeader { required: u64, actual: u64 },
+...    |
+1147 | | }
+     | |_- in this macro invocation
+     |
+     = note: this warning originates in the macro `nested_fault_enum` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unreachable `pub` item
+  --> crates/library/surface.rs:27:48
+   |
+25 | pub use package_compiler_failure::{
+   | --- help: consider restricting its visibility: `pub(crate)`
+26 |     AuthorityClassFact, AuthorityPhaseFact, CompilerAuthorityDiagnosticFacts, CompilerLanguageFact,
+27 |     CompilerNativeToolFact, CompilerStageFact, PackageAnonymousCallableAnchorFaultFacts,
+   |                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: or consider exporting it for use by other crates
+   = note: requested on the command line with `-W unreachable-pub`
+
+warning: unreachable `pub` item
+  --> crates/library/surface.rs:28:5
+   |
+25 | pub use package_compiler_failure::{
+   | --- help: consider restricting its visibility: `pub(crate)`
+...
+28 |     PackageAnonymousCallableAnchorPoolFact, PackageCompilerFailureCause,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: or consider exporting it for use by other crates
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:28:5
+   |
+28 |     Prepare,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:29:5
+   |
+29 |     Write,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:30:5
+   |
+30 |     Validate,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:31:5
+   |
+31 |     Setup,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:32:5
+   |
+32 |     Lowering,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:33:5
+   |
+33 |     Authority,
+   |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:40:5
+   |
+40 |     Rust,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:41:5
+   |
+41 |     TypeScript,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:42:5
+   |
+42 |     Python,
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:43:5
+   |
+43 |     Go,
+   |     ^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:44:5
+   |
+44 |     Java,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:45:5
+   |
+45 |     CSharp,
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:46:5
+   |
+46 |     Clang,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:53:5
+   |
+53 |     Parse,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:54:5
+   |
+54 |     LowerIr,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:61:5
+   |
+61 |     Rustc,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:62:5
+   |
+62 |     Clang,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:63:5
+   |
+63 |     Python,
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:64:5
+   |
+64 |     TypeScriptCompiler,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:65:5
+   |
+65 |     GoCompiler,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:66:5
+   |
+66 |     JavaCompiler,
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates/library/surface/package_compiler_failure.rs:67:5
+   |
+67 |     CSharpCompiler,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:128:9
+    |
+128 |         language: CompilerLanguageFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:129:9
+    |
+129 |         stage: CompilerStageFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:130:9
+    |
+130 |         selected: CompilerNativeToolFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:131:9
+    |
+131 |         configured: Option<CompilerNativeToolFact>,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:135:9
+    |
+135 |         language: CompilerLanguageFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:136:9
+    |
+136 |         stage: CompilerStageFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:137:9
+    |
+137 |         tool: CompilerNativeToolFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:141:9
+    |
+141 |         language: CompilerLanguageFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:142:9
+    |
+142 |         stage: CompilerStageFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:143:9
+    |
+143 |         issue: CompilerToolIssue,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:149:9
+    |
+149 |         phase: AuthorityPhaseFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:150:9
+    |
+150 |         class: AuthorityClassFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:151:9
+    |
+151 |         diagnostic: Option<CompilerAuthorityDiagnosticFacts>,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:344:5
+    |
+344 |     Open,
+    |     ^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:345:5
+    |
+345 |     Parse,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:346:5
+    |
+346 |     Resolve,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:347:5
+    |
+347 |     TypeCheck,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:348:5
+    |
+348 |     Project,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:355:5
+    |
+355 |     Syntax,
+    |     ^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:356:5
+    |
+356 |     Binding,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:357:5
+    |
+357 |     SourceScope,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:358:5
+    |
+358 |     Type,
+    |     ^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:359:5
+    |
+359 |     Authority,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:360:5
+    |
+360 |     Projection,
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:367:5
+    |
+367 |     pub retained_bytes: u32,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:368:5
+    |
+368 |     pub observed_bytes: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:369:5
+    |
+369 |     pub truncated: bool,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:381:5
+    |
+381 |     NoSupportedDeclaration,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:382:5
+    |
+382 |     ExtensionAtomUnbound {
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:383:9
+    |
+383 |         row: u32,
+    |         ^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:384:9
+    |
+384 |         provisional: u32,
+    |         ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:385:9
+    |
+385 |         atom_count: u32,
+    |         ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:387:5
+    |
+387 |     ExtensionTypeParametersUnbound {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:388:9
+    |
+388 |         row: u32,
+    |         ^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:389:9
+    |
+389 |         start: u32,
+    |         ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:390:9
+    |
+390 |         length: u32,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:391:9
+    |
+391 |         element_count: u32,
+    |         ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:393:5
+    |
+393 |     FactRejected {
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:394:9
+    |
+394 |         fact: u64,
+    |         ^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:395:9
+    |
+395 |         name_len: u64,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:396:9
+    |
+396 |         cause: PackageProjectionAdmissionFaultFacts,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:398:5
+    |
+398 |     RustFunction,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:399:5
+    |
+399 |     RustConstantType,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:400:5
+    |
+400 |     RustGenericParameter,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:401:5
+    |
+401 |     PythonAssignmentName,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:402:5
+    |
+402 |     PythonAssignmentValue,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:403:5
+    |
+403 |     ClangDeclarationForm,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:404:5
+    |
+404 |     TypeScriptDeclarationForm,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:405:5
+    |
+405 |     TypeScriptDeclarationType,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:406:5
+    |
+406 |     CSharpDeclarationForm,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:407:5
+    |
+407 |     CSharpDeclarationType,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:408:5
+    |
+408 |     GoDeclarationForm,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:409:5
+    |
+409 |     GoDeclarationType,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:410:5
+    |
+410 |     JavaDeclarationForm,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:411:5
+    |
+411 |     JavaProjection {
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:412:9
+    |
+412 |         fault: PackageLanguageProjectionFault,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:414:5
+    |
+414 |     GoProjection {
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:415:9
+    |
+415 |         fault: PackageLanguageProjectionFault,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:417:5
+    |
+417 |     TypeScriptProjection {
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:418:9
+    |
+418 |         fault: PackageTypeScriptProjectionFaultFacts,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:420:5
+    |
+420 |     PythonProjection {
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:421:9
+    |
+421 |         fault: PackageLanguageProjectionFault,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:423:5
+    |
+423 |     CSharpProjection {
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:424:9
+    |
+424 |         fault: PackageLanguageProjectionFault,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:426:5
+    |
+426 |     ClangProjection {
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:427:9
+    |
+427 |         fault: PackageLanguageProjectionFault,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:469:5
+    |
+469 |     ForeignKey {
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:470:9
+    |
+470 |         start: u32,
+    |         ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:471:9
+    |
+471 |         end: u32,
+    |         ^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:472:9
+    |
+472 |         cause: PackageForeignKeyFaultFacts,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:474:5
+    |
+474 |     PackageLineage {
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:475:9
+    |
+475 |         start: u32,
+    |         ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:476:9
+    |
+476 |         end: u32,
+    |         ^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:477:9
+    |
+477 |         cause: PackageLineageFaultFacts,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:479:5
+    |
+479 |     CoordinateOverflow {
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:480:9
+    |
+480 |         value: u64,
+    |         ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:482:5
+    |
+482 |     MissingImportBinding {
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:483:9
+    |
+483 |         fact: u32,
+    |         ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:539:5
+    |
+539 |     JavaImage,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:540:5
+    |
+540 |     JavaDepth,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:541:5
+    |
+541 |     JavaMalformedType,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:542:5
+    |
+542 |     JavaPrimitive,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:543:5
+    |
+543 |     JavaAtomUtf8,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:544:5
+    |
+544 |     JavaSourceUtf8,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:545:5
+    |
+545 |     JavaUtf16Offset,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:546:5
+    |
+546 |     JavaUtf16Range,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:547:5
+    |
+547 |     JavaOrphanOwner,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:548:5
+    |
+548 |     JavaForeignKey,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:549:5
+    |
+549 |     JavaSiblingCapacity,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:550:5
+    |
+550 |     JavaIndexCapacity,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:551:5
+    |
+551 |     GoImage,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:552:5
+    |
+552 |     GoIndexCapacity,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:553:5
+    |
+553 |     GoDepth,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:554:5
+    |
+554 |     GoVariadicWithoutParameter,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:555:5
+    |
+555 |     GoAnchor,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:556:5
+    |
+556 |     GoListCapacity,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:557:5
+    |
+557 |     GoOrphanTarget,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:558:5
+    |
+558 |     GoForeignKey,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:559:5
+    |
+559 |     GoPackageLineage,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:560:5
+    |
+560 |     GoAtomUtf8,
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:561:5
+    |
+561 |     GoRelativeSpan,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:562:5
+    |
+562 |     GoOrphanOwner,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:563:5
+    |
+563 |     GoAdmission,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:564:5
+    |
+564 |     PythonForeignSpellingUtf8,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:565:5
+    |
+565 |     PythonForeignKey,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:566:5
+    |
+566 |     PythonPackageLineage,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:567:5
+    |
+567 |     PythonContainment,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:568:5
+    |
+568 |     CSharpImage,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:569:5
+    |
+569 |     CSharpDepth,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:570:5
+    |
+570 |     CSharpNameSpan,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:571:5
+    |
+571 |     CSharpOwnerOrder,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:572:5
+    |
+572 |     CSharpAnchor,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:573:5
+    |
+573 |     CSharpForeign,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:574:5
+    |
+574 |     CSharpAttributeCapacity,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:575:5
+    |
+575 |     CSharpIndexCapacity,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:576:5
+    |
+576 |     CSharpHeterogeneousArrayRank,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:577:5
+    |
+577 |     CSharpResultName,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:578:5
+    |
+578 |     CSharpAdmission,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:579:5
+    |
+579 |     ClangSpan,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:580:5
+    |
+580 |     ClangNameless,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:581:5
+    |
+581 |     ClangAnchor,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:582:5
+    |
+582 |     ClangIndexCapacity,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:583:5
+    |
+583 |     ClangForeignOverride,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:584:5
+    |
+584 |     ClangForeignReference,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:585:5
+    |
+585 |     ClangIllegalQualifierTarget,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:586:5
+    |
+586 |     ClangIllegalMemberPointerOwner,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:654:5
+    |
+654 |     Tag {
+    |     ^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:655:9
+    |
+655 |         actual: u32,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:657:5
+    |
+657 |     ReservedPayload {
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:658:9
+    |
+658 |         tag: u8,
+    |         ^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:659:9
+    |
+659 |         payload0: u32,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:660:9
+    |
+660 |         payload1: u32,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:662:5
+    |
+662 |     ArityOverflow {
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:663:9
+    |
+663 |         tag: u8,
+    |         ^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:664:9
+    |
+664 |         payload0: u32,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:665:9
+    |
+665 |         payload1: u32,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:667:5
+    |
+667 |     Arity {
+    |     ^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:668:9
+    |
+668 |         tag: u8,
+    |         ^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:669:9
+    |
+669 |         expected: u32,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:670:9
+    |
+670 |         actual: u32,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:689:5
+    |
+689 |     Tag {
+    |     ^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:690:9
+    |
+690 |         actual: u8,
+    |         ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:692:5
+    |
+692 |     ReservedCell {
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:693:9
+    |
+693 |         tag: PackageTypeTagFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:694:9
+    |
+694 |         cell: PackageTypeCellFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:695:9
+    |
+695 |         actual: u32,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:697:5
+    |
+697 |     MissingCell {
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:698:9
+    |
+698 |         tag: PackageTypeTagFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:699:9
+    |
+699 |         cell: PackageTypeCellFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:701:5
+    |
+701 |     Reason {
+    |     ^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:702:9
+    |
+702 |         actual: u32,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:704:5
+    |
+704 |     PrimitiveShape {
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:705:9
+    |
+705 |         actual: u32,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:707:5
+    |
+707 |     CvQualifiers {
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:708:9
+    |
+708 |         actual: u32,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:710:5
+    |
+710 |     Width {
+    |     ^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:711:9
+    |
+711 |         actual: u32,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:713:5
+    |
+713 |     ChildCount {
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:714:9
+    |
+714 |         tag: PackageTypeTagFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:715:9
+    |
+715 |         min: u32,
+    |         ^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:716:9
+    |
+716 |         max: u32,
+    |         ^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:717:9
+    |
+717 |         actual: u32,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:719:5
+    |
+719 |     ChildNameForbidden {
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:720:9
+    |
+720 |         tag: PackageTypeTagFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:721:9
+    |
+721 |         position: u32,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:723:5
+    |
+723 |     ChildNameRequired {
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:724:9
+    |
+724 |         tag: PackageTypeTagFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:725:9
+    |
+725 |         position: u32,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:727:5
+    |
+727 |     ChildFlagsForbidden {
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:728:9
+    |
+728 |         tag: PackageTypeTagFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:729:9
+    |
+729 |         position: u32,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:730:9
+    |
+730 |         actual: u8,
+    |         ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:732:5
+    |
+732 |     VariadicParameter {
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:733:9
+    |
+733 |         position: u32,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:734:9
+    |
+734 |         actual: u8,
+    |         ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:736:5
+    |
+736 |     ChildTextForbidden {
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:737:9
+    |
+737 |         tag: PackageTypeTagFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:738:9
+    |
+738 |         position: u32,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:766:5
+    |
+766 |     SelfType,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:767:5
+    |
+767 |     Primitive,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:768:5
+    |
+768 |     Tuple,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:769:5
+    |
+769 |     Slice,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:770:5
+    |
+770 |     Array,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:771:5
+    |
+771 |     Union,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:772:5
+    |
+772 |     Intersection,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:773:5
+    |
+773 |     Never,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:774:5
+    |
+774 |     Any,
+    |     ^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:775:5
+    |
+775 |     Unknown,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:776:5
+    |
+776 |     Nominal,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:777:5
+    |
+777 |     Apply,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:778:5
+    |
+778 |     TypeVar,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:779:5
+    |
+779 |     Wildcard,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:780:5
+    |
+780 |     FunctionPointer,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:781:5
+    |
+781 |     Annotated,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:782:5
+    |
+782 |     Conditional,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:783:5
+    |
+783 |     Mapped,
+    |     ^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:784:5
+    |
+784 |     TemplateLiteral,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:785:5
+    |
+785 |     AnonymousRecord,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:786:5
+    |
+786 |     ImplTrait,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:787:5
+    |
+787 |     DynTrait,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:788:5
+    |
+788 |     Inferred,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:789:5
+    |
+789 |     QualifiedPath,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:790:5
+    |
+790 |     Map,
+    |     ^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:791:5
+    |
+791 |     Channel,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:792:5
+    |
+792 |     ArraySequence,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:793:5
+    |
+793 |     ArrayRectangular,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:794:5
+    |
+794 |     ArrayFixed,
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:795:5
+    |
+795 |     ArrayConstExpression,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:796:5
+    |
+796 |     ArrayIncomplete,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:797:5
+    |
+797 |     CQualified,
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:798:5
+    |
+798 |     KeyOf,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:799:5
+    |
+799 |     IndexedAccess,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:800:5
+    |
+800 |     TypeOf,
+    |     ^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:807:5
+    |
+807 |     Payload0,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:808:5
+    |
+808 |     Payload1,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:809:5
+    |
+809 |     Text,
+    |     ^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:810:5
+    |
+810 |     Text2,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:811:5
+    |
+811 |     Nominal,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:819:5
+    |
+819 |     EmptyName,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:820:5
+    |
+820 |     AnonymousCallableAnchor {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:821:9
+    |
+821 |         cause: PackageAnonymousCallableAnchorFaultFacts,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:823:5
+    |
+823 |     AnonymousCallableAnchorPoolCapacity {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:824:9
+    |
+824 |         pool: PackageAnonymousCallableAnchorPoolFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:825:9
+    |
+825 |         used: u64,
+    |         ^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:826:9
+    |
+826 |         requested: u64,
+    |         ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:827:9
+    |
+827 |         capacity: u64,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:829:5
+    |
+829 |     Capacity,
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:830:5
+    |
+830 |     ChildCapacity,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:831:5
+    |
+831 |     ProductChildPoolCapacity {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:832:9
+    |
+832 |         used: u64,
+    |         ^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:833:9
+    |
+833 |         requested: u64,
+    |         ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:834:9
+    |
+834 |         capacity: u64,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:836:5
+    |
+836 |     Constructor {
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:837:9
+    |
+837 |         cause: PackageProjectionConstructorFaultFacts,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:839:5
+    |
+839 |     ChildRole {
+    |     ^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:840:9
+    |
+840 |         position: u64,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:841:9
+    |
+841 |         expected: u8,
+    |         ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:842:9
+    |
+842 |         actual: u8,
+    |         ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:844:5
+    |
+844 |     ChildTarget {
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:845:9
+    |
+845 |         position: u64,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:846:9
+    |
+846 |         target: u32,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:847:9
+    |
+847 |         fact_count: u64,
+    |         ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:849:5
+    |
+849 |     TypeRecord {
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:850:9
+    |
+850 |         cause: PackageProjectionSemanticTypeFaultFacts,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:852:5
+    |
+852 |     TypeChild {
+    |     ^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:853:9
+    |
+853 |         position: u64,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:854:9
+    |
+854 |         cause: PackageProjectionSemanticTypeFaultFacts,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:856:5
+    |
+856 |     TypeChildTarget {
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:857:9
+    |
+857 |         position: u64,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:858:9
+    |
+858 |         target: u32,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:859:9
+    |
+859 |         fact_count: u64,
+    |         ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:861:5
+    |
+861 |     TypeChildCapacity,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:862:5
+    |
+862 |     TypeChildPoolCapacity {
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:863:9
+    |
+863 |         lane: u8,
+    |         ^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:864:9
+    |
+864 |         used: u64,
+    |         ^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:865:9
+    |
+865 |         requested: u64,
+    |         ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:866:9
+    |
+866 |         capacity: u64,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:868:5
+    |
+868 |     TypeRowCapacity,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:869:5
+    |
+869 |     ComputedRowCapacity,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:870:5
+    |
+870 |     TypeProjectionDepthLimit {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:871:9
+    |
+871 |         depth: u64,
+    |         ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:872:9
+    |
+872 |         maximum: u64,
+    |         ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:874:5
+    |
+874 |     TypeProjectionCycle {
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:875:9
+    |
+875 |         type_id: u32,
+    |         ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:877:5
+    |
+877 |     TypeProjectionRecursiveReference {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:878:9
+    |
+878 |         distance: u32,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:880:5
+    |
+880 |     TypeProjectionWidth {
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:881:9
+    |
+881 |         actual: u64,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:882:9
+    |
+882 |         maximum: u64,
+    |         ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:884:5
+    |
+884 |     OccurrenceOwner {
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:885:9
+    |
+885 |         owner: u32,
+    |         ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:886:9
+    |
+886 |         fact_count: u64,
+    |         ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:888:5
+    |
+888 |     OccurrenceCapacity,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:889:5
+    |
+889 |     DocOwner {
+    |     ^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:890:9
+    |
+890 |         owner: u32,
+    |         ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:891:9
+    |
+891 |         fact_count: u64,
+    |         ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:893:5
+    |
+893 |     DocCapacity,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:894:5
+    |
+894 |     ExtensionAtomCapacity,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:895:5
+    |
+895 |     TypeParameterCapacity,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:896:5
+    |
+896 |     TypeParameterBoundCapacity {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:897:9
+    |
+897 |         requested: u64,
+    |         ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:898:9
+    |
+898 |         available: u64,
+    |         ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:900:5
+    |
+900 |     RefListCapacity,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:901:5
+    |
+901 |     RefListElements,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:902:5
+    |
+902 |     RefTarget {
+    |     ^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:903:9
+    |
+903 |         lane: u8,
+    |         ^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:904:9
+    |
+904 |         raw: u32,
+    |         ^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:905:9
+    |
+905 |         fact_count: u64,
+    |         ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:907:5
+    |
+907 |     SourceSpan {
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:908:9
+    |
+908 |         entity: u32,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:909:9
+    |
+909 |         start: u32,
+    |         ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:910:9
+    |
+910 |         end: u32,
+    |         ^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:911:9
+    |
+911 |         source_len: u32,
+    |         ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:913:5
+    |
+913 |     ConflictingSourceSpan {
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:914:9
+    |
+914 |         entity: u32,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:915:9
+    |
+915 |         existing_start: u32,
+    |         ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:916:9
+    |
+916 |         existing_end: u32,
+    |         ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:917:9
+    |
+917 |         requested_start: u32,
+    |         ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:918:9
+    |
+918 |         requested_end: u32,
+    |         ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:920:5
+    |
+920 |     ConflictingParentage {
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:921:9
+    |
+921 |         entity: u32,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:922:9
+    |
+922 |         existing: PackageParentageFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:923:9
+    |
+923 |         requested: PackageParentageFact,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/library/surface/package_compiler_failure.rs:925:5
+    |
+925 |     ConflictingMemberInventory {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:926:9
+    |
+926 |         entity: u32,
+    |         ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:927:9
+    |
+927 |         existing_count: u64,
+    |         ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:928:9
+    |
+928 |         requested_count: u64,
+    |         ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:929:9
+    |
+929 |         first_difference: u64,
+    |         ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:930:9
+    |
+930 |         existing_member: Option<u32>,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/library/surface/package_compiler_failure.rs:931:9
+    |
+931 |         requested_member: Option<u32>,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+    --> crates/library/surface/package_compiler_failure.rs:1027:5
+     |
+1027 |     Unavailable,
+     |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+    --> crates/library/surface/package_compiler_failure.rs:1028:5
+     |
+1028 |     Root,
+     |     ^^^^
+
+warning: missing documentation for a variant
+    --> crates/library/surface/package_compiler_failure.rs:1029:5
+     |
+1029 |     Bound { parent: u32 },
+     |     ^^^^^
+
+warning: missing documentation for a struct field
+    --> crates/library/surface/package_compiler_failure.rs:1029:13
+     |
+1029 |     Bound { parent: u32 },
+     |             ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+    --> crates/library/surface/package_compiler_failure.rs:1030:5
+     |
+1030 |     UnrepresentedAuthorityOwner { identity: [u8; 16] },
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+    --> crates/library/surface/package_compiler_failure.rs:1030:35
+     |
+1030 |     UnrepresentedAuthorityOwner { identity: [u8; 16] },
+     |                                   ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+    --> crates/library/surface/package_compiler_failure.rs:1037:5
+     |
+1037 |     EmptyPath,
+     |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+    --> crates/library/surface/package_compiler_failure.rs:1038:5
+     |
+1038 |     BackslashInPath,
+     |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+    --> crates/library/surface/package_compiler_failure.rs:1045:5
+     |
+1045 |     EmptyEcosystem,
+     |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+    --> crates/library/surface/package_compiler_failure.rs:1046:5
+     |
+1046 |     EmptyPackage,
+     |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+    --> crates/library/surface/package_compiler_failure.rs:1047:5
+     |
+1047 |     SeparatorInEcosystem,
+     |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+    --> crates/library/surface/package_compiler_failure.rs:1048:5
+     |
+1048 |     SeparatorInPackage,
+     |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+    --> crates/library/surface/package_compiler_failure.rs:1049:5
+     |
+1049 |     BackslashEcosystem,
+     |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+    --> crates/library/surface/package_compiler_failure.rs:1050:5
+     |
+1050 |     BackslashPackage,
+     |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+    --> crates/library/surface/package_compiler_failure.rs:1051:5
+     |
+1051 |     BackslashInvalid { segment: u8 },
+     |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+    --> crates/library/surface/package_compiler_failure.rs:1051:24
+     |
+1051 |     BackslashInvalid { segment: u8 },
+     |                        ^^^^^^^^^^^
+
+warning: `backend-library` (lib) generated 621 warnings (run `cargo fix --lib -p backend-library` to apply 15 suggestions)
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1178:15
+     |
+1178 |         match std::fs::remove_dir_all(&work) {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+     |
+1178 -         match std::fs::remove_dir_all(&work) {
+1178 +         match fs::remove_dir_all(&work) {
+     |
+
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1256:17
+     |
+1256 |                 std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+     |                 ^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1256 -                 std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+1256 +                 fs::write(&file, source).map_err(|cause| CheckerError::Work {
+     |
+
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1277:15
+     |
+1277 |         match std::fs::remove_dir_all(&work) {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1277 -         match std::fs::remove_dir_all(&work) {
+1277 +         match fs::remove_dir_all(&work) {
+     |
+
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1333:17
+     |
+1333 |                 std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+     |                 ^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1333 -                 std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+1333 +                 fs::write(&file, source).map_err(|cause| CheckerError::Work {
+     |
+
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1342:15
+     |
+1342 |         match std::fs::remove_dir_all(&work) {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1342 -         match std::fs::remove_dir_all(&work) {
+1342 +         match fs::remove_dir_all(&work) {
+     |
+
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1377:15
+     |
+1377 |         match std::fs::remove_dir_all(&work) {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1377 -         match std::fs::remove_dir_all(&work) {
+1377 +         match fs::remove_dir_all(&work) {
+     |
+
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1397:9
+     |
+1397 |         std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+     |         ^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1397 -         std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+1397 +         fs::write(&file, source).map_err(|cause| CheckerError::Work {
+     |
+
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1424:9
+     |
+1424 |         std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+     |         ^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1424 -         std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+1424 +         fs::write(&file, source).map_err(|cause| CheckerError::Work {
+     |
+
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1443:13
+     |
+1443 |             std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+     |             ^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1443 -             std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+1443 +             fs::write(&file, source).map_err(|cause| CheckerError::Work {
+     |
+
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1449:15
+     |
+1449 |         match std::fs::remove_dir_all(&work) {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1449 -         match std::fs::remove_dir_all(&work) {
+1449 +         match fs::remove_dir_all(&work) {
+     |
+
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1740:20
+     |
+1740 |     let metadata = std::fs::symlink_metadata(source).map_err(|cause| CheckerError::Work {
+     |                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1740 -     let metadata = std::fs::symlink_metadata(source).map_err(|cause| CheckerError::Work {
+1740 +     let metadata = fs::symlink_metadata(source).map_err(|cause| CheckerError::Work {
+     |
+
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1750:5
+     |
+1750 |     std::fs::create_dir_all(destination).map_err(|cause| CheckerError::Work {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1750 -     std::fs::create_dir_all(destination).map_err(|cause| CheckerError::Work {
+1750 +     fs::create_dir_all(destination).map_err(|cause| CheckerError::Work {
+     |
+
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1754:18
+     |
+1754 |     for entry in std::fs::read_dir(source).map_err(|cause| CheckerError::Work {
+     |                  ^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1754 -     for entry in std::fs::read_dir(source).map_err(|cause| CheckerError::Work {
+1754 +     for entry in fs::read_dir(source).map_err(|cause| CheckerError::Work {
+     |
+
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1771:24
+     |
+1771 |         let metadata = std::fs::symlink_metadata(&child).map_err(|cause| CheckerError::Work {
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1771 -         let metadata = std::fs::symlink_metadata(&child).map_err(|cause| CheckerError::Work {
+1771 +         let metadata = fs::symlink_metadata(&child).map_err(|cause| CheckerError::Work {
+     |
+
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1808:13
+     |
+1808 |             std::fs::File::open(&child)
+     |             ^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1808 -             std::fs::File::open(&child)
+1808 +             fs::File::open(&child)
+     |
+
+warning: unnecessary qualification
+    --> frontends/typescript/src/legacy/checker.rs:1844:13
+     |
+1844 |             std::fs::write(&target, bytes).map_err(|cause| CheckerError::Work {
+     |             ^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1844 -             std::fs::write(&target, bytes).map_err(|cause| CheckerError::Work {
+1844 +             fs::write(&target, bytes).map_err(|cause| CheckerError::Work {
+     |
+
+warning: function `cache_entry_is_valid` is never used
+    --> frontends/go/src/legacy/oracle.rs:2119:4
+     |
+2119 | fn cache_entry_is_valid(
+     |    ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `hash_regular_file` is never used
+    --> frontends/go/src/legacy/oracle.rs:2352:4
+     |
+2352 | fn hash_regular_file(path: &Path) -> std::io::Result<[u8; 32]> {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: `backend-frontend-typescript` (lib) generated 16 warnings (run `cargo fix --lib -p backend-frontend-typescript` to apply 16 suggestions)
+warning: `backend-frontend-go` (lib) generated 2 warnings
+warning: unused imports: `CompilationManifestFacts` and `CompilationManifestView`
+ --> crates/engine/src/application/cluster_coordinator/result_wire.rs:9:5
+  |
+9 |     CompilationManifestFacts, CompilationManifestIdentity, CompilationManifestView,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^                               ^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `TszCheckerOptions`, `TszEnvironmentFingerprint`, `TszFileInput`, `TszProjectOptions`, `TszProject`, and `TszSourceError`
+  --> crates/engine/src/application/compiler.rs:39:5
+   |
+39 |     TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszProject, TszProjectAuthority,
+   |     ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^
+40 |     TszProjectExecutionBudget, TszProjectOptions, TszSourceError,
+   |                                ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^
+
+warning: unused import: `FragmentCause`
+  --> crates/engine/src/application/compiler.rs:44:70
+   |
+44 |     CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, FragmentCause,
+   |                                                                      ^^^^^^^^^^^^^
+
+warning: unnecessary qualification
+    --> crates/engine/src/application/compiler.rs:1782:15
+     |
+1782 |     deadline: std::time::Instant,
+     |               ^^^^^^^^^^^^^^^^^^
+     |
+     = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+     |
+1782 -     deadline: std::time::Instant,
+1782 +     deadline: Instant,
+     |
+
+warning: unnecessary qualification
+    --> crates/engine/src/application/compiler.rs:2065:37
+     |
+2065 |         let mut tsz_package_paths = std::collections::BTreeMap::<Box<str>, Box<str>>::new();
+     |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2065 -         let mut tsz_package_paths = std::collections::BTreeMap::<Box<str>, Box<str>>::new();
+2065 +         let mut tsz_package_paths = BTreeMap::<Box<str>, Box<str>>::new();
+     |
+
+warning: unnecessary qualification
+   --> crates/engine/src/application/host/authority.rs:468:25
+    |
+468 |                         crate::application::ToolchainProbeError::TypeScriptInterpreterUnavailable {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+468 -                         crate::application::ToolchainProbeError::TypeScriptInterpreterUnavailable {
+468 +                         ToolchainProbeError::TypeScriptInterpreterUnavailable {
+    |
+
+warning: unnecessary qualification
+   --> crates/engine/src/application/host/authority.rs:475:29
+    |
+475 | ...                   crate::application::ToolchainProbeError::TypeScriptModuleRootUnavailable {
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+475 -                             crate::application::ToolchainProbeError::TypeScriptModuleRootUnavailable {
+475 +                             ToolchainProbeError::TypeScriptModuleRootUnavailable {
+    |
+
+warning: unnecessary qualification
+    --> crates/engine/src/application/typescript_host.rs:3153:45
+     |
+3153 |             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+     |                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+3153 -             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+3153 +             Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+     |
+
+warning: unnecessary qualification
+    --> crates/engine/src/application/typescript_host.rs:3253:41
+     |
+3253 |         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+     |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+3253 -         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+3253 +         Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+     |
+
+warning: unnecessary qualification
+    --> crates/engine/src/application/typescript_host.rs:3640:17
+     |
+3640 |         source: std::io::Error,
+     |                 ^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+3640 -         source: std::io::Error,
+3640 +         source: io::Error,
+     |
+
+warning: unnecessary qualification
+    --> crates/engine/src/application/typescript_host.rs:3646:17
+     |
+3646 |         source: std::io::Error,
+     |                 ^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+3646 -         source: std::io::Error,
+3646 +         source: io::Error,
+     |
+
+warning: unnecessary qualification
+    --> crates/engine/src/application/typescript_host.rs:3666:17
+     |
+3666 |         source: std::io::Error,
+     |                 ^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+3666 -         source: std::io::Error,
+3666 +         source: io::Error,
+     |
+
+warning: unnecessary qualification
+    --> crates/engine/src/application/typescript_host.rs:3674:17
+     |
+3674 |         source: std::io::Error,
+     |                 ^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+3674 -         source: std::io::Error,
+3674 +         source: io::Error,
+     |
+
+warning: unused import: `Duration`
+  --> crates/engine/src/application/typescript_program.rs:13:12
+   |
+13 |     time::{Duration, Instant},
+   |            ^^^^^^^^
+
+warning: unused import: `self::typescript_program::build_native_inputs`
+  --> crates/engine/src/application/mod.rs:22:16
+   |
+22 | pub(crate) use self::typescript_program::build_native_inputs;
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `NativeCompilerEnvironment` and `admit_typescript_script_invocation`
+   --> crates/engine/src/application/mod.rs:103:44
+    |
+103 |     NATIVE_COMPILER_ENVIRONMENT_POLICY_ID, NativeCompilerEnvironment,
+    |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^
+104 |     admit_typescript_script_invocation, compiler_directory_object_identity,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `ProductSourceRelation`
+  --> crates/engine/src/builtin/file_facts_relation.rs:13:70
+   |
+13 |     Container, DeclarationKind, ProductFileRef, ProductSourceRecord, ProductSourceRelation,
+   |                                                                      ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unnecessary qualification
+    --> crates/engine/src/driver/lower/typescript.rs:4252:14
+     |
+4252 |     binder: &backend_frontend_typescript::TszBinderState,
+     |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+4252 -     binder: &backend_frontend_typescript::TszBinderState,
+4252 +     binder: &TszBinderState,
+     |
+
+warning: unnecessary qualification
+    --> crates/engine/src/driver/lower/typescript.rs:4584:14
+     |
+4584 |     binder: &backend_frontend_typescript::TszBinderState,
+     |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+4584 -     binder: &backend_frontend_typescript::TszBinderState,
+4584 +     binder: &TszBinderState,
+     |
+
+warning: unnecessary qualification
+    --> crates/engine/src/driver/lower/typescript.rs:6131:18
+     |
+6131 |         binder: &backend_frontend_typescript::TszBinderState,
+     |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+6131 -         binder: &backend_frontend_typescript::TszBinderState,
+6131 +         binder: &TszBinderState,
+     |
+
+warning: unnecessary qualification
+   --> crates/engine/src/driver/types/toolchain.rs:125:19
+    |
+125 |         path: Box<std::path::Path>,
+    |                   ^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+125 -         path: Box<std::path::Path>,
+125 +         path: Box<Path>,
+    |
+
+warning: unnecessary qualification
+   --> crates/engine/src/driver/types/toolchain.rs:136:19
+    |
+136 |         path: Box<std::path::Path>,
+    |                   ^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+136 -         path: Box<std::path::Path>,
+136 +         path: Box<Path>,
+    |
+
+warning: unused import: `NativeRecipe`
+  --> crates/engine/src/driver/types.rs:26:26
+   |
+26 | pub(crate) use request::{NativeRecipe, SourceLease, WorkPermit, WorkStopped};
+   |                          ^^^^^^^^^^^^
+
+warning: unused imports: `NativeArtifactRole` and `NativeWorkPhase`
+  --> crates/engine/src/driver/types.rs:42:26
+   |
+42 |     LoweringUnsupported, NativeArtifactRole, NativeWorkPhase,
+   |                          ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unnecessary qualification
+  --> crates/engine/src/workspace/head.rs:99:22
+   |
+99 |         let schema = backend_version::SchemaIdentity::of_relation::<R>();
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: remove the unnecessary path segments
+   |
+99 -         let schema = backend_version::SchemaIdentity::of_relation::<R>();
+99 +         let schema = SchemaIdentity::of_relation::<R>();
+   |
+
+warning: unnecessary qualification
+   --> crates/engine/src/workspace/head.rs:239:22
+    |
+239 |         let schema = backend_version::SchemaIdentity::of_relation::<R>();
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+239 -         let schema = backend_version::SchemaIdentity::of_relation::<R>();
+239 +         let schema = SchemaIdentity::of_relation::<R>();
+    |
+
+warning: unused import: `error::Error`
+  --> crates/engine/src/application/compiler.rs:70:5
+   |
+70 |     error::Error as _,
+   |     ^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+    --> crates/engine/src/driver/lower/typescript.rs:9952:17
+     |
+9952 |             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral);
+     |                 ----^^^^^^
+     |                 |
+     |                 help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: type `ToolchainProbeFileRole` is more private than the item `ToolchainProbeError::ExecutableWitness::role`
+   --> crates/engine/src/application/toolchain_probe.rs:616:9
+    |
+616 |         role: ToolchainProbeFileRole,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ field `ToolchainProbeError::ExecutableWitness::role` is reachable at visibility `pub`
+    |
+note: but type `ToolchainProbeFileRole` is only usable at visibility `pub(crate)`
+   --> crates/engine/src/application/toolchain_probe.rs:766:1
+    |
+766 | pub(crate) enum ToolchainProbeFileRole {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(private_interfaces)]` on by default
+
+warning: type `ToolchainProbeFileRole` is more private than the item `ToolchainProbeError::ExecutableChanged::role`
+   --> crates/engine/src/application/toolchain_probe.rs:627:9
+    |
+627 |         role: ToolchainProbeFileRole,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ field `ToolchainProbeError::ExecutableChanged::role` is reachable at visibility `pub`
+    |
+note: but type `ToolchainProbeFileRole` is only usable at visibility `pub(crate)`
+   --> crates/engine/src/application/toolchain_probe.rs:766:1
+    |
+766 | pub(crate) enum ToolchainProbeFileRole {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated functions `derive_with_streamed_field` and `from_encoded` are never used
+   --> crates/engine/src/acquisition/identity.rs:113:27
+    |
+108 |         impl $name {
+    |         ---------- associated functions in this implementation
+...
+113 |             pub(super) fn derive_with_streamed_field(
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+141 |             pub(crate) const fn from_encoded(bytes: [u8; ID_BYTES]) -> Self {
+    |                                 ^^^^^^^^^^^^
+...
+158 | identity!(ReleaseClaimId, b"release-claim");
+    | ------------------------------------------- in this macro invocation
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+    = note: this warning originates in the macro `identity` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: associated function `derive_with_streamed_field` is never used
+   --> crates/engine/src/acquisition/identity.rs:113:27
+    |
+108 |         impl $name {
+    |         ---------- associated function in this implementation
+...
+113 |             pub(super) fn derive_with_streamed_field(
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+159 | identity!(RawArchiveObjectId, b"raw-archive-object");
+    | ---------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `identity` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: associated functions `derive_with_streamed_field` and `from_encoded` are never used
+   --> crates/engine/src/acquisition/identity.rs:113:27
+    |
+108 |         impl $name {
+    |         ---------- associated functions in this implementation
+...
+113 |             pub(super) fn derive_with_streamed_field(
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+141 |             pub(crate) const fn from_encoded(bytes: [u8; ID_BYTES]) -> Self {
+    |                                 ^^^^^^^^^^^^
+...
+160 | identity!(TreeManifestId, b"tree-manifest");
+    | ------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `identity` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: associated functions `derive_with_streamed_field` and `from_encoded` are never used
+   --> crates/engine/src/acquisition/identity.rs:113:27
+    |
+108 |         impl $name {
+    |         ---------- associated functions in this implementation
+...
+113 |             pub(super) fn derive_with_streamed_field(
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+141 |             pub(crate) const fn from_encoded(bytes: [u8; ID_BYTES]) -> Self {
+    |                                 ^^^^^^^^^^^^
+...
+161 | identity!(SourceSnapshotId, b"source-snapshot");
+    | ----------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `identity` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: associated functions `derive_with_streamed_field` and `from_encoded` are never used
+   --> crates/engine/src/acquisition/identity.rs:113:27
+    |
+108 |         impl $name {
+    |         ---------- associated functions in this implementation
+...
+113 |             pub(super) fn derive_with_streamed_field(
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+141 |             pub(crate) const fn from_encoded(bytes: [u8; ID_BYTES]) -> Self {
+    |                                 ^^^^^^^^^^^^
+...
+162 | identity!(AcquisitionDeltaId, b"acquisition-delta");
+    | --------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `identity` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: associated functions `derive_with_streamed_field` and `from_encoded` are never used
+   --> crates/engine/src/acquisition/identity.rs:113:27
+    |
+108 |         impl $name {
+    |         ---------- associated functions in this implementation
+...
+113 |             pub(super) fn derive_with_streamed_field(
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+141 |             pub(crate) const fn from_encoded(bytes: [u8; ID_BYTES]) -> Self {
+    |                                 ^^^^^^^^^^^^
+...
+163 | identity!(AcquisitionReceiptId, b"acquisition-receipt");
+    | ------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `identity` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: associated function `derive` is never used
+   --> crates/engine/src/acquisition/identity.rs:109:27
+    |
+108 |         impl $name {
+    |         ---------- associated function in this implementation
+109 |             pub(super) fn derive(fields: &[&[u8]]) -> Self {
+    |                           ^^^^^^
+...
+164 | identity!(AcquisitionRecordId, b"acquisition-record");
+    | ----------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `identity` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: associated function `derive_with_streamed_field` is never used
+   --> crates/engine/src/acquisition/identity.rs:113:27
+    |
+108 |         impl $name {
+    |         ---------- associated function in this implementation
+...
+113 |             pub(super) fn derive_with_streamed_field(
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+165 | identity!(PublicationRootId, b"publication-root");
+    | ------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `identity` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: field `request` is never read
+    --> crates/engine/src/application/runtime.rs:3343:9
+     |
+3341 |     PackageSources {
+     |     -------------- field in this variant
+3342 |         facts: RequestFacts,
+3343 |         request: OwnedPackageSourceSet,
+     |         ^^^^^^^
+
+warning: function `fragment_terminal` is never used
+   --> crates/engine/src/application/terminal/native.rs:291:10
+    |
+291 | const fn fragment_terminal(
+    |          ^^^^^^^^^^^^^^^^^
+
+warning: function `executable_object_identity` is never used
+   --> crates/engine/src/application/toolchain_probe.rs:371:15
+    |
+371 | pub(crate) fn executable_object_identity(path: &Path) -> io::Result<(u64, u64)> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `compiler_directory_object_identity` is never used
+   --> crates/engine/src/application/toolchain_probe.rs:389:15
+    |
+389 | pub(crate) fn compiler_directory_object_identity(path: &Path) -> io::Result<(u64, u64)> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `validate_launch_objects` is never used
+   --> crates/engine/src/application/typescript_host.rs:100:19
+    |
+ 75 | impl TypeScriptProjectInvocationLease {
+    | ------------------------------------- method in this implementation
+...
+100 |     pub(crate) fn validate_launch_objects(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `compiler_path`, `compiler_origin`, `node_version`, `node_origin`, and `selected_build_config_paths` are never read
+   --> crates/engine/src/application/typescript_host.rs:177:16
+    |
+173 | pub(crate) struct TypeScriptProjectInputs<'a> {
+    |                   ----------------------- fields in this struct
+...
+177 |     pub(crate) compiler_path: &'a Path,
+    |                ^^^^^^^^^^^^^
+178 |     pub(crate) compiler_version: &'a [u8],
+179 |     pub(crate) compiler_origin: TypeScriptSelectionOrigin,
+    |                ^^^^^^^^^^^^^^^
+180 |     pub(crate) node_path: &'a Path,
+181 |     pub(crate) node_version: &'a [u8],
+    |                ^^^^^^^^^^^^
+182 |     pub(crate) node_origin: TypeScriptSelectionOrigin,
+    |                ^^^^^^^^^^^
+...
+185 |     pub(crate) selected_build_config_paths: &'a [Box<Path>],
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `TypeScriptProjectInputs` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: methods `load_source` and `validate_current` are never used
+   --> crates/engine/src/application/typescript_host.rs:213:19
+    |
+204 | impl TypeScriptProjectInputs<'_> {
+    | -------------------------------- methods in this implementation
+...
+213 |     pub(crate) fn load_source(
+    |                   ^^^^^^^^^^^
+...
+220 |     pub(crate) fn validate_current(&self) -> Result<(), TypeScriptProjectHostError> {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: enum `TypeScriptResolverObservationRef` is never used
+   --> crates/engine/src/application/typescript_host.rs:245:17
+    |
+245 | pub(crate) enum TypeScriptResolverObservationRef<'a> {
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `read_directory`, `loaded_sources`, and `observations` are never used
+   --> crates/engine/src/application/typescript_host.rs:467:19
+    |
+336 | impl TypeScriptResolverCapability<'_> {
+    | ------------------------------------- methods in this implementation
+...
+467 |     pub(crate) fn read_directory(
+    |                   ^^^^^^^^^^^^^^
+...
+626 |     pub(crate) fn loaded_sources(
+    |                   ^^^^^^^^^^^^^^
+...
+632 |     pub(crate) fn observations(&self) -> Vec<TypeScriptResolverObservationRef<'_>> {
+    |                   ^^^^^^^^^^^^
+
+warning: method `load_source` is never used
+    --> crates/engine/src/application/typescript_host.rs:1263:8
+     |
+1060 | impl TypeScriptProjectWitness {
+     | ----------------------------- method in this implementation
+...
+1263 |     fn load_source(&self, path: &Path) -> Result<TypeScriptFileInput, TypeScriptProjectHostError> {
+     |        ^^^^^^^^^^^
+
+warning: function `extension_matches` is never used
+    --> crates/engine/src/application/typescript_host.rs:1617:4
+     |
+1617 | fn extension_matches(path: &Path, extensions: &[&str]) -> bool {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: function `resolver_observation_ref_path` is never used
+    --> crates/engine/src/application/typescript_host.rs:1630:4
+     |
+1630 | fn resolver_observation_ref_path<'a>(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `resolver_observation_ref_tag` is never used
+    --> crates/engine/src/application/typescript_host.rs:1641:4
+     |
+1641 | fn resolver_observation_ref_tag(observation: &TypeScriptResolverObservationRef<'_>) -> u8 {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+    --> crates/engine/src/application/typescript_host.rs:2673:19
+     |
+2672 | impl TypeScriptProjectHost {
+     | -------------------------- associated function in this implementation
+2673 |     pub(crate) fn new(
+     |                   ^^^
+
+warning: function `find_project_typescript` is never used
+    --> crates/engine/src/application/typescript_host.rs:3103:4
+     |
+3103 | fn find_project_typescript(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variants `AbsentPath`, `CargoProject`, `ToolchainInput`, and `ExternalInput` are never constructed
+   --> crates/engine/src/compiler_read_observation_v2.rs:91:5
+    |
+ 85 | pub(crate) enum CompilerReadObservationEventClassV2 {
+    |                 ----------------------------------- variants in this enum
+...
+ 91 |     AbsentPath = 3,
+    |     ^^^^^^^^^^
+...
+ 97 |     CargoProject = 6,
+    |     ^^^^^^^^^^^^
+...
+101 |     ToolchainInput = 8,
+    |     ^^^^^^^^^^^^^^
+...
+105 |     ExternalInput = 10,
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `CompilerReadObservationEventClassV2` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: methods `observe_path_event` and `observe_nonpath_event` are never used
+   --> crates/engine/src/compiler_read_observation_v2.rs:338:19
+    |
+246 | impl CompilerReadObservationRecorderV2 {
+    | -------------------------------------- methods in this implementation
+...
+338 |     pub(crate) fn observe_path_event(
+    |                   ^^^^^^^^^^^^^^^^^^
+...
+426 |     pub(crate) fn observe_nonpath_event(
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `compilation_attempt_id` is never used
+   --> crates/engine/src/compiler_unit_read_closure_v2.rs:180:25
+    |
+176 | impl VerifiedUnitReadClosure {
+    | ---------------------------- method in this implementation
+...
+180 |     pub(crate) const fn compilation_attempt_id(&self) -> CompilationAttemptId {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `mark_members_captured` is never used
+    --> crates/engine/src/driver/lower.rs:1863:19
+     |
+ 923 | impl<'source> FactSet<'source> {
+     | ------------------------------ method in this implementation
+...
+1863 |     pub(super) fn mark_members_captured(&mut self, entity: u32) -> Result<(), FactFault> {
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `mark_members_captured` is never used
+   --> crates/engine/src/driver/lower/provenance.rs:198:19
+    |
+ 36 | impl Provenance {
+    | --------------- method in this implementation
+...
+198 |     pub(super) fn mark_members_captured(
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `NativeRecipe` is never constructed
+   --> crates/engine/src/driver/types/request.rs:335:19
+    |
+335 | pub(crate) struct NativeRecipe<'source, 'toolchain> {
+    |                   ^^^^^^^^^^^^
+
+warning: methods `invocation` and `validate_invocation` are never used
+   --> crates/engine/src/driver/types/toolchain.rs:337:25
+    |
+140 | impl<'path> ResolvedToolchain<'path> {
+    | ------------------------------------ methods in this implementation
+...
+337 |     pub(crate) const fn invocation(self) -> NativeInvocation<'path> {
+    |                         ^^^^^^^^^^
+...
+368 |     pub(crate) fn validate_invocation(self) -> Result<(), NativeInvocationError> {
+    |                   ^^^^^^^^^^^^^^^^^^^
+
+warning: methods `release` and `admit_releases` are never used
+    --> crates/engine/src/registry/ecosystem.rs:1011:8
+     |
+ 804 | impl EcosystemAdapter {
+     | --------------------- methods in this implementation
+...
+1011 |     fn release(
+     |        ^^^^^^^
+...
+1151 |     pub(crate) fn admit_releases(
+     |                   ^^^^^^^^^^^^^^
+
+warning: methods `maven_versions`, `maven_release`, `maven_archive_url`, `maven_source_archive_url`, `maven_archive_url_with_classifier`, and `conan_archive_name` are never used
+   --> crates/engine/src/registry/ecosystem_decoders.rs:630:19
+    |
+220 | impl EcosystemAdapter {
+    | --------------------- methods in this implementation
+...
+630 |     pub(crate) fn maven_versions(&self, bytes: &[u8]) -> Result<Vec<String>, TransportFailure> {
+    |                   ^^^^^^^^^^^^^^
+...
+639 |     pub(crate) fn maven_release(
+    |                   ^^^^^^^^^^^^^
+...
+683 |     pub(crate) fn maven_archive_url(&self, version: &str) -> String {
+    |                   ^^^^^^^^^^^^^^^^^
+...
+687 |     pub(crate) fn maven_source_archive_url(&self, version: &str) -> String {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+707 |     fn maven_archive_url_with_classifier(&self, version: &str, classifier: &str) -> String {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+996 |     pub(crate) fn conan_archive_name(&self, bytes: &[u8]) -> Result<String, TransportFailure> {
+    |                   ^^^^^^^^^^^^^^^^^^
+
+warning: function `is_sdist` is never used
+    --> crates/engine/src/registry/ecosystem_decoders.rs:2661:4
+     |
+2661 | fn is_sdist(filename: &str) -> bool {
+     |    ^^^^^^^^
+
+warning: function `is_wheel` is never used
+    --> crates/engine/src/registry/ecosystem_decoders.rs:2667:4
+     |
+2667 | fn is_wheel(filename: &str) -> bool {
+     |    ^^^^^^^^
+
+warning: field `stats` is never read
+   --> crates/engine/src/registry/frontier.rs:354:5
+    |
+350 | pub(super) struct PreparedFactsUpdate {
+    |                   ------------------- field in this struct
+...
+354 |     stats: UpdateStats,
+    |     ^^^^^
+    |
+    = note: `PreparedFactsUpdate` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `stats` is never used
+   --> crates/engine/src/registry/frontier.rs:364:19
+    |
+357 | impl PreparedFactsUpdate {
+    | ------------------------ method in this implementation
+...
+364 |     pub(super) fn stats(&self) -> UpdateStats {
+    |                   ^^^^^
+
+warning: constant `MAX_FACTS_PROOF_LEVELS` is never used
+   --> crates/engine/src/registry/frontier.rs:400:7
+    |
+400 | const MAX_FACTS_PROOF_LEVELS: usize = usize::BITS as usize;
+    |       ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `proof` is never used
+   --> crates/engine/src/registry/frontier.rs:451:19
+    |
+402 | impl FactsMerkleMap {
+    | ------------------- method in this implementation
+...
+451 |     pub(super) fn proof(&self, coordinate: &PackageCoordinate) -> Option<backend_store::KeyProof> {
+    |                   ^^^^^
+
+warning: method `admit_reader` is never used
+  --> crates/engine/src/registry/identity.rs:66:19
+   |
+37 | impl PublishedArtifactClaim {
+   | --------------------------- method in this implementation
+...
+66 |     pub(crate) fn admit_reader<R: Read>(
+   |                   ^^^^^^^^^^^^
+
+warning: method `permit_authority` is never used
+   --> crates/engine/src/registry/identity.rs:309:19
+    |
+281 | impl RegistryCredentialPolicy {
+    | ----------------------------- method in this implementation
+...
+309 |     pub(crate) fn permit_authority(&mut self, url: &str) -> bool {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: methods `poll`, `acquire_page`, and `verify_and_store` are never used
+    --> crates/engine/src/registry/owner.rs:1060:19
+     |
+ 434 | impl RegistryOwner {
+     | ------------------ methods in this implementation
+...
+1060 |     pub(crate) fn poll<T: RegistryTransport>(
+     |                   ^^^^
+...
+1209 |     fn acquire_page<T: RegistryTransport>(
+     |        ^^^^^^^^^^^^
+...
+1269 |     pub(crate) fn verify_and_store(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: enum `PageAcquisition` is never used
+    --> crates/engine/src/registry/owner.rs:1322:6
+     |
+1322 | enum PageAcquisition {
+     |      ^^^^^^^^^^^^^^^
+
+warning: method `verify_and_store` is never used
+    --> crates/engine/src/registry/owner.rs:1350:19
+     |
+1339 | impl ArchiveStageContext {
+     | ------------------------ method in this implementation
+...
+1350 |     pub(crate) fn verify_and_store(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: methods `body_length` and `telemetry` are never used
+   --> crates/engine/src/registry/transport.rs:141:19
+    |
+106 | impl ArchiveArtifact {
+    | -------------------- methods in this implementation
+...
+141 |     pub(crate) fn body_length(&self) -> u64 {
+    |                   ^^^^^^^^^^^
+...
+157 |     pub(crate) const fn telemetry(&self) -> TransferTelemetry {
+    |                         ^^^^^^^^^
+
+warning: methods `verify_archive` and `canonical_digest` are never used
+   --> crates/engine/src/registry/transport.rs:406:19
+    |
+405 | impl RemotePackage {
+    | ------------------ methods in this implementation
+406 |     pub(crate) fn verify_archive(
+    |                   ^^^^^^^^^^^^^^
+...
+513 |     pub(crate) const fn canonical_digest(&self) -> Option<[u8; 32]> {
+    |                         ^^^^^^^^^^^^^^^^
+
+warning: method `maven_checksum` is never used
+    --> crates/engine/src/registry/transport.rs:1518:8
+     |
+ 675 | impl HttpRegistryTransport {
+     | -------------------------- method in this implementation
+...
+1518 |     fn maven_checksum(
+     |        ^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/engine/src/application/cluster_coordinator/result_wire.rs:109:5
+    |
+109 |     pub const fn role(self) -> CompilerResultMemberRole {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for a method
+   --> crates/engine/src/application/cluster_coordinator/result_wire.rs:114:5
+    |
+114 |     pub const fn reference(self) -> ObjectRef<ObjectDomain> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/engine/src/application/cluster_coordinator/result_wire.rs:119:5
+    |
+119 |     pub const fn key(self) -> u64 {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/engine/src/application/cluster_coordinator/result_wire.rs:124:5
+    |
+124 |     pub const fn parent(self) -> Option<u64> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/engine/src/builtin/semantic_relation.rs:474:5
+    |
+474 |     pub const fn completed(self) -> NonZeroU32 {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/engine/src/builtin/semantic_relation.rs:478:5
+    |
+478 |     pub const fn total(self) -> NonZeroU32 {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/engine/src/driver/types/lowering.rs:183:32
+    |
+183 |     TypeProjectionDepthLimit { depth: u8, maximum: u8 },
+    |                                ^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/engine/src/driver/types/lowering.rs:183:43
+    |
+183 |     TypeProjectionDepthLimit { depth: u8, maximum: u8 },
+    |                                           ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/engine/src/driver/types/lowering.rs:185:27
+    |
+185 |     TypeProjectionCycle { type_id: u32 },
+    |                           ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/engine/src/driver/types/lowering.rs:187:40
+    |
+187 |     TypeProjectionRecursiveReference { distance: u32 },
+    |                                        ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/engine/src/driver/types/lowering.rs:189:27
+    |
+189 |     TypeProjectionWidth { actual: usize, maximum: usize },
+    |                           ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/engine/src/driver/types/lowering.rs:189:42
+    |
+189 |     TypeProjectionWidth { actual: usize, maximum: usize },
+    |                                          ^^^^^^^^^^^^^^
+
+warning: `backend-engine` (lib) generated 88 warnings (run `cargo fix --lib -p backend-engine` to apply 27 suggestions)
+warning: unnecessary qualification
+  --> crates/client/src/query_continuation.rs:49:6
+   |
+49 | impl std::io::Write for ProofBudget {
+   |      ^^^^^^^^^^^^^^
+   |
+   = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+   |
+49 - impl std::io::Write for ProofBudget {
+49 + impl Write for ProofBudget {
+   |
+
+warning: `backend-client` (lib) generated 1 warning (run `cargo fix --lib -p backend-client` to apply 1 suggestion)
+warning: unnecessary qualification
+   --> crates/present/assemble.rs:415:25
+    |
+415 |     if matches!(row.id, backend_library::RowId::Package(_)) {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+    |
+415 -     if matches!(row.id, backend_library::RowId::Package(_)) {
+415 +     if matches!(row.id, RowId::Package(_)) {
+    |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1182:30
+     |
+1182 | fn discovery_row(candidate: &backend_library::RegistryDiscoveryCandidate) -> ProductRecord {
+     |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1182 - fn discovery_row(candidate: &backend_library::RegistryDiscoveryCandidate) -> ProductRecord {
+1182 + fn discovery_row(candidate: &RegistryDiscoveryCandidate) -> ProductRecord {
+     |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1287:9
+     |
+1287 |         backend_library::RegistryEvidenceFacet::Known(true) => "registry yanked",
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1287 -         backend_library::RegistryEvidenceFacet::Known(true) => "registry yanked",
+1287 +         RegistryEvidenceFacet::Known(true) => "registry yanked",
+     |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1288:9
+     |
+1288 |         backend_library::RegistryEvidenceFacet::Known(false) => "registry not yanked",
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1288 -         backend_library::RegistryEvidenceFacet::Known(false) => "registry not yanked",
+1288 +         RegistryEvidenceFacet::Known(false) => "registry not yanked",
+     |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1289:9
+     |
+1289 |         backend_library::RegistryEvidenceFacet::Absent => "registry yank state absent",
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1289 -         backend_library::RegistryEvidenceFacet::Absent => "registry yank state absent",
+1289 +         RegistryEvidenceFacet::Absent => "registry yank state absent",
+     |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1290:9
+     |
+1290 |         backend_library::RegistryEvidenceFacet::Unknown => "registry yank state unknown",
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1290 -         backend_library::RegistryEvidenceFacet::Unknown => "registry yank state unknown",
+1290 +         RegistryEvidenceFacet::Unknown => "registry yank state unknown",
+     |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1357:9
+     |
+1357 |         backend_library::RegistrySearchGroupKind::Acquired => "acquired",
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1357 -         backend_library::RegistrySearchGroupKind::Acquired => "acquired",
+1357 +         RegistrySearchGroupKind::Acquired => "acquired",
+     |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1358:9
+     |
+1358 |         backend_library::RegistrySearchGroupKind::Discovered => "discovered · unacquired",
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1358 -         backend_library::RegistrySearchGroupKind::Discovered => "discovered · unacquired",
+1358 +         RegistrySearchGroupKind::Discovered => "discovered · unacquired",
+     |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1359:9
+     |
+1359 |         backend_library::RegistrySearchGroupKind::Forge => "forge source",
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1359 -         backend_library::RegistrySearchGroupKind::Forge => "forge source",
+1359 +         RegistrySearchGroupKind::Forge => "forge source",
+     |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1412:9
+     |
+1412 |         backend_library::ForgeFact::Recorded(readme) => {
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1412 -         backend_library::ForgeFact::Recorded(readme) => {
+1412 +         ForgeFact::Recorded(readme) => {
+     |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1415:9
+     |
+1415 |         backend_library::ForgeFact::Unavailable(reason) => reason.as_str().to_owned(),
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1415 -         backend_library::ForgeFact::Unavailable(reason) => reason.as_str().to_owned(),
+1415 +         ForgeFact::Unavailable(reason) => reason.as_str().to_owned(),
+     |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1418:9
+     |
+1418 |         backend_library::DependencyFacts::Known(rows) => {
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1418 -         backend_library::DependencyFacts::Known(rows) => {
+1418 +         DependencyFacts::Known(rows) => {
+     |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1421:9
+     |
+1421 |         backend_library::DependencyFacts::Unknown(reason) => {
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1421 -         backend_library::DependencyFacts::Unknown(reason) => {
+1421 +         DependencyFacts::Unknown(reason) => {
+     |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1424:9
+     |
+1424 |         backend_library::DependencyFacts::Unavailable(reason) => {
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1424 -         backend_library::DependencyFacts::Unavailable(reason) => {
+1424 +         DependencyFacts::Unavailable(reason) => {
+     |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1797:9
+     |
+1797 |         backend_library::PackageReference::Local(_)
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1797 -         backend_library::PackageReference::Local(_)
+1797 +         PackageReference::Local(_)
+     |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1827:17
+     |
+1827 |                 crate::fault::Operand::Text(heading.to_owned()),
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1827 -                 crate::fault::Operand::Text(heading.to_owned()),
+1827 +                 Operand::Text(heading.to_owned()),
+     |
+
+warning: unnecessary qualification
+    --> crates/present/product.rs:1854:21
+     |
+1854 |                     crate::fault::Operand::Text(heading.to_owned()),
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1854 -                     crate::fault::Operand::Text(heading.to_owned()),
+1854 +                     Operand::Text(heading.to_owned()),
+     |
+
+warning: unused variable: `reason`
+    --> crates/present/product.rs:1790:39
+     |
+1790 |         RegistryMetadata::NotRecorded(reason) => metadata_view("owner", metadata),
+     |                                       ^^^^^^ help: if this is intentional, prefix it with an underscore: `_reason`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `backend-present` (lib) generated 18 warnings (run `cargo fix --lib -p backend-present` to apply 18 suggestions)
+   Compiling backend-mcp v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/apps/mcp)
+warning: unnecessary qualification
+   --> apps/mcp/src/http.rs:481:6
+    |
+481 | impl std::io::Write for ResponseByteCounter {
+    |      ^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+    |
+481 - impl std::io::Write for ResponseByteCounter {
+481 + impl io::Write for ResponseByteCounter {
+    |
+
+warning: unnecessary qualification
+   --> apps/mcp/src/http.rs:482:42
+    |
+482 |     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+    |                                          ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+482 -     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+482 +     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+    |
+
+warning: unnecessary qualification
+   --> apps/mcp/src/http.rs:487:28
+    |
+487 |     fn flush(&mut self) -> std::io::Result<()> {
+    |                            ^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+487 -     fn flush(&mut self) -> std::io::Result<()> {
+487 +     fn flush(&mut self) -> io::Result<()> {
+    |
+
+warning: unused import: `IndexSearchPage`
+  --> apps/mcp/src/jsonrpc.rs:24:54
+   |
+24 |     HealthReport, IndexJobTicket, IndexSearchCursor, IndexSearchPage, PackageReference,
+   |                                                      ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary qualification
+    --> apps/mcp/src/jsonrpc.rs:1472:24
+     |
+1472 |         let mut data = serde_json::Map::new();
+     |                        ^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1472 -         let mut data = serde_json::Map::new();
+1472 +         let mut data = Map::new();
+     |
+
+warning: unnecessary qualification
+   --> apps/mcp/src/jsonrpc/tests.rs:372:23
+    |
+372 |         continuation: backend_library::PageContinuation,
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+372 -         continuation: backend_library::PageContinuation,
+372 +         continuation: PageContinuation,
+    |
+
+warning: unnecessary qualification
+   --> apps/mcp/src/jsonrpc/tests.rs:432:17
+    |
+432 |     ) -> Result<backend_library::PageContinuation, ClientError> {
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+432 -     ) -> Result<backend_library::PageContinuation, ClientError> {
+432 +     ) -> Result<PageContinuation, ClientError> {
+    |
+
+warning: unnecessary qualification
+   --> apps/mcp/src/jsonrpc/tests.rs:458:30
+    |
+458 |         continuation: Option<backend_library::PageContinuation>,
+    |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+458 -         continuation: Option<backend_library::PageContinuation>,
+458 +         continuation: Option<PageContinuation>,
+    |
+
+warning: unnecessary qualification
+   --> apps/mcp/src/jsonrpc/tests.rs:569:68
+    |
+569 |         export_view["batch"]["entries"][0]["symbol"]["id"] = json!(backend_library::encode_id(
+    |                                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+569 -         export_view["batch"]["entries"][0]["symbol"]["id"] = json!(backend_library::encode_id(
+569 +         export_view["batch"]["entries"][0]["symbol"]["id"] = json!(encode_id(
+    |
+
+warning: unnecessary qualification
+   --> apps/mcp/src/jsonrpc/tests.rs:641:30
+    |
+641 |         let cli_projection = backend_present::encode_answer(
+    |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+641 -         let cli_projection = backend_present::encode_answer(
+641 +         let cli_projection = encode_answer(
+    |
+
+warning: unnecessary qualification
+   --> apps/mcp/src/jsonrpc/tests.rs:645:13
+    |
+645 |             backend_present::DEFAULT_RESPONSE_BUDGET_BYTES,
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+645 -             backend_present::DEFAULT_RESPONSE_BUDGET_BYTES,
+645 +             DEFAULT_RESPONSE_BUDGET_BYTES,
+    |
+
+warning: unnecessary qualification
+   --> apps/mcp/src/jsonrpc/tests.rs:653:13
+    |
+653 |             backend_present::bounded_text(&backend_present::markdown::answer(&answer))
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+653 -             backend_present::bounded_text(&backend_present::markdown::answer(&answer))
+653 +             bounded_text(&backend_present::markdown::answer(&answer))
+    |
+
+warning: unnecessary qualification
+   --> apps/mcp/src/jsonrpc/tests.rs:653:44
+    |
+653 |             backend_present::bounded_text(&backend_present::markdown::answer(&answer))
+    |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+653 -             backend_present::bounded_text(&backend_present::markdown::answer(&answer))
+653 +             backend_present::bounded_text(&markdown::answer(&answer))
+    |
+
+warning: unnecessary qualification
+    --> apps/mcp/src/jsonrpc/tests.rs:2050:34
+     |
+2050 |     let expected = bounded_text(&backend_present::markdown::answer(&answer));
+     |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2050 -     let expected = bounded_text(&backend_present::markdown::answer(&answer));
+2050 +     let expected = bounded_text(&markdown::answer(&answer));
+     |
+
+warning: unnecessary qualification
+    --> apps/mcp/src/jsonrpc/tests.rs:2511:18
+     |
+2511 |     for _ in 0..=super::codec::MAX_JSON_DEPTH {
+     |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2511 -     for _ in 0..=super::codec::MAX_JSON_DEPTH {
+2511 +     for _ in 0..=codec::MAX_JSON_DEPTH {
+     |
+
+warning: unnecessary qualification
+    --> apps/mcp/src/jsonrpc/tests.rs:3432:30
+     |
+3432 |             let mut fields = std::collections::BTreeMap::new();
+     |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+3432 -             let mut fields = std::collections::BTreeMap::new();
+3432 +             let mut fields = BTreeMap::new();
+     |
+
+warning: function `token_budget_tools` is never used
+   --> apps/mcp/src/jsonrpc/tools.rs:262:15
+    |
+262 | pub(crate) fn token_budget_tools() -> Value {
+    |               ^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `backend-mcp` (lib test) generated 17 warnings (run `cargo fix --lib -p backend-mcp --tests` to apply 16 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.87s
+     Running unittests src/lib.rs (.local/build/point-metadata-test/.nudox-cargo/slot-0/debug/deps/backend_mcp-d67bde356dc9bc51)

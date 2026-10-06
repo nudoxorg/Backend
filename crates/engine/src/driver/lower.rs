@@ -5580,7 +5580,12 @@ pub(super) fn admit<'source, 'output>(
             kind: facts.kinds[ordinal],
         };
         atoms[ordinal] = AtomInput {
-            bytes: facts.names[ordinal],
+            // Anonymous callables have no declared spelling. Their admitted
+            // typed anchor is the exact nonempty identity operand already
+            // used by the full image builder; never intern an empty name.
+            bytes: facts.anonymous_callable_names[ordinal].map_or(facts.names[ordinal], |anchor| {
+                facts.anonymous_callable_anchor_pool[anchor as usize].as_ref()
+            }),
         };
     }
     for (index, bytes) in facts.extension_atoms[..extension_atom_count]
@@ -5633,8 +5638,8 @@ pub(super) fn admit<'source, 'output>(
     }
 
     let mut semantic_atoms = vec![SemanticAtom { bytes: b"" }; fact_count].into_boxed_slice();
-    for (ordinal, name) in facts.names[..fact_count].iter().enumerate() {
-        semantic_atoms[ordinal] = SemanticAtom { bytes: name };
+    for (ordinal, atom) in atoms[..fact_count].iter().enumerate() {
+        semantic_atoms[ordinal] = SemanticAtom { bytes: atom.bytes };
     }
     let mut scratch_atom_order = vec![AtomId::new(0); fact_count].into_boxed_slice();
     let mut scratch_atom_map = vec![0_u32; fact_count].into_boxed_slice();
