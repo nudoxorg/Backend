@@ -607,7 +607,7 @@ fn raw_psrd_page(files: &[[u8; 32]]) -> Vec<u8> {
 #[test]
 fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     use backend_engine::builtin::{
-        ProductSemanticCaptureOutcome, ProductSemanticPublicationKey,
+        ProductSemanticCaptureOutcome, ProductSemanticCaptureRecord, ProductSemanticPublicationKey,
         ProductSourceFileFactsAdmission, ProductSourceFileFactsRecord, ProductSourceSnapshot,
         SemanticSourceCapture, build_product_source_file_facts, semantic_capture_relation,
     };
@@ -778,6 +778,69 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         pending_capture.outcome(),
         ProductSemanticCaptureOutcome::Pending { prior: None }
     );
+    let source_capture_sequence = pending_capture.source_workspace_sequence();
+    let unrelated_label = "pkg:npm/intervening-project@1.0.0";
+    let unrelated_package = backend_engine::PackageKey::from_value(unrelated_label);
+    let unrelated_project = BuiltinPackageRecord::project(unrelated_label, [0xB2; 32], Vec::new())
+        .expect("independent project source row");
+    let unrelated_intent = BuiltinIntent::index_with_semantics(
+        unrelated_package,
+        unrelated_label,
+        vec![BuiltinSourceChange {
+            key: unrelated_package.to_bytes(),
+            after: Some(unrelated_project),
+        }],
+        Vec::new(),
+    )
+    .expect("independent product transition");
+    super::super::commands::commit_builtin_intent(&mut daemon, 2, &unrelated_intent)
+        .expect("commit unrelated product change while capture is pending");
+    assert_ne!(
+        daemon.engine().daemon().owner().head().root(),
+        source_capture_root,
+        "the intervening product transition advances the workspace root"
+    );
+    let forged_before = ProductSemanticCaptureRecord::new(
+        pending_capture.operation_key().copied(),
+        [0xFE; 32],
+        pending_capture.capture(),
+        *pending_capture.base_workspace_root(),
+        pending_capture.base_workspace_sequence(),
+        *pending_capture.source_workspace_root(),
+        pending_capture.source_workspace_sequence(),
+        *pending_capture.source_commit(),
+        pending_capture.outcome(),
+    )
+    .expect("well-formed but nonmatching pending receipt");
+    let forged_intent = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        Vec::new(),
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            key: capture_key.clone(),
+            expected: Some(forged_before),
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Unavailable {
+                reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+            },
+            compiler_failure: None,
+        }],
+    )
+    .expect("forged before receipt intent");
+    let before_forged = daemon.engine().daemon().owner().head().root();
+    let forged_error =
+        super::super::commands::commit_builtin_intent(&mut daemon, 3, &forged_intent)
+            .expect_err("a forged expected receipt cannot replace the selected Pending row");
+    assert!(
+        forged_error.to_string().contains("persisted before value"),
+        "forged receipt is refused by the live selected-before check: {forged_error}"
+    );
+    assert_eq!(
+        daemon.engine().daemon().owner().head().root(),
+        before_forged,
+        "refusal leaves the selected capture root unchanged"
+    );
     let terminal_intent = BuiltinIntent::index_with_capture(
         package,
         label,
@@ -794,8 +857,8 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         }],
     )
     .expect("typed terminal semantic refusal intent");
-    super::super::commands::commit_builtin_intent(&mut daemon, 2, &terminal_intent)
-        .expect("commit terminal typed refusal against captured source");
+    super::super::commands::commit_builtin_intent(&mut daemon, 4, &terminal_intent)
+        .expect("commit terminal typed refusal against its exact pending capture");
     let selected_root = daemon.engine().daemon().owner().head().root();
     drop(daemon);
 
@@ -883,6 +946,11 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     assert_eq!(
         terminal.source_workspace_root(),
         source_capture_root.as_bytes()
+    );
+    assert_eq!(
+        terminal.source_workspace_sequence(),
+        source_capture_sequence,
+        "terminal capture preserves the original source receipt across unrelated commits"
     );
     assert_eq!(failure.source_identity(), source_identity);
     assert_eq!(failure.relative_path(), path);

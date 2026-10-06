@@ -61,8 +61,10 @@ pub use relation::{
     product_source_file_key, product_source_membership_page_key,
 };
 pub use semantic_capture_relation::{
-    ProductSemanticCaptureOutcome, ProductSemanticCaptureRecord, ProductSemanticCaptureRelation,
-    ProductSemanticCaptureRootSchema, semantic_capture_relation, semantic_capture_root_object,
+    ProductSemanticCaptureBaseRootSchema, ProductSemanticCaptureOutcome,
+    ProductSemanticCaptureRecord, ProductSemanticCaptureRelation, ProductSemanticCaptureRootSchema,
+    semantic_capture_base_root_from_object, semantic_capture_base_root_object,
+    semantic_capture_relation, semantic_capture_root_object, semantic_capture_root_pointer_key,
 };
 pub use semantic_relation::{
     ActivatedSemanticPublication, PartialSemanticCoverage, ProductSemanticPublicationKey,

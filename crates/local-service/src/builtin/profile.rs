@@ -23,7 +23,9 @@ use backend_engine::builtin::{
     ProductSourceFileFactsRecord, ProductSourceFileFactsRelation, ProductSourceFileFactsRootSchema,
     SemanticPublicationVersion, SemanticSourceCapture, admit_product_source_file_facts,
     product_source_file_facts_record_key, product_source_file_facts_relation,
-    product_source_file_facts_root_object, semantic_capture_relation, semantic_capture_root_object,
+    product_source_file_facts_root_object, semantic_capture_base_root_from_object,
+    semantic_capture_base_root_object, semantic_capture_relation, semantic_capture_root_object,
+    semantic_capture_root_pointer_key,
 };
 use backend_engine::{
     CanonicalRelation, LazyPreparedUpdate, Relation, SemanticCoverageValidator, TransitionWork,
@@ -2120,6 +2122,7 @@ pub(super) fn prepare_transition_with_source_update(
             intent,
             capture_objects: &capture_update.node_objects,
             capture_pointer: capture_update.pointer.as_ref(),
+            capture_base_pointer: capture_update.base_pointer.as_ref(),
             source_facts_objects: &source_facts_update.node_objects,
             source_facts_pointer: source_facts_update.pointer.as_ref(),
         },
@@ -2147,6 +2150,17 @@ pub(super) fn prepare_transition_with_source_update(
     } else {
         transition
     };
+    let transition = if let Some(pointer) = capture_update.base_pointer {
+        transition
+            .replace_object_family([pointer], &registry)
+            .map_err(|error| {
+                BuiltinModelError(format!(
+                    "retain semantic capture before-root receipt: {error}"
+                ))
+            })?
+    } else {
+        transition
+    };
     let transition = transition
         .retain_objects(source_facts_update.node_objects, &registry)
         .map_err(|error| BuiltinModelError(format!("retain source facts nodes: {error}")))?;
@@ -2166,6 +2180,7 @@ pub(super) fn prepare_transition_with_source_update(
 struct PreparedCaptureRelationUpdate {
     node_objects: Vec<TypedObject>,
     pointer: Option<TypedObject>,
+    base_pointer: Option<TypedObject>,
 }
 
 struct PreparedSourceFactsRelationUpdate {
@@ -2294,10 +2309,16 @@ fn prepare_capture_relation_update(
         return Ok(PreparedCaptureRelationUpdate {
             node_objects: Vec::new(),
             pointer: None,
+            base_pointer: None,
         });
     }
     let selected_capture_relation = semantic_capture_relation(base)
         .map_err(|error| BuiltinModelError(format!("open semantic capture relation: {error}")))?;
+    let base_pointer = semantic_capture_base_root_object(
+        selected_capture_relation
+            .as_ref()
+            .map(|relation| *relation.root().as_bytes()),
+    );
     let source_relation = if intent
         .capture_changes()
         .iter()
@@ -2398,6 +2419,7 @@ fn prepare_capture_relation_update(
         Ok(PreparedCaptureRelationUpdate {
             node_objects,
             pointer: Some(pointer),
+            base_pointer: Some(base_pointer),
         })
     } else {
         if intent
@@ -2436,6 +2458,7 @@ fn prepare_capture_relation_update(
         Ok(PreparedCaptureRelationUpdate {
             node_objects,
             pointer: Some(semantic_capture_root_object(state.root())),
+            base_pointer: Some(base_pointer),
         })
     }
 }
@@ -3084,7 +3107,7 @@ fn validate_persisted_capture_changes(
         ProductSemanticCaptureRootSchema::TYPE,
         ProductSemanticCaptureRootSchema::VERSION,
     );
-    let pointer_key = ObjectKey::<ProductSemanticCaptureRootSchema>::from_value(&[0x53; 32]);
+    let pointer_key = semantic_capture_root_pointer_key();
     let mut pointers = closure_objects
         .iter()
         .filter(|object| object.schema() == pointer_schema);
@@ -3096,6 +3119,26 @@ fn validate_persisted_capture_changes(
             "persisted capture target has an ambiguous or noncanonical root pointer".to_owned(),
         ));
     }
+    let base_pointer_template = semantic_capture_base_root_object(None);
+    let mut base_pointers = closure_objects
+        .iter()
+        .filter(|object| object.schema() == base_pointer_template.schema());
+    let base_pointer = base_pointers.next().ok_or_else(|| {
+        BuiltinModelError("persisted capture update has no before-root witness".to_owned())
+    })?;
+    if base_pointers.next().is_some() {
+        return Err(BuiltinModelError(
+            "persisted capture update has multiple before-root witnesses".to_owned(),
+        ));
+    }
+    let base_capture_root = semantic_capture_base_root_from_object(base_pointer)
+        .map_err(|error| BuiltinModelError(error.to_owned()))?;
+    let base_capture = base_capture_root
+        .map(|root| persisted.relation::<ProductSemanticCaptureRelation>(store, root))
+        .transpose()
+        .map_err(|error| {
+            BuiltinModelError(format!("open persisted base semantic capture: {error}"))
+        })?;
     let capture_root: [u8; 32] = pointer
         .bytes()
         .try_into()
@@ -3122,14 +3165,27 @@ fn validate_persisted_capture_changes(
                 expected.outcome(),
                 ProductSemanticCaptureOutcome::Pending { .. }
             ) || expected.capture() != change.capture
-                || expected.source_workspace_root() != base_manifest.root().as_bytes()
-                || expected.source_workspace_sequence() != base_sequence
+                || expected.source_workspace_sequence() > base_sequence
             {
                 return Err(BuiltinModelError(
-                    "persisted semantic terminal does not match its exact before receipt"
+                    "persisted semantic terminal is future-dated or does not match its before receipt"
                         .to_owned(),
                 ));
             }
+        }
+        let before = base_capture
+            .as_ref()
+            .map(|relation| relation.lookup(&change.key))
+            .transpose()
+            .map_err(|error| {
+                BuiltinModelError(format!("read persisted before semantic capture: {error}"))
+            })?
+            .flatten();
+        if before != change.expected {
+            return Err(BuiltinModelError(
+                "persisted capture before receipt does not match its authenticated base root"
+                    .to_owned(),
+            ));
         }
         let selected_prior = selected_semantic_prior(base_semantic, &change.key)?;
         let after = next_capture_record(
@@ -3154,6 +3210,11 @@ fn validate_persisted_capture_changes(
             return Err(BuiltinModelError(
                 "persisted capture root does not match its exact before receipt and terminal"
                     .to_owned(),
+            ));
+        }
+        if after.source_workspace_sequence() > target_sequence {
+            return Err(BuiltinModelError(
+                "persisted capture refers to a future source workspace sequence".to_owned(),
             ));
         }
         if let Some(failure) = &change.compiler_failure {
