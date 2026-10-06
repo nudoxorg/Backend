@@ -39,7 +39,7 @@ const MAX_RESOLVER_OBSERVATIONS: usize = 16_384;
 const MAX_RESOLVER_DIRECTORY_ENTRIES: usize = 16_384;
 const MAX_RESOLVER_TOTAL_DIRECTORY_ENTRIES: usize = 65_536;
 const MAX_RESOLVER_METADATA_BYTES: usize = 64 * 1024 * 1024;
-const MAX_RESOLVER_DEPTH: usize = 32;
+pub(crate) const MAX_RESOLVER_DEPTH: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FileIdentity {
@@ -193,6 +193,33 @@ impl ResolverObservationLedger {
             .saturating_add(self.external_missing_node_modules.len())
             .saturating_add(self.directories.len())
             .saturating_add(self.realpaths.len())
+    }
+}
+
+/// Owned compiler-read closure retained through package staging and publication.
+#[derive(Debug)]
+pub(crate) struct TypeScriptResolverWitness {
+    project_fingerprint: [u8; 32],
+    digest: [u8; 32],
+    observations: ResolverObservationLedger,
+}
+
+impl TypeScriptResolverWitness {
+    pub(crate) const fn digest(&self) -> &[u8; 32] {
+        &self.digest
+    }
+
+    pub(crate) fn validate_current(
+        &self,
+        witness: &TypeScriptProjectWitness,
+    ) -> Result<(), TypeScriptProjectHostError> {
+        if self.project_fingerprint != witness.fingerprint {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: witness.project_root.clone(),
+            });
+        }
+        witness.validate_current()?;
+        validate_resolver_observations(witness, &self.observations)
     }
 }
 
@@ -351,6 +378,7 @@ impl TypeScriptResolverCapability<'_> {
         recursive: bool,
         maximum_depth: usize,
         maximum_entries: usize,
+        require_complete: bool,
     ) -> Result<Vec<TypeScriptDirectoryEntry>, TypeScriptProjectHostError> {
         if maximum_depth > MAX_RESOLVER_DEPTH
             || maximum_entries == 0
@@ -427,6 +455,13 @@ impl TypeScriptResolverCapability<'_> {
                 if actual_metadata.is_dir() {
                     if recursive && depth < maximum_depth {
                         pending.push((entry.path.to_path_buf(), depth + 1));
+                    } else if recursive && require_complete {
+                        return Err(TypeScriptProjectHostError::ResolverDirectoryLimit {
+                            requested_depth: depth.saturating_add(1),
+                            requested_entries: output.len(),
+                            maximum_depth,
+                            maximum_entries,
+                        });
                     }
                     continue;
                 }
@@ -578,96 +613,26 @@ impl TypeScriptResolverCapability<'_> {
         Ok(*digest.finalize().as_bytes())
     }
 
+    pub(crate) fn seal(&mut self) -> Result<TypeScriptResolverWitness, TypeScriptProjectHostError> {
+        self.validate_current()?;
+        let digest = self.resolver_witness()?;
+        Ok(TypeScriptResolverWitness {
+            project_fingerprint: self.witness.fingerprint,
+            digest,
+            observations: std::mem::take(&mut self.observations),
+        })
+    }
+
     pub(crate) fn validate_current(&self) -> Result<(), TypeScriptProjectHostError> {
         self.witness.validate_current()?;
-        for input in self.observations.loaded_sources.values() {
-            let observed = capture_file_snapshot(&input.path, MAX_SOURCE_FILE_BYTES)?;
-            if observed.identity != input.identity
-                || observed.length != u64::try_from(input.bytes.len()).unwrap_or(u64::MAX)
-                || observed.digest != *blake3::hash(&input.bytes).as_bytes()
-            {
-                return Err(TypeScriptProjectHostError::WitnessChanged {
-                    path: input.path.clone(),
-                });
-            }
-        }
-        for (path, nearest_parent) in &self.observations.missing_paths {
-            if !matches!(fs::symlink_metadata(path), Err(ref source) if source.kind() == io::ErrorKind::NotFound)
-            {
-                return Err(TypeScriptProjectHostError::WitnessChanged {
-                    path: path.clone().into_boxed_path(),
-                });
-            }
-            if let Some(parent) = nearest_parent {
-                let observed = capture_directory_snapshot(parent, self.witness)?;
-                if !self
-                    .observations
-                    .directories
-                    .get(parent)
-                    .is_some_and(|expected| expected == &observed)
-                {
-                    return Err(TypeScriptProjectHostError::WitnessChanged {
-                        path: parent.clone().into_boxed_path(),
-                    });
-                }
-            }
-        }
-        for expected in self.observations.external_missing_node_modules.values() {
-            let observed = self.witness.external_missing_node_modules(&expected.root)?;
-            if observed.as_ref() != Some(expected) {
-                return Err(TypeScriptProjectHostError::WitnessChanged {
-                    path: expected.root.clone(),
-                });
-            }
-        }
-        for (path, expected) in &self.observations.directories {
-            let observed = capture_directory_snapshot(path, self.witness)?;
-            if &observed != expected {
-                return Err(TypeScriptProjectHostError::WitnessChanged {
-                    path: path.clone().into_boxed_path(),
-                });
-            }
-        }
-        for (path, expected) in &self.observations.realpaths {
-            let observed = self.capture_realpath(path)?;
-            let canonical = observed.as_ref().map(|(path, _)| path.as_path());
-            if canonical != expected.canonical_path.as_deref()
-                || observed.as_ref().and_then(|(_, identity)| *identity) != expected.identity
-            {
-                return Err(TypeScriptProjectHostError::WitnessChanged {
-                    path: path.clone().into_boxed_path(),
-                });
-            }
-        }
-        Ok(())
+        validate_resolver_observations(self.witness, &self.observations)
     }
 
     fn capture_realpath(
         &self,
         path: &Path,
     ) -> Result<Option<(PathBuf, Option<FileIdentity>)>, TypeScriptProjectHostError> {
-        match fs::symlink_metadata(path) {
-            Ok(metadata) => {
-                let identity = file_identity(&metadata).map_err(|source| {
-                    TypeScriptProjectHostError::PackagePath {
-                        path: path.to_path_buf().into_boxed_path(),
-                        source,
-                    }
-                })?;
-                let canonical = fs::canonicalize(path).map_err(|source| {
-                    TypeScriptProjectHostError::PackagePath {
-                        path: path.to_path_buf().into_boxed_path(),
-                        source,
-                    }
-                })?;
-                Ok(Some((canonical, Some(identity))))
-            }
-            Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(source) => Err(TypeScriptProjectHostError::PackagePath {
-                path: path.to_path_buf().into_boxed_path(),
-                source,
-            }),
-        }
+        capture_realpath_snapshot(path)
     }
 
     fn record_missing(
@@ -802,6 +767,98 @@ impl TypeScriptResolverCapability<'_> {
             .directories
             .insert(path.to_path_buf(), snapshot);
         Ok(())
+    }
+}
+
+fn validate_resolver_observations(
+    witness: &TypeScriptProjectWitness,
+    observations: &ResolverObservationLedger,
+) -> Result<(), TypeScriptProjectHostError> {
+    for input in observations.loaded_sources.values() {
+        let observed = capture_file_snapshot(&input.path, MAX_SOURCE_FILE_BYTES)?;
+        if observed.identity != input.identity
+            || observed.length != u64::try_from(input.bytes.len()).unwrap_or(u64::MAX)
+            || observed.digest != *blake3::hash(&input.bytes).as_bytes()
+        {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: input.path.clone(),
+            });
+        }
+    }
+    for (path, nearest_parent) in &observations.missing_paths {
+        if !matches!(fs::symlink_metadata(path), Err(ref source) if source.kind() == io::ErrorKind::NotFound)
+        {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: path.clone().into_boxed_path(),
+            });
+        }
+        if let Some(parent) = nearest_parent {
+            let observed = capture_directory_snapshot(parent, witness)?;
+            if !observations
+                .directories
+                .get(parent)
+                .is_some_and(|expected| expected == &observed)
+            {
+                return Err(TypeScriptProjectHostError::WitnessChanged {
+                    path: parent.clone().into_boxed_path(),
+                });
+            }
+        }
+    }
+    for expected in observations.external_missing_node_modules.values() {
+        let observed = witness.external_missing_node_modules(&expected.root)?;
+        if observed.as_ref() != Some(expected) {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: expected.root.clone(),
+            });
+        }
+    }
+    for (path, expected) in &observations.directories {
+        let observed = capture_directory_snapshot(path, witness)?;
+        if &observed != expected {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: path.clone().into_boxed_path(),
+            });
+        }
+    }
+    for (path, expected) in &observations.realpaths {
+        let observed = capture_realpath_snapshot(path)?;
+        let canonical = observed.as_ref().map(|(path, _)| path.as_path());
+        if canonical != expected.canonical_path.as_deref()
+            || observed.as_ref().and_then(|(_, identity)| *identity) != expected.identity
+        {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: path.clone().into_boxed_path(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn capture_realpath_snapshot(
+    path: &Path,
+) -> Result<Option<(PathBuf, Option<FileIdentity>)>, TypeScriptProjectHostError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            let identity = file_identity(&metadata).map_err(|source| {
+                TypeScriptProjectHostError::PackagePath {
+                    path: path.to_path_buf().into_boxed_path(),
+                    source,
+                }
+            })?;
+            let canonical = fs::canonicalize(path).map_err(|source| {
+                TypeScriptProjectHostError::PackagePath {
+                    path: path.to_path_buf().into_boxed_path(),
+                    source,
+                }
+            })?;
+            Ok(Some((canonical, Some(identity))))
+        }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(TypeScriptProjectHostError::PackagePath {
+            path: path.to_path_buf().into_boxed_path(),
+            source,
+        }),
     }
 }
 
@@ -4297,7 +4354,7 @@ printf 'Version 5.9.3\n'
                 .expect("observe source directory")
         );
         let entries = capability
-            .read_directory(&project_root.join("src"), &[".ts"], false, 0, 8)
+            .read_directory(&project_root.join("src"), &[".ts"], false, 0, 8, false)
             .expect("read bounded TypeScript directory");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].canonical_path.as_deref(), Some(source.as_path()));
@@ -4313,14 +4370,28 @@ printf 'Version 5.9.3\n'
         )));
         let fingerprint = capability.resolver_witness().expect("hash observations");
         assert_ne!(fingerprint, [0; 32]);
-        capability
-            .validate_current()
+        let closure = capability.seal().expect("retain exact resolver closure");
+        assert_eq!(closure.digest(), &fingerprint);
+        closure
+            .validate_current(&witness)
             .expect("admitted resolver observations remain current");
+
+        let newly_enumerated = project_root.join("src/added.ts");
+        fs::write(&newly_enumerated, b"export const added = true;")
+            .expect("add a new directory result");
+        assert!(matches!(
+            closure.validate_current(&witness),
+            Err(TypeScriptProjectHostError::WitnessChanged { .. })
+        ));
+        fs::remove_file(&newly_enumerated).expect("restore witnessed directory set");
+        closure
+            .validate_current(&witness)
+            .expect("restored directory query result matches its witness");
 
         fs::write(&missing, b"declare const missing: string;")
             .expect("materialize formerly missing candidate");
         assert!(matches!(
-            capability.validate_current(),
+            closure.validate_current(&witness),
             Err(TypeScriptProjectHostError::WitnessChanged { .. })
         ));
     }
@@ -4367,7 +4438,7 @@ printf 'Version 5.9.3\n'
         );
         assert!(
             capability
-                .read_directory(&ancestor_modules, &[".d.ts"], true, 8, 64)
+                .read_directory(&ancestor_modules, &[".d.ts"], true, 8, 64, false)
                 .expect("enumerate absent ancestor candidate")
                 .is_empty()
         );

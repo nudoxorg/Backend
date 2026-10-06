@@ -1742,6 +1742,8 @@ pub(crate) struct StagedPackageCompilation {
     cargo_workspace_facts: Option<std::sync::Arc<RustCargoWorkspaceFactsV1>>,
     typescript_witness:
         Option<std::sync::Arc<crate::application::typescript_host::TypeScriptProjectWitness>>,
+    typescript_closure_witness:
+        Option<crate::application::typescript_program::TypeScriptProgramClosureWitness>,
     embeddings: Option<StagedEmbeddingOutput>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
 }
@@ -2035,6 +2037,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut tsz_authority = None;
         let mut tsz_budget = None;
         let mut tsz_package_paths = std::collections::BTreeMap::<Box<str>, Box<str>>::new();
+        let mut typescript_closure_witness = None;
         if let Some(project) = typescript_project.as_ref() {
             let inputs = project.inputs();
             let mut resolver = inputs.resolver();
@@ -2064,6 +2067,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     terminal: Box::new(terminal),
                 }
             })?;
+            typescript_closure_witness = Some(native.closure_witness);
             let budget =
                 TszProjectExecutionBudget::new(control.deadline, cancelled, native.work_units);
             let mut authority = TszProjectAuthority::new();
@@ -2718,25 +2722,21 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 Coverage::Partial,
             );
         }
-        if let Some(project) = typescript_project.as_ref()
-            && let Err(cause) = project.validate_current()
-        {
-            let toolchain = self.toolchain(first_application_request).unwrap_or(
-                ToolchainSelection::ExplicitlyUnavailable {
-                    tool: NativeTool::TypeScriptCompiler,
-                },
-            );
-            let terminal = package_authority_terminal(
-                package.package_target.target(),
-                first_application_request,
-                first_authority,
-                toolchain,
-                PackageAuthorityError::TypeScriptProjectHost(cause),
-            );
-            return Err(PackageSemanticError::Compile {
-                path: first_source.relative_path.into(),
-                terminal: Box::new(terminal),
-            });
+        match (
+            typescript_project.as_ref(),
+            typescript_closure_witness.as_ref(),
+        ) {
+            (Some(project), Some(resolver_witness)) => {
+                resolver_witness
+                    .validate_current(project.witness.as_ref())
+                    .map_err(PackageSemanticError::TypeScriptProjectWitness)?;
+            }
+            (None, None) => {}
+            _ => {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "TypeScript compiler read closure",
+                });
+            }
         }
         let project_plane_seed = typescript_toolchain.and_then(|toolchain| {
             typescript_project.as_ref().and_then(|project| {
@@ -2773,6 +2773,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             typescript_witness: typescript_project
                 .as_ref()
                 .map(|project| std::sync::Arc::clone(&project.witness)),
+            typescript_closure_witness,
             embeddings: embedding_identity.map(|identity| StagedEmbeddingOutput {
                 identity,
                 artifacts: if embedding_unavailable.is_some() {
@@ -3014,10 +3015,19 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         cancelled: &AtomicBool,
         progress: &mut impl FnMut(PackageCompilePhase),
     ) -> Result<PublishedSemanticPackage, PackageSemanticError> {
-        if let Some(witness) = staged.typescript_witness.as_ref() {
-            witness
-                .validate_current()
-                .map_err(PackageSemanticError::TypeScriptProjectWitness)?;
+        match (
+            staged.typescript_witness.as_ref(),
+            staged.typescript_closure_witness.as_ref(),
+        ) {
+            (Some(project), Some(resolver)) => resolver
+                .validate_current(project.as_ref())
+                .map_err(PackageSemanticError::TypeScriptProjectWitness)?,
+            (None, None) => {}
+            _ => {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "TypeScript compiler read closure",
+                });
+            }
         }
         let count = staged.artifacts.len();
         if count == 0 {
@@ -3143,10 +3153,19 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         staged: StagedPackageCompilation,
         cancelled: &AtomicBool,
     ) -> Result<StagedSemanticPackage, PackageSemanticError> {
-        if let Some(witness) = staged.typescript_witness.as_ref() {
-            witness
-                .validate_current()
-                .map_err(PackageSemanticError::TypeScriptProjectWitness)?;
+        match (
+            staged.typescript_witness.as_ref(),
+            staged.typescript_closure_witness.as_ref(),
+        ) {
+            (Some(project), Some(resolver)) => resolver
+                .validate_current(project.as_ref())
+                .map_err(PackageSemanticError::TypeScriptProjectWitness)?,
+            (None, None) => {}
+            _ => {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "TypeScript compiler read closure",
+                });
+            }
         }
         let package_identity = staged.package_identity;
         let target_identity = staged.target_identity;

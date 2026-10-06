@@ -11068,9 +11068,10 @@ mod lane_tests {
             &cancelled,
         )
         .map_err(|error| LaneError::ConfiguredProject(format!("compiler API bridge: {error:?}")))?;
-        resolver
-            .validate_current()
-            .map_err(|_| LaneError::Missing("unchanged compiler resolver witness"))?;
+        native
+            .closure_witness
+            .validate_current(admitted.witness.as_ref())
+            .map_err(|error| LaneError::ConfiguredProject(format!("resolver witness: {error:?}")))?;
         let route_path = native
             .package_paths
             .get("src/app/api/route.ts")

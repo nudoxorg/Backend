@@ -23,7 +23,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::typescript_host::{
-    TypeScriptProjectHostError, TypeScriptProjectInputs, TypeScriptResolverCapability,
+    MAX_RESOLVER_DEPTH, TypeScriptProjectHostError, TypeScriptProjectInputs,
+    TypeScriptResolverCapability, TypeScriptResolverWitness,
 };
 use super::{ToolchainProbeLimits, toolchain_probe::run_typescript_program_bridge};
 use crate::application::compiler::PackageSource;
@@ -39,9 +40,32 @@ pub(crate) struct NativeTypeScriptInputs {
     pub(crate) sources: Vec<TszFileInput>,
     pub(crate) libraries: Vec<std::sync::Arc<backend_frontend_typescript::TszLibFile>>,
     pub(crate) options: TszProjectOptions,
+    pub(crate) closure_witness: TypeScriptProgramClosureWitness,
     /// Package-relative source path to the exact workspace-root TSZ path.
     pub(crate) package_paths: BTreeMap<Box<str>, Box<str>>,
     pub(crate) work_units: u64,
+}
+
+/// Owns both the admitted host reads and the exact Compiler API directory-query transcript.
+#[derive(Debug)]
+pub(crate) struct TypeScriptProgramClosureWitness {
+    resolver: TypeScriptResolverWitness,
+    compiler_accesses: Box<[ProgramAccess]>,
+    access_digest: [u8; 32],
+}
+
+impl TypeScriptProgramClosureWitness {
+    pub(crate) fn validate_current(
+        &self,
+        witness: &super::typescript_host::TypeScriptProjectWitness,
+    ) -> Result<(), TypeScriptProjectHostError> {
+        if compiler_access_digest(&self.compiler_accesses)? != self.access_digest {
+            return Err(bridge_error(
+                "retained Compiler API directory transcript changed after construction",
+            ));
+        }
+        self.resolver.validate_current(witness)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,7 +106,7 @@ struct ProgramResolution {
     package_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProgramAccess {
     kind: String,
@@ -96,9 +120,15 @@ struct ProgramAccess {
     #[serde(default)]
     extensions: Option<Vec<String>>,
     #[serde(default)]
+    excludes: Option<Vec<String>>,
+    #[serde(default)]
+    includes: Option<Vec<String>>,
+    #[serde(default)]
     recursive: Option<bool>,
     #[serde(default)]
     depth: Option<usize>,
+    #[serde(default)]
+    entries: Option<Vec<String>>,
 }
 
 /// One script executed by the exact admitted TypeScript compiler API.
@@ -112,6 +142,8 @@ const workspaceRoot = process.argv[3];
 const observations = new Map();
 const key = (kind, p, extra) => JSON.stringify([kind, path.resolve(p), extra || null]);
 const digest = value => crypto.createHash('sha256').update(Buffer.isBuffer(value) ? value : Buffer.from(value)).digest('hex');
+const resolvedEntries = (value, root) => Array.isArray(value) ? value.map(item =>
+  path.isAbsolute(item) ? path.resolve(item) : path.resolve(root, item)).sort() : [];
 const add = value => { const k = JSON.stringify(value); observations.set(k, value); };
 const result = value => { process.stdout.write(JSON.stringify(value)); };
 try {
@@ -122,19 +154,21 @@ try {
       const original = sys[name].bind(sys);
       sys[name] = (...args) => {
         const p = args[0];
+        const resolvedPath = path.resolve(p);
         const value = original(...args);
         if (name === 'readFile') {
-          add({kind:'file', path:p, exists:value !== undefined, sha256:value === undefined ? null : digest(value)});
+          add({kind:'file', path:resolvedPath, exists:value !== undefined, sha256:value === undefined ? null : digest(value)});
         } else if (name === 'fileExists') {
-          add({kind:'exists', path:p, exists:!!value});
+          add({kind:'exists', path:resolvedPath, exists:!!value});
         } else if (name === 'directoryExists') {
-          add({kind:'directory', path:p, exists:!!value});
+          add({kind:'directory', path:resolvedPath, exists:!!value});
         } else if (name === 'realpath') {
-          add({kind:'realpath', path:p, realpath:value === undefined ? null : path.resolve(value)});
+          add({kind:'realpath', path:resolvedPath, realpath:value === undefined ? null : path.resolve(value)});
         } else if (name === 'readDirectory') {
-          add({kind:'readDirectory', path:p, extensions:args[1] || null, recursive:args[4] === undefined, depth:args[4] === undefined ? null : args[4]});
+          add({kind:'readDirectory', path:resolvedPath, extensions:args[1] || null, excludes:args[2] || null, includes:args[3] || null,
+            recursive:args[4] === undefined, depth:args[4] === undefined ? null : args[4], entries:resolvedEntries(value, resolvedPath)});
         } else if (name === 'getDirectories') {
-          add({kind:'getDirectories', path:p});
+          add({kind:'getDirectories', path:resolvedPath, entries:resolvedEntries(value, resolvedPath)});
         }
         return value;
       };
@@ -509,8 +543,9 @@ pub(crate) fn build_native_inputs(
     for (path, source) in source_by_virtual {
         sources.push(TszFileInput { path, source });
     }
-    let resolver_digest = resolver.resolver_witness()?;
-    resolver.validate_current()?;
+    let compiler_accesses = report.accesses.into_boxed_slice();
+    let access_digest = compiler_access_digest(&compiler_accesses)?;
+    let resolver_witness = resolver.seal()?;
     let environment = program_environment_fingerprint(
         inputs,
         config,
@@ -518,8 +553,9 @@ pub(crate) fn build_native_inputs(
         &report.compiler_options,
         &content_ids,
         &compiler_api.content_id,
+        &access_digest,
         &resolutions,
-        &resolver_digest,
+        resolver_witness.digest(),
     )?;
     let work_units = calculate_work_units(inputs, &sources, &libraries);
     let options = TszProjectOptions {
@@ -532,6 +568,11 @@ pub(crate) fn build_native_inputs(
         sources,
         libraries,
         options,
+        closure_witness: TypeScriptProgramClosureWitness {
+            resolver: resolver_witness,
+            compiler_accesses,
+            access_digest,
+        },
         package_paths,
         work_units,
     })
@@ -669,13 +710,13 @@ fn replay_observations(
     resolver: &mut TypeScriptResolverCapability<'_>,
     accesses: &[ProgramAccess],
 ) -> Result<(), TypeScriptProjectHostError> {
-    let mut observed = BTreeSet::new();
     for access in accesses {
-        let key = format!("{}:{}", access.kind, access.path);
-        if !observed.insert(key) {
-            continue;
-        }
         let path = Path::new(&access.path);
+        if !path.is_absolute() || normalize_path(path).to_string_lossy() != access.path {
+            return Err(bridge_error(
+                "compiler filesystem observation used a non-canonical query path",
+            ));
+        }
         match access.kind.as_str() {
             "file" | "exists" => {
                 let source = resolver.try_load_source(path)?;
@@ -728,9 +769,79 @@ fn replay_observations(
                             ".d.ts",
                         ]
                     });
-                let recursive = access.kind == "getDirectories" || access.recursive.unwrap_or(true);
-                let depth = access.depth.unwrap_or(32).min(32);
-                let _ = resolver.read_directory(path, &extensions, recursive, depth, 16_384)?;
+                let recursive = access.kind == "readDirectory";
+                let (depth, require_complete) = match (recursive, access.depth) {
+                    (true, Some(depth)) if depth > MAX_RESOLVER_DEPTH => {
+                        return Err(bridge_error(
+                            "compiler directory query depth exceeds the admitted resolver bound",
+                        ));
+                    }
+                    (true, Some(depth)) => (depth, false),
+                    (true, None) => (MAX_RESOLVER_DEPTH, true),
+                    (false, _) => (0, false),
+                };
+                let directory_entries = resolver.read_directory(
+                    path,
+                    &extensions,
+                    recursive,
+                    depth,
+                    16_384,
+                    require_complete,
+                )?;
+                let entries = access.entries.as_deref().ok_or_else(|| {
+                    bridge_error("compiler API omitted a directory query result set")
+                })?;
+                if entries.windows(2).any(|pair| pair[0] >= pair[1]) {
+                    return Err(bridge_error(
+                        "compiler directory query result is not strictly sorted and unique",
+                    ));
+                }
+                for entry in entries {
+                    let entry_path = Path::new(entry);
+                    if !entry_path.is_absolute()
+                        || normalize_path(entry_path).to_string_lossy() != entry.as_str()
+                    {
+                        return Err(bridge_error(
+                            "compiler directory query returned a non-canonical path",
+                        ));
+                    }
+                    if access.kind == "readDirectory" {
+                        if !entry_path.starts_with(path) {
+                            return Err(bridge_error(
+                                "compiler directory result escaped its queried root",
+                            ));
+                        }
+                        let Some(source) = resolver.try_load_source(entry_path)? else {
+                            return Err(bridge_error(
+                                "compiler directory result names an absent source file",
+                            ));
+                        };
+                        if !directory_entries.iter().any(|observed| {
+                            observed
+                                .canonical_path
+                                .as_deref()
+                                .unwrap_or(observed.path.as_ref())
+                                == source.path.as_ref()
+                        }) {
+                            return Err(bridge_error(
+                                "compiler directory result is not present in the captured directory closure",
+                            ));
+                        }
+                    } else {
+                        if entry_path.parent() != Some(path) {
+                            return Err(bridge_error(&format!(
+                                "compiler getDirectories returned {entry:?} outside immediate query directory {:?}",
+                                access.path
+                            )));
+                        }
+                        if !resolver.directory_exists(entry_path)? {
+                            return Err(bridge_error(&format!(
+                                "compiler getDirectories returned missing directory {entry:?} under {:?}",
+                                access.path
+                            )));
+                        }
+                    }
+                }
             }
             other => {
                 return Err(bridge_error(&format!(
@@ -796,6 +907,7 @@ fn program_environment_fingerprint(
     options: &serde_json::Value,
     content_ids: &BTreeMap<String, ContentId<SourceFactDomain>>,
     compiler_api_content_id: &ContentId<SourceFactDomain>,
+    compiler_access_digest: &[u8; 32],
     resolutions: &[TszProjectModuleResolution],
     resolver_digest: &[u8; 32],
 ) -> Result<TszEnvironmentFingerprint, TypeScriptProjectHostError> {
@@ -805,6 +917,7 @@ fn program_environment_fingerprint(
     digest.update(compiler_version.as_bytes());
     digest.update(config.content_id.as_ref());
     digest.update(compiler_api_content_id.as_ref());
+    digest.update(compiler_access_digest);
     digest.update(resolver_digest);
     let options = serde_json::to_vec(options).map_err(|error| {
         bridge_error(&format!(
@@ -826,6 +939,23 @@ fn program_environment_fingerprint(
     Ok(TszEnvironmentFingerprint::from_sha256(
         *digest.finalize().as_bytes(),
     ))
+}
+
+fn compiler_access_digest(
+    accesses: &[ProgramAccess],
+) -> Result<[u8; 32], TypeScriptProjectHostError> {
+    let mut digest = Sha256::new();
+    digest.update(b"compiler.typescript.api-directory-transcript.v1\0");
+    for access in accesses {
+        let encoded = serde_json::to_vec(access).map_err(|error| {
+            bridge_error(&format!(
+                "Compiler API directory transcript failed to encode: {error}"
+            ))
+        })?;
+        digest.update(&(encoded.len() as u64).to_le_bytes());
+        digest.update(&encoded);
+    }
+    Ok(digest.finalize().into())
 }
 
 fn calculate_work_units(
@@ -886,7 +1016,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_compiler_api_lib_names;
+    use super::{ProgramAccess, compiler_access_digest, normalize_compiler_api_lib_names};
     use serde_json::json;
 
     #[test]
@@ -915,6 +1045,35 @@ mod tests {
             options["compilerOptions"]["lib"],
             json!(["DOM", "@typescript/lib-dom", 7])
         );
+    }
+
+    #[test]
+    fn compiler_directory_transcript_binds_query_and_exact_result_set() {
+        let access = |includes: &str, entries: &[&str]| ProgramAccess {
+            kind: "readDirectory".to_owned(),
+            path: "/workspace/app".to_owned(),
+            exists: None,
+            sha256: None,
+            realpath: None,
+            extensions: Some(vec![".ts".to_owned()]),
+            excludes: Some(Vec::new()),
+            includes: Some(vec![includes.to_owned()]),
+            recursive: Some(true),
+            depth: None,
+            entries: Some(entries.iter().map(|entry| (*entry).to_owned()).collect()),
+        };
+        let original = compiler_access_digest(&[access("**/*", &["/workspace/app/src/a.ts"])])
+            .expect("hash exact compiler directory transcript");
+        let changed_query =
+            compiler_access_digest(&[access("src/**", &["/workspace/app/src/a.ts"])])
+                .expect("hash changed compiler query");
+        let changed_results = compiler_access_digest(&[access(
+            "**/*",
+            &["/workspace/app/src/a.ts", "/workspace/app/src/b.ts"],
+        )])
+        .expect("hash changed compiler result set");
+        assert_ne!(original, changed_query);
+        assert_ne!(original, changed_results);
     }
 }
 
