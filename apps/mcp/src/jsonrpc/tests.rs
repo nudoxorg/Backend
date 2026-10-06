@@ -45,6 +45,8 @@ struct Fake {
     stale_cursor: bool,
     /// Optional product reply used by the high-fanout surface budget case.
     surface_reply: Option<SurfaceReply>,
+    /// Typed client failure returned by the surface boundary.
+    surface_error: Option<ClientError>,
     /// Exercise the opaque owner cursor family behind `backend.surface`.
     surface_index_search_pages: bool,
     /// Override the opaque owner cursor for size-boundary cases.
@@ -238,6 +240,9 @@ impl Engine for Fake {
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
         self.surface_commands.push(command.clone());
+        if let Some(error) = self.surface_error.take() {
+            return Err(error);
+        }
         if let Some(reply) = self.surface_reply.take() {
             return Ok(reply);
         }
@@ -435,6 +440,142 @@ fn assert_context_bounded(response: &Value) {
         bytes.len(),
         DEFAULT_RESPONSE_BUDGET_BYTES
     );
+}
+
+fn setup_compiler_failure() -> backend_library::PackageCompilerFailure {
+    use backend_library::interface::{CompilerTerminal, SourceAuthority};
+    use backend_semantic::vocabulary::{Language, NativeTool, Stage};
+    use backend_version::{ContentId, SourceFactDomain};
+
+    let bytes = b"export function welcome(): string { return 'hello'; }";
+    backend_library::PackageCompilerFailure::from_package_terminal(
+        "src/main.ts",
+        &CompilerTerminal::Toolchain {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(bytes),
+                byte_len: u32::try_from(bytes.len()).expect("small source"),
+            },
+            language: Language::TypeScript,
+            stage: Stage::LowerIr,
+            selected: NativeTool::TypeScriptCompiler,
+            configured: None,
+        },
+    )
+    .expect("valid compiler terminal")
+    .expect("setup refusal projects")
+}
+
+fn compiler_error_routes() -> Vec<(&'static str, Value, &'static str)> {
+    let command = SurfaceCommand::IndexStart {
+        package: PackageReference::parse(PROJECT).expect("project reference"),
+        execution_intent: CompileExecutionIntent::Interactive,
+    };
+    vec![
+        (
+            INDEX_START_TOOL,
+            json!({"package": PROJECT, "detail": "full"}),
+            PROJECT,
+        ),
+        (
+            INDEX_PROGRESS_TOOL,
+            json!({"ticket": ticket_value(&index_job_ticket()), "detail": "full"}),
+            "pkg:cargo/serde@1.0.228",
+        ),
+        (
+            INDEX_CANCEL_TOOL,
+            json!({"ticket": ticket_value(&index_job_ticket()), "detail": "full"}),
+            "pkg:cargo/serde@1.0.228",
+        ),
+        (
+            SURFACE_TOOL,
+            json!({"command": command, "detail": "full"}),
+            PROJECT,
+        ),
+    ]
+}
+
+#[test]
+fn surface_errors_preserve_typed_compiler_facts_across_all_job_routes() {
+    let failure = setup_compiler_failure();
+    for (tool, arguments, operand) in compiler_error_routes() {
+        let mut server = ready(Fake {
+            surface_error: Some(ClientError::CommandFailed(
+                backend_library::CommandFailure::CompilerRefused {
+                    detail: "RAW SOURCE DIAGNOSTIC AND LEGACY JSON".repeat(2_000),
+                    failure: failure.clone(),
+                },
+            )),
+            ..Fake::default()
+        });
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({"name": tool, "arguments": arguments}),
+        );
+        let data = &response["error"]["data"];
+        let structured = &data["structuredContent"];
+        assert_eq!(data["kind"], "compiler-refused", "{tool}: {response}");
+        assert_eq!(
+            structured["compiler_failure"],
+            serde_json::to_value(&failure).expect("exact facts")
+        );
+        assert_eq!(structured["cause"], "refused");
+        assert_eq!(structured["operand"], operand);
+        assert_eq!(
+            structured["compiler_tool_requirement"]["configuration_variable"],
+            "NUDOX_TSC"
+        );
+        assert_eq!(
+            structured["compiler_tool_requirement"]["configuration_required"],
+            true
+        );
+        let detail = data["detail"].as_str().expect("human detail");
+        assert!(detail.contains("src/main.ts: setup/toolchain_configuration_mismatch"));
+        assert!(detail.contains("Set NUDOX_TSC to an absolute path"));
+        assert!(!detail.contains("RAW SOURCE DIAGNOSTIC"));
+        assert!(!detail.contains("content:"));
+        assert!(!detail.contains("facts="));
+        assert!(detail.len() < 500);
+        assert_eq!(server.product.surface_commands.len(), 1);
+        assert_context_bounded(&response);
+    }
+}
+
+#[test]
+fn surface_errors_keep_valid_compiler_json_and_coordinates_as_unproven_protocol() {
+    let failure = setup_compiler_failure();
+    let encoded = failure
+        .encode_bounded_json()
+        .expect("bounded compiler JSON");
+    assert_eq!(
+        backend_library::PackageCompilerFailure::decode_bounded_json(&encoded)
+            .expect("valid compiler JSON"),
+        failure
+    );
+    for message in [
+        encoded,
+        "/abs/trap::src/hidden.ts:12::Secret: library record not found".to_owned(),
+    ] {
+        for (tool, arguments, operand) in compiler_error_routes() {
+            let mut server = ready(Fake {
+                surface_error: Some(ClientError::Protocol(message.clone())),
+                ..Fake::default()
+            });
+            let response = request(
+                &mut server,
+                "tools/call",
+                &json!({"name": tool, "arguments": arguments}),
+            );
+            let data = &response["error"]["data"];
+            let structured = &data["structuredContent"];
+            assert_eq!(data["kind"], "protocol", "{tool}: {response}");
+            assert_eq!(structured["cause"], "unproven");
+            assert_eq!(structured["operand"], operand);
+            assert!(structured.get("compiler_failure").is_none());
+            assert!(structured.get("compiler_tool_requirement").is_none());
+            assert_context_bounded(&response);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

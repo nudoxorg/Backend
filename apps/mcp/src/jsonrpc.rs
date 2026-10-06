@@ -717,9 +717,10 @@ impl<P: Product> Server<P> {
         command
             .admit()
             .map_err(|error| RpcError::invalid(format!("command: {error}")))?;
+        let operand = surface_error_operand(&command);
         let reply = self.product.surface(command).map_err(|error| match error {
             ClientError::StaleCursor => RpcError::stale_cursor(),
-            other => RpcError::tool(other.to_string()),
+            other => RpcError::from_fault(&Fault::from_client_error(&other, operand)),
         })?;
         self.surface_reply_result(&reply, detail, context)
     }
@@ -774,10 +775,11 @@ impl<P: Product> Server<P> {
         command
             .admit()
             .map_err(|error| RpcError::invalid(format!("command: {error}")))?;
+        let operand = surface_error_operand(&command);
         let reply = self
             .product
             .surface(command)
-            .map_err(|error| RpcError::tool(error.to_string()))?;
+            .map_err(|error| RpcError::from_fault(&Fault::from_client_error(&error, operand)))?;
         self.surface_reply_result(&reply, detail, context)
     }
 
@@ -1535,6 +1537,21 @@ fn index_job_ticket(arguments: &Map<String, Value>) -> Result<IndexJobTicket, Rp
         .cloned()
         .ok_or_else(|| RpcError::invalid("ticket must be the exact owner-issued ticket object"))?;
     serde_json::from_value(encoded).map_err(|error| RpcError::invalid(format!("ticket: {error}")))
+}
+
+fn surface_error_operand(command: &SurfaceCommand) -> backend_present::Operand {
+    let package = match command {
+        SurfaceCommand::IndexStart { package, .. } => Some(package),
+        SurfaceCommand::IndexProgress { ticket, .. }
+        | SurfaceCommand::IndexCancel { ticket }
+        | SurfaceCommand::IndexAwait { ticket } => Some(ticket.package()),
+        _ => None,
+    };
+    backend_present::Operand::Text(
+        package
+            .map_or(SURFACE_TOOL, PackageReference::as_str)
+            .to_owned(),
+    )
 }
 
 /// Returns the smallest projection that fulfils a tool's advertised promise.

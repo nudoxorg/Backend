@@ -37,5 +37,9 @@ tokio = { workspace = true, features = ["net"] }
 [target.'cfg(windows)'.dependencies]
 backend-platform = { path = "../../crates/platform" }
 
+[dev-dependencies]
+backend-semantic = { path = "../../crates/semantic" }
+backend-version = { path = "../../crates/version" }
+
 [lints]
 workspace = true
