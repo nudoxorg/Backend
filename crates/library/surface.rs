@@ -1961,7 +1961,13 @@ fn compiler_fault_facts_match_kind(
             nested_fault_is(facts, N::SignatureCarrierBindingEdgeMismatch)
         }
         CompilerFragmentFaultKind::Build(
-            B::Capacity
+            B::AnonymousCallableName
+            | B::TypedDeclarationKey
+            | B::AnonymousCallableSourceUnavailable
+            | B::AnonymousCallableAnchorInvalid
+            | B::AnonymousCallableSourceCoordinate
+            | B::AnonymousCallableInstance
+            | B::Capacity
             | B::RecursiveType
             | B::CallableElement
             | B::MissingTypedVariadicParameter
