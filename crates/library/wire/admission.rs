@@ -543,6 +543,17 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
             reply
                 .admit(command.id())
                 .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+            if let (
+                crate::SurfaceCommand::ProjectTree { root },
+                crate::SurfaceReply::ProjectTree(tree),
+            ) = (command, reply)
+                && !tree.request_binding().is_some_and(|binding|
+                    binding.matches_requested_root(std::path::Path::new(root.as_str())))
+            {
+                return Err(ReplyAdmissionError::Protocol(
+                    "project Tree observation does not match the exact requested directory".to_owned(),
+                ));
+            }
             true
         }
         (Command::Add { package, .. }, CommandReply::Added(intent)) => {

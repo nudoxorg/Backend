@@ -162,6 +162,14 @@ fn owner_tree_observations_separate_display_identity_from_retained_source() {
             crate::admit_reply(&request, &decoded).is_ok(),
             "the client admits both exact observation states"
         );
+        let foreign = native_test_paths::absolute_path("/workspace/backend/crates/present");
+        let foreign_request = crate::CommandDto::new(17, crate::Command::Surface(
+            crate::SurfaceCommand::ProjectTree {
+                root: crate::ProductText::new(foreign.to_str().expect("native other directory")).expect("other project address"),
+            },
+        ));
+        assert!(crate::admit_reply(&foreign_request, &decoded).is_err(),
+            "both retained and display-only observations must match the submitted directory");
         let mut old = serde_json::to_value(&reply).expect("versioned reply");
         old["version"] = serde_json::json!(17);
         assert!(
