@@ -1,0 +1,2 @@
+# Preserve the exact CSV bytes bound by evidence-index.json.
+independent-task/*.csv -text
