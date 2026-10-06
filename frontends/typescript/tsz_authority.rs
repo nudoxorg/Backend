@@ -74,7 +74,7 @@ pub enum TszSourceError {
     InvalidPath,
     /// The source extension is outside the TS/JS/JSX/MTS/CTS/CJS set.
     UnsupportedExtension,
-    /// A project listed the same stable source path more than once.
+    /// A project or its explicit library set lists a stable path more than once.
     DuplicatePath,
     /// TSZ needs at least one source file to construct a project program.
     EmptyProject,
@@ -149,6 +149,7 @@ pub struct TszUpdateReport {
 #[derive(Default)]
 pub struct TszProjectAuthority {
     environment: Option<TszEnvironmentFingerprint>,
+    libraries: Option<[u8; 32]>,
     bound_sources: BTreeMap<String, CachedBind>,
     project: Option<TszProject>,
 }
@@ -158,7 +159,9 @@ pub struct TszProjectAuthority {
 pub struct TszProject {
     options: TszProjectOptions,
     checker_options_digest: [u8; 32],
+    library_digest: [u8; 32],
     bound_sources: BTreeMap<String, Arc<tsz::parallel::BindResult>>,
+    lib_files: Vec<Arc<tsz::lib_loader::LibFile>>,
     program: tsz::parallel::MergedProgram,
     check: tsz::parallel::CheckResult,
 }
@@ -168,6 +171,7 @@ impl std::fmt::Debug for TszProject {
         formatter
             .debug_struct("TszProject")
             .field("source_count", &self.bound_sources.len())
+            .field("library_count", &self.lib_files.len())
             .field(
                 "source_paths",
                 &self.bound_sources.keys().collect::<Vec<_>>(),
@@ -222,7 +226,16 @@ impl TszProjectAuthority {
         }
 
         let mut report = TszUpdateReport::default();
-        let environment_changed = self.environment != Some(options.environment);
+        for library in lib_files {
+            validate_source_path(&library.file_name)?;
+            if !unique_paths.insert(library.file_name.clone()) {
+                return Err(TszSourceError::DuplicatePath.into());
+            }
+        }
+        let library_digest = library_digest(lib_files)?;
+        let libraries_changed = self.libraries != Some(library_digest);
+        let environment_changed =
+            self.environment != Some(options.environment) || libraries_changed;
         let checker_digest = checker_options_digest(&options.checker);
         let checker_options_changed = self
             .project
@@ -232,6 +245,7 @@ impl TszProjectAuthority {
             self.bound_sources.clear();
             self.project = None;
             self.environment = Some(options.environment);
+            self.libraries = Some(library_digest);
         }
 
         report.removed_sources = self
@@ -261,6 +275,7 @@ impl TszProjectAuthority {
             && self.project.as_ref().is_some_and(|current| {
                 current.options.environment == options.environment
                     && current.checker_options_digest == checker_digest
+                    && current.library_digest == library_digest
             })
             && report.removed_sources == 0
         {
@@ -304,6 +319,8 @@ impl TszProjectAuthority {
         let check = tsz::parallel::check_files_parallel(&program, &options.checker, lib_files);
         self.project = Some(TszProject {
             checker_options_digest: checker_digest,
+            library_digest,
+            lib_files: lib_files.to_vec(),
             options,
             bound_sources,
             program,
@@ -347,11 +364,77 @@ impl TszProject {
     /// Source text retained by the TSZ parser for a source path.
     #[must_use]
     pub fn source_text(&self, path: &str) -> Option<&str> {
-        let result = self.bind_result(path)?;
-        result
-            .arena
-            .get_source_file_at(result.source_file)
-            .map(|file| file.text.as_ref())
+        if let Some(result) = self.bind_result(path) {
+            return result
+                .arena
+                .get_source_file_at(result.source_file)
+                .map(|file| file.text.as_ref());
+        }
+        self.lib_files.iter().find_map(|lib| {
+            (lib.file_name == path)
+                .then(|| lib.arena.get_source_file_at(lib.root_index))
+                .flatten()
+                .map(|file| file.text.as_ref())
+        })
+    }
+
+    /// Returns the exact source token at a declaration-scoped TSZ node.
+    ///
+    /// `file` is the source-file name carried by `TypeParamOrigin::DeclScoped`
+    /// and `node` is that origin's exact identifier-node index. The result is
+    /// admitted only if the node is an identifier whose TSZ-decoded name is
+    /// `expected`; the returned bytes are the raw spelling from the retained
+    /// project or library source, including any escapes the source wrote.
+    #[must_use]
+    pub fn declaration_name_source(&self, file: &str, node: u32, expected: &str) -> Option<&str> {
+        let node = TszNodeIndex(node);
+        let (arena, source) = self.source_arena_and_text(file)?;
+        let syntax_node = arena.get(node)?;
+        let identifier = arena.get_identifier(syntax_node)?;
+        if identifier.escaped_text != expected {
+            return None;
+        }
+        let (start, end) = arena.pos_end_at(node)?;
+        let token = source.get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)?;
+        (!token.is_empty()).then_some(token)
+    }
+
+    /// Content identity for one exact retained project or library source.
+    /// The stable path is included in the digest, so moving byte-identical
+    /// content to another owner does not preserve a declaration identity.
+    #[must_use]
+    pub fn source_content_digest(&self, path: &str) -> Option<[u8; 32]> {
+        let source = self.source_text(path)?;
+        Some(source_digest(path, source))
+    }
+
+    /// Library source paths in deterministic load order.
+    #[must_use]
+    pub fn library_paths(&self) -> impl Iterator<Item = &str> {
+        self.lib_files.iter().map(|lib| lib.file_name.as_str())
+    }
+
+    fn source_arena_and_text(&self, path: &str) -> Option<(&tsz::parser::NodeArena, &str)> {
+        if let Some(file) = self
+            .program
+            .files
+            .iter()
+            .find(|file| file.file_name == path)
+        {
+            let source = file
+                .arena
+                .get_source_file_at(file.source_file)?
+                .text
+                .as_ref();
+            return Some((file.arena.as_ref(), source));
+        }
+        self.lib_files.iter().find_map(|lib| {
+            if lib.file_name != path {
+                return None;
+            }
+            let source = lib.arena.get_source_file_at(lib.root_index)?.text.as_ref();
+            Some((lib.arena.as_ref(), source))
+        })
     }
 
     /// Admits a TSZ diagnostic's byte range against the exact retained source.
@@ -462,10 +545,43 @@ fn validate_source_path(path: &str) -> Result<(), TszSourceError> {
 
 fn source_digest(path: &str, source: &str) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(path.as_bytes());
-    digest.update([0]);
-    digest.update(source.as_bytes());
+    digest.update(b"compiler.typescript.tsz-source.v1\0");
+    digest_part(&mut digest, path.as_bytes());
+    digest_part(&mut digest, source.as_bytes());
     digest.finalize().into()
+}
+
+fn library_digest(lib_files: &[Arc<tsz::lib_loader::LibFile>]) -> Result<[u8; 32], TszSourceError> {
+    let mut libraries = Vec::with_capacity(lib_files.len());
+    let mut unique_paths = BTreeSet::new();
+    for library in lib_files {
+        validate_source_path(&library.file_name)?;
+        if !unique_paths.insert(library.file_name.as_str()) {
+            return Err(TszSourceError::DuplicatePath);
+        }
+        let Some(source) = library
+            .arena
+            .get_source_file_at(library.root_index)
+            .map(|file| file.text.as_ref())
+        else {
+            return Err(TszSourceError::InvalidPath);
+        };
+        libraries.push((library.file_name.as_str(), source));
+    }
+    libraries.sort_unstable_by(|left, right| left.0.cmp(right.0));
+
+    let mut digest = Sha256::new();
+    digest.update(b"compiler.typescript.tsz-libraries.v2\0");
+    for (path, source) in libraries {
+        digest_part(&mut digest, path.as_bytes());
+        digest_part(&mut digest, source.as_bytes());
+    }
+    Ok(digest.finalize().into())
+}
+
+fn digest_part(digest: &mut Sha256, part: &[u8]) {
+    digest.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_be_bytes());
+    digest.update(part);
 }
 
 fn checker_options_digest(options: &TszCheckerOptions) -> [u8; 32] {
@@ -618,6 +734,159 @@ mod tests {
         let expected_start = source.find("value").expect("declaration offset");
         assert_eq!(span.start as usize, expected_start);
         assert_eq!(span.end as usize, expected_start + "value".len());
+    }
+
+    #[test]
+    fn declaration_name_source_uses_the_exact_retained_identifier_node() {
+        let source = "export type Labels<T> = { [K in keyof T]: T[K] };";
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update(vec![input("src/labels.ts", source)], options(), &[])
+            .expect("TSZ should build the project");
+        let project = authority.project().expect("project result exists");
+        let file = project
+            .program()
+            .files
+            .iter()
+            .find(|file| file.file_name == "src/labels.ts")
+            .expect("exact source file is retained");
+        let mapped_key = file
+            .arena
+            .nodes
+            .iter()
+            .enumerate()
+            .find_map(|(raw, node)| {
+                let identifier = file.arena.get_identifier(node)?;
+                (identifier.escaped_text == "K")
+                    .then(|| u32::try_from(raw).ok())
+                    .flatten()
+            })
+            .expect("mapped binder identifier is present in the source arena");
+
+        assert_eq!(
+            project.declaration_name_source("src/labels.ts", mapped_key, "K"),
+            Some("K")
+        );
+        assert_eq!(
+            project.declaration_name_source("src/labels.ts", mapped_key, "T"),
+            None,
+            "a valid node with a mismatched expected name is not admitted"
+        );
+        assert_eq!(
+            project.declaration_name_source("other.ts", mapped_key, "K"),
+            None,
+            "an unadmitted source path is not admitted"
+        );
+        assert_eq!(
+            project.declaration_name_source("src/labels.ts", u32::MAX, "K"),
+            None,
+            "an out-of-range authority node is rejected"
+        );
+        assert_eq!(
+            project.source_content_digest("src/labels.ts"),
+            Some(source_digest("src/labels.ts", source)),
+            "the admitted path and exact retained source have a stable identity"
+        );
+    }
+
+    #[test]
+    fn library_sources_are_exact_authority_and_invalidate_cached_project() {
+        let mut authority = TszProjectAuthority::new();
+        let mut first_options = options();
+        first_options.checker.no_lib = true;
+        let first_library = Arc::new(tsz::lib_loader::LibFile::from_source(
+            "lib.fixture.d.ts".to_owned(),
+            "declare type LibraryLabel = string;".to_owned(),
+        ));
+        let first = authority
+            .update(
+                vec![input("src/main.ts", "export const value = 1;")],
+                first_options.clone(),
+                &[Arc::clone(&first_library)],
+            )
+            .expect("explicit library source is admitted");
+        assert_eq!(first.parsed_and_bound, 1);
+        let project = authority.project().expect("project result exists");
+        let lib_source = "declare type LibraryLabel = string;";
+        let lib = first_library
+            .arena
+            .nodes
+            .iter()
+            .enumerate()
+            .find_map(|(raw, node)| {
+                let identifier = first_library.arena.get_identifier(node)?;
+                (identifier.escaped_text == "LibraryLabel")
+                    .then(|| u32::try_from(raw).ok())
+                    .flatten()
+            })
+            .expect("library binder identifier exists");
+        assert_eq!(
+            project.declaration_name_source("lib.fixture.d.ts", lib, "LibraryLabel"),
+            Some("LibraryLabel")
+        );
+        assert_eq!(
+            project.source_content_digest("lib.fixture.d.ts"),
+            Some(source_digest("lib.fixture.d.ts", lib_source))
+        );
+
+        let repeated = authority
+            .update(
+                vec![input("src/main.ts", "export const value = 1;")],
+                first_options.clone(),
+                &[Arc::clone(&first_library)],
+            )
+            .expect("unchanged explicit library set is reused");
+        assert!(repeated.reused_project_result);
+
+        let changed_library = Arc::new(tsz::lib_loader::LibFile::from_source(
+            "lib.fixture.d.ts".to_owned(),
+            "declare type LibraryLabel = number;".to_owned(),
+        ));
+        let changed = authority
+            .update(
+                vec![input("src/main.ts", "export const value = 1;")],
+                first_options,
+                &[changed_library],
+            )
+            .expect("changed library bytes invalidate the project result");
+        assert_eq!(changed.parsed_and_bound, 1);
+        assert_eq!(changed.reused_binds, 0);
+        assert!(!changed.reused_project_result);
+    }
+
+    #[test]
+    fn project_source_paths_cannot_alias_library_source_paths() {
+        let mut authority = TszProjectAuthority::new();
+        let same_path = Arc::new(tsz::lib_loader::LibFile::from_source(
+            "src/library.d.ts".to_owned(),
+            "declare type Duplicate = string;".to_owned(),
+        ));
+        let duplicate = authority.update(
+            vec![input(
+                "src/library.d.ts",
+                "declare type Duplicate = number;",
+            )],
+            options(),
+            &[same_path],
+        );
+        assert!(matches!(
+            duplicate,
+            Err(TszAuthorityError::Source(TszSourceError::DuplicatePath))
+        ));
+
+        let duplicate_library = Arc::new(tsz::lib_loader::LibFile::from_source(
+            "lib.duplicate.d.ts".to_owned(),
+            "declare type Duplicate = string;".to_owned(),
+        ));
+        let duplicate = authority.update(
+            vec![input("src/main.ts", "export const value = 1;")],
+            options(),
+            &[Arc::clone(&duplicate_library), duplicate_library],
+        );
+        assert!(matches!(
+            duplicate,
+            Err(TszAuthorityError::Source(TszSourceError::DuplicatePath))
+        ));
     }
 
     #[test]
