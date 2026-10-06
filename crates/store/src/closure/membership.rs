@@ -19,6 +19,7 @@ pub struct DurableClosureManifest {
     index: DurableManifest,
     pin: Arc<MembershipPin>,
     budget: ClosureCompositionBudget,
+    cancellation: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 #[derive(Debug)]
@@ -61,7 +62,29 @@ impl DurableClosureManifest {
                 _reader_pin: reader_pin,
             }),
             budget,
+            cancellation: None,
         })
+    }
+
+    /// Associates the live admission's cancellation flag with bounded visits.
+    #[must_use]
+    pub fn with_cancellation(mut self, cancellation: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
+    fn check_cancellation(&self) -> Result<(), StoreError> {
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        {
+            Err(StoreError::Io(
+                "workspace membership admission cancelled".to_owned(),
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     pub(super) fn rebind_controls(
@@ -70,6 +93,7 @@ impl DurableClosureManifest {
         next: &super::WorkspaceClosure,
     ) -> Result<Self, StoreError> {
         let controls = next.control_manifest();
+        self.check_cancellation()?;
         if controls.objects().len() > 128 || previous.objects().len() > 128 {
             return Err(StoreError::Bounds);
         }
@@ -85,12 +109,30 @@ impl DurableClosureManifest {
                 changes.push(ClosureMembershipChange::add(object.id()));
             }
         }
-        let receipt = self.store.compose_workspace_closure_index(
-            Some(ArtifactClosureClaim::from_bytes(*self.id().as_bytes())),
-            &changes,
-            self.budget,
-        )?;
-        Self::from_pinned(&self.store, receipt, self.budget)
+        let claim = Some(ArtifactClosureClaim::from_id(self.id()));
+        let receipt = if let Some(flag) = &self.cancellation {
+            self.store.compose_workspace_closure_index_cancellable(
+                claim,
+                &changes,
+                self.budget,
+                flag,
+            )?
+        } else {
+            self.store
+                .compose_workspace_closure_index(claim, &changes, self.budget)?
+        };
+        let mut rebound = Self::from_pinned(&self.store, receipt, self.budget)?;
+        rebound.cancellation.clone_from(&self.cancellation);
+        Ok(rebound)
+    }
+
+    /// Extends an admitted evidence scope by only a bounded typed frontier.
+    pub fn with_control_frontier(
+        &self,
+        next: &super::WorkspaceClosure,
+    ) -> Result<Self, StoreError> {
+        let empty = super::ClosureManifest::new(Vec::new())?;
+        self.rebind_controls(&empty, next)
     }
 
     /// Returns the complete membership identity, without opening objects.
@@ -124,8 +166,10 @@ impl DurableClosureManifest {
         let mut after = None;
         let mut count = 0_u64;
         loop {
+            self.check_cancellation()?;
             let page = self.index.page_ids(after, MEMBER_PAGE_SIZE)?;
             for &id in page.object_ids() {
+                self.check_cancellation()?;
                 if after.is_some_and(|previous| id <= previous) {
                     return Err(StoreError::Corrupt);
                 }

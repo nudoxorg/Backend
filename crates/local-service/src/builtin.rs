@@ -69,6 +69,8 @@ mod source_budget;
 mod source_frontier;
 #[path = "builtin/staged_intent.rs"]
 mod staged_intent;
+#[path = "builtin/staged_transport.rs"]
+mod staged_transport;
 use profile::{
     BuiltinAuthorityVerifier, BuiltinCaptureBasis, BuiltinCaptureChange, BuiltinProfile,
     BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinSourceFactsChange,

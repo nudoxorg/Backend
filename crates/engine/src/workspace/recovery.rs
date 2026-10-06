@@ -16,6 +16,25 @@ use std::path::Path;
 
 const MAX_STORE_BYTES: usize = 64 * 1024 * 1024;
 
+/// Opens only the fixed authenticated recovery frontier of a publication.
+/// Staged evidence membership is never exported as a complete object vector.
+pub fn control_frontier(
+    store: &FileStore,
+    descriptor: &backend_store::PublicationDescriptor,
+) -> Result<backend_store::ClosureManifest, WorkspaceError> {
+    let membership = store
+        .open_closure(descriptor.closure())
+        .map_err(WorkspaceError::store)?;
+    let index = read_workspace_pack_index(store, descriptor, &membership)?;
+    let persisted = persisted_from_store_manifest(
+        &membership,
+        index.transaction,
+        index.payloads,
+        &index.auxiliary,
+    )?;
+    Ok(persisted.closure_manifest().clone())
+}
+
 /// Disposition of one durable transaction after journal replay.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransactionDisposition {

@@ -40,6 +40,23 @@ schema!(SourceRowsPage, 11);
 schema!(CompleteFactsPage, 12);
 schema!(StagedManifest, 13);
 
+pub(super) fn admit_manifest_object(object: &TypedObject) -> Result<StageBasis, StoreError> {
+    if object.schema() != SchemaIdentity::new(0x96, 13, 1)
+        || typed::<StagedManifest>(object.bytes()).id() != object.id()
+    {
+        return Err(StoreError::Corrupt);
+    }
+    decode_manifest(object.bytes()).map(|(basis, _)| basis)
+}
+
+pub(super) fn staged_member_count(object: &TypedObject) -> Result<u64, StoreError> {
+    admit_manifest_object(object)?;
+    let (_, chains) = decode_manifest(object.bytes())?;
+    chains.iter().try_fold(1_u64, |count, chain| {
+        count.checked_add(chain.pages).ok_or(StoreError::Bounds)
+    })
+}
+
 /// Different kinds remain separated even for identical payload bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum EvidenceKind {
@@ -101,14 +118,170 @@ pub(super) struct StagePool {
 }
 
 impl StagePool {
+    #[cfg(unix)]
+    fn write_object(
+        &self,
+        store: &FileStore,
+        object: &TypedObject,
+    ) -> Result<ObjectId, StoreError> {
+        use std::{
+            fs::{self, OpenOptions},
+            os::unix::fs::MetadataExt,
+        };
+        let quota = store.root().join("staged-ingest-quota");
+        let markers = quota.join("members");
+        for directory in [&quota, &markers] {
+            if fs::symlink_metadata(directory)
+                .is_ok_and(|metadata| !metadata.is_dir() || metadata.file_type().is_symlink())
+            {
+                return Err(StoreError::Corrupt);
+            }
+        }
+        fs::create_dir_all(&markers).map_err(|e| StoreError::Io(e.to_string()))?;
+        if fs::symlink_metadata(&quota)
+            .map_err(|e| StoreError::Io(e.to_string()))?
+            .file_type()
+            .is_symlink()
+            || fs::symlink_metadata(&markers)
+                .map_err(|e| StoreError::Io(e.to_string()))?
+                .file_type()
+                .is_symlink()
+        {
+            return Err(StoreError::Corrupt);
+        }
+        let lock_path = quota.join("allocation.lock");
+        if fs::symlink_metadata(&lock_path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err(StoreError::Corrupt);
+        }
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        lock.lock().map_err(|e| StoreError::Io(e.to_string()))?;
+        let mut allocated = 0_u64;
+        for entry in fs::read_dir(&markers).map_err(|e| StoreError::Io(e.to_string()))? {
+            let entry = entry.map_err(|e| StoreError::Io(e.to_string()))?;
+            let marker_metadata =
+                fs::symlink_metadata(entry.path()).map_err(|e| StoreError::Io(e.to_string()))?;
+            if !marker_metadata.is_file()
+                || marker_metadata.file_type().is_symlink()
+                || marker_metadata.nlink() != 1
+            {
+                return Err(StoreError::Corrupt);
+            }
+            let name = entry.file_name();
+            let name = name.to_str().ok_or(StoreError::Corrupt)?;
+            if name.len() != 64
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return Err(StoreError::Corrupt);
+            }
+            let path = store.root().join("objects").join(format!("{name}.object"));
+            match fs::symlink_metadata(path) {
+                Ok(metadata) => {
+                    if !metadata.is_file()
+                        || metadata.file_type().is_symlink()
+                        || metadata.nlink() != 1
+                    {
+                        return Err(StoreError::Corrupt);
+                    }
+                    allocated = allocated
+                        .checked_add(
+                            metadata
+                                .blocks()
+                                .checked_mul(512)
+                                .ok_or(StoreError::Bounds)?,
+                        )
+                        .ok_or(StoreError::Bounds)?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // Only accounting metadata is removed. Ordinary store GC
+                    // owns all unselected CAS reclamation, including crashes.
+                    fs::remove_file(entry.path()).map_err(|e| StoreError::Io(e.to_string()))?;
+                }
+                Err(error) => return Err(StoreError::Io(error.to_string())),
+            }
+        }
+        let id = object.id();
+        let name = id
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let marker = markers.join(&name);
+        let already_counted = marker.is_file();
+        let target = store.root().join("objects").join(format!("{name}.object"));
+        let addition = if marker.is_file() {
+            0
+        } else if let Ok(metadata) = fs::symlink_metadata(&target) {
+            if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.nlink() != 1 {
+                return Err(StoreError::Corrupt);
+            }
+            metadata
+                .blocks()
+                .checked_mul(512)
+                .ok_or(StoreError::Bounds)?
+        } else {
+            let bytes = u64::try_from(object.bytes().len())
+                .map_err(|_| StoreError::Bounds)?
+                .checked_add(4096 + 128)
+                .ok_or(StoreError::Bounds)?;
+            bytes
+                .div_ceil(4096)
+                .checked_mul(4096)
+                .ok_or(StoreError::Bounds)?
+        };
+        if allocated.checked_add(addition).ok_or(StoreError::Bounds)? > self.max_reserved_bytes {
+            return Err(StoreError::Bounds);
+        }
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&marker)
+        {
+            Ok(file) => file.sync_all().map_err(|e| StoreError::Io(e.to_string()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(StoreError::Io(error.to_string())),
+        }
+        let written = store.write_object(object)?;
+        let actual = fs::symlink_metadata(&target)
+            .map_err(|e| StoreError::Io(e.to_string()))?
+            .blocks()
+            .checked_mul(512)
+            .ok_or(StoreError::Bounds)?;
+        if !already_counted
+            && allocated.checked_add(actual).ok_or(StoreError::Bounds)? > self.max_reserved_bytes
+        {
+            return Err(StoreError::Bounds);
+        }
+        std::fs::File::open(&markers)
+            .and_then(|file| file.sync_all())
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        Ok(written)
+    }
+
+    #[cfg(not(unix))]
+    fn write_object(
+        &self,
+        _store: &FileStore,
+        _object: &TypedObject,
+    ) -> Result<ObjectId, StoreError> {
+        // This policy requires real physical-allocation accounting. A platform
+        // without that adapter cannot silently replace it with logical bytes.
+        Err(StoreError::Bounds)
+    }
     fn metadata_required(pages: usize) -> Result<usize, StoreError> {
         ClosureCompositionBudget::metadata_bytes_for(
             pages.checked_add(1).ok_or(StoreError::Bounds)?,
         )?
         .checked_add(PAGE_BYTES * 8)
-        .and_then(|charge| {
-            charge.checked_add(pages.checked_mul(size_of::<ObjectId>() * 4)?)
-        })
+        .and_then(|charge| charge.checked_add(pages.checked_mul(size_of::<ObjectId>() * 4)?))
         .ok_or(StoreError::Bounds)
     }
     pub(super) fn new(
@@ -185,7 +358,7 @@ impl Drop for Reservation {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct Chain {
+pub(super) struct Chain {
     tail: [u8; 32],
     pages: u64,
     bytes: u64,
@@ -273,7 +446,7 @@ impl StageWriter {
         bytes.extend_from_slice(&chain.pages.to_be_bytes());
         bytes.extend_from_slice(&chain.tail);
         bytes.extend_from_slice(payload);
-        let id = self.store.write_object(&kind.object(&bytes))?;
+        let id = self.pool.write_object(&self.store, &kind.object(&bytes))?;
         self.ids.push(id);
         chain.tail = *id.as_bytes();
         chain.pages += 1;
@@ -296,8 +469,8 @@ impl StageWriter {
         }
         let manifest = encode_manifest(self.basis, self.chains);
         let manifest_id = self
-            .store
-            .write_object(&typed::<StagedManifest>(&manifest))?;
+            .pool
+            .write_object(&self.store, &typed::<StagedManifest>(&manifest))?;
         let mut edits = self
             .ids
             .iter()
@@ -368,7 +541,7 @@ fn encode_manifest(basis: StageBasis, chains: [Chain; 3]) -> Vec<u8> {
     bytes
 }
 
-fn decode_manifest(bytes: &[u8]) -> Result<(StageBasis, [Chain; 3]), StoreError> {
+pub(super) fn decode_manifest(bytes: &[u8]) -> Result<(StageBasis, [Chain; 3]), StoreError> {
     if bytes.len() != MANIFEST_BYTES || &bytes[..4] != b"BSM1" {
         return Err(StoreError::Corrupt);
     }
@@ -458,11 +631,30 @@ pub(super) fn visit_staged(
     budget: ArtifactBudget,
     mut visit: impl FnMut(EvidenceKind, &[u8]) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
+    visit_staged_scope(
+        store,
+        manifest_id,
+        receipt.receipt().closure(),
+        expected,
+        budget,
+        Some(receipt.receipt().object_count()),
+        visit,
+    )
+}
+
+pub(super) fn visit_staged_scope(
+    store: &FileStore,
+    manifest_id: ObjectId,
+    closure: backend_store::ClosureId,
+    expected: StageBasis,
+    budget: ArtifactBudget,
+    exact_count: Option<u64>,
+    mut visit: impl FnMut(EvidenceKind, &[u8]) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
     // A receipt may have been produced by another FileStore containing the
     // same CAS closure. Pin this reader's store across the entire traversal.
     let _local_pin = store.pin_garbage_collection()?;
     let sink = store.artifact_sink(budget);
-    let closure = receipt.receipt().closure();
     let mut seen = BTreeSet::new();
     let (schema, manifest) = read_bounded(&sink, manifest_id, MANIFEST_BYTES)?;
     if schema != SchemaIdentity::new(0x96, 13, 1)
@@ -530,7 +722,7 @@ pub(super) fn visit_staged(
             visit(kind, &bytes[PAGE_HEADER..])?;
         }
     }
-    if seen.len() as u64 != receipt.receipt().object_count() {
+    if exact_count.is_some_and(|count| seen.len() as u64 != count) {
         return Err(StoreError::Corrupt);
     }
     Ok(())

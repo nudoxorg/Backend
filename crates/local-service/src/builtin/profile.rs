@@ -459,6 +459,7 @@ pub struct BuiltinIntent {
     semantic_selection: Option<BuiltinSemanticSelectionIntent>,
     operation_key: Option<[u8; 32]>,
     capture_basis: Option<BuiltinCaptureBasis>,
+    staged: Option<Arc<super::staged_transport::StagedIntent>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1066,6 +1067,7 @@ impl BuiltinIntent {
             semantic_selection,
             operation_key,
             capture_basis,
+            staged: None,
         })
     }
 
@@ -1156,10 +1158,17 @@ impl BuiltinIntent {
     }
 
     pub(super) fn encode(&self) -> Vec<u8> {
+        if let Some(staged) = &self.staged {
+            return staged.encode();
+        }
         self.encode_canonical()
     }
 
     fn encode_canonical(&self) -> Vec<u8> {
+        self.staging_parts().0
+    }
+
+    pub(super) fn staging_parts(&self) -> (Vec<u8>, usize) {
         let label = self.label.as_bytes();
         let mut bytes = Vec::with_capacity(46 + label.len());
         bytes.extend_from_slice(match self.encoding_version {
@@ -1198,6 +1207,7 @@ impl BuiltinIntent {
                 None => bytes.push(0),
             }
         }
+        let source_end = bytes.len();
         let semantic_count = u32::try_from(self.semantic_changes.len()).unwrap_or(u32::MAX);
         bytes.extend_from_slice(&semantic_count.to_be_bytes());
         for change in &self.semantic_changes {
@@ -1287,7 +1297,23 @@ impl BuiltinIntent {
                 }
             }
         }
-        bytes
+        (bytes, source_end)
+    }
+
+    pub(super) fn staged(&self) -> Option<&Arc<super::staged_transport::StagedIntent>> {
+        self.staged.as_ref()
+    }
+
+    pub(super) fn set_staged(
+        &mut self,
+        staged: Arc<super::staged_transport::StagedIntent>,
+        clear_payload: bool,
+    ) {
+        self.staged = Some(staged);
+        if clear_payload {
+            self.changes = Box::new([]);
+            self.source_facts_changes = Box::new([]);
+        }
     }
 
     fn canonical_bytes(&self) -> Vec<u8> {
@@ -1645,7 +1671,13 @@ fn added_package_semantic_terminal(
 
 impl backend_engine::queue::QueueSized for BuiltinIntent {
     fn queue_bytes(&self) -> usize {
-        self.encode().len()
+        if self.staged.is_some() {
+            self.encode()
+                .len()
+                .saturating_add(self.staging_parts().0.len())
+        } else {
+            self.encode().len()
+        }
     }
 }
 
@@ -2184,6 +2216,9 @@ impl WorkspaceModel for BuiltinModel {
     type Error = BuiltinModelError;
 
     fn request_id(&self, intent: &Self::Intent) -> [u8; 32] {
+        if let Some(staged) = intent.staged() {
+            return staged.request();
+        }
         let bytes = intent.canonical_bytes();
         ObjectVersion::<BuiltinIntentSchema>::from_value(&bytes).to_bytes()
     }
@@ -2194,6 +2229,15 @@ impl WorkspaceModel for BuiltinModel {
         intent: &Self::Intent,
         transaction: TransactionId,
     ) -> Result<PreparedTransition, Self::Error> {
+        let hydrated;
+        let intent = if let Some(staged) = intent.staged() {
+            let mut decoded = staged.hydrate(Some(base))?;
+            decoded.set_staged(Arc::clone(staged), false);
+            hydrated = decoded;
+            &hydrated
+        } else {
+            intent
+        };
         let relation = base
             .relation::<BuiltinWorkspaceRelation>()
             .map_err(|error| BuiltinModelError(format!("open product source: {error}")))?;
@@ -2328,23 +2372,63 @@ pub(super) fn prepare_transition_with_source_update(
     )
     .map_err(|error| BuiltinModelError(format!("construct prepared transition: {error}")))?;
     let transition = if let Some(pointer) = capture_update.pointer {
-        transition
+        let root = capture_update
+            .node_objects
+            .iter()
+            .find(|object| pointer.bytes() == object.version())
+            .cloned();
+        let transition = transition
             .replace_object_family([pointer], &registry)
-            .map_err(|error| BuiltinModelError(format!("select semantic capture root: {error}")))?
+            .map_err(|error| BuiltinModelError(format!("select semantic capture root: {error}")))?;
+        if let Some(root) = root {
+            transition
+                .replace_object_family([root], &registry)
+                .map_err(|e| BuiltinModelError(format!("replace selected capture root: {e}")))?
+        } else {
+            transition
+        }
     } else {
         transition
     };
     let transition = if let Some(pointer) = source_facts_update.pointer {
-        transition
+        let root = source_facts_update
+            .node_objects
+            .iter()
+            .find(|object| pointer.bytes() == object.version())
+            .cloned();
+        let transition = transition
             .replace_object_family([pointer], &registry)
-            .map_err(|error| BuiltinModelError(format!("select source facts root: {error}")))?
+            .map_err(|error| BuiltinModelError(format!("select source facts root: {error}")))?;
+        if let Some(root) = root {
+            transition
+                .replace_object_family([root], &registry)
+                .map_err(|e| BuiltinModelError(format!("replace selected facts root: {e}")))?
+        } else {
+            transition
+        }
     } else {
         transition
     };
-    transition
+    let transition = transition
         .replace_object_family([intent_object], &registry)
-        .map(|transition| transition.with_work(work))
-        .map_err(|error| BuiltinModelError(format!("retain current intent: {error}")))
+        .map_err(|error| BuiltinModelError(format!("retain current intent: {error}")))?;
+    let transition = if let Some(staged) = intent.staged() {
+        let membership = staged
+            .membership
+            .with_control_frontier(transition.closure())
+            .map_err(|error| {
+                BuiltinModelError(format!("compose staged workspace evidence: {error:?}"))
+            })?;
+        staged.validate_membership_union(&membership, transition.closure().control_manifest())?;
+        transition
+            .with_stored_membership(membership)
+            .map_err(|error| {
+                BuiltinModelError(format!("bind staged workspace evidence: {error}"))
+            })?
+    } else {
+        transition
+    };
+    Ok(transition.with_work(work))
 }
 
 struct PreparedCaptureRelationUpdate {
@@ -2893,7 +2977,7 @@ fn admit_persisted_transition_with_layout(
     store: &backend_engine::FileStore,
     layout: SourceFileKeyLayout,
 ) -> Result<PreparedTransition, BuiltinModelError> {
-    let persisted_intent = admit_persisted_intent(persisted.closure_manifest().objects())?;
+    let persisted_intent = admit_persisted_intent_with_store(persisted, store)?;
     if layout == SourceFileKeyLayout::Retired
         && BuiltinModel.request_id(&persisted_intent) != persisted.request()
     {
@@ -2956,6 +3040,47 @@ fn admit_persisted_intent(objects: &[TypedObject]) -> Result<BuiltinIntent, Buil
         ));
     }
     Ok(persisted_intent)
+}
+
+fn admit_persisted_intent_with_store(
+    persisted: &backend_engine::PersistedTransition,
+    store: &backend_engine::FileStore,
+) -> Result<BuiltinIntent, BuiltinModelError> {
+    let objects = persisted.closure_manifest().objects();
+    let schema = backend_version::SchemaIdentity::new(
+        BuiltinIntentSchema::DOMAIN,
+        BuiltinIntentSchema::TYPE,
+        BuiltinIntentSchema::VERSION,
+    );
+    let mut intents = objects.iter().filter(|object| object.schema() == schema);
+    let object = intents.next().ok_or_else(|| {
+        BuiltinModelError("persisted builtin transition has no intent".to_owned())
+    })?;
+    if intents.next().is_some() {
+        return Err(BuiltinModelError(
+            "persisted transition has multiple intents".to_owned(),
+        ));
+    }
+    if !object.bytes().starts_with(b"BPS1") {
+        return admit_persisted_intent(objects);
+    }
+    let closure = persisted.membership_id().ok_or_else(|| {
+        BuiltinModelError("staged pointer has no authenticated selected membership".to_owned())
+    })?;
+    let staged = super::staged_transport::StagedIntent::decode(object.bytes(), store, closure)?;
+    let mut intent = staged.hydrate(None)?;
+    if BuiltinModel.request_id(&intent) != persisted.request() {
+        return Err(BuiltinModelError(
+            "staged persisted request differs from exact source/facts bytes".to_owned(),
+        ));
+    }
+    intent.set_staged(staged, false);
+    if intent.encode() != object.bytes() {
+        return Err(BuiltinModelError(
+            "noncanonical staged intent pointer".to_owned(),
+        ));
+    }
+    Ok(intent)
 }
 
 #[expect(
@@ -3131,14 +3256,91 @@ fn admit_persisted_relations(
     // tree needed an internal node: a one-leaf project reopened, and a real
     // crate did not. Read it with the reader that matches the writer.
     let closure_id = selected.descriptor().closure();
-    let persisted_objects = store
-        .read_workspace_root_closure(closure_id)
-        .map_err(|error| {
-            BuiltinModelError(format!(
-                "read selected workspace closure {}: {error:?}",
-                backend_engine::encode_id(closure_id.as_bytes())
-            ))
-        })?;
+    let persisted_objects =
+        if let Some(staged) = persisted_intent.staged() {
+            if staged.membership.id() != closure_id {
+                return Err(BuiltinModelError(
+                    "staged membership differs from selected HEAD".to_owned(),
+                ));
+            }
+            let mut objects = persisted.closure_manifest().objects().to_vec();
+            for object in [
+                base_tree.root_object(),
+                target_tree.root_object(),
+                base_semantic.root_object(),
+                target_semantic.root_object(),
+            ] {
+                let object = object
+                    .map_err(|e| BuiltinModelError(format!("reopen checked control root: {e}")))?;
+                if staged
+                    .membership
+                    .contains(object.id())
+                    .map_err(|e| BuiltinModelError(format!("probe selected control root: {e:?}")))?
+                {
+                    objects.push(object);
+                }
+            }
+            for pointer in persisted.closure_manifest().objects() {
+                let capture_schema = backend_version::SchemaIdentity::new(
+                    ProductSemanticCaptureRootSchema::DOMAIN,
+                    ProductSemanticCaptureRootSchema::TYPE,
+                    ProductSemanticCaptureRootSchema::VERSION,
+                );
+                let facts_schema = backend_version::SchemaIdentity::new(
+                    ProductSourceFileFactsRootSchema::DOMAIN,
+                    ProductSourceFileFactsRootSchema::TYPE,
+                    ProductSourceFileFactsRootSchema::VERSION,
+                );
+                if pointer.schema() != capture_schema && pointer.schema() != facts_schema {
+                    continue;
+                }
+                let root = pointer.bytes().try_into().map_err(|_| {
+                    BuiltinModelError("malformed selected auxiliary root pointer".to_owned())
+                })?;
+                let object = if pointer.schema() == capture_schema {
+                    persisted
+                        .relation::<ProductSemanticCaptureRelation>(store, root)
+                        .and_then(|tree| tree.root_object())
+                } else {
+                    persisted
+                        .relation::<ProductSourceFileFactsRelation>(store, root)
+                        .and_then(|tree| tree.root_object())
+                }
+                .map_err(|e| {
+                    BuiltinModelError(format!("reopen checked auxiliary control root: {e}"))
+                })?;
+                if !staged.membership.contains(object.id()).map_err(|e| {
+                    BuiltinModelError(format!("prove auxiliary root membership: {e:?}"))
+                })? {
+                    return Err(BuiltinModelError(
+                        "selected auxiliary root is outside staged membership".to_owned(),
+                    ));
+                }
+                objects.push(object);
+            }
+            objects.sort_by_key(|object| (object.schema(), *object.key(), *object.version()));
+            objects.dedup_by_key(|object| object.id());
+            if objects.len() > 128 {
+                return Err(BuiltinModelError(
+                    "selected control frontier exceeds 128 objects".to_owned(),
+                ));
+            }
+            backend_store::ClosureManifest::new_root_only_with_registry(objects, &registry)
+                .map_err(|e| BuiltinModelError(format!("admit stored control frontier: {e:?}")))?
+        } else {
+            store
+                .read_workspace_root_closure(closure_id)
+                .map_err(|e| BuiltinModelError(format!("read legacy selected closure: {e:?}")))?
+        };
+    if let Some(staged) = persisted_intent.staged() {
+        validate_persisted_stage_basis(
+            staged,
+            persisted,
+            store,
+            &base_manifest,
+            selected.descriptor().target_generation(),
+        )?;
+    }
     validate_persisted_capture_changes(
         persisted,
         store,
@@ -3158,6 +3360,12 @@ fn admit_persisted_relations(
         &target_tree,
         persisted_objects.objects(),
     )?;
+    let physical_roots = persisted_objects
+        .objects()
+        .iter()
+        .filter(|object| registry.contains_schema(object.schema()))
+        .cloned()
+        .collect::<Vec<_>>();
     let closure = WorkspaceClosure::from_checked_transition_root_only_with_registry(
         &manifest,
         &checked_delta,
@@ -3165,7 +3373,16 @@ fn admit_persisted_relations(
         persisted_objects,
         &registry,
     )
+    .and_then(|closure| closure.with_checked_relation_frontier(physical_roots, &registry))
     .map_err(|error| BuiltinModelError(format!("admit persisted closure: {error:?}")))?;
+    let closure = if let Some(staged) = persisted_intent.staged() {
+        staged.validate_control_union(closure.control_manifest())?;
+        closure
+            .with_stored_membership(staged.membership.clone())
+            .map_err(|e| BuiltinModelError(format!("bind selected stored membership: {e:?}")))?
+    } else {
+        closure
+    };
     if layout == SourceFileKeyLayout::Retired {
         super::read_indexed_relation(&base_tree, layout)?;
         let sources = super::read_indexed_relation(&target_tree, layout)?;
@@ -3191,6 +3408,66 @@ fn admit_persisted_relations(
         .replace_object_family([intent_object], &registry)
         .map(|transition| transition.with_work(work))
         .map_err(|error| BuiltinModelError(format!("retain persisted intent: {error}")))
+}
+
+fn validate_persisted_stage_basis(
+    staged: &super::staged_transport::StagedIntent,
+    persisted: &backend_engine::PersistedTransition,
+    store: &backend_engine::FileStore,
+    base: &WorkspaceManifest,
+    target_sequence: u64,
+) -> Result<(), BuiltinModelError> {
+    let basis = staged.basis;
+    if basis.workspace_root != *base.root().as_bytes()
+        || basis.workspace_sequence.checked_add(1) != Some(target_sequence)
+        || basis.source_capture != persisted.request()
+        || TransactionId::derive(
+            basis.owner_epoch,
+            base.root(),
+            basis.source_capture,
+            target_sequence,
+        ) != persisted.transaction()
+    {
+        return Err(BuiltinModelError(
+            "persisted staged intent substituted its owner/workspace/command fence".to_owned(),
+        ));
+    }
+    let selected = store
+        .head()
+        .map_err(|e| BuiltinModelError(format!("read staged selected HEAD: {e:?}")))?
+        .ok_or_else(|| BuiltinModelError("staged selected HEAD is absent".to_owned()))?;
+    let predecessor = store
+        .workspace_base_publication(selected.descriptor().target(), target_sequence)
+        .map_err(|e| {
+            BuiltinModelError(format!("resolve staged authenticated predecessor: {e:?}"))
+        })?;
+    let binding = if let Some(predecessor) = predecessor {
+        let descriptor = predecessor.descriptor();
+        if descriptor.target() != basis.workspace_root
+            || descriptor.target_generation() != basis.workspace_sequence
+        {
+            return Err(BuiltinModelError(
+                "staged predecessor does not match exact base".to_owned(),
+            ));
+        }
+        descriptor.workspace().ok_or_else(|| {
+            BuiltinModelError("staged predecessor has no workspace binding".to_owned())
+        })?
+    } else {
+        let genesis = super::genesis()?;
+        if basis.workspace_sequence != 0 || genesis.root() != base.root() {
+            return Err(BuiltinModelError(
+                "staged base is neither authenticated predecessor nor genesis".to_owned(),
+            ));
+        }
+        genesis.closure().binding()
+    };
+    if binding.closure().as_bytes() != &basis.closure_id || binding.proof() != &basis.owner_fence {
+        return Err(BuiltinModelError(
+            "staged basis substituted authenticated base closure".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_persisted_source_facts(
@@ -3398,19 +3675,31 @@ fn validate_persisted_capture_changes(
         basis,
         backend_store::ClosureId::from_bytes(selected_base_closure_id),
     )?;
-    let base_closure = store
-        .read_workspace_root_closure(backend_store::ClosureId::from_bytes(
+    let base_closure = if base_sequence == 0 {
+        super::genesis()?.closure().control_manifest().clone()
+    } else {
+        let predecessor = selected_base_publication
+            .ok_or_else(|| BuiltinModelError("capture base publication disappeared".to_owned()))?;
+        backend_engine::workspace::recovery::control_frontier(store, &predecessor.descriptor())
+            .map_err(|e| BuiltinModelError(format!("read bounded capture base controls: {e}")))?
+    };
+    let base_membership = store
+        .open_closure(backend_store::ClosureId::from_bytes(
             selected_base_closure_id,
         ))
-        .map_err(|error| {
-            BuiltinModelError(format!(
-                "read exact persisted capture base closure: {error:?}"
-            ))
-        })?;
+        .map_err(|e| BuiltinModelError(format!("open capture base membership: {e:?}")))?;
+    let base_roots = [base_source.root_object(), base_semantic.root_object()]
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| BuiltinModelError(format!("admit capture base relation roots: {e}")))?;
     for relation in base_manifest.relations() {
         let relation_root = relation.root();
-        if !base_closure.objects().iter().any(|object| {
-            object.schema() == relation.schema() && object.version() == &relation_root
+        if !base_roots.iter().any(|object| {
+            object.schema() == relation.schema()
+                && object.version() == &relation_root
+                && base_membership
+                    .contains_object_id(object.id())
+                    .unwrap_or(false)
         }) {
             return Err(BuiltinModelError(
                 "persisted capture base closure does not bind the checked workspace relations"

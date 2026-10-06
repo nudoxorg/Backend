@@ -193,6 +193,9 @@ impl WorkspaceClosure {
         for previous_root in &base.selected_roots {
             if !retained_ids.contains(&previous_root.id())
                 && base.manifest.contains_object_id(previous_root.id())
+                && checked_objects
+                    .iter()
+                    .any(|object| object.schema() == previous_root.schema())
             {
                 changes.push(super::ManifestChange::delete(previous_root)?);
             }

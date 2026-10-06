@@ -225,7 +225,8 @@ pub(crate) fn persisted_from_store_manifest(
         commit,
         closure,
         closure_bytes.into_boxed_slice(),
-    ))
+    )
+    .with_membership_id(manifest.id()))
 }
 
 fn payload_from_store_manifest<S: Schema>(

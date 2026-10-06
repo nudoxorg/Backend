@@ -277,7 +277,7 @@ impl FileStore {
         changes: &[ClosureMembershipChange],
         budget: ClosureCompositionBudget,
     ) -> Result<PinnedStoredClosureReceipt, StoreError> {
-        self.compose_closure_index_inner(base, changes, budget, false)
+        self.compose_closure_index_inner(base, changes, budget, false, None)
     }
 
     /// Composes root-only workspace membership. Relation child nodes remain
@@ -289,7 +289,27 @@ impl FileStore {
         changes: &[ClosureMembershipChange],
         budget: ClosureCompositionBudget,
     ) -> Result<PinnedStoredClosureReceipt, StoreError> {
-        self.compose_closure_index_inner(base, changes, budget, true)
+        self.compose_closure_index_inner(base, changes, budget, true, None)
+    }
+
+    /// Streams and re-admits exact workspace membership after a cold reopen.
+    pub fn compose_workspace_closure_index_cancellable(
+        &self,
+        base: Option<ArtifactClosureClaim>,
+        changes: &[ClosureMembershipChange],
+        budget: ClosureCompositionBudget,
+        cancellation: &std::sync::atomic::AtomicBool,
+    ) -> Result<PinnedStoredClosureReceipt, StoreError> {
+        self.compose_closure_index_inner(base, changes, budget, true, Some(cancellation))
+    }
+
+    /// Streams and re-admits exact workspace membership after a cold reopen.
+    pub fn reopen_pinned_workspace_closure(
+        &self,
+        claim: ArtifactClosureClaim,
+        budget: ClosureCompositionBudget,
+    ) -> Result<PinnedStoredClosureReceipt, StoreError> {
+        self.compose_workspace_closure_index(Some(claim), &[], budget)
     }
 
     fn compose_closure_index_inner(
@@ -298,6 +318,7 @@ impl FileStore {
         changes: &[ClosureMembershipChange],
         budget: ClosureCompositionBudget,
         root_only: bool,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<PinnedStoredClosureReceipt, StoreError> {
         let budget = budget.validate(changes.len())?;
         let gc_pin = self.acquire_gc_pin()?;
@@ -424,7 +445,14 @@ impl FileStore {
         if update.target().node().row_count() != expected_count {
             return Err(StoreError::Corrupt);
         }
-        let facts = verify_target_members(self, base_index.as_ref(), &ordered, budget, root_only)?;
+        let facts = verify_target_members(
+            self,
+            base_index.as_ref(),
+            &ordered,
+            budget,
+            root_only,
+            cancellation,
+        )?;
         if facts.object_count != expected_count {
             return Err(StoreError::Corrupt);
         }
@@ -516,6 +544,7 @@ fn verify_target_members(
     changes: &[ClosureMembershipChange],
     budget: ClosureCompositionBudget,
     root_only: bool,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<VerificationFacts, StoreError> {
     let mut facts = VerificationFacts::default();
     // A persisted base closure was admitted when it was written, and the caller
@@ -524,11 +553,20 @@ fn verify_target_members(
     // verify only the new envelopes; the checked base root supplies the exact
     // unchanged member count. Removals still require the full walk below,
     // because a retained relation may refer to a removed child.
-    if changes.iter().all(|change| change.is_addition()) {
+    if !root_only && changes.iter().all(|change| change.is_addition()) {
         facts.object_count = base.map_or(0, DurableManifest::object_count);
         for change in changes {
             if let ClosureMembershipChange::Add(id) = change {
-                verify_target_member(store, base, changes, *id, budget, root_only, &mut facts)?;
+                verify_target_member(
+                    store,
+                    base,
+                    changes,
+                    *id,
+                    budget,
+                    root_only,
+                    cancellation,
+                    &mut facts,
+                )?;
             }
         }
         return Ok(facts);
@@ -562,6 +600,7 @@ fn verify_target_members(
                     *id,
                     budget,
                     root_only,
+                    cancellation,
                     &mut facts,
                 )?;
             }
@@ -576,7 +615,16 @@ fn verify_target_members(
     }
     for change in changes {
         if let ClosureMembershipChange::Add(id) = change {
-            verify_target_member(store, base, changes, *id, budget, root_only, &mut facts)?;
+            verify_target_member(
+                store,
+                base,
+                changes,
+                *id,
+                budget,
+                root_only,
+                cancellation,
+                &mut facts,
+            )?;
         }
     }
     Ok(facts)
@@ -589,8 +637,14 @@ fn verify_target_member(
     id: ObjectId,
     budget: ClosureCompositionBudget,
     root_only: bool,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
     facts: &mut VerificationFacts,
 ) -> Result<(), StoreError> {
+    if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+        return Err(StoreError::Io(
+            "workspace membership admission cancelled".to_owned(),
+        ));
+    }
     let remaining_bytes = budget
         .max_verified_payload_bytes
         .checked_sub(facts.payload_bytes)

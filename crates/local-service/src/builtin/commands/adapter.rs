@@ -1843,12 +1843,16 @@ impl CommandAdapter {
             indexing.request_id,
             indexing.requested_package,
             indexing.operation_key,
+            Arc::clone(&indexing.cancelled),
         ) {
             Ok(reply) => {
                 if indexing.legacy_add.is_some() {
                     *legacy_reply = Some(Self::encode(daemon, indexing.request_id, reply, None));
                 }
                 backend_library::IndexJobOutcome::Published
+            }
+            Err(_) if indexing.cancelled.load(Ordering::Acquire) => {
+                backend_library::IndexJobOutcome::Cancelled
             }
             Err(error) => backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)),
         }
@@ -2027,10 +2031,9 @@ impl CommandAdapter {
                                 // The source and Pending capture already committed.
                                 // Publish their authenticated current view before
                                 // compiler work can leave the owner serving reads.
-                                match self
-                                    .publish_view(daemon, None)
-                                    .and_then(|()| self.spawn_next_index_profile(&mut indexing, job))
-                                {
+                                match self.publish_view(daemon, None).and_then(|()| {
+                                    self.spawn_next_index_profile(&mut indexing, job)
+                                }) {
                                     Ok(()) => {
                                         self.indexing = Some(indexing);
                                         return self.with_browse_completions(daemon, ready);
@@ -2500,6 +2503,7 @@ impl CommandAdapter {
         request_id: u64,
         requested_package: backend_engine::PackageKey,
         operation_key: Option<backend_library::IndexOperationKey>,
+        cancellation: Arc<AtomicBool>,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let PreparedProductSelection {
             intent: prepared_intent,
@@ -2512,7 +2516,14 @@ impl CommandAdapter {
         };
         let prepared_intent = intent
             .as_ref()
-            .map(|intent| prepare_builtin_intent(daemon, intent))
+            .map(|intent| {
+                prepare_builtin_intent_at(
+                    daemon,
+                    intent,
+                    revision_fence.as_ref().map(|fence| fence.canonical_root()),
+                    Arc::clone(&cancellation),
+                )
+            })
             .transpose()?;
         let request_identity = prepared_intent
             .as_ref()
@@ -4201,6 +4212,15 @@ pub(in crate::builtin) fn prepare_builtin_intent(
     daemon: &ProductDaemon,
     intent: &BuiltinIntent,
 ) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
+    prepare_builtin_intent_at(daemon, intent, None, Arc::new(AtomicBool::new(false)))
+}
+
+fn prepare_builtin_intent_at(
+    daemon: &ProductDaemon,
+    intent: &BuiltinIntent,
+    source_root: Option<&Path>,
+    cancellation: Arc<AtomicBool>,
+) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let intent = if intent.has_capture_changes() && intent.capture_basis().is_none() {
         intent
@@ -4210,6 +4230,8 @@ pub(in crate::builtin) fn prepare_builtin_intent(
         intent.clone()
     };
     let request_identity = BuiltinModel.request_id(&intent);
+    let intent =
+        super::super::staged_transport::stage(intent, &snapshot, source_root, cancellation)?;
     Ok(PreparedBuiltinIntent {
         intent,
         request_identity,
@@ -4987,30 +5009,44 @@ mod tests {
         let mut observed_inflight_capture = false;
         while adapter.indexing.is_some() {
             replies.extend(adapter.poll_deferred(daemon));
-            if adapter.indexing.as_ref().is_some_and(|job| {
-                matches!(&job.work, IndexJobWork::Compiling { .. })
-            }) {
+            if adapter
+                .indexing
+                .as_ref()
+                .is_some_and(|job| matches!(&job.work, IndexJobWork::Compiling { .. }))
+            {
                 // The background result is not applied until the next owner
                 // poll. Read the committed Pending frontier in that interval.
                 let snapshot = daemon.engine().daemon().owner().snapshot();
                 let expected = crate::builtin::builtin_view_capability_for_workspace(&snapshot)
                     .expect("current Pending capture capability");
                 let view = daemon.engine().daemon().library().view();
-                assert_ne!(view.root(), before, "initial capture is visible before compilation");
+                assert_ne!(
+                    view.root(),
+                    before,
+                    "initial capture is visible before compilation"
+                );
                 assert_eq!(view.capability(), Some(expected));
                 let query = backend_engine::Query::new(
                     "captured_name",
                     view.root(),
                     backend_engine::QueryLimit::default(),
                 );
-                let (reply, _) = adapter.search(daemon, &query, None).expect("Pending owner query");
-                assert!(matches!(reply, backend_engine::CommandReply::Search(_)), "{reply:?}");
+                let (reply, _) = adapter
+                    .search(daemon, &query, None)
+                    .expect("Pending owner query");
+                assert!(
+                    matches!(reply, backend_engine::CommandReply::Search(_)),
+                    "{reply:?}"
+                );
                 observed_inflight_capture = true;
             }
             assert!(std::time::Instant::now() < deadline, "refused add terminal");
             std::thread::sleep(Duration::from_millis(2));
         }
-        assert!(observed_inflight_capture, "query the committed capture before terminal refusal");
+        assert!(
+            observed_inflight_capture,
+            "query the committed capture before terminal refusal"
+        );
         let reply = replies
             .into_iter()
             .find(|(ticket, _)| *ticket == 9850)
@@ -5019,12 +5055,19 @@ mod tests {
             .expect("encode typed refusal");
         let reply: serde_json::Value = serde_json::from_slice(&reply).expect("actual DTO reply");
         assert_eq!(reply["reply"]["kind"], "failed", "{reply}");
-        assert_eq!(reply["reply"]["data"]["kind"], "compiler_refused", "{reply}");
+        assert_eq!(
+            reply["reply"]["data"]["kind"], "compiler_refused",
+            "{reply}"
+        );
         let snapshot = daemon.engine().daemon().owner().snapshot();
         let expected = crate::builtin::builtin_view_capability_for_workspace(&snapshot)
             .expect("current committed workspace capability");
         let view = daemon.engine().daemon().library().view();
-        assert_ne!(view.root(), before, "captured structural rows are published");
+        assert_ne!(
+            view.root(),
+            before,
+            "captured structural rows are published"
+        );
         assert_eq!(view.capability(), Some(expected.clone()));
         assert!(
             view.row_refs()
@@ -5035,8 +5078,13 @@ mod tests {
             view.root(),
             backend_engine::QueryLimit::default(),
         );
-        let (reply, _) = adapter.search(daemon, &query, None).expect("owner query reply");
-        assert!(matches!(reply, backend_engine::CommandReply::Search(_)), "{reply:?}");
+        let (reply, _) = adapter
+            .search(daemon, &query, None)
+            .expect("owner query reply");
+        assert!(
+            matches!(reply, backend_engine::CommandReply::Search(_)),
+            "{reply:?}"
+        );
         assert!(adapter.poll_deferred(daemon).is_empty());
         assert_eq!(
             daemon.engine().daemon().library().view().capability(),

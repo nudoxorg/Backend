@@ -270,6 +270,29 @@ impl fmt::Debug for PreparedTransition {
 }
 
 impl PreparedTransition {
+    /// Binds the checked small controls to exact admitted stored evidence.
+    pub fn with_stored_membership(
+        mut self,
+        membership: backend_store::DurableClosureManifest,
+    ) -> Result<Self, WorkspaceError> {
+        self.closure = self
+            .closure
+            .with_stored_membership(membership)
+            .map_err(WorkspaceError::store)?;
+        let persisted = Arc::make_mut(&mut self.persisted);
+        persisted.membership = Some(self.closure.membership_id());
+        let mut encoded = Vec::from(&b"SCM1"[..]);
+        encoded.extend_from_slice(self.closure.membership_id().as_bytes());
+        encoded.extend_from_slice(
+            &self
+                .closure
+                .control_manifest()
+                .encode(MAX_RECORD_BYTES)
+                .map_err(WorkspaceError::store)?,
+        );
+        persisted.closure_bytes = Arc::from(encoded);
+        Ok(self)
+    }
     /// Binds checked version and store capabilities to one owner transaction.
     ///
     /// # Errors
@@ -436,10 +459,17 @@ impl PreparedTransition {
             &closure,
             registry,
         )?;
-        let closure_bytes = closure
+        let mut closure_bytes = closure
             .control_manifest()
             .encode(MAX_RECORD_BYTES)
             .map_err(WorkspaceError::store)?;
+        let membership_id = closure.stored_membership().map(|_| closure.membership_id());
+        if let Some(id) = membership_id {
+            let mut compact = Vec::from(&b"SCM1"[..]);
+            compact.extend_from_slice(id.as_bytes());
+            compact.extend_from_slice(&closure_bytes);
+            closure_bytes = compact;
+        }
         // Retain only the manifest's non-relation roots in the fixed
         // recovery index. Relation nodes, including the selected root, are
         // reopened through the store's typed relation reference index;
@@ -472,7 +502,7 @@ impl PreparedTransition {
             .collect::<Vec<_>>();
         auxiliary.sort_unstable();
         auxiliary.dedup();
-        let persisted = Arc::new(PersistedTransition::from_parts(
+        let mut persisted = PersistedTransition::from_parts(
             request,
             transaction,
             manifest_bytes.into_boxed_slice(),
@@ -480,7 +510,9 @@ impl PreparedTransition {
             commit_bytes.into_boxed_slice(),
             closure.control_manifest().clone(),
             closure_bytes.into_boxed_slice(),
-        ));
+        );
+        persisted.membership = membership_id;
+        let persisted = Arc::new(persisted);
         Ok(Self {
             request,
             transaction,
@@ -638,6 +670,12 @@ impl PreparedTransition {
             .filter(|id| rebuilt.closure.control_manifest().contains_object_id(*id))
             .collect::<Vec<_>>();
         for object_id in retained_ids {
+            if objects
+                .iter()
+                .any(|object| object.id() == object_id && registry.contains_schema(object.schema()))
+            {
+                continue;
+            }
             if !rebuilt.payloads.contains(&object_id) && !auxiliary.contains(&object_id) {
                 auxiliary.push(object_id);
             }
@@ -825,6 +863,7 @@ pub struct PersistedTransition {
     commit: Arc<[u8]>,
     closure: Arc<ClosureManifest>,
     closure_bytes: Arc<[u8]>,
+    membership: Option<backend_store::ClosureId>,
 }
 
 impl PersistedTransition {
@@ -845,7 +884,19 @@ impl PersistedTransition {
             commit: Arc::from(commit),
             closure: Arc::new(closure),
             closure_bytes: Arc::from(closure_bytes),
+            membership: None,
         }
+    }
+
+    pub(super) fn with_membership_id(mut self, id: backend_store::ClosureId) -> Self {
+        self.membership = Some(id);
+        self
+    }
+
+    /// Returns exact authenticated stored membership when supplied by recovery.
+    #[must_use]
+    pub const fn membership_id(&self) -> Option<backend_store::ClosureId> {
+        self.membership
     }
 
     /// Returns the request identity carried by the record.
