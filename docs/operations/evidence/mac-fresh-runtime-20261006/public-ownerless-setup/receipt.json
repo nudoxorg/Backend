@@ -1,0 +1,89 @@
+{
+  "schema": "nudox.public-ownerless-setup.v1",
+  "runtime_manifest_sha256": "4a1777bad6a988f33f1b70854e58664e20e36eb58eba1d60209f12654d374f40",
+  "environment": {
+    "HOME": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/receipts/public-ownerless-setup-20261006T170224Z/home",
+    "PATH": "/usr/bin:/bin",
+    "TMPDIR": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/receipts/public-ownerless-setup-20261006T170224Z",
+    "LANG": "C.UTF-8",
+    "USER": "rmccrar6"
+  },
+  "commands": [
+    {
+      "label": "cli-help",
+      "argv": [
+        "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-fcb-native-mac-attempt02/backend-cli",
+        "--help"
+      ],
+      "exit": 0,
+      "stdout_sha256": "b3baa1778813e98a714257a4a9a192812843cef5227df1890bb2fc656d0ae55c",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "state_exists": false,
+      "endpoint_exists": false,
+      "home_entries": []
+    },
+    {
+      "label": "locald-help",
+      "argv": [
+        "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-fcb-native-mac-attempt02/backend-locald",
+        "--help"
+      ],
+      "exit": 0,
+      "stdout_sha256": "e3cf693bdae56311bc9a02df0c150367c80a2ba5b859ea9d46b0ba8e0f5b3ed8",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "state_exists": false,
+      "endpoint_exists": false,
+      "home_entries": []
+    },
+    {
+      "label": "passive-health",
+      "argv": [
+        "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-fcb-native-mac-attempt02/backend-cli",
+        "--project",
+        "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/receipts/public-ownerless-setup-20261006T170224Z/project",
+        "--workspace",
+        "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/receipts/public-ownerless-setup-20261006T170224Z/state",
+        "--endpoint",
+        "/tmp/nudox-ownerless-6c3e656937004359.sock",
+        "--json",
+        "--passive",
+        "health"
+      ],
+      "exit": 1,
+      "stdout_sha256": "94198faecb4d44990ad1077c78efbbc6d881360e39164a4a5e18610ace1c4b90",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "state_exists": false,
+      "endpoint_exists": false,
+      "home_entries": []
+    },
+    {
+      "label": "add-help",
+      "argv": [
+        "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-fcb-native-mac-attempt02/backend-cli",
+        "add",
+        "--help"
+      ],
+      "exit": 0,
+      "stdout_sha256": "458b1d310ea061a0950c6506b0485b766add92e3dbe656481be33981447964d6",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "state_exists": false,
+      "endpoint_exists": false,
+      "home_entries": []
+    },
+    {
+      "label": "argument-error",
+      "argv": [
+        "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-fcb-native-mac-attempt02/backend-cli",
+        "--definitely-unknown"
+      ],
+      "exit": 64,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "b0ee7e167204e5b108c77f8b4bbb9807036791c93e16f46e4da4ff1cf8971902",
+      "state_exists": false,
+      "endpoint_exists": false,
+      "home_entries": []
+    }
+  ],
+  "owner_started": false,
+  "source_credit": false
+}

@@ -1,0 +1,86 @@
+backend — local-first, versioned code intelligence
+
+Usage: backend [OPTIONS] <COMMAND> [OPERANDS]
+
+library
+  packages                                List every package on the shelf with its status and declaration counts.
+  add [PATH] [--execution-intent INTENT]  Index a local project directory, or refresh its existing indexed contents.
+  remove <PATH>                           Remove one package and its derived indexes from the shelf.
+  show <COORDINATE>                       Render one declaration page: signature, documentation, members, relations, and source.
+  source <COORDINATE>                     Read the source text of one declaration with a few lines of context either side.
+  related <COORDINATE>                    List the symbols related to one declaration through its links, its siblings, and the vector space.
+  references <COORDINATE>                 List the places one declaration is used, with the exact source span that proves each use.
+  read <COORDINATE>...                    Render several declaration pages in one call, each answered or refused on its own.
+  diff <PACKAGE> <PACKAGE>                Compare two versions of one package: declarations added, removed, and changed in signature.
+  outline [PATH]                          Render one package's containment tree.
+  resolve <TEXT> [--limit COUNT] [--cursor CURSOR]  Turn a readable address into exact declarations, reporting ambiguity instead of guessing.
+  search <TEXT> [--limit COUNT] [--cursor CURSOR]  Search exact keys, names, relations, and vectors together; every lane reports its coverage.
+  graph <COORDINATE>                      Traverse calls, implementations, references, and other relations from one declaration.
+  semantic-versions <PACKAGE>             List immutable compiler generations retained for one exact package.
+  semantic-shapes <SHAPE_REQUEST_JSON>    Read bounded compiler-owned callable and member shapes for selected declarations.
+  package-source-membership <MEMBERSHIP_REQUEST_JSON>  Read a bounded, snapshot-bound page of exact File rows selected by one local Project, including package-relative paths and source identities.
+  select-semantic-version <PACKAGE> <PURL> <PROFILE> <GENERATION>  Select one exact retained compiler generation for local product projection.
+  cargo-source-file <SOURCE_REQUEST_JSON> <TEXT>  Read one bounded source or documentation file using the exact Cargo package authority and ProjectTree root binding currently observed by the owner.
+  cargo-source-inventory <SOURCE_REQUEST_JSON>  List a bounded set of currently observed source and documentation paths under one exact Cargo package authority and ProjectTree root binding.
+  cargo-package-readme <PACKAGE>          Read the bounded README Cargo selects from one exact package release's observed manifest and source authority.
+  cargo-package-readme-link <ORIGIN_JSON> <TEXT>  Read one bounded relative link from a current owner-admitted package README under its exact package or workspace root.
+  index_start <PACKAGE> [--execution-intent INTENT]  Start one package indexing job and return its owner-issued ticket.
+  index_await <TICKET>                    Wait for the terminal receipt of one owner-issued package indexing job.
+  index_cancel <TICKET>                   Request cancellation of one exact owner-issued package indexing job.
+  index_progress <TICKET> [--after-sequence SEQUENCE]  Read the next bounded page of typed progress facts for one owner-issued package indexing job.
+
+registry
+  advisory <PACKAGE> [--override-actor TEXT] [--override-reason TEXT] [--override-policy-version TEXT] [--override-expires-at TEXT]  Show advisory sources, affected ranges, freshness, coverage, and the acquisition decision for one package version.
+  explore [TEXT] [--limit COUNT]          Browse or search the package registries across every ecosystem, sorted and paged.
+  package <PACKAGE>                       Show one registry package: readme, versions, owners, dependencies, dependents, downloads, and how to install it.
+  dependents <PACKAGE>                    List the packages that depend on one registry package, most downloaded first.
+  dependencies <PACKAGE>                  List the packages one registry package declares, preserving requirements and scopes.
+  owner <TEXT>                            List every package one owner publishes, across ecosystems.
+  index-search <TEXT> [--limit COUNT] [--cursor CURSOR]  Search every package the local registry index knows by name prefix and term.
+  package-versions <PACKAGE>              List every version of one package the index recorded, with checksum and yanked state.
+  package-profile <PACKAGE>               Show one package's latest version and full version history from the index.
+  forge-add <FORGE>                       Acquire a pinned GitHub, GitLab, Codeberg, or HTTPS Git source and discover its package manifests.
+  forge-reference <FORGE>                 Read an exact code-forge source already present in the local content-addressed cache.
+  package-graph <PACKAGE> <DIRECTION> [--authority TEXT] [--limit COUNT] [--cursor CURSOR]  Read one bounded page of a package's dependencies or dependents, preserving the exact source authority, ecosystem, version requirement, resolver scope, and graph snapshot.
+
+home
+  subscribe <PACKAGE> [--project PROJECT]  Follow one package for new releases, optionally filing it into a project folder.
+  unsubscribe <PACKAGE>                   Stop following one package.
+  subscriptions                           List every followed package with how many releases you have not seen.
+  releases [--mark-seen]                  List new versions of followed packages since you last looked, optionally marking them seen.
+  projects                                List every project folder with its members and lockfile binding.
+  project-create <NAME> [--lockfile LOCKFILE]  Create a project folder, optionally bound to a lockfile it stays in sync with.
+  project-delete <PROJECT>                Delete a project folder; its subscriptions are kept.
+  project-add <PROJECT> <PACKAGE>         Put one pinned package into a project folder.
+  project-remove <PROJECT> <PACKAGE>      Take one package out of a project folder.
+  project-sync <PROJECT>                  Reconcile a project folder with its lockfile, optionally compiling members not yet on the shelf.
+  project-tree [PATH]                     Read a project's dependency tree as Cargo resolves it here: the role each dependency plays, why every package is in the tree, which are here twice, and what the advisory sources say.
+
+session
+  tree                                    Show the tree of every subject opened from any surface, nested under what it was opened from.
+  tree-open <SUBJECT> <TEXT> [--parent NODE] [--title TEXT]  Open a package, page, registry entry, owner, gallery, or search in the session tree under a parent node.
+  tree-close <NODE> [--branch]            Close one session tree node, or a whole branch.
+
+system
+  health                                  Report every capability as ready, unreachable, unconfigured, or detached.
+  advisory-refresh                        Refresh the configured RustSec, OSV, and GHSA sources and keep what they say for tree and package reads.
+
+escape hatch
+  surface <JSON>                          Execute any tagged SurfaceCommand object verbatim.
+
+options
+  --format human|markdown|json  Choose the rendering; markdown matches the MCP text block.
+  --json                        Shorthand for --format json.
+  --no-color                    Never paint; NO_COLOR and a non-terminal stdout do the same.
+  --limit COUNT                 Bound any command that pages.
+  --detail LEVEL                JSON projection: summary, standard, or full.
+  --project PATH                Select the project; defaults to the current directory.
+  --workspace PATH              Select durable state; defaults to this project's private app-data root.
+  --endpoint PATH               Connect to a specific local daemon.
+  --passive                     With health/status, connect without starting locald or creating state.
+  -h, --help                    Show this help, or one command's help after its name.
+  -V, --version                 Show the version.
+
+COLUMNS is honoured for width. Exit codes: 0 success, 2 the engine refused,
+64 the arguments were wrong, 1 the local endpoint failed.
+
