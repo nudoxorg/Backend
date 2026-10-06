@@ -25,6 +25,7 @@ use backend_compile::{
     EmbeddingNormalization, EmbeddingPurpose, RustCargoWorkspaceFactsV1,
 };
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
+use backend_frontend_python::legacy::checker::PythonProjectSource;
 use backend_frontend_rust::legacy::{
     RustAnalysisControl, RustAuthorityError, RustWorkspaceEditorBufferObserver, RustWorkspaceFile,
     RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
@@ -1628,6 +1629,9 @@ pub enum PackageSemanticError {
     /// An installed TypeScript source or toolchain witness changed before publication.
     #[error("admitted TypeScript project changed before publication")]
     TypeScriptProjectWitness(#[source] crate::application::TypeScriptProjectHostError),
+    /// Captured Python source, configuration, or executable changed before admission.
+    #[error("admitted Python project changed before publication")]
+    PythonProjectWitness(#[source] backend_frontend_python::legacy::checker::CheckerError),
     /// Required embedding inference could not produce a complete bounded output plane.
     #[error("required package embedding failed for {path}: {cause}")]
     Embedding {
@@ -1758,6 +1762,8 @@ pub(crate) struct StagedPackageCompilation {
     cargo_workspace_facts: Option<std::sync::Arc<RustCargoWorkspaceFactsV1>>,
     typescript_witness:
         Option<std::sync::Arc<crate::application::typescript_host::TypeScriptProjectWitness>>,
+    python_witness:
+        Option<std::sync::Arc<backend_frontend_python::legacy::checker::PythonProjectWitness>>,
     embeddings: Option<StagedEmbeddingOutput>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
 }
@@ -2044,6 +2050,58 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         if let Some(project) = typescript_project.as_ref() {
             package_authority_configuration.typescript = Some(&project.checker);
         }
+        // One fresh native Python State owns the entire selected frontier.
+        // It is deliberately not reused: external/configuration negative reads
+        // have no complete observation contract yet.
+        let python_project =
+            if target.profile.language() == backend_semantic::vocabulary::Language::Python {
+                let toolchain = self
+                    .toolchain(first_application_request)
+                    .map_err(|cause| {
+                        toolchain_terminal(first_authority, first_application_request, cause)
+                    })
+                    .map_err(|terminal| PackageSemanticError::Compile {
+                        path: first_source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    })?;
+                let sources = package
+                    .sources
+                    .iter()
+                    .map(|source| PythonProjectSource {
+                        relative_path: source.relative_path,
+                        source: source.source,
+                    })
+                    .collect::<Vec<_>>();
+                let first_source_path = package.package_root.join(first_source.relative_path);
+                Some(
+                    super::package_authority::enter_python_project_authority(
+                        PackageAuthorityRequest {
+                            package_root: package.package_root,
+                            source_path: &first_source_path,
+                            source: first_source.source.as_bytes(),
+                            unit_key: package.package_target.unit_key(),
+                            profile: target.profile,
+                            toolchain,
+                            control,
+                            configuration: package_authority_configuration,
+                        },
+                        request.lineage_name(),
+                        &sources,
+                    )
+                    .map_err(|cause| PackageSemanticError::Compile {
+                        path: first_source.relative_path.into(),
+                        terminal: Box::new(package_authority_terminal(
+                            package.package_target.target(),
+                            first_application_request,
+                            first_authority,
+                            toolchain,
+                            cause,
+                        )),
+                    })?,
+                )
+            } else {
+                None
+            };
         let source_count = package.compilation_sources().count();
         if target.profile.language() == backend_semantic::vocabulary::Language::Rust
             && let Some(configuration) = self.package_authority.rust
@@ -2387,7 +2445,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     }
                 })?;
             let source_path = package.package_root.join(source.relative_path);
-            let transient_authority = if rust_workspace_authority.is_none() {
+            let transient_authority = if rust_workspace_authority.is_none()
+                && python_project.is_none()
+            {
                 Some(
                     enter_package_authority_with_go_authority_witness(
                         PackageAuthorityRequest {
@@ -2419,13 +2479,23 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             } else {
                 None
             };
-            let authority_owner = rust_workspace_authority
-                .as_ref()
-                .or(transient_authority.as_ref())
-                .ok_or(PackageSemanticError::Capacity {
-                    lane: "package authority owner",
-                })?;
-            let authority = authority_owner.input(&source_path);
+            let authority = if let Some(project) = python_project.as_ref() {
+                let report =
+                    project
+                        .module(source.relative_path)
+                        .ok_or(PackageSemanticError::Capacity {
+                            lane: "Python project module report",
+                        })?;
+                crate::driver::SemanticAuthorityInput::Python { report }
+            } else {
+                let authority_owner = rust_workspace_authority
+                    .as_ref()
+                    .or(transient_authority.as_ref())
+                    .ok_or(PackageSemanticError::Capacity {
+                        lane: "package authority owner",
+                    })?;
+                authority_owner.input(&source_path)
+            };
             let compiled = match self.stage_prepared(
                 application_request,
                 source_authority,
@@ -2671,6 +2741,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             typescript_witness: typescript_project
                 .as_ref()
                 .map(|project| std::sync::Arc::clone(&project.witness)),
+            python_witness: python_project
+                .as_ref()
+                .map(|project| std::sync::Arc::clone(project.witness())),
             embeddings: embedding_identity.map(|identity| StagedEmbeddingOutput {
                 identity,
                 artifacts: if embedding_unavailable.is_some() {
@@ -2912,6 +2985,11 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         cancelled: &AtomicBool,
         progress: &mut impl FnMut(PackageCompilePhase),
     ) -> Result<PublishedSemanticPackage, PackageSemanticError> {
+        if let Some(witness) = staged.python_witness.as_ref() {
+            witness
+                .validate_current()
+                .map_err(PackageSemanticError::PythonProjectWitness)?;
+        }
         if let Some(witness) = staged.typescript_witness.as_ref() {
             witness
                 .validate_current()
@@ -3041,6 +3119,11 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         staged: StagedPackageCompilation,
         cancelled: &AtomicBool,
     ) -> Result<StagedSemanticPackage, PackageSemanticError> {
+        if let Some(witness) = staged.python_witness.as_ref() {
+            witness
+                .validate_current()
+                .map_err(PackageSemanticError::PythonProjectWitness)?;
+        }
         if let Some(witness) = staged.typescript_witness.as_ref() {
             witness
                 .validate_current()

@@ -418,7 +418,7 @@ impl LanguageSpec for PythonSpec {
                             lower::python::PythonCollectError::Authority(cause),
                         )
                     })?;
-                lower::python::collect_with_checker(&module, source, facts, Some(report))
+                lower::python::collect_with_project_checker(&module, source, facts, report)
                     .map_err(|cause| python_terminal(prepared.source, prepared.recipe, cause))
             }
         }
@@ -1704,26 +1704,26 @@ mod lifecycle_tests {
     #[test]
     fn incomplete_cargo_metadata_keeps_typed_cause_and_safe_policy_diagnostic() {
         use backend_frontend_rust::legacy::{
-            CargoMetadataIncompleteCause, CargoMetadataPreflightError, RustCargoMetadataPolicy,
-            RustAuthorityError,
+            CargoMetadataIncompleteCause, CargoMetadataPreflightError, RustAuthorityError,
+            RustCargoMetadataPolicy,
         };
 
         let source = source();
         let recipe = recipe(source);
         let private_root = std::path::PathBuf::from("/private/work/serde_core");
-        let cause = lower::rust::RustCollectError::Authority(
-            RustAuthorityError::CargoMetadataIncomplete {
+        let cause =
+            lower::rust::RustCollectError::Authority(RustAuthorityError::CargoMetadataIncomplete {
                 root: private_root.clone(),
                 policy: RustCargoMetadataPolicy::Offline,
                 cause: CargoMetadataIncompleteCause::Preflight(
                     CargoMetadataPreflightError::CommandFailed {
                         phase: "metadata full",
                         status: "exit status: 101".to_owned(),
-                        stderr: "no matching package named `quote` found at /private/cache".to_owned(),
+                        stderr: "no matching package named `quote` found at /private/cache"
+                            .to_owned(),
                     },
                 ),
-            },
-        );
+            });
         let mut scratch = [0xa5; MAX_NATIVE_DIAGNOSTIC_BYTES];
         let failure = rust_terminal(source, recipe, Some(&mut scratch), false, cause);
         let CompileFailure::Authority { failure, .. } = failure else {

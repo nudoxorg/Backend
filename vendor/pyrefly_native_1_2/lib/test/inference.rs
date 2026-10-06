@@ -1,0 +1,270 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+use pyrefly_config::base::UntypedDefBehavior;
+
+use crate::test::util::TestEnv;
+use crate::testcase;
+
+testcase!(
+    test_no_empty_container_inference,
+    TestEnv::new_with_infer_with_first_use(false),
+    r#"
+from typing import assert_type, Any
+x = []
+x.append(1)
+x.append("foo")
+assert_type(x, list[Any])
+x = {}
+x[1] = 2
+x["1"] = "2"
+assert_type(x, dict[Any, Any])
+"#,
+);
+
+testcase!(
+    test_empty_container_inference_via_generic_function,
+    TestEnv::new_with_infer_with_first_use(false),
+    r#"
+from typing import assert_type
+
+def pair[T](a: T, b: T) -> tuple[T, T]:
+    return (a, b)
+
+# The empty list [] comes first, but it gets unified with list[int] from
+# the second argument through the generic function's type variable T.
+result = pair([], [1, 2, 3])
+assert_type(result, tuple[list[int], list[int]])
+
+# Same pattern with dict
+dict_result = pair({}, {"a": 1})
+assert_type(dict_result, tuple[dict[str, int], dict[str, int]])
+"#,
+);
+
+testcase!(
+    test_implicit_any_no_inference,
+    TestEnv::new_with_untyped_def_behavior(UntypedDefBehavior::SkipAndInferReturnAny)
+        .enable_unannotated_return_error()
+        .enable_implicit_any_parameter_error(),
+    r#"
+def foo(x, y):  # E: `foo` is missing an annotation for parameter `x` # E: `foo` is missing an annotation for parameter `y` # E: `foo` is missing a return annotation
+    return 1
+"#,
+);
+
+testcase!(
+    test_implicit_any_with_inference,
+    TestEnv::new_with_untyped_def_behavior(UntypedDefBehavior::CheckAndInferReturnType)
+        .enable_unannotated_return_error()
+        .enable_implicit_any_parameter_error(),
+    r#"
+def foo(x, y):  # E: `foo` is missing an annotation for parameter `x` # E: `foo` is missing an annotation for parameter `y` # E: `foo` is missing a return annotation
+    return 1
+"#,
+);
+
+testcase!(
+    test_implicit_any_self_cls_ignored,
+    TestEnv::new().enable_implicit_any_error(),
+    r#"
+class C:
+    def method(self) -> int:
+        return 1
+
+    @classmethod
+    def clsmethod(cls) -> int:
+        return 1
+"#,
+);
+
+// https://github.com/facebook/pyrefly/issues/2327
+testcase!(
+    test_unannotated_parameter_first_param_by_position,
+    TestEnv::new().enable_implicit_any_parameter_error(),
+    r#"
+class A:
+    def __new__(cls, a: int) -> "A": ...
+
+class B:
+    def __new__(_cls, a: int) -> "B": ...
+
+class C:
+    def method(_self, x: int) -> int:
+        return x
+
+    @classmethod
+    def clsmethod(_cls) -> int:
+        return 1
+
+    @classmethod
+    def clsmethod2(klass) -> int:
+        return 1
+
+    @staticmethod
+    def static_method(x) -> int:  # E: `static_method` is missing an annotation for parameter `x`
+        return x
+
+    def __init_subclass__(klass, **kwargs: int) -> None: ...
+
+    # vararg as first param is NOT an implicit self param
+    def vararg_method(*args, **kwargs) -> None: ...  # E: `vararg_method` is missing an annotation for parameter `args` # E: `vararg_method` is missing an annotation for parameter `kwargs`
+
+    # keyword-only params after variadic first param should also error
+    def vararg_method2(*args, name) -> None: ...  # E: `vararg_method2` is missing an annotation for parameter `args` # E: `vararg_method2` is missing an annotation for parameter `name`
+
+# self/cls in standalone functions should still error
+def f(a: str, self, cls, b: int) -> None: ...  # E: `f` is missing an annotation for parameter `self` # E: `f` is missing an annotation for parameter `cls`
+
+# self/cls as first param of standalone function should error
+def g(self) -> None: ...  # E: `g` is missing an annotation for parameter `self`
+def h(cls) -> None: ...  # E: `h` is missing an annotation for parameter `cls`
+"#,
+);
+
+// https://github.com/facebook/pyrefly/issues/3542
+testcase!(
+    test_underscore_params_suppress_implicit_any,
+    TestEnv::new().enable_implicit_any_parameter_error(),
+    r#"
+# Single `_` and `_`-prefixed params (single underscore, not ending with `_`)
+# should not trigger implicit-any-parameter error
+def foo(_) -> int:  # ok - intentionally unused
+    return 1
+
+def bar(_x) -> int:  # ok
+    return 1
+
+# Params starting with `__` or ending with `_` should still error
+def baz(__x) -> int:  # E: `baz` is missing an annotation for parameter `__x`
+    return 1
+
+def qux(x_) -> int:  # E: `qux` is missing an annotation for parameter `x_`
+    return 1
+
+def quux(__x__) -> int:  # E: `quux` is missing an annotation for parameter `__x__`
+    return 1
+
+def corge(_x_) -> int:  # E: `corge` is missing an annotation for parameter `_x_`
+    return 1
+
+# Regular params without annotation should still error
+def grault(x) -> int:  # E: `grault` is missing an annotation for parameter `x`
+    return 1
+"#,
+);
+
+testcase!(
+    test_implicit_any_with_complete_annotations,
+    TestEnv::new().enable_implicit_any_error(),
+    r#"
+def foo(x: int) -> int:
+    return x
+"#,
+);
+
+testcase!(
+    test_implicit_any_empty_containers,
+    TestEnv::new_with_infer_with_first_use(false).enable_implicit_any_error(),
+    r#"
+from typing import Iterable, Mapping
+x1 = [] # E: Cannot infer type of empty container
+x2 = {} # E: Cannot infer type of empty container
+x3: Iterable[int] = {} # ok
+x4: Mapping[str, str] = {} # ok
+"#,
+);
+
+testcase!(
+    test_implicit_any_empty_containers_with_partial_inference,
+    TestEnv::new().enable_implicit_any_error(),
+    r#"
+from typing import Iterable, Mapping
+x1 = [] # E: Cannot infer type of empty container
+x2 = {} # E: Cannot infer type of empty container
+x3: Iterable[int] = {} # ok
+x4: Mapping[str, str] = {} # ok
+"#,
+);
+
+testcase!(
+    test_implicit_any_default_disabled,
+    r#"
+from typing import Iterable
+def foo(x):
+    return x
+
+x1 = []
+x2 = {}
+"#,
+);
+
+testcase!(
+    test_explicit_any_default_disabled,
+    r#"
+from typing import Any
+
+def f(value: Any) -> Any:
+    print(value.asdfsdf)
+    return value
+"#,
+);
+
+testcase!(
+    test_explicit_any_error,
+    TestEnv::new().enable_explicit_any_error(),
+    r#"
+from typing import Any, TypeAlias
+
+def f(value: Any) -> Any:  # E: Explicit `Any` is not allowed # E: Explicit `Any` is not allowed
+    print(value.asdfsdf)
+    return value
+
+xs: list[Any] = []  # E: Explicit `Any` is not allowed
+Alias: TypeAlias = dict[str, Any]  # E: Explicit `Any` is not allowed
+"#,
+);
+
+testcase!(
+    test_warn_on_implicit_any_in_attribute,
+    TestEnv::new().enable_implicit_any_attribute_error(),
+    r#"
+from typing import Any
+class A:
+    def __init__(self):
+        self.x = None  # E: implicitly inferred to be `Any | None`
+    "#,
+);
+
+testcase!(
+    test_implicit_any_attribute_slots_excluded,
+    TestEnv::new().enable_implicit_any_attribute_error(),
+    r#"
+class A:
+    __slots__ = ()
+    __match_args__ = ()
+    x = ()  # E: implicitly inferred to be `tuple[Any, ...]`
+    "#,
+);
+
+// Regression test for https://github.com/facebook/pyrefly/issues/1774
+testcase!(
+    test_nested_list_set_item,
+    r#"
+from typing import Any
+rows: list[str] = []
+x = []
+for i, row in enumerate(rows):
+    x.append([])
+    for j, item in enumerate(row):
+        x[-1].append(item)
+
+entries: list[Any] = []
+for i, j in entries:
+    x[i][j] = "x"
+"#,
+);

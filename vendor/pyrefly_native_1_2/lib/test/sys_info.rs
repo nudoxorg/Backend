@@ -1,0 +1,471 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+use pyrefly_python::sys_info::PythonPlatform;
+use pyrefly_python::sys_info::PythonVersion;
+
+use crate::test::util::TestEnv;
+use crate::testcase;
+
+testcase!(
+    test_sys_version,
+    r#"
+from typing import assert_type
+import sys
+if sys.version_info >= (3, 0):
+    X = str
+else:
+    X = int
+assert_type(X(), str)
+
+if sys.version_info == (2, 7):
+    Y = str
+else:
+    Y = int
+assert_type(Y(), int)
+
+if sys.version_info < (3, 0, 0):
+    Z = str
+else:
+    Z = int
+assert_type(Z(), int)
+
+if sys.version_info[0] == 3:
+    A = str
+else:
+    A = int
+assert_type(A(), str)
+
+if sys.version_info[0] == 2:
+    B = str
+else:
+    B = int
+assert_type(B(), int)
+
+if sys.version_info[1] >= 6:
+    C = str
+else:
+    C = int
+assert_type(C(), str)
+
+if sys.version_info.minor >= 6:
+    D = str
+else:
+    D = int
+assert_type(D(), str)
+
+if sys.version_info.major == 3:
+    E = str
+else:
+    E = int
+assert_type(E(), str)
+"#,
+);
+
+testcase!(
+    test_class_under_version,
+    r#"
+from typing import assert_type
+import sys
+if sys.version_info >= (3, 0):
+    class Bar:
+        def magic(self) -> Foo:
+            return Foo()
+    class Foo: ...
+
+    assert_type(Bar().magic(), Foo)
+"#,
+);
+
+testcase!(
+    test_bool_literals,
+    r#"
+from typing import assert_type
+if True:
+    X = str
+else:
+    X = int
+assert_type(X(), str)
+
+if False:
+    Y = str
+else:
+    Y = int
+assert_type(Y(), int)
+
+if not(False):
+    X = str
+else:
+    X = int
+assert_type(X(), str)
+
+if not(True):
+    Y = str
+else:
+    Y = int
+assert_type(Y(), int)
+"#,
+);
+
+testcase!(
+    test_typechecking_constant,
+    r#"
+import typing
+import typing_extensions as te
+from typing import TYPE_CHECKING, assert_type
+if TYPE_CHECKING:
+    X0 = str
+else:
+    X0 = int
+assert_type(X0(), str)
+
+if typing.TYPE_CHECKING:
+    X1 = str
+else:
+    X1 = int
+assert_type(X1(), str)
+
+if not TYPE_CHECKING:
+    Y0 = str
+else:
+    Y0 = int
+assert_type(Y0(), int)
+
+if not typing.TYPE_CHECKING:
+    Y1 = str
+else:
+    Y1 = int
+assert_type(Y1(), int)
+
+if te.TYPE_CHECKING:
+    Z1 = str
+else:
+    Z1 = bool
+assert_type(Z1(), str)
+"#,
+);
+
+testcase!(
+    test_typechecking_with_pyrefly_constant,
+    TestEnv::one("foo", "TYPE_CHECKING_WITH_PYREFLY: bool = False"),
+    r#"
+from typing import assert_type
+from foo import TYPE_CHECKING_WITH_PYREFLY
+
+if TYPE_CHECKING_WITH_PYREFLY:
+    X0 = str
+else:
+    X0 = int
+assert_type(X0(), str)
+
+import foo
+if foo.TYPE_CHECKING_WITH_PYREFLY:
+    X1 = str
+else:
+    X1 = int
+assert_type(X1(), str)
+"#,
+);
+
+testcase!(
+    test_platform,
+    r#"
+from typing import assert_type
+import sys
+if sys.platform == "linux":
+    X = str
+else:
+    X = int
+assert_type(X(), str)
+
+if sys.platform.startswith("win"):
+    Y = str
+elif sys.platform.startswith("lin"):
+    Y = int
+else:
+    Y = None
+assert_type(Y(), int)
+"#,
+);
+
+testcase!(
+    test_platform_membership,
+    r#"
+from typing import assert_type
+import sys
+if sys.platform in ("linux", "darwin"):
+    X = str
+else:
+    X = int
+assert_type(X(), str)
+
+if sys.platform not in {"win32", "cygwin"}:
+    Y = str
+else:
+    Y = int
+assert_type(Y(), str)
+
+if sys.platform in ["linux", "win32"]:
+    Z = str
+else:
+    Z = int
+assert_type(Z(), str)
+"#,
+);
+
+testcase!(
+    test_os_name,
+    r#"
+from typing import assert_type
+import os
+if os.name == "posix":
+    X = str
+else:
+    X = int
+assert_type(X(), str)
+
+if os.name == "nt":
+    Y = str
+else:
+    Y = int
+assert_type(Y(), int)
+
+if os.name != "posix":
+    Z = str
+else:
+    Z = int
+assert_type(Z(), int)
+"#,
+);
+
+testcase!(
+    test_sys_version_subscript,
+    TestEnv::new_with_version(PythonVersion::new(3, 13, 0)),
+    r#"
+from typing import assert_type
+import sys
+if sys.version_info[:2] >= (3, 10):
+    X = str
+else:
+    X = int
+assert_type(X(), str)
+
+if sys.version_info[0] == 3:
+    Y = str
+else:
+    Y = int
+assert_type(Y(), str)
+
+if sys.version_info == (3, 13):
+    Z = str
+else:
+    Z = int
+assert_type(Z(), str)
+
+if sys.version_info == (3, 13, 0):
+    W = str
+else:
+    W = int
+assert_type(W(), str)
+
+if sys.version_info in ((3, 13), (3, 12)):
+    V = str
+else:
+    V = int
+assert_type(V(), str)
+
+if sys.version_info not in {(3, 12), (3, 11)}:
+    U = str
+else:
+    U = int
+assert_type(U(), str)
+"#,
+);
+
+testcase!(
+    test_sys_info_with_or,
+    r#"
+from typing import TYPE_CHECKING, Literal, assert_type
+x = True
+
+if x or TYPE_CHECKING:
+    y = ""
+else:
+    y = 1
+
+assert_type(y, Literal[''])
+"#,
+);
+
+testcase!(
+    test_sys_version_unpack_alias,
+    TestEnv::new_with_version(PythonVersion::new(3, 11, 0)),
+    r#"
+import sys
+import typing
+import typing_extensions
+from typing import TypedDict, assert_type
+
+if sys.version_info >= (3, 11):
+    Unpack = typing.Unpack
+else:
+    Unpack = typing_extensions.Unpack
+
+class Kwargs(TypedDict, total=False):
+    x: int
+
+def f(**kwargs: Unpack[Kwargs]) -> None:
+    assert_type(kwargs, Kwargs)
+"#,
+);
+
+testcase!(
+    test_version_guard_and_short_circuit,
+    r#"
+if False:
+    A = 3
+
+if False:
+    B = 3
+
+if False:
+    C = 3
+
+
+def test_and_basic() -> None:
+    # `and` short-circuits on False: A in the condition and body are unreachable.
+    if False and A:
+        _ = A
+
+def test_and_longer_chain() -> None:
+    # Both B and C are gated: the guard short-circuits before reaching them.
+    if False and B and C:
+        _ = B
+        _ = C
+
+def test_and_three_guards() -> None:
+    # Three consecutive False guards in a single and-chain.
+    if False and A and B and C:
+        _ = A
+        _ = B
+        _ = C
+
+def test_or_basic() -> None:
+    # `or` short-circuits when the left side is *true*. False on the left
+    # means the right side IS evaluated — the name is unknown.
+    if False or A:  # E: Could not find name `A`
+        pass
+
+def test_or_always_true_guard() -> None:
+    # True → right side is unreachable.
+    if True or A:
+        pass
+
+def test_or_longer_chain() -> None:
+    # Chain: first element is always-true, so B and C are never evaluated.
+    if True or B or C:
+        pass
+
+def test_and_body_unreachable() -> None:
+    # An `if False` body is also unreachable; accessing A inside it is fine.
+    if False:
+        _ = A
+
+def test_no_guard_produces_error() -> None:
+    # Baseline: without any guard, accessing A must produce an error.
+    A  # E: Could not find name `A`
+"#,
+);
+
+testcase!(
+    test_typechecking_unpack_alias,
+    r#"
+import typing
+import typing_extensions
+from typing import TYPE_CHECKING, TypedDict, assert_type
+
+if TYPE_CHECKING:
+    GuardedUnpack = typing.Unpack
+else:
+    GuardedUnpack = typing_extensions.Unpack
+
+class Kwargs(TypedDict, total=False):
+    x: int
+
+def f(**kwargs: GuardedUnpack[Kwargs]) -> None:
+    assert_type(kwargs, Kwargs)
+"#,
+);
+
+testcase!(
+    test_negative_platform_gate_import,
+    TestEnv::new_with_platform(PythonPlatform::linux()),
+    r#"
+import sys
+
+def darwin_only_example() -> int:
+    if sys.platform != "darwin":
+        return 0
+
+    from fcntl import F_FULLFSYNC  # If tested on mac laptop this will be a Pyrefly FP
+    return F_FULLFSYNC
+
+def linux_only_example() -> int:
+    if sys.platform != "linux":
+        return 0
+    from socket import SO_DOMAIN   # If tested on Linux machine this will be a Pyrefly FP
+    return SO_DOMAIN
+"#,
+);
+
+testcase!(
+    test_python_3_14,
+    TestEnv::new_with_version(PythonVersion::new(3, 14, 0)),
+    "",
+);
+
+testcase!(
+    test_python_3_13,
+    TestEnv::new_with_version(PythonVersion::new(3, 13, 0)),
+    "",
+);
+
+testcase!(
+    test_python_3_12,
+    TestEnv::new_with_version(PythonVersion::new(3, 12, 0)),
+    "",
+);
+
+testcase!(
+    test_python_3_11,
+    TestEnv::new_with_version(PythonVersion::new(3, 11, 0)),
+    "",
+);
+
+testcase!(
+    test_python_3_10,
+    TestEnv::new_with_version(PythonVersion::new(3, 10, 0)),
+    "",
+);
+
+testcase!(
+    test_python_3_9,
+    TestEnv::new_with_version(PythonVersion::new(3, 9, 0)),
+    "",
+);
+
+testcase!(
+    test_python_3_8,
+    TestEnv::new_with_version(PythonVersion::new(3, 8, 0)),
+    "",
+);
+
+testcase!(
+    test_python_3_7,
+    TestEnv::new_with_version(PythonVersion::new(3, 7, 0)),
+    "",
+);
