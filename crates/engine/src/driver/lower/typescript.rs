@@ -20,8 +20,8 @@ use backend_frontend_typescript::{
     tsz_type_handles::{
         ConditionalType, FunctionShape, IndexSignature as TszIndexSignature, IntrinsicKind,
         LiteralValue as TszLiteral, MappedModifier as TszMappedModifier, MappedType,
-        ObjectShape as TszObjectShape, ParamInfo, TemplateSpan, TypeData, TypeId as TszTypeId,
-        TypeParamInfo, TypeParamOrigin as TszTypeParamOrigin, SymbolRef as TszSymbolRef,
+        ObjectShape as TszObjectShape, ParamInfo, SymbolRef as TszSymbolRef, TemplateSpan,
+        TypeData, TypeId as TszTypeId, TypeParamInfo, TypeParamOrigin as TszTypeParamOrigin,
     },
 };
 use backend_semantic::ir::{
@@ -9156,11 +9156,7 @@ fn intern_native_tsz_type_inner<'source>(
                 // Cross-file or otherwise unowned symbols remain an explicit
                 // gap. Never translate a TSZ symbol index into an entity row
                 // without the exact same-file source-span join above.
-                return intern_computed_leaf(
-                    facts,
-                    unknown_record(TypeReason::OracleGap),
-                    owner,
-                );
+                return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
             };
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TypeOf);
             record.payload0 = target;
@@ -9341,7 +9337,8 @@ fn intern_native_tsz_function<'source>(
             },
         ));
     }
-    if function.this_type.is_some() || function.type_predicate.is_some() || function.is_constructor {
+    if function.this_type.is_some() || function.type_predicate.is_some() || function.is_constructor
+    {
         return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
     }
     let mut children = Vec::with_capacity(function.params.len() + 1);
@@ -10088,6 +10085,7 @@ mod lane_tests {
     };
     use backend_semantic::ir::{
         ComputedType, EntityKind, FragmentError, FragmentView, OccurrenceFault, OccurrenceTarget,
+        ComputedType, EntityKind, FragmentError, FragmentView, OccurrenceFault, OccurrenceTarget,
         ReferenceKind, SemanticReader, TypeExpr, TypeId, TypeQuery,
         TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeScriptSourceCoordinate,
     };
@@ -10669,7 +10667,8 @@ mod lane_tests {
     }
 
     #[test]
-    fn native_tsz_preserves_distinct_keyof_indexed_access_and_local_typeof() -> Result<(), LaneError> {
+    fn native_tsz_preserves_distinct_keyof_indexed_access_and_local_typeof() -> Result<(), LaneError>
+    {
         let source = concat!(
             "export const marker = { value: 1 };\n",
             "export type MarkerQuery = typeof marker;\n",
@@ -10752,11 +10751,10 @@ mod lane_tests {
             LaneError::Collection(TypeScriptCollectError::Rejected(super::FactRejection {
                 cause: super::FactFault::TypeProjectionRecursiveReference { distance: 0 },
                 ..
+            })) | LaneError::Collection(TypeScriptCollectError::Rejected(super::FactRejection {
+                cause: super::FactFault::TypeProjectionCycle { .. },
+                ..
             }))
-                | LaneError::Collection(TypeScriptCollectError::Rejected(super::FactRejection {
-                    cause: super::FactFault::TypeProjectionCycle { .. },
-                    ..
-                }))
         ));
     }
 

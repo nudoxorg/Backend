@@ -4678,6 +4678,29 @@ fn live_type<'source>(
         SemanticTypeTag::Any => tree
             .intern_concrete(ConcreteType::Builtin(BuiltinType::Any))?
             .erase(),
+        SemanticTypeTag::KeyOf if child_count == 1 => tree
+            .intern_computed(ComputedType::KeyOf(child_type(0)?))?
+            .erase(),
+        SemanticTypeTag::IndexedAccess if child_count == 2 => tree
+            .intern_computed(ComputedType::IndexedAccess {
+                object: child_type(0)?,
+                index: child_type(1)?,
+            })?
+            .erase(),
+        // The TSZ source pass stages a same-file entity fact ordinal, never a
+        // guessed type-query path. Fact ordinals become IR entity IDs in this
+        // lowering transaction, and the lane validity check keeps the target
+        // inside that exact file's admitted declarations.
+        SemanticTypeTag::TypeOf
+            if child_count == 0 && record.payload1 == 0 && record.payload0 < facts.len as u32 =>
+        {
+            tree.intern_computed(ComputedType::TypeOf(
+                backend_semantic::ir::TypeQuery::Entity(backend_semantic::ir::EntityId::new(
+                    record.payload0,
+                )),
+            ))?
+            .erase()
+        }
         SemanticTypeTag::Conditional if child_count == 4 => tree
             .intern_computed(ComputedType::Conditional {
                 check: child_type(0)?,
