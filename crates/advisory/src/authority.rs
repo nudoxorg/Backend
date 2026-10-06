@@ -953,8 +953,13 @@ impl AdvisoryAuthority {
             entries: previous.map_or(0, |value| value.entries),
             not_modified: false,
         };
-        self.frontiers.insert(source, frontier);
-        self.frontiers.get(&source).expect("inserted frontier")
+        match self.frontiers.entry(source) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.insert(frontier);
+                entry.into_mut()
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => entry.insert(frontier),
+        }
     }
 
     /// Reads one source's current conditional validators.
