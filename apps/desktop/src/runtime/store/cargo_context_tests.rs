@@ -46,7 +46,7 @@ pub(crate) fn fixture(project: &LocalProjectId) -> (TreeModel, PackageRef, Cargo
         &tree.root,
     )
     .expect("fixture binding");
-    tree.request_binding = Some(binding);
+    tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding });
     assert!(tree.has_admissible_shape());
     // Selection must retain the exact observed version and source. `package`
     // refuses ambiguous rows instead of selecting another source by position.
@@ -105,6 +105,60 @@ pub(crate) fn force_land(store: &mut DataStore, key: &PageKey, value: PageValue)
     assert_eq!(
         store.pages.land(key, generation, Ok(value)),
         Landing::Applied
+    );
+}
+
+#[test]
+fn display_only_tree_is_current_for_its_request_but_cannot_lend_source_or_readme_context() {
+    let requested = LocalProjectId::new("/workspace/backend/member").expect("member request");
+    let (mut tree, package, context) = fixture(&requested);
+    let binding = tree
+        .retained_request_binding()
+        .expect("fixture retained observation");
+    tree.observation =
+        Some(backend_library::browse::ProjectTreeObservationV1::DisplayOnly { binding });
+    // Keep the same immutable positive package list deliberately: extraction
+    // must refuse display-only even if a retained model's rows survive.
+    let route = Route::Orbit(crate::navigation::OrbitRoute::Browse(
+        crate::navigation::BrowseRoute::Tree(requested.clone()),
+    ));
+    let plan = RouteDependencies::new(&route, None);
+    let tree_key = PageKey::Browse(BrowseKey::Tree(requested.clone()));
+    let mut store = DataStore::new(Arc::new(at(route)), None);
+    land(
+        &mut store,
+        &tree_key,
+        PageValue::Browse(BrowseValue::Tree(Arc::new(tree.clone()))),
+    );
+    let current = plan
+        .current_tree(&store)
+        .expect("exact display observation remains readable");
+    assert_eq!(current.model().request_binding(), Some(binding));
+    assert!(current.context.is_none());
+    assert!(plan.current_cargo_package(&store, &package).is_none());
+    let source_route = package_route(&package, context);
+    let source_plan = RouteDependencies::new(&source_route, None);
+    assert!(
+        source_plan.current_tree(&store).is_none(),
+        "a saved retained source address cannot accept display-only bytes as current authority"
+    );
+    assert!(source_plan.current_cargo_readme(&store).is_none());
+    let other = LocalProjectId::new("/workspace/backend/other-member").expect("other request");
+    let other_plan = RouteDependencies::new(
+        &Route::Orbit(crate::navigation::OrbitRoute::Browse(
+            crate::navigation::BrowseRoute::Tree(other.clone()),
+        )),
+        None,
+    );
+    let other_key = PageKey::Browse(BrowseKey::Tree(other));
+    land(
+        &mut store,
+        &other_key,
+        PageValue::Browse(BrowseValue::Tree(Arc::new(tree))),
+    );
+    assert!(
+        other_plan.current_tree(&store).is_none(),
+        "display-only preserves exact request matching"
     );
 }
 
@@ -259,13 +313,11 @@ fn completed_tree_for_another_binding_is_terminal_instead_of_an_infinite_wait() 
     let tree_key = PageKey::Browse(BrowseKey::Tree(requested.clone()));
     let mut store = DataStore::new(Arc::new(at(route)), None);
     let mut changed = tree;
-    changed.request_binding = Some(
-        backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+    changed.observation = Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding: backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
             Path::new(requested.service_coordinate().expect("coordinate")),
             "/replacement/workspace",
         )
-        .expect("changed binding"),
-    );
+        .expect("changed binding") });
     land(
         &mut store,
         &tree_key,
@@ -341,10 +393,10 @@ fn source_zoom_out_preserves_address_and_evicted_tree_requires_fresh_observation
     for i in 0..4 {
         let project = LocalProjectId::new(&format!("/workspace/backend/alias-{i}")).expect("alias");
         let mut other = tree.clone();
-        other.request_binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+        other.observation = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
             Path::new(project.service_coordinate().expect("coordinate")),
             &other.root,
-        );
+        ).map(|binding| backend_library::browse::ProjectTreeObservationV1::Retained { binding });
         land(
             &mut store,
             &PageKey::Browse(BrowseKey::Tree(project)),
@@ -567,13 +619,11 @@ fn required_tree_refusal_is_visible_for_every_optional_dossier_phase() {
         let tree_key = PageKey::Browse(BrowseKey::Tree(requested.clone()));
         let dossier_key = PageKey::Package(package.clone());
         let mut store = DataStore::new(Arc::new(at(route)), None);
-        tree.request_binding = Some(
-            backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+        tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding: backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
                 Path::new(requested.service_coordinate().expect("coordinate")),
                 "/replacement/workspace",
             )
-            .expect("changed binding"),
-        );
+            .expect("changed binding") });
         land(
             &mut store,
             &tree_key,
@@ -841,7 +891,7 @@ fn owner_readme_is_independent_of_semantic_dossier_but_requires_exact_current_lo
     let mut other = tree.clone();
     let mut binding = readme.context.request_binding();
     binding.effective_workspace_root_digest = [3; 32];
-    other.request_binding = Some(binding);
+    other.observation = Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding });
     force_land(
         &mut store,
         &tree_key,

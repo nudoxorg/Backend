@@ -13,6 +13,15 @@ pub struct CargoBrowseContext {
 }
 
 impl CargoBrowseContext {
+    /// A freshly observed Tree can establish a source context only while its
+    /// owner reports retaining that observation. A display receipt is enough
+    /// to identify the Tree, but cannot mint this source address.
+    pub(crate) fn from_observation(
+        requested_project: LocalProjectId,
+        observation: backend_library::browse::ProjectTreeObservationV1,
+    ) -> Option<Self> {
+        Self::from_binding_address(requested_project, observation.retained_request_binding()?)
+    }
     /// Admits an address, including a saved address, without admitting reads.
     pub(crate) fn from_binding_address(
         requested_project: LocalProjectId,
@@ -94,6 +103,17 @@ pub(crate) fn fixture_context(project: LocalProjectId) -> CargoBrowseContext {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_only_tree_binding_cannot_mint_a_source_context() {
+        use backend_library::browse::ProjectTreeObservationV1;
+        let project = LocalProjectId::new("/fixture/workspace/member").expect("project");
+        let binding = ProjectTreeRequestBindingV1::for_paths(&project.path(), "/fixture/workspace").expect("binding");
+        assert!(CargoBrowseContext::from_observation(project.clone(),
+            ProjectTreeObservationV1::DisplayOnly { binding }).is_none());
+        assert!(CargoBrowseContext::from_observation(project,
+            ProjectTreeObservationV1::Retained { binding }).is_some());
+    }
 
     #[test]
     fn requested_member_and_effective_workspace_remain_distinct_address_identity() {

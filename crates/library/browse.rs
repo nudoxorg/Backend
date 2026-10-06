@@ -21,6 +21,6 @@ pub use tree::{
     AdvisoryObserver, AdvisorySourceState, DirectDependency, Duplicate, DuplicateCopy,
     LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership, MAX_TREE_PACKAGES,
     MemberEdge, PROJECT_TREE_REQUEST_BINDING_SCHEMA, PROJECT_TREE_SCHEMA, PackageOrigin,
-    PackageRole, ProjectTree, ProjectTreeRequestBindingV1, TreeAdvisory, TreeEdge, TreeHealth,
+    PackageRole, ProjectTree, ProjectTreeObservationV1, ProjectTreeRequestBindingV1, TreeAdvisory, TreeEdge, TreeHealth,
     TreeInput, TreeInputPackage, TreeMember, TreePackage, TreeSource, WhyHop, build_tree,
 };

@@ -73,13 +73,13 @@ fn path(hops: &[WhyHop]) -> String {
 fn owner_tree_binding_accepts_requested_subdirectory_and_rejects_other_projects() {
     let mut tree = tree(&rustsec());
     let requested = native_test_paths::absolute_path("/workspace/backend/crates/library");
-    tree.request_binding = Some(
-        ProjectTreeRequestBindingV1::for_paths(&requested, &tree.root)
+    tree.observation = Some(crate::browse::ProjectTreeObservationV1::Retained {
+        binding: ProjectTreeRequestBindingV1::for_paths(&requested, &tree.root)
             .expect("the requested directory and workspace root are absolute"),
-    );
+    });
 
     assert!(tree.has_admissible_shape());
-    let binding = tree.request_binding.expect("owner bound request");
+    let binding = tree.request_binding().expect("owner bound request");
     assert!(binding.matches_requested_root(&requested));
     assert_eq!(
         ProjectTreeRequestBindingV1::requested_root_digest_for(&requested),
@@ -115,6 +115,108 @@ fn project_tree_request_binding_separates_subdirectory_from_effective_workspace(
     assert!(
         !binding.matches_effective_workspace_root(&native_test_paths::absolute("/other-workspace")),
         "a response from a different workspace must fail the binding"
+    );
+}
+
+#[test]
+fn owner_tree_observations_separate_display_identity_from_retained_source() {
+    let mut tree = tree(&rustsec());
+    assert!(
+        !tree.has_admissible_shape(),
+        "pure unbound construction cannot cross the wire"
+    );
+    let requested = native_test_paths::absolute_path("/workspace/backend/crates/library");
+    let binding =
+        ProjectTreeRequestBindingV1::for_paths(&requested, &tree.root).expect("request binding");
+    let request = crate::CommandDto::new(
+        17,
+        crate::Command::Surface(crate::SurfaceCommand::ProjectTree {
+            root: crate::ProductText::new(requested.to_str().expect("native requested root"))
+                .expect("project address"),
+        }),
+    );
+    for observation in [
+        ProjectTreeObservationV1::DisplayOnly { binding },
+        ProjectTreeObservationV1::Retained { binding },
+    ] {
+        tree.observation = Some(observation);
+        assert!(tree.has_admissible_shape());
+        assert_eq!(tree.request_binding(), Some(binding));
+        assert_eq!(
+            tree.retained_request_binding(),
+            observation.retained_request_binding()
+        );
+        let bytes = serde_json::to_vec(&tree).expect("strict tree observation wire");
+        let decoded: ProjectTree =
+            serde_json::from_slice(&bytes).expect("decode exact observation state");
+        assert_eq!(decoded, tree);
+        let reply = crate::ReplyDto::new(
+            17,
+            crate::CommandReply::Surface(crate::SurfaceReply::ProjectTree(Box::new(tree.clone()))),
+        );
+        let wire = serde_json::to_vec(&reply).expect("reply wire");
+        let decoded = crate::decode_reply_body(&wire)
+            .expect("client codec admits bound display and retained trees");
+        assert_eq!(decoded.reply, reply.reply);
+        assert!(
+            crate::admit_reply(&request, &decoded).is_ok(),
+            "the client admits both exact observation states"
+        );
+        let mut old = serde_json::to_value(&reply).expect("versioned reply");
+        old["version"] = serde_json::json!(17);
+        assert!(
+            crate::decode_reply_body(&serde_json::to_vec(&old).expect("old DTO")).is_err(),
+            "the preceding DTO cannot imply retained source authority"
+        );
+    }
+    let mut wrong = binding;
+    wrong.effective_workspace_root_digest = [3; 32];
+    tree.observation = Some(ProjectTreeObservationV1::DisplayOnly { binding: wrong });
+    assert!(
+        !tree.has_admissible_shape(),
+        "display-only identity still requires the exact effective root"
+    );
+    tree.observation = Some(ProjectTreeObservationV1::Retained { binding });
+    tree.schema = PROJECT_TREE_SCHEMA - 1;
+    assert!(
+        !tree.has_admissible_shape(),
+        "old Tree schemas cannot gain source capability"
+    );
+    let old_reply = crate::ReplyDto::new(
+        17,
+        crate::CommandReply::Surface(crate::SurfaceReply::ProjectTree(Box::new(tree.clone()))),
+    );
+    let decoded =
+        crate::decode_reply_body(&serde_json::to_vec(&old_reply).expect("old schema wire"))
+            .expect("typed body before command admission");
+    assert!(
+        crate::admit_reply(&request, &decoded).is_err(),
+        "client command admission rejects the preceding Tree schema"
+    );
+    tree.schema = PROJECT_TREE_SCHEMA;
+    let mut old = serde_json::to_value(&tree).expect("tree wire");
+    old["request_binding"] = serde_json::to_value(binding).expect("legacy field");
+    assert!(
+        serde_json::from_value::<ProjectTree>(old).is_err(),
+        "dual legacy/new fields are rejected"
+    );
+    let mut missing = serde_json::to_value(&tree).expect("tree wire");
+    missing
+        .as_object_mut()
+        .expect("tree object")
+        .remove("observation");
+    let missing: ProjectTree = serde_json::from_value(missing).expect("unbound builder shape");
+    let missing_reply = crate::ReplyDto::new(
+        17,
+        crate::CommandReply::Surface(crate::SurfaceReply::ProjectTree(Box::new(missing))),
+    );
+    let decoded = crate::decode_reply_body(
+        &serde_json::to_vec(&missing_reply).expect("missing observation wire"),
+    )
+    .expect("typed body before command admission");
+    assert!(
+        crate::admit_reply(&request, &decoded).is_err(),
+        "missing observation never silently deserializes into retained authority"
     );
 }
 

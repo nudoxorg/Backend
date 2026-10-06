@@ -21,7 +21,7 @@ impl PageReader for BrowseFixture {
         let ReadRequest::Browse(BrowseKey::Tree(project)) = request else { return tests::Fixture.read(request, context); };
         self.trees.lock().expect("Tree observations").push(project.clone());
         use backend_library::browse::{LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership, TreeInput, TreeSource, build_tree};
-        let tree = build_tree(&TreeInput {
+        let mut tree = build_tree(&TreeInput {
             root: project.service_coordinate().expect("exact local Tree address").to_owned(),
             source: TreeSource::Lockfile {
                 reason: "saved Shelf project fixture".into(),
@@ -31,6 +31,10 @@ impl PageReader for BrowseFixture {
             packages: Vec::new(), edges: Vec::new(), locked_inactive: 0,
             locked_inactive_coverage: LockedInactiveCoverage::Unavailable,
         }, &|_: &str, _: &str| panic!("empty fixture needs no advisory read"));
+        let binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+            &project.path(), &tree.root,
+        ).expect("exact display fixture request");
+        tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::DisplayOnly { binding });
         let mut model = crate::runtime::browse_reads::tree_model(&tree);
         model.prepared = Arc::new(facet::browse::library::Model {
             name: "Saved shelf project tree".into(),

@@ -466,7 +466,7 @@ pub fn compose(engine: &mut dyn Engine, key: &BrowseKey) -> Result<PageValue, Re
                 .map_err(|error| failure(&error))?
             {
                 SurfaceReply::ProjectTree(tree) if tree.has_admissible_shape()
-                    && tree.request_binding.is_some_and(|binding| binding.matches_requested_root(std::path::Path::new(&requested_root))) => Ok(PageValue::Browse(BrowseValue::Tree(Arc::new(tree_model(&tree))))),
+                    && tree.request_binding().is_some_and(|binding| binding.matches_requested_root(std::path::Path::new(&requested_root))) => Ok(PageValue::Browse(BrowseValue::Tree(Arc::new(tree_model(&tree))))),
                 _ => Err(ReadFailure::Fault(crate::core::ErrorValue::new(
                     crate::core::FaultCode::Protocol,
                     "the project-tree reply changed shape",
@@ -567,7 +567,7 @@ pub fn tree_model(tree: &backend_library::browse::ProjectTree) -> TreeModel {
     let prepared = Arc::new(prepared_library_model(&reading, &links, &inventory_links));
     TreeModel {
         root: Arc::from(tree.root.as_str()),
-        request_binding: tree.request_binding,
+        observation: tree.observation,
         reading,
         links,
         inventory_links,
@@ -580,14 +580,18 @@ pub fn tree_model(tree: &backend_library::browse::ProjectTree) -> TreeModel {
 /// reference. Equal name/version text may identify multiple registry or Git
 /// sources; the authority digest keeps those releases separate.
 struct TreeSources<'a> {
+    retained: bool,
     by_reference:
         BTreeMap<backend_library::PackageReference, Vec<&'a backend_library::browse::TreePackage>>,
 }
 
 impl<'a> TreeSources<'a> {
     fn new(tree: &'a backend_library::browse::ProjectTree) -> Self {
+        let retained = tree.retained_request_binding().is_some();
         let mut by_reference = BTreeMap::new();
-        for package in &tree.packages {
+        // An exact display identity cannot mint source destinations. An
+        // owner may have computed these rows without retaining any bytes.
+        for package in tree.packages.iter().filter(|_| retained) {
             if let Some(reference) = package.source_qualified_reference() {
                 by_reference
                     .entry(reference)
@@ -595,7 +599,7 @@ impl<'a> TreeSources<'a> {
                     .push(package);
             }
         }
-        Self { by_reference }
+        Self { retained, by_reference }
     }
 
     fn exact(
@@ -604,6 +608,9 @@ impl<'a> TreeSources<'a> {
         version: &str,
         reference: Option<&backend_library::PackageReference>,
     ) -> Result<&'a backend_library::browse::TreePackage, &'static str> {
+        if !self.retained {
+            return Err("This Tree is display-only; the owner did not retain its source observation. Reopen the project tree before opening source.");
+        }
         let Some(reference) = reference else {
             return Err("This release has no current exact Cargo source receipt.");
         };
@@ -1009,6 +1016,11 @@ mod find_tests {
             authority.observe(&package, version, false, false, 0, false)
         };
         let mut tree = build_tree(&input, &observe);
+        let binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+            std::path::Path::new(&tree.root), &tree.root,
+        ).expect("exact fixture request and workspace");
+        tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding });
+        assert!(tree.has_admissible_shape());
         let observed = tree
             .package(PACKAGE_NAME, PACKAGE_VERSION)
             .expect("resolved Cargo package")
@@ -1045,6 +1057,13 @@ mod find_tests {
             TreeSources::new(&tree).destination(&observed.name, &observed.version, Some(&different)),
             TreeDestination::Unavailable(_)
         ));
+        tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::DisplayOnly { binding });
+        let display = tree_model(&tree);
+        assert_eq!(display.request_binding(), Some(binding));
+        assert!(display.source_packages.is_empty(), "exact package receipts cannot bypass display-only retention");
+        assert!(matches!(TreeSources::new(&tree).destination(&observed.name, &observed.version, Some(&receipt)),
+            TreeDestination::Unavailable(_)));
+        tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding });
         tree.packages = tree
             .packages
             .iter()

@@ -367,7 +367,7 @@ pub(crate) mod tests {
             &tree.root,
         )
         .expect("full owner fixture binding");
-        tree.request_binding = Some(binding);
+        tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding });
         assert!(tree.has_admissible_shape());
         let CargoPackageSourceAuthorityStateV1::Admitted(authority) = &tree
             .package(PACKAGE_NAME, PACKAGE_VERSION)
@@ -653,7 +653,7 @@ pub(crate) mod tests {
         let mut changed = tree.clone();
         let mut binding = key.context.request_binding();
         binding.requested_root_digest = [4; 32];
-        changed.request_binding = Some(binding);
+        changed.observation = Some(backend_library::browse::ProjectTreeObservationV1::Retained { binding });
         let mut cold = Cold {
             tree: changed,
             final_reply: result,

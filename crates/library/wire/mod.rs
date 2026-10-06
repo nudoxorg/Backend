@@ -65,9 +65,9 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version; version 17 adds strict typed package
-/// compiler-failure summaries to index terminal replies. Version 16's selected
-/// local Project membership frontier and version 15's registry-advisory alias
-/// coverage remain intact. Clients and services must use the same version so
-/// older readers cannot silently discard compiler refusal authority.
-pub const DTO_VERSION: u16 = 17;
+/// Current transport DTO version; version 18 separates exact Tree observation
+/// identity from retained source capability. Version 17's compiler-failure
+/// family and earlier membership/frontier evidence remain intact. Clients
+/// and services must agree on the version; old optional Tree bindings cannot
+/// be interpreted as retained source authority.
+pub const DTO_VERSION: u16 = 18;

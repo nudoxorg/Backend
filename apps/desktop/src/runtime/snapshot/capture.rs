@@ -80,7 +80,7 @@ impl DisplayCapture {
                         DisplayBody::Markdown { source: document.source.clone() })
                 }
                 BrowseValue::Tree(tree) => {
-                    let binding = tree.request_binding?;
+                    let binding = tree.request_binding()?;
                     let mut rows = Rows::new(&tree.reading.name)?;
                     rows.push("", &tree.reading.lede)?;
                     for note in [&tree.reading.locked_inactive_note, &tree.reading.source_note, &tree.reading.twice_line] {

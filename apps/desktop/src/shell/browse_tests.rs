@@ -38,7 +38,7 @@ fn retained_tree_names_require_the_exact_requested_and_effective_roots() {
     wrong_root.root = "/replacement/workspace".into();
     assert!(!super::retained_tree_matches_route(&route, &wrong_root));
     let mut no_binding = tree;
-    no_binding.request_binding = None;
+    no_binding.observation = None;
     assert!(!super::retained_tree_matches_route(&route, &no_binding));
 }
 
@@ -354,6 +354,98 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
     );
     assert_eq!(toml.verdict, "Moving yours to 1.1.6 drops a copy.");
     assert_eq!(again.alerts[0].why, "app → bincode 1.3.3");
+    let _ = std::fs::remove_dir_all(state);
+}
+
+#[gpui::test]
+fn real_lockfile_display_only_tree_paints_without_minting_source_or_readme_controls(
+    cx: &mut TestAppContext,
+) {
+    use backend_library::browse::ProjectTreeObservationV1;
+    let (_service, endpoint, state) = owner();
+    let project = state.join("display-only-workspace");
+    std::fs::create_dir_all(project.join("app/src")).expect("private physical workspace");
+    std::fs::write(
+        project.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"app\"]\nresolver = \"2\"\n",
+    )
+    .expect("workspace manifest");
+    // This authored dependency has no cached registry source. Cargo's offline
+    // exact-manifest read cannot resolve it, so the real owner must fall back
+    // to the workspace lockfile and truthfully expose display-only evidence.
+    std::fs::write(project.join("app/Cargo.toml"),
+        "[package]\nname = \"display-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\nnudox-display-only-uncached = \"=0.1.0\"\n").expect("physical member manifest");
+    std::fs::write(
+        project.join("app/src/lib.rs"),
+        "pub fn physical_member() {}\n",
+    )
+    .expect("physical member source");
+    std::fs::write(project.join("Cargo.lock"), format!(
+        "version = 4\n\n[[package]]\nname = \"display-app\"\nversion = \"0.1.0\"\ndependencies = [\n \"nudox-display-only-uncached\",\n]\n\n[[package]]\nname = \"nudox-display-only-uncached\"\nversion = \"0.1.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"{}\"\n", "a".repeat(64))).expect("authored physical lockfile");
+    let project = project.canonicalize().expect("exact canonical workspace");
+    let route = tree_route(&project);
+    let reader_endpoint = endpoint.clone();
+    let pool = ReadPool::start(1, move |_| SessionReader::connect(&reader_endpoint))
+        .expect("real owner reads");
+    let engine = crate::runtime::client::LocalEngineClient::new(
+        &endpoint,
+        LocalProjectId::from_path(&project).expect("exact project"),
+    );
+    let mut rig = crate::shell::tests::rig_with_engine(cx, None, 1440.0, 900.0, pool, engine);
+    rig.patience = Duration::from_secs(120);
+    rig.cx.update(|window, cx| {
+        window.set_a11y_forced(true);
+        facet::probe::enable(cx);
+    });
+    rig.go(crate::navigation::Intent::Navigate(route.clone()));
+    let model = rig.graph.store.read_with(rig.cx, |store, _| {
+        let plan = crate::runtime::store::RouteDependencies::new(&route, None);
+        plan.current_tree(store)
+            .expect("real display-only Tree is a current readable page")
+            .model()
+            .clone()
+    });
+    assert!(matches!(
+        model.observation,
+        Some(ProjectTreeObservationV1::DisplayOnly { .. })
+    ));
+    assert!(
+        model
+            .request_binding()
+            .expect("display identity")
+            .matches_requested_root(&project)
+    );
+    assert!(model.source_packages.is_empty());
+    assert!(model.inventory_links.iter().all(|row| matches!(
+        row.destination,
+        crate::model::browse::TreeDestination::Unavailable(_)
+    )));
+    let ledger = crate::shell::fit_tests::painted(&mut rig);
+    assert!(
+        ledger
+            .texts
+            .iter()
+            .any(|text| text.content == "nudox-display-only-uncached"),
+        "the real bounded lockfile dependency name actually paints"
+    );
+    assert!(
+        !ledger
+            .texts
+            .iter()
+            .any(|text| text.content.contains("READ-PROTOCOL"))
+    );
+    for label in [
+        "Open Cargo source",
+        "Open package README",
+        "Go to source line",
+    ] {
+        assert!(
+            crate::shell::tests::native_bounds(&mut rig, "Button", label, true).is_none(),
+            "display-only Tree cannot mint the native action {label}"
+        );
+    }
+    assert_eq!(rig.route(), route);
+    drop(rig);
     let _ = std::fs::remove_dir_all(state);
 }
 

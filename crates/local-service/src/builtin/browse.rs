@@ -228,6 +228,9 @@ pub(super) struct BrowseCache {
     bindings: HashMap<RequestBindingKey, BrowseContextKey>,
     requested_bindings: HashMap<[u8; 32], RequestBindingKey>,
     cached_bytes: usize,
+    /// Includes retained rows and the bounded indexes. Keeping the policy on
+    /// the cache lets small-capacity instances exercise the same admission.
+    byte_budget: usize,
     use_clock: u64,
     #[cfg(test)]
     counters: BrowseCacheCounters,
@@ -243,6 +246,7 @@ impl Default for BrowseCache {
             // bounded maximum index allocation once instead of reallocating
             // the indexes whenever a source witness changes.
             cached_bytes: BROWSE_CACHE_INDEX_RETAINED_BYTES,
+            byte_budget: MAX_BROWSE_CACHE_BYTES,
             use_clock: 0,
             #[cfg(test)]
             counters: BrowseCacheCounters::default(),
@@ -355,10 +359,11 @@ impl BrowseCache {
         // Keep dependency-tree display available when an input is intentionally
         // not retained (for example, a lockfile fallback or cache-size limit),
         // but issue no source route without an exact owner-held observation.
-        tree.request_binding = match self.admit_request_binding(&context, binding, request_root)? {
-            RequestBindingAdmission::Retained => Some(binding),
-            RequestBindingAdmission::NoRetainedObservation => None,
-        };
+        use backend_library::browse::ProjectTreeObservationV1;
+        tree.observation = Some(match self.admit_request_binding(&context, binding, request_root)? {
+            RequestBindingAdmission::Retained => ProjectTreeObservationV1::Retained { binding },
+            RequestBindingAdmission::NoRetainedObservation => ProjectTreeObservationV1::DisplayOnly { binding },
+        });
         Ok(tree)
     }
 
@@ -1173,7 +1178,8 @@ impl BrowseCache {
             let current = fresh
                 .as_ref()
                 .expect("candidate freshness read was performed");
-            let matches = current.is_metadata_authority()
+            let matches = self.cached_bytes <= self.byte_budget
+                && current.is_metadata_authority()
                 && self.entries.get(&context).is_some_and(|entry| {
                     current.workspace_root() == context.workspace.as_path()
                         && current.witness() == entry.witness
@@ -1247,11 +1253,11 @@ impl BrowseCache {
             &package_rows,
             read.tool_witness_reuse.as_ref(),
         );
-        if retained_bytes <= MAX_BROWSE_CACHE_BYTES {
+        if retained_bytes <= self.byte_budget {
             while !self.workspace_cache_limit_allows(&workspace)
                 || self.context_count_for_workspace(&workspace)
                     >= MAX_BROWSE_CACHED_CONTEXTS_PER_WORKSPACE
-                || self.cached_bytes.saturating_add(retained_bytes) > MAX_BROWSE_CACHE_BYTES
+                || self.cached_bytes.saturating_add(retained_bytes) > self.byte_budget
             {
                 let workspace_limit = !self.workspace_cache_limit_allows(&workspace);
                 let context_limit = self.context_count_for_workspace(&workspace)
@@ -1289,7 +1295,7 @@ impl BrowseCache {
             if self.workspace_cache_limit_allows(&workspace)
                 && self.context_count_for_workspace(&workspace)
                     < MAX_BROWSE_CACHED_CONTEXTS_PER_WORKSPACE
-                && self.cached_bytes.saturating_add(retained_bytes) <= MAX_BROWSE_CACHE_BYTES
+                && self.cached_bytes.saturating_add(retained_bytes) <= self.byte_budget
             {
                 let last_used = self.next_use();
                 self.cached_bytes = self.cached_bytes.saturating_add(retained_bytes);
@@ -4772,7 +4778,7 @@ mod tests {
         let old_reply = cache
             .project_tree(&package, None)
             .expect("fresh old member cache");
-        let old_binding = old_reply.request_binding.expect("bound request");
+        let old_binding = old_reply.retained_request_binding().expect("bound request");
         let old_context = cache
             .bindings
             .get(&request_binding_key(old_binding))
@@ -5350,7 +5356,7 @@ mod tests {
             .and_then(Option::as_ref)
             .cloned()
             .expect("exact source-qualified path package row");
-        let binding = tree.request_binding.expect("exact project tree request");
+        let binding = tree.retained_request_binding().expect("exact project tree request");
         let readme = owner.package_readme(CargoPackageReadmeRequestV1::from_tree(package, binding));
         assert!(
             readme.has_admissible_shape(),
@@ -5450,7 +5456,7 @@ mod tests {
         assert!(changed_link);
         assert_eq!(alias.canonicalize().expect("updated request symlink"), b);
         assert_eq!(tree_a.root, a.to_string_lossy().into_owned());
-        let binding_a = tree_a.request_binding.expect("retained A request binding");
+        let binding_a = tree_a.retained_request_binding().expect("retained A request binding");
         assert_eq!(
             binding_a,
             backend_library::browse::ProjectTreeRequestBindingV1::for_paths(&a, &tree_a.root)
@@ -5498,7 +5504,7 @@ mod tests {
             .project_tree(&alias, None)
             .expect("later request follows the changed symlink to B");
         assert_eq!(tree_b.root, b.to_string_lossy().into_owned());
-        let binding_b = tree_b.request_binding.expect("retained B request binding");
+        let binding_b = tree_b.retained_request_binding().expect("retained B request binding");
         assert_ne!(
             binding_a.requested_root_digest,
             binding_b.requested_root_digest
@@ -5515,7 +5521,7 @@ mod tests {
     }
 
     #[test]
-    fn project_tree_omits_source_binding_when_observation_is_not_retained() {
+    fn project_tree_lockfile_observation_remains_wire_readable_without_source_capability() {
         let scratch = scratch("backend-browse-unretained-observation");
         let root = scratch.0.join("project");
         std::fs::create_dir_all(&root).expect("project directory");
@@ -5554,10 +5560,118 @@ mod tests {
             })
             .expect("lockfile-only tree remains displayable");
 
-        assert!(tree.request_binding.is_none());
+        assert!(tree.retained_request_binding().is_none());
+        let binding = tree
+            .request_binding()
+            .expect("display-only exact request identity");
+        assert!(matches!(
+            tree.observation,
+            Some(backend_library::browse::ProjectTreeObservationV1::DisplayOnly { .. })
+        ));
+        assert!(binding.matches_requested_root(&root));
+        assert!(binding.matches_effective_workspace_root(&tree.root));
+        let reply = backend_library::SurfaceReply::ProjectTree(Box::new(tree));
+        assert!(
+            reply.admit(backend_library::CommandId::ProjectTree).is_ok(),
+            "the owner-attached display-only fallback must cross the product boundary"
+        );
+        let dto = backend_library::ReplyDto::new(31, backend_library::CommandReply::Surface(reply));
+        let decoded =
+            backend_library::decode_reply_body(&serde_json::to_vec(&dto).expect("fallback wire"))
+                .expect("the strict client admits the display-only Tree");
+        assert_eq!(decoded.reply, dto.reply);
         assert!(owner.entries.is_empty());
         assert!(owner.bindings.is_empty());
         assert!(owner.requested_bindings.is_empty());
+    }
+
+    #[test]
+    fn project_tree_cache_budget_keeps_display_and_revokes_evicted_source_and_readme() {
+        let scratch = scratch("backend-browse-display-budget");
+        let project = scratch.0.join("project");
+        let helper = scratch.0.join("helper");
+        for root in [&project, &helper] {
+            std::fs::create_dir_all(root.join("src")).expect("physical source root");
+            std::fs::write(root.join("src/lib.rs"), "pub fn physical_source() {}\n")
+                .expect("physical source");
+        }
+        std::fs::write(project.join("Cargo.toml"),
+            "[package]\nname = \"budget-project\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[workspace]\n[dependencies]\nbudget-helper = { path = \"../helper\" }\n").expect("project manifest");
+        std::fs::write(helper.join("Cargo.toml"),
+            "[package]\nname = \"budget-helper\"\nversion = \"0.1.0\"\nedition = \"2021\"\nreadme = \"README.md\"\n").expect("helper manifest");
+        std::fs::write(helper.join("README.md"), "# Physical helper README\n")
+            .expect("physical README");
+        std::fs::write(project.join("Cargo.lock"),
+            "version = 4\n\n[[package]]\nname = \"budget-project\"\nversion = \"0.1.0\"\ndependencies = [\n \"budget-helper\",\n]\n\n[[package]]\nname = \"budget-helper\"\nversion = \"0.1.0\"\n").expect("locked local dependency graph");
+        let project = project.canonicalize().expect("canonical exact project");
+        let mut owner = BrowseCache::default();
+        let retained = owner
+            .project_tree(&project, None)
+            .expect("real Cargo observation");
+        let binding = retained
+            .retained_request_binding()
+            .expect("retained exact source context");
+        let package = retained
+            .direct
+            .iter()
+            .find(|row| row.name == "budget-helper")
+            .and_then(|row| row.package_references.first())
+            .and_then(Option::as_ref)
+            .cloned()
+            .expect("Cargo's exact helper authority");
+        let request = backend_library::CargoPackageSourceRequestV1::from_tree(package.clone(), binding);
+        let path = CargoPackageSourcePathV1::new("src/lib.rs").expect("source path");
+        assert!(matches!(
+            owner.source_file(request.clone(), path.clone()),
+            CargoPackageSourceFileResultV1::Read { .. }
+        ));
+        assert!(matches!(
+            owner.package_readme(CargoPackageReadmeRequestV1::from_tree(
+                package.clone(),
+                binding
+            )),
+            CargoPackageReadmeResultV1::Read { .. }
+        ));
+        // The real production byte admission now has no room for its fresh
+        // observation. No synthetic cache entry or display packet is planted.
+        owner.byte_budget = BROWSE_CACHE_INDEX_RETAINED_BYTES;
+        let display = owner
+            .project_tree(&project, None)
+            .expect("bounded display survives source eviction");
+        assert!(matches!(
+            display.observation,
+            Some(backend_library::browse::ProjectTreeObservationV1::DisplayOnly { .. })
+        ));
+        assert_eq!(display.request_binding(), Some(binding));
+        assert!(display.has_admissible_shape());
+        assert!(owner.entries.is_empty() && owner.bindings.is_empty());
+        assert!(owner.cached_bytes <= owner.byte_budget);
+        assert!(
+            !matches!(
+                owner.source_file(request, path),
+                CargoPackageSourceFileResultV1::Read { .. }
+            ),
+            "old exact source requests cannot survive eviction into display-only state"
+        );
+        assert!(
+            !matches!(
+                owner.package_readme(CargoPackageReadmeRequestV1::from_tree(package, binding)),
+                CargoPackageReadmeResultV1::Read { .. }
+            ),
+            "old exact README requests cannot survive eviction into display-only state"
+        );
+        let dto = backend_library::ReplyDto::new(
+            32,
+            backend_library::CommandReply::Surface(backend_library::SurfaceReply::ProjectTree(
+                Box::new(display),
+            )),
+        );
+        assert!(
+            backend_library::decode_reply_body(
+                &serde_json::to_vec(&dto).expect("budget fallback wire")
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -5715,7 +5829,7 @@ mod tests {
         let tree_a = owner
             .project_tree(&a, None)
             .expect("real Cargo observation for workspace A");
-        let binding_a = tree_a.request_binding.expect("A request binding");
+        let binding_a = tree_a.retained_request_binding().expect("A request binding");
         let request_a = request_for(&owner, &a, "cache-shared", binding_a);
         let root_context_a = owner
             .bindings
@@ -5735,7 +5849,7 @@ mod tests {
             .project_tree(&member_root_a, None)
             .expect("member request gets its own real Cargo observation");
         let mut binding_a_member = tree_a_member
-            .request_binding
+            .retained_request_binding()
             .expect("A member request binding");
         let mut request_a_member = request_for(&owner, &a, "cache-shared", binding_a_member);
         let member_context_a = owner
@@ -5787,7 +5901,7 @@ mod tests {
             .project_tree(&member_root_a, None)
             .expect("re-admit the changed member context");
         binding_a_member = refreshed_member
-            .request_binding
+            .retained_request_binding()
             .expect("refreshed member binding");
         let previous_member_route = request_a_member.package.clone();
         request_a_member = request_for(&owner, &a, "cache-shared", binding_a_member);
@@ -5824,13 +5938,13 @@ mod tests {
         let refreshed_root = owner
             .project_tree(&a, None)
             .expect("re-admit the changed workspace context");
-        let binding_a = refreshed_root.request_binding.expect("refreshed A binding");
+        let binding_a = refreshed_root.retained_request_binding().expect("refreshed A binding");
         let request_a = request_for(&owner, &a, "cache-shared", binding_a);
         let refreshed_member = owner
             .project_tree(&member_root_a, None)
             .expect("re-admit the changed member context");
         binding_a_member = refreshed_member
-            .request_binding
+            .retained_request_binding()
             .expect("refreshed member binding");
         request_a_member = request_for(&owner, &a, "cache-shared", binding_a_member);
         assert_ne!(old_root_route, request_a.package);
@@ -5873,7 +5987,7 @@ mod tests {
         let tree_b = owner
             .project_tree(&b, None)
             .expect("real Cargo observation for workspace B");
-        let binding_b = tree_b.request_binding.expect("B request binding");
+        let binding_b = tree_b.retained_request_binding().expect("B request binding");
         let request_b = request_for(&owner, &b, "cache-shared", binding_b);
         assert_ne!(
             request_a.package, request_b.package,
@@ -6017,7 +6131,7 @@ mod tests {
             let tree = owner
                 .project_tree(&requested, None)
                 .expect("real Cargo member request in workspace A");
-            let binding = tree.request_binding.expect("additional request binding");
+            let binding = tree.retained_request_binding().expect("additional request binding");
             assert_eq!(
                 binding.effective_workspace_root_digest,
                 binding_a.effective_workspace_root_digest
@@ -6466,7 +6580,7 @@ mod tests {
                 .any(|member| member.name == "cache-app" && member.has_bin)
         );
         let target_binding = with_target
-            .request_binding
+            .retained_request_binding()
             .expect("custom target request binding");
         let target_context = cache
             .bindings

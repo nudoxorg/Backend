@@ -464,9 +464,10 @@ fn tree_body(route: &BrowseRoute, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -
 
 fn retained_tree_matches_route(route: &BrowseRoute, tree: &TreeModel) -> bool {
     let BrowseRoute::Tree(project) = route else { return false };
-    let Some(binding) = tree.request_binding else { return false };
-    binding.matches_effective_workspace_root(&tree.root)
-        && CargoBrowseContext::from_binding_address(project.clone(), binding).is_some()
+    let Some(binding) = tree.request_binding() else { return false };
+    binding.has_admissible_shape()
+        && binding.matches_effective_workspace_root(&tree.root)
+        && binding.matches_requested_root(&project.path())
 }
 
 fn observed_package_route(plan: &RouteDependencies, store: &DataStore, package: &PackageRef) -> Option<Route> {
