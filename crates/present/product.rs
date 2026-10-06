@@ -2616,7 +2616,7 @@ mod tests {
             )
             .with_source_capture(Some(receipt.clone())),
         );
-        let view = index_operation_view(&observation);
+        let view = product_view(&SurfaceReply::IndexOperationStatus(observation.clone()));
         assert_eq!(view.index_operation(), Some(&observation));
         let tags = view.records()[0].tags();
         assert!(
