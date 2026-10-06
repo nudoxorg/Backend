@@ -589,6 +589,7 @@ fn single_component(value: &OsStr) -> bool {
 }
 
 const MAX_BUNDLE_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_BUNDLE_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_BUNDLED_NODE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Discovers a Node runtime only for an executable directly installed in a recognized Nudox
@@ -701,7 +702,7 @@ fn bundled_typescript_node(
     validate_bundle_inventory_file(
         executable_record,
         &bundle_root.join(&executable_relative),
-        MAX_BUNDLED_NODE_BYTES,
+        MAX_BUNDLE_EXECUTABLE_BYTES,
         &manifest_path,
     )?;
     let runtime = bundle_root.join(runtime_relative);
@@ -749,7 +750,7 @@ fn validate_bundle_inventory_file(
     if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > maximum_bytes {
         return Err(mismatch());
     }
-    let (length, digest) = sha256_file(path)?;
+    let (length, digest) = sha256_file(path, maximum_bytes)?;
     if record.get("size_bytes").and_then(serde_json::Value::as_u64) != Some(length)
         || record.get("sha256").and_then(serde_json::Value::as_str) != Some(digest.as_str())
     {
@@ -778,26 +779,99 @@ fn read_bounded(path: &Path, maximum_bytes: u64) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn sha256_file(path: &Path) -> Result<(u64, String), LocalCompilerHostError> {
+fn sha256_file(path: &Path, maximum_bytes: u64) -> Result<(u64, String), LocalCompilerHostError> {
+    let path_metadata =
+        fs::symlink_metadata(path).map_err(|source| LocalCompilerHostError::BundleManifest {
+            path: path.to_path_buf().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        })?;
+    if !path_metadata.is_file()
+        || path_metadata.file_type().is_symlink()
+        || path_metadata.len() > maximum_bytes
+    {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: path.to_path_buf().into_boxed_path(),
+            message: format!("file exceeds its {maximum_bytes}-byte hash bound").into_boxed_str(),
+        });
+    }
     let mut file =
         fs::File::open(path).map_err(|source| LocalCompilerHostError::BundleManifest {
             path: path.to_path_buf().into_boxed_path(),
             message: source.to_string().into_boxed_str(),
         })?;
+    let opened_metadata =
+        file.metadata()
+            .map_err(|source| LocalCompilerHostError::BundleManifest {
+                path: path.to_path_buf().into_boxed_path(),
+                message: source.to_string().into_boxed_str(),
+            })?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() > maximum_bytes
+        || !same_file_identity(&path_metadata, &opened_metadata)
+    {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: path.to_path_buf().into_boxed_path(),
+            message: "file identity changed before hashing".into(),
+        });
+    }
+    let (length, digest) = sha256_reader(&mut file, maximum_bytes, path)?;
+    let after_handle =
+        file.metadata()
+            .map_err(|source| LocalCompilerHostError::BundleManifest {
+                path: path.to_path_buf().into_boxed_path(),
+                message: source.to_string().into_boxed_str(),
+            })?;
+    let after_path =
+        fs::symlink_metadata(path).map_err(|source| LocalCompilerHostError::BundleManifest {
+            path: path.to_path_buf().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        })?;
+    if after_path.file_type().is_symlink()
+        || !same_file_identity(&opened_metadata, &after_handle)
+        || !same_file_identity(&opened_metadata, &after_path)
+        || after_handle.len() != length
+        || after_path.len() != length
+    {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: path.to_path_buf().into_boxed_path(),
+            message: "file changed while hashing".into(),
+        });
+    }
+    Ok((length, digest))
+}
+
+fn sha256_reader(
+    reader: &mut impl Read,
+    maximum_bytes: u64,
+    path: &Path,
+) -> Result<(u64, String), LocalCompilerHostError> {
     let mut digest = Sha256::new();
     let mut total = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
     loop {
-        let read =
-            file.read(&mut buffer)
-                .map_err(|source| LocalCompilerHostError::BundleManifest {
-                    path: path.to_path_buf().into_boxed_path(),
-                    message: source.to_string().into_boxed_str(),
-                })?;
+        let remaining = maximum_bytes.saturating_add(1).saturating_sub(total);
+        if remaining == 0 {
+            break;
+        }
+        let read_limit =
+            usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
+        let read = reader.read(&mut buffer[..read_limit]).map_err(|source| {
+            LocalCompilerHostError::BundleManifest {
+                path: path.to_path_buf().into_boxed_path(),
+                message: source.to_string().into_boxed_str(),
+            }
+        })?;
         if read == 0 {
             break;
         }
         total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+        if total > maximum_bytes {
+            return Err(LocalCompilerHostError::BundleManifest {
+                path: path.to_path_buf().into_boxed_path(),
+                message: format!("file grew beyond its {maximum_bytes}-byte hash bound")
+                    .into_boxed_str(),
+            });
+        }
         digest.update(&buffer[..read]);
     }
     let digest = digest
@@ -806,6 +880,21 @@ fn sha256_file(path: &Path) -> Result<(u64, String), LocalCompilerHostError> {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     Ok((total, digest))
+}
+
+#[cfg(unix)]
+fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(windows)]
+fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    left.volume_serial_number() == right.volume_serial_number()
+        && left.file_index() == right.file_index()
 }
 
 #[cfg(all(test, unix))]
@@ -969,7 +1058,8 @@ mod tests {
         fs::write(&runtime, b"fixture node").expect("write Node runtime");
         let manifest = bundle.join("Contents/Resources/build-manifest.json");
         let inventory_entry = |path: &Path| {
-            let (size_bytes, sha256) = sha256_file(path).expect("hash inventory fixture");
+            let (size_bytes, sha256) =
+                sha256_file(path, MAX_BUNDLE_EXECUTABLE_BYTES).expect("hash inventory fixture");
             serde_json::json!({
                 "kind": "file",
                 "size_bytes": size_bytes,
@@ -1008,5 +1098,44 @@ mod tests {
             Err(LocalCompilerHostError::BundleManifest { .. })
         ));
         fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn bundle_hashing_refuses_oversized_and_growing_payloads_with_bounded_reads() {
+        use std::io::Read as IoRead;
+
+        let root = private_test_directory("typescript-bundle-size-cap");
+        let oversized = root.join("oversized-node");
+        fs::write(&oversized, b"0123456789").expect("write oversized fixture");
+        assert!(matches!(
+            sha256_file(&oversized, 8),
+            Err(LocalCompilerHostError::BundleManifest { .. })
+        ));
+
+        struct GrowingReader {
+            remaining: usize,
+            consumed: usize,
+        }
+
+        impl IoRead for GrowingReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let length = buffer.len().min(self.remaining);
+                buffer[..length].fill(b'x');
+                self.remaining -= length;
+                self.consumed += length;
+                Ok(length)
+            }
+        }
+
+        let mut growing = GrowingReader {
+            remaining: 1024,
+            consumed: 0,
+        };
+        assert!(matches!(
+            sha256_reader(&mut growing, 8, Path::new("changing-bundle-payload")),
+            Err(LocalCompilerHostError::BundleManifest { .. })
+        ));
+        assert_eq!(growing.consumed, 9);
+        fs::remove_dir_all(root).expect("remove size-cap fixture");
     }
 }

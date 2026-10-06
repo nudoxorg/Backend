@@ -298,7 +298,9 @@ impl TypeScriptResolverCapability<'_> {
             return Ok(false);
         };
         if !self.witness.path_is_admitted(&canonical) {
-            return Err(TypeScriptProjectHostError::SourceOutsideCapability { path: canonical });
+            return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+                path: canonical.into_boxed_path(),
+            });
         }
         self.record_realpath(lexical.clone(), Some(canonical.clone()), identity)?;
         let metadata =
@@ -500,7 +502,9 @@ impl TypeScriptResolverCapability<'_> {
                     digest.update(&[1]);
                     update_logical_path(&mut digest, self.witness, parent)?;
                 }
-                None => digest.update(&[0]),
+                None => {
+                    digest.update(&[0]);
+                }
             }
         }
         for snapshot in self.observations.directories.values() {
@@ -520,7 +524,9 @@ impl TypeScriptResolverCapability<'_> {
                         digest.update(&[1]);
                         update_logical_path(&mut digest, self.witness, path)?;
                     }
-                    None => digest.update(&[0]),
+                    None => {
+                        digest.update(&[0]);
+                    }
                 }
             }
         }
@@ -532,7 +538,9 @@ impl TypeScriptResolverCapability<'_> {
                     digest.update(&[1]);
                     update_logical_path(&mut digest, self.witness, path)?;
                 }
-                None => digest.update(&[0]),
+                None => {
+                    digest.update(&[0]);
+                }
             }
         }
         Ok(*digest.finalize().as_bytes())
@@ -1272,7 +1280,9 @@ fn extension_matches(path: &Path, extensions: &[&str]) -> bool {
         })
 }
 
-fn resolver_observation_ref_path(observation: &TypeScriptResolverObservationRef<'_>) -> &Path {
+fn resolver_observation_ref_path<'a>(
+    observation: &TypeScriptResolverObservationRef<'a>,
+) -> &'a Path {
     match observation {
         TypeScriptResolverObservationRef::Source(input) => &input.path,
         TypeScriptResolverObservationRef::MissingPath { path, .. }
@@ -2369,7 +2379,7 @@ impl TypeScriptProjectHost {
         }
         let identity = NodeRuntimeIdentity {
             path: node.to_path_buf().into_boxed_path(),
-            version: version.into_boxed_slice(),
+            version,
             snapshot: after,
         };
         *cached = Some(identity.clone());
@@ -4085,7 +4095,7 @@ printf 'Version 5.9.3\n'
         let second = host
             .admit_node_runtime(&node)
             .expect("reuse admitted Node identity");
-        assert_eq!(first.version, b"v22.0.0\n");
+        assert_eq!(first.version.as_ref(), b"v22.0.0\n");
         assert_eq!(first.version, second.version);
         assert_eq!(
             fs::read(node.with_extension("count")).expect("probe count"),
