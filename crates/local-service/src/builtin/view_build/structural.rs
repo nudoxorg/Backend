@@ -468,7 +468,7 @@ impl<'a> FileContainment<'a> {
         label: &'a str,
         path: &'a str,
         project: [u8; 32],
-        declarations: &'a [backend_compile::SourceDeclaration],
+        declarations: &[backend_compile::SourceDeclaration],
     ) -> Self {
         let mut local_types = BTreeMap::new();
         for declaration in declarations {
@@ -491,7 +491,7 @@ impl<'a> FileContainment<'a> {
 
     fn for_file(
         sources: &IndexedSources,
-        record: &super::super::ProductSourceRecord,
+        record: &'a super::super::ProductSourceRecord,
         label: &'a str,
     ) -> Result<Self, BuiltinModelError> {
         let file = record.file_fields().ok_or_else(|| {
