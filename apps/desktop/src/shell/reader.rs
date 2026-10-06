@@ -384,6 +384,10 @@ fn uncovered(reader: Bounds<Pixels>, plate: Bounds<Pixels>, has_row: bool) -> [B
 
 #[derive(Clone)]
 struct NativeReturn {
+    /// One foreground return request; an old painted callback cannot complete
+    /// a later request even when route, target text, and authority agree.
+    ticket: Rc<()>,
+    input: NativeReturnLease,
     place: u64,
     route: Route,
     root: crate::core::VersionedRoot,
@@ -1111,16 +1115,64 @@ impl Reader {
         self.targets.focused().is_some_and(|id| self.targets.focus_native(&id, window, cx))
     }
 
-    pub(crate) fn request_native_return(&mut self, route: Route, id: SharedString, cx: &mut Context<Self>) {
+    pub(crate) fn request_native_return(&mut self, route: Route, id: SharedString, input: NativeReturnLease, cx: &mut Context<Self>) {
         if self.route == route && self.overlay.is_none() {
             if let Some(place) = self.places.last() {
                 let root = self.links.snapshot(cx).key();
                 let store = self.links.store.read(cx);
                 let Some(attachment) = store.current_owner_attachment() else { return };
                 let read_stamp = RouteDependencies::new(&route, None).native_stamp(store, false);
-                self.native_return = Some(NativeReturn { place: place.key, route, root, id, attachment, read_stamp });
+                self.native_return = Some(NativeReturn { ticket: Rc::new(()), input, place: place.key, route, root, id, attachment, read_stamp });
                 cx.notify();
             }
+        }
+    }
+
+    /// Complete only after this Reader's actual child has painted. Some
+    /// components register their native targets in RenderOnce, after Reader
+    /// finishes gathering its body; render-time list membership is premature.
+    fn finish_painted_native_return(&mut self, ticket: &Rc<()>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.native_return.clone().filter(|pending| Rc::ptr_eq(&pending.ticket, ticket)) else { return; };
+        let snapshot = self.links.snapshot(cx);
+        let resources_current = {
+            let store = self.links.store.read(cx);
+            store.admits_owner_attachment(&pending.attachment)
+                && pending.read_stamp.as_ref().is_none_or(|stamp|
+                    RouteDependencies::new(&pending.route, None).admits_native_stamp(store, pending.root, stamp))
+        };
+        let input_owned = self.links.shell.upgrade().is_some_and(|shell| {
+            let shell = shell.read(cx);
+            pending.input.current(window.window_handle().window_id(), shell.focus_return_generation(), window.focus_epoch())
+                && shell.allows_reader_native_return(window)
+        });
+        let current = self.places.last();
+        if current.is_none_or(|place| place.key != pending.place || place.route != pending.route || place.overlay.is_some())
+            || snapshot.route() != &pending.route || snapshot.page_overlay().is_some()
+            || !pending.root.same_authority(snapshot.key()) || !resources_current || !input_owned
+            || super::titlebar::menu_open(window, cx)
+            || self.targets.native_focused(window).is_some_and(|focused| focused != pending.id)
+        {
+            self.native_return = None;
+            return;
+        }
+        if self.painted != Some(pending.place) || !self.native_input_allowed() { return; }
+        let Some(mount) = self.targets.mount_claim(&pending.id) else {
+            self.native_return = None;
+            return;
+        };
+        // A scalar saved selection resolves against the newly painted target;
+        // its real native owner must still be mounted in this exact Window.
+        if !self.targets.admits_mount(&mount, window) {
+            self.native_return = None;
+            return;
+        }
+        if self.targets.focus_native(&pending.id, window, cx) {
+            self.targets.focus(pending.id);
+            self.native_return = None;
+            self.reveal.set(true);
+            cx.notify();
+        } else {
+            self.native_return = None;
         }
     }
 
@@ -2958,6 +3010,7 @@ impl Render for Reader {
                 land: Vec::new(),
                 reading: None,
                 scroll_mount: None,
+                native_return: None,
                 child: div().size_full().child(map.clone()).into_any_element(),
             };
             let framed = if retaining_departure {
@@ -3047,27 +3100,6 @@ impl Render for Reader {
             else { self.reveal.set(true); cx.notify(); }
         }
         self.targets.finish_native();
-        if let Some(pending) = self.native_return.clone() {
-            let store = self.links.store.read(cx);
-            let dependencies = RouteDependencies::new(&pending.route, None);
-            let resources_current = store.admits_owner_attachment(&pending.attachment)
-                && pending.read_stamp.as_ref().is_none_or(|stamp| dependencies.admits_native_stamp(store, pending.root, stamp));
-            let input_owned = self.links.shell.upgrade().is_some_and(|shell| shell.read(cx).allows_reader_native_return(window));
-            if pending.place != current.key || pending.route != current.route || !pending.root.same_authority(snapshot.key()) || current.overlay.is_some()
-                || !resources_current || !input_owned || super::titlebar::menu_open(window, cx)
-                || self.targets.native_focused(window).is_some_and(|focused| focused != pending.id)
-            {
-                self.native_return = None;
-            } else if self.painted == Some(current.key)
-                && staged.is_none() && self.transit.is_none() && self.arrival.is_none()
-                && self.targets.focus_native(&pending.id, window, cx)
-            {
-                self.targets.focus(pending.id);
-                self.native_return = None;
-                self.reveal.set(true);
-                cx.notify();
-            }
-        }
         if let Some(pending) = self.pending_settings_focus.take()
             && pending.focus.place == current.key
         {
@@ -3172,6 +3204,7 @@ impl Render for Reader {
             reading: (!waiting && self.pending_scroll_restore.is_none() && self.native_input_for(snapshot.route(), snapshot.page_overlay()) && snapshot.page_overlay().is_none())
                 .then(|| (snapshot.session().reading.current.id, snapshot.session().reading.current.presentation.controls().offset, self.links.clone())),
             scroll_mount: Some((Rc::clone(&self.scroll_mounted), current.key)),
+            native_return: self.native_return.as_ref().map(|pending| (cx.weak_entity(), Rc::clone(&pending.ticket))),
             child: scroller.into_any_element(),
         });
         let scroller = facet::motion::flow::local_paint("reader-flow-paint", scroller);
@@ -3470,6 +3503,7 @@ struct Reveal {
     land: Vec<facet::motion::Flow>,
     reading: Option<(crate::navigation::presentation::VisitId, crate::navigation::presentation::ReadingOffset, Links)>,
     scroll_mount: Option<(Rc<Cell<Option<u64>>>, u64)>,
+    native_return: Option<(gpui::WeakEntity<Reader>, Rc<()>)>,
     child: gpui::AnyElement,
 }
 
@@ -3616,6 +3650,13 @@ impl gpui::Element for Reveal {
         cx: &mut gpui::App,
     ) {
         self.child.paint(window, cx);
+        if let Some((reader, ticket)) = &self.native_return {
+            let reader = reader.clone();
+            let ticket = Rc::clone(ticket);
+            window.defer(cx, move |window, cx| {
+                let _ = reader.update(cx, |reader, cx| reader.finish_painted_native_return(&ticket, window, cx));
+            });
+        }
     }
 }
 

@@ -790,12 +790,20 @@ impl Shell {
                 // arrival, including this one still landing from the same
                 // event, so the restore is deferred past it rather than
                 // raced against it.
-                let reader_targets = self.reader.read(cx).targets.clone();
-                if let Some(id) = reader_targets.left_by(&route) {
+                // The restored typed visit is the history authority. Reader
+                // observation can run before or after this subscriber, so its
+                // previous target registry cannot decide a returned selection.
+                if let Some(crate::navigation::presentation::ReadingFocus::Reader(key)) =
+                    snapshot.session().reading.current.presentation.controls().focus.as_ref()
+                    && let Some(input) = super::keyboard::NativeReturnLease::new(
+                        window.window_handle().window_id(), self.transient_generation, window.focus_epoch(),
+                    )
+                {
+                    let id: SharedString = key.as_str().to_owned().into();
                     let reader = self.reader.clone();
                     cx.defer(move |cx| {
                         reader.update(cx, |reader, cx| {
-                            reader.request_native_return(route, id, cx);
+                            reader.request_native_return(route, id, input, cx);
                         });
                     });
                 }
