@@ -225,10 +225,11 @@ impl Library {
         let limit = usize::from(query.limit.get());
         let fetch = |offset| {
             self.arrangement.names_page(
-                query.text(),
+                query.selection(),
                 offset,
                 limit,
                 |id| self.view.row(id),
+                |row, address| self.row_matches_address(row, address),
                 &self.work,
             )
         };
@@ -262,6 +263,40 @@ impl Library {
             },
             Some(start.saturating_add(limit)),
         )
+    }
+
+    /// Matches only producer-admitted address evidence. A readable source
+    /// address selects the same compiler-owned row as its semantic address;
+    /// the package prefix and captured site are read from this exact view.
+    fn row_matches_address(&self, row: &Row, address: &str) -> bool {
+        if row.label == address {
+            return true;
+        }
+        let Some((site, name)) = address.rsplit_once("::") else {
+            return false;
+        };
+        if row.label.rsplit("::").next() != Some(name) {
+            return false;
+        }
+        let Some(location) = row.source.captured() else {
+            return false;
+        };
+        let Some(package) = row.package else {
+            return false;
+        };
+        let Some(package_row) = self.view.row_ref(RowId::Package(package)) else {
+            return false;
+        };
+        let Some(location_text) = site
+            .strip_prefix(&package_row.label)
+            .and_then(|suffix| suffix.strip_prefix("::"))
+        else {
+            return false;
+        };
+        let Some((path, line)) = location_text.rsplit_once(':') else {
+            return false;
+        };
+        path == location.path() && line == location.start_line().to_string()
     }
 
     /// Looks up one package outline under an exact source basis.

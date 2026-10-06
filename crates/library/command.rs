@@ -637,7 +637,25 @@ impl DocumentQuery {
     }
 }
 
-/// Name lookup pinned to a source root.
+/// Closed selection used by a name lookup under one admitted source root.
+///
+/// An address remains caller text until it matches an existing row. Parsing
+/// its final name only chooses a posting; it does not mint a symbol identity.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum NameSelection<'a> {
+    Name(&'a str),
+    Address { address: &'a str, name: &'a str },
+}
+
+impl<'a> NameSelection<'a> {
+    pub(crate) const fn posting_text(self) -> &'a str {
+        match self {
+            Self::Name(name) | Self::Address { name, .. } => name,
+        }
+    }
+}
+
+/// Name or exact declaration-address lookup pinned to a source root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NameQuery {
     /// Canonical name text or prefix.
@@ -670,6 +688,18 @@ impl NameQuery {
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    pub(crate) fn selection(&self) -> NameSelection<'_> {
+        match self.text.rsplit_once("::") {
+            Some((prefix, name)) if !prefix.is_empty() && !name.is_empty() => {
+                NameSelection::Address {
+                    address: &self.text,
+                    name,
+                }
+            }
+            _ => NameSelection::Name(&self.text),
+        }
     }
 
     /// Returns the bounded page size.

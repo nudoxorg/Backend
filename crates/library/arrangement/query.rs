@@ -5,6 +5,7 @@ use super::{
     ProjectionArrangement, SearchPostingKey, SearchPostingTree, WorkCounters, search_grams,
     searchable_text, update,
 };
+use crate::command::NameSelection;
 use crate::{PackageKey, Row, RowId, SymbolKey};
 use backend_flow::MaterializedIndex;
 use std::cmp::Ordering;
@@ -165,17 +166,20 @@ impl ProjectionArrangement {
         ArrangementPage { ids, has_more }
     }
 
-    pub(crate) fn names_page<F>(
+    pub(crate) fn names_page<F, A>(
         &self,
-        text: &str,
+        selection: NameSelection<'_>,
         start: usize,
         limit: usize,
         row_for_id: F,
+        address_matches: A,
         work: &WorkCounters,
     ) -> ArrangementPage
     where
         F: Fn(RowId) -> Option<Row>,
+        A: Fn(&Row, &str) -> bool,
     {
+        let text = selection.posting_text();
         if text.is_empty() {
             let mut ids = self
                 .names
@@ -193,11 +197,12 @@ impl ProjectionArrangement {
             return ArrangementPage { ids, has_more };
         }
         select_name_matches_page(
-            text,
+            selection,
             start,
             limit,
             self.name_postings.as_ref(),
             row_for_id,
+            address_matches,
             work,
         )
     }
@@ -321,14 +326,15 @@ impl ProjectionArrangement {
     }
 }
 fn select_name_matches_page(
-    text: &str,
+    selection: NameSelection<'_>,
     start: usize,
     limit: usize,
     postings: Option<&NamePostingTree>,
     row_for_id: impl Fn(RowId) -> Option<Row>,
+    address_matches: impl Fn(&Row, &str) -> bool,
     work: &WorkCounters,
 ) -> ArrangementPage {
-    let normalized = text.to_lowercase();
+    let normalized = selection.posting_text().to_lowercase();
     let grams = search_grams(&normalized);
     let Some(postings) = postings else {
         return ArrangementPage {
@@ -354,7 +360,10 @@ fn select_name_matches_page(
             .filter_map(|(key, ())| key.id)
             .filter_map(row_for_id)
             .map(RankedRow::new)
-            .filter(|row| row.normalized_label.contains(&normalized)),
+            .filter(|row| match selection {
+                NameSelection::Name(_) => row.normalized_label.contains(&normalized),
+                NameSelection::Address { address, .. } => address_matches(&row.row, address),
+            }),
         capacity,
     );
     work.record_sort(rows.len());
