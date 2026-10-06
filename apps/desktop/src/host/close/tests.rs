@@ -76,8 +76,13 @@ fn a_composed_focus_trap_preserves_native_semantics_children_and_keyboard_cycles
     cx.update(gpui_component::init);
     let (root, cx) = cx.add_window_view(|window, cx| {
         let fixture = cx.new(|cx| NamedTrapFixture {
-            trap: cx.focus_handle(), first: cx.focus_handle(), second: cx.focus_handle(),
-            outside: cx.focus_handle(), mounted: true,
+            trap: cx.focus_handle(),
+            // A tracked external handle owns its native tab metadata; Div's
+            // tab_index sets that metadata only on an auto-created handle.
+            // These are actual stops, while the trap container is not one.
+            first: cx.focus_handle().tab_stop(true),
+            second: cx.focus_handle().tab_stop(true),
+            outside: cx.focus_handle().tab_stop(true), mounted: true,
         });
         gpui_component::Root::new(fixture, window, cx).bordered(false)
     });
@@ -127,6 +132,11 @@ fn a_composed_focus_trap_preserves_native_semantics_children_and_keyboard_cycles
             }
             let first = fixture.read(cx).first.clone();
             first.focus(window, cx);
+            assert!(fixture.read(cx).first.is_focused(window), "the actual first control owns focus on mount {mount}");
+            assert!(window.is_focus_handle_mounted(&fixture.read(cx).first)
+                && window.is_focus_handle_mounted(&fixture.read(cx).second)
+                && window.is_focus_handle_mounted(&fixture.read(cx).outside),
+                "all three native controls are mounted on mount {mount}");
         });
         for (key, second) in [("tab", true), ("tab", false), ("shift-tab", true),
             ("shift-tab", false)] {
@@ -136,7 +146,9 @@ fn a_composed_focus_trap_preserves_native_semantics_children_and_keyboard_cycles
                 let fixture = fixture.read(cx);
                 assert!(fixture.trap.contains_focused(window, cx), "native Tab remains trapped");
                 let expected = if second { &fixture.second } else { &fixture.first };
-                assert!(expected.is_focused(window), "native {key} reaches the expected decision");
+                assert!(expected.is_focused(window),
+                    "native {key} reaches the expected decision on mount {mount}: expected={expected:?} actual={:?}, first={:?}, second={:?}",
+                    window.focused(cx), fixture.first, fixture.second);
                 assert!(!fixture.outside.is_focused(window));
             });
         }
