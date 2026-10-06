@@ -16,9 +16,11 @@
 //!   `#[serde(default)]`.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::{Path, PathBuf},
 };
+
+use backend_platform::{DirectoryCapability, EntryKind};
 
 use backend_semantic::vocabulary::{NativeWorker, NativeWorkerPanic};
 use serde::Deserialize;
@@ -33,6 +35,15 @@ pub use self::authority_witness::{
 const DIAGNOSTIC_PREFIX_LIMIT: usize = 4096;
 const DIAGNOSTIC_TAIL_LIMIT: usize = 4096;
 const UNSUPPORTED_CGO_SENTINEL: &str = "NUDOX_GO_UNSUPPORTED_CGO_CLOSURE";
+const MAX_HELPER_CACHE_ROOT_ENTRIES: usize = 256;
+const MAX_HELPER_CACHE_ENTRY_ENTRIES: usize = 8;
+const MAX_HELPER_MANIFEST_BYTES: u64 = 512;
+const MAX_HELPER_BINARY_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_GO_TOOLCHAIN_ENTRIES: usize = 50_000;
+const MAX_GO_TOOLCHAIN_DEPTH: usize = 64;
+const MAX_GO_TOOLCHAIN_FILE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_GO_TOOLCHAIN_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_GO_TOOLCHAIN_PATH_BYTES: usize = 4096;
 
 /// Versioned identity of the explicit Go package-authority child environment.
 pub const GO_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str = "go-package-child-environment.v1";
@@ -1193,7 +1204,6 @@ pub struct ConfiguredGoOracle {
     oracle: GoOracle,
     configuration: GoOracleConfiguration,
     child_environment: Option<GoOracleChildEnvironment>,
-    helper_binary_cache: std::sync::Arc<std::sync::OnceLock<PathBuf>>,
 }
 
 impl Default for GoOracle {
@@ -1215,7 +1225,6 @@ impl GoOracle {
             oracle: self,
             configuration,
             child_environment: None,
-            helper_binary_cache: std::sync::Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -1600,14 +1609,8 @@ impl ConfiguredGoOracle {
         let Some(environment) = &self.child_environment else {
             return Ok(None);
         };
-        if let Some(path) = self.helper_binary_cache.get() {
-            return Ok(Some(path.clone()));
-        }
-        let path = self.prepare_cached_helper(executable.as_ref(), environment)?;
-        let _ = self.helper_binary_cache.set(path.clone());
-        Ok(Some(
-            self.helper_binary_cache.get().cloned().unwrap_or(path),
-        ))
+        self.prepare_cached_helper(executable.as_ref(), environment)
+            .map(Some)
     }
 
     fn prepare_cached_helper(
@@ -1616,27 +1619,21 @@ impl ConfiguredGoOracle {
         environment: &GoOracleChildEnvironment,
     ) -> Result<PathBuf, OracleError> {
         use fs4::fs_std::FileExt;
-        use std::{fs, io::Write, time::Instant};
+        use std::time::Instant;
 
         let source_identity = helper_source_identity();
         let toolchain_identity = environment.toolchain_identity();
-        let mut key_digest = Sha256::new();
-        key_digest.update(b"nudox.go-oracle-compiled-helper.v1\0");
-        key_digest.update(source_identity);
-        key_digest.update(toolchain_identity);
-        let key = digest_hex(&key_digest.finalize());
-        let cache_root = environment.build_cache().join("nudox-go-oracle-v1");
-        fs::create_dir_all(&cache_root).map_err(|error| OracleError::GoOracleHelperCache {
-            detail: format!("create cache root {:?}: {error}", cache_root),
+        let key = helper_cache_key(&source_identity, &toolchain_identity);
+        let cache_root_path = environment.build_cache().join("nudox-go-oracle-v1");
+        let cache_root = open_private_helper_cache(&cache_root_path).map_err(|error| {
+            OracleError::GoOracleHelperCache {
+                detail: format!("open private cache root {cache_root_path:?}: {error}"),
+            }
         })?;
-        let lock_path = cache_root.join("build.lock");
-        let lock_file = fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(&lock_path)
+        let lock_file = cache_root
+            .open_private_file_read_write("build.lock", true)
             .map_err(|error| OracleError::GoOracleHelperCache {
-                detail: format!("open cache lock {:?}: {error}", lock_path),
+                detail: format!("open private cache lock in {cache_root_path:?}: {error}"),
             })?;
         let started = Instant::now();
         loop {
@@ -1645,7 +1642,7 @@ impl ConfiguredGoOracle {
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => false,
                 Err(error) => {
                     return Err(OracleError::GoOracleHelperCache {
-                        detail: format!("lock cache {:?}: {error}", lock_path),
+                        detail: format!("lock cache {cache_root_path:?}: {error}"),
                     });
                 }
             };
@@ -1654,51 +1651,78 @@ impl ConfiguredGoOracle {
             }
             if started.elapsed() >= self.oracle.timeout {
                 return Err(OracleError::GoOracleHelperCache {
-                    detail: format!("timed out waiting for cache lock {:?}", lock_path),
+                    detail: format!("timed out waiting for cache lock {cache_root_path:?}"),
                 });
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
 
-        let entry = cache_root.join(&key);
+        clean_abandoned_helper_staging(&cache_root).map_err(|error| {
+            OracleError::GoOracleHelperCache {
+                detail: format!("clean bounded cache staging in {cache_root_path:?}: {error}"),
+            }
+        })?;
         let binary_name = if cfg!(windows) {
             "oracle.exe"
         } else {
             "oracle"
         };
-        let binary_path = entry.join(binary_name);
-        let manifest_path = entry.join("manifest.txt");
         let manifest_prefix = format!(
             "schema=1\nsource={}\ntoolchain={}\n",
             digest_hex(&source_identity),
             digest_hex(&toolchain_identity),
         );
-        if cache_entry_is_valid(&entry, &binary_path, &manifest_path, &manifest_prefix) {
+        let binary_path = cache_root_path.join(&key).join(binary_name);
+        if validate_helper_cache_entry(&cache_root, &key, binary_name, &manifest_prefix).map_err(
+            |error| OracleError::GoOracleHelperCache {
+                detail: format!("validate bounded cache entry {binary_path:?}: {error}"),
+            },
+        )? {
+            cache_root.verify_path(&cache_root_path).map_err(|error| {
+                OracleError::GoOracleHelperCache {
+                    detail: format!("cache root identity changed at {cache_root_path:?}: {error}"),
+                }
+            })?;
             return Ok(binary_path);
         }
-        if fs::symlink_metadata(&entry).is_ok() {
-            if fs::symlink_metadata(&entry)
-                .map(|metadata| metadata.file_type().is_symlink())
-                .unwrap_or(false)
-            {
-                fs::remove_file(&entry).map_err(|error| OracleError::GoOracleHelperCache {
-                    detail: format!("remove linked cache entry {:?}: {error}", entry),
-                })?;
-            } else {
-                fs::remove_dir_all(&entry).map_err(|error| OracleError::GoOracleHelperCache {
-                    detail: format!("remove invalid cache entry {:?}: {error}", entry),
-                })?;
+        remove_helper_cache_entry(&cache_root, &key).map_err(|error| {
+            OracleError::GoOracleHelperCache {
+                detail: format!("remove invalid bounded cache entry {binary_path:?}: {error}"),
             }
-        }
+        })?;
 
         let staging = tempfile::Builder::new()
             .prefix("go-oracle-build-")
-            .tempdir_in(&cache_root)
+            .tempdir_in(&cache_root_path)
             .map_err(|error| OracleError::GoOracleHelperCache {
-                detail: format!("create staging directory in {:?}: {error}", cache_root),
+                detail: format!("create staging directory in {cache_root_path:?}: {error}"),
             })?;
+        let staging_path = staging.path().to_path_buf();
+        let staging_name = staging_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| OracleError::GoOracleHelperCache {
+                detail: "helper staging directory name is not UTF-8".to_owned(),
+            })?
+            .to_owned();
+        let staging_capability = cache_root
+            .open_dir(&staging_name)
+            .and_then(|directory| {
+                directory.restrict_private()?;
+                directory.validate_private()?;
+                directory.verify_path(&staging_path)?;
+                Ok(directory)
+            })
+            .map_err(|error| OracleError::GoOracleHelperCache {
+                detail: format!("open pinned helper staging directory {staging_path:?}: {error}"),
+            })?;
+        cache_root.verify_path(&cache_root_path).map_err(|error| {
+            OracleError::GoOracleHelperCache {
+                detail: format!("cache root identity changed before helper build: {error}"),
+            }
+        })?;
         let source = EmbeddedGoOracleSource::materialize()?;
-        let staged_binary = staging.path().join(binary_name);
+        let staged_binary = staging_path.join(binary_name);
         let mut build = std::process::Command::new(executable);
         build
             .args([
@@ -1713,33 +1737,81 @@ impl ConfiguredGoOracle {
             .current_dir(source.path());
         environment.apply_to(&mut build, &GoWorkWitness::Disabled, true);
         self.oracle.execute_configured(&mut build)?;
-        let binary_hash = hash_regular_file(&staged_binary).map_err(|error| {
-            OracleError::GoOracleHelperCache {
-                detail: format!("hash built oracle {:?}: {error}", staged_binary),
-            }
-        })?;
-        let manifest = format!("{}binary={}\n", manifest_prefix, digest_hex(&binary_hash));
-        let staged_manifest = staging.path().join("manifest.txt");
-        let mut manifest_file = fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&staged_manifest)
+        cache_root
+            .verify_path(&cache_root_path)
+            .and_then(|()| staging_capability.verify_path(&staging_path))
             .map_err(|error| OracleError::GoOracleHelperCache {
-                detail: format!("create cache manifest {:?}: {error}", staged_manifest),
+                detail: format!("helper staging identity changed during build: {error}"),
             })?;
+        let mut binary_file = staging_capability
+            .open_file_read_write(binary_name, false)
+            .map_err(|error| OracleError::GoOracleHelperCache {
+                detail: format!("open staged helper binary {staged_binary:?}: {error}"),
+            })?;
+        let mut binary_digest = Sha256::new();
+        hash_regular_file_handle(
+            &mut binary_file,
+            MAX_HELPER_BINARY_BYTES,
+            true,
+            &mut binary_digest,
+        )
+        .map_err(|error| OracleError::GoOracleHelperCache {
+            detail: format!("hash bounded staged helper binary {staged_binary:?}: {error}"),
+        })?;
+        binary_file
+            .sync_all()
+            .map_err(|error| OracleError::GoOracleHelperCache {
+                detail: format!("sync staged helper binary {staged_binary:?}: {error}"),
+            })?;
+        let binary_hash = digest_hex(&binary_digest.finalize());
+        let manifest = format!("{manifest_prefix}binary={binary_hash}\n");
+        if manifest.len() as u64 > MAX_HELPER_MANIFEST_BYTES {
+            return Err(OracleError::GoOracleHelperCache {
+                detail: "generated helper cache manifest exceeds its byte limit".to_owned(),
+            });
+        }
+        let mut manifest_file = staging_capability
+            .create_file_exclusive("manifest.txt")
+            .map_err(|error| OracleError::GoOracleHelperCache {
+                detail: format!("create staged helper manifest: {error}"),
+            })?;
+        use std::io::Write;
         manifest_file
             .write_all(manifest.as_bytes())
             .map_err(|error| OracleError::GoOracleHelperCache {
-                detail: format!("write cache manifest {:?}: {error}", staged_manifest),
+                detail: format!("write staged helper manifest: {error}"),
             })?;
         manifest_file
             .sync_all()
             .map_err(|error| OracleError::GoOracleHelperCache {
-                detail: format!("sync cache manifest {:?}: {error}", staged_manifest),
+                detail: format!("sync staged helper manifest: {error}"),
             })?;
-        let staging_path = staging.keep();
-        fs::rename(&staging_path, &entry).map_err(|error| OracleError::GoOracleHelperCache {
-            detail: format!("install helper cache entry {:?}: {error}", entry),
+        staging_capability
+            .sync_all()
+            .map_err(|error| OracleError::GoOracleHelperCache {
+                detail: format!("sync staged helper generation: {error}"),
+            })?;
+        let _staging_path = staging.keep();
+        cache_root
+            .rename(&staging_name, &key, false)
+            .map_err(|error| OracleError::GoOracleHelperCache {
+                detail: format!("atomically publish helper generation {binary_path:?}: {error}"),
+            })?;
+        if !validate_helper_cache_entry(&cache_root, &key, binary_name, &manifest_prefix).map_err(
+            |error| OracleError::GoOracleHelperCache {
+                detail: format!("verify published helper generation {binary_path:?}: {error}"),
+            },
+        )? {
+            return Err(OracleError::GoOracleHelperCache {
+                detail: format!(
+                    "published helper generation failed bounded validation: {binary_path:?}"
+                ),
+            });
+        }
+        cache_root.verify_path(&cache_root_path).map_err(|error| {
+            OracleError::GoOracleHelperCache {
+                detail: format!("cache root identity changed after publish: {error}"),
+            }
         })?;
         Ok(binary_path)
     }
@@ -1992,61 +2064,365 @@ impl ConfiguredGoOracle {
     }
 }
 
-fn cache_entry_is_valid(entry: &Path, binary: &Path, manifest: &Path, prefix: &str) -> bool {
-    use std::fs;
-    let Ok(entry_metadata) = fs::symlink_metadata(entry) else {
-        return false;
+fn cache_entry_is_valid(
+    cache_root: &DirectoryCapability,
+    entry_name: &str,
+    binary_name: &str,
+    manifest_prefix: &str,
+) -> bool {
+    validate_helper_cache_entry(cache_root, entry_name, binary_name, manifest_prefix)
+        .unwrap_or(false)
+}
+
+fn validate_helper_cache_entry(
+    cache_root: &DirectoryCapability,
+    entry_name: &str,
+    binary_name: &str,
+    manifest_prefix: &str,
+) -> std::io::Result<bool> {
+    let entry = match cache_root.open_dir(entry_name) {
+        Ok(entry) => entry,
+        Err(_) => return Ok(false),
     };
-    if !entry_metadata.is_dir() || entry_metadata.file_type().is_symlink() {
-        return false;
+    if entry.validate_private().is_err() {
+        return Ok(false);
     }
-    let Ok(binary_metadata) = fs::symlink_metadata(binary) else {
-        return false;
-    };
-    if !binary_metadata.is_file() || binary_metadata.file_type().is_symlink() {
-        return false;
+    let entries = entry.entries(MAX_HELPER_CACHE_ENTRY_ENTRIES)?;
+    if entries.len() != 2
+        || entries.iter().any(|item| item.kind != EntryKind::File)
+        || !entries.iter().any(|item| item.name == binary_name)
+        || !entries.iter().any(|item| item.name == "manifest.txt")
+    {
+        return Ok(false);
     }
-    let Ok(manifest_metadata) = fs::symlink_metadata(manifest) else {
-        return false;
-    };
-    if !manifest_metadata.is_file() || manifest_metadata.file_type().is_symlink() {
-        return false;
-    }
-    let Ok(manifest_text) = fs::read_to_string(manifest) else {
-        return false;
+    let manifest =
+        match read_bounded_regular_file(&entry, "manifest.txt", MAX_HELPER_MANIFEST_BYTES) {
+            Ok(manifest) => manifest,
+            Err(_) => return Ok(false),
+        };
+    let Ok(manifest_text) = std::str::from_utf8(&manifest) else {
+        return Ok(false);
     };
     let Some(expected_binary_hash) = manifest_text
-        .strip_prefix(prefix)
+        .strip_prefix(manifest_prefix)
         .and_then(|rest| rest.strip_prefix("binary="))
         .and_then(|rest| rest.strip_suffix('\n'))
     else {
-        return false;
+        return Ok(false);
     };
     if expected_binary_hash.len() != 64
         || !expected_binary_hash
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
-        return false;
+        return Ok(false);
     }
-    hash_regular_file(binary)
-        .map(|hash| digest_hex(&hash) == expected_binary_hash)
-        .unwrap_or(false)
+    let mut binary = match entry.open_file_read(binary_name) {
+        Ok(binary) => binary,
+        Err(_) => return Ok(false),
+    };
+    let mut binary_digest = Sha256::new();
+    if hash_regular_file_handle(
+        &mut binary,
+        MAX_HELPER_BINARY_BYTES,
+        true,
+        &mut binary_digest,
+    )
+    .is_err()
+    {
+        return Ok(false);
+    }
+    Ok(digest_hex(&binary_digest.finalize()) == expected_binary_hash)
 }
 
-fn hash_regular_file(path: &Path) -> std::io::Result<[u8; 32]> {
+fn read_bounded_regular_file(
+    directory: &DirectoryCapability,
+    name: &str,
+    maximum: u64,
+) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
-    let mut file = std::fs::File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
+
+    let mut file = directory.open_file_read(name)?;
+    let before = validate_regular_file_handle(&file, maximum, false)?;
+    let before_modified = before.modified()?;
+    let capacity = usize::try_from(before.len())
+        .map_err(|_| std::io::Error::other("bounded manifest length does not fit memory"))?;
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut buffer = [0_u8; 256];
     loop {
-        let read = file.read(&mut buffer)?;
+        let remaining = maximum.saturating_sub(bytes.len() as u64).saturating_add(1);
+        let read_limit = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|_| std::io::Error::other("manifest read bound does not fit memory"))?;
+        let read = file.read(&mut buffer[..read_limit])?;
         if read == 0 {
             break;
         }
+        if bytes.len().saturating_add(read) as u64 > maximum {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "helper cache manifest exceeds its byte limit",
+            ));
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+    let after = validate_regular_file_handle(&file, maximum, false)?;
+    if after.len() != before.len()
+        || bytes.len() as u64 != before.len()
+        || after.modified()? != before_modified
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "helper cache manifest changed while it was read",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn validate_regular_file_handle(
+    file: &std::fs::File,
+    maximum: u64,
+    require_executable: bool,
+) -> std::io::Result<std::fs::Metadata> {
+    use std::io::ErrorKind;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            "opened helper/toolchain object is not a regular file",
+        ));
+    }
+    if metadata.len() > maximum {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("opened helper/toolchain file exceeds {maximum} bytes"),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        if metadata.nlink() != 1 {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "opened helper/toolchain file has multiple hard links",
+            ));
+        }
+        if require_executable && metadata.permissions().mode() & 0o111 == 0 {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "opened helper/toolchain binary is not executable",
+            ));
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        if metadata.number_of_links() != 1 {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "opened helper/toolchain file has multiple hard links",
+            ));
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = require_executable;
+        return Err(std::io::Error::new(
+            ErrorKind::Unsupported,
+            "helper/toolchain file identity is unsupported on this platform",
+        ));
+    }
+    Ok(metadata)
+}
+
+fn hash_regular_file_handle(
+    file: &mut std::fs::File,
+    maximum: u64,
+    require_executable: bool,
+    digest: &mut Sha256,
+) -> std::io::Result<u64> {
+    use std::io::Read;
+
+    let before = validate_regular_file_handle(file, maximum, require_executable)?;
+    let before_modified = before.modified()?;
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let remaining = maximum.saturating_sub(total).saturating_add(1);
+        let read_limit = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|_| std::io::Error::other("bounded file read does not fit memory"))?;
+        let read = file.read(&mut buffer[..read_limit])?;
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(read as u64)
+            .ok_or_else(|| std::io::Error::other("bounded file byte count overflow"))?;
+        if total > maximum {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("opened helper/toolchain file exceeds {maximum} bytes"),
+            ));
+        }
         digest.update(&buffer[..read]);
     }
+    let after = validate_regular_file_handle(file, maximum, require_executable)?;
+    if after.len() != before.len() || total != before.len() || after.modified()? != before_modified
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "helper/toolchain file changed while it was hashed",
+        ));
+    }
+    Ok(total)
+}
+
+fn hash_regular_file(path: &Path) -> std::io::Result<[u8; 32]> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "regular file has no parent",
+        )
+    })?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "regular file name is not UTF-8",
+            )
+        })?;
+    let directory = DirectoryCapability::open_read_only_source(parent)?;
+    let mut file = directory.open_file_read(name)?;
+    let mut digest = Sha256::new();
+    hash_regular_file_handle(&mut file, MAX_HELPER_BINARY_BYTES, false, &mut digest)?;
     Ok(digest.finalize().into())
+}
+
+fn open_directory_chain(path: &Path) -> std::io::Result<DirectoryCapability> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "helper cache path must be absolute",
+        ));
+    }
+    let mut current = PathBuf::new();
+    let mut directory: Option<DirectoryCapability> = None;
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::RootDir => {
+                current.push(component.as_os_str());
+                directory = Some(DirectoryCapability::open(&current)?);
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "helper cache path may not contain parent components",
+                ));
+            }
+            Component::Normal(name) => {
+                let name = name.to_str().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "helper cache path component is not UTF-8",
+                    )
+                })?;
+                let parent = directory.as_ref().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "absolute helper cache path has no root directory",
+                    )
+                })?;
+                let child = match parent.open_dir(name) {
+                    Ok(child) => child,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        parent.create_private_dir(name)?
+                    }
+                    Err(error) => return Err(error),
+                };
+                current.push(name);
+                directory = Some(child);
+            }
+        }
+    }
+    directory.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "absolute helper cache path has no root directory",
+        )
+    })
+}
+
+fn open_private_helper_cache(path: &Path) -> std::io::Result<DirectoryCapability> {
+    let parent_path = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "cache root has no parent")
+    })?;
+    let parent = open_directory_chain(parent_path)?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "cache root name is not UTF-8",
+            )
+        })?;
+    match parent.open_dir(name) {
+        Ok(cache) => {
+            cache.restrict_private()?;
+            cache.validate_private()?;
+            Ok(cache)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            parent.create_private_dir(name)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn clean_abandoned_helper_staging(cache_root: &DirectoryCapability) -> std::io::Result<()> {
+    let entries = cache_root.entries(MAX_HELPER_CACHE_ROOT_ENTRIES)?;
+    for entry in entries {
+        let Some(name) = entry.name.to_str() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "helper cache contains a non-UTF-8 entry",
+            ));
+        };
+        if name.starts_with("go-oracle-build-") {
+            if entry.kind != EntryKind::Directory {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "helper cache staging name is not a regular directory",
+                ));
+            }
+            cache_root.remove_dir_all(name, MAX_HELPER_CACHE_ENTRY_ENTRIES)?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_helper_cache_entry(cache_root: &DirectoryCapability, name: &str) -> std::io::Result<()> {
+    let entries = cache_root.entries(MAX_HELPER_CACHE_ROOT_ENTRIES)?;
+    let Some(entry) = entries.iter().find(|entry| entry.name == name) else {
+        return Ok(());
+    };
+    match entry.kind {
+        EntryKind::Directory => cache_root.remove_dir_all(name, MAX_HELPER_CACHE_ENTRY_ENTRIES),
+        EntryKind::File | EntryKind::Link | EntryKind::Special => cache_root.remove_file(name),
+    }
+}
+
+fn helper_cache_key(source_identity: &[u8; 32], toolchain_identity: &[u8; 32]) -> String {
+    let mut key_digest = Sha256::new();
+    key_digest.update(b"nudox.go-oracle-compiled-helper.v2\0");
+    key_digest.update(source_identity);
+    key_digest.update(toolchain_identity);
+    digest_hex(&key_digest.finalize())
 }
 
 fn helper_source_identity() -> [u8; 32] {
@@ -2062,107 +2438,164 @@ fn helper_source_identity() -> [u8; 32] {
 }
 
 fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<[u8; 32]> {
-    use std::{fs, io::Read};
+    use std::io::ErrorKind;
 
-    fn add_file(path: &Path, logical: &Path, digest: &mut Sha256) -> std::io::Result<()> {
-        let metadata = fs::metadata(path)?;
+    struct WalkBudget {
+        entries: usize,
+        bytes: u64,
+    }
+
+    fn path_bytes(path: &Path) -> std::io::Result<&[u8]> {
+        let bytes = path.as_os_str().as_encoded_bytes();
+        if bytes.len() > MAX_GO_TOOLCHAIN_PATH_BYTES {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "Go toolchain path exceeds the identity limit",
+            ));
+        }
+        Ok(bytes)
+    }
+
+    fn add_open_file(
+        file: &mut std::fs::File,
+        logical: &Path,
+        maximum: u64,
+        executable: bool,
+        budget: &mut WalkBudget,
+        digest: &mut Sha256,
+    ) -> std::io::Result<()> {
+        let metadata = validate_regular_file_handle(file, maximum, executable)?;
+        budget.bytes = budget
+            .bytes
+            .checked_add(metadata.len())
+            .ok_or_else(|| std::io::Error::other("Go toolchain byte count overflow"))?;
+        if budget.bytes > MAX_GO_TOOLCHAIN_TOTAL_BYTES {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "Go toolchain exceeds the total identity byte limit",
+            ));
+        }
+        let path = path_bytes(logical)?;
         digest.update(b"file\0");
-        digest.update((logical.as_os_str().as_encoded_bytes().len() as u64).to_be_bytes());
-        digest.update(logical.as_os_str().as_encoded_bytes());
+        digest.update((path.len() as u64).to_be_bytes());
+        digest.update(path);
         digest.update(metadata.len().to_be_bytes());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             digest.update(metadata.permissions().mode().to_be_bytes());
         }
-        let mut file = fs::File::open(path)?;
-        let mut buffer = [0u8; 64 * 1024];
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            digest.update(&buffer[..read]);
-        }
+        hash_regular_file_handle(file, maximum, executable, digest)?;
         Ok(())
     }
 
     fn walk(
-        root: &Path,
-        path: &Path,
+        directory: &DirectoryCapability,
         logical: &Path,
+        depth: usize,
+        budget: &mut WalkBudget,
         digest: &mut Sha256,
-        visited: &mut HashSet<PathBuf>,
     ) -> std::io::Result<()> {
-        let metadata = fs::symlink_metadata(path)?;
-        if metadata.file_type().is_symlink() {
-            let target = fs::canonicalize(path)?;
-            digest.update(b"symlink\0");
-            digest.update((logical.as_os_str().as_encoded_bytes().len() as u64).to_be_bytes());
-            digest.update(logical.as_os_str().as_encoded_bytes());
-            digest.update((target.as_os_str().as_encoded_bytes().len() as u64).to_be_bytes());
-            digest.update(target.as_os_str().as_encoded_bytes());
-            if !visited.insert(target.clone()) {
-                digest.update(b"already-visited\0");
-                return Ok(());
+        if depth > MAX_GO_TOOLCHAIN_DEPTH {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "Go toolchain exceeds the identity directory depth limit",
+            ));
+        }
+        let logical_bytes = path_bytes(logical)?;
+        digest.update(b"directory\0");
+        digest.update((logical_bytes.len() as u64).to_be_bytes());
+        digest.update(logical_bytes);
+        let entries = directory.entries(MAX_GO_TOOLCHAIN_ENTRIES)?;
+        for entry in entries {
+            budget.entries = budget
+                .entries
+                .checked_add(1)
+                .ok_or_else(|| std::io::Error::other("Go toolchain entry count overflow"))?;
+            if budget.entries > MAX_GO_TOOLCHAIN_ENTRIES {
+                return Err(std::io::Error::new(
+                    ErrorKind::InvalidData,
+                    "Go toolchain exceeds the identity entry limit",
+                ));
             }
-            if target.is_dir() {
-                let mut entries = fs::read_dir(&target)?
-                    .map(|entry| entry.map(|entry| entry.path()))
-                    .collect::<Result<Vec<_>, _>>()?;
-                entries.sort();
-                for entry in entries {
-                    let name = entry.file_name().ok_or_else(|| {
-                        std::io::Error::other("Go toolchain entry has no file name")
-                    })?;
-                    walk(root, &entry, &logical.join(name), digest, visited)?;
+            let name = entry.name.to_str().ok_or_else(|| {
+                std::io::Error::new(
+                    ErrorKind::InvalidData,
+                    "Go toolchain contains a non-UTF-8 entry name",
+                )
+            })?;
+            let child_logical = logical.join(name);
+            let child_bytes = path_bytes(&child_logical)?;
+            match entry.kind {
+                EntryKind::Directory => {
+                    let child = directory.open_dir(name)?;
+                    walk(&child, &child_logical, depth + 1, budget, digest)?;
                 }
-            } else {
-                add_file(&target, logical, digest)?;
+                EntryKind::File => {
+                    let mut file = directory.open_file_read(name)?;
+                    add_open_file(
+                        &mut file,
+                        &child_logical,
+                        MAX_GO_TOOLCHAIN_FILE_BYTES,
+                        false,
+                        budget,
+                        digest,
+                    )?;
+                }
+                EntryKind::Link => {
+                    return Err(std::io::Error::new(
+                        ErrorKind::InvalidData,
+                        format!("Go toolchain contains a symbolic link at {child_logical:?}"),
+                    ));
+                }
+                EntryKind::Special => {
+                    return Err(std::io::Error::new(
+                        ErrorKind::InvalidData,
+                        format!("Go toolchain contains a special file at {child_logical:?}"),
+                    ));
+                }
             }
-            return Ok(());
+            digest.update((child_bytes.len() as u64).to_be_bytes());
+            digest.update(child_bytes);
         }
-        if metadata.is_dir() {
-            let canonical = fs::canonicalize(path)?;
-            if !visited.insert(canonical) {
-                return Ok(());
-            }
-            digest.update(b"directory\0");
-            digest.update((logical.as_os_str().as_encoded_bytes().len() as u64).to_be_bytes());
-            digest.update(logical.as_os_str().as_encoded_bytes());
-            let mut entries = fs::read_dir(path)?
-                .map(|entry| entry.map(|entry| entry.path()))
-                .collect::<Result<Vec<_>, _>>()?;
-            entries.sort();
-            for entry in entries {
-                let name = entry
-                    .file_name()
-                    .ok_or_else(|| std::io::Error::other("Go toolchain entry has no file name"))?;
-                walk(root, &entry, &logical.join(name), digest, visited)?;
-            }
-            return Ok(());
-        }
-        if metadata.is_file() {
-            add_file(path, logical, digest)?;
-            return Ok(());
-        }
-        let relative = path.strip_prefix(root).unwrap_or(path);
-        Err(std::io::Error::other(format!(
-            "unsupported Go toolchain entry {relative:?}"
-        )))
+        Ok(())
     }
 
-    let canonical_root = fs::canonicalize(goroot)?;
+    let goroot_cap = DirectoryCapability::open_read_only_source(goroot)?;
+    let executable_parent = executable.parent().ok_or_else(|| {
+        std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "Go executable has no parent directory",
+        )
+    })?;
+    let executable_name = executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(ErrorKind::InvalidInput, "Go executable name is not UTF-8")
+        })?;
+    let executable_parent = DirectoryCapability::open_read_only_source(executable_parent)?;
+    let mut executable_file = executable_parent.open_file_read(executable_name)?;
     let mut digest = Sha256::new();
-    digest.update(b"nudox.go-toolchain-identity.v1\0");
-    add_file(executable, Path::new("selected-go-executable"), &mut digest)?;
-    let mut visited = HashSet::new();
-    walk(
-        &canonical_root,
-        &canonical_root,
-        Path::new("GOROOT"),
+    digest.update(b"nudox.go-toolchain-identity.v2\0");
+    let mut budget = WalkBudget {
+        entries: 0,
+        bytes: 0,
+    };
+    add_open_file(
+        &mut executable_file,
+        Path::new("selected-go-executable"),
+        MAX_GO_TOOLCHAIN_FILE_BYTES,
+        true,
+        &mut budget,
         &mut digest,
-        &mut visited,
+    )?;
+    walk(
+        &goroot_cap,
+        Path::new("GOROOT"),
+        0,
+        &mut budget,
+        &mut digest,
     )?;
     Ok(digest.finalize().into())
 }
@@ -2263,9 +2696,11 @@ fn tail(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod read_tests {
     use super::{
-        GoCgoPolicy, GoOracle, GoOracleChildEnvironment, GoOracleConfiguration,
-        GoOracleConfigurationError, GoOracleInvocationModeV1, GoPackageAuthorityWitness,
-        GoWorkWitness, cache_entry_is_valid, digest_hex, hash_regular_file, read_bounded,
+        DirectoryCapability, GoCgoPolicy, GoOracle, GoOracleChildEnvironment,
+        GoOracleConfiguration, GoOracleConfigurationError, GoOracleInvocationModeV1,
+        GoPackageAuthorityWitness, GoWorkWitness, MAX_GO_TOOLCHAIN_DEPTH,
+        MAX_GO_TOOLCHAIN_FILE_BYTES, MAX_HELPER_MANIFEST_BYTES, cache_entry_is_valid, digest_hex,
+        hash_regular_file, hash_toolchain_identity, read_bounded,
     };
     use std::io::{self, Read};
     use std::path::{Path, PathBuf};
@@ -2639,6 +3074,9 @@ mod read_tests {
 
     #[test]
     fn go_environment_keeps_build_cache_leaf_uncreated_for_inspection() {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
         let root = std::env::temp_dir().join(format!("go-child-env-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let go_dir = root.join("go/bin");
@@ -2649,6 +3087,9 @@ mod read_tests {
         std::fs::create_dir_all(&module_cache).expect("module cache fixture");
         let go = go_dir.join("go");
         std::fs::write(&go, b"fixture").expect("Go executable fixture");
+        #[cfg(unix)]
+        std::fs::set_permissions(&go, std::fs::Permissions::from_mode(0o700))
+            .expect("mark Go executable fixture executable");
         let build_cache = root.join("native-work/go-oracle-cache");
         let environment =
             GoOracleChildEnvironment::new(go, goroot, module_cache, build_cache.clone())
@@ -2659,12 +3100,19 @@ mod read_tests {
     }
 
     #[test]
-    fn helper_cache_requires_an_exact_regular_manifest() -> io::Result<()> {
+    fn helper_cache_requires_an_exact_bounded_private_regular_manifest() -> io::Result<()> {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
         let root = tempfile::tempdir()?;
         let entry = root.path().join("entry");
         std::fs::create_dir(&entry)?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o700))?;
         let binary = entry.join("oracle");
         std::fs::write(&binary, b"compiled helper bytes")?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))?;
         let binary_hash = hash_regular_file(&binary)?;
         let manifest = entry.join("manifest.txt");
         let prefix = format!(
@@ -2672,11 +3120,10 @@ mod read_tests {
             "a".repeat(64),
             "b".repeat(64)
         );
-        std::fs::write(
-            &manifest,
-            format!("{prefix}binary={}\n", digest_hex(&binary_hash)),
-        )?;
-        assert!(cache_entry_is_valid(&entry, &binary, &manifest, &prefix));
+        let valid = format!("{prefix}binary={}\n", digest_hex(&binary_hash));
+        std::fs::write(&manifest, &valid)?;
+        let root_cap = DirectoryCapability::open(root.path())?;
+        assert!(cache_entry_is_valid(&root_cap, "entry", "oracle", &prefix));
 
         std::fs::write(
             &manifest,
@@ -2685,24 +3132,100 @@ mod read_tests {
                 digest_hex(&binary_hash)
             ),
         )?;
-        assert!(!cache_entry_is_valid(&entry, &binary, &manifest, &prefix));
+        assert!(!cache_entry_is_valid(&root_cap, "entry", "oracle", &prefix));
         std::fs::write(
             &manifest,
             format!("{prefix}binary={}\n\n", digest_hex(&binary_hash)),
         )?;
-        assert!(!cache_entry_is_valid(&entry, &binary, &manifest, &prefix));
+        assert!(!cache_entry_is_valid(&root_cap, "entry", "oracle", &prefix));
+        std::fs::write(
+            &manifest,
+            vec![
+                b'x';
+                usize::try_from(MAX_HELPER_MANIFEST_BYTES + 1).expect("small manifest bound")
+            ],
+        )?;
+        assert!(!cache_entry_is_valid(&root_cap, "entry", "oracle", &prefix));
+        std::fs::write(&manifest, &valid)?;
 
         #[cfg(unix)]
         {
+            let outside = root.path().join("outside-hardlink");
+            std::fs::hard_link(&binary, &outside)?;
+            assert!(!cache_entry_is_valid(&root_cap, "entry", "oracle", &prefix));
+            std::fs::remove_file(&outside)?;
+
             let target = root.path().join("manifest-target.txt");
-            std::fs::write(
-                &target,
-                format!("{prefix}binary={}\n", digest_hex(&binary_hash)),
-            )?;
+            std::fs::write(&target, &valid)?;
             std::fs::remove_file(&manifest)?;
             std::os::unix::fs::symlink(&target, &manifest)?;
-            assert!(!cache_entry_is_valid(&entry, &binary, &manifest, &prefix));
+            assert!(!cache_entry_is_valid(&root_cap, "entry", "oracle", &prefix));
         }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn go_toolchain_identity_is_bounded_and_refuses_links_specials_and_hardlinks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        fn fixture(root: &Path) -> io::Result<(PathBuf, PathBuf)> {
+            let executable = root.join("bin/go");
+            let goroot = root.join("goroot");
+            std::fs::create_dir_all(executable.parent().expect("bin parent"))?;
+            std::fs::create_dir_all(&goroot)?;
+            std::fs::write(&executable, b"selected go executable")?;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))?;
+            Ok((executable, goroot))
+        }
+
+        let root = tempfile::tempdir()?;
+        let (executable, goroot) = fixture(root.path())?;
+        std::fs::write(goroot.join("VERSION"), "go1.27.1\n")?;
+        let first = hash_toolchain_identity(&executable, &goroot)?;
+        let second = hash_toolchain_identity(&executable, &goroot)?;
+        assert_eq!(first, second);
+        std::fs::write(goroot.join("VERSION"), "go1.27.2\n")?;
+        assert_ne!(first, hash_toolchain_identity(&executable, &goroot)?);
+
+        let symlink_root = root.path().join("symlink-root");
+        let (symlink_go, symlink_goroot) = fixture(&symlink_root)?;
+        std::os::unix::fs::symlink("/etc/passwd", symlink_goroot.join("outside"))?;
+        assert!(hash_toolchain_identity(&symlink_go, &symlink_goroot).is_err());
+
+        let cycle_root = root.path().join("cycle-root");
+        let (cycle_go, cycle_goroot) = fixture(&cycle_root)?;
+        std::os::unix::fs::symlink("cycle", cycle_goroot.join("cycle"))?;
+        assert!(hash_toolchain_identity(&cycle_go, &cycle_goroot).is_err());
+
+        let hardlink_root = root.path().join("hardlink-root");
+        let (hardlink_go, hardlink_goroot) = fixture(&hardlink_root)?;
+        std::fs::write(hardlink_goroot.join("one"), b"shared")?;
+        std::fs::hard_link(hardlink_goroot.join("one"), hardlink_goroot.join("two"))?;
+        assert!(hash_toolchain_identity(&hardlink_go, &hardlink_goroot).is_err());
+        assert_eq!(std::fs::metadata(hardlink_goroot.join("one"))?.nlink(), 2);
+
+        let special_root = root.path().join("special-root");
+        let (special_go, special_goroot) = fixture(&special_root)?;
+        let _listener = std::os::unix::net::UnixListener::bind(special_goroot.join("socket"))?;
+        assert!(hash_toolchain_identity(&special_go, &special_goroot).is_err());
+
+        let oversized_root = root.path().join("oversized-root");
+        let (oversized_go, oversized_goroot) = fixture(&oversized_root)?;
+        let oversized = std::fs::File::create(oversized_goroot.join("sparse"))?;
+        oversized.set_len(MAX_GO_TOOLCHAIN_FILE_BYTES + 1)?;
+        drop(oversized);
+        assert!(hash_toolchain_identity(&oversized_go, &oversized_goroot).is_err());
+
+        let deep_root = root.path().join("deep-root");
+        let (deep_go, deep_goroot) = fixture(&deep_root)?;
+        let mut deep = deep_goroot.clone();
+        for _ in 0..=MAX_GO_TOOLCHAIN_DEPTH {
+            deep.push("d");
+            std::fs::create_dir(&deep)?;
+        }
+        assert!(hash_toolchain_identity(&deep_go, &deep_goroot).is_err());
         Ok(())
     }
 
@@ -2716,12 +3239,17 @@ mod read_tests {
         let go = root.path().join("fake-go");
         let helper_cwd = root.path().join("helper-cwd.txt");
         let build_count = root.path().join("build-count.txt");
+        let build_started = root.path().join("build-started.txt");
         let host_path =
             std::env::var_os("PATH").ok_or_else(|| io::Error::other("host PATH is unavailable"))?;
         let chmod = std::env::split_paths(&host_path)
             .map(|directory| directory.join("chmod"))
             .find(|path| path.is_file())
             .ok_or_else(|| io::Error::other("host PATH has no chmod executable"))?;
+        let sleeper = std::env::split_paths(&host_path)
+            .map(|directory| directory.join("sleep"))
+            .find(|path| path.is_file())
+            .ok_or_else(|| io::Error::other("host PATH has no sleep executable"))?;
         let program = format!(
             r#"#!/bin/sh
 set -eu
@@ -2741,12 +3269,16 @@ printf '%s\n' "$((count + 1))" > '{}'
 out="$6"
 [ "$7" = . ]
 printf '%s\n' '#!/bin/sh' 'set -eu' "printf '%s\n' '{{\"schemaVersion\":5}}'" > "$out"
+: > '{}'
+{} 1
 {} 700 "$out"
 "#,
             helper_cwd.display(),
             build_count.display(),
             build_count.display(),
             build_count.display(),
+            build_started.display(),
+            sleeper.display(),
             chmod.display(),
         );
         std::fs::write(&go, program)?;
@@ -2780,18 +3312,83 @@ printf '%s\n' '#!/bin/sh' 'set -eu' "printf '%s\n' '{{\"schemaVersion\":5}}'" > 
         let unavailable_directory =
             source_directory.with_file_name(format!("oracle-unavailable-{}", std::process::id()));
         assert!(!unavailable_directory.exists());
+        let key = super::helper_cache_key(
+            &super::helper_source_identity(),
+            &oracle
+                .child_environment
+                .as_ref()
+                .expect("configured child environment")
+                .toolchain_identity(),
+        );
+        let published_entry = root
+            .path()
+            .join("native-work/go-oracle-cache/nudox-go-oracle-v1")
+            .join(&key);
         std::fs::rename(&source_directory, &unavailable_directory)?;
-        let first_result = oracle.run(&module);
-        let second_result = oracle.run(&module);
+        let first_oracle = oracle.clone();
+        let first_module = module.clone();
+        let first_thread = std::thread::spawn(move || first_oracle.run(&first_module));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !build_started.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let build_started_in_time = build_started.exists();
+        let absent_while_compiling = !published_entry.exists();
+        let cache_root_path = published_entry
+            .parent()
+            .expect("published helper entry has a cache root");
+        let has_unpublished_partial_stage = std::fs::read_dir(cache_root_path)?
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("go-oracle-build-")
+            })
+            .any(|entry| {
+                let staged_binary = entry.path().join("oracle");
+                staged_binary.is_file() && !entry.path().join("manifest.txt").exists()
+            });
+        let second_oracle = oracle.clone();
+        let second_module = module.clone();
+        let second_thread = std::thread::spawn(move || second_oracle.run(&second_module));
+        let first_result = first_thread
+            .join()
+            .map_err(|_| io::Error::other("first helper build thread panicked"))?;
+        let second_result = second_thread
+            .join()
+            .map_err(|_| io::Error::other("second helper build thread panicked"))?;
         std::fs::rename(&unavailable_directory, &source_directory)?;
         let first = first_result?;
         let second = second_result?;
+        assert!(build_started_in_time, "fake helper build must begin");
+        assert!(
+            absent_while_compiling,
+            "partial staging must never be published"
+        );
+        assert!(
+            has_unpublished_partial_stage,
+            "the compiled file must remain in a manifest-free staging directory until publication"
+        );
         assert_eq!(first.schema_version, super::Output::REQUIRED_SCHEMA_VERSION);
         assert_eq!(
             second.schema_version,
             super::Output::REQUIRED_SCHEMA_VERSION
         );
         assert_eq!(std::fs::read_to_string(&build_count)?.trim(), "1");
+
+        let cached_binary = published_entry.join("oracle");
+        std::fs::write(&cached_binary, b"mutated cached helper")?;
+        let after_mutation = oracle.run(&module)?;
+        assert_eq!(
+            after_mutation.schema_version,
+            super::Output::REQUIRED_SCHEMA_VERSION
+        );
+        assert_eq!(
+            std::fs::read_to_string(&build_count)?.trim(),
+            "2",
+            "a cached binary changed after first use must be rejected and rebuilt"
+        );
 
         let helper_cwd = PathBuf::from(std::fs::read_to_string(&helper_cwd)?.trim());
         assert!(helper_cwd.is_absolute());
@@ -3070,10 +3667,15 @@ func CgoOnly() C.int { return 1 }
             digest_hex(&source_identity),
             digest_hex(&toolchain_identity),
         );
+        let cache_root_cap = DirectoryCapability::open(&cache_root)?;
+        let helper_entry_name = helper_entry
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| io::Error::other("helper key is not UTF-8"))?;
         assert!(cache_entry_is_valid(
-            helper_entry,
-            &helper,
-            &manifest,
+            &cache_root_cap,
+            helper_entry_name,
+            "oracle",
             &prefix
         ));
         assert_eq!(
@@ -3089,6 +3691,28 @@ func CgoOnly() C.int { return 1 }
                 .join("cache/download/golang.org/x/tools")
                 .exists()
         );
+
+        // Prove that the production helper cache is checked on every launch,
+        // including after a prior successful real Go invocation.
+        std::fs::write(&helper, b"mutated real Go helper")?;
+        let refreshed_bytes = oracle.authority_image_for_package_with_authority_witness(
+            &mux_source,
+            &module,
+            &witness,
+        )?;
+        let refreshed_image = GoImage::open(&refreshed_bytes)?;
+        assert!(
+            refreshed_image
+                .methods()
+                .any(|method| method.is_ok_and(|method| method.name == b"NewRoute"))
+        );
+        assert!(cache_entry_is_valid(
+            &cache_root_cap,
+            helper_entry_name,
+            "oracle",
+            &prefix
+        ));
+        assert_ne!(std::fs::read(&helper)?, b"mutated real Go helper");
         Ok(())
     }
 
