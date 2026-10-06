@@ -927,7 +927,14 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             }
             oxc_symbol = Some(symbol);
         }
-        let oxc_symbol = oxc_symbol?;
+        let Some(oxc_symbol) = oxc_symbol else {
+            #[cfg(test)]
+            eprintln!(
+                "TYPE_QUERY_BINDING_TRACE no_oxc_reference query={query_span:?} name={name_span:?} fallback={:?}",
+                self.local_fact_at(name_span.start)
+            );
+            return None;
+        };
         let target_start = semantic.scoping().symbol_span(oxc_symbol).start;
         let target = self.fact_at_name_start(target_start)?;
         let target_index = usize::try_from(target).ok()?;
@@ -949,8 +956,14 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         else {
             return Some(target);
         };
-        let query_symbol = native_tsz_type_query_symbol(bound_file, query_span, name_span)?;
-        let declaration_symbol = native_tsz_symbol_at_identifier_span(bound_file, target_name)?;
+        let query_symbol = native_tsz_type_query_symbol(bound_file, query_span, name_span);
+        let declaration_symbol = native_tsz_symbol_at_identifier_span(bound_file, target_name);
+        #[cfg(test)]
+        eprintln!(
+            "TYPE_QUERY_BINDING_TRACE query={query_span:?} name={name_span:?} target={target} target_name={target_name:?} tsz_query={query_symbol:?} tsz_decl={declaration_symbol:?}",
+        );
+        let query_symbol = query_symbol?;
+        let declaration_symbol = declaration_symbol?;
         if query_symbol != declaration_symbol {
             return None;
         }
@@ -10909,6 +10922,12 @@ mod lane_tests {
             .typescript_extension(marker_query.id())
             .and_then(|extension| extension.declared)
             .ok_or(LaneError::Missing("declared TypeQuery cell"))?;
+        #[cfg(test)]
+        eprintln!(
+            "TYPE_QUERY_IR_TRACE declared={declared:?} type={:?} observed={:?}",
+            ir.ty(declared),
+            native_observation(&ir, b"MarkerQuery")
+        );
         let TypeExpr::Computed(ComputedType::TypeOf(TypeQuery::Entity(target))) =
             ir.ty(declared)
                 .ok_or(LaneError::Missing("declared TypeOf row"))?
