@@ -1,0 +1,7 @@
+backend references <COORDINATE>
+
+List the places one declaration is used, with the exact source span that proves each use. Use to answer where is this symbol used: every row carries the relation kind, the authority class, and the exact source span that proves the use.
+
+operands
+  COORDINATE      Exact declaration coordinate whose uses are requested.
+

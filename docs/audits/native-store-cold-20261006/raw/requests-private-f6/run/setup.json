@@ -1,0 +1,619 @@
+{
+  "schema": "nudox.fresh-real-remote-runtime.v1",
+  "root": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b",
+  "language": "python",
+  "mode": "stock-host",
+  "source": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/sources/python-native-joined/python/packages/pypi-requests-2.34.2/source/requests-2.34.2",
+  "source_origin": [
+    {
+      "package": "requests",
+      "version": "2.34.2",
+      "derivation": "exact recorded PyPI metadata sdist member and copied original archive bytes",
+      "original_metadata_path": "/root/nudox-corpus-20261006/python/discovery/pypi-metadata/requests.json",
+      "metadata_sha256": "bcfc6a202592e4e90f5a28ff002694eaa7c58ba741b76077f432b8bee1480111",
+      "archive": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/sources/python-native-joined/python/archives/pypi-requests-2.34.2-requests-2.34.2.tar.gz",
+      "archive_sha256": "f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed",
+      "original_declared_archive": {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "acc3e2a2b89f2d3e2179abd6d00ebd70bff6273f37fb3e0cc209f48b39d00cbf",
+          "md5": "611e438d0803e962500225f9807a475e",
+          "sha256": "f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed"
+        },
+        "downloads": -1,
+        "filename": "requests-2.34.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "611e438d0803e962500225f9807a475e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.10",
+        "size": 142856,
+        "upload_time": "2026-05-14T19:25:27",
+        "upload_time_iso_8601": "2026-05-14T19:25:27.735762Z",
+        "url": "https://files.pythonhosted.org/packages/ac/c3/e2a2b89f2d3e2179abd6d00ebd70bff6273f37fb3e0cc209f48b39d00cbf/requests-2.34.2.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    },
+    {
+      "package": "quart",
+      "version": "0.23.1",
+      "derivation": "exact recorded PyPI metadata sdist member and copied original archive bytes",
+      "original_metadata_path": "/root/nudox-corpus-20261006/python/discovery/pypi-metadata/quart.json",
+      "metadata_sha256": "a69e416799a2060d46510724805503f4180627eeca3bae85a57d24dc78ab51ed",
+      "archive": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/sources/python-native-joined/python/archives/pypi-quart-0.23.1-quart-0.23.1.tar.gz",
+      "archive_sha256": "1ca848415910bd2eb75e9d9b452388f892a37be222602a373622e6c633d1efbf",
+      "original_declared_archive": {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "6b8134396f67e09e7a0609261f1ef0f43b26f5d67e8f2dc4d34b4953061560f2",
+          "md5": "e3de90d7b233713c5acac53c33f7d82b",
+          "sha256": "1ca848415910bd2eb75e9d9b452388f892a37be222602a373622e6c633d1efbf"
+        },
+        "downloads": -1,
+        "filename": "quart-0.23.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e3de90d7b233713c5acac53c33f7d82b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.13",
+        "size": 65636,
+        "upload_time": "2026-08-29T15:58:35",
+        "upload_time_iso_8601": "2026-08-29T15:58:35.767708Z",
+        "url": "https://files.pythonhosted.org/packages/6b/81/34396f67e09e7a0609261f1ef0f43b26f5d67e8f2dc4d34b4953061560f2/quart-0.23.1.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    }
+  ],
+  "source_before": {
+    "files": [
+      [
+        "HISTORY.md",
+        64563,
+        "f779ef32bdb04e23869a197f63812b0ca1f40ca1c4621f38cbcce06dbb6085b8"
+      ],
+      [
+        "LICENSE",
+        10142,
+        "09e8a9bcec8067104652c168685ab0931e7868f9c8284b66f5ae6edae5f1130b"
+      ],
+      [
+        "MANIFEST.in",
+        126,
+        "e44e033d6fb54718d34926991771eef6e0eadcddd36ce9e2ad06a1533cbbc517"
+      ],
+      [
+        "NOTICE",
+        38,
+        "f5110972dedad2b4e9d314518daf3b7d72d6e02e499acd802181de6f74571dcc"
+      ],
+      [
+        "PKG-INFO",
+        4806,
+        "8c384ba3e979480faae2859d3c5e6c1276dd2c3616e322e124d52c8cfc556f27"
+      ],
+      [
+        "README.md",
+        2906,
+        "2a9268c9be5f4dc9abe9105740be7c5234babc3dd2b25eb11ca376c538a0c67b"
+      ],
+      [
+        "pyproject.toml",
+        3153,
+        "249147c8688043884fd91b951a013c5bf0aef445894527ad75124a12a41225e1"
+      ],
+      [
+        "requirements-dev.txt",
+        93,
+        "aed8622c9a3d9361a9cdbe71a4643831387aff5f622ebdd68de598a8b258c841"
+      ],
+      [
+        "setup.cfg",
+        38,
+        "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e"
+      ],
+      [
+        "setup.py",
+        179,
+        "1728c11af4134997015ab07547544852e2f7e103c79a5b0486a8486799f50e0a"
+      ],
+      [
+        "src/requests/__init__.py",
+        5922,
+        "311157e7fa4aa9166c827d5237e6fd694eeb5ca549ee40e2e90f89f21abcd56e"
+      ],
+      [
+        "src/requests/__version__.py",
+        435,
+        "abba90670b0370a3dc40d97c2dea46a35d4bec941ff10d7c3cf3098ef04a17f9"
+      ],
+      [
+        "src/requests/_internal_utils.py",
+        1542,
+        "4c7d8d132c9898fc7d715e473f3ac74785ddc4ab96d2c9240f87835dc6d981ff"
+      ],
+      [
+        "src/requests/_types.py",
+        5838,
+        "d06df79f54a279c0cc3faec596c446246d5ad14edfd529eb328defbd62a44a89"
+      ],
+      [
+        "src/requests/adapters.py",
+        28064,
+        "647eabd4453de232aa40b55ff033d6f19778910b7e7069c51fdf63076fc77493"
+      ],
+      [
+        "src/requests/api.py",
+        7152,
+        "4d15480ac046f089209798e8650476ef4a28ebe6f81b400758f8ef42ec6b5509"
+      ],
+      [
+        "src/requests/auth.py",
+        12233,
+        "e93951a552d4c3c5fd9b84a5e1d49b03caaba4723c4ff112da6053600ec85a65"
+      ],
+      [
+        "src/requests/certs.py",
+        430,
+        "fd9c6b83359cef90ff6c4eeeab8dcc2388da382ebca7d00a499b3c0b434a87e4"
+      ],
+      [
+        "src/requests/compat.py",
+        2465,
+        "5d79ba289690b5015044341a1f7bc7d24134fc13a2db3efcf852515bf9aa18b4"
+      ],
+      [
+        "src/requests/cookies.py",
+        21549,
+        "0a1ce6140f2b9420522c5080e356e689fa796c2522f55ca10826f5ed8e0a723c"
+      ],
+      [
+        "src/requests/exceptions.py",
+        4564,
+        "c5e18f3352454968e337bb3056f0867df2f37c0a0d2c1a77dc05e7e0b3c0411b"
+      ],
+      [
+        "src/requests/help.py",
+        4210,
+        "723519bb1884da18d84f6b2fb78f7ebf7fb57f732070b6025ae071dac6a2d179"
+      ],
+      [
+        "src/requests/hooks.py",
+        1138,
+        "ebd8a02475d31a0e473a8f553e9501ff43645b9563885ad52844e7a63f0d76ab"
+      ],
+      [
+        "src/requests/models.py",
+        41783,
+        "d1bc0d990abf5d5ebee05f890911b4363fadf2d5264b686a963df47c529b6ace"
+      ],
+      [
+        "src/requests/packages.py",
+        904,
+        "fe0d2067af355320252874631fa91a9db6a8c71d9e01beaacdc5e2383c932287"
+      ],
+      [
+        "src/requests/py.typed",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "src/requests/sessions.py",
+        34248,
+        "96fbb30bbbf06a59a5268d13b57885149756aa3f31695b5c15e41dd7bb2f67a6"
+      ],
+      [
+        "src/requests/status_codes.py",
+        4351,
+        "1950f47c89cf18019787e07d8ce48f66d6b38e622f7d94d70a90247fee6c040e"
+      ],
+      [
+        "src/requests/structures.py",
+        4134,
+        "ba9460c39078f25e6f1d2a24ac941ac6f8d2ee97197fa8c8d0c262d8a1e67a02"
+      ],
+      [
+        "src/requests/utils.py",
+        36322,
+        "657fd02343b2586bbd138a4ec0f03ceeb7610c2712f96ac54f28a708bf7d079c"
+      ],
+      [
+        "src/requests.egg-info/PKG-INFO",
+        4806,
+        "8c384ba3e979480faae2859d3c5e6c1276dd2c3616e322e124d52c8cfc556f27"
+      ],
+      [
+        "src/requests.egg-info/SOURCES.txt",
+        2238,
+        "6e577552258f9ec2936409fcfadcb94134a4b32039435beaf1cfa6eddac1d728"
+      ],
+      [
+        "src/requests.egg-info/dependency_links.txt",
+        1,
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      ],
+      [
+        "src/requests.egg-info/requires.txt",
+        157,
+        "2b5413fb2126441797dc8412bee5781f51ffb61ec7275d5a2b9e06f1124d9604"
+      ],
+      [
+        "src/requests.egg-info/top_level.txt",
+        9,
+        "7cc4959877dbe6b6c63a8eb1bfe3bfb545fa8fe5b28b1b2c13e4a7c1c0d1c4d4"
+      ],
+      [
+        "tests/__init__.py",
+        469,
+        "ac7f253daae0905f9b3dec647cae736bb3c090185aa373b30b3e851599e5342c"
+      ],
+      [
+        "tests/certs/README.md",
+        343,
+        "a902fe53d4cc6224b59532e47d94fc42726b2227462e801538aa50a7888d38f3"
+      ],
+      [
+        "tests/certs/expired/Makefile",
+        138,
+        "a33636d6474f1e94a1de61c4e1fbd2efb5c55aa86061ab3ce2d2ad9fb5aeb457"
+      ],
+      [
+        "tests/certs/expired/README.md",
+        228,
+        "80690554d2353ab1c348bee8df833bdf7b3cd1cb8d728b4380221f34b5881eeb"
+      ],
+      [
+        "tests/certs/expired/ca/Makefile",
+        297,
+        "09ab0ff83129203660d5ad489618764524f6af7fa4d9586ca5bdb0f68d1ca822"
+      ],
+      [
+        "tests/certs/expired/ca/ca-private.key",
+        1700,
+        "9a36bafea981da2dcd9a218b7ce23c778acdbee0009c0720531dd4e4d0549548"
+      ],
+      [
+        "tests/certs/expired/ca/ca.cnf",
+        463,
+        "238414b5b06448a4d2f37fcf2e0e771e49e84a172a1c6dc3efec5866d24da3fe"
+      ],
+      [
+        "tests/certs/expired/ca/ca.crt",
+        1322,
+        "1407cb9c2502bf453ffa3f54cb846022f161a46b73fe4caf436157d95ad93367"
+      ],
+      [
+        "tests/certs/expired/ca/ca.srl",
+        41,
+        "c80a955513b5fed04be2ee78804153be8cf070c4145b83c9dbb6331c2e6c2013"
+      ],
+      [
+        "tests/certs/expired/server/Makefile",
+        382,
+        "1c8cf9d72554a803d3b267d9df9c5e54db2e05d2fbd6b16d745f140bfcf74a24"
+      ],
+      [
+        "tests/certs/expired/server/cert.cnf",
+        457,
+        "3b70317a294d4ac19e055ccb7316c4b3d9cca685d7bdc40be98cdfa9994ff081"
+      ],
+      [
+        "tests/certs/expired/server/server.csr",
+        1159,
+        "5d4683e2db14cf6f47d57ea6e45647a29b5693f3f723a891b2ef188c333de694"
+      ],
+      [
+        "tests/certs/expired/server/server.key",
+        1704,
+        "acce64eae44a4073909c97e5929a1a319c947f4f37e4b933c1dcd805e59c8516"
+      ],
+      [
+        "tests/certs/expired/server/server.pem",
+        2628,
+        "232cc4e13f97688281a03e6a555e93c3a7bd6cfda4604fdee085f4ac2556f2c2"
+      ],
+      [
+        "tests/certs/mtls/Makefile",
+        74,
+        "aa1f5be6bde49113304ba145736bc3a3d23d45dfaa81e0d977fd52378f30b314"
+      ],
+      [
+        "tests/certs/mtls/README.md",
+        180,
+        "57dd4ec5bd44f1d2e1bc2de7e6cb292eb62f2236d34fd889a46d81a19dbde9f7"
+      ],
+      [
+        "tests/certs/mtls/client/Makefile",
+        381,
+        "ec153d8d19a0987a41977094bc8b01cbca1a8b5adc589f1bd8d9bec562bdb9d8"
+      ],
+      [
+        "tests/certs/mtls/client/ca/Makefile",
+        297,
+        "09ab0ff83129203660d5ad489618764524f6af7fa4d9586ca5bdb0f68d1ca822"
+      ],
+      [
+        "tests/certs/mtls/client/ca/ca-private.key",
+        1700,
+        "9a36bafea981da2dcd9a218b7ce23c778acdbee0009c0720531dd4e4d0549548"
+      ],
+      [
+        "tests/certs/mtls/client/ca/ca.cnf",
+        463,
+        "238414b5b06448a4d2f37fcf2e0e771e49e84a172a1c6dc3efec5866d24da3fe"
+      ],
+      [
+        "tests/certs/mtls/client/ca/ca.crt",
+        1322,
+        "1407cb9c2502bf453ffa3f54cb846022f161a46b73fe4caf436157d95ad93367"
+      ],
+      [
+        "tests/certs/mtls/client/ca/ca.srl",
+        41,
+        "c80a955513b5fed04be2ee78804153be8cf070c4145b83c9dbb6331c2e6c2013"
+      ],
+      [
+        "tests/certs/mtls/client/cert.cnf",
+        696,
+        "b7cbb0ae5934dd229cba5cbf60869a33d352bf9c2799705f99f74e0685148acf"
+      ],
+      [
+        "tests/certs/mtls/client/client.csr",
+        1500,
+        "5fc31e8e331f1fdbf7f80c4840b4e70fa81f6dc46ecab811bb03134d21ab4004"
+      ],
+      [
+        "tests/certs/mtls/client/client.key",
+        1704,
+        "98ed2a33896438a77175ee8ecebe0a8bf57d39c24a18ba4ebf87d9bc8abf6711"
+      ],
+      [
+        "tests/certs/mtls/client/client.pem",
+        2628,
+        "d8601d058cf8958fff16250037b38a83e5eb93cc0507b4e083860ca9214023ea"
+      ],
+      [
+        "tests/certs/valid/ca/Makefile",
+        297,
+        "09ab0ff83129203660d5ad489618764524f6af7fa4d9586ca5bdb0f68d1ca822"
+      ],
+      [
+        "tests/certs/valid/ca/ca-private.key",
+        1700,
+        "9a36bafea981da2dcd9a218b7ce23c778acdbee0009c0720531dd4e4d0549548"
+      ],
+      [
+        "tests/certs/valid/ca/ca.cnf",
+        463,
+        "238414b5b06448a4d2f37fcf2e0e771e49e84a172a1c6dc3efec5866d24da3fe"
+      ],
+      [
+        "tests/certs/valid/ca/ca.crt",
+        1322,
+        "1407cb9c2502bf453ffa3f54cb846022f161a46b73fe4caf436157d95ad93367"
+      ],
+      [
+        "tests/certs/valid/ca/ca.srl",
+        41,
+        "c80a955513b5fed04be2ee78804153be8cf070c4145b83c9dbb6331c2e6c2013"
+      ],
+      [
+        "tests/certs/valid/server/Makefile",
+        421,
+        "68541e2b167a72cf00a57c0978750b11ff830dc85bdda99eebe50f7791768a03"
+      ],
+      [
+        "tests/certs/valid/server/cert.cnf",
+        722,
+        "605014e20661c4d3e5ff5869e5453018e09329a3b7a987d26c8b785db3ee7479"
+      ],
+      [
+        "tests/certs/valid/server/server.csr",
+        1175,
+        "e880392e855c00d84c06daa45000a624950fc2da0dde1ae92f2a9f91370a578e"
+      ],
+      [
+        "tests/certs/valid/server/server.key",
+        1704,
+        "5457b89bc1af7de6829d78c9baa639ddea79b4e9dffe7933166c12836f9345c2"
+      ],
+      [
+        "tests/certs/valid/server/server.pem",
+        2770,
+        "d0b55dbe152874f2d7bce3513d52a8e5f587566186dfd7a88d14ad41367133d1"
+      ],
+      [
+        "tests/compat.py",
+        480,
+        "d58ff5e3167de0140a667cc51427f809c552e485875c95b9dad43ce13ba15083"
+      ],
+      [
+        "tests/conftest.py",
+        1934,
+        "6d65ffb582519f80a66c5d1ef571e3c33395a199f9e67fcb500c6ad2d7800e0a"
+      ],
+      [
+        "tests/test_adapters.py",
+        314,
+        "102494aa704f8505fb22fa476452f6aa3aae756da82fe2d5b2a2a3f366b38bf4"
+      ],
+      [
+        "tests/test_help.py",
+        839,
+        "1c2ac8ca9f4986429717791df766122b23e1fe90aa621318380ccf1f8e83d0f6"
+      ],
+      [
+        "tests/test_hooks.py",
+        424,
+        "a9e5163f538543a660be3b06650cd0b803ff0c503f5948f66b6fc50ede38109c"
+      ],
+      [
+        "tests/test_lowlevel.py",
+        15343,
+        "db5fac7340c49c49551e3e41679a8ee6e385c56054f84073932354a8da87df65"
+      ],
+      [
+        "tests/test_packages.py",
+        229,
+        "90875423db059d65b39416d7b6d01b18938851b8071279877400beb506e08676"
+      ],
+      [
+        "tests/test_requests.py",
+        107631,
+        "c97eaf5958378b2117fdb88b5df031002772a9f24ba5484b91fe983c5f51cc80"
+      ],
+      [
+        "tests/test_structures.py",
+        2757,
+        "f984b7fc68fb2bd6ec82463b0cf5b6bd2ac773293cac6629fc3361f9f66947e9"
+      ],
+      [
+        "tests/test_testserver.py",
+        5547,
+        "90ac39d6cb9c0fbaa94c5aa59646bf6097829ae73e50ac284a41135188f95d33"
+      ],
+      [
+        "tests/test_utils.py",
+        31454,
+        "00d027432443a1aa9539c00a09550de9439cdd696d2e6acf2dc997de3a416946"
+      ],
+      [
+        "tests/testserver/__init__.py",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "tests/testserver/server.py",
+        5147,
+        "15a9092cc5edb005af6732097555515c4b82093d9394f6463c966259f83068c3"
+      ],
+      [
+        "tests/utils.py",
+        366,
+        "cfaec86690eba62573c8c730a121332837809333fb2b1006a20e2e8f4d34d4de"
+      ]
+    ],
+    "sha256": "8dd6fd869be09aaa5c75a53837fce418a3c7463890a08034d35c4e779fe58031"
+  },
+  "runtime_manifest": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/runtime-build-manifest.json",
+  "runtime_manifest_sha256": "5034ac6f55522863bf8ed52dd450461060a44739ae86de804a23133f8266a83a",
+  "runtime_manifest_content": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "f6eee1512c723460844c7e563b5833717bb9f548",
+      "tree": "9e68e115eee8c225604603f5a96cc3a32a725112",
+      "clean_before_launch": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/images/backend-locald",
+        "sha256": "feb4735f313c0c88df0815572aaa7c0e6f43c3878bf2127e04c73fbb919e5ce6",
+        "bytes": 684717600
+      },
+      "backend-cli": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/images/backend-cli",
+        "sha256": "532c298fcd05802e3eff7c8956e52148d351f30451b0799108534f37e7a57be9",
+        "bytes": 219025344
+      },
+      "backend-mcp": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/images/backend-mcp",
+        "sha256": "73268455dac095e27fdce8b0a1530d2968420d4bdc7cb7432e4f7e2777f79a46",
+        "bytes": 159795920
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/runtime-artifact-build-receipt.json",
+      "sha256": "f80b14fa36254ab4be3bebb689aa3656701d26492ad7f0dcd40477a9f553bf25"
+    }
+  },
+  "binaries": {
+    "backend-cli": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/bin/backend-cli",
+      "sha256": "532c298fcd05802e3eff7c8956e52148d351f30451b0799108534f37e7a57be9"
+    },
+    "backend-locald": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/bin/backend-locald",
+      "sha256": "feb4735f313c0c88df0815572aaa7c0e6f43c3878bf2127e04c73fbb919e5ce6"
+    },
+    "backend-mcp": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/bin/backend-mcp",
+      "sha256": "73268455dac095e27fdce8b0a1530d2968420d4bdc7cb7432e4f7e2777f79a46"
+    }
+  },
+  "env": {
+    "HOME": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home",
+    "XDG_CONFIG_HOME": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.config",
+    "XDG_DATA_HOME": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/share",
+    "XDG_STATE_HOME": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/state",
+    "TMPDIR": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/tmp",
+    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/nix/var/nix/profiles/default/bin",
+    "LANG": "C.UTF-8",
+    "USER": "rmccrar6",
+    "LOGNAME": "rmccrar6"
+  },
+  "compiler_snapshot_sha256": "59237afc707b4ba4b61b2d82aa70dea6e6610c3cb72b1fdb6dd373f5941719d9",
+  "workspace_preexisting": false,
+  "endpoint_preexisting": false,
+  "fresh_home_entries": [
+    "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local"
+  ],
+  "installer_tested": false,
+  "dependency_closure_copied": false,
+  "accepted_project_pass": false,
+  "journey_options": {
+    "skip_update_cancel": true,
+    "cancel_before_first_add": true,
+    "transport_only": false,
+    "public_compiler_variables": [],
+    "requested_queries": [
+      "request",
+      "Session"
+    ],
+    "edit_file": "src/requests/api.py",
+    "keep_edited_source": true,
+    "first_publish_only": false,
+    "witness_path": "src/requests/api.py",
+    "witness_line": 24,
+    "resolve_detail": "summary",
+    "resolve_limit": 200,
+    "supervise_locald": true
+  },
+  "host": {
+    "system": "Darwin",
+    "release": "25.6.0",
+    "machine": "arm64",
+    "user": "rmccrar6",
+    "fresh_os_claimed": false
+  },
+  "manual_installation": {
+    "kind": "manual matched-trio copy installation",
+    "source_manifest_sha256": "5034ac6f55522863bf8ed52dd450461060a44739ae86de804a23133f8266a83a",
+    "executables": {
+      "backend-cli": {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/images/backend-cli",
+        "installed": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/bin/backend-cli",
+        "sha256": "532c298fcd05802e3eff7c8956e52148d351f30451b0799108534f37e7a57be9",
+        "bytes": 219025344
+      },
+      "backend-locald": {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/images/backend-locald",
+        "installed": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/bin/backend-locald",
+        "sha256": "feb4735f313c0c88df0815572aaa7c0e6f43c3878bf2127e04c73fbb919e5ce6",
+        "bytes": 684717600
+      },
+      "backend-mcp": {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/images/backend-mcp",
+        "installed": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/bin/backend-mcp",
+        "sha256": "73268455dac095e27fdce8b0a1530d2968420d4bdc7cb7432e4f7e2777f79a46",
+        "bytes": 159795920
+      }
+    }
+  },
+  "home_before_installation": [],
+  "network_scope": "documented product offline policies; not a kernel network denial",
+  "mcp_observer_capture_limit_bytes": 134217728
+}

@@ -1,0 +1,7 @@
+backend graph <COORDINATE>
+
+Traverse calls, implementations, references, and other relations from one declaration. Use to follow one declaration outward along calls and references in its package.
+
+operands
+  COORDINATE      Exact declaration coordinate to traverse from.
+

@@ -1,0 +1,11 @@
+backend search <TEXT> [--limit COUNT] [--cursor CURSOR]
+
+Search exact keys, names, relations, and vectors together; every lane reports its coverage. Start here for a question like where error handling lives. Match names, signatures, and documentation, then open a coordinate.
+
+operands
+  TEXT            Text to find in names, signatures, and documentation.
+
+options
+  --limit         Maximum rows in this page, 1 to 200.
+  --cursor        Opaque continuation returned by the preceding page; bound to its query and index snapshot.
+

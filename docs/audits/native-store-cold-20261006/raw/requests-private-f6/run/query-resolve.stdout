@@ -1,0 +1,7 @@
+{
+  "slug": "transport",
+  "operand": "response",
+  "cause": "oversized",
+  "detail": "response is 98748 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+  "answer": "fault"
+}

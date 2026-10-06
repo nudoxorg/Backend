@@ -1,0 +1,1 @@
+usage: backend-mcp [--project PATH] [--workspace PATH] [--endpoint PATH] [--framed | --http 127.0.0.1:PORT]

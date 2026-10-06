@@ -1,0 +1,2289 @@
+{
+  "schema": "nudox.fresh-real-remote-runtime.v1",
+  "root": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b",
+  "language": "python",
+  "mode": "stock-host",
+  "source": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/sources/python-native-joined/python/packages/pypi-requests-2.34.2/source/requests-2.34.2",
+  "source_origin": [
+    {
+      "package": "requests",
+      "version": "2.34.2",
+      "derivation": "exact recorded PyPI metadata sdist member and copied original archive bytes",
+      "original_metadata_path": "/root/nudox-corpus-20261006/python/discovery/pypi-metadata/requests.json",
+      "metadata_sha256": "bcfc6a202592e4e90f5a28ff002694eaa7c58ba741b76077f432b8bee1480111",
+      "archive": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/sources/python-native-joined/python/archives/pypi-requests-2.34.2-requests-2.34.2.tar.gz",
+      "archive_sha256": "f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed",
+      "original_declared_archive": {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "acc3e2a2b89f2d3e2179abd6d00ebd70bff6273f37fb3e0cc209f48b39d00cbf",
+          "md5": "611e438d0803e962500225f9807a475e",
+          "sha256": "f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed"
+        },
+        "downloads": -1,
+        "filename": "requests-2.34.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "611e438d0803e962500225f9807a475e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.10",
+        "size": 142856,
+        "upload_time": "2026-05-14T19:25:27",
+        "upload_time_iso_8601": "2026-05-14T19:25:27.735762Z",
+        "url": "https://files.pythonhosted.org/packages/ac/c3/e2a2b89f2d3e2179abd6d00ebd70bff6273f37fb3e0cc209f48b39d00cbf/requests-2.34.2.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    },
+    {
+      "package": "quart",
+      "version": "0.23.1",
+      "derivation": "exact recorded PyPI metadata sdist member and copied original archive bytes",
+      "original_metadata_path": "/root/nudox-corpus-20261006/python/discovery/pypi-metadata/quart.json",
+      "metadata_sha256": "a69e416799a2060d46510724805503f4180627eeca3bae85a57d24dc78ab51ed",
+      "archive": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/sources/python-native-joined/python/archives/pypi-quart-0.23.1-quart-0.23.1.tar.gz",
+      "archive_sha256": "1ca848415910bd2eb75e9d9b452388f892a37be222602a373622e6c633d1efbf",
+      "original_declared_archive": {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "6b8134396f67e09e7a0609261f1ef0f43b26f5d67e8f2dc4d34b4953061560f2",
+          "md5": "e3de90d7b233713c5acac53c33f7d82b",
+          "sha256": "1ca848415910bd2eb75e9d9b452388f892a37be222602a373622e6c633d1efbf"
+        },
+        "downloads": -1,
+        "filename": "quart-0.23.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e3de90d7b233713c5acac53c33f7d82b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.13",
+        "size": 65636,
+        "upload_time": "2026-08-29T15:58:35",
+        "upload_time_iso_8601": "2026-08-29T15:58:35.767708Z",
+        "url": "https://files.pythonhosted.org/packages/6b/81/34396f67e09e7a0609261f1ef0f43b26f5d67e8f2dc4d34b4953061560f2/quart-0.23.1.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    }
+  ],
+  "source_before": {
+    "files": [
+      [
+        "HISTORY.md",
+        64563,
+        "f779ef32bdb04e23869a197f63812b0ca1f40ca1c4621f38cbcce06dbb6085b8"
+      ],
+      [
+        "LICENSE",
+        10142,
+        "09e8a9bcec8067104652c168685ab0931e7868f9c8284b66f5ae6edae5f1130b"
+      ],
+      [
+        "MANIFEST.in",
+        126,
+        "e44e033d6fb54718d34926991771eef6e0eadcddd36ce9e2ad06a1533cbbc517"
+      ],
+      [
+        "NOTICE",
+        38,
+        "f5110972dedad2b4e9d314518daf3b7d72d6e02e499acd802181de6f74571dcc"
+      ],
+      [
+        "PKG-INFO",
+        4806,
+        "8c384ba3e979480faae2859d3c5e6c1276dd2c3616e322e124d52c8cfc556f27"
+      ],
+      [
+        "README.md",
+        2906,
+        "2a9268c9be5f4dc9abe9105740be7c5234babc3dd2b25eb11ca376c538a0c67b"
+      ],
+      [
+        "pyproject.toml",
+        3153,
+        "249147c8688043884fd91b951a013c5bf0aef445894527ad75124a12a41225e1"
+      ],
+      [
+        "requirements-dev.txt",
+        93,
+        "aed8622c9a3d9361a9cdbe71a4643831387aff5f622ebdd68de598a8b258c841"
+      ],
+      [
+        "setup.cfg",
+        38,
+        "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e"
+      ],
+      [
+        "setup.py",
+        179,
+        "1728c11af4134997015ab07547544852e2f7e103c79a5b0486a8486799f50e0a"
+      ],
+      [
+        "src/requests/__init__.py",
+        5922,
+        "311157e7fa4aa9166c827d5237e6fd694eeb5ca549ee40e2e90f89f21abcd56e"
+      ],
+      [
+        "src/requests/__version__.py",
+        435,
+        "abba90670b0370a3dc40d97c2dea46a35d4bec941ff10d7c3cf3098ef04a17f9"
+      ],
+      [
+        "src/requests/_internal_utils.py",
+        1542,
+        "4c7d8d132c9898fc7d715e473f3ac74785ddc4ab96d2c9240f87835dc6d981ff"
+      ],
+      [
+        "src/requests/_types.py",
+        5838,
+        "d06df79f54a279c0cc3faec596c446246d5ad14edfd529eb328defbd62a44a89"
+      ],
+      [
+        "src/requests/adapters.py",
+        28064,
+        "647eabd4453de232aa40b55ff033d6f19778910b7e7069c51fdf63076fc77493"
+      ],
+      [
+        "src/requests/api.py",
+        7152,
+        "4d15480ac046f089209798e8650476ef4a28ebe6f81b400758f8ef42ec6b5509"
+      ],
+      [
+        "src/requests/auth.py",
+        12233,
+        "e93951a552d4c3c5fd9b84a5e1d49b03caaba4723c4ff112da6053600ec85a65"
+      ],
+      [
+        "src/requests/certs.py",
+        430,
+        "fd9c6b83359cef90ff6c4eeeab8dcc2388da382ebca7d00a499b3c0b434a87e4"
+      ],
+      [
+        "src/requests/compat.py",
+        2465,
+        "5d79ba289690b5015044341a1f7bc7d24134fc13a2db3efcf852515bf9aa18b4"
+      ],
+      [
+        "src/requests/cookies.py",
+        21549,
+        "0a1ce6140f2b9420522c5080e356e689fa796c2522f55ca10826f5ed8e0a723c"
+      ],
+      [
+        "src/requests/exceptions.py",
+        4564,
+        "c5e18f3352454968e337bb3056f0867df2f37c0a0d2c1a77dc05e7e0b3c0411b"
+      ],
+      [
+        "src/requests/help.py",
+        4210,
+        "723519bb1884da18d84f6b2fb78f7ebf7fb57f732070b6025ae071dac6a2d179"
+      ],
+      [
+        "src/requests/hooks.py",
+        1138,
+        "ebd8a02475d31a0e473a8f553e9501ff43645b9563885ad52844e7a63f0d76ab"
+      ],
+      [
+        "src/requests/models.py",
+        41783,
+        "d1bc0d990abf5d5ebee05f890911b4363fadf2d5264b686a963df47c529b6ace"
+      ],
+      [
+        "src/requests/packages.py",
+        904,
+        "fe0d2067af355320252874631fa91a9db6a8c71d9e01beaacdc5e2383c932287"
+      ],
+      [
+        "src/requests/py.typed",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "src/requests/sessions.py",
+        34248,
+        "96fbb30bbbf06a59a5268d13b57885149756aa3f31695b5c15e41dd7bb2f67a6"
+      ],
+      [
+        "src/requests/status_codes.py",
+        4351,
+        "1950f47c89cf18019787e07d8ce48f66d6b38e622f7d94d70a90247fee6c040e"
+      ],
+      [
+        "src/requests/structures.py",
+        4134,
+        "ba9460c39078f25e6f1d2a24ac941ac6f8d2ee97197fa8c8d0c262d8a1e67a02"
+      ],
+      [
+        "src/requests/utils.py",
+        36322,
+        "657fd02343b2586bbd138a4ec0f03ceeb7610c2712f96ac54f28a708bf7d079c"
+      ],
+      [
+        "src/requests.egg-info/PKG-INFO",
+        4806,
+        "8c384ba3e979480faae2859d3c5e6c1276dd2c3616e322e124d52c8cfc556f27"
+      ],
+      [
+        "src/requests.egg-info/SOURCES.txt",
+        2238,
+        "6e577552258f9ec2936409fcfadcb94134a4b32039435beaf1cfa6eddac1d728"
+      ],
+      [
+        "src/requests.egg-info/dependency_links.txt",
+        1,
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      ],
+      [
+        "src/requests.egg-info/requires.txt",
+        157,
+        "2b5413fb2126441797dc8412bee5781f51ffb61ec7275d5a2b9e06f1124d9604"
+      ],
+      [
+        "src/requests.egg-info/top_level.txt",
+        9,
+        "7cc4959877dbe6b6c63a8eb1bfe3bfb545fa8fe5b28b1b2c13e4a7c1c0d1c4d4"
+      ],
+      [
+        "tests/__init__.py",
+        469,
+        "ac7f253daae0905f9b3dec647cae736bb3c090185aa373b30b3e851599e5342c"
+      ],
+      [
+        "tests/certs/README.md",
+        343,
+        "a902fe53d4cc6224b59532e47d94fc42726b2227462e801538aa50a7888d38f3"
+      ],
+      [
+        "tests/certs/expired/Makefile",
+        138,
+        "a33636d6474f1e94a1de61c4e1fbd2efb5c55aa86061ab3ce2d2ad9fb5aeb457"
+      ],
+      [
+        "tests/certs/expired/README.md",
+        228,
+        "80690554d2353ab1c348bee8df833bdf7b3cd1cb8d728b4380221f34b5881eeb"
+      ],
+      [
+        "tests/certs/expired/ca/Makefile",
+        297,
+        "09ab0ff83129203660d5ad489618764524f6af7fa4d9586ca5bdb0f68d1ca822"
+      ],
+      [
+        "tests/certs/expired/ca/ca-private.key",
+        1700,
+        "9a36bafea981da2dcd9a218b7ce23c778acdbee0009c0720531dd4e4d0549548"
+      ],
+      [
+        "tests/certs/expired/ca/ca.cnf",
+        463,
+        "238414b5b06448a4d2f37fcf2e0e771e49e84a172a1c6dc3efec5866d24da3fe"
+      ],
+      [
+        "tests/certs/expired/ca/ca.crt",
+        1322,
+        "1407cb9c2502bf453ffa3f54cb846022f161a46b73fe4caf436157d95ad93367"
+      ],
+      [
+        "tests/certs/expired/ca/ca.srl",
+        41,
+        "c80a955513b5fed04be2ee78804153be8cf070c4145b83c9dbb6331c2e6c2013"
+      ],
+      [
+        "tests/certs/expired/server/Makefile",
+        382,
+        "1c8cf9d72554a803d3b267d9df9c5e54db2e05d2fbd6b16d745f140bfcf74a24"
+      ],
+      [
+        "tests/certs/expired/server/cert.cnf",
+        457,
+        "3b70317a294d4ac19e055ccb7316c4b3d9cca685d7bdc40be98cdfa9994ff081"
+      ],
+      [
+        "tests/certs/expired/server/server.csr",
+        1159,
+        "5d4683e2db14cf6f47d57ea6e45647a29b5693f3f723a891b2ef188c333de694"
+      ],
+      [
+        "tests/certs/expired/server/server.key",
+        1704,
+        "acce64eae44a4073909c97e5929a1a319c947f4f37e4b933c1dcd805e59c8516"
+      ],
+      [
+        "tests/certs/expired/server/server.pem",
+        2628,
+        "232cc4e13f97688281a03e6a555e93c3a7bd6cfda4604fdee085f4ac2556f2c2"
+      ],
+      [
+        "tests/certs/mtls/Makefile",
+        74,
+        "aa1f5be6bde49113304ba145736bc3a3d23d45dfaa81e0d977fd52378f30b314"
+      ],
+      [
+        "tests/certs/mtls/README.md",
+        180,
+        "57dd4ec5bd44f1d2e1bc2de7e6cb292eb62f2236d34fd889a46d81a19dbde9f7"
+      ],
+      [
+        "tests/certs/mtls/client/Makefile",
+        381,
+        "ec153d8d19a0987a41977094bc8b01cbca1a8b5adc589f1bd8d9bec562bdb9d8"
+      ],
+      [
+        "tests/certs/mtls/client/ca/Makefile",
+        297,
+        "09ab0ff83129203660d5ad489618764524f6af7fa4d9586ca5bdb0f68d1ca822"
+      ],
+      [
+        "tests/certs/mtls/client/ca/ca-private.key",
+        1700,
+        "9a36bafea981da2dcd9a218b7ce23c778acdbee0009c0720531dd4e4d0549548"
+      ],
+      [
+        "tests/certs/mtls/client/ca/ca.cnf",
+        463,
+        "238414b5b06448a4d2f37fcf2e0e771e49e84a172a1c6dc3efec5866d24da3fe"
+      ],
+      [
+        "tests/certs/mtls/client/ca/ca.crt",
+        1322,
+        "1407cb9c2502bf453ffa3f54cb846022f161a46b73fe4caf436157d95ad93367"
+      ],
+      [
+        "tests/certs/mtls/client/ca/ca.srl",
+        41,
+        "c80a955513b5fed04be2ee78804153be8cf070c4145b83c9dbb6331c2e6c2013"
+      ],
+      [
+        "tests/certs/mtls/client/cert.cnf",
+        696,
+        "b7cbb0ae5934dd229cba5cbf60869a33d352bf9c2799705f99f74e0685148acf"
+      ],
+      [
+        "tests/certs/mtls/client/client.csr",
+        1500,
+        "5fc31e8e331f1fdbf7f80c4840b4e70fa81f6dc46ecab811bb03134d21ab4004"
+      ],
+      [
+        "tests/certs/mtls/client/client.key",
+        1704,
+        "98ed2a33896438a77175ee8ecebe0a8bf57d39c24a18ba4ebf87d9bc8abf6711"
+      ],
+      [
+        "tests/certs/mtls/client/client.pem",
+        2628,
+        "d8601d058cf8958fff16250037b38a83e5eb93cc0507b4e083860ca9214023ea"
+      ],
+      [
+        "tests/certs/valid/ca/Makefile",
+        297,
+        "09ab0ff83129203660d5ad489618764524f6af7fa4d9586ca5bdb0f68d1ca822"
+      ],
+      [
+        "tests/certs/valid/ca/ca-private.key",
+        1700,
+        "9a36bafea981da2dcd9a218b7ce23c778acdbee0009c0720531dd4e4d0549548"
+      ],
+      [
+        "tests/certs/valid/ca/ca.cnf",
+        463,
+        "238414b5b06448a4d2f37fcf2e0e771e49e84a172a1c6dc3efec5866d24da3fe"
+      ],
+      [
+        "tests/certs/valid/ca/ca.crt",
+        1322,
+        "1407cb9c2502bf453ffa3f54cb846022f161a46b73fe4caf436157d95ad93367"
+      ],
+      [
+        "tests/certs/valid/ca/ca.srl",
+        41,
+        "c80a955513b5fed04be2ee78804153be8cf070c4145b83c9dbb6331c2e6c2013"
+      ],
+      [
+        "tests/certs/valid/server/Makefile",
+        421,
+        "68541e2b167a72cf00a57c0978750b11ff830dc85bdda99eebe50f7791768a03"
+      ],
+      [
+        "tests/certs/valid/server/cert.cnf",
+        722,
+        "605014e20661c4d3e5ff5869e5453018e09329a3b7a987d26c8b785db3ee7479"
+      ],
+      [
+        "tests/certs/valid/server/server.csr",
+        1175,
+        "e880392e855c00d84c06daa45000a624950fc2da0dde1ae92f2a9f91370a578e"
+      ],
+      [
+        "tests/certs/valid/server/server.key",
+        1704,
+        "5457b89bc1af7de6829d78c9baa639ddea79b4e9dffe7933166c12836f9345c2"
+      ],
+      [
+        "tests/certs/valid/server/server.pem",
+        2770,
+        "d0b55dbe152874f2d7bce3513d52a8e5f587566186dfd7a88d14ad41367133d1"
+      ],
+      [
+        "tests/compat.py",
+        480,
+        "d58ff5e3167de0140a667cc51427f809c552e485875c95b9dad43ce13ba15083"
+      ],
+      [
+        "tests/conftest.py",
+        1934,
+        "6d65ffb582519f80a66c5d1ef571e3c33395a199f9e67fcb500c6ad2d7800e0a"
+      ],
+      [
+        "tests/test_adapters.py",
+        314,
+        "102494aa704f8505fb22fa476452f6aa3aae756da82fe2d5b2a2a3f366b38bf4"
+      ],
+      [
+        "tests/test_help.py",
+        839,
+        "1c2ac8ca9f4986429717791df766122b23e1fe90aa621318380ccf1f8e83d0f6"
+      ],
+      [
+        "tests/test_hooks.py",
+        424,
+        "a9e5163f538543a660be3b06650cd0b803ff0c503f5948f66b6fc50ede38109c"
+      ],
+      [
+        "tests/test_lowlevel.py",
+        15343,
+        "db5fac7340c49c49551e3e41679a8ee6e385c56054f84073932354a8da87df65"
+      ],
+      [
+        "tests/test_packages.py",
+        229,
+        "90875423db059d65b39416d7b6d01b18938851b8071279877400beb506e08676"
+      ],
+      [
+        "tests/test_requests.py",
+        107631,
+        "c97eaf5958378b2117fdb88b5df031002772a9f24ba5484b91fe983c5f51cc80"
+      ],
+      [
+        "tests/test_structures.py",
+        2757,
+        "f984b7fc68fb2bd6ec82463b0cf5b6bd2ac773293cac6629fc3361f9f66947e9"
+      ],
+      [
+        "tests/test_testserver.py",
+        5547,
+        "90ac39d6cb9c0fbaa94c5aa59646bf6097829ae73e50ac284a41135188f95d33"
+      ],
+      [
+        "tests/test_utils.py",
+        31454,
+        "00d027432443a1aa9539c00a09550de9439cdd696d2e6acf2dc997de3a416946"
+      ],
+      [
+        "tests/testserver/__init__.py",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "tests/testserver/server.py",
+        5147,
+        "15a9092cc5edb005af6732097555515c4b82093d9394f6463c966259f83068c3"
+      ],
+      [
+        "tests/utils.py",
+        366,
+        "cfaec86690eba62573c8c730a121332837809333fb2b1006a20e2e8f4d34d4de"
+      ]
+    ],
+    "sha256": "8dd6fd869be09aaa5c75a53837fce418a3c7463890a08034d35c4e779fe58031"
+  },
+  "runtime_manifest": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/runtime-build-manifest.json",
+  "runtime_manifest_sha256": "5034ac6f55522863bf8ed52dd450461060a44739ae86de804a23133f8266a83a",
+  "runtime_manifest_content": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "f6eee1512c723460844c7e563b5833717bb9f548",
+      "tree": "9e68e115eee8c225604603f5a96cc3a32a725112",
+      "clean_before_launch": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/images/backend-locald",
+        "sha256": "feb4735f313c0c88df0815572aaa7c0e6f43c3878bf2127e04c73fbb919e5ce6",
+        "bytes": 684717600
+      },
+      "backend-cli": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/images/backend-cli",
+        "sha256": "532c298fcd05802e3eff7c8956e52148d351f30451b0799108534f37e7a57be9",
+        "bytes": 219025344
+      },
+      "backend-mcp": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/images/backend-mcp",
+        "sha256": "73268455dac095e27fdce8b0a1530d2968420d4bdc7cb7432e4f7e2777f79a46",
+        "bytes": 159795920
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/runtime-artifact-build-receipt.json",
+      "sha256": "f80b14fa36254ab4be3bebb689aa3656701d26492ad7f0dcd40477a9f553bf25"
+    }
+  },
+  "binaries": {
+    "backend-cli": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/bin/backend-cli",
+      "sha256": "532c298fcd05802e3eff7c8956e52148d351f30451b0799108534f37e7a57be9"
+    },
+    "backend-locald": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/bin/backend-locald",
+      "sha256": "feb4735f313c0c88df0815572aaa7c0e6f43c3878bf2127e04c73fbb919e5ce6"
+    },
+    "backend-mcp": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/bin/backend-mcp",
+      "sha256": "73268455dac095e27fdce8b0a1530d2968420d4bdc7cb7432e4f7e2777f79a46"
+    }
+  },
+  "env": {
+    "HOME": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home",
+    "XDG_CONFIG_HOME": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.config",
+    "XDG_DATA_HOME": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/share",
+    "XDG_STATE_HOME": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/state",
+    "TMPDIR": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/tmp",
+    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/nix/var/nix/profiles/default/bin",
+    "LANG": "C.UTF-8",
+    "USER": "rmccrar6",
+    "LOGNAME": "rmccrar6"
+  },
+  "compiler_snapshot_sha256": "59237afc707b4ba4b61b2d82aa70dea6e6610c3cb72b1fdb6dd373f5941719d9",
+  "workspace_preexisting": false,
+  "endpoint_preexisting": false,
+  "fresh_home_entries": [
+    "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local"
+  ],
+  "installer_tested": false,
+  "dependency_closure_copied": false,
+  "accepted_project_pass": false,
+  "journey_options": {
+    "skip_update_cancel": true,
+    "cancel_before_first_add": true,
+    "transport_only": false,
+    "public_compiler_variables": [],
+    "requested_queries": [
+      "request",
+      "Session"
+    ],
+    "edit_file": "src/requests/api.py",
+    "keep_edited_source": true,
+    "first_publish_only": false,
+    "witness_path": "src/requests/api.py",
+    "witness_line": 24,
+    "resolve_detail": "summary",
+    "resolve_limit": 200,
+    "supervise_locald": true
+  },
+  "host": {
+    "system": "Darwin",
+    "release": "25.6.0",
+    "machine": "arm64",
+    "user": "rmccrar6",
+    "fresh_os_claimed": false
+  },
+  "manual_installation": {
+    "kind": "manual matched-trio copy installation",
+    "source_manifest_sha256": "5034ac6f55522863bf8ed52dd450461060a44739ae86de804a23133f8266a83a",
+    "executables": {
+      "backend-cli": {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/images/backend-cli",
+        "installed": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/bin/backend-cli",
+        "sha256": "532c298fcd05802e3eff7c8956e52148d351f30451b0799108534f37e7a57be9",
+        "bytes": 219025344
+      },
+      "backend-locald": {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/images/backend-locald",
+        "installed": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/bin/backend-locald",
+        "sha256": "feb4735f313c0c88df0815572aaa7c0e6f43c3878bf2127e04c73fbb919e5ce6",
+        "bytes": 684717600
+      },
+      "backend-mcp": {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-private-store-trace-f6eee1512c/images/backend-mcp",
+        "installed": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/home/.local/bin/backend-mcp",
+        "sha256": "73268455dac095e27fdce8b0a1530d2968420d4bdc7cb7432e4f7e2777f79a46",
+        "bytes": 159795920
+      }
+    }
+  },
+  "home_before_installation": [],
+  "network_scope": "documented product offline policies; not a kernel network denial",
+  "mcp_observer_capture_limit_bytes": 134217728,
+  "source_after": {
+    "files": [
+      [
+        "HISTORY.md",
+        64563,
+        "f779ef32bdb04e23869a197f63812b0ca1f40ca1c4621f38cbcce06dbb6085b8"
+      ],
+      [
+        "LICENSE",
+        10142,
+        "09e8a9bcec8067104652c168685ab0931e7868f9c8284b66f5ae6edae5f1130b"
+      ],
+      [
+        "MANIFEST.in",
+        126,
+        "e44e033d6fb54718d34926991771eef6e0eadcddd36ce9e2ad06a1533cbbc517"
+      ],
+      [
+        "NOTICE",
+        38,
+        "f5110972dedad2b4e9d314518daf3b7d72d6e02e499acd802181de6f74571dcc"
+      ],
+      [
+        "PKG-INFO",
+        4806,
+        "8c384ba3e979480faae2859d3c5e6c1276dd2c3616e322e124d52c8cfc556f27"
+      ],
+      [
+        "README.md",
+        2906,
+        "2a9268c9be5f4dc9abe9105740be7c5234babc3dd2b25eb11ca376c538a0c67b"
+      ],
+      [
+        "pyproject.toml",
+        3153,
+        "249147c8688043884fd91b951a013c5bf0aef445894527ad75124a12a41225e1"
+      ],
+      [
+        "requirements-dev.txt",
+        93,
+        "aed8622c9a3d9361a9cdbe71a4643831387aff5f622ebdd68de598a8b258c841"
+      ],
+      [
+        "setup.cfg",
+        38,
+        "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e"
+      ],
+      [
+        "setup.py",
+        179,
+        "1728c11af4134997015ab07547544852e2f7e103c79a5b0486a8486799f50e0a"
+      ],
+      [
+        "src/requests/__init__.py",
+        5922,
+        "311157e7fa4aa9166c827d5237e6fd694eeb5ca549ee40e2e90f89f21abcd56e"
+      ],
+      [
+        "src/requests/__version__.py",
+        435,
+        "abba90670b0370a3dc40d97c2dea46a35d4bec941ff10d7c3cf3098ef04a17f9"
+      ],
+      [
+        "src/requests/_internal_utils.py",
+        1542,
+        "4c7d8d132c9898fc7d715e473f3ac74785ddc4ab96d2c9240f87835dc6d981ff"
+      ],
+      [
+        "src/requests/_types.py",
+        5838,
+        "d06df79f54a279c0cc3faec596c446246d5ad14edfd529eb328defbd62a44a89"
+      ],
+      [
+        "src/requests/adapters.py",
+        28064,
+        "647eabd4453de232aa40b55ff033d6f19778910b7e7069c51fdf63076fc77493"
+      ],
+      [
+        "src/requests/api.py",
+        7153,
+        "8d173193130d597347ca8a8843f42d46db81e3d245c9e5317902d3895ca1d2a2"
+      ],
+      [
+        "src/requests/auth.py",
+        12233,
+        "e93951a552d4c3c5fd9b84a5e1d49b03caaba4723c4ff112da6053600ec85a65"
+      ],
+      [
+        "src/requests/certs.py",
+        430,
+        "fd9c6b83359cef90ff6c4eeeab8dcc2388da382ebca7d00a499b3c0b434a87e4"
+      ],
+      [
+        "src/requests/compat.py",
+        2465,
+        "5d79ba289690b5015044341a1f7bc7d24134fc13a2db3efcf852515bf9aa18b4"
+      ],
+      [
+        "src/requests/cookies.py",
+        21549,
+        "0a1ce6140f2b9420522c5080e356e689fa796c2522f55ca10826f5ed8e0a723c"
+      ],
+      [
+        "src/requests/exceptions.py",
+        4564,
+        "c5e18f3352454968e337bb3056f0867df2f37c0a0d2c1a77dc05e7e0b3c0411b"
+      ],
+      [
+        "src/requests/help.py",
+        4210,
+        "723519bb1884da18d84f6b2fb78f7ebf7fb57f732070b6025ae071dac6a2d179"
+      ],
+      [
+        "src/requests/hooks.py",
+        1138,
+        "ebd8a02475d31a0e473a8f553e9501ff43645b9563885ad52844e7a63f0d76ab"
+      ],
+      [
+        "src/requests/models.py",
+        41783,
+        "d1bc0d990abf5d5ebee05f890911b4363fadf2d5264b686a963df47c529b6ace"
+      ],
+      [
+        "src/requests/packages.py",
+        904,
+        "fe0d2067af355320252874631fa91a9db6a8c71d9e01beaacdc5e2383c932287"
+      ],
+      [
+        "src/requests/py.typed",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "src/requests/sessions.py",
+        34248,
+        "96fbb30bbbf06a59a5268d13b57885149756aa3f31695b5c15e41dd7bb2f67a6"
+      ],
+      [
+        "src/requests/status_codes.py",
+        4351,
+        "1950f47c89cf18019787e07d8ce48f66d6b38e622f7d94d70a90247fee6c040e"
+      ],
+      [
+        "src/requests/structures.py",
+        4134,
+        "ba9460c39078f25e6f1d2a24ac941ac6f8d2ee97197fa8c8d0c262d8a1e67a02"
+      ],
+      [
+        "src/requests/utils.py",
+        36322,
+        "657fd02343b2586bbd138a4ec0f03ceeb7610c2712f96ac54f28a708bf7d079c"
+      ],
+      [
+        "src/requests.egg-info/PKG-INFO",
+        4806,
+        "8c384ba3e979480faae2859d3c5e6c1276dd2c3616e322e124d52c8cfc556f27"
+      ],
+      [
+        "src/requests.egg-info/SOURCES.txt",
+        2238,
+        "6e577552258f9ec2936409fcfadcb94134a4b32039435beaf1cfa6eddac1d728"
+      ],
+      [
+        "src/requests.egg-info/dependency_links.txt",
+        1,
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      ],
+      [
+        "src/requests.egg-info/requires.txt",
+        157,
+        "2b5413fb2126441797dc8412bee5781f51ffb61ec7275d5a2b9e06f1124d9604"
+      ],
+      [
+        "src/requests.egg-info/top_level.txt",
+        9,
+        "7cc4959877dbe6b6c63a8eb1bfe3bfb545fa8fe5b28b1b2c13e4a7c1c0d1c4d4"
+      ],
+      [
+        "tests/__init__.py",
+        469,
+        "ac7f253daae0905f9b3dec647cae736bb3c090185aa373b30b3e851599e5342c"
+      ],
+      [
+        "tests/certs/README.md",
+        343,
+        "a902fe53d4cc6224b59532e47d94fc42726b2227462e801538aa50a7888d38f3"
+      ],
+      [
+        "tests/certs/expired/Makefile",
+        138,
+        "a33636d6474f1e94a1de61c4e1fbd2efb5c55aa86061ab3ce2d2ad9fb5aeb457"
+      ],
+      [
+        "tests/certs/expired/README.md",
+        228,
+        "80690554d2353ab1c348bee8df833bdf7b3cd1cb8d728b4380221f34b5881eeb"
+      ],
+      [
+        "tests/certs/expired/ca/Makefile",
+        297,
+        "09ab0ff83129203660d5ad489618764524f6af7fa4d9586ca5bdb0f68d1ca822"
+      ],
+      [
+        "tests/certs/expired/ca/ca-private.key",
+        1700,
+        "9a36bafea981da2dcd9a218b7ce23c778acdbee0009c0720531dd4e4d0549548"
+      ],
+      [
+        "tests/certs/expired/ca/ca.cnf",
+        463,
+        "238414b5b06448a4d2f37fcf2e0e771e49e84a172a1c6dc3efec5866d24da3fe"
+      ],
+      [
+        "tests/certs/expired/ca/ca.crt",
+        1322,
+        "1407cb9c2502bf453ffa3f54cb846022f161a46b73fe4caf436157d95ad93367"
+      ],
+      [
+        "tests/certs/expired/ca/ca.srl",
+        41,
+        "c80a955513b5fed04be2ee78804153be8cf070c4145b83c9dbb6331c2e6c2013"
+      ],
+      [
+        "tests/certs/expired/server/Makefile",
+        382,
+        "1c8cf9d72554a803d3b267d9df9c5e54db2e05d2fbd6b16d745f140bfcf74a24"
+      ],
+      [
+        "tests/certs/expired/server/cert.cnf",
+        457,
+        "3b70317a294d4ac19e055ccb7316c4b3d9cca685d7bdc40be98cdfa9994ff081"
+      ],
+      [
+        "tests/certs/expired/server/server.csr",
+        1159,
+        "5d4683e2db14cf6f47d57ea6e45647a29b5693f3f723a891b2ef188c333de694"
+      ],
+      [
+        "tests/certs/expired/server/server.key",
+        1704,
+        "acce64eae44a4073909c97e5929a1a319c947f4f37e4b933c1dcd805e59c8516"
+      ],
+      [
+        "tests/certs/expired/server/server.pem",
+        2628,
+        "232cc4e13f97688281a03e6a555e93c3a7bd6cfda4604fdee085f4ac2556f2c2"
+      ],
+      [
+        "tests/certs/mtls/Makefile",
+        74,
+        "aa1f5be6bde49113304ba145736bc3a3d23d45dfaa81e0d977fd52378f30b314"
+      ],
+      [
+        "tests/certs/mtls/README.md",
+        180,
+        "57dd4ec5bd44f1d2e1bc2de7e6cb292eb62f2236d34fd889a46d81a19dbde9f7"
+      ],
+      [
+        "tests/certs/mtls/client/Makefile",
+        381,
+        "ec153d8d19a0987a41977094bc8b01cbca1a8b5adc589f1bd8d9bec562bdb9d8"
+      ],
+      [
+        "tests/certs/mtls/client/ca/Makefile",
+        297,
+        "09ab0ff83129203660d5ad489618764524f6af7fa4d9586ca5bdb0f68d1ca822"
+      ],
+      [
+        "tests/certs/mtls/client/ca/ca-private.key",
+        1700,
+        "9a36bafea981da2dcd9a218b7ce23c778acdbee0009c0720531dd4e4d0549548"
+      ],
+      [
+        "tests/certs/mtls/client/ca/ca.cnf",
+        463,
+        "238414b5b06448a4d2f37fcf2e0e771e49e84a172a1c6dc3efec5866d24da3fe"
+      ],
+      [
+        "tests/certs/mtls/client/ca/ca.crt",
+        1322,
+        "1407cb9c2502bf453ffa3f54cb846022f161a46b73fe4caf436157d95ad93367"
+      ],
+      [
+        "tests/certs/mtls/client/ca/ca.srl",
+        41,
+        "c80a955513b5fed04be2ee78804153be8cf070c4145b83c9dbb6331c2e6c2013"
+      ],
+      [
+        "tests/certs/mtls/client/cert.cnf",
+        696,
+        "b7cbb0ae5934dd229cba5cbf60869a33d352bf9c2799705f99f74e0685148acf"
+      ],
+      [
+        "tests/certs/mtls/client/client.csr",
+        1500,
+        "5fc31e8e331f1fdbf7f80c4840b4e70fa81f6dc46ecab811bb03134d21ab4004"
+      ],
+      [
+        "tests/certs/mtls/client/client.key",
+        1704,
+        "98ed2a33896438a77175ee8ecebe0a8bf57d39c24a18ba4ebf87d9bc8abf6711"
+      ],
+      [
+        "tests/certs/mtls/client/client.pem",
+        2628,
+        "d8601d058cf8958fff16250037b38a83e5eb93cc0507b4e083860ca9214023ea"
+      ],
+      [
+        "tests/certs/valid/ca/Makefile",
+        297,
+        "09ab0ff83129203660d5ad489618764524f6af7fa4d9586ca5bdb0f68d1ca822"
+      ],
+      [
+        "tests/certs/valid/ca/ca-private.key",
+        1700,
+        "9a36bafea981da2dcd9a218b7ce23c778acdbee0009c0720531dd4e4d0549548"
+      ],
+      [
+        "tests/certs/valid/ca/ca.cnf",
+        463,
+        "238414b5b06448a4d2f37fcf2e0e771e49e84a172a1c6dc3efec5866d24da3fe"
+      ],
+      [
+        "tests/certs/valid/ca/ca.crt",
+        1322,
+        "1407cb9c2502bf453ffa3f54cb846022f161a46b73fe4caf436157d95ad93367"
+      ],
+      [
+        "tests/certs/valid/ca/ca.srl",
+        41,
+        "c80a955513b5fed04be2ee78804153be8cf070c4145b83c9dbb6331c2e6c2013"
+      ],
+      [
+        "tests/certs/valid/server/Makefile",
+        421,
+        "68541e2b167a72cf00a57c0978750b11ff830dc85bdda99eebe50f7791768a03"
+      ],
+      [
+        "tests/certs/valid/server/cert.cnf",
+        722,
+        "605014e20661c4d3e5ff5869e5453018e09329a3b7a987d26c8b785db3ee7479"
+      ],
+      [
+        "tests/certs/valid/server/server.csr",
+        1175,
+        "e880392e855c00d84c06daa45000a624950fc2da0dde1ae92f2a9f91370a578e"
+      ],
+      [
+        "tests/certs/valid/server/server.key",
+        1704,
+        "5457b89bc1af7de6829d78c9baa639ddea79b4e9dffe7933166c12836f9345c2"
+      ],
+      [
+        "tests/certs/valid/server/server.pem",
+        2770,
+        "d0b55dbe152874f2d7bce3513d52a8e5f587566186dfd7a88d14ad41367133d1"
+      ],
+      [
+        "tests/compat.py",
+        480,
+        "d58ff5e3167de0140a667cc51427f809c552e485875c95b9dad43ce13ba15083"
+      ],
+      [
+        "tests/conftest.py",
+        1934,
+        "6d65ffb582519f80a66c5d1ef571e3c33395a199f9e67fcb500c6ad2d7800e0a"
+      ],
+      [
+        "tests/test_adapters.py",
+        314,
+        "102494aa704f8505fb22fa476452f6aa3aae756da82fe2d5b2a2a3f366b38bf4"
+      ],
+      [
+        "tests/test_help.py",
+        839,
+        "1c2ac8ca9f4986429717791df766122b23e1fe90aa621318380ccf1f8e83d0f6"
+      ],
+      [
+        "tests/test_hooks.py",
+        424,
+        "a9e5163f538543a660be3b06650cd0b803ff0c503f5948f66b6fc50ede38109c"
+      ],
+      [
+        "tests/test_lowlevel.py",
+        15343,
+        "db5fac7340c49c49551e3e41679a8ee6e385c56054f84073932354a8da87df65"
+      ],
+      [
+        "tests/test_packages.py",
+        229,
+        "90875423db059d65b39416d7b6d01b18938851b8071279877400beb506e08676"
+      ],
+      [
+        "tests/test_requests.py",
+        107631,
+        "c97eaf5958378b2117fdb88b5df031002772a9f24ba5484b91fe983c5f51cc80"
+      ],
+      [
+        "tests/test_structures.py",
+        2757,
+        "f984b7fc68fb2bd6ec82463b0cf5b6bd2ac773293cac6629fc3361f9f66947e9"
+      ],
+      [
+        "tests/test_testserver.py",
+        5547,
+        "90ac39d6cb9c0fbaa94c5aa59646bf6097829ae73e50ac284a41135188f95d33"
+      ],
+      [
+        "tests/test_utils.py",
+        31454,
+        "00d027432443a1aa9539c00a09550de9439cdd696d2e6acf2dc997de3a416946"
+      ],
+      [
+        "tests/testserver/__init__.py",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "tests/testserver/server.py",
+        5147,
+        "15a9092cc5edb005af6732097555515c4b82093d9394f6463c966259f83068c3"
+      ],
+      [
+        "tests/utils.py",
+        366,
+        "cfaec86690eba62573c8c730a121332837809333fb2b1006a20e2e8f4d34d4de"
+      ]
+    ],
+    "sha256": "ee1c4e70c9254776003b88e3f2d747e76bf774223445bc0b5462086bafa1b0ae"
+  },
+  "checks": [
+    {
+      "query": "request",
+      "mcp_search": {
+        "jsonrpc": "2.0",
+        "id": 19,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "~lanes exact\u271310 names\u271310 graph\u271310 semantic\u2717 unconfigured semantic-search unavailable (unconfigured)\nproject \u203a src/requests/sessions.py:557 \u203a request  \u00b7  function \u00b7 python\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::338d59640cfaeb88e80803163a5bc8e7aaa1f4387433b31386e2415afa4a4b40::request`  def request(\n        self,\n        method: str,\n        url: _t.UriType,\n        params: _t.ParamsType = None,\n        data: _t.DataType = None,\n        headers: _t.HeadersType = None,\n        cookies: RequestsCookieJar | CookieJar | dict[str, str] | None = None,\n        files: _t.FilesType = None,\n        auth: _t.AuthType = None,\n        timeout: _t.TimeoutType = None,\n        allow_redirects: bool = True,\n        proxies: dict[str, str] | None = None,\n        hooks: _t.HooksInputType | None = None,\n        stream: bool | None = None,\n        verify: _t.VerifyType | None = None,\n        cert: _t.CertType = None,\n        json: _t.JsonType = None,\n    ) -> Response:\n        \"\"\"Constructs a :class:`Request <Request>`, prepares it and sends it.\n        Returns :class:`Response <Response>` object.\n\n        :param method: method for the new :class:`Request` object.\n        :param url: URL for the new :class:`Request` object.\n        :param params: (optional) Dictionary or bytes to be sent in the query\n            string for the :class:`Request`.\n        :param data: (optional) Dictionary, list of tuples, bytes, or file-like\n            object to send in the body of the :class:`Request`.\n        :param json: (optional) json to send in the body of the\n            :class:`Request`.\n        :param headers: (optional) Dictionary of HTTP Headers to send with the\n            :class:`Request`.\n        :param cookies: (optional) Dict or CookieJar object to send with the\n            :class:`Request`.\n        :param files: (optional) Dictionary of ``'filename': file-like-objects``\n            for multipart encoding upload.\n        :param auth: (optional) Auth tuple or callable to enable\n            Basic/Digest/Custom HTTP Auth.\n        :param timeout: (optional) How many seconds to wait for the server to send\n            data before giving up, as a float, or a :ref:`(connect timeout,\n            read timeout) <timeouts>` tuple.\n        :type timeout: float or tuple\n        :param allow_redirects: (optional) Set to True by default.\n        :type allow_redirects: bool\n        :param proxies: (optional) Dictionary mapping protocol or protocol and\n            hostname to the URL of the proxy.\n        :param hooks: (optional) Dictionary mapping hook name to one event or\n            list of events, event must be callable.\n        :param stream: (optional) whether to immediately download the response\n            content. Defaults to ``False``.\n        :param verify: (optional) Either a boolean, in which case it controls whether we verify\n            the server's TLS certificate, or a string, in which case it must be a path\n            to a CA bundle to use. Defaults to ``True``. When set to\n            ``False``, requests will accept any TLS certificate presented by\n            the server, and will ignore hostname mismatches and/or expired\n            certificates, which will make your application vulnerable to\n            man-in-the-middle (MitM) attacks. Setting verify to ``False``\n            may be useful during local development or testing.\n        :param cert: (optional) if String, path to ssl client cert file (.pem).\n            If Tuple, ('cert', 'key') pair.\n        :rtype: requests.Response\n        \"\"\"\n        if isinstance(url, bytes):\n            url = url.decode(\"utf-8\")\n\n        # Create the Request.\n        req = Request(\n            method=method.upper(),\n            url=url,\n            headers=headers,\n            files=files,\n            data=data or\nproject \u203a request  \u00b7  type \u00b7 unknown\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::1e782c2c8130d461c5aec194214d8428c505d3ee0de7967d0ac3393d93d380c7::request`  unknown(unannotated)\nproject \u203a src/requests/api.py:24 \u203a request  \u00b7  function \u00b7 python\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c1a88a686c0ec0bed5b54ee996776bb30078d3ac9418e434dddb50d9ac6e97c4::request`  def request(\n    method: str, url: _t.UriType, **kwargs: Unpack[_t.RequestKwargs]\n) -> Response:\n    \"\"\"Constructs and sends a :class:`Request <Request>`.\n\n    :param method: method for the new :class:`Request` object: ``GET``, ``OPTIONS``, ``HEAD``, ``POST``, ``PUT``, ``PATCH``, or ``DELETE``.\n    :param url: URL for the new :class:`Request` object.\n    :param params: (optional) Dictionary, list of tuples or bytes to send\n        in the query string for the :class:`Request`.\n    :param data: (optional) Dictionary, list of tuples, bytes, or file-like\n        object to send in the body of the :class:`Request`.\n    :param json: (optional) A JSON serializable Python object to send in the body of the :class:`Request`.\n    :param headers: (optional) Dictionary of HTTP Headers to send with the :class:`Request`.\n    :param cookies: (optional) Dict or CookieJar object to send with the :class:`Request`.\n    :param files: (optional) Dictionary of ``'name': file-like-objects`` (or ``\nproject \u203a request  \u00b7  variable \u00b7 unknown\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::70c9079bed072ee3ca1158ea8ce7b80c6150acda9991e6f760da4c48e9297807::request`  unknown(unresolved-external,x\"507265706172656452657175657374\")\nproject \u203a request  \u00b7  variable \u00b7 unknown\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::335dd9099b55ae465f8f89e7bcce2a936150acda9991e6f760da4c48e9297807::request`  unknown(unresolved-external,x\"507265706172656452657175657374\")\nproject \u203a request  \u00b7  variable \u00b7 unknown\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::d28eca58b44941f9fc2a3d22879853e36150acda9991e6f760da4c48e9297807::request`  unknown(unresolved-external,x\"507265706172656452657175657374\")\nproject \u203a request  \u00b7  variable \u00b7 unknown\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::bbb045014a735025033abc82551b51146150acda9991e6f760da4c48e9297807::request`  unknown(unresolved-external,x\"507265706172656452657175657374\")\nproject \u203a src/requests/exceptions.py:26 \u203a request  \u00b7  field \u00b7 python\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::dd6ff189c4a738aea84c36741f0d69761f2266c06d20f05aab63bf88f1c0ca47::request`  request: Request | PreparedRequest | None\nproject \u203a request  \u00b7  variable \u00b7 unknown\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::67751a47cc0e173e689edf2e7d6b68fd6150acda9991e6f760da4c48e9297807::request`  unknown(unresolved-external,x\"507265706172656452657175657374\")\nproject \u203a request  \u00b7  variable \u00b7 unknown\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c26d7e24e7465a208106c0d1a413f1506150acda9991e6f760da4c48e9297807::request`  unknown(unresolved-external,x\"507265706172656452657175657374\")\n\u2026 more rows at this revision; raise `limit` to see them\n"
+            }
+          ],
+          "structuredContent": {
+            "query": "request",
+            "coverage": [
+              {
+                "lane": "exact",
+                "state": "complete"
+              },
+              {
+                "lane": "names",
+                "state": "complete"
+              },
+              {
+                "lane": "graph",
+                "state": "complete"
+              },
+              {
+                "lane": "semantic",
+                "state": "unavailable",
+                "reason": "unconfigured"
+              }
+            ],
+            "readiness": "ready",
+            "records": [
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::338d59640cfaeb88e80803163a5bc8e7aaa1f4387433b31386e2415afa4a4b40::request",
+                  "trail": "project \u203a src/requests/sessions.py:557 \u203a request",
+                  "name": "request",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "path": "src/requests/sessions.py",
+                  "line": 557,
+                  "segments": [
+                    "request"
+                  ],
+                  "key": "0e0788f8",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      14,
+                      7,
+                      136,
+                      248,
+                      222,
+                      84,
+                      192,
+                      164,
+                      93,
+                      170,
+                      137,
+                      122,
+                      107,
+                      172,
+                      108,
+                      81,
+                      9,
+                      107,
+                      21,
+                      144,
+                      27,
+                      116,
+                      243,
+                      228,
+                      8,
+                      204,
+                      143,
+                      246,
+                      189,
+                      135,
+                      227,
+                      136
+                    ]
+                  }
+                },
+                "kind": "function",
+                "language": "python",
+                "state": "ready",
+                "signature": "def request(\n        self,\n        method: str,\n        url: _t.UriType,\n        params: _t.ParamsType = None,\n        data: _t.DataType = None,\n        headers: _t.HeadersType = None,\n        cookies: RequestsCookieJar | CookieJar | dict[str, str] | None = None,\n        files: _t.FilesType = None,\n        auth: _t.AuthType = None,\n        timeout: _t.TimeoutType = None,\n        allow_redirects: bool = True,\n        proxies: dict[str, str] | None = None,\n        hooks: _t.HooksInputType | None = None,\n        stream: bool | None = None,\n        verify: _t.VerifyType | None = None,\n        cert: _t.CertType = None,\n        json: _t.JsonType = None,\n    ) -> Response:\n        \"\"\"Constructs a :class:`Request <Request>`, prepares it and sends it.\n        Returns :class:`Response <Response>` object.\n\n        :param method: method for the new :class:`Request` object.\n        :param url: URL for the new :class:`Request` object.\n        :param params: (optional) Dictionary or bytes to be sent in the query\n            string for the :class:`Request`.\n        :param data: (optional) Dictionary, list of tuples, bytes, or file-like\n            object to send in the body of the :class:`Request`.\n        :param json: (optional) json to send in the body of the\n            :class:`Request`.\n        :param headers: (optional) Dictionary of HTTP Headers to send with the\n            :class:`Request`.\n        :param cookies: (optional) Dict or CookieJar object to send with the\n            :class:`Request`.\n        :param files: (optional) Dictionary of ``'filename': file-like-objects``\n            for multipart encoding upload.\n        :param auth: (optional) Auth tuple or callable to enable\n            Basic/Digest/Custom HTTP Auth.\n        :param timeout: (optional) How many seconds to wait for the server to send\n            data before giving up, as a float, or a :ref:`(connect timeout,\n            read timeout) <timeouts>` tuple.\n        :type timeout: float or tuple\n        :param allow_redirects: (optional) Set to True by default.\n        :type allow_redirects: bool\n        :param proxies: (optional) Dictionary mapping protocol or protocol and\n            hostname to the URL of the proxy.\n        :param hooks: (optional) Dictionary mapping hook name to one event or\n            list of events, event must be callable.\n        :param stream: (optional) whether to immediately download the response\n            content. Defaults to ``False``.\n        :param verify: (optional) Either a boolean, in which case it controls whether we verify\n            the server's TLS certificate, or a string, in which case it must be a path\n            to a CA bundle to use. Defaults to ``True``. When set to\n            ``False``, requests will accept any TLS certificate presented by\n            the server, and will ignore hostname mismatches and/or expired\n            certificates, which will make your application vulnerable to\n            man-in-the-middle (MitM) attacks. Setting verify to ``False``\n            may be useful during local development or testing.\n        :param cert: (optional) if String, path to ssl client cert file (.pem).\n            If Tuple, ('cert', 'key') pair.\n        :rtype: requests.Response\n        \"\"\"\n        if isinstance(url, bytes):\n            url = url.decode(\"utf-8\")\n\n        # Create the Request.\n        req = Request(\n            method=method.upper(),\n            url=url,\n            headers=headers,\n            files=files,\n            data=data or",
+                "summary": "Constructs a :class:`Request <Request>`, prepares it and sends it.",
+                "score": 4294967295
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::1e782c2c8130d461c5aec194214d8428c505d3ee0de7967d0ac3393d93d380c7::request",
+                  "trail": "project \u203a request",
+                  "name": "request",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "segments": [
+                    "request"
+                  ],
+                  "key": "64450d99",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      100,
+                      69,
+                      13,
+                      153,
+                      126,
+                      29,
+                      192,
+                      222,
+                      54,
+                      12,
+                      94,
+                      235,
+                      182,
+                      116,
+                      177,
+                      53,
+                      86,
+                      143,
+                      69,
+                      72,
+                      46,
+                      210,
+                      178,
+                      119,
+                      135,
+                      56,
+                      104,
+                      205,
+                      247,
+                      110,
+                      45,
+                      239
+                    ]
+                  }
+                },
+                "kind": "type",
+                "language": "unknown",
+                "state": "ready",
+                "signature": "unknown(unannotated)",
+                "score": 4294967294
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c1a88a686c0ec0bed5b54ee996776bb30078d3ac9418e434dddb50d9ac6e97c4::request",
+                  "trail": "project \u203a src/requests/api.py:24 \u203a request",
+                  "name": "request",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "path": "src/requests/api.py",
+                  "line": 24,
+                  "segments": [
+                    "request"
+                  ],
+                  "key": "b4a68423",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      180,
+                      166,
+                      132,
+                      35,
+                      84,
+                      91,
+                      241,
+                      38,
+                      202,
+                      231,
+                      219,
+                      2,
+                      131,
+                      152,
+                      57,
+                      120,
+                      128,
+                      99,
+                      124,
+                      161,
+                      244,
+                      161,
+                      204,
+                      79,
+                      75,
+                      124,
+                      75,
+                      94,
+                      96,
+                      156,
+                      171,
+                      103
+                    ]
+                  }
+                },
+                "kind": "function",
+                "language": "python",
+                "state": "ready",
+                "signature": "def request(\n    method: str, url: _t.UriType, **kwargs: Unpack[_t.RequestKwargs]\n) -> Response:\n    \"\"\"Constructs and sends a :class:`Request <Request>`.\n\n    :param method: method for the new :class:`Request` object: ``GET``, ``OPTIONS``, ``HEAD``, ``POST``, ``PUT``, ``PATCH``, or ``DELETE``.\n    :param url: URL for the new :class:`Request` object.\n    :param params: (optional) Dictionary, list of tuples or bytes to send\n        in the query string for the :class:`Request`.\n    :param data: (optional) Dictionary, list of tuples, bytes, or file-like\n        object to send in the body of the :class:`Request`.\n    :param json: (optional) A JSON serializable Python object to send in the body of the :class:`Request`.\n    :param headers: (optional) Dictionary of HTTP Headers to send with the :class:`Request`.\n    :param cookies: (optional) Dict or CookieJar object to send with the :class:`Request`.\n    :param files: (optional) Dictionary of ``'name': file-like-objects`` (or ``",
+                "summary": "Constructs and sends a :class:`Request <Request>`.",
+                "score": 4294967293
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::70c9079bed072ee3ca1158ea8ce7b80c6150acda9991e6f760da4c48e9297807::request",
+                  "trail": "project \u203a request",
+                  "name": "request",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "segments": [
+                    "request"
+                  ],
+                  "key": "9e7f5795",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      158,
+                      127,
+                      87,
+                      149,
+                      171,
+                      186,
+                      43,
+                      176,
+                      112,
+                      84,
+                      184,
+                      252,
+                      246,
+                      83,
+                      79,
+                      201,
+                      125,
+                      67,
+                      24,
+                      74,
+                      105,
+                      193,
+                      160,
+                      119,
+                      106,
+                      161,
+                      25,
+                      219,
+                      187,
+                      103,
+                      159,
+                      87
+                    ]
+                  }
+                },
+                "kind": "variable",
+                "language": "unknown",
+                "state": "ready",
+                "signature": "unknown(unresolved-external,x\"507265706172656452657175657374\")",
+                "score": 4294967292
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::335dd9099b55ae465f8f89e7bcce2a936150acda9991e6f760da4c48e9297807::request",
+                  "trail": "project \u203a request",
+                  "name": "request",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "segments": [
+                    "request"
+                  ],
+                  "key": "dc3df821",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      220,
+                      61,
+                      248,
+                      33,
+                      121,
+                      3,
+                      140,
+                      107,
+                      86,
+                      217,
+                      86,
+                      202,
+                      114,
+                      63,
+                      106,
+                      64,
+                      60,
+                      142,
+                      236,
+                      1,
+                      25,
+                      108,
+                      63,
+                      238,
+                      166,
+                      64,
+                      175,
+                      167,
+                      65,
+                      15,
+                      132,
+                      216
+                    ]
+                  }
+                },
+                "kind": "variable",
+                "language": "unknown",
+                "state": "ready",
+                "signature": "unknown(unresolved-external,x\"507265706172656452657175657374\")",
+                "score": 4294967291
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::d28eca58b44941f9fc2a3d22879853e36150acda9991e6f760da4c48e9297807::request",
+                  "trail": "project \u203a request",
+                  "name": "request",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "segments": [
+                    "request"
+                  ],
+                  "key": "54b0f09b",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      84,
+                      176,
+                      240,
+                      155,
+                      156,
+                      76,
+                      217,
+                      81,
+                      211,
+                      243,
+                      158,
+                      229,
+                      188,
+                      243,
+                      85,
+                      83,
+                      122,
+                      222,
+                      60,
+                      200,
+                      104,
+                      109,
+                      89,
+                      25,
+                      88,
+                      100,
+                      48,
+                      40,
+                      143,
+                      54,
+                      138,
+                      177
+                    ]
+                  }
+                },
+                "kind": "variable",
+                "language": "unknown",
+                "state": "ready",
+                "signature": "unknown(unresolved-external,x\"507265706172656452657175657374\")",
+                "score": 4294967290
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::bbb045014a735025033abc82551b51146150acda9991e6f760da4c48e9297807::request",
+                  "trail": "project \u203a request",
+                  "name": "request",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "segments": [
+                    "request"
+                  ],
+                  "key": "fcea6d50",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      252,
+                      234,
+                      109,
+                      80,
+                      246,
+                      106,
+                      205,
+                      153,
+                      100,
+                      60,
+                      28,
+                      38,
+                      12,
+                      13,
+                      67,
+                      167,
+                      85,
+                      12,
+                      246,
+                      69,
+                      106,
+                      52,
+                      187,
+                      35,
+                      128,
+                      207,
+                      56,
+                      35,
+                      170,
+                      140,
+                      187,
+                      114
+                    ]
+                  }
+                },
+                "kind": "variable",
+                "language": "unknown",
+                "state": "ready",
+                "signature": "unknown(unresolved-external,x\"507265706172656452657175657374\")",
+                "score": 4294967289
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::dd6ff189c4a738aea84c36741f0d69761f2266c06d20f05aab63bf88f1c0ca47::request",
+                  "trail": "project \u203a src/requests/exceptions.py:26 \u203a request",
+                  "name": "request",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "path": "src/requests/exceptions.py",
+                  "line": 26,
+                  "segments": [
+                    "request"
+                  ],
+                  "key": "9146f064",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      145,
+                      70,
+                      240,
+                      100,
+                      152,
+                      141,
+                      95,
+                      201,
+                      214,
+                      254,
+                      171,
+                      216,
+                      134,
+                      200,
+                      24,
+                      183,
+                      156,
+                      175,
+                      124,
+                      251,
+                      108,
+                      129,
+                      252,
+                      174,
+                      114,
+                      181,
+                      171,
+                      89,
+                      68,
+                      156,
+                      40,
+                      120
+                    ]
+                  }
+                },
+                "kind": "field",
+                "language": "python",
+                "state": "ready",
+                "signature": "request: Request | PreparedRequest | None",
+                "score": 4294967288
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::67751a47cc0e173e689edf2e7d6b68fd6150acda9991e6f760da4c48e9297807::request",
+                  "trail": "project \u203a request",
+                  "name": "request",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "segments": [
+                    "request"
+                  ],
+                  "key": "29a731b5",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      41,
+                      167,
+                      49,
+                      181,
+                      168,
+                      83,
+                      127,
+                      249,
+                      156,
+                      184,
+                      144,
+                      200,
+                      160,
+                      148,
+                      250,
+                      74,
+                      210,
+                      17,
+                      10,
+                      42,
+                      31,
+                      65,
+                      53,
+                      250,
+                      237,
+                      126,
+                      210,
+                      125,
+                      163,
+                      1,
+                      238,
+                      92
+                    ]
+                  }
+                },
+                "kind": "variable",
+                "language": "unknown",
+                "state": "ready",
+                "signature": "unknown(unresolved-external,x\"507265706172656452657175657374\")",
+                "score": 4294967287
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c26d7e24e7465a208106c0d1a413f1506150acda9991e6f760da4c48e9297807::request",
+                  "trail": "project \u203a request",
+                  "name": "request",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "segments": [
+                    "request"
+                  ],
+                  "key": "8ebe1c95",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      142,
+                      190,
+                      28,
+                      149,
+                      119,
+                      155,
+                      201,
+                      186,
+                      17,
+                      197,
+                      203,
+                      153,
+                      236,
+                      147,
+                      45,
+                      30,
+                      246,
+                      221,
+                      189,
+                      134,
+                      246,
+                      180,
+                      35,
+                      239,
+                      117,
+                      114,
+                      141,
+                      95,
+                      108,
+                      110,
+                      209,
+                      232
+                    ]
+                  }
+                },
+                "kind": "variable",
+                "language": "unknown",
+                "state": "ready",
+                "signature": "unknown(unresolved-external,x\"507265706172656452657175657374\")",
+                "score": 4294967286
+              }
+            ],
+            "more": true,
+            "semantic_search": {
+              "status": "unavailable",
+              "reason": "unconfigured"
+            },
+            "answer": "records",
+            "detail": "full",
+            "nextCursor": "mcp1-1791318031-cGMzLWVKenRYZHR5M0RxdV9aZC01Z05KOFNMbVY2YW1kdlZGUGVPYVhNNDQyZnVjcWFuOC02a0ZnQklsVWVwdXg3SGJ0aXAyYkV0c1hrQVFXQVFCOEwtN3Y3ckg3d19mdnU0LVdhTjJqOTJfXy15LV9famo0YlQ3Wk5UdS1PM0xsXzNYMC03VGYzZl9lc0RQM2ZkdV8zajg1MDd0VHZzZmV6el8wZjNmajkybl9NR2QybjEtLVBMd1lfZkphTFU3N0w4X2ZOOTkyb1htdkUtTjhicHBUX1o0Y0RxY1kyaUROMTF6MnB1RE84WmpUSjA1TnAwX1JLZlBRUl85NFJ5TjFxZnViRXphcWQzeHo4ZnYzeDdSNEdOM2ZQaWZidmRwZDQ1TlBPam1lTksyaWZ0ak9KMU83VDY1dHJYSGd6NmJnLWxTaU1kVE9JUXVuczYyMl92VzZXVGlvZk5OTXY2NFU4UFlkMGRfYk1MNWZENXFlNHJSaHBOdHVyTjFUdnZHTnJFN2hSajhmbl9zempFY2oyZjgwOTNwZkQ3NHN6MkdvN0U3dFRzODdyOGVfN243dEhQQjY3MF8yVlBUSHIyT3gyRE40UkQzcC02WVFyTV83NF94Y0lwT0h3N0gxbXNkRC1aNENqcnRRendmckd2dEdVVDg5b19kcDUyeGU2Y1BacDlPN2FIWm4zV3kzU0g1Nkh6MEdKcEplMzg2cE9QZXRkMnA4ODdhME5uMmJGTVRUTmZFb0hkcTlfMzR6LTdMZnZlcFVidkhiOTh3VThmR25rS3czVG1kX2RIdXoxMktoOUFkMDc3ejU1QlNlejRlX0ZrZkQwYnZqYlg3N253d2gxUFQtaGpTUGdiVG9sSk05dGRqdF90azFlN2ZmM2FQX19uajJfbjh2YU5wX3drdTJwXy0tTExfLW5BR1MzejYtdWZueno5X3F0MnhlX3p4Y0g0NDduOTBtTWpqNV8zRGwtLTdUM19ybWV2NDdhX3VjZi1Qcm1Ddjc4ZHZOTm43MU81dGFKUHUzTEU3N2R0NGF2Zm5jMk9TRC1IVTZuZzh0MTF6Mk1kNFBPLVBPblR4YkpQWE5qU25nel82bzltcDNiZkQ5LTd4ci03MFBMWDl6LU8zMDVfSDduSDNhZGZzMjdNejF1eGIzOFR6LVJEOHZrbXQzLV8zclQyNlU5eTNObGpUSFdJMFI2MjdVNHFuTGphbnMyLTEwV2R6QW50Xy15b0w2ZGlHc3oxNzNYWEh6dG5UeVhVeGFIM296TjZmWTNmeVhUU3BjeWJGZmRLbjVFUG43RDRldFhQNjFCMTlFM2RxMV8zMWNPTHAtVnNiVlJ0VXE1VkxxbzBxUmhXMThscFpwZW1mVVZyRnBJejNLalRLYXFlc2FmbFBwMHcwOUNnNDFTaHJnbXFWUVNsamxiRkJXZU9WU1ZGWlo1WHhRUmxubERWR0dZdWZUaG5YS0l2Zm0wYVpaSlZwZ3ZMS29rQlN4anJsalRJcFVCMWUtYVNNRHZoaFZYTEthcTJzamNvRUttZU5WaVpvdkltdHNwckxvS3V4VWFhTnlyVG9yMWQ0cENPcXdSOFJ2VXNxcWJaVnhtcHFCTU9OLUlCWDFpcUxiMjk1WUk1SVpYeWpqUFBVZjlOb1pSdGxqRk0tVXQ5MXF3eHFjNEhHWUUyalRHd1Z4dDE2RU5pWXBLSlJ4a2RsdEZjbUJMd01hRUlyNDFwbGtsYkdvS0JSMW5ybHZJbzhTR2VWYTFRVFZQRDB0a1dmNUFPb3lqcGxBb2dCWW9PR0lHcWpuRlltWWc0d1hVa1psYUxTcWxIbWRhYVdPWXY3UXotVndXU0N5RzBMUnFSYTBOSEdNWUUxV3ZZS1BiUXFZSDR3YU15UFYwMExmcVdTUVZrUGlvQ29WcG1FMlVfS05wamJWbG1RRkRPRG1vMVZ0a25TaFFaajlKYll4cUFuSUdla0tXbVRNcTNCMHJBMDB3a1RnUDU1clZxalRFaktxUVl6cnhWbTJ2RHFNVkVsOUF3amNKam5samtNay14VURFSURqWW9ETFR0YWMyQnF6S3VMNEROMDNPcWdRaUJhRWhPMVdKTkpLeHRVOGpJVmpiS05VUmJrYVBHRG1uRWdGaTF1UE1VMFdhZG9Qc0hSdEtROGs0Qkk1NGlySTlZVW1DNm9CbTlSTTlqTkdLOHMxWWhlUm1YdzFsb2FXc0xmYmN0VDNWandLV1lTeXpFb1N5V01va2wwX2FqSF84RHJrRU5hdFpicDhMcjhDV3BBOG1IRkJtVWl0VWVGMFR3WURDUWl2a2drRTFKU2xudUdaMDZqdjFRcnRVUWNpMkxvaVBWTzJhUWMxai1Qdk1Hdm50bmZURW5VV0ZBbXRTUUFRQnNzY3hJcGphVkpOYTBLeW1xV0RlQjI4Q0lZWEhPZnRGRUdjNEQtUmhhUmtBZ0duQjRNU1NVU2xHQUxMTHhHdGU3dlAzLXFYdVVDRlB3Qm1QZnc0MHYzOWNkSTh6SnkyUDMxMFAzdkg0X2Q1XzBQUUNXMUF6YjhkVWhYZHVKZjNYOXFEUXVna2hhZkFWWDl0Zl84SjhERWxfM0QxMnM2QUJRbXJUOERGTXV0ZjM0NFBPNGZfelB0d0ItSF9fem92cTlNQU1GZTZjNXpZRl91enRfR0hBbkZBemtIb1FiLTRhVXg0OXFVc0lpTkNmUURPaEdzcGhzb3Mxb0Y5SmdXUGdyaERUMGgyYzRvQkJJRmhlbERaUVVvRjZvOUlFSHVTQzFEWXh2bG5ES3R4b29ob2N5MU5WcGhKZUFieWowbF92WXRGbEN3S3FFUnJGNGxXQVFDRFYyQXNMUXNEZnhVcENrOVdrVjVIN0UwZWNON21yMW4yR3prMld1RGlnMGtFQ005X0dLQkcySUQ0UnFoVDJha0EzVWd6R0pRQVlLN2hUWWdFWkphRnB1Z1IwZ0tvRUwwTXpSRUJDMUpyaEh3QWJHaFppRXRHd1VCQ05pQ3FTSElsRFQ2QVNDVjdKMU5Yd1BwQ0VYUXNoS1B5cERXdHZndFFKRmpJRkMybnZBS3ZyVWxza0Q4b3JnbExCa2dlaDJQaEJRQ2FCTWhfbHVOcXFuWFJyclZ6SHNSTlFIT0FLRVBXQUZwem8tc2cxb0FBQVlSSXpRMUJxa1ZCazdOQWJrQTZSQzhKT0RUb0FYSWVFSkRUcUdEUUttUkFGVWtmVDRuQkRTclF4MFdEVUQ1SjJvRXFOS0JKa0RDM0JCNERLVEE3SUlsbk1JUEFHbHRVVF9vQnowVEFnWVBtQUZGN0l6eUR2UG9hWTZnLVRkQ0xCSGlWZGRGWlowQ2hrTlVhNHNWanMwVTRlX0V1eTNDVjdRX2dwUXd5a1JIdUJXYkZRQnV3dndBTHlKRUlDTU1nZm1JVldQQTRNVDFxSWZRSHpnUnpGZnBtUVU1WnVEbGFzVHlESGFQNF83cnQ2OFB4XzFuRnJ4ZVE4REdwRUlMd1F1MVFMc2QwSTJWMnZoZlNvQ2FNMDB5LWR1VElPLUZlb3owaThPZXNDTExOem02eWRGTm9keTVITzJsMS1RNTluU3poeEM2ampiaDZDalVxTVh5SjN3UldPTmlwd2VvQXNnR05BS2NCaE1FTnF4NGdJMHV0dk9NMEMxdGhsc0ZhNE5zalFIV29NbHBuODlOVGZ2bDdFZ010UmFDcmdXQXVNTU92XzZVYjVEeXJpQWwyeHRoWjhQMjBROTdVWmdad1dYZ2hFVGJXUFREOFc3V29WWjZMUlphc2RmQmRDd2dpQTIzcE11SlI0QjBVQUtQZUNlTURROWU1Z2J6WndoSGVhMGNiWHJSVU1Mdi1GTWFsYXE0RG00c2I0anh0LU05c3p3aUs2Y3dhdDVPbzduY2Uta2IyWXJJNGpoLTdhZE5Tb2Q0bjg2dDhBNWQ5dmw5STd3Zjc4ZVhINGRNUmd4ZUhtcUxhcm03X08yUzhnMzlUeVRFUm5TQklxMlRWX2lUN0xFdzVQTThrQlV3ajkzMUV6RHBIblVrY2tkeUlYNkxpUWpnSGU0T09vWU9lR3k1aUN4Q0FTSU5EMTNtMjdmNDZqa0tMRFFtZUNKT3g1ZWhMenpWYU1SSGpBcE0yWExQeEJwaTBDaDZ3LTM0UUFQbV81bGVkRFlBZzI2RG9taEFpbm9pTjMzSkR0V3pmWmJHSnI5el9Wd1R2M0w5Z0swUWdEcENfZkg5XzYzME5ZOTQyVFFEYWVoSDN4VU5RZVpISE1rNHNrcGpIU2RhNjJSd1Rmak5hdXlIalU5a1pvQlVnQVp4V2FMelhqMndfVE9TMVpRNERodGZraTVRTEd6LUpFTnlSVUZBNEVmVk5MQkkwTGJFa0QyVjlfaGlWWWI1Z19iWG1wUUhES3JnVzBlbUVyS05ZQzhPY1FWYkFZUWQ3N2xSamdmbG9ULWJhZnZ0ZkQ4UUFnNEhNdmNPck12ck5Fc1k0Nm52RWY5NzRSMVpsY3p2ZUJpZ29KY21xTEhvX0VvQjZMeUFNVUo0OThzZjc1bEpDekdFRXJxdk5qT19acm5mQzFwLU5DbnZRa1ZNT3pkMERJUE5jcXJfOURWRHprS3JJQ1RVX0hqWTlVSThkT284clpUSmVxXzJPUy1KbmppMGZoS1BsYVhmU0RSQkFMUnJiLWxWN3B2TWdwVGdjVEJGOFRZOW5RMXVINmRkSG1lZUtHZ09HbHZyQ1NPR2V4MU1TQ3VEbVQ2VUx1QVFSaEFBc1U1ZDN6T25vUmVpLWVmRnhBcmVqTWlDanZkYWJGaGRvcjJrUUNaWnNiSjQ2WEVUdWtyZnVmMTlUbzljYTVZNFVoMlEyTVVaZlBLVVZXY21tcFhscEl0emh0OHdJeUx6Y0lCQkJYckp4a3ZURGpNaXNJQks4cGpjMGl4bVFUcVFqdzZlZmY5cGdpVFNKR210MmdUQk82TEszbU1tbVFyZFZkWWduY2t5cC1USFlweV9hNUlCU0JZbm1iVmNucDdicG5uNjZSZWh6bXg0Smo3M290QXI5T0plMEJNOTJ0cjhScG5GVklpMHRjY1gyOTNzVWs4dVQ0TUJzVVFBYWZjS0pBN0xhcnpmd0dIZzRzY2pOZjRLaWNkU29jZC00MFpnUXVmLUxDcTROMERjdUlJZEp0THdSUmczTVdSSWxkYWxjb1ptYkttNFRtYlRmck0yUHhpUk5Ealh1NWlraVhiQXBfSXhlaDdQZ0x5enZwZS1DbXZTZWh2cjdGSkhtWDVWMXNWeFdPWjlQTWg3Zm5mcnpQalJoeGUwNXdRSDhTYWEzaEh6RVVHTGtnT25EX05WbHFuUk9MQm5BaTBONGhRWE05dGtENFRlR2tBLVd0bEkweHMzbUJvVGdUY1pYNTMxM1FyU0hKdGxtQXBjMzIyRWh1U2w1XzIySS1fRjdFZ285SkpzdkNVcnBZZVFmNEEtRjlCN2FVM0xhOGhka2tsejZkdE0wTjBBZU1zTzVGWnB6dGdndGNEMkFzZmllTWZNeTNoWUVKanZLVHpyOTlhRGNZM2hUOEIwbEJTVW5jdEVEQzlNS05xcHctNlJfcjVVUzk3SXJoWENrSXVkN0h6RlZSblZ5cFlJUGdMQ2NzV1NXMlhUQ2xrbmtMZTI3T2RpYUVVRkR5SWhNenBPbHZzWnl1TFBUUVh2YmVzSTNoV3lJeDl6TUU0d3NzVjBnSWV5dURMWUVTTmVJYnpyaEk0TGhQN0ZRV2JBS2liYzIxQmthZVMwMHREdjFjWlpTRW5qMDJWYzlLZXc0T2F4VGJqclV1SFNNalZmaE0zTUpEeUZBUk5wTmhLQkkxUEg0djVwUm1Cc04yLTFUUFM5Rkl6NFdwTXo2WWRZY1ZZSWxrVl9vYmNIdkRVVkZfTUpTcGYyNUpVYWk2MzNRbnNaYUExVkRpYVdOUlJ5OHc1dFpGZ1JTWjl1M2RnU2hzLVcxNEcxS3NxMkY5VnBKRGVLa3hzYVNTRzhSTmp3SEkzZ1lvMlIzYnFkZFQ1OVk5elJtMGI0ZDFCVEdMTXFRaXVHTU1MU3NTZFFEMjZXOXg5dFhKbWRBYlV3NmZnNDZjYUZOZDVoRlRNellKbENObWMyd0RHVm01a2g4a3p6UW1YZ25GMXNlMk4yYVhlZlVMY19yR0xhWE1NOXhiS3RrNk1LYks4RmcyeENaVFVhQTdTczlMb3ZuQkVHajJ2d0o2YjFWa2RvU19iS1p5RG91bWlRMW9XWFpHdFQyMU9WUEVzZkNoRmJoc3dPZzA1YTJOX2tIb2pNZWNvcW1lQ1dZWWxRcU1IQUJwTVRtekg4bWVzb2Qya1J5cFN0SEJPV2pKazMwMWxYeTBHOG5EbmxHUmp0YUo3RVNhVWU3Z19TSjJLSmhWNUdkX09oWDcwRktuWWdjMHZNTU54LUQwcWRtR3h6THFJUy1qVTdOUXhlLU9WcTk1TnUwSkYyWVc0UVBOS3ItUUZ0VmthdnJ5ZDJhZnV1TGNBcUxVVHQ5aWliRVhMZWJ3d1V6YmlrblRVOHNmM0tRaU1PSFd5U3kyYUYtWkJIQl90azkySEprdjBjaE5EMEpvOW90cXlkcG1CQUVUR1JuTUx6V0ZoUVpGOEpjUTRKay0zSU1MZ0NJeS1JNmh1MFpVVnU2WDY4ZG5idU5BaWszdnNsejF5T1lxd2NIZ21pNkNGVnVXZktZLWozUE9XNTZCd2I1dFZYTElwUzlOOTRvRFRoNVZ1UEdwamtNa19MbW1paUtlYVdFU0lweTc0QzZZNHBNT2xxeFNUSlhZZHJuT3dvTVVnNHZWWHRqZ2JPZkxuN2JtNGhvSTQ2d3Q3VHBwTzhKVmd1VWgyc1FxMFZBeFpwVXQ4RHl3R1FtLTJEeGFKd1FYVWdObmY5S0hfc1lJRnFNTXhpcTM2aEZiQUJ5WkRxMTdBTVFDOHlONjJWWHZjREtJRE1oWHBtNS14a0h5Q05UcTV0ekg4WWFFSFJTM1V1SDNjWHRldEtvVWs3QUNoc2pjeHJ1ZmVXV2FYTl9GQjNhRGYwSG1jcFBsZDdGODdMaHNhWHo3T2VwU2NYajVWV0Rsckl4SGZOaVpHOV9uQ0ppX2JiUmJZUmtLX3JpRDhuSEp1YTRzT1Q4VDkxaHBaT2hJcXAwYk1penpNbnRlT09naDNIQnZfblljaUw1dFZpR2JyRm9zODJfR2UwUU9ZLVRIWWhsd1hTdWlueUhsaDB5UkkzbGg2VElsQzVwS0xzeXJROWF6X1hURV96MlhyZXB0ZnNLZ1ZMaDJxeDMwdVhLdkFybG5uaEx2VmNTNnZ1MTFLd2l4dTlmbktiak1FY25RQ1ZPcVNPa2dEQ2x2dmNPUG42WUk2cEt5UzVjX2RVR3RKaTU5LWhuLXBUUm52bjNxcFBHdEs3OTFsZEUxT0xHdS1GdkZpZnRPUS1paV9yMVJQM1JyMWJuelQ1YjgzSDljcEpmSEU2ZmdEZjFfc2tfVHYzaWIxUG9uOGtYOWxyMWNaTGU4OC1aYTI4TlJfYUsybl9ZbDYxVDBMRUg5UzM5dXAxODk2OWJhX0duYV9pZjN1SnBWX0tDX2VKNHV4dC11TGVUUFRudFljX2NXUF9NZnh5cjVaYnItU3AtOVR0eWJ2MzE3MTY0dTdLZ19kSmFfRWotZkZlT2EwdjY5bjdwRm5iX0h1djhPLTlHaTF0SHItWkF0Y1Q3TzM3QUY4ckRUNkVWX0R6cnBXMzd5ZDhnNnA0djU3RFY4T2dkLXRMZkNNRjNxSjM4Uk1ONVJfQnhfaksyWDlCci1OTGtfVWJmWS12Y0tsWmRSWHFaMzBRMmpMbC1RaUJSVWpPcmxndWozYmwtUGFpdzg5SWZRMDE5dTVIbzJaUWNXR1V5OHFBLW9NUjlrWmM4a2Z5QVE5eEY4cTZ4aUE5Uk1iaVladFZhdXJ4bG43NWxHV2RBOHBKSHZ3VVYycTd3VUpSZDVlUlFKTGFLMXBRcFhJU1pLQnBiZDJBTllmSm9ldGVSaXh4aTRHbGZwSkpJMWg4ZTBzVDgyTXNxbnYtLUpaS1M0TTJWVGV4Y1Blb3FaSjdHWGRwMFV3N09jZTRLQVFLWmRYTDEwR0tpNXlnMlpRYlUyZ1JqSE5CMDAwbVcweENoWkczbUlRdEpvRkFfQmFUVUQ4LTNtSVN0cGlFaXVMZVloSzJtSVR5LUdhTFNkaGlFcmFZaExmZ3dMX0ZKUHpLLWZjV2t6RGl6aTBtWVl0SnVGVUNiVEVKRXhHX3hTUzhNZmY0TFNiaEZZaS14U1RVN2R0YlRNSVdrN0RGSkd3eENWdE13aGFUc01Va2JERUpXMHpDRnBPd3hTUnNNUWtNaTdlWWhDMG1RVXdXZlFqMXIyY2gzMklTS29hTExTWmg1Rm0xeFNTTW1HT0xTZGhpRXJhWUJDeUZMU1poaTBuWVloTHF4eDliVE1JV2tfQmJZeExJMTdsUnh0NVdfVGdSSURVd2ZuUkw4RWpONTU3Q1NHb3Zmclh2RTZmbUlIRS1SZHFuNjZ0YVRrV0hhcGZmM2hnVU1fR3R6ZEV3azhmcmxYTDQwOW9jbEVtTmk3Q3J5WFVUWVMwQmNwbWlaaUdVcVhoOU1TS3JPRWFlaEFlaUlRbFFvellYZTBSQlRucFc0bUxUYS1sdkN1S3NGcXF3NmFWR2h4RDRhUXpvcE9INXJQUVJYaGdsaDl3U2xYSllVRTZDa2htSGI5c3BBekdKa3VzOXVDRVliVXJ4VUlrVVhDUGdQSnQtSF82Vkl6S1hyRmtTaGpqZFlWMVlHeGREQV90QVpuMHhzOG50UVlIalhHbzBjNkNXV0dsY2hRZkFVdGZOQllWRUxpZnhhbkpveF9Qa05XdmMwN05YOVYxNWNnMFhfTTU1RGY3Nk5KU0JrNE5xN1VOaUw2eWlDN0o0bkI5blhSYVBPMXdUZFJ6YWJHZVJoNGF1Z0RmS04weHRxMXdPV3VlUVNFZWpUZ2szYzNtLUp0dFRjY3FVRl9Nemw1UzM5T1h3VkQ1SjA0TDZLRmJZdFlqQ1JWVVJkUWpKVUM4eGlfZEZUZFNPbzVkZWluak5mYU1PNUJ3RDFGOThPT1NlY0Q1cmZCbjY0akJoMzFDckRuWGpFX3haR2pKMUVaX25xZk5CT29yX0RYWEhTWXNnRW4wMkY2VjBTUHhGbzJVS1VCM29Odl9POVhOTl9Jcm5CYU1pS2cyMFJ4djlfNjMwRlpNMm5UWlhleWhDTEhCbld2emFrcnl5VVZrOFFyY1I5LTZjc2xnOFNDU0lCanhkcDJuQlB1Z0hhbThNOHNUNGhsN2FCZ2tUQXBmQTRzRjk2Y28yclVyamlOSUdNYVZ0UUpoOVNFanZnb1JuOUl1LXc5NXlVcFZFSHpJdUtycHgwVWpNYzZ0VlVCWnh0bG0wTThMRmQ2dVZBUWZoMjdmS3RwUnZVWlk2WlpBMW1GQjZnc3ZIckxYS09vTnJ4MmJ0Rzl6ZDJyU3FhWlZCeHltRkRBMEIzdWZvZm9NeGU2S1NNSmxGNGcxbElaU2NWVDRSRlJHc1NDTkpFbVpnS1RVSGtwcHlQRFpJVE4yYTNvZUd2QWdhQlUzd1JEVUxZZXY0a1hYZ1JCdVZ3ZHpFUnRrR2c2U3M0ZHdjWmktTFhtVmFqQU10UURYWlZsa0FkMlVDVWgxRVpXS0xqS1l1VmdqUktoT2dvNVJGQTFFWlR1bHJJYzRjYU9LWkFHQ3hxTkFrSkdscWxJSDh3QTFyWGxsTkdWTkJQMnNUVXNTQ2VxalFFZFQwRHZPSWRZdlk1OXJGY05TNWRvbzNKZUlhbkVDNUlValg5SG1ndmVQWGtnY2g1MEt6a21RbHgxZElRdEY2d2cwSk04Z05EZ2xKa0x1QUpCOUxRVWR5Rkg5S28xSVYxOEdObFptRUhHZDN5U296dHlGcUttUEIzUHV4NnM5ajdsXzdhWlBTb1JKOWM2YldVaGNPV2ZmS3pFRTU2WXhrdFpFV2VRZ2lJZk0zeTBqOHozb2tMbEtreldxQ2hUZC1UeXBKaHB1Y2xhZklmcENUM3d6ZGs4dzExSkZ4WGlOT0lzRXJrWFFOaTNDUDlVRmtLV0RzT0NpSDlkR2d1WWNjdmtKd3FCVFdXWTRVQjhreTFyeFFJcHdvaUlhWnllRlpneEpIbzFmNXNnTm9jOHUzYUpKLUVqMEtaVUlGMlY4MjB3MnRjSGJDMU92T19DWHFtNmFDLW9DUGlDNW5CY1VxWDFRaEszTFM0cUk3eWUyM1RLMWJ5MlZBb3EzX0Jobm5rZ0VyMlVTc2ZtV2JST0loMFlxSHdBZVZHbVhwQ25UakU1WTNpU05JUVpmbE9vdlhBSm1aa0xLSWtwOFJWVXhETW9hMjVpUzRVTGpTQjItVXRaN2JSd20wQU9rVGxBVXZCTkp6SlB6d0V5SWNPUjBnY2x2U0RLZ1pmU1BORm8xcWFINGgxX0NCU05PTGlva0VrTHRUVlRGWG9IUVhjRTZZbGZtSlVUTHhkYzdLVXU2M2g1VTdKQ2NTS1pVVGJPVjhMVzRrbmhEclJHbFZtR1VHVU5iUWlzaVNZUFNjd0JaLUtVdHltV1o0Z21WS1dFblNzM0JhQ3YyaGtPcTdXdlh6VGNZeVhnVy13MklCczZMZlBoRDhNVkcxaG1DSWRkRHYwT0c4dlBBM0V1a0NKMEl5VURac2dvY0UweEp3Z2ZVS0N4RXoxTkl5Y01SdUFGSW14bDhCcktfZDNRMnhib2gxUTZ3YllyMGp4RXBxUldlRndBNWxVT3hCREJqNElzV1JEU1JpNldBdzM2dFhuMnVCSnNsS01pczdjNmR3RlFyM1B1RXFHeGt4Zk5JdkZyTkxabnZCaXNoQ3o1QXpvRE9vRUFSTXNIbndQcThGZGFDWDhIRXdDTXd2aVh0bkxTazh2dngyQTZvZkI2aS1vOFYtQzBxbF9Ja3cweWtEaXNDMnlFc1dnQTZkc0NwaHNYdGxFT01LUVJHSk1MaGQyQkcwaE5GTFRKSjBoeTVxbzk1QVpsc3RlMTgyUjBCcWpJeFN5aVI5QTBwOTVlNXVJSFVEcVJ0STNVRHFIWUhVckMtNEtkS2M4bi1RWTdtc0JrbEFRa0VQeDNMVUhrcXhXV2FrVG9NOEVpWE10ckZlcGZmMmE2NDhkNEhQSVVVMVp4VW5wNVdEamh4LXkyZVNLUFVVbE9ydUFxVk9aY0pjZFpINThTcURaal9QdVlTa3BCNnVTeUJMNG9jekpMNG5QcjhKb09GRjBqaHY1Q05DSE14aTJ3UDdPLUFOYjEyd0tmSnlndWxJR0pGRkhzWjZGQVRJY2ZRM0xQQU5JNXZlWDhtSkt4VmZ5QUNldDgwdm5YN2ZSNmMzdExhaHRRMnRiV2p0anRDYWFGNEFIS3A2Y0piS21vVjFMdWt0OFFRZ19jYkhrUG5Jak1fLXN6bUNsRXgydHhyT0stX01vZ2d4ZmdkWXJXcFVVQ2J5VlY0NDE4S1FXa1BYaWZIeE40NkhrNGVMRmR4eC1QNGlkcEFKZEpTRll2RE13UWdkNjBWcXF1VlRYMWdaWUl5QVljSTBzRTljUW92YjhmZDdRYTN2WjczZmhsazlsaXlkSlFNMFk3Z00xNEFBc2NCbzV4YnhPNVlRZTBHU1Z3a1FJUUNpRjZlX2ZCVW5iUDIyWDZia2ZSSU5qcGpoU29oT3dpdHYwaEdBMUZzdzZ6MTBlc09zRzJiZE1PdUdXZThJcy1hTEVrVjdaTlZEUGxxc04xaHhzcEVqMjF0WUhiSm1ZYWN1WDV5ZVpTVktpbHIwa1p5cjhRRWFlUjZMdmhidEthcVhQc3dLazYtTWxCZ0dmcGVESFJnMDBPZmxMTTgtRGJXMjk0cGFFVXNBajJRY1hzUDlYQzVsaE11bFZWRzZEM2JKdnVaR0diaDZBb1ZHOG45SDNUcVNqb0pYT1h6N3dTX29xMEJkbkpfRHl4eDJGMWhscGk1YmMwV0tWbGFveThGUEs5bHloNnVKME1QbG1NZXJxcGhjMldIZ3JUOFZydUVKMTVPSlEtbmt6dHdMdDVSeFcyLUtYQl9HdVB5ZVJOd3RNVlh3NTRUd3dHM1Y0cjBOLXl3OFBTTnpMOXhDVzJCYTN0LTJEU0EwMlhHdHh4YlpPa1FzRWV2RGFSekNpTzRRRGhST1JBNDJjQmNGeFlDU0JYNF8zYkQ4NmgzZUFQb0cwRGVBdmdIME93TG9IS1hDeWxLTXMzS1h1aHdZNTZDV3JLeWhTNmc2R0pxb1g5bnRqVlNhNEJydTVIQnVlWmRXWmVqXy04VG5PS19rRUFsMEJITUxOQTE2SkFMamVKLXp1Q2VLeS1TN0lHSkEyR3V3VUkySU15VnpNNEpXT1JLVUFuaWhCQWt1UUJjbUN2LThCTXczbV9KN0FhdnZhTG5mWkZTbUtHNVlYbWx0dFE0ZTJyU1FzQnF4aFlWbE5xSE9CbHRkZHRHRjQ0M2xwQWd3MVFMaU9mbXBIYUNoR0cyang4RU10c0JreVFYaHhpSFVjR1ZvYjNKVmZkMy1iamgxdzZrYlR0MXc2aDNoVlBiQkU2VkdaaFNKOVIwT090bFJyeTNWR1dlbWdkSVNHNVlvay15Q3g0b0h5V3M0RlEwblNCQ1Bfa0tuOXRFYldTRnhDaHRXeWZtYlc4cnFtTTB2cEF0enF6d2Mtd1NnMnR3RlVKM0toREFOY0NCWWlad3JoU1d6VDFCbTRpaVpsWmdaaTNSaDQyeE5RNkVuMzU2RzVGQ3I1a3VrcDZIc1lfT01KeFRYc1hpNVdqYmVGaWt6TU9mdDJ0dktGV1F2ZkFtdVpBLWpRdEVRRUNFWUFCcTQ0bFdDUWJoMUFDc0FEWlItcUZMTW9vYmdjU0E5Zjl0cXFxZXBONEg2X2VLclFLOUNSQk5sZ2ZJLVdYb2NXZ3JLQ1RLVWtITHgyb3o2dDN2UDczd3dJYTBNcHBZWjlEZmM4Q3VUUWduWEJsV1I1MGxMdnJZeUY5eVFyZlhHMjRHbndtRk9FRkpMbkVtdU5rY2x5WXY3aWN2OGlaT0xjTmJtX0ZjdWM1eDNQWm9WU1ZObXByMnpPWFJMY3pkYnJkUGJLR215cEVsU01hYTJYczNDZ3JqQUduYUZFVWpCU1dhUTRvN3FZcHlfYTVKcG1fdGJMdmtOdEZpaWstT0tLTmtxaXpSZDRJS2NNaEk3UU9vQzBiV191SVJTbXMyVFFDMEtwVGM1QjIyN01nVkZDbFU5eW5EMkcxYmRlTXlSRHA3d3hUbm43RkpQTGhOOV9YN2c1eWRvLUtpM19qNl9mTEFyR24waVBsLUVLeGxKVWRDTVZNYXdsajFDcmhQcWxFT3VSbjdLVFoxaFR6LUlBdG5CZW4xajJ6VXRaWE16VElZWHZ3SzRwZ2N5V3I1eUREMlo4cVZVdW5ibEZPekE5Y18zSkhXYUtEcmpwU21GTXlTWWx1dm5FWTZ0QlNySHZ2bkZtcVlDalNTYXpKdk1NTV9VRFE2U2RTRlY5NVNzVGtuSmdFeFEteVpHMVNmekxtNGtZeTdsbk5ETGFtMHlpeXp2c2tWaVVOWlpDdHpjdFo1dk03QXNya2RiZ04zem1TRzVQTnpUT3BTZXJMOHh3Rmp1YWk1Y2RuVU5mM0N5ZUU3ZG1ldXB6T1hNbU1HRGY5SzhET3VkaVNYaUptOEdLOGg1UmNkTlNFSE5WVW5ZZHlTX3FTcVRkYUJVU1J1clN5MWJ0SEY1VnowVmp0V04wN0tKWm5KdHhjMkl1dnp3d2hab0FpR0dwVDlHMWtGaXNIbF95bjZDb283elZRUzlIVFV5b3BtenpCd2xUdnBZcDgtYWtXQTVtXzF0eEFKY2xXaDBVYWw1S1JTYjdNeVVNX1BlQ0lUeFI4dXJGdGNOTDJVbTR1R3lneXUySnFQclh1YTJGVElhOXpLbnlNMDdrd2hWR0NCQ21XZXhXTWhqZ01EWEJrenNJTm5ZT2JoZk1zNGtaVE5hekxxR1pwZXZKeWhTNThzeXJLeld1RjRMczdOZUxZUWhzMVYxWWRWVUdUVmozNHBrdnNTbUZiSk9iQS0xcFR2WE5KbnVDN0xrU2RjdDNDaDFjaDdvZkltQkRJaUJKQmxiNXdLR1BJcHpCX3hjLXZSbVhoZnJkbDFrOVM1TXRmd24yMmI1OTlJWXk2SnJZbkpGellVcHVPQzBKZElVRkpDaERjc3RDLTRNeVdkaVFxekVFaFlsdTZzVnM2LU5DN3oxaTlPYXpSZ3lYVGRLMy1XclhYN1R4aTdMWldsOEtybUtfaFRIZlhsc0U0azZFc01qU19reWtKcU9HTGJIcWtraHJsQ3RmcVBOalJRYjctc0xyY0hTZHpLdjVUSjBNOE5XeHN3OEE1Y3ZENTVDMF81VWxBOUJaemo4S2ZjelZ6alJYYTA3LTJ2RUlDYklBX3FXNjFnWEZOb1M0SC1WMjVnclJ3ZHVnbExac3NSMlZXS0hBZHN2Z0xfY0ExRnd2MWVpcGJXRHJPcU5VTGV0a0R5X1Y5X1N2SERQRXh0VFJtZkIxMjNRWklXS2NCNU42UUFHaENmejlxaE1jOFFuRW5uelZLUkttaGhvY2dVTGhwcG0xYmhaTElnbmt4ZkJ2OHZyWXNLM2MxaExGR1VDc1NGeTBDTTlOU2Rkclc5ZUhkRWc2MGE2UXl3emNueTVXMWlySzNQa0tGRmNrOVlmazF4amhsM2t4Tkk5b0Y2b0FMUFZQZlljYjhpbTFNMHdSNzVIN0VLTTJPVi16d1Y4dnBtRkNDb2VPSHlVUGVkcjhnX21yM0pCOVEwTmpIS2hwNVdka3g3WFhWUlFYTlIxY2Z4clJaalplbGc3WnJNc3lQTTlqRFFWU0E0Vlp5OXBLbm5KVVl0Wmp4SWlIamJtek1oMW1pOE9kVTd6Y0FXblliSHkxU3praFpRYWNyc2UxUU0zSFBhbHpjcmxBa0huVnhKZThGMHA5RWVXUWxQWENESDNnVTh6UEtZdFFzbnFfYjFxY01pdFh4TFgtMWt3RGZoTWttVkZNbVVqeTJjcDhIMmFWd3hIZHdxT1JBOW9OMXFHUWRacFQyRjhJem8xVHI3ZW9qdlRfTUxHelpYcDdib3lYVHVWZC03RWRQVXczcl83MHFVYjNlX2VpZWxxNmZKUjNKZFdyeXg5b3c0MFYwX3k1cjMwaXNUZl9KYWVpWlNieDlLejhPUEhjMVZDc08xOGszMXpacGhzbnRlMTdDX1RYT1hvQklXVWJsdkJiU3U0YlFVX1NsVEx0aFhjdG9MYlZuRGJDbTVid1E4VXlMSnRCVi1hbE50V2NOc0tmdUNvbFJWajVoYTY4b3FoS3hlTXpGdjh5dXZHcjZ5ZTZteEJMRzhqaUdWMWpUMVhLTXUxTU9UakJiRmNiZURZd2xmeVVsalcxZThfaU9YU2F2M2RvU3cxZG4ycElKWWJoTWdXdmZJMm9sZXVZcWZualZ1NXdTdG5pMWk1UlVGdHNTcFh4S3FzeU8tNUxOLWlWOXhOQkx2UGVKYXJGOUFXeWZLa1NKWWJUSnhiQ010emg3RFVpSC1fd1NzTHZmMU5ZU3R6cF9TbG9KVjVTZjU2cHJpVnkzV19uN2lWbThaYUxfekV3SldGY0lySzNQb2NfWjRQMFFaTHczS1NGekt6VDFKMGpSVEhLQ0l3MVlNTWg4d3RZMnpSZTlMWEFwNkhNOEljZ2pkc0NDYm1Rb25LbzVkNUVmUnh4UDBKWmJfSHpwMnFFb2k2bVU4Y09TMU83X29zdThiS1psNjgyZ29CVnFyc1laRmZGWUE3SElMMk1LNHBlSzdZX1k4NEp1OTJ5UmNPajF0eGRtTkpPSE5hTDg1YjVlTjZqUzZqNk9EQ3NYc2NqdFBQQTZlS0s3M0dCeE5rTm5MazVyS3RvZ2lqSDhpZGF5bTZXNXc3RnliRnVWNm9KcGRiNXFvc1g1dkZFZ2pnSEpqWlg2cXdFdTQwNmwxZFpWMm85TElBWElvOUMyYngxVHdJRFlXTFA2LUlOSU1ZX0RqWDBiMm5ST20zWEVkbkxURVNMc2xwY1BzTnVlVVMwMFhrcWFSN0t3TmRuZ0hld0xYck9xamd5QXJvY0tNR1oxMW5IbXZvNmtyY3dCRndiVE51eXFRTkZIZ1piWm53S3hmUnZXWlh0NnM5ZWlwRVRkNUNnZTlTc3BBNGpoOVpZblhrUTRMTWpTQXhMa3Nod1dseE9RNFdJYkxwazRUa081VWFoUDNTcFVzdFhmaU5XMC1CYWFJeXNSWHo0Mndpb0xJeGJZYXk5ME9DNUF0WE1kVkIyUWJwX2JraHNCWFdmc09YRDJJNU5zcTB1S2lWRGxad0RTdXVCQWlCYm9sQmhZNXVkX0lPMmYteHFNQUt0WWgxNnB5ZzhaSG15b0tVOWthMGEtaFRxLUxDSGxHeEpPbGxmMm9sRlhjVzJtTHhyeDlVeVlsZ2JuREFmcmhSZ2k4aklobklkOXJMYmZWNW84VDJ5NzZ4SXVzRWpwSktpMmh1UTVLVXlLdHNCWmxZNV9PWS05ZC0ycVIwS0lQaGZBZ3NlN2lpa2VMNFNfclNlM3dRR1FVT3lSQkVfdVZ2dVVDSk5CQWZ1QzFScE0xS0FuOHlFRThxU1VKUVczV0h1NjhyNk9pV0tkRmpvaEl3RkZJX29wVkVUN05DY2IwaTVpeXFmTmNxdmFXT0NhOXlYLVhXS1hPdmQ5Q1plNzJERGczakdqcjBwQ0YwQnlERjBTeW9HMkxSVUU1dHpHdERHQlJsSWIzd0N0S0w3NmVDM3ZLUW1ObkFnQTdpVzBNa2VWS0N4cy16Smt5elN3d3loWkhlMkNSR0ItUDVjWm1ESnVkWEd0QU9NYm9rb3VxZFFkeElOUEVGMWcyeFduOHBHbk1lMzZFbTdGUS1kOFFkemJna2wybUdKMkJGdXV1M2NReE5SVU5fSUl6Nm5sYjhMZGZROFczcHJGQmJSSFdoWGlBOXdEV21ScURiNHJDLXNIYklsU0t3YnVZN2lTbDlHZDBjalh1R0FRLUFOelNSR1g5QkptQWw0QkppNDM0SnBiNXFaemVjdXVIVURhZHVPUFdPY0NwYlAxQmhLNG9lbUpzVUJPdEkxbW1DMGZrWHZrQ1ZsQnJxQ2ZLS2tiM1lRZmhpVlh1bkFCVnQzaWRBNWN5RVpCR0Jib0wzamxZR3pqMWVOWkd5UTJHdkR2QVNJZ0Jzd3BBUVN3MkxpVFZXWVRmdnlZUUNrb1pHWVJpZWJsZEY2am1qTEt3czZLT2RidDQzZVBwLTRXbDZEd3VkY09uZmZfNzgtOC1mX3dfNlpzc1k-ea81eb66f9172ec6016ebb80d6d0dc73",
+            "budget": {
+              "bytes": 31587,
+              "estimatedTokens": 7897,
+              "bytesPerToken": 4
+            }
+          },
+          "isError": false
+        }
+      }
+    },
+    {
+      "query": "Session",
+      "mcp_search": {
+        "jsonrpc": "2.0",
+        "id": 20,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "~lanes exact\u271310 names\u271310 graph\u271310 semantic\u2717 unconfigured semantic-search unavailable (unconfigured)\nproject \u203a src/requests/sessions.py:395 \u203a Session  \u00b7  struct \u00b7 python\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::8e36914e06891f98b9950895e79f2e55f7824d986f6f5e7c4b15ce62263f6e52::Session`  class Session(SessionRedirectMixin):\n    \"\"\"A Requests session.\n\n    Provides cookie persistence, connection-pooling, and configuration.\n\n    Basic Usage::\n\n      >>> import requests\n      >>> s = requests.Session()\n      >>> s.get('https://httpbin.org/get')\n      <Response [200]>\n\n    Or as a context manager::\n\n      >>> with requests.Session() as s:\n      ...     s.get('https://httpbin.org/get')\n      <Response [200]>\n    \"\"\"\n\n    headers: CaseInsensitiveDict[str]\n    auth: _t.AuthType\n    proxies: dict[str, str]\n    hooks: dict[str, list[_t.HookType]]\n    params: MutableMapping[str, Any]\n    stream: bool\n    verify: _t.VerifyType\n    cert: _t.CertType\n    max_redirects: int\n    trust_env: bool\n    cookies: RequestsCookieJar\n    adapters: MutableMapping[str, BaseAdapter]\n\n    __attrs__: list[str] = [\n        \"headers\",\n        \"cookies\",\n        \"auth\",\n        \"proxies\",\n        \"hooks\",\n        \"params\",\n        \"verify\",\n        \"cert\",\n        \"adapters\",\n        \"stream\",\n        \"trust_env\",\n        \"max_redirects\",\n    ]\n\n    def __init__(self) -> None:\n        #: A case-insensitive dictionary of headers to be sent on each\n        #: :class:`Request <Request>` sent from this\n        #: :class:`Session <Session>`.\n        self.headers = default_headers()\n\n        #: Default Authentication tuple or object to attach to\n        #: :class:`Request <Request>`.\n        self.auth = None\n\n        #: Dictionary mapping protocol or protocol and host to the URL of the proxy\n        #: (e.g.\nproject \u203a Session  \u00b7  type \u00b7 unknown\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::cf0b10e9c5f3fa8a5ef40958b61d0b7ebbe7337e4604d721bd0111936792f904::Session`  unknown(unannotated)\nproject \u203a session  \u00b7  type \u00b7 unknown\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::9bad18504645d7d0abc0834c6c8769075568b123e994613d8921302d97597668::session`  unknown(unannotated)\nproject \u203a src/requests/sessions.py:908 \u203a session  \u00b7  function \u00b7 python\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::1fe7f081d3d86de317c1e60c4ddfcf66dfd0533b9258db56a032ea29ed81a5b3::session`  def session() -> Session:\nproject \u203a session  \u00b7  variable \u00b7 unknown\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::b13658b6bad4a65577939cea4d2cc3d6220943d2b557dc9c312a42a7a71f4af4::session`  unknown(unannotated)\nproject \u203a src/requests/cookies.py:191 \u203a RequestsCookieJar  \u00b7  struct \u00b7 python\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::a77966b5ae48b056b44ded1fd27ded8a17858a4f81734fc8f2c033c7b728706d::RequestsCookieJar`  class RequestsCookieJar(CookieJar, MutableMapping[str, str | None]):  # type: ignore[misc]\n    \"\"\"Compatibility class; is a http.cookiejar.CookieJar, but exposes a dict\n    interface.\n\n    This is the CookieJar we create by default for requests and sessions that\n    don't specify one, since some clients may expect response.cookies and\n    session.cookies to support dict operations.\n\n    Requests does not use the dict interface internally; it's just for\n    compatibility with external client code. All requests code should work\n    out of the box with externally provided instances of ``CookieJar``, e.g.\n    ``LWPCookieJar`` and ``FileCookieJar``.\n\n    Unlike a regular CookieJar, this class is pickleable.\n\n    .. warning:: dictionary operations that are normally O(1) may be O(n).\n    \"\"\"\n\n    _policy: CookiePolicy\n\n    def get(  # type: ignore[override]\n        self,\n        name: str,\n        default: str | None = None,\n        domain: str | None = None,\n        path: str | None = None,\n    ) -> str | None:\n        \"\"\"Dict-like get() that also supports optional domain and path args in\n        order to resolve naming collisions from using one cookie jar over\n        multiple domains.\n\n        .. warning:: operation is O(n), not O(1).\n        \"\"\"\n        try:\n            return self._find_no_duplicates(name, domain, path)\n        except KeyError:\n            return default\n\n    def set(\n        self, name: str, value: str | Morsel[dict[str, str]] | None, **kwargs: Any\n    ) -> Cookie | None:\n        \"\"\"Dict-like set() that also supports optional domain and path args in\n        order to resolve naming collisions from using one cookie jar over\n        multiple domains.\n        \"\"\"\n        # support client code that unsets cookies by assignment of a None value:\n        if value is None:\n            remove_cookie_by_name(\n                self, name, domain=kwargs.get(\"domain\"), path=kwargs.get(\"path\")\n            )\n            return\n\n        if isinstance(value, Morsel):\n            c = morsel_to_cookie(value)\n        else:\n            c = create_cookie(name, value, **kwargs)\n        self.set_cookie(c)\n        return c\n\n    def iterkeys(self) -> Iterator[str]:\n        \"\"\"Dict-like iterkeys() that returns an iterator of names of cookies\n        from the jar.\n\n        .. seealso:: itervalues() and iteritems().\n        \"\"\"\n        for cookie in iter(self):\n            yield cookie.name\n\n    def keys(self) -> list[str]:  # type: ignore[override]\n        \"\"\"Dict-like keys() that returns a list of names of cookies from the\n        jar.\n\n        .. seealso:: values() and items().\n        \"\"\"\n        return list(self.iterkeys())\n\n    def itervalues(self) -> Iterator[str | None]:\n        \"\"\"Dict-like itervalues() that returns an iterator of values of cookies\n        from the jar.\n\n        .. seealso:: iterkeys() and iteritems().\n        \"\"\"\n        for cookie in iter(self):\n            yield cookie.value\n\n    def values(self) -> list[str | None]:  # type: ignore[override]\n        \"\"\"Dict-like values() that returns a list of values of cookies from the\n        jar.\n\n        .. seealso:: keys() and items().\n        \"\"\"\n        return list(self.itervalues())\n\n    def iteritems(self) -> Iterator[tuple[str, str | None]]:\n        \"\"\"Dict-like iteritems() that returns an iterator of name-value tuples\n        from the jar.\n\n        .. seealso:: iterkeys() and itervalues().\n        \"\"\"\n        for cookie in iter(self):\n            yield cookie.name, cookie.value\n\n    def items(self) -> list[tuple[str, str | None]]:  # type: ignore[override]\n        \"\"\"Dict-like items() that returns a list of name-value tuples from the\n        jar. Allows client-code to call ``dict(RequestsCookieJar)`` and get a\n        vanilla python dict of key value pairs.\n\n        .. seealso:: keys() and values().\n        \"\"\"\n        return list(self.iteritems())\n\n    def list_domains(self) -> list[str]:\n        \"\"\"Utility method to list all the domains in the jar.\"\"\"\n        domains: list[str] = []\n        for cookie in iter(self):\n            if cookie.domain not in domains:\nproject \u203a src/requests/adapters.py:158 \u203a HTTPAdapter  \u00b7  struct \u00b7 python\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::6ac31c78c9b4dc7637c5d33cec5095c3d61f81d939603caf9bb00990c4db6669::HTTPAdapter`  class HTTPAdapter(BaseAdapter):\n    \"\"\"The built-in HTTP Adapter for urllib3.\n\n    Provides a general-case interface for Requests sessions to contact HTTP and\n    HTTPS urls by implementing the Transport Adapter interface. This class will\n    usually be created by the :class:`Session <Session>` class under the\n    covers.\n\n    :param pool_connections: The number of urllib3 connection pools to cache.\n    :param pool_maxsize: The maximum number of connections to save in the pool.\n    :param max_retries: The maximum number of retries each connection\n        should attempt. Note, this applies only to failed DNS lookups, socket\n        connections and connection timeouts, never to requests where data has\n        made it to the server. By default, Requests does not retry failed\n        connections. If you need granular control over the conditions under\n        which we retry a request, import urllib3's ``Retry`` class and pass\n        that instead.\n    :param pool_block: Whether the connection pool should block for connections.\n\n    Usage::\n\n      >>> import requests\n      >>> s = requests.Session()\n      >>> a = requests.adapters.HTTPAdapter(max_retries=3)\n      >>> s.mount('http://', a)\n    \"\"\"\n\n    __attrs__: list[str] = [\n        \"max_retries\",\n        \"config\",\n        \"_pool_connections\",\n        \"_pool_maxsize\",\n        \"_pool_block\",\n    ]\n\n    max_retries: Retry\n    config: dict[str, Any]\n    proxy_manager: dict[str, Any]\n    _pool_connections: int\n    _pool_maxsize: int\n    _pool_block: bool\n    poolmanager: _PoolManager\n\n    def __init__(\n        self,\n        pool_connections: int = DEFAULT_POOLSIZE,\n        pool_maxsize: int = DEFAULT_POOLSIZE,\n        max_retries: int | Retry = DEFAULT_RETRIES,\n        pool_block: bool = DEFAULT_POOLBLOCK,\n    ) -> None:\n        if max_retries == DEFAULT_RETRIES:\n            self.max_retries = Retry(0, read=False)\n        else:\n            self.max_retries = Retry.from_int(max_retries)\n        self.config =\nproject \u203a tests/test_requests.py:2582 \u203a RedirectSession  \u00b7  struct \u00b7 python\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::51ef726b75eeabcb630f11c6334c431afab9cddab8e138405223069dd5884ab7::RedirectSession`  class RedirectSession(SessionRedirectMixin):\n    def __init__(self, order_of_redirects):\n        self.redirects = order_of_redirects\n        self.calls = []\n        self.max_redirects = 30\n        self.cookies =\nproject \u203a src/requests/models.py:376 \u203a PreparedRequest  \u00b7  struct \u00b7 python\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::b2a6eae2cc2b10a8c47e9f95690beafd6b0109721c733fa3999f574612adc0e1::PreparedRequest`  class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):\n    \"\"\"The fully mutable :class:`PreparedRequest <PreparedRequest>` object,\n    containing the exact bytes that will be sent to the server.\n\n    Instances are generated from a :class:`Request <Request>` object, and\n    should not be instantiated manually; doing so may produce undesirable\n    effects.\n\n    Usage::\n\n      >>> import requests\n      >>> req = requests.Request('GET', 'https://httpbin.org/get')\n      >>> r = req.prepare()\n      >>> r\n      <PreparedRequest [GET]>\n\n      >>> s = requests.Session()\n      >>> s.send(r)\n      <Response [200]>\n    \"\"\"\n\n    method: str | None\n    url: str | None\n    headers: CaseInsensitiveDict[str | bytes]\n    _cookies: RequestsCookieJar | CookieJar | None\n    body: _t.BodyType\n    hooks: dict[str, list[_t.HookType]]\n    _body_position: int | object | None\n\n    def __init__(self) -> None:\n        #: HTTP verb to send to the server.\n        self.method = None\n        #: HTTP URL to send the request to.\n        self.url = None\n        #: dictionary of HTTP headers.\n        self.headers = None  # type: ignore[assignment]\n        # The `CookieJar` used to create the Cookie header will be stored here\n        # after prepare_cookies is called\n        self._cookies = None\n        #: request body to send to the server.\n        self.body = None\n        #: dictionary of callback hooks, for internal usage.\n        self.hooks = default_hooks()\n        #: integer denoting starting position of a readable file-like body.\n        self._body_position = None\n\n    def prepare(\n        self,\n        method: str | None = None,\n        url: _t.UriType | None = None,\n        headers: Mapping[str, str | bytes] | None = None,\n        files: _t.FilesType = None,\n        data: _t.DataType = None,\n        params: _t.ParamsType = None,\n        auth: _t.AuthType = None,\n        cookies: RequestsCookieJar | CookieJar | dict[str, str] | None = None,\n        hooks: _t.HooksInputType | None = None,\n        json: _t.JsonType = None,\n    ) -> None:\n        \"\"\"Prepares the entire request with the given parameters.\"\"\"\n\n        url = cast(\"_t.UriType\", url)\n        self.prepare_method(method)\n        self.prepare_url(url, params)\n        self.prepare_headers(headers)\n        self.prepare_cookies(cookies)\n        self.prepare_body(data, files, json)\n        self.prepare_auth(auth, url)\n\n        # Note that prepare_auth must be last to enable authentication schemes\n        # such as OAuth to work on a fully prepared request.\n\n        # This MUST go after prepare_auth. Authenticators could add a hook\n        self.prepare_hooks(hooks)\n\n    def __repr__(self) -> str:\n        return f\"<PreparedRequest [\nproject \u203a src/requests/sessions.py:127 \u203a SessionRedirectMixin  \u00b7  struct \u00b7 python\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c70468a0fbaeee5e84a0eaff14babdc2e55ee2c0a8bc1afcff3fda298bee4bbf::SessionRedirectMixin`  class SessionRedirectMixin:\n    max_redirects: int\n    trust_env: bool\n    cookies: RequestsCookieJar\n\n    def send(self, request: PreparedRequest, **kwargs: Any) -> Response: ...\n\n    def get_redirect_target(self, resp: Response) -> str | None:\n        \"\"\"Receives a Response. Returns a redirect URI or ``None``\"\"\"\n        # Due to the nature of how requests processes redirects this method will\n        # be called at least once upon the original response and at least twice\n        # on each subsequent redirect response (if any).\n        # If a custom mixin is used to handle this logic, it may be advantageous\n        # to cache the redirect location onto the response object as a private\n        # attribute.\n        if resp.is_redirect:\n            location = resp.headers[\"location\"]\n            # Currently the underlying http module on py3 decode headers\n            # in latin1, but empirical evidence suggests that latin1 is very\n            # rarely used with non-ASCII characters in HTTP headers.\n            # It is more likely to get UTF8 header rather than latin1.\n            # This causes incorrect handling of UTF8 encoded location headers.\n            # To solve this, we re-encode the location in latin1.\n            location = location.encode(\"latin1\")\n            return to_native_string(location, \"utf8\")\n        return None\n\n    def should_strip_auth(self, old_url: str, new_url: str) -> bool:\n        \"\"\"Decide whether Authorization header should be removed when redirecting\"\"\"\n        old_parsed = urlparse(old_url)\n        new_parsed = urlparse(new_url)\n        if old_parsed.hostname != new_parsed.hostname:\n            return True\n        # Special case: allow http -> https redirect when using the standard\n        # ports. This isn't specified by RFC 7235, but is kept to avoid\n        # breaking backwards compatibility with older versions of requests\n        # that allowed any redirects on the same host.\n        if (\n            old_parsed.scheme == \"http\"\n            and old_parsed.port in (80, None)\n            and new_parsed.scheme == \"https\"\n            and new_parsed.port in (443, None)\n        ):\n            return False\n\n        # Handle default port usage corresponding to scheme.\n        changed_port = old_parsed.port != new_parsed.port\n        changed_scheme \n\n\u2026 output truncated; request a narrower page or detail=summary"
+            }
+          ],
+          "structuredContent": {
+            "query": "Session",
+            "coverage": [
+              {
+                "lane": "exact",
+                "state": "complete"
+              },
+              {
+                "lane": "names",
+                "state": "complete"
+              },
+              {
+                "lane": "graph",
+                "state": "complete"
+              },
+              {
+                "lane": "semantic",
+                "state": "unavailable",
+                "reason": "unconfigured"
+              }
+            ],
+            "readiness": "ready",
+            "records": [
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::8e36914e06891f98b9950895e79f2e55f7824d986f6f5e7c4b15ce62263f6e52::Session",
+                  "trail": "project \u203a src/requests/sessions.py:395 \u203a Session",
+                  "name": "Session",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "path": "src/requests/sessions.py",
+                  "line": 395,
+                  "segments": [
+                    "Session"
+                  ],
+                  "key": "5bbb215c",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      91,
+                      187,
+                      33,
+                      92,
+                      81,
+                      241,
+                      37,
+                      2,
+                      49,
+                      146,
+                      215,
+                      121,
+                      250,
+                      190,
+                      44,
+                      160,
+                      101,
+                      44,
+                      60,
+                      221,
+                      213,
+                      233,
+                      197,
+                      162,
+                      180,
+                      123,
+                      0,
+                      106,
+                      194,
+                      5,
+                      42,
+                      31
+                    ]
+                  }
+                },
+                "kind": "struct",
+                "language": "python",
+                "state": "ready",
+                "signature": "class Session(SessionRedirectMixin):\n    \"\"\"A Requests session.\n\n    Provides cookie persistence, connection-pooling, and configuration.\n\n    Basic Usage::\n\n      >>> import requests\n      >>> s = requests.Session()\n      >>> s.get('https://httpbin.org/get')\n      <Response [200]>\n\n    Or as a context manager::\n\n      >>> with requests.Session() as s:\n      ...     s.get('https://httpbin.org/get')\n      <Response [200]>\n    \"\"\"\n\n    headers: CaseInsensitiveDict[str]\n    auth: _t.AuthType\n    proxies: dict[str, str]\n    hooks: dict[str, list[_t.HookType]]\n    params: MutableMapping[str, Any]\n    stream: bool\n    verify: _t.VerifyType\n    cert: _t.CertType\n    max_redirects: int\n    trust_env: bool\n    cookies: RequestsCookieJar\n    adapters: MutableMapping[str, BaseAdapter]\n\n    __attrs__: list[str] = [\n        \"headers\",\n        \"cookies\",\n        \"auth\",\n        \"proxies\",\n        \"hooks\",\n        \"params\",\n        \"verify\",\n        \"cert\",\n        \"adapters\",\n        \"stream\",\n        \"trust_env\",\n        \"max_redirects\",\n    ]\n\n    def __init__(self) -> None:\n        #: A case-insensitive dictionary of headers to be sent on each\n        #: :class:`Request <Request>` sent from this\n        #: :class:`Session <Session>`.\n        self.headers = default_headers()\n\n        #: Default Authentication tuple or object to attach to\n        #: :class:`Request <Request>`.\n        self.auth = None\n\n        #: Dictionary mapping protocol or protocol and host to the URL of the proxy\n        #: (e.g.",
+                "summary": "A Requests session.",
+                "score": 4294967295
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::cf0b10e9c5f3fa8a5ef40958b61d0b7ebbe7337e4604d721bd0111936792f904::Session",
+                  "trail": "project \u203a Session",
+                  "name": "Session",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "segments": [
+                    "Session"
+                  ],
+                  "key": "520a968c",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      82,
+                      10,
+                      150,
+                      140,
+                      68,
+                      151,
+                      64,
+                      99,
+                      96,
+                      105,
+                      171,
+                      124,
+                      202,
+                      228,
+                      101,
+                      161,
+                      68,
+                      217,
+                      129,
+                      148,
+                      84,
+                      242,
+                      31,
+                      16,
+                      37,
+                      78,
+                      237,
+                      78,
+                      86,
+                      248,
+                      54,
+                      211
+                    ]
+                  }
+                },
+                "kind": "type",
+                "language": "unknown",
+                "state": "ready",
+                "signature": "unknown(unannotated)",
+                "score": 4294967294
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::9bad18504645d7d0abc0834c6c8769075568b123e994613d8921302d97597668::session",
+                  "trail": "project \u203a session",
+                  "name": "session",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "segments": [
+                    "session"
+                  ],
+                  "key": "f3b628db",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      243,
+                      182,
+                      40,
+                      219,
+                      45,
+                      112,
+                      116,
+                      192,
+                      40,
+                      60,
+                      53,
+                      164,
+                      88,
+                      6,
+                      112,
+                      56,
+                      168,
+                      152,
+                      182,
+                      42,
+                      51,
+                      117,
+                      134,
+                      118,
+                      44,
+                      166,
+                      161,
+                      129,
+                      0,
+                      253,
+                      251,
+                      203
+                    ]
+                  }
+                },
+                "kind": "type",
+                "language": "unknown",
+                "state": "ready",
+                "signature": "unknown(unannotated)",
+                "score": 4294967293
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::1fe7f081d3d86de317c1e60c4ddfcf66dfd0533b9258db56a032ea29ed81a5b3::session",
+                  "trail": "project \u203a src/requests/sessions.py:908 \u203a session",
+                  "name": "session",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "path": "src/requests/sessions.py",
+                  "line": 908,
+                  "segments": [
+                    "session"
+                  ],
+                  "key": "cdeb794f",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      205,
+                      235,
+                      121,
+                      79,
+                      153,
+                      38,
+                      75,
+                      189,
+                      103,
+                      132,
+                      13,
+                      212,
+                      6,
+                      113,
+                      226,
+                      42,
+                      144,
+                      17,
+                      9,
+                      57,
+                      211,
+                      93,
+                      206,
+                      147,
+                      58,
+                      88,
+                      220,
+                      85,
+                      48,
+                      38,
+                      91,
+                      88
+                    ]
+                  }
+                },
+                "kind": "function",
+                "language": "python",
+                "state": "ready",
+                "signature": "def session() -> Session:",
+                "summary": "Returns a :class:`Session` for context-management.",
+                "score": 4294967292
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::b13658b6bad4a65577939cea4d2cc3d6220943d2b557dc9c312a42a7a71f4af4::session",
+                  "trail": "project \u203a session",
+                  "name": "session",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "segments": [
+                    "session"
+                  ],
+                  "key": "c3695d14",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      195,
+                      105,
+                      93,
+                      20,
+                      217,
+                      26,
+                      247,
+                      137,
+                      108,
+                      4,
+                      254,
+                      21,
+                      9,
+                      157,
+                      36,
+                      112,
+                      228,
+                      21,
+                      75,
+                      244,
+                      68,
+                      188,
+                      81,
+                      6,
+                      35,
+                      144,
+                      222,
+                      102,
+                      134,
+                      94,
+                      51,
+                      45
+                    ]
+                  }
+                },
+                "kind": "variable",
+                "language": "unknown",
+                "state": "ready",
+                "signature": "unknown(unannotated)",
+                "score": 4294967291
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::a77966b5ae48b056b44ded1fd27ded8a17858a4f81734fc8f2c033c7b728706d::RequestsCookieJar",
+                  "trail": "project \u203a src/requests/cookies.py:191 \u203a RequestsCookieJar",
+                  "name": "RequestsCookieJar",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "path": "src/requests/cookies.py",
+                  "line": 191,
+                  "segments": [
+                    "RequestsCookieJar"
+                  ],
+                  "key": "a31df188",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      163,
+                      29,
+                      241,
+                      136,
+                      237,
+                      41,
+                      98,
+                      5,
+                      169,
+                      190,
+                      135,
+                      145,
+                      96,
+                      20,
+                      244,
+                      241,
+                      106,
+                      100,
+                      244,
+                      233,
+                      41,
+                      54,
+                      215,
+                      9,
+                      29,
+                      1,
+                      236,
+                      124,
+                      76,
+                      64,
+                      152,
+                      186
+                    ]
+                  }
+                },
+                "kind": "struct",
+                "language": "python",
+                "state": "ready",
+                "signature": "class RequestsCookieJar(CookieJar, MutableMapping[str, str | None]):  # type: ignore[misc]\n    \"\"\"Compatibility class; is a http.cookiejar.CookieJar, but exposes a dict\n    interface.\n\n    This is the CookieJar we create by default for requests and sessions that\n    don't specify one, since some clients may expect response.cookies and\n    session.cookies to support dict operations.\n\n    Requests does not use the dict interface internally; it's just for\n    compatibility with external client code. All requests code should work\n    out of the box with externally provided instances of ``CookieJar``, e.g.\n    ``LWPCookieJar`` and ``FileCookieJar``.\n\n    Unlike a regular CookieJar, this class is pickleable.\n\n    .. warning:: dictionary operations that are normally O(1) may be O(n).\n    \"\"\"\n\n    _policy: CookiePolicy\n\n    def get(  # type: ignore[override]\n        self,\n        name: str,\n        default: str | None = None,\n        domain: str | None = None,\n        path: str | None = None,\n    ) -> str | None:\n        \"\"\"Dict-like get() that also supports optional domain and path args in\n        order to resolve naming collisions from using one cookie jar over\n        multiple domains.\n\n        .. warning:: operation is O(n), not O(1).\n        \"\"\"\n        try:\n            return self._find_no_duplicates(name, domain, path)\n        except KeyError:\n            return default\n\n    def set(\n        self, name: str, value: str | Morsel[dict[str, str]] | None, **kwargs: Any\n    ) -> Cookie | None:\n        \"\"\"Dict-like set() that also supports optional domain and path args in\n        order to resolve naming collisions from using one cookie jar over\n        multiple domains.\n        \"\"\"\n        # support client code that unsets cookies by assignment of a None value:\n        if value is None:\n            remove_cookie_by_name(\n                self, name, domain=kwargs.get(\"domain\"), path=kwargs.get(\"path\")\n            )\n            return\n\n        if isinstance(value, Morsel):\n            c = morsel_to_cookie(value)\n        else:\n            c = create_cookie(name, value, **kwargs)\n        self.set_cookie(c)\n        return c\n\n    def iterkeys(self) -> Iterator[str]:\n        \"\"\"Dict-like iterkeys() that returns an iterator of names of cookies\n        from the jar.\n\n        .. seealso:: itervalues() and iteritems().\n        \"\"\"\n        for cookie in iter(self):\n            yield cookie.name\n\n    def keys(self) -> list[str]:  # type: ignore[override]\n        \"\"\"Dict-like keys() that returns a list of names of cookies from the\n        jar.\n\n        .. seealso:: values() and items().\n        \"\"\"\n        return list(self.iterkeys())\n\n    def itervalues(self) -> Iterator[str | None]:\n        \"\"\"Dict-like itervalues() that returns an iterator of values of cookies\n        from the jar.\n\n        .. seealso:: iterkeys() and iteritems().\n        \"\"\"\n        for cookie in iter(self):\n            yield cookie.value\n\n    def values(self) -> list[str | None]:  # type: ignore[override]\n        \"\"\"Dict-like values() that returns a list of values of cookies from the\n        jar.\n\n        .. seealso:: keys() and items().\n        \"\"\"\n        return list(self.itervalues())\n\n    def iteritems(self) -> Iterator[tuple[str, str | None]]:\n        \"\"\"Dict-like iteritems() that returns an iterator of name-value tuples\n        from the jar.\n\n        .. seealso:: iterkeys() and itervalues().\n        \"\"\"\n        for cookie in iter(self):\n            yield cookie.name, cookie.value\n\n    def items(self) -> list[tuple[str, str | None]]:  # type: ignore[override]\n        \"\"\"Dict-like items() that returns a list of name-value tuples from the\n        jar. Allows client-code to call ``dict(RequestsCookieJar)`` and get a\n        vanilla python dict of key value pairs.\n\n        .. seealso:: keys() and values().\n        \"\"\"\n        return list(self.iteritems())\n\n    def list_domains(self) -> list[str]:\n        \"\"\"Utility method to list all the domains in the jar.\"\"\"\n        domains: list[str] = []\n        for cookie in iter(self):\n            if cookie.domain not in domains:",
+                "summary": "Compatibility class; is a http.cookiejar.CookieJar, but exposes a dict",
+                "score": 4294967290
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::6ac31c78c9b4dc7637c5d33cec5095c3d61f81d939603caf9bb00990c4db6669::HTTPAdapter",
+                  "trail": "project \u203a src/requests/adapters.py:158 \u203a HTTPAdapter",
+                  "name": "HTTPAdapter",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "path": "src/requests/adapters.py",
+                  "line": 158,
+                  "segments": [
+                    "HTTPAdapter"
+                  ],
+                  "key": "363662c5",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      54,
+                      54,
+                      98,
+                      197,
+                      215,
+                      66,
+                      25,
+                      70,
+                      97,
+                      100,
+                      204,
+                      125,
+                      183,
+                      176,
+                      21,
+                      203,
+                      66,
+                      26,
+                      234,
+                      131,
+                      16,
+                      250,
+                      50,
+                      23,
+                      99,
+                      64,
+                      244,
+                      29,
+                      220,
+                      75,
+                      37,
+                      152
+                    ]
+                  }
+                },
+                "kind": "struct",
+                "language": "python",
+                "state": "ready",
+                "signature": "class HTTPAdapter(BaseAdapter):\n    \"\"\"The built-in HTTP Adapter for urllib3.\n\n    Provides a general-case interface for Requests sessions to contact HTTP and\n    HTTPS urls by implementing the Transport Adapter interface. This class will\n    usually be created by the :class:`Session <Session>` class under the\n    covers.\n\n    :param pool_connections: The number of urllib3 connection pools to cache.\n    :param pool_maxsize: The maximum number of connections to save in the pool.\n    :param max_retries: The maximum number of retries each connection\n        should attempt. Note, this applies only to failed DNS lookups, socket\n        connections and connection timeouts, never to requests where data has\n        made it to the server. By default, Requests does not retry failed\n        connections. If you need granular control over the conditions under\n        which we retry a request, import urllib3's ``Retry`` class and pass\n        that instead.\n    :param pool_block: Whether the connection pool should block for connections.\n\n    Usage::\n\n      >>> import requests\n      >>> s = requests.Session()\n      >>> a = requests.adapters.HTTPAdapter(max_retries=3)\n      >>> s.mount('http://', a)\n    \"\"\"\n\n    __attrs__: list[str] = [\n        \"max_retries\",\n        \"config\",\n        \"_pool_connections\",\n        \"_pool_maxsize\",\n        \"_pool_block\",\n    ]\n\n    max_retries: Retry\n    config: dict[str, Any]\n    proxy_manager: dict[str, Any]\n    _pool_connections: int\n    _pool_maxsize: int\n    _pool_block: bool\n    poolmanager: _PoolManager\n\n    def __init__(\n        self,\n        pool_connections: int = DEFAULT_POOLSIZE,\n        pool_maxsize: int = DEFAULT_POOLSIZE,\n        max_retries: int | Retry = DEFAULT_RETRIES,\n        pool_block: bool = DEFAULT_POOLBLOCK,\n    ) -> None:\n        if max_retries == DEFAULT_RETRIES:\n            self.max_retries = Retry(0, read=False)\n        else:\n            self.max_retries = Retry.from_int(max_retries)\n        self.config =",
+                "summary": "The built-in HTTP Adapter for urllib3.",
+                "score": 4294967289
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::51ef726b75eeabcb630f11c6334c431afab9cddab8e138405223069dd5884ab7::RedirectSession",
+                  "trail": "project \u203a tests/test_requests.py:2582 \u203a RedirectSession",
+                  "name": "RedirectSession",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "path": "tests/test_requests.py",
+                  "line": 2582,
+                  "segments": [
+                    "RedirectSession"
+                  ],
+                  "key": "90d3ee84",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      144,
+                      211,
+                      238,
+                      132,
+                      110,
+                      192,
+                      144,
+                      237,
+                      219,
+                      242,
+                      82,
+                      25,
+                      39,
+                      143,
+                      228,
+                      52,
+                      219,
+                      51,
+                      21,
+                      63,
+                      160,
+                      103,
+                      39,
+                      187,
+                      106,
+                      37,
+                      237,
+                      100,
+                      237,
+                      51,
+                      143,
+                      22
+                    ]
+                  }
+                },
+                "kind": "struct",
+                "language": "python",
+                "state": "ready",
+                "signature": "class RedirectSession(SessionRedirectMixin):\n    def __init__(self, order_of_redirects):\n        self.redirects = order_of_redirects\n        self.calls = []\n        self.max_redirects = 30\n        self.cookies =",
+                "score": 4294967288
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::b2a6eae2cc2b10a8c47e9f95690beafd6b0109721c733fa3999f574612adc0e1::PreparedRequest",
+                  "trail": "project \u203a src/requests/models.py:376 \u203a PreparedRequest",
+                  "name": "PreparedRequest",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "path": "src/requests/models.py",
+                  "line": 376,
+                  "segments": [
+                    "PreparedRequest"
+                  ],
+                  "key": "142c43ee",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      20,
+                      44,
+                      67,
+                      238,
+                      200,
+                      145,
+                      87,
+                      110,
+                      0,
+                      46,
+                      191,
+                      79,
+                      189,
+                      175,
+                      203,
+                      246,
+                      227,
+                      84,
+                      28,
+                      96,
+                      116,
+                      44,
+                      96,
+                      19,
+                      76,
+                      94,
+                      138,
+                      3,
+                      47,
+                      82,
+                      197,
+                      206
+                    ]
+                  }
+                },
+                "kind": "struct",
+                "language": "python",
+                "state": "ready",
+                "signature": "class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):\n    \"\"\"The fully mutable :class:`PreparedRequest <PreparedRequest>` object,\n    containing the exact bytes that will be sent to the server.\n\n    Instances are generated from a :class:`Request <Request>` object, and\n    should not be instantiated manually; doing so may produce undesirable\n    effects.\n\n    Usage::\n\n      >>> import requests\n      >>> req = requests.Request('GET', 'https://httpbin.org/get')\n      >>> r = req.prepare()\n      >>> r\n      <PreparedRequest [GET]>\n\n      >>> s = requests.Session()\n      >>> s.send(r)\n      <Response [200]>\n    \"\"\"\n\n    method: str | None\n    url: str | None\n    headers: CaseInsensitiveDict[str | bytes]\n    _cookies: RequestsCookieJar | CookieJar | None\n    body: _t.BodyType\n    hooks: dict[str, list[_t.HookType]]\n    _body_position: int | object | None\n\n    def __init__(self) -> None:\n        #: HTTP verb to send to the server.\n        self.method = None\n        #: HTTP URL to send the request to.\n        self.url = None\n        #: dictionary of HTTP headers.\n        self.headers = None  # type: ignore[assignment]\n        # The `CookieJar` used to create the Cookie header will be stored here\n        # after prepare_cookies is called\n        self._cookies = None\n        #: request body to send to the server.\n        self.body = None\n        #: dictionary of callback hooks, for internal usage.\n        self.hooks = default_hooks()\n        #: integer denoting starting position of a readable file-like body.\n        self._body_position = None\n\n    def prepare(\n        self,\n        method: str | None = None,\n        url: _t.UriType | None = None,\n        headers: Mapping[str, str | bytes] | None = None,\n        files: _t.FilesType = None,\n        data: _t.DataType = None,\n        params: _t.ParamsType = None,\n        auth: _t.AuthType = None,\n        cookies: RequestsCookieJar | CookieJar | dict[str, str] | None = None,\n        hooks: _t.HooksInputType | None = None,\n        json: _t.JsonType = None,\n    ) -> None:\n        \"\"\"Prepares the entire request with the given parameters.\"\"\"\n\n        url = cast(\"_t.UriType\", url)\n        self.prepare_method(method)\n        self.prepare_url(url, params)\n        self.prepare_headers(headers)\n        self.prepare_cookies(cookies)\n        self.prepare_body(data, files, json)\n        self.prepare_auth(auth, url)\n\n        # Note that prepare_auth must be last to enable authentication schemes\n        # such as OAuth to work on a fully prepared request.\n\n        # This MUST go after prepare_auth. Authenticators could add a hook\n        self.prepare_hooks(hooks)\n\n    def __repr__(self) -> str:\n        return f\"<PreparedRequest [",
+                "summary": "The fully mutable :class:`PreparedRequest <PreparedRequest>` object,",
+                "score": 4294967287
+              },
+              {
+                "identity": {
+                  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c70468a0fbaeee5e84a0eaff14babdc2e55ee2c0a8bc1afcff3fda298bee4bbf::SessionRedirectMixin",
+                  "trail": "project \u203a src/requests/sessions.py:127 \u203a SessionRedirectMixin",
+                  "name": "SessionRedirectMixin",
+                  "shape": "semantic",
+                  "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project",
+                  "path": "src/requests/sessions.py",
+                  "line": 127,
+                  "segments": [
+                    "SessionRedirectMixin"
+                  ],
+                  "key": "d34ea3bf",
+                  "semantic_data": {
+                    "kind": "selected-symbol-id",
+                    "value": [
+                      211,
+                      78,
+                      163,
+                      191,
+                      45,
+                      180,
+                      198,
+                      189,
+                      172,
+                      22,
+                      204,
+                      197,
+                      246,
+                      56,
+                      119,
+                      155,
+                      89,
+                      30,
+                      181,
+                      114,
+                      229,
+                      194,
+                      206,
+                      251,
+                      216,
+                      100,
+                      40,
+                      35,
+                      94,
+                      59,
+                      147,
+                      225
+                    ]
+                  }
+                },
+                "kind": "struct",
+                "language": "python",
+                "state": "ready",
+                "signature": "class SessionRedirectMixin:\n    max_redirects: int\n    trust_env: bool\n    cookies: RequestsCookieJar\n\n    def send(self, request: PreparedRequest, **kwargs: Any) -> Response: ...\n\n    def get_redirect_target(self, resp: Response) -> str | None:\n        \"\"\"Receives a Response. Returns a redirect URI or ``None``\"\"\"\n        # Due to the nature of how requests processes redirects this method will\n        # be called at least once upon the original response and at least twice\n        # on each subsequent redirect response (if any).\n        # If a custom mixin is used to handle this logic, it may be advantageous\n        # to cache the redirect location onto the response object as a private\n        # attribute.\n        if resp.is_redirect:\n            location = resp.headers[\"location\"]\n            # Currently the underlying http module on py3 decode headers\n            # in latin1, but empirical evidence suggests that latin1 is very\n            # rarely used with non-ASCII characters in HTTP headers.\n            # It is more likely to get UTF8 header rather than latin1.\n            # This causes incorrect handling of UTF8 encoded location headers.\n            # To solve this, we re-encode the location in latin1.\n            location = location.encode(\"latin1\")\n            return to_native_string(location, \"utf8\")\n        return None\n\n    def should_strip_auth(self, old_url: str, new_url: str) -> bool:\n        \"\"\"Decide whether Authorization header should be removed when redirecting\"\"\"\n        old_parsed = urlparse(old_url)\n        new_parsed = urlparse(new_url)\n        if old_parsed.hostname != new_parsed.hostname:\n            return True\n        # Special case: allow http -> https redirect when using the standard\n        # ports. This isn't specified by RFC 7235, but is kept to avoid\n        # breaking backwards compatibility with older versions of requests\n        # that allowed any redirects on the same host.\n        if (\n            old_parsed.scheme == \"http\"\n            and old_parsed.port in (80, None)\n            and new_parsed.scheme == \"https\"\n            and new_parsed.port in (443, None)\n        ):\n            return False\n\n        # Handle default port usage corresponding to scheme.\n        changed_port = old_parsed.port != new_parsed.port\n        changed_scheme = old_parsed.scheme != new_parsed.scheme\n        default_port = (DEFAULT_PORTS.get(old_parsed.scheme, None), None)\n        if (\n            not changed_scheme\n            and old_parsed.port in default_port\n            and new_parsed.port in default_port\n        ):\n            return False\n\n        # Standard case: root URI must match\n        return changed_port or changed_scheme\n\n    def resolve_redirects(\n        self,\n        resp: Response,\n        req: PreparedRequest,\n        stream: bool = False,\n        timeout: _t.TimeoutType = None,\n        verify: _t.VerifyType = True,\n        cert: _t.CertType = None,\n        proxies: dict[str, str] | None = None,\n        yield_requests: bool = False,\n        **adapter_kwargs: Any,\n    ) -> Generator[Response, None, None]:\n        \"\"\"Receives a Response. Returns a generator of Responses or Requests.\"\"\"\n\n        hist: list[Response] = []  # keep track of history\n\n        url = self.get_redirect_target(resp)\n        previous_fragment = urlparse(req.url).fragment\n        while url:\n            prepared_request = req.copy()\n\n            # Update history and keep track of redirects.\n            resp.history = hist[:]\n            hist.append(resp)\n\n            try:\n                resp.content  # Consume socket so it can be released\n            except (ChunkedEncodingError, ContentDecodingError, RuntimeError):\n                resp.raw.read(decode_content=False)\n\n            if len(resp.history) >= self.max_redirects:\n                raise TooManyRedirects(\n                    f\"Exceeded",
+                "score": 4294967286
+              }
+            ],
+            "more": true,
+            "semantic_search": {
+              "status": "unavailable",
+              "reason": "unconfigured"
+            },
+            "answer": "records",
+            "detail": "full",
+            "nextCursor": "mcp1-1791318031-cGMzLWVKenRXRjF2SXpjU19DOTg3Z2QyazgwUF9ZMTdEQllHaC1Sa2hkaFdJc20tV3dULTc0ZHFhamRaMnprRU9BTjdEd2RER0dtR1F6YXJxNnVMX3QwOXpfUGxlSHAwQjJGeTVfbmIwN3hjNzQ3REhaaGNQejA4dE1maERyLTdYNDY0dXN0czVfN1prUnZ0Mm5EX092OTFkUWYzajNteFdjamRIeC1PVjNkZ1QyNXJsLVBGSFZ3S2U2dUIxWWN5cEdfUnB6Mm5rcFJuR0kyMzJIUFBkWElQVTdjY19aNTgxMjNQN1AyWU8zTjE1UHJULVhJNlk4SHo3TWRmcHp1NHNmZDk3eUhyUGpxbk9zcU1jUTdSVVdMcHVyTlBYbm1NMW1QZS0tZ2JxN1F0eExpTlVOcG95ZEVmZTNlemxsbVllMHRGVXRVLW0walljdU50YnBKU2EzMVUzYmdFMlVmSm83ZXVJYlpjeGhaU0NSR1RiZWYyMkQtN2c0dEpmZE1oSTVTdVB2Y2t2RzI1amRsckNtMXZQVzhqUjc5dHZhajNlZU0ta3E4dDVYMlRXR1FIaUtlZjNjR3h0T2czYm5XVUxiVGRWNWxiMVJ3MWEwMjVjMjA2dHRwYkxITk1qU0pwU3RtbGhzUXo1T1FkdVV2X1BCLWFPd1J5NTlNSm1ZcXhKZDRxYTYtaGJiRkptWnVPbUZLT3VhWGVPT1F0alpqcUZsT09aZF9xYUxWcER2dk8tOXdISmdWTEh2dDBCeUgzMjlNOGY3azc3ZnRsV3RwZndLSTI3aDdhNDNHZmw2czdQRDdkMzctOGtPdnpmRDN1eDk2dUU0bnM5LTM0Y0hHSG43NlJxNS1lNTduOVBQOUVyMHNfV2JKYkxVMVNxWDdHUGtjcmVaUzI3NEdycGpTS3ozMHZNMnd0NTc2Mzd0UE11MVQxa3NMWXRHdG5SLTYwWGViNWVZNlBtZTNYODJrODlYbDJCeGRhMlNNTHQ2SWg3X3VXdElWYXRMVldwTWVSVzVFa1BMZWN1WHNfUjgxajVqQjJMWjc5emtDMG54NXZoZFJMMm1WWFAyZWZVY2FJTXlmdnQ4bE45enlIenN4MVJxNjVWVC1xcGhtbDVlNWo5R04yRGRtUm04X0hzZEx6VThsVUVoVlBzVkxKbERObFQtcEp5TnNmazZkY2lWVXBCUklmU2Jpc241RTRzOTFLa1FJSkp5ckVHTVZDTEltRWxiaG1raWpFbW9namt6QVRDNjZST0FZU2ZBLUJ1QXB4U0tRa0dGQ0pKWkl5Y1UwMmg1SldZcDl3RWFxUnhIc1N5Y1RKeGdsNzR1VHhKQmNTdjhZZzFCeUlTeVl1aUZjSnQzekdOUGlSRVYybFNxVVFpN2RGc04yTUY1UkVTUEJSV1J1TEJoVnJJSTVxOFhQd0pJR1lJMm0yMkgwaHhtd3gyUjZFQTNFdWhIMFhCY0RNbFRJVGF5YjJTcHdTSGlZczRZbGpJYTZlbURHUVNVUXBLdVcxeVNnVUE0VkVTZTFwUVV5M0Z6Q1ZST0lFTUFBMk1BU29nYUluenNnQjBsV0pxV2J5RkloX1RHb1hzMVk4ZGlWR01nRnlLU0NpellKQVExd0FlNnlzaEFpRkV2S0RUU01fU3FHQXJ6WXlrU2dRQWFoQ1hKSDlTaEtRMjBJQ1NKRVp6TXhDRXVvdGhJQTlxaGh0R0pFQXptd3BLWlc0TUVwRExOTVZDVUI4NnFrd2Nhb1VLU0R6bnBCcFh0WERtU29pd3c0aThsd1d3NURrU0RuZE1QQ1lPRm5aV2MyQjFNaHJ6T0FaQWhlZktDWEQwa2hVVUpQVmt5U3Fla3RGSUFsTUFqZ0tMclpNQkZoVzNMaUxORWtreXljWWJTV2xDd0tETGhxck0yb0twRXNVOEJRemcyN01TbUl6SXNwTWpLY2l0cldLMzZXc1ZBY0JUNUZKbEdNaXNSRk1sc1Q0YmRmZl80SHIwQ0ZQUlJZT1A1YWZRQVBLaDRwTnhObldzOEZZSGdRRFJNYUxhcHBRSzhtS0RQZWlSN3cycTYxa2pNVXdCQ0lhU1NwRjFQX2FlY0JYWGZUbjF4QUZBVEsxbUFBQUc1UzVTVW9RU3lvWFNpUi1hUVBZRGk2QzRIN0Y1SmtZT1VDOGVVa2tGSUhCOU1TbVNpYVVvQVVLTDFDSm4xNWU2RnZMaFNtNGc4MDdYaF9tNF9XN3pydWNnM3Mtem5fZW5lZDl1eTZEQjJfNDMxdTZQd2Z4eV96eTNzSTNRM1ZiOFFOYzFYTzdmNEtaZUdqSHg3OFRBRnpZYmZVUHNHSmZWNzhfYnVkMl92STZnTHZ0eTNWZV9rTUN6UGJld3ZrSTc3dkMtZWw3UnFMeFFPY2dhdURQS28wM3JLMFZSY3ljN0lLZUNLcjVnR2IyM2dSMjJ3b2ZnX0RFN3BpMkx4ZkNIdTF1dllOSHVsb2VwbVhfYmdDbTQ5RzZNaG8yVTR6RXhhTmdUSk9qelJZOG9SRHdRVy12ZFgyMG9INlNVTVVDS0Y2NldSSG9HYllBclpRbEJ2cGEwY2hfVjBSZmp4Rl9sYnNfbmx2eVB1Q3M4VFY1SlZFT0VLQmw5UEJGZ0dNTzBOYU1kdklHT2hISWJUWkpVa1dmRWNGbWwyV0Jua0h0ODJwN2llQXNUR3FaVEVUcjBtbWdKUkFqdmZWdjA2dGM4VGJhS2xRWjNpeWxfN0hrQlVnanVrQlpIUng3UnN2R2xobkJvOFdpTmF1YVdjSEh5NExDY0FORU1KSUp1aHZYVHF3YmVFTWtNbHBkS0JZNVBJU0ZGZDVHa2IyNXpRVEZoNmVBbEs5YkV0RVQ0SDVSRWhsdEdwdjBoSTNiY3JBdHNEbm1MYzMxQkt3QWdUY3JGQWtCcmhUQlRXVnI1bS1CUUZ1Tm1FT3dBRHBfdFVWZ0tTTXdnUTFlQzRGaGdBSzlMeEJySkZ6Z29yMWdmdUNISnBNU05nLVBnUzRjbVRRaWoyQWFxUEJfSVA0YWlCOWFGX0kySGxRRFhCNDRyd1NPSTRiTXNDc1JCbGJCQWZnT0gtek1nOEd3SHN0cXdLVGdvYXBkN05SeW80dzV2V2oyLUdhNFlKdzB2Qk9UQUlnM251VnZHNVVQLUhkSGI0LW54Mk52OTB0dzFVTllsOUlsSEhjWTFwNFlpTjE2MmV0LW9lOTBrSGVxRWRVck5fRkYybV85TU4zT1BFQTF3VkJhZVpvVEJVTUs3Q3BLRjY4a1ZKeWRUeXJKT3VkQU9LQUo1bjl0T3REbHRScThfZzAxZnhObVFHNVhaNjVvSXJZU19EaDRBZjMwQmFjNDVCTG1HWXBpeHdzMEhRc2hyNE9HOVlpQ3lPMGtZcWNaTkNCd0owU2M3ZFVjd3R2ZWhjMUhPX3ZoREFDTnpzbU81akRFV0hkMUpHRVVDSXFwQ0NWUTFkdVJCNUJZcGFBN0djcHF4elBHOFJBZzR1QzF6amtRXzFlUWZIcDUtZlR5OG1fM01zOUY-556e674ebd0aca072ab5ca76b6c08ee3",
+            "budget": {
+              "bytes": 28278,
+              "estimatedTokens": 7070,
+              "bytesPerToken": 4
+            }
+          },
+          "isError": false
+        }
+      }
+    }
+  ],
+  "owned_daemons_remaining": [],
+  "endpoint_remaining": true,
+  "source_unchanged": false
+}

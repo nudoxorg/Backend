@@ -1,0 +1,9 @@
+backend show <COORDINATE>
+
+Render one declaration page: signature, documentation, members, relations, and source. Reach for this immediately after search: it is the cheapest complete answer about one declaration.
+
+operands
+  COORDINATE      Exact declaration coordinate from a search or outline result.
+
+also spelled: document
+

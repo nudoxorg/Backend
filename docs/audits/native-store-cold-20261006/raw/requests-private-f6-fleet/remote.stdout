@@ -1,0 +1,207 @@
+{"label": "help-cli", "exit": 0, "seconds": 2.888372, "stdout_bytes": 8687, "fault": null}
+{"label": "help-health", "exit": 0, "seconds": 0.260643, "stdout_bytes": 231, "fault": null}
+{"label": "help-status", "exit": 0, "seconds": 0.237244, "stdout_bytes": 231, "fault": null}
+{"label": "help-add", "exit": 0, "seconds": 0.243486, "stdout_bytes": 674, "fault": null}
+{"label": "help-remove", "exit": 0, "seconds": 0.23648, "stdout_bytes": 242, "fault": null}
+{"label": "help-search", "exit": 0, "seconds": 0.238093, "stdout_bytes": 532, "fault": null}
+{"label": "help-resolve", "exit": 0, "seconds": 0.241196, "stdout_bytes": 509, "fault": null}
+{"label": "help-source", "exit": 0, "seconds": 0.244782, "stdout_bytes": 287, "fault": null}
+{"label": "help-show", "exit": 0, "seconds": 0.248026, "stdout_bytes": 328, "fault": null}
+{"label": "help-references", "exit": 0, "seconds": 0.250819, "stdout_bytes": 353, "fault": null}
+{"label": "help-graph", "exit": 0, "seconds": 0.245172, "stdout_bytes": 272, "fault": null}
+{"label": "help-semantic-versions", "exit": 0, "seconds": 0.235273, "stdout_bytes": 265, "fault": null}
+{"label": "help-backend-mcp", "exit": 0, "seconds": 2.144991, "stdout_bytes": 108, "fault": null}
+{"label": "help-backend-locald", "exit": 0, "seconds": 8.66468, "stdout_bytes": 1623, "fault": null}
+{"label": "tool-python3", "exit": 0, "seconds": 0.562831, "stdout_bytes": 13, "fault": null}
+{"kind": "admission_request", "nonce": "34a3d6dbeddb43e5a344090f30d973e8", "response_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/coordination/sol61-private-store-trace-f6eee1512c-admission/34a3d6dbeddb43e5a344090f30d973e8.response.json", "label": "fresh-health", "supervisor_pid": 69109}
+{"label": "fresh-health", "exit": 0, "seconds": 0.535941, "stdout_bytes": 802, "fault": null}
+{"label": "after-initial-cancel-health", "exit": 0, "seconds": 0.51813, "stdout_bytes": 802, "fault": null}
+{"label": "fresh-add", "exit": 0, "seconds": 30.080609, "stdout_bytes": 419, "fault": null}
+{"label": "post-add-health", "exit": 0, "seconds": 0.591051, "stdout_bytes": 805, "fault": null}
+{"label": "post-add-packages", "exit": 0, "seconds": 0.278106, "stdout_bytes": 646, "fault": null}
+{"label": "post-add-semantic-versions-0", "exit": 0, "seconds": 0.407333, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-1", "exit": 0, "seconds": 0.397817, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-2", "exit": 0, "seconds": 0.38306, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-3", "exit": 0, "seconds": 0.390379, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-4", "exit": 0, "seconds": 0.390607, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-5", "exit": 0, "seconds": 0.39586, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-6", "exit": 0, "seconds": 0.381567, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-7", "exit": 0, "seconds": 0.375379, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-8", "exit": 0, "seconds": 0.381059, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-9", "exit": 0, "seconds": 0.384845, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-10", "exit": 0, "seconds": 0.386367, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-11", "exit": 0, "seconds": 0.403322, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-12", "exit": 0, "seconds": 0.383333, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-13", "exit": 0, "seconds": 0.400723, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-14", "exit": 0, "seconds": 0.392856, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-15", "exit": 0, "seconds": 0.294781, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-16", "exit": 0, "seconds": 0.396108, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-17", "exit": 0, "seconds": 0.366871, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-18", "exit": 0, "seconds": 0.355957, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-19", "exit": 0, "seconds": 0.393196, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-20", "exit": 0, "seconds": 0.441197, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-21", "exit": 0, "seconds": 0.380222, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-22", "exit": 0, "seconds": 0.406937, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-23", "exit": 0, "seconds": 0.414221, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-24", "exit": 0, "seconds": 0.406341, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-25", "exit": 0, "seconds": 0.238007, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-26", "exit": 0, "seconds": 0.238657, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-27", "exit": 0, "seconds": 0.237582, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-28", "exit": 0, "seconds": 0.239568, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-29", "exit": 0, "seconds": 0.232504, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-30", "exit": 0, "seconds": 0.238251, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-31", "exit": 0, "seconds": 0.236512, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-32", "exit": 0, "seconds": 0.247424, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-33", "exit": 0, "seconds": 0.238338, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-34", "exit": 0, "seconds": 0.237731, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-35", "exit": 0, "seconds": 0.238919, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-36", "exit": 0, "seconds": 0.236433, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-37", "exit": 0, "seconds": 0.241555, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-38", "exit": 0, "seconds": 0.240759, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-39", "exit": 0, "seconds": 0.282849, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-40", "exit": 0, "seconds": 0.239461, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-41", "exit": 0, "seconds": 0.263611, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-42", "exit": 0, "seconds": 0.244276, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-43", "exit": 0, "seconds": 0.247747, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-44", "exit": 0, "seconds": 0.276504, "stdout_bytes": 3017, "fault": null}
+{"label": "post-add-semantic-versions-45", "exit": 0, "seconds": 0.300674, "stdout_bytes": 3017, "fault": null}
+{"label": "query-search-request", "exit": 0, "seconds": 9.366858, "stdout_bytes": 27187, "fault": null}
+{"label": "query-search-Session", "exit": 0, "seconds": 0.267019, "stdout_bytes": 27346, "fault": null}
+{"label": "query-resolve", "exit": 1, "seconds": 0.304581, "stdout_bytes": 203, "fault": {"slug": "transport", "operand": "response", "cause": "oversized", "detail": "response is 98748 bytes, above the 49152 byte budget; lower limit or request detail=summary", "answer": "fault"}}
+{"label": "query-outline-bare", "exit": 0, "seconds": 0.332469, "stdout_bytes": 25834, "fault": null}
+{"label": "query-outline-dot", "exit": 0, "seconds": 0.339892, "stdout_bytes": 25834, "fault": null}
+{"label": "query-outline-absolute", "exit": 0, "seconds": 0.471587, "stdout_bytes": 25834, "fault": null}
+{"label": "query-source-c9918c71", "exit": 0, "seconds": 0.268935, "stdout_bytes": 9740, "fault": null}
+{"label": "query-show-c9918c71", "exit": 0, "seconds": 0.522894, "stdout_bytes": 17551, "fault": null}
+{"label": "query-references-c9918c71", "exit": 0, "seconds": 0.381528, "stdout_bytes": 4544, "fault": null}
+{"label": "query-graph-c9918c71", "exit": 0, "seconds": 0.352025, "stdout_bytes": 4209, "fault": null}
+{"label": "query-related-c9918c71", "exit": 0, "seconds": 0.420682, "stdout_bytes": 10787, "fault": null}
+{"label": "retry-add", "exit": 0, "seconds": 21.675825, "stdout_bytes": 419, "fault": null}
+{"label": "retry-health", "exit": 0, "seconds": 0.501713, "stdout_bytes": 805, "fault": null}
+{"label": "retry-semantic-versions-0", "exit": 0, "seconds": 0.250922, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-1", "exit": 0, "seconds": 0.246141, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-2", "exit": 0, "seconds": 0.235957, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-3", "exit": 0, "seconds": 0.239699, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-4", "exit": 0, "seconds": 0.238121, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-5", "exit": 0, "seconds": 0.245145, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-6", "exit": 0, "seconds": 0.239437, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-7", "exit": 0, "seconds": 0.236467, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-8", "exit": 0, "seconds": 0.241116, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-9", "exit": 0, "seconds": 0.23158, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-10", "exit": 0, "seconds": 0.240653, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-11", "exit": 0, "seconds": 0.236412, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-12", "exit": 0, "seconds": 0.230768, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-13", "exit": 0, "seconds": 0.245918, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-14", "exit": 0, "seconds": 0.230275, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-15", "exit": 0, "seconds": 0.229153, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-16", "exit": 0, "seconds": 0.231388, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-17", "exit": 0, "seconds": 0.247327, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-18", "exit": 0, "seconds": 0.566333, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-19", "exit": 0, "seconds": 0.243599, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-20", "exit": 0, "seconds": 0.258076, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-21", "exit": 0, "seconds": 0.249849, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-22", "exit": 0, "seconds": 0.237802, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-23", "exit": 0, "seconds": 0.288478, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-24", "exit": 0, "seconds": 0.25731, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-25", "exit": 0, "seconds": 0.265282, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-26", "exit": 0, "seconds": 0.262724, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-27", "exit": 0, "seconds": 0.246325, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-28", "exit": 0, "seconds": 0.232908, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-29", "exit": 0, "seconds": 0.248187, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-30", "exit": 0, "seconds": 0.237782, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-31", "exit": 0, "seconds": 0.2345, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-32", "exit": 0, "seconds": 0.254628, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-33", "exit": 0, "seconds": 0.256023, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-34", "exit": 0, "seconds": 0.249754, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-35", "exit": 0, "seconds": 0.257932, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-36", "exit": 0, "seconds": 0.270875, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-37", "exit": 0, "seconds": 0.304962, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-38", "exit": 0, "seconds": 0.253414, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-39", "exit": 0, "seconds": 0.280805, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-40", "exit": 0, "seconds": 0.289536, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-41", "exit": 0, "seconds": 0.305578, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-42", "exit": 0, "seconds": 0.275705, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-43", "exit": 0, "seconds": 0.285884, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-44", "exit": 0, "seconds": 0.298998, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-45", "exit": 0, "seconds": 0.254514, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-46", "exit": 0, "seconds": 0.262492, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-semantic-versions-47", "exit": 0, "seconds": 0.247125, "stdout_bytes": 3023, "fault": null}
+{"label": "retry-search-request", "exit": 0, "seconds": 9.74785, "stdout_bytes": 27183, "fault": null}
+{"label": "retry-search-Session", "exit": 0, "seconds": 0.272231, "stdout_bytes": 27354, "fault": null}
+{"label": "retry-resolve", "exit": 1, "seconds": 0.320726, "stdout_bytes": 203, "fault": {"slug": "transport", "operand": "response", "cause": "oversized", "detail": "response is 98748 bytes, above the 49152 byte budget; lower limit or request detail=summary", "answer": "fault"}}
+{"label": "edit-add", "exit": 2, "seconds": 1.081713, "stdout_bytes": 510, "fault": {"slug": "protocol", "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: index job did not publish: Refused(ProductText(\"daemon error: Workspace(\\\"workspace error: Model(\\\\\\\"extend lazy transition closure: Corrupt\\\\\\\")\\\")\"))", "answer": "fault"}}
+{"label": "edit-health", "exit": 0, "seconds": 0.556418, "stdout_bytes": 805, "fault": null}
+{"label": "edit-semantic-versions-0", "exit": 0, "seconds": 0.264693, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-1", "exit": 0, "seconds": 0.24829, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-2", "exit": 0, "seconds": 0.298686, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-3", "exit": 0, "seconds": 0.285871, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-4", "exit": 0, "seconds": 0.269263, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-5", "exit": 0, "seconds": 0.29144, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-6", "exit": 0, "seconds": 0.267772, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-7", "exit": 0, "seconds": 0.275341, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-8", "exit": 0, "seconds": 0.248988, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-9", "exit": 0, "seconds": 0.257547, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-10", "exit": 0, "seconds": 0.276441, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-11", "exit": 0, "seconds": 0.255561, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-12", "exit": 0, "seconds": 0.276402, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-13", "exit": 0, "seconds": 0.273382, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-14", "exit": 0, "seconds": 0.280088, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-15", "exit": 0, "seconds": 0.23825, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-16", "exit": 0, "seconds": 0.403893, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-17", "exit": 0, "seconds": 0.254811, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-18", "exit": 0, "seconds": 0.270902, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-19", "exit": 0, "seconds": 0.283557, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-20", "exit": 0, "seconds": 0.294496, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-21", "exit": 0, "seconds": 0.283741, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-22", "exit": 0, "seconds": 0.263818, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-23", "exit": 0, "seconds": 0.267867, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-24", "exit": 0, "seconds": 0.257155, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-25", "exit": 0, "seconds": 0.300285, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-26", "exit": 0, "seconds": 0.274434, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-27", "exit": 0, "seconds": 0.307949, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-28", "exit": 0, "seconds": 0.325628, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-29", "exit": 0, "seconds": 0.290276, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-30", "exit": 0, "seconds": 0.293357, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-31", "exit": 0, "seconds": 0.28984, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-32", "exit": 0, "seconds": 0.3084, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-33", "exit": 0, "seconds": 0.544127, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-34", "exit": 0, "seconds": 0.296532, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-35", "exit": 0, "seconds": 0.303993, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-36", "exit": 0, "seconds": 0.278375, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-37", "exit": 0, "seconds": 0.274623, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-38", "exit": 0, "seconds": 0.289764, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-39", "exit": 0, "seconds": 0.274932, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-40", "exit": 0, "seconds": 0.282362, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-41", "exit": 0, "seconds": 0.286766, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-42", "exit": 0, "seconds": 0.281516, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-43", "exit": 0, "seconds": 0.263331, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-44", "exit": 0, "seconds": 0.289308, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-45", "exit": 0, "seconds": 0.29137, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-semantic-versions-46", "exit": 0, "seconds": 0.29296, "stdout_bytes": 3023, "fault": null}
+{"label": "edit-resolve", "exit": 1, "seconds": 0.266685, "stdout_bytes": 203, "fault": {"slug": "transport", "operand": "response", "cause": "oversized", "detail": "response is 98748 bytes, above the 49152 byte budget; lower limit or request detail=summary", "answer": "fault"}}
+{"label": "edit-source-c9918c71", "exit": 0, "seconds": 0.242036, "stdout_bytes": 9740, "fault": null}
+{"label": "edit-document-c9918c71", "exit": 0, "seconds": 0.459212, "stdout_bytes": 17551, "fault": null}
+{"label": "remove-project", "exit": 0, "seconds": 4.836631, "stdout_bytes": 421, "fault": null}
+{"label": "removed-health", "exit": 0, "seconds": 0.493558, "stdout_bytes": 802, "fault": null}
+{"label": "removed-source-c9918c71", "exit": 2, "seconds": 0.257151, "stdout_bytes": 428, "fault": {"slug": "protocol", "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c1a88a686c0ec0bed5b54ee996776bb30078d3ac9418e434dddb50d9ac6e97c4::request", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "answer": "fault"}}
+{"label": "removed-show-c9918c71", "exit": 2, "seconds": 0.264312, "stdout_bytes": 428, "fault": {"slug": "protocol", "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c1a88a686c0ec0bed5b54ee996776bb30078d3ac9418e434dddb50d9ac6e97c4::request", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "answer": "fault"}}
+{"label": "removed-references-c9918c71", "exit": 2, "seconds": 0.254551, "stdout_bytes": 158, "fault": {"slug": "invalid-query", "operand": "", "cause": "malformed", "detail": "references target is absent from the selected view", "answer": "fault"}}
+{"label": "removed-graph-c9918c71", "exit": 2, "seconds": 0.277348, "stdout_bytes": 484, "fault": {"slug": "protocol", "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c1a88a686c0ec0bed5b54ee996776bb30078d3ac9418e434dddb50d9ac6e97c4::request", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: semantic graph source is absent from the selected view", "answer": "fault"}}
+{"label": "readd-project", "exit": 2, "seconds": 1.104446, "stdout_bytes": 510, "fault": {"slug": "protocol", "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: index job did not publish: Refused(ProductText(\"daemon error: Workspace(\\\"workspace error: Model(\\\\\\\"extend lazy transition closure: Corrupt\\\\\\\")\\\")\"))", "answer": "fault"}}
+{"label": "readded-health", "exit": 0, "seconds": 0.515054, "stdout_bytes": 802, "fault": null}
+{"label": "readded-semantic-versions-0", "exit": 2, "seconds": 0.245258, "stdout_bytes": 159, "fault": {"slug": "invalid-query", "operand": "", "cause": "malformed", "detail": "semantic publication unavailable: project authority", "answer": "fault"}}
+{"label": "readded-source-c9918c71", "exit": 2, "seconds": 0.270614, "stdout_bytes": 428, "fault": {"slug": "protocol", "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c1a88a686c0ec0bed5b54ee996776bb30078d3ac9418e434dddb50d9ac6e97c4::request", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "answer": "fault"}}
+{"label": "readded-show-c9918c71", "exit": 2, "seconds": 0.277309, "stdout_bytes": 428, "fault": {"slug": "protocol", "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c1a88a686c0ec0bed5b54ee996776bb30078d3ac9418e434dddb50d9ac6e97c4::request", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "answer": "fault"}}
+{"label": "readded-references-c9918c71", "exit": 2, "seconds": 0.263777, "stdout_bytes": 158, "fault": {"slug": "invalid-query", "operand": "", "cause": "malformed", "detail": "references target is absent from the selected view", "answer": "fault"}}
+{"label": "readded-graph-c9918c71", "exit": 2, "seconds": 0.254203, "stdout_bytes": 484, "fault": {"slug": "protocol", "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c1a88a686c0ec0bed5b54ee996776bb30078d3ac9418e434dddb50d9ac6e97c4::request", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: semantic graph source is absent from the selected view", "answer": "fault"}}
+{"kind": "admission_request", "nonce": "908aca1519254c26982bf73800882842", "response_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/coordination/sol61-private-store-trace-f6eee1512c-admission/908aca1519254c26982bf73800882842.response.json", "label": "cold-health", "supervisor_pid": 69109}
+{"label": "cold-health", "exit": 0, "seconds": 0.51741, "stdout_bytes": 802, "fault": null}
+{"label": "cold-semantic-versions-0", "exit": 2, "seconds": 0.245886, "stdout_bytes": 159, "fault": {"slug": "invalid-query", "operand": "", "cause": "malformed", "detail": "semantic publication unavailable: project authority", "answer": "fault"}}
+{"label": "cold-search-request", "exit": 0, "seconds": 0.250639, "stdout_bytes": 552, "fault": null}
+{"label": "cold-search-Session", "exit": 0, "seconds": 0.257401, "stdout_bytes": 552, "fault": null}
+{"label": "cold-source-c9918c71", "exit": 2, "seconds": 0.251666, "stdout_bytes": 428, "fault": {"slug": "protocol", "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c1a88a686c0ec0bed5b54ee996776bb30078d3ac9418e434dddb50d9ac6e97c4::request", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "answer": "fault"}}
+{"label": "cold-show-c9918c71", "exit": 2, "seconds": 0.261565, "stdout_bytes": 428, "fault": {"slug": "protocol", "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c1a88a686c0ec0bed5b54ee996776bb30078d3ac9418e434dddb50d9ac6e97c4::request", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "answer": "fault"}}
+{"label": "cold-references-c9918c71", "exit": 2, "seconds": 0.251828, "stdout_bytes": 158, "fault": {"slug": "invalid-query", "operand": "", "cause": "malformed", "detail": "references target is absent from the selected view", "answer": "fault"}}
+{"label": "cold-graph-c9918c71", "exit": 2, "seconds": 0.260063, "stdout_bytes": 484, "fault": {"slug": "protocol", "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b/project::semantic::c1a88a686c0ec0bed5b54ee996776bb30078d3ac9418e434dddb50d9ac6e97c4::request", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: semantic graph source is absent from the selected view", "answer": "fault"}}
+{"kind": "admission_request", "nonce": "0bfb5ac0a8e44198badb4c37f967fa2b", "response_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/coordination/sol61-private-store-trace-f6eee1512c-admission/0bfb5ac0a8e44198badb4c37f967fa2b.response.json", "label": "mcp-status", "supervisor_pid": 69109}
+{"root": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-private-store-trace-f6eee1512c/20261006T200321Z-python-stock-host-8715e27b", "source_unchanged": false, "accepted_project_pass": false, "remaining_owned_daemons": [], "journey_error": null}
