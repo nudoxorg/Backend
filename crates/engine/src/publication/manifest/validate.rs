@@ -12,11 +12,7 @@ use thiserror::Error;
 
 use super::{
     CompilationManifestIdentity,
-    build::{
-        COMPILATION_MANIFEST_ENTRY_BYTES, COMPILATION_MANIFEST_HEADER_BYTES,
-        COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES, CONTEXTUAL_SEMANTIC_VERSION, MAGIC, RANGE_COUNT,
-        SEMANTIC_VERSION, VERSION,
-    },
+    build::{COMPILATION_MANIFEST_HEADER_BYTES, MAGIC, RANGE_COUNT},
     wire::{decode_entry, fixed},
 };
 
@@ -33,40 +29,7 @@ pub struct CompilationManifestFacts {
     pub byte_length: u32,
 }
 
-/// Closed compiler-manifest generations.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CompilationManifestFormat {
-    /// Compatibility package binding only compact IR fragments.
-    CompactV1,
-    /// Authoritative package binding compact fragments and full semantic images.
-    SemanticV2,
-    /// Authoritative contextual package ordered by compact and full-image identity.
-    SemanticV3,
-}
-
-impl CompilationManifestFormat {
-    /// Whether this format binds both the compact object and its full semantic image.
-    #[must_use]
-    pub const fn is_semantic(self) -> bool {
-        matches!(self, Self::SemanticV2 | Self::SemanticV3)
-    }
-
-    const fn from_version(version: u16) -> Option<Self> {
-        match version {
-            VERSION => Some(Self::CompactV1),
-            SEMANTIC_VERSION => Some(Self::SemanticV2),
-            CONTEXTUAL_SEMANTIC_VERSION => Some(Self::SemanticV3),
-            _ => None,
-        }
-    }
-
-    const fn entry_bytes(self) -> usize {
-        match self {
-            Self::CompactV1 => COMPILATION_MANIFEST_ENTRY_BYTES,
-            Self::SemanticV2 | Self::SemanticV3 => COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES,
-        }
-    }
-}
+pub use backend_semantic::ir::CompilationManifestFormat;
 
 /// A borrowed validated compiler package manifest.
 pub struct CompilationManifestView<'manifest, 'facts> {

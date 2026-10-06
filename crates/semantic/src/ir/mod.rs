@@ -10,6 +10,7 @@ compile_error!("backend-semantic::ir requires at least a 32-bit address space");
 mod authority;
 mod canonical_data;
 mod columnar;
+mod compiler_manifest;
 mod coordinate;
 mod declaration_identity;
 mod discovery;
@@ -90,6 +91,11 @@ pub use canonical_data::{
     CanonicalDataError, CanonicalDataGraph, DataCanonicalization, DataCountLane, DataFacts,
     DataOutput, DataOutputLane, DataResource, DataResourceBudget, DataScratch, DataScratchLane,
     canonicalize_data_with_budget,
+};
+pub use compiler_manifest::{
+    COMPILATION_MANIFEST_ENTRY_BYTES, COMPILATION_MANIFEST_HEADER_BYTES,
+    COMPILATION_MANIFEST_MAGIC, COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES,
+    CompilationManifestFormat,
 };
 pub use coordinate::{
     AtomId, AtomSpace, DenseId, Entity, EntityId, List, ListId, Text, TextId, Type, TypeId,

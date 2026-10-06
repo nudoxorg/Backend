@@ -1223,6 +1223,7 @@ dependencies = [
 name = "backend-extension-turso"
 version = "0.2.0"
 dependencies = [
+ "backend-engine",
  "backend-library",
  "backend-platform",
  "backend-semantic",
