@@ -2838,9 +2838,12 @@ impl Render for Reader {
         }
         // The place change in flight, this frame (window space).
         let reader = self.frame.get();
-        if !waiting
+        // The route owns the plate as soon as it has a measured viewport.
+        // Read readiness controls its body and native actions, not whether
+        // the previous painted page survives or which spring Back reverses.
+        // Check the frame first so an unmeasured arrival is not consumed.
+        if let Some(reader) = reader
             && let Some(arrival) = self.arrival.take()
-            && let Some(reader) = reader
         {
             self.begin(arrival, reader, window, cx);
         }
@@ -2857,7 +2860,9 @@ impl Render for Reader {
             facet::motion::request_frame(window, cx);
         }
         let transit = self.transit.clone().filter(|_| staged.is_some());
-        let keep = |key: u64| key == current.key || key == requested.key || transit.as_ref().is_some_and(|t| t.inside == key || t.outside == key);
+        let keep = |key: u64| key == current.key || key == requested.key
+            || self.arrival.as_ref().is_some_and(|arrival| arrival.leaving == key)
+            || transit.as_ref().is_some_and(|t| t.inside == key || t.outside == key);
         self.places.retain(|place| keep(place.key));
         // The page drawn away from the scroller this frame (the one leaving
         // an Open, the one folding on a Close's or a Fold's plate).
