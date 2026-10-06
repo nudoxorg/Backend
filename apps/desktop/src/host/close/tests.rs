@@ -7,6 +7,13 @@ use gpui::TestAppContext;
 use std::sync::mpsc;
 
 fn closing(rig: &mut Rig) -> Entity<GracefulClose> {
+    // Paint tracing is opt-in and independent of the Facet probe. Enable it
+    // before the close view mounts; an empty trace is not evidence of a blank
+    // decision surface.
+    rig.cx.update(|window, cx| {
+        cx.set_global(gpui::TextTrace);
+        window.set_a11y_forced(true);
+    });
     rig._window
         .root(rig.cx)
         .expect("component root")
@@ -136,12 +143,21 @@ fn held_native_path(cx: &mut TestAppContext, entry: Entry) {
         0,
         "shutdown has not started during a held save"
     );
-    assert!(rig.cx.update(|window, _| {
-        window
-            .painted_texts()
-            .iter()
-            .any(|text| text.text.contains("Saving your latest changes"))
-    }));
+    rig.cx.update(|window, cx| {
+        let painted = window.painted_texts();
+        assert!(painted.iter().any(|text| {
+            text.alpha > 0.0 && text.text.contains("Saving your latest changes")
+        }), "the live save surface paints its status: {painted:#?}");
+        assert!(close.read(cx).focus.contains_focused(window, cx),
+            "the held save owns native input");
+        let tree: serde_json::Value = serde_json::from_str(
+            &window.debug_a11y_tree_json().expect("native close tree"),
+        ).expect("native close JSON");
+        assert!(tree["nodes"].as_object().expect("native nodes").values().any(|node| {
+            node["aria"]["role"].as_str() == Some("Dialog")
+                && node["aria"]["label"].as_str() == Some("Save before closing")
+        }), "the held save mounts its native dialog: {tree:#?}");
+    });
     release(&mut held);
     crate::runtime::wait::until("close checkpoint acknowledged", || {
         rig.cx
@@ -444,6 +460,12 @@ fn long_close_failure_at_200_percent_stays_inside_viewport_and_traps_native_tab(
         for _ in 0..4 {
             rig.cx.simulate_keystrokes("tab");
             rig.draw();
+            let panel = rig.cx.debug_bounds("close-panel").expect("mounted decision panel");
+            assert!(panel.origin.x >= px(0.0) && panel.origin.y >= px(0.0),
+                "the whole close panel begins inside the viewport: {panel:?}");
+            assert!(panel.origin.x + panel.size.width <= px(width)
+                && panel.origin.y + panel.size.height <= px(height),
+                "the whole close panel fits the viewport: {panel:?}");
             let focus = rig.cx.update(|window, cx| {
                 let trap = close.read(cx).focus.clone();
                 assert!(
@@ -455,12 +477,24 @@ fn long_close_failure_at_200_percent_stays_inside_viewport_and_traps_native_tab(
                     text.text.contains("CloseError") || labels.contains(&text.text.as_ref())
                 }) {
                     observed += 1;
+                    assert!(text.alpha > 0.0, "close words have visible ink");
                     assert!(text.bounds.origin.x >= px(0.0));
                     assert!(text.bounds.origin.y >= px(0.0));
                     assert!(text.bounds.origin.x + text.bounds.size.width <= px(width));
                     assert!(text.bounds.origin.y + text.bounds.size.height <= px(height));
                 }
-                assert!(observed > 0, "bounded close text is actually painted");
+                assert!(observed > 0, "bounded close text is actually painted: {:?}",
+                    window.painted_texts());
+                let tree: serde_json::Value = serde_json::from_str(
+                    &window.debug_a11y_tree_json().expect("native decisions tree"),
+                ).expect("native decisions JSON");
+                let nodes = tree["nodes"].as_object().expect("native decisions");
+                for label in labels {
+                    assert!(nodes.values().any(|node| {
+                        node["aria"]["role"].as_str() == Some("Button")
+                            && node["aria"]["label"].as_str() == Some(label)
+                    }), "the mounted close decision is accessible: {label}: {tree:#?}");
+                }
                 window.focused(cx).expect("native control focus")
             });
             focused.push(focus);
