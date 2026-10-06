@@ -48,15 +48,15 @@ class LauncherEnvironmentTests(unittest.TestCase):
             contents / "Resources/Helpers/typescript/node/bin/node",
             "#!/bin/sh\nprintf '%s\\n' bundled-node-probe\n",
         )
-        # The child executes the selected Node path, so a missing, unexported,
-        # or incorrectly quoted bundled runtime cannot pass this contract.
+        # Observe the actual child environment. When the caller selects Node,
+        # execute that path to check argument quoting and propagation too.
         self._executable(
             macos / "backend-desktop",
             f"#!{sys.executable}\n"
             "import json, os, subprocess, sys\n"
-            "node = os.environ['NUDOX_TYPESCRIPT_NODE']\n"
-            "probe = subprocess.run([node, '--version'], check=True, capture_output=True, text=True)\n"
-            "print(json.dumps({'node': node, 'node_probe': probe.stdout.strip(),\n"
+            "node = os.environ.get('NUDOX_TYPESCRIPT_NODE')\n"
+            "probe = subprocess.run([node, '--version'], check=True, capture_output=True, text=True).stdout.strip() if node else None\n"
+            "print(json.dumps({'node': node, 'node_probe': probe,\n"
             "  'compiler': {key: os.environ.get(key) for key in\n"
             "    ['NUDOX_TYPESCRIPT_MODULE_ROOT', 'NUDOX_TYPESCRIPT_REPORT_PROGRAM', 'NUDOX_TSC']},\n"
             "  'args': sys.argv[1:]}))\n",
@@ -78,12 +78,12 @@ class LauncherEnvironmentTests(unittest.TestCase):
         self.assertEqual(result.stderr, "")
         return json.loads(result.stdout)
 
-    def test_bundled_node_runs_without_forcing_a_project_compiler(self) -> None:
+    def test_bundle_does_not_inject_typescript_runtime_or_compiler_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            launcher, node = self._bundle(Path(temporary))
+            launcher, _ = self._bundle(Path(temporary))
             observed = self._run(launcher, {})
-            self.assertEqual(Path(observed["node"]), node)
-            self.assertEqual(observed["node_probe"], "bundled-node-probe")
+            self.assertIsNone(observed["node"])
+            self.assertIsNone(observed["node_probe"])
             self.assertEqual(observed["compiler"], dict.fromkeys(COMPILER_VARIABLES))
             self.assertEqual(
                 observed["args"],
@@ -110,11 +110,14 @@ class LauncherEnvironmentTests(unittest.TestCase):
             self.assertEqual(observed["node_probe"], "explicit-node-probe")
             self.assertEqual(observed["compiler"], values)
 
-    def test_explicit_empty_compiler_values_are_not_replaced_with_defaults(self) -> None:
+    def test_explicit_empty_typescript_values_are_not_replaced_with_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             launcher, _ = self._bundle(Path(temporary))
             values = dict.fromkeys(COMPILER_VARIABLES, "")
-            self.assertEqual(self._run(launcher, values)["compiler"], values)
+            observed = self._run(launcher, {**values, "NUDOX_TYPESCRIPT_NODE": ""})
+            self.assertEqual(observed["compiler"], values)
+            self.assertEqual(observed["node"], "")
+            self.assertIsNone(observed["node_probe"])
 
 
 if __name__ == "__main__":

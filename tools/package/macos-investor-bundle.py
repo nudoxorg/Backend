@@ -1329,11 +1329,11 @@ def inspect_macho_tree(
 
 
 def write_application_launcher(macos: Path) -> None:
-    """Make bundled Node available without selecting a project's TS compiler.
+    """Preserve caller TypeScript settings for the shared Rust host resolver.
 
     The host admits TypeScript from the selected package. Inherited explicit
-    compiler paths remain available, but a bundle default must not replace
-    that project-local selection with the bundled legacy checker.
+    runtime and compiler paths remain available. Bundled Node is admitted
+    through the executable's manifest, rather than an ambient override.
     """
     launcher = macos / "Nudox"
     launcher.write_text(
@@ -1345,7 +1345,6 @@ def write_application_launcher(macos: Path) -> None:
         'export NUDOX_GO_ORACLE="${NUDOX_GO_ORACLE-$contents/Resources/Helpers/go/oracle}"\n'
         'export NUDOX_GO_ORACLE_BIN="${NUDOX_GO_ORACLE_BIN-$contents/Resources/Helpers/go/oracle}"\n'
         'export NUDOX_PYREFLY="${NUDOX_PYREFLY-$contents/Resources/Helpers/python/pyrefly}"\n'
-        'export NUDOX_TYPESCRIPT_NODE="${NUDOX_TYPESCRIPT_NODE-$contents/Resources/Helpers/typescript/node/bin/node}"\n'
         'exec "$contents/MacOS/backend-desktop" "$@"\n',
         encoding="utf-8",
     )
