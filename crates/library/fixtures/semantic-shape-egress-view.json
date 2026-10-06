@@ -193,7 +193,9 @@
     "entries": [
       {
         "symbol": {
-          "kind": "selected",
+          "kind": {
+            "kind": "selected"
+          },
           "id": "0606060606060606060606060606060606060606060606060606060606060606"
         },
         "identity": null,
