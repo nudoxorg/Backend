@@ -1399,6 +1399,8 @@ mod tests {
             backend_engine::Row::in_package(RowId::Symbol(parent), basis, package, "parent"),
             backend_engine::Row::in_package(RowId::Symbol(unrelated), basis, package, "unrelated"),
             backend_engine::Row::in_package(RowId::Symbol(child), basis, package, "child")
+                .try_with_identity_preimage("shape-child")
+                .expect("exact child identity witness")
                 .with_parent(parent)
                 .with_document(vec![backend_engine::Fragment::Link {
                     label: "unrelated".to_owned(),

@@ -1669,6 +1669,7 @@ mod tests {
             authority: EntityAuthorityFacts {
                 parentage: ParentageAuthority::Root,
                 semantic_type: FactAvailability::Captured,
+                visibility: FactAvailability::Captured,
                 ..EntityAuthorityFacts::default()
             },
             parent: None,
@@ -1860,6 +1861,7 @@ mod tests {
             authority: EntityAuthorityFacts {
                 parentage: ParentageAuthority::Root,
                 semantic_type: FactAvailability::Captured,
+                visibility: FactAvailability::Captured,
                 ..EntityAuthorityFacts::default()
             },
             parent: None,

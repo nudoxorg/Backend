@@ -4104,6 +4104,8 @@ mod tests {
 
     #[test]
     fn freshness_key_rejects_immutable_generation_rows() {
+        use backend_engine::publication::binding::CompilationBindingIdentity;
+
         let coordinate = PackageUrl::parse("pkg:cargo/freshness-key-fixture@0.1.0".to_owned())
             .expect("admit freshness fixture coordinate");
         let selected = ProductSemanticPublicationKey::new(
@@ -4114,8 +4116,11 @@ mod tests {
         .expect("admit selected semantic key");
         assert!(SelectedSemanticPublicationKey::new(&selected).is_ok());
 
+        assert!(selected.for_generation_bytes([7; 32]).is_err());
+        let binding =
+            CompilationBindingIdentity::from_encoded_bytes(b"freshness fixture generation");
         let generation = selected
-            .for_generation_bytes([7; 32])
+            .for_generation_bytes(binding.to_bytes())
             .expect("admit immutable generation key");
         assert_eq!(
             SelectedSemanticPublicationKey::new(&generation).err(),
