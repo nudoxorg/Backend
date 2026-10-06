@@ -35,13 +35,20 @@ pub fn reply_peer_state(stream: &LocalStream) -> std::io::Result<ReplyPeerState>
     {
         use rustix::event::{PollFd, PollFlags, Timespec, poll};
         let mut descriptors = [PollFd::new(stream, PollFlags::OUT)];
-        poll(
+        if let Err(error) = poll(
             &mut descriptors,
             Some(&Timespec {
                 tv_sec: 0,
                 tv_nsec: 0,
             }),
-        )?;
+        ) {
+            // An interrupted readiness probe establishes nothing about the
+            // peer. The next bounded response-wait iteration can probe again.
+            if error == rustix::io::Errno::INTR {
+                return Ok(ReplyPeerState::NotKnownClosed);
+            }
+            return Err(error.into());
+        }
         if descriptors[0].revents().contains(PollFlags::NVAL) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotConnected,

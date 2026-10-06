@@ -287,16 +287,18 @@ impl ResponseWaiter {
         if self.abandoned.load(Ordering::Acquire) {
             return true;
         }
-        if self.peer.as_ref().is_some_and(|peer| {
-            matches!(
-                backend_platform::local::reply_peer_state(peer),
-                Ok(backend_platform::local::ReplyPeerState::Closed) | Err(_)
-            )
-        }) {
-            self.abandon();
-            return true;
+        if let Some(peer) = &self.peer {
+            self.observe_peer_state(backend_platform::local::reply_peer_state(peer));
         }
-        false
+        self.abandoned.load(Ordering::Acquire)
+    }
+
+    fn observe_peer_state(&self, state: io::Result<backend_platform::local::ReplyPeerState>) {
+        // A probe failure has no authority to cancel delivery. Keep the
+        // bounded response deadline when the kernel witness is inconclusive.
+        if matches!(state, Ok(backend_platform::local::ReplyPeerState::Closed)) {
+            self.abandon();
+        }
     }
 }
 
@@ -907,6 +909,37 @@ mod tests {
                 .join()
                 .unwrap_or_else(|_| panic!("listener thread panicked"))
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deferred_peer_probe_errors_preserve_response_delivery() {
+        let (mut owner, mut client) =
+            backend_engine::LocalStream::pair().expect("local stream pair");
+        let waiter = super::ResponseWaiter::for_stream(&owner).expect("response capability");
+        for kind in [
+            io::ErrorKind::Interrupted,
+            io::ErrorKind::Other,
+            io::ErrorKind::NotConnected,
+        ] {
+            waiter.observe_peer_state(Err(io::Error::new(kind, "inconclusive peer probe")));
+            assert!(
+                !waiter.is_abandoned(),
+                "probe error is not a closure witness"
+            );
+        }
+        owner
+            .write_all(b"reply")
+            .expect("connected response remains deliverable");
+        let mut reply = [0_u8; 5];
+        std::io::Read::read_exact(&mut client, &mut reply)
+            .expect("receive response after probe errors");
+        assert_eq!(&reply, b"reply");
+        drop(client);
+        assert!(
+            waiter.is_abandoned(),
+            "an actual kernel closure still abandons delivery"
+        );
     }
 
     #[cfg(unix)]
