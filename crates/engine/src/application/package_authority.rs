@@ -29,7 +29,7 @@ use backend_frontend_java::legacy::harness::{
     Harness, HarnessError, HarnessRequest, JavaSource, JdkToolchain,
 };
 use backend_frontend_python::legacy::checker::{
-    PythonProjectControl, PythonProjectReport, PythonProjectSource,
+    NativePythonProjectAuthority, PythonProjectControl, PythonProjectReport, PythonProjectSource,
 };
 use backend_frontend_python::legacy::{
     CheckerError as PyreflyError, CheckerReport as PythonReport, ExtractionError, Pyrefly, extract,
@@ -43,6 +43,7 @@ use backend_frontend_typescript::legacy::{
 };
 use backend_library::interface::{CompilerToolFailure, CompilerToolIssue, CompilerToolRequirement};
 use backend_semantic::vocabulary::{LanguageProfile, NativeTool, TypeScriptSource};
+use backend_version::{ContentId, ToolchainDomain};
 use thiserror::Error;
 
 use super::typescript_host::TypeScriptProjectHost;
@@ -331,14 +332,7 @@ pub(crate) fn enter_python_project_authority(
             },
         });
     };
-    if resolved.identity.as_ref() != &authority.producer_identity().as_bytes() {
-        return Err(PackageAuthorityError::PythonPyrefly(
-            PyreflyError::NativeProducerIdentity {
-                expected: authority.producer_identity().as_bytes(),
-                observed: *resolved.identity.as_ref(),
-            },
-        ));
-    }
+    require_native_python_toolchain(authority, resolved.identity)?;
     let report = authority
         .analyze_project(
             request.package_root,
@@ -357,6 +351,19 @@ pub(crate) fn enter_python_project_authority(
         PackageAuthorityStage::PythonPyrefly,
     )?;
     Ok(report)
+}
+
+fn require_native_python_toolchain(
+    authority: NativePythonProjectAuthority,
+    observed: ContentId<ToolchainDomain>,
+) -> Result<(), PackageAuthorityError> {
+    let expected = ContentId::from_digest(authority.producer_identity().as_bytes());
+    if observed != expected {
+        return Err(
+            PackageAuthorityError::NativePythonToolchainIdentityMismatch { expected, observed },
+        );
+    }
+    Ok(())
 }
 
 fn require_python_checker(
@@ -496,14 +503,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 )?;
                 let report = match request.configuration.python_checker {
                     super::LocalRuntimePythonCheckerAdmission::Native { authority } => {
-                        if resolved.identity.as_ref() != &authority.producer_identity().as_bytes() {
-                            return Err(PackageAuthorityError::PythonPyrefly(
-                                PyreflyError::NativeProducerIdentity {
-                                    expected: authority.producer_identity().as_bytes(),
-                                    observed: *resolved.identity.as_ref(),
-                                },
-                            ));
-                        }
+                        require_native_python_toolchain(authority, resolved.identity)?;
                         let relative_path = request
                             .source_path
                             .strip_prefix(request.package_root)
@@ -1012,6 +1012,16 @@ pub enum PackageAuthorityError {
     ClangToolchainExecutableMismatch {
         /// Requested C-family profile.
         profile: LanguageProfile,
+    },
+    /// The resolved toolchain is not the domain-encoded identity of the admitted native producer.
+    #[error(
+        "compiled native Python toolchain identity differs: expected {expected:?}, observed {observed:?}"
+    )]
+    NativePythonToolchainIdentityMismatch {
+        /// Expected domain-encoded toolchain identity derived from the admitted producer digest.
+        expected: ContentId<ToolchainDomain>,
+        /// Exact resolved toolchain identity selected by the runtime.
+        observed: ContentId<ToolchainDomain>,
     },
     /// The package-aware TypeScript checker returned its exact terminal.
     #[error(transparent)]

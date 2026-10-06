@@ -4394,6 +4394,7 @@ fn package_authority_projection(
         | PackageAuthorityError::CompilationUnitSourceMismatch { .. }
         | PackageAuthorityError::RustToolchainExecutableMismatch { .. }
         | PackageAuthorityError::ClangToolchainExecutableMismatch { .. }
+        | PackageAuthorityError::NativePythonToolchainIdentityMismatch { .. }
         | PackageAuthorityError::GoAuthorityInputsChanged { .. }
         | PackageAuthorityError::ClangProject(_) => (Phase::Open, Class::Binding),
         PackageAuthorityError::PythonSyntax(_) => (Phase::Parse, Class::Syntax),
