@@ -22,12 +22,15 @@ use super::{
     AUTHORITY_IMAGE_BYTES, LocalCompilerHost, LocalCompilerHostError, LocalHostEnvironment,
     LocalHostPathRole, LocalHostVariable, PACKAGE_SOURCE_BYTES, nonzero,
 };
-use crate::application::toolchain_probe::{ToolchainProbeLimits, probe_command};
+use crate::application::toolchain_probe::{
+    ToolchainProbeError, ToolchainProbeLimits, ToolchainProbePrimary, probe_command,
+};
 use crate::application::typescript_host::TypeScriptProjectHost;
 use crate::application::{
     LocalRuntimeCSharpAuthority, LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority,
-    LocalRuntimePackageRoot, LocalRuntimePythonCheckerState, LocalRuntimeRustAuthority,
-    LocalRuntimeToolchain, PyreflyToolchainIdentity,
+    LocalRuntimePackageRoot, LocalRuntimePythonCheckerAdmission,
+    LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
+    PyreflyToolchainIdentity,
 };
 
 impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
@@ -117,23 +120,19 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalHostPathRole::Pyrefly,
             self.auxiliary_candidates(home, "pyrefly"),
         )?;
-        let (python_toolchain_identity, python_checker_state) = match pyrefly.as_deref() {
+        let python_checker = match pyrefly.as_deref() {
             Some(executable) => {
                 match probe_command(NativeTool::Python, executable, &["--version"], probe_limits) {
-                    Ok(output) => (
-                        Some(PyreflyToolchainIdentity::from_version_output(&output)),
-                        LocalRuntimePythonCheckerState::Ready,
-                    ),
-                    Err(_) => (None, LocalRuntimePythonCheckerState::ProbeFailed),
+                    Ok(output) => LocalRuntimePythonCheckerAdmission::Ready {
+                        adapter: Pyrefly::from_executable(executable.to_path_buf())?,
+                        proof: PyreflyToolchainIdentity::from_version_output(&output),
+                    },
+                    Err(error) => LocalRuntimePythonCheckerAdmission::ProbeFailed {
+                        cause: python_checker_probe_failure(&error),
+                    },
                 }
             }
-            None => (None, LocalRuntimePythonCheckerState::Unconfigured),
-        };
-        let python = match (executables.python.as_ref(), pyrefly, python_checker_state) {
-            (Some(_), Some(executable), LocalRuntimePythonCheckerState::Ready) => {
-                Some(Pyrefly::from_executable(executable)?)
-            }
-            _ => None,
+            None => LocalRuntimePythonCheckerAdmission::Unconfigured,
         };
         let rust = match (
             executables.rustc.as_deref(),
@@ -200,9 +199,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalRuntimePackageAuthority {
                 clang,
                 typescript,
-                python,
-                python_toolchain_identity,
-                python_checker_state,
+                python_checker,
                 rust,
                 go,
                 csharp,
@@ -297,6 +294,95 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     }
 }
 
+fn python_checker_probe_failure(
+    error: &ToolchainProbeError,
+) -> LocalRuntimePythonCheckerProbeFailure {
+    match error {
+        ToolchainProbeError::RelativeExecutable { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::RelativeExecutable
+        }
+        ToolchainProbeError::Spawn { .. } => LocalRuntimePythonCheckerProbeFailure::ExecutableStart,
+        ToolchainProbeError::ProbeWorkerSpawn { .. } | ToolchainProbeError::ReaderSpawn { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::WorkerStart
+        }
+        ToolchainProbeError::MissingStream { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::MissingStream
+        }
+        ToolchainProbeError::Wait { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::ProcessObservation
+        }
+        ToolchainProbeError::Cleanup { action, .. } => {
+            LocalRuntimePythonCheckerProbeFailure::Cleanup(*action)
+        }
+        ToolchainProbeError::Stream { .. } | ToolchainProbeError::Streams { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::StreamRead
+        }
+        ToolchainProbeError::Bounded {
+            primary: ToolchainProbePrimary::Deadline { .. },
+            ..
+        } => LocalRuntimePythonCheckerProbeFailure::TimedOut,
+        ToolchainProbeError::Bounded {
+            primary: ToolchainProbePrimary::OutputLimit { .. },
+            ..
+        } => LocalRuntimePythonCheckerProbeFailure::OutputLimit,
+        ToolchainProbeError::MissingStatus { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::MissingStatus
+        }
+        ToolchainProbeError::Exit { status, .. } => {
+            LocalRuntimePythonCheckerProbeFailure::ProcessExit {
+                code: status.code(),
+            }
+        }
+        ToolchainProbeError::Empty { .. } => LocalRuntimePythonCheckerProbeFailure::EmptyVersion,
+        ToolchainProbeError::Resolution { .. }
+        | ToolchainProbeError::TypeScriptInterpreterUnavailable { .. }
+        | ToolchainProbeError::TypeScriptModuleRootUnavailable { .. }
+        | ToolchainProbeError::TypeScriptModuleEntryMismatch { .. }
+        | ToolchainProbeError::ExecutableWitness { .. }
+        | ToolchainProbeError::ExecutableChanged { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::IdentityResolution
+        }
+    }
+}
+
+#[cfg(test)]
+mod python_checker_probe_tests {
+    use super::*;
+
+    #[test]
+    fn pyrefly_probe_failure_projection_keeps_only_bounded_typed_causes() {
+        let timeout = ToolchainProbeError::Bounded {
+            tool: NativeTool::Python,
+            primary: ToolchainProbePrimary::Deadline {
+                timeout: std::time::Duration::from_secs(2),
+            },
+        };
+        assert_eq!(
+            python_checker_probe_failure(&timeout),
+            LocalRuntimePythonCheckerProbeFailure::TimedOut,
+        );
+        let output_limit = ToolchainProbeError::Bounded {
+            tool: NativeTool::Python,
+            primary: ToolchainProbePrimary::OutputLimit {
+                worker: backend_semantic::vocabulary::NativeWorker::StandardOutputReader,
+                observed: 4097,
+                maximum: 4096,
+            },
+        };
+        assert_eq!(
+            python_checker_probe_failure(&output_limit),
+            LocalRuntimePythonCheckerProbeFailure::OutputLimit,
+        );
+        let empty = ToolchainProbeError::Empty {
+            tool: NativeTool::Python,
+        };
+        assert_eq!(
+            python_checker_probe_failure(&empty),
+            LocalRuntimePythonCheckerProbeFailure::EmptyVersion,
+        );
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct NativeExecutables {
     pub(super) rustc: Option<PathBuf>,
@@ -314,14 +400,30 @@ impl NativeExecutables {
     pub(super) fn toolchain_rows(
         &self,
         typescript_node: Option<&Path>,
+        typescript_module_root: Option<&Path>,
     ) -> Box<[LocalRuntimeToolchain]> {
         self.toolchain_executables()
             .map(|(tool, executable)| match executable {
-                Some(executable) => match (tool, typescript_node) {
-                    (NativeTool::TypeScriptCompiler, Some(node)) => {
+                Some(executable) => match (tool, typescript_node, typescript_module_root) {
+                    (NativeTool::TypeScriptCompiler, Some(node), Some(module_root)) => {
                         LocalRuntimeToolchain::probing_typescript_script(
                             executable.to_path_buf(),
                             node.to_path_buf(),
+                            module_root.to_path_buf(),
+                        )
+                    }
+                    (NativeTool::TypeScriptCompiler, None, _) => LocalRuntimeToolchain::probe_failed(
+                        tool,
+                        crate::application::ToolchainProbeError::TypeScriptInterpreterUnavailable {
+                            compiler: executable.to_path_buf(),
+                        },
+                    ),
+                    (NativeTool::TypeScriptCompiler, Some(_), None) => {
+                        LocalRuntimeToolchain::probe_failed(
+                            tool,
+                            crate::application::ToolchainProbeError::TypeScriptModuleRootUnavailable {
+                                compiler: executable.to_path_buf(),
+                            },
                         )
                     }
                     _ => LocalRuntimeToolchain::probing(tool, executable.to_path_buf()),
@@ -335,9 +437,10 @@ impl NativeExecutables {
     pub(super) fn admitted_toolchain_rows(
         &self,
         typescript_node: Option<&Path>,
+        typescript_module_root: Option<&Path>,
         limits: ToolchainProbeLimits,
     ) -> Box<[LocalRuntimeToolchain]> {
-        self.toolchain_rows(typescript_node)
+        self.toolchain_rows(typescript_node, typescript_module_root)
             .into_vec()
             .into_iter()
             .map(|row| {
@@ -360,5 +463,61 @@ impl NativeExecutables {
             (NativeTool::CSharpCompiler, self.csharp.as_deref()),
         ]
         .into_iter()
+    }
+}
+
+#[cfg(test)]
+mod invocation_selection_tests {
+    use super::NativeExecutables;
+    use crate::application::{LocalRuntimeToolchainState, ToolchainProbeError};
+    use backend_semantic::vocabulary::NativeTool;
+    use std::path::PathBuf;
+
+    fn only_typescript(typescript: Option<PathBuf>) -> NativeExecutables {
+        NativeExecutables {
+            rustc: None,
+            cargo: None,
+            cargo_home: None,
+            clang: None,
+            python: None,
+            typescript,
+            go: None,
+            java: None,
+            csharp: None,
+        }
+    }
+
+    #[test]
+    fn global_typescript_script_without_node_is_a_typed_refusal() {
+        let compiler = PathBuf::from("/selected/typescript/bin/tsc");
+        let rows = only_typescript(Some(compiler.clone())).toolchain_rows(None, None);
+        let typescript = rows
+            .iter()
+            .find(|row| row.tool == NativeTool::TypeScriptCompiler)
+            .expect("fixed TypeScript row");
+
+        assert_eq!(typescript.state, LocalRuntimeToolchainState::ProbeFailed);
+        assert!(matches!(
+            typescript.probe_failure(),
+            Some(ToolchainProbeError::TypeScriptInterpreterUnavailable {
+                compiler: observed
+            }) if observed == &compiler
+        ));
+    }
+
+    #[test]
+    fn selected_node_keeps_global_typescript_in_pending_script_form() {
+        let compiler = PathBuf::from("/selected/typescript/bin/tsc");
+        let node = PathBuf::from("/selected/node/bin/node");
+        let module_root = PathBuf::from("/selected/node_modules");
+        let rows =
+            only_typescript(Some(compiler.clone())).toolchain_rows(Some(&node), Some(&module_root));
+        let typescript = rows
+            .iter()
+            .find(|row| row.tool == NativeTool::TypeScriptCompiler)
+            .expect("fixed TypeScript row");
+
+        assert_eq!(typescript.state, LocalRuntimeToolchainState::Probing);
+        assert!(typescript.probe_failure().is_none());
     }
 }

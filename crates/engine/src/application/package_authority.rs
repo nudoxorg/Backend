@@ -55,10 +55,8 @@ pub struct PackageAuthorityConfiguration<'config> {
     pub typescript: Option<&'config ExplicitTypeScriptChecker>,
     /// Closed host inputs for request-scoped project compiler admission.
     pub typescript_project_host: Option<&'config TypeScriptProjectHost>,
-    /// Python pyrefly adapter that owns inferred-type and resolution facts.
-    pub python: Option<&'config Pyrefly>,
-    /// Exact checker selection and version-probe outcome, independent of the interpreter.
-    pub python_checker_state: super::LocalRuntimePythonCheckerState,
+    /// Closed Python checker state; a ready value carries both adapter and version proof.
+    pub python_checker: super::LocalRuntimePythonCheckerAdmission<&'config Pyrefly>,
     /// Rust Analyzer/Cargo authority configuration.
     pub rust: Option<RustPackageAuthorityConfiguration<'config>>,
     /// Go package oracle selected by the application owner.
@@ -80,8 +78,7 @@ impl PackageAuthorityConfiguration<'static> {
         clang: None,
         typescript: None,
         typescript_project_host: None,
-        python: None,
-        python_checker_state: super::LocalRuntimePythonCheckerState::Unconfigured,
+        python_checker: super::LocalRuntimePythonCheckerAdmission::Unconfigured,
         rust: None,
         go: None,
         csharp: None,
@@ -385,29 +382,28 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 PackageAuthorityOwner::TypeScript { profile, report }
             }
             LanguageProfile::Python(profile) => {
-                let Some(pyrefly) = request.configuration.python else {
-                    let failure = match request.configuration.python_checker_state {
-                        super::LocalRuntimePythonCheckerState::Unconfigured => {
-                            CompilerToolFailure::Missing
-                        }
-                        super::LocalRuntimePythonCheckerState::ProbeFailed => {
-                            CompilerToolFailure::ProbeFailed
-                        }
-                        super::LocalRuntimePythonCheckerState::Ready => {
-                            return Err(PackageAuthorityError::AdapterUnavailable {
-                                profile: request.profile,
-                                stage: PackageAuthorityStage::PythonPyrefly,
-                            });
-                        }
-                    };
-                    return Err(PackageAuthorityError::RequiredTool {
-                        profile: request.profile,
-                        stage: PackageAuthorityStage::PythonPyrefly,
-                        issue: CompilerToolIssue {
-                            requirement: CompilerToolRequirement::PythonChecker,
-                            failure,
-                        },
-                    });
+                let pyrefly = match request.configuration.python_checker {
+                    super::LocalRuntimePythonCheckerAdmission::Unconfigured => {
+                        return Err(PackageAuthorityError::RequiredTool {
+                            profile: request.profile,
+                            stage: PackageAuthorityStage::PythonPyrefly,
+                            issue: CompilerToolIssue {
+                                requirement: CompilerToolRequirement::PythonChecker,
+                                failure: CompilerToolFailure::Missing,
+                            },
+                        });
+                    }
+                    super::LocalRuntimePythonCheckerAdmission::ProbeFailed { .. } => {
+                        return Err(PackageAuthorityError::RequiredTool {
+                            profile: request.profile,
+                            stage: PackageAuthorityStage::PythonPyrefly,
+                            issue: CompilerToolIssue {
+                                requirement: CompilerToolRequirement::PythonChecker,
+                                failure: CompilerToolFailure::ProbeFailed,
+                            },
+                        });
+                    }
+                    super::LocalRuntimePythonCheckerAdmission::Ready { adapter, .. } => adapter,
                 };
                 let syntax = extract(request.source, profile)
                     .map_err(PackageAuthorityError::PythonSyntax)?;
@@ -942,8 +938,7 @@ mod tests {
             clang: None,
             typescript: None,
             typescript_project_host: None,
-            python: None,
-            python_checker_state: crate::application::LocalRuntimePythonCheckerState::Unconfigured,
+            python_checker: crate::application::LocalRuntimePythonCheckerAdmission::Unconfigured,
             rust: None,
             go: None,
             csharp: None,
@@ -985,8 +980,7 @@ mod tests {
             clang: None,
             typescript: Some(&typescript),
             typescript_project_host: None,
-            python: None,
-            python_checker_state: crate::application::LocalRuntimePythonCheckerState::Unconfigured,
+            python_checker: crate::application::LocalRuntimePythonCheckerAdmission::Unconfigured,
             rust: None,
             go: Some(&go),
             csharp: None,

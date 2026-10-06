@@ -2016,11 +2016,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             None
         };
         let typescript_toolchain = match typescript_project.as_ref() {
-            Some(project) => match ResolvedToolchain::from_version(
-                NativeTool::TypeScriptCompiler,
-                &project.compiler,
-                &project.compiler_version,
-            ) {
+            Some(project) => match project.resolved_toolchain() {
                 Ok(toolchain) => Some(toolchain),
                 Err(source) => {
                     let toolchain = self.toolchain(first_application_request).unwrap_or(
@@ -2033,11 +2029,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         first_application_request,
                         first_authority,
                         toolchain,
-                        PackageAuthorityError::TypeScriptProjectHost(
-                            crate::application::TypeScriptProjectHostError::ToolchainResolution {
-                                source,
-                            },
-                        ),
+                        PackageAuthorityError::TypeScriptProjectHost(source),
                     );
                     return Err(PackageSemanticError::Compile {
                         path: first_source.relative_path.into(),
@@ -4252,7 +4244,7 @@ fn compiler_attempt_terminal(
         request.stage,
         resolved.tool,
         source.identity,
-        resolved.identity,
+        resolved.invocation_identity(),
     );
     CompilerTerminal::Compile {
         attempted: CompilerAttempt {

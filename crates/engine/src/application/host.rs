@@ -434,6 +434,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                     .node
                     .as_ref()
                     .map(|node| node.path.as_path()),
+                typescript_host.module_root.as_deref(),
                 probe_limits,
             )
         } else {
@@ -442,6 +443,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                     .node
                     .as_ref()
                     .map(|node| node.path.as_path()),
+                typescript_host.module_root.as_deref(),
             )
         };
         let package_roots = self.package_roots(home.as_deref())?;

@@ -21,11 +21,12 @@ pub use self::types::{
     AuthorityProfileMismatch, ClangProjectionFault, CompileControl, CompileFailure, CompileOutput,
     CompileRecipeFact, CompileRequest, CompileScratch, CompiledFragment, CompiledIr,
     CompiledSemantic, DeclarationScope, FactFault, FactRejection, InvalidUtf8Fact,
-    MAX_NATIVE_WORKER_PANIC_BYTES, NativeDiagnostic, NativeTool, NativeWorkError,
-    NativeWorkPrimary, NativeWorker, NativeWorkerPanic, NativeWorkerPanicClass, ParentageState,
-    NativeWorkerPanicMessage, PackageDeclarationScopeFault, ResolvedToolchain,
-    ResolvedToolchainView, SemanticAuthorityInput, SourceIdentity, SourceSpanFact,
-    ToolchainResolutionError, ToolchainSelection, ToolchainSelectionFact, TypeChildLane, compile,
-    compile_ir, compile_semantic,
+    MAX_NATIVE_WORKER_PANIC_BYTES, NativeDiagnostic, NativeInvocation, NativeInvocationError,
+    NativeInvocationFileRole, NativeTool, NativeWorkError, NativeWorkPrimary, NativeWorker,
+    NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage,
+    PackageDeclarationScopeFault, ParentageState, ResolvedToolchain, ResolvedToolchainView,
+    SemanticAuthorityInput, SourceIdentity, SourceSpanFact, ToolchainResolutionError,
+    ToolchainSelection, ToolchainSelectionFact, TypeChildLane, compile, compile_ir,
+    compile_semantic,
 };
 pub use backend_semantic::vocabulary::{LoweringUnsupported, NativeArtifactRole, NativeWorkPhase};

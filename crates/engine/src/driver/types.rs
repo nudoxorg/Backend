@@ -29,8 +29,8 @@ pub use terminal::{
     NativeDiagnostic, NativeWorkError, NativeWorkPrimary,
 };
 pub use toolchain::{
-    ResolvedToolchain, ResolvedToolchainView, ToolchainResolutionError, ToolchainSelection,
-    ToolchainSelectionFact,
+    NativeInvocation, NativeInvocationError, NativeInvocationFileRole, ResolvedToolchain,
+    ResolvedToolchainView, ToolchainResolutionError, ToolchainSelection, ToolchainSelectionFact,
 };
 
 pub use backend_semantic::ir::SourceIdentity;
