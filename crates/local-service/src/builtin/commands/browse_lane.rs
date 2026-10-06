@@ -16,6 +16,7 @@
 
 use super::super::browse::{BrowseCache, ObservationControl, with_observation_control};
 use super::super::registry::RegistryGateway;
+use crate::discovery::package_metadata::{FetchedPackageMetadata, PreparedPackageMetadata};
 use backend_engine::{CommandFailure, CommandReply, SurfaceReply};
 use backend_library::SurfaceCommand;
 use std::collections::{HashMap, VecDeque};
@@ -44,6 +45,7 @@ struct Job {
     command: SurfaceCommand,
     advisory: AdvisorySelection,
     control: Arc<ObservationControl>,
+    metadata: Option<PreparedPackageMetadata>,
 }
 
 struct Running {
@@ -66,6 +68,7 @@ struct Shard {
 
 pub(super) enum Terminal {
     Reply(CommandReply, PayloadPermit),
+    Metadata(FetchedPackageMetadata, PayloadPermit),
     Cancelled,
     Deadline,
     Failed,
@@ -75,6 +78,8 @@ pub(super) enum Terminal {
 #[derive(Clone)]
 pub(super) enum AdvisorySelection {
     NotTree,
+    /// Exact registry metadata carries its own narrower authority witness.
+    Metadata,
     NoAuthority,
     Authority(Arc<backend_engine::advisory::AdvisoryAuthority>),
 }
@@ -83,17 +88,21 @@ impl AdvisorySelection {
     fn as_authority(&self) -> Option<&backend_engine::advisory::AdvisoryAuthority> {
         match self {
             Self::Authority(authority) => Some(authority),
-            Self::NotTree | Self::NoAuthority => None,
+            Self::NotTree | Self::Metadata | Self::NoAuthority => None,
         }
     }
 
     pub(super) fn still_selected(&self, registry: Option<&RegistryGateway>) -> bool {
         match self {
-            Self::NotTree => true,
+            Self::NotTree | Self::Metadata => true,
             Self::NoAuthority => registry.is_none(),
             Self::Authority(admitted) => registry
                 .is_some_and(|registry| Arc::ptr_eq(admitted, &registry.advisory_snapshot())),
         }
+    }
+
+    pub(super) const fn is_metadata(&self) -> bool {
+        matches!(self, Self::Metadata)
     }
 }
 
@@ -217,6 +226,36 @@ impl BrowseLane {
         command: SurfaceCommand,
         registry: Option<&RegistryGateway>,
     ) -> Result<(), &'static str> {
+        self.submit_work(ticket, request_id, owner_cursor, command, registry, None)
+    }
+
+    pub(super) fn submit_metadata(
+        &mut self,
+        ticket: u64,
+        request_id: u64,
+        owner_cursor: backend_engine::Cursor,
+        command: SurfaceCommand,
+        metadata: PreparedPackageMetadata,
+    ) -> Result<(), &'static str> {
+        self.submit_work(
+            ticket,
+            request_id,
+            owner_cursor,
+            command,
+            None,
+            Some(metadata),
+        )
+    }
+
+    fn submit_work(
+        &mut self,
+        ticket: u64,
+        request_id: u64,
+        owner_cursor: backend_engine::Cursor,
+        command: SurfaceCommand,
+        registry: Option<&RegistryGateway>,
+        metadata: Option<PreparedPackageMetadata>,
+    ) -> Result<(), &'static str> {
         if self.closed || self.outstanding.len() >= MAX_OUTSTANDING {
             return Err("Cargo browse read capacity is exhausted");
         }
@@ -259,7 +298,9 @@ impl BrowseLane {
             running.control.cancel();
         }
         let control = Arc::new(ObservationControl::new());
-        let advisory = if matches!(&command, SurfaceCommand::ProjectTree { .. }) {
+        let advisory = if metadata.is_some() {
+            AdvisorySelection::Metadata
+        } else if matches!(&command, SurfaceCommand::ProjectTree { .. }) {
             registry.map_or(AdvisorySelection::NoAuthority, |registry| {
                 AdvisorySelection::Authority(registry.advisory_snapshot())
             })
@@ -273,6 +314,7 @@ impl BrowseLane {
             command: command.clone(),
             advisory: advisory.clone(),
             control: Arc::clone(&control),
+            metadata,
         });
         self.outstanding.insert(
             ticket,
@@ -491,6 +533,9 @@ fn shard_for(command: &SurfaceCommand) -> usize {
         SurfaceCommand::CargoPackageReadmeLink { request } => {
             request.origin.request_binding.requested_root_digest
         }
+        SurfaceCommand::Package { package } => {
+            *blake3::hash(package.as_str().as_bytes()).as_bytes()
+        }
         _ => return 0,
     };
     usize::from(requested[0]) % WORKERS
@@ -502,6 +547,10 @@ fn run_worker(
     completions: Arc<Completions>,
     executor: Arc<ExecuteBrowse>,
 ) {
+    enum WorkReply {
+        Browse(CommandReply),
+        Metadata(FetchedPackageMetadata),
+    }
     let mut cache = BrowseCache::default();
     loop {
         let job = {
@@ -553,24 +602,38 @@ fn run_worker(
             } else if job.control.is_expired() {
                 Terminal::Deadline
             } else {
-                let reply = catch_unwind(AssertUnwindSafe(|| {
-                    with_observation_control(Arc::clone(&job.control), || {
-                        executor(
-                            &mut cache,
-                            job.command,
-                            job.advisory.as_authority(),
-                            &job.control,
-                        )
-                    })
-                }));
+                let reply =
+                    catch_unwind(AssertUnwindSafe(|| {
+                        with_observation_control(Arc::clone(&job.control), || {
+                            if let Some(metadata) = job.metadata {
+                                WorkReply::Metadata(metadata.fetch(|| {
+                                    job.control.is_cancelled() || job.control.is_expired()
+                                }))
+                            } else {
+                                WorkReply::Browse(executor(
+                                    &mut cache,
+                                    job.command,
+                                    job.advisory.as_authority(),
+                                    &job.control,
+                                ))
+                            }
+                        })
+                    }));
                 if job.control.is_cancelled() {
                     Terminal::Cancelled
                 } else if job.control.is_expired() {
                     Terminal::Deadline
                 } else {
                     match reply {
-                        Ok(reply) => Terminal::Reply(
+                        Ok(WorkReply::Browse(reply)) => Terminal::Reply(
                             reply,
+                            PayloadPermit {
+                                completions: Arc::clone(&completions),
+                                shard: index,
+                            },
+                        ),
+                        Ok(WorkReply::Metadata(metadata)) => Terminal::Metadata(
+                            metadata,
                             PayloadPermit {
                                 completions: Arc::clone(&completions),
                                 shard: index,
@@ -591,7 +654,7 @@ fn run_worker(
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .running = None;
-        let payload = matches!(&terminal, Terminal::Reply(_, _));
+        let payload = matches!(&terminal, Terminal::Reply(_, _) | Terminal::Metadata(_, _));
         let mut completed = completions
             .queue
             .lock()

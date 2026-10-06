@@ -30,7 +30,7 @@ struct CachedObject {
 
 #[derive(Default)]
 pub(super) struct PackageMetadataCache {
-    objects: BTreeMap<ObjectKey, CachedObject>,
+    objects: BTreeMap<ObjectKey, Arc<CachedObject>>,
     encoded_bytes: usize,
 }
 
@@ -45,22 +45,96 @@ enum ObjectResponse {
     },
 }
 
-impl DiscoveryGateway {
-    /// Commits exact package metadata under a distinct endpoint identity.
-    /// Namespace feed cursors and their CAS sequences are never advanced.
-    /// Positive replies read the admitted journal; negative outcomes remain
-    /// explicit and cannot masquerade as an empty acquired-package catalog.
-    pub(crate) fn observe_package(
-        &mut self,
-        package: &PackageCoordinate,
-    ) -> Option<RegistryPackageDiscoveryObservation> {
-        if self.cancelled.load(Ordering::Acquire) {
-            return Some(unavailable(None, "registry metadata request was cancelled"));
+pub(crate) enum PackageMetadataPreparation {
+    Cached(Option<RegistryPackageDiscoveryObservation>),
+    Fetch(PreparedPackageMetadata),
+}
+
+pub(crate) struct PreparedPackageMetadata {
+    key: ObjectKey,
+    source: DiscoverySourceIdentity,
+    progress: DiscoveryProgressToken,
+    pub(crate) package: PackageCoordinate,
+    pub(crate) owner_epoch: [u8; 16],
+    pub(crate) request_id: u64,
+    request_identity: [u8; 32],
+    ecosystem: RegistryEcosystem,
+    name: String,
+    maximum: usize,
+    cached: Option<Arc<CachedObject>>,
+    cancelled: Arc<AtomicBool>,
+}
+
+pub(crate) struct FetchedPackageMetadata {
+    pub(crate) request: PreparedPackageMetadata,
+    result: Result<CachedObject, DiscoveryStoreError>,
+}
+
+impl PreparedPackageMetadata {
+    pub(crate) fn fetch(self, cancelled: impl Fn() -> bool) -> FetchedPackageMetadata {
+        let result = (|| {
+            if cancelled() || self.cancelled.load(Ordering::Acquire) {
+                return Err(DiscoveryStoreError::Cancelled);
+            }
+            let etag = self
+                .cached
+                .as_ref()
+                .and_then(|cached| cached.etag.as_deref());
+            let response = fetch_object(
+                &self.key.endpoint,
+                self.maximum,
+                || cancelled() || self.cancelled.load(Ordering::Acquire),
+                etag,
+            )?;
+            let (releases, complete, proof, etag) = match response {
+                ObjectResponse::Modified { bytes, etag } => {
+                    let proof = *blake3::hash(&bytes).as_bytes();
+                    let (releases, complete) =
+                        parse_object(self.ecosystem, &bytes, &self.name, &self.package)?;
+                    (releases, complete, proof, etag)
+                }
+                ObjectResponse::Unchanged => {
+                    let cached = self.cached.as_ref().ok_or(DiscoveryStoreError::Corrupt)?;
+                    (
+                        cached.releases.clone(),
+                        cached.complete,
+                        cached.proof,
+                        cached.etag.clone(),
+                    )
+                }
+                ObjectResponse::Missing { proof } => (Vec::new(), true, proof, None),
+            };
+            if cancelled() || self.cancelled.load(Ordering::Acquire) {
+                return Err(DiscoveryStoreError::Cancelled);
+            }
+            Ok(CachedObject {
+                etag,
+                releases,
+                complete,
+                proof,
+                observed: Instant::now(),
+                observed_at_millis: discovery_now(),
+                encoded_bytes: 0,
+            })
+        })();
+        FetchedPackageMetadata {
+            request: self,
+            result,
         }
+    }
+}
+
+impl DiscoveryGateway {
+    fn prepare_request(
+        &self,
+        package: &PackageCoordinate,
+        owner_epoch: [u8; 16],
+        request_id: u64,
+    ) -> Result<PreparedPackageMetadata, RegistryPackageDiscoveryObservation> {
         let coordinate = match admit_registry_coordinate(package) {
             Ok(coordinate) => coordinate,
             Err(_) => {
-                return Some(unavailable(
+                return Err(unavailable(
                     None,
                     "package has no registry metadata authority",
                 ));
@@ -71,7 +145,7 @@ impl DiscoveryGateway {
             .iter()
             .find(|endpoint| endpoint.ecosystem() == coordinate.ecosystem())
         else {
-            return Some(unavailable(
+            return Err(unavailable(
                 None,
                 "no metadata source is configured for this ecosystem",
             ));
@@ -95,6 +169,12 @@ impl DiscoveryGateway {
                 MAX_SOURCE_BODY_BYTES,
             ),
             RegistryEcosystem::Golang => {
+                if name
+                    .split('/')
+                    .any(|segment| matches!(segment, "" | "." | ".."))
+                {
+                    return Err(unavailable(None, "Go module path has an invalid segment"));
+                }
                 let root = if endpoint.as_str() == "https://index.golang.org" {
                     "https://proxy.golang.org"
                 } else {
@@ -104,14 +184,17 @@ impl DiscoveryGateway {
                     format!(
                         "{}/{}/@v/{}.info",
                         root,
-                        go_proxy_escape(name),
-                        go_proxy_escape(coordinate.version().as_str())
+                        name.split('/')
+                            .map(|segment| percent_encode_component(&go_proxy_escape(segment)))
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                        percent_encode_component(&go_proxy_escape(coordinate.version().as_str()))
                     ),
                     1024 * 1024,
                 )
             }
             _ => {
-                return Some(unavailable(
+                return Err(unavailable(
                     None,
                     "exact metadata lookup is not supported by this source protocol",
                 ));
@@ -120,7 +203,7 @@ impl DiscoveryGateway {
         let point_endpoint = match RegistryEndpoint::new(coordinate.ecosystem(), url.clone()) {
             Ok(endpoint) => endpoint,
             Err(_) => {
-                return Some(unavailable(
+                return Err(unavailable(
                     None,
                     "package metadata endpoint failed admission",
                 ));
@@ -128,7 +211,7 @@ impl DiscoveryGateway {
         };
         let source = discovery_source_identity(&point_endpoint);
         if self.metadata_offline {
-            return Some(unavailable(
+            return Err(unavailable(
                 Some(source.id()),
                 "registry metadata requests are disabled in offline mode",
             ));
@@ -138,10 +221,49 @@ impl DiscoveryGateway {
             parser: PARSER_IDENTITY,
             package: package.as_str().to_owned(),
         };
-        if let Some(cached) = self.package_metadata.objects.get(&key)
+
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"backend.registry.package-metadata.request.v1\0");
+        identity.update(&owner_epoch);
+        identity.update(&request_id.to_le_bytes());
+        identity.update(&missing_proof(&key, [0; 32]));
+        Ok(PreparedPackageMetadata {
+            source,
+            progress: self.store.progress_token(source),
+            package: package.clone(),
+            owner_epoch,
+            request_id,
+            request_identity: *identity.finalize().as_bytes(),
+            ecosystem: coordinate.ecosystem(),
+            name: name.to_owned(),
+            maximum,
+            cached: self.package_metadata.objects.get(&key).cloned(),
+            key,
+            cancelled: Arc::clone(&self.cancelled),
+        })
+    }
+
+    /// Captures a narrow source/owner witness, without performing I/O on the owner.
+    pub(crate) fn prepare_package(
+        &self,
+        package: &PackageCoordinate,
+        owner_epoch: [u8; 16],
+        request_id: u64,
+    ) -> PackageMetadataPreparation {
+        if self.cancelled.load(Ordering::Acquire) {
+            return PackageMetadataPreparation::Cached(Some(unavailable(
+                None,
+                "registry metadata request was cancelled",
+            )));
+        }
+        let request = match self.prepare_request(package, owner_epoch, request_id) {
+            Ok(request) => request,
+            Err(observation) => return PackageMetadataPreparation::Cached(Some(observation)),
+        };
+        if let Some(cached) = &request.cached
             && cached.observed.elapsed() < DISCOVERY_REFRESH_INTERVAL
         {
-            return if cached
+            let observation = if cached
                 .releases
                 .iter()
                 .any(|release| &release.coordinate == package)
@@ -149,53 +271,77 @@ impl DiscoveryGateway {
                 None
             } else if cached.complete {
                 Some(RegistryPackageDiscoveryObservation::Missing {
-                    source: source.id(),
-                    proof: missing_proof(&key, cached.proof),
+                    source: request.source.id(),
+                    proof: missing_proof(&request.key, cached.proof),
                     observed_at_millis: cached.observed_at_millis,
                 })
             } else {
                 Some(unavailable(
-                    Some(source.id()),
+                    Some(request.source.id()),
                     "the bounded package document does not establish whether this release exists",
                 ))
             };
+            return PackageMetadataPreparation::Cached(observation);
         }
-        let etag = self
-            .package_metadata
-            .objects
-            .get(&key)
-            .and_then(|cached| cached.etag.as_deref());
-        let response = fetch_object(&url, maximum, &self.cancelled, etag);
-        let (releases, complete, proof, etag) = match response {
-            Ok(ObjectResponse::Modified { bytes, etag }) => {
-                let proof = *blake3::hash(&bytes).as_bytes();
-                let parsed = parse_object(coordinate.ecosystem(), &bytes, name, package);
-                match parsed {
-                    Ok((releases, complete)) => (releases, complete, proof, etag),
-                    Err(error) => {
-                        self.store.mark_failed(source, true);
-                        return Some(unavailable(
-                            Some(source.id()),
-                            &format!("metadata document failed admission: {error:?}"),
-                        ));
-                    }
-                }
-            }
-            Ok(ObjectResponse::Unchanged) => {
-                let Some(cached) = self.package_metadata.objects.get(&key) else {
-                    return Some(unavailable(
-                        Some(source.id()),
-                        "HTTP 304 has no admitted prior metadata object",
-                    ));
-                };
-                (
-                    cached.releases.clone(),
-                    cached.complete,
-                    cached.proof,
-                    cached.etag.clone(),
-                )
-            }
-            Ok(ObjectResponse::Missing { proof }) => (Vec::new(), true, proof, None),
+        PackageMetadataPreparation::Fetch(request)
+    }
+
+    /// Only already-observed evidence may be read synchronously by a surface.
+    pub(crate) fn cached_package_observation(
+        &self,
+        package: &PackageCoordinate,
+    ) -> Option<RegistryPackageDiscoveryObservation> {
+        match self.prepare_package(package, [0; 16], 0) {
+            PackageMetadataPreparation::Cached(observation) => observation,
+            PackageMetadataPreparation::Fetch(_) => Some(unavailable(
+                None,
+                "registry package metadata has not been observed yet",
+            )),
+        }
+    }
+
+    /// Admits a detached result under its captured point-source CAS. Neither
+    /// namespace crawl progress nor unrelated workspace revisions participate.
+    pub(crate) fn admit_package_completion(
+        &mut self,
+        fetched: FetchedPackageMetadata,
+        owner_epoch: [u8; 16],
+    ) -> Option<RegistryPackageDiscoveryObservation> {
+        let FetchedPackageMetadata {
+            mut request,
+            result,
+        } = fetched;
+        let source = request.source;
+        let selected = self.prepare_request(&request.package, owner_epoch, request.request_id);
+        if request.owner_epoch != owner_epoch
+            || selected.as_ref().map_or(true, |selected| {
+                selected.key != request.key
+                    || selected.source != source
+                    || selected.request_identity != request.request_identity
+            })
+        {
+            return Some(unavailable(
+                Some(source.id()),
+                "registry metadata authority changed during the request; retry",
+            ));
+        }
+        let current = self.store.progress_token(source);
+        if current.sequence != request.progress.sequence
+            || current.cursor != request.progress.cursor
+        {
+            return Some(unavailable(
+                Some(source.id()),
+                "a newer point observation was committed before this response; retry",
+            ));
+        }
+        if self.cancelled.load(Ordering::Acquire) {
+            return Some(unavailable(
+                Some(source.id()),
+                "registry metadata request was cancelled",
+            ));
+        }
+        let mut object = match result {
+            Ok(object) => object,
             Err(error) => {
                 self.store.mark_failed(source, true);
                 return Some(unavailable(
@@ -204,19 +350,12 @@ impl DiscoveryGateway {
                 ));
             }
         };
-        let observed_at = DiscoveryObservedAt::from_unix_millis(discovery_now());
-        if self.cancelled.load(Ordering::Acquire) {
-            return Some(unavailable(
-                Some(source.id()),
-                "registry metadata request was cancelled before admission",
-            ));
-        }
-        let progress = self.store.progress_token(source);
-        let mut facts = releases
+        let observed_at = DiscoveryObservedAt::from_unix_millis(object.observed_at_millis);
+        let mut facts = object
+            .releases
             .iter()
             .cloned()
             .map(|mut release| {
-                // A point snapshot supplies no append-feed ordering evidence.
                 release.source_event_time = None;
                 discovery_fact(
                     source,
@@ -227,9 +366,7 @@ impl DiscoveryGateway {
                 )
             })
             .collect::<Vec<_>>();
-        if complete {
-            // A complete new object may retract earlier claims. Keep the
-            // retraction as evidence rather than silently preserving Published.
+        if object.complete {
             for (_, old) in self
                 .store
                 .facts()
@@ -243,13 +380,13 @@ impl DiscoveryGateway {
                         observed_at,
                         source_event: DiscoverySourceEvent::Snapshot,
                         source_event_time: None,
-                        proof,
+                        proof: object.proof,
                         metadata: DiscoveryMetadata::default(),
                     });
                 }
             }
         }
-        let encoded_bytes = facts
+        object.encoded_bytes = facts
             .iter()
             .try_fold(0_usize, |total, fact| {
                 serde_json::to_vec(fact)
@@ -257,7 +394,7 @@ impl DiscoveryGateway {
                     .and_then(|bytes| total.checked_add(bytes.len()))
             })
             .unwrap_or(usize::MAX);
-        if encoded_bytes > MAX_CACHE_ENCODED_BYTES {
+        if object.encoded_bytes > MAX_CACHE_ENCODED_BYTES {
             return Some(unavailable(
                 Some(source.id()),
                 "admitted package metadata exceeds the bounded object cache",
@@ -265,12 +402,12 @@ impl DiscoveryGateway {
         }
         let draft = DiscoveryBatchDraft {
             source,
-            previous_cursor: progress.cursor.clone(),
-            next_cursor: progress.cursor.clone(),
-            source_high_watermark: progress.cursor,
+            previous_cursor: current.cursor.clone(),
+            next_cursor: current.cursor.clone(),
+            source_high_watermark: current.cursor,
             caught_up: false,
             observed_at,
-            completeness: if complete {
+            completeness: if object.complete {
                 DiscoveryCompleteness::Windowed
             } else {
                 DiscoveryCompleteness::Incomplete
@@ -278,16 +415,16 @@ impl DiscoveryGateway {
             facts,
             package_retractions: Vec::new(),
         };
-        let committed = draft
-            .admit_for_sequence(progress.sequence)
+        if let Err(error) = draft
+            .admit_for_sequence(current.sequence)
             .map_err(DiscoveryStoreError::from)
             .and_then(|batch| {
                 if self.cancelled.load(Ordering::Acquire) {
                     return Err(DiscoveryStoreError::Cancelled);
                 }
                 self.store.commit(batch)
-            });
-        if let Err(error) = committed {
+            })
+        {
             self.store.mark_failed(source, true);
             return Some(unavailable(
                 Some(source.id()),
@@ -301,35 +438,41 @@ impl DiscoveryGateway {
                 "registry metadata request was cancelled before cache publication",
             ));
         }
-        let found = releases
+        let found = object
+            .releases
             .iter()
-            .any(|release| &release.coordinate == package);
-        let negative_proof = missing_proof(&key, proof);
-        self.package_metadata.insert(
-            key,
-            CachedObject {
-                etag,
-                releases,
-                complete,
-                proof,
-                observed: Instant::now(),
-                observed_at_millis: observed_at.as_unix_millis(),
-                encoded_bytes,
-            },
-        );
-        if found {
+            .any(|release| release.coordinate == request.package);
+        let outcome = if found {
             None
-        } else if complete {
+        } else if object.complete {
             Some(RegistryPackageDiscoveryObservation::Missing {
                 source: source.id(),
-                proof: negative_proof,
-                observed_at_millis: observed_at.as_unix_millis(),
+                proof: missing_proof(&request.key, object.proof),
+                observed_at_millis: object.observed_at_millis,
             })
         } else {
             Some(unavailable(
                 Some(source.id()),
                 "the bounded package document does not establish whether this release exists",
             ))
+        };
+        // Releasing the current task witness allows replacement while queued
+        // witnesses pin earlier objects inside the accounted cache ceiling.
+        request.cached = None;
+        self.package_metadata.insert(request.key, object);
+        outcome
+    }
+
+    #[cfg(test)]
+    fn observe_package(
+        &mut self,
+        package: &PackageCoordinate,
+    ) -> Option<RegistryPackageDiscoveryObservation> {
+        match self.prepare_package(package, [1; 16], 1) {
+            PackageMetadataPreparation::Cached(observation) => observation,
+            PackageMetadataPreparation::Fetch(request) => {
+                self.admit_package_completion(request.fetch(|| false), [1; 16])
+            }
         }
     }
 }
@@ -347,6 +490,13 @@ fn missing_proof(key: &ObjectKey, response_proof: [u8; 32]) -> [u8; 32] {
 
 impl PackageMetadataCache {
     fn insert(&mut self, key: ObjectKey, object: CachedObject) {
+        if self
+            .objects
+            .get(&key)
+            .is_some_and(|value| Arc::strong_count(value) > 1)
+        {
+            return;
+        }
         if let Some(previous) = self.objects.remove(&key) {
             self.encoded_bytes = self.encoded_bytes.saturating_sub(previous.encoded_bytes);
         }
@@ -358,16 +508,19 @@ impl PackageMetadataCache {
             let oldest = self
                 .objects
                 .iter()
+                .filter(|(_, value)| Arc::strong_count(value) == 1)
                 .min_by_key(|(_, value)| value.observed)
                 .map(|(key, _)| key.clone());
             if let Some(oldest) = oldest
                 && let Some(old) = self.objects.remove(&oldest)
             {
                 self.encoded_bytes = self.encoded_bytes.saturating_sub(old.encoded_bytes);
+            } else {
+                return;
             }
         }
         self.encoded_bytes = self.encoded_bytes.saturating_add(object.encoded_bytes);
-        self.objects.insert(key, object);
+        self.objects.insert(key, Arc::new(object));
     }
 }
 
@@ -448,10 +601,10 @@ fn parse_object(
 fn fetch_object(
     url: &str,
     maximum: usize,
-    cancelled: &AtomicBool,
+    cancelled: impl Fn() -> bool,
     etag: Option<&str>,
 ) -> Result<ObjectResponse, DiscoveryStoreError> {
-    if cancelled.load(Ordering::Acquire) {
+    if cancelled() {
         return Err(DiscoveryStoreError::Cancelled);
     }
     let agent = ureq::Agent::config_builder()
@@ -480,15 +633,26 @@ fn fetch_object(
         };
     }
     let mut bytes = Vec::new();
-    response
-        .body_mut()
-        .as_reader()
-        .take(u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > maximum {
-        return Err(DiscoveryStoreError::Bounds);
+    let mut reader = response.body_mut().as_reader();
+    let mut chunk = [0_u8; 16 * 1024];
+    loop {
+        if cancelled() {
+            return Err(DiscoveryStoreError::Cancelled);
+        }
+        let count = reader.read(&mut chunk)?;
+        if count == 0 {
+            break;
+        }
+        if bytes
+            .len()
+            .checked_add(count)
+            .is_none_or(|length| length > maximum)
+        {
+            return Err(DiscoveryStoreError::Bounds);
+        }
+        bytes.extend_from_slice(&chunk[..count]);
     }
-    if cancelled.load(Ordering::Acquire) {
+    if cancelled() {
         return Err(DiscoveryStoreError::Cancelled);
     }
     if status == 404 || status == 410 {
@@ -603,13 +767,16 @@ mod tests {
             "fresh validated object is reused"
         );
         let revision = owner.store.observation_revision();
-        owner
-            .package_metadata
-            .objects
-            .values_mut()
-            .next()
-            .expect("object")
-            .observed = Instant::now() - Duration::from_secs(61);
+        Arc::get_mut(
+            owner
+                .package_metadata
+                .objects
+                .values_mut()
+                .next()
+                .expect("object"),
+        )
+        .expect("unshared cached object")
+        .observed = Instant::now() - Duration::from_secs(61);
         assert!(owner.observe_package(&package).is_none());
         assert!(owner.store.observation_revision() > revision);
         let requests = server.join().expect("server");
@@ -738,5 +905,74 @@ mod tests {
             Some(RegistryPackageDiscoveryObservation::Unavailable { .. })
         ));
         assert_eq!(owner.store.observation_revision(), revision);
+    }
+
+    #[test]
+    fn package_metadata_late_response_cannot_replace_a_newer_point_observation() {
+        const YANKED: &str = r#"{"info":{"name":"requests","version":"2.34.2"},"releases":{"2.34.2":[{"yanked":true,"upload_time_iso_8601":"2026-10-01T12:00:00Z"}]}}"#;
+        let (endpoint, server) = server(vec![("200 OK", REQUESTS), ("200 OK", YANKED)]);
+        let feed = discovery_source_identity(&endpoint);
+        let mut owner = gateway(endpoint);
+        let package = PackageCoordinate::parse("pkg:pypi/requests@2.34.2").expect("package");
+        let PackageMetadataPreparation::Fetch(older) = owner.prepare_package(&package, [3; 16], 31)
+        else {
+            panic!("cold request");
+        };
+        let PackageMetadataPreparation::Fetch(newer) = owner.prepare_package(&package, [3; 16], 32)
+        else {
+            panic!("cold request");
+        };
+        let older = older.fetch(|| false);
+        let newer = newer.fetch(|| false);
+        assert!(owner.admit_package_completion(newer, [3; 16]).is_none());
+        let revision = owner.store.observation_revision();
+        assert!(matches!(
+            owner.admit_package_completion(older, [3; 16]),
+            Some(RegistryPackageDiscoveryObservation::Unavailable { .. })
+        ));
+        assert_eq!(owner.store.observation_revision(), revision);
+        assert!(
+            owner
+                .store
+                .facts()
+                .any(|(_, fact)| fact.coordinate == package
+                    && fact.metadata.yanked == DiscoveryFacet::Known(true))
+        );
+        assert_eq!(owner.store.progress_token(feed).sequence, 0);
+        assert!(owner.store.progress_token(feed).cursor.is_empty());
+        assert_eq!(server.join().expect("server").len(), 2);
+    }
+
+    #[test]
+    fn package_metadata_owner_epoch_change_discards_fetched_evidence() {
+        let (endpoint, server) = server(vec![("200 OK", REQUESTS)]);
+        let mut owner = gateway(endpoint);
+        let package = PackageCoordinate::parse("pkg:pypi/requests@2.34.2").expect("package");
+        let PackageMetadataPreparation::Fetch(request) =
+            owner.prepare_package(&package, [3; 16], 31)
+        else {
+            panic!("cold request");
+        };
+        assert!(matches!(
+            owner.admit_package_completion(request.fetch(|| false), [4; 16]),
+            Some(RegistryPackageDiscoveryObservation::Unavailable { .. })
+        ));
+        assert!(owner.store.facts().next().is_none());
+        assert!(owner.package_metadata.objects.is_empty());
+        assert_eq!(server.join().expect("server").len(), 1);
+    }
+
+    #[test]
+    fn package_metadata_304_without_an_admitted_cached_object_is_unavailable() {
+        let (endpoint, server) = server(vec![("304 Not Modified", "")]);
+        let mut owner = gateway(endpoint);
+        let package = PackageCoordinate::parse("pkg:pypi/requests@2.34.2").expect("package");
+        assert!(matches!(
+            owner.observe_package(&package),
+            Some(RegistryPackageDiscoveryObservation::Unavailable { .. })
+        ));
+        assert!(owner.store.facts().next().is_none());
+        assert!(owner.package_metadata.objects.is_empty());
+        assert_eq!(server.join().expect("server").len(), 1);
     }
 }

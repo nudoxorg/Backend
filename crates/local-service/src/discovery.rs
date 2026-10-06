@@ -36,7 +36,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-mod package_metadata;
+pub(crate) mod package_metadata;
 
 const JOURNAL_MAGIC: &[u8; 8] = b"DISCOV01";
 const JOURNAL_VERSION: u16 = DISCOVERY_BATCH_ENVELOPE_VERSION;

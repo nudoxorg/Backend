@@ -751,6 +751,60 @@ impl CommandAdapter {
             return Ok(Executed::Deferred);
         }
         if let Command::Surface(surface) = &request.command
+            && let backend_library::SurfaceCommand::Package {
+                package: backend_library::PackageReference::Purl(package),
+            } = surface
+        {
+            let acquired = self
+                .registry
+                .as_mut()
+                .map(RegistryGateway::catalog_projection)
+                .transpose()
+                .map_err(BuiltinModelError)?
+                .is_some_and(|catalog| {
+                    catalog
+                        .records
+                        .iter()
+                        .any(|record| record.coordinate.as_str() == package.as_str())
+                });
+            let forge = self.forge.search_records().map_err(BuiltinModelError)?;
+            let forged = !super::super::forge_gateway::find_package_versions(&forge, package)
+                .map_err(|error| {
+                    BuiltinModelError(format!("select forge metadata authority: {error:?}"))
+                })?
+                .is_empty();
+            if !acquired
+                && !forged
+                && let Some(discovery) = self.discovery.as_ref()
+                && let crate::discovery::package_metadata::PackageMetadataPreparation::Fetch(
+                    metadata,
+                ) =
+                    discovery.prepare_package(package, self.index_owner_epoch, request.request_id)
+            {
+                return match self.browse_lane.submit_metadata(
+                    transport_ticket,
+                    request.request_id,
+                    owner,
+                    surface.clone(),
+                    metadata,
+                ) {
+                    Ok(()) => Ok(Executed::Deferred),
+                    Err(reason) => Self::encode(
+                        daemon,
+                        request.request_id,
+                        (
+                            CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                                reason.to_owned(),
+                            )),
+                            None,
+                        ),
+                        None,
+                    )
+                    .map(Executed::Reply),
+                };
+            }
+        }
+        if let Command::Surface(surface) = &request.command
             && BrowseLane::accepts(surface)
         {
             return match self.browse_lane.submit(
@@ -2303,49 +2357,113 @@ impl CommandAdapter {
     /// immediately before serializing a finished Cargo browse reply.
     fn with_browse_completions(
         &mut self,
-        daemon: &ProductDaemon,
+        daemon: &mut ProductDaemon,
         mut ready: Vec<(u64, Result<Vec<u8>, BuiltinModelError>)>,
     ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
         let current_owner = daemon.engine().daemon().library().cursor();
-        ready.extend(self.browse_lane.drain().into_iter().map(
-            |(ticket, request_id, admitted_owner, advisory, terminal)| {
-                let (reply, permit) = if admitted_owner != current_owner
-                    || !advisory.still_selected(self.registry.as_ref())
+        for (ticket, request_id, admitted_owner, advisory, terminal) in self.browse_lane.drain() {
+            if let BrowseTerminal::Metadata(fetched, permit) = terminal {
+                let package = fetched.request.package.clone();
+                let observation = if fetched.request.owner_epoch != self.index_owner_epoch
+                    || fetched.request.request_id != request_id
                 {
-                    (
-                        CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
-                            "owner view changed during Cargo browse observation; retry".to_owned(),
-                        )),
-                        None,
+                    Some(
+                        backend_library::RegistryPackageDiscoveryObservation::Unavailable {
+                            source: None,
+                            reason: backend_library::ProductText::from_static(
+                                "registry metadata request authority changed; retry",
+                            ),
+                        },
                     )
                 } else {
-                    match terminal {
-                        BrowseTerminal::Reply(reply, permit) => (reply, Some(permit)),
-                        BrowseTerminal::Cancelled => (
-                            CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
-                                "Cargo browse request was cancelled".to_owned(),
-                            )),
-                            None,
-                        ),
-                        BrowseTerminal::Deadline => (
-                            CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
-                                "Cargo browse request exceeded its deadline".to_owned(),
-                            )),
-                            None,
-                        ),
-                        BrowseTerminal::Failed => (
-                            CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
-                                "Cargo browse worker could not complete the observation".to_owned(),
-                            )),
-                            None,
-                        ),
+                    self.discovery.as_mut().and_then(|discovery| {
+                        discovery.admit_package_completion(fetched, self.index_owner_epoch)
+                    })
+                };
+                let reply = self
+                    .surface(
+                        daemon,
+                        backend_library::SurfaceCommand::Package {
+                            package: backend_library::PackageReference::Purl(package.clone()),
+                        },
+                        request_id,
+                    )
+                    .map(|(reply, _)| reply);
+                let reply = match (reply, observation) {
+                    (Ok(CommandReply::Failed(_)) | Err(_), Some(observation)) => {
+                        CommandReply::Surface(backend_library::SurfaceReply::PackageDiscovery {
+                            package,
+                            observation,
+                        })
+                    }
+                    (Ok(reply), _) => reply,
+                    (Err(error), _) => CommandReply::Failed(
+                        backend_library::CommandFailure::InvalidQuery(error.to_string()),
+                    ),
+                };
+                ready.push((
+                    ticket,
+                    Self::encode(daemon, request_id, (reply, None), None),
+                ));
+                drop(permit);
+                continue;
+            }
+            let (reply, permit) = if advisory.is_metadata() {
+                let reason = match terminal {
+                    BrowseTerminal::Cancelled => "registry metadata request was cancelled",
+                    BrowseTerminal::Deadline => "registry metadata request exceeded its deadline",
+                    BrowseTerminal::Failed => {
+                        "registry metadata worker could not complete the observation"
+                    }
+                    BrowseTerminal::Reply(_, _) | BrowseTerminal::Metadata(_, _) => {
+                        unreachable!("metadata payloads use their source witness")
                     }
                 };
-                let encoded = Self::encode(daemon, request_id, (reply, None), None);
-                drop(permit); // release only after serialization consumed the reply
-                (ticket, encoded)
-            },
-        ));
+                (
+                    CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                        reason.to_owned(),
+                    )),
+                    None,
+                )
+            } else if admitted_owner != current_owner
+                || !advisory.still_selected(self.registry.as_ref())
+            {
+                (
+                    CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                        "owner view changed during Cargo browse observation; retry".to_owned(),
+                    )),
+                    None,
+                )
+            } else {
+                match terminal {
+                    BrowseTerminal::Reply(reply, permit) => (reply, Some(permit)),
+                    BrowseTerminal::Cancelled => (
+                        CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                            "Cargo browse request was cancelled".to_owned(),
+                        )),
+                        None,
+                    ),
+                    BrowseTerminal::Deadline => (
+                        CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                            "Cargo browse request exceeded its deadline".to_owned(),
+                        )),
+                        None,
+                    ),
+                    BrowseTerminal::Failed => (
+                        CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                            "Cargo browse worker could not complete the observation".to_owned(),
+                        )),
+                        None,
+                    ),
+                    BrowseTerminal::Metadata(_, _) => {
+                        unreachable!("metadata terminals use their narrower source witness")
+                    }
+                }
+            };
+            let encoded = Self::encode(daemon, request_id, (reply, None), None);
+            drop(permit); // release only after serialization consumed the reply
+            ready.push((ticket, encoded));
+        }
         ready
     }
 
@@ -3717,7 +3835,7 @@ impl CommandAdapter {
                     backend_engine::SurfaceCommand::Package {
                         package: backend_engine::PackageReference::Purl(coordinate),
                     } if !catalog.records().iter().any(|record| record.coordinate.as_str() == coordinate.as_str()) => {
-                        self.discovery.as_mut().and_then(|gateway| gateway.observe_package(coordinate))
+                        self.discovery.as_ref().and_then(|gateway| gateway.cached_package_observation(coordinate))
                     }
                     _ => None,
                 };
@@ -4798,6 +4916,220 @@ mod tests {
             work: IndexJobWork::Transition,
         });
         cancelled
+    }
+
+    fn stalled_package_metadata_owner(abandon: bool) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("real TCP metadata fixture");
+        listener.set_nonblocking(true).expect("bounded accept");
+        let endpoint = backend_engine::registry::RegistryEndpoint::new(
+            backend_engine::registry::RegistryEcosystem::Pypi,
+            format!("http://{}", listener.local_addr().expect("address")),
+        )
+        .expect("loopback metadata authority");
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let server_stop = Arc::clone(&stopped);
+        let server = std::thread::spawn(move || {
+            let mut release = Some(release_rx);
+            let mut handlers = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(8);
+            while !server_stop.load(Ordering::Acquire) && Instant::now() < deadline {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    }
+                    Err(error) => panic!("metadata accept: {error}"),
+                };
+                stream
+                    .set_nonblocking(false)
+                    .expect("blocking accepted stream");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("read bound");
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .expect("write bound");
+                let mut headers = Vec::new();
+                while !headers.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0_u8; 1];
+                    stream
+                        .read_exact(&mut byte)
+                        .expect("complete request headers");
+                    headers.push(byte[0]);
+                    assert!(headers.len() <= 16 * 1024);
+                }
+                let request = String::from_utf8(headers).expect("HTTP headers");
+                if request.starts_with("GET /pypi/requests/json ") {
+                    let release = release.take().expect("one exact point request");
+                    let entered = entered_tx.clone();
+                    handlers.push(std::thread::spawn(move || {
+                        entered.send(()).expect("point entered");
+                        release.recv_timeout(Duration::from_secs(5)).expect("release stalled HTTP");
+                        let body = r#"{"info":{"name":"requests","version":"2.34.2"},"releases":{"2.34.2":[{"yanked":false,"upload_time_iso_8601":"2026-10-01T12:00:00Z"}]}}"#;
+                        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                        stream.write_all(response.as_bytes()).expect("complete point response");
+                    }));
+                } else {
+                    stream.write_all(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").expect("namespace failure is bounded");
+                }
+            }
+            for handler in handlers {
+                handler.join().expect("point handler");
+            }
+        });
+        let mut fixture = AdapterFixture::new();
+        let (new_package, new_label) = fixture.add_target();
+        let discovery_root = fixture.root.0.join("registry-metadata");
+        let (adapter, daemon) = fixture.parts();
+        adapter.discovery = Some(
+            crate::discovery::DiscoveryGateway::open(
+                discovery_root,
+                crate::process::RegistryDiscoveryConfig {
+                    sources: vec![endpoint],
+                    offline: false,
+                    max_pages: 1,
+                },
+            )
+            .expect("independent real discovery owner"),
+        );
+        let coordinate =
+            backend_engine::registry::PackageCoordinate::parse("pkg:pypi/requests@2.34.2")
+                .expect("pinned package");
+        let body = |id, command| {
+            serde_json::to_vec(&backend_engine::CommandDto::new(id, command)).expect("command DTO")
+        };
+        let started = Instant::now();
+        assert!(matches!(
+            adapter.execute_or_defer(
+                daemon,
+                &body(
+                    801,
+                    Command::Surface(backend_library::SurfaceCommand::Package {
+                        package: backend_library::PackageReference::Purl(coordinate.clone()),
+                    })
+                ),
+                1801
+            ),
+            Ok(Executed::Deferred)
+        ));
+        let admission_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert!(admission_ms < 1000.0);
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("HTTP connection remains stalled");
+        let cancelled = install_transition_job(adapter);
+        let index_ticket = adapter
+            .indexing
+            .as_ref()
+            .expect("index owner")
+            .owner_ticket
+            .clone();
+        let mut measurements = BTreeMap::new();
+        for (id, name, command) in [
+            (802, "health", Command::Health),
+            (
+                803,
+                "index_search",
+                Command::Surface(backend_library::SurfaceCommand::IndexSearch {
+                    query: backend_library::ProductText::from_static("requests"),
+                    limit: 2,
+                    cursor: None,
+                }),
+            ),
+            (
+                804,
+                "index_cancel",
+                Command::Surface(backend_library::SurfaceCommand::IndexCancel {
+                    ticket: index_ticket,
+                }),
+            ),
+        ] {
+            let started = Instant::now();
+            assert!(
+                matches!(
+                    adapter.execute_or_defer(daemon, &body(id, command), id + 1000),
+                    Ok(Executed::Reply(_))
+                ),
+                "{name} must reply while HTTP is stalled"
+            );
+            let millis = started.elapsed().as_secs_f64() * 1000.0;
+            assert!(millis < 1000.0, "{name} blocked for {millis} ms");
+            measurements.insert(name, millis);
+        }
+        assert!(cancelled.load(Ordering::Acquire));
+        let before = owner_cursor(daemon);
+        let intent =
+            BuiltinIntent::add(new_package, new_label).expect("unrelated source publication");
+        super::commit_builtin_intent(daemon, 805, &intent).expect("commit unrelated source");
+        adapter
+            .publish_view(daemon, Some(&intent))
+            .expect("publish unrelated source");
+        assert_ne!(owner_cursor(daemon), before);
+        if abandon {
+            adapter.abandon_reply(1801);
+        }
+        release_tx.send(()).expect("release network response");
+        if abandon {
+            adapter.browse_lane.close();
+            assert!(
+                adapter
+                    .poll_deferred(daemon)
+                    .iter()
+                    .all(|(ticket, _)| *ticket != 1801)
+            );
+        } else {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let replies = adapter.poll_deferred(daemon);
+                if let Some((_, reply)) = replies.into_iter().find(|(ticket, _)| *ticket == 1801) {
+                    let reply =
+                        reply.expect("metadata reply after unrelated workspace publication");
+                    assert!(!String::from_utf8_lossy(&reply).contains("owner view changed"));
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "metadata terminal did not arrive"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+        let published = adapter
+            .discovery
+            .as_ref()
+            .expect("gateway")
+            .store()
+            .facts()
+            .any(|(_, fact)| fact.coordinate == coordinate);
+        assert_eq!(
+            published, !abandon,
+            "only a current un-abandoned metadata task can publish"
+        );
+        eprintln!(
+            "package_metadata_stalled_http_measurements {}",
+            serde_json::json!({"abandoned": abandon, "admission_ms": admission_ms, "owner_reads_ms": measurements, "published": published})
+        );
+        drop(fixture);
+        stopped.store(true, Ordering::Release);
+        server.join().expect("bounded HTTP server");
+    }
+
+    #[test]
+    fn package_metadata_stalled_http_keeps_owner_reads_responsive_and_survives_workspace_publish() {
+        stalled_package_metadata_owner(false);
+    }
+
+    #[test]
+    fn package_metadata_abandoned_stalled_http_cannot_publish() {
+        stalled_package_metadata_owner(true);
     }
 
     fn remove_body(request_id: u64, package: backend_engine::PackageKey, label: &str) -> Vec<u8> {
