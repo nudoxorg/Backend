@@ -814,6 +814,49 @@ class RuntimeSetupBoundaryTests(unittest.TestCase):
                                          "BACKEND_LOCALD_COMPILER_ENVIRONMENT", ["NUDOX_TSC"])
 
 
+@unittest.skipUnless(hasattr(os, "mkfifo"), "Unix descriptor boundary")
+class SourceDescriptorRaceTests(unittest.TestCase):
+    def test_regular_to_fifo_replacement_is_refused_without_a_blocking_open(self) -> None:
+        # Both old implementations block here. The test child has its own deadline.
+        code = """
+import importlib.util, os, pathlib, sys
+directory = pathlib.Path(sys.argv[1])
+sys.path.insert(0, sys.argv[2])
+spec = importlib.util.spec_from_file_location('race_runner', pathlib.Path(sys.argv[2]) / 'run-real-workspace-index-acceptance.py')
+r = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = r
+spec.loader.exec_module(r)
+path = directory / 'source'
+path.write_bytes(b'original regular source')
+if sys.argv[3] == 'bounded':
+    original_lstat = pathlib.Path.lstat
+    def replace_after_inspection(self, *args, **kwargs):
+        info = original_lstat(self, *args, **kwargs)
+        if self == path and path.is_file():
+            path.unlink()
+            os.mkfifo(path)
+        return info
+    pathlib.Path.lstat = replace_after_inspection
+    operation = lambda: r.read_bounded_regular(path, 1024, 'source')
+else:
+    assert path.is_file()
+    path.unlink()
+    os.mkfifo(path)
+    operation = lambda: r.read_source_file(path)
+try:
+    operation()
+except (r.Blocked, r.AcceptanceError):
+    print('refused')
+else:
+    raise AssertionError('FIFO was accepted as regular source')
+"""
+        for boundary in ("bounded", "streaming"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
+                result = subprocess.run([sys.executable, "-c", code, directory, str(SCRIPT_DIRECTORY), boundary],
+                                        capture_output=True, timeout=2, check=True)
+                self.assertEqual(result.stdout, b"refused\n")
+
+
 class PairedSurfaceObligationTests(unittest.TestCase):
     def fixture(self, root: Path) -> tuple:
         source = b"class Session:\n    pass\n\ndef session():\n    return Session()\n"

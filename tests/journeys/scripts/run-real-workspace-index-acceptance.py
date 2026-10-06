@@ -473,8 +473,16 @@ def read_bounded_regular(path: Path, maximum: int, label: str) -> bytes:
     if before.st_size > maximum:
         raise Blocked(f"{label} exceeds its {maximum}-byte input bound")
     try:
-        with path.open("rb") as stream:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or (
+                before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+            ) != (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns):
+                raise AcceptanceError(f"{label} changed before its descriptor was admitted")
             payload = stream.read(maximum + 1)
+            descriptor_after = os.fstat(stream.fileno())
         after = path.lstat()
     except OSError as error:
         raise Blocked(f"{label} could not be read") from error
@@ -485,6 +493,9 @@ def read_bounded_regular(path: Path, maximum: int, label: str) -> bytes:
         != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
         or not stat.S_ISREG(after.st_mode)
         or after.st_nlink != 1
+        or (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_nlink)
+        != (descriptor_after.st_dev, descriptor_after.st_ino, descriptor_after.st_size,
+            descriptor_after.st_mtime_ns, descriptor_after.st_nlink)
     ):
         raise AcceptanceError(f"{label} changed while it was read")
     return payload
@@ -1666,7 +1677,7 @@ def verify_acquired_source_inventory(case: ProjectCase, manifest_sha: str, deadl
 def read_source_file(
     path: Path, deadline: Deadline | None = None
 ) -> tuple[int, bytes, os.stat_result]:
-    flags = os.O_RDONLY
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
@@ -1692,6 +1703,7 @@ def read_source_file(
                 if bytes_read > MAX_SOURCE_FILE_BYTES:
                     break
             after = os.fstat(stream.fileno())
+        current = path.lstat()
     except OSError as error:
         raise AcceptanceError("a recognized project source could not be read consistently") from error
     if bytes_read > MAX_SOURCE_FILE_BYTES:
@@ -1700,6 +1712,9 @@ def read_source_file(
         (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
         != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
         or bytes_read != before.st_size
+        or not stat.S_ISREG(current.st_mode)
+        or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        != (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)
     ):
         raise AcceptanceError("a project source changed while it was fingerprinted")
     return bytes_read, content_digest.digest(), after
