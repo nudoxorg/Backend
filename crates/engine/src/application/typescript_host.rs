@@ -387,7 +387,12 @@ impl TypeScriptResolverCapability<'_> {
                 continue;
             }
             self.record_realpath(lexical, Some(canonical.clone()), identity)?;
-            let snapshot = self.observe_directory(&canonical)?;
+            self.observe_directory(&canonical)?;
+            let snapshot = self
+                .observations
+                .directories
+                .get(&canonical)
+                .expect("directory snapshot was recorded above");
             for entry in snapshot.entries.iter() {
                 let actual = entry
                     .canonical_path
@@ -674,10 +679,7 @@ impl TypeScriptResolverCapability<'_> {
         record_realpath_ledger(&mut self.observations, path, canonical_path, identity)
     }
 
-    fn observe_directory(
-        &mut self,
-        path: &Path,
-    ) -> Result<&DirectorySnapshot, TypeScriptProjectHostError> {
+    fn observe_directory(&mut self, path: &Path) -> Result<(), TypeScriptProjectHostError> {
         let snapshot = capture_directory_snapshot(path, self.witness)?;
         if let Some(previous) = self.observations.directories.get(path) {
             if previous != &snapshot {
@@ -685,11 +687,7 @@ impl TypeScriptResolverCapability<'_> {
                     path: path.to_path_buf().into_boxed_path(),
                 });
             }
-            return Ok(self
-                .observations
-                .directories
-                .get(path)
-                .expect("checked above"));
+            return Ok(());
         }
         if self.observations.directories.len() >= MAX_RESOLVER_DIRECTORIES {
             return Err(TypeScriptProjectHostError::ResolverObservationLimit {
@@ -717,11 +715,7 @@ impl TypeScriptResolverCapability<'_> {
         self.observations
             .directories
             .insert(path.to_path_buf(), snapshot);
-        Ok(self
-            .observations
-            .directories
-            .get(path)
-            .expect("inserted above"))
+        Ok(())
     }
 }
 
