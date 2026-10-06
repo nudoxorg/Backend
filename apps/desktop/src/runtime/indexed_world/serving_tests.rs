@@ -131,8 +131,9 @@ fn offline_config(paths: &WorkspacePaths) -> ProcessConfig {
 }
 
 struct GraphFixture {
-    cx: TestAppContext,
+    // Native entities must retire before the test context checks for leaks.
     requester: Entity<()>,
+    cx: TestAppContext,
     root: VersionedRoot,
     cancellation: Cancellation,
 }
