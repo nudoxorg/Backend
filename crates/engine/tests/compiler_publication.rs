@@ -9,11 +9,6 @@ use std::{
 };
 
 use backend_engine::driver::{CompiledFragment, CompiledSemantic};
-use backend_semantic::ir::{AtomId, TypeId};
-use backend_semantic::ir::{
-    AtomInput, EntityKind, EntityRecord, FragmentRangeManifest, FragmentView, IrBuilder,
-    PackageLineage, PreparedFragment, PrimitiveType, SemanticCoreReader, SourceIdentity, TypeNode,
-};
 use backend_engine::publication::binding::{COMPILATION_BINDING_BYTES, CompilationBindingView};
 use backend_engine::publication::{
     OpenPublicationScratch, OpenSemanticPublicationScratch, OpenedFragment, OpenedFragmentCursor,
@@ -23,9 +18,16 @@ use backend_engine::publication::{
     manifest::SemanticImageRegion,
     publication::{open_published, open_published_semantic, publish_compiled, publish_semantic},
 };
-use backend_semantic::vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
-use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
+use backend_semantic::ir::{AtomId, TypeId};
+use backend_semantic::ir::{
+    AtomInput, EntityKind, EntityRecord, FragmentRangeManifest, FragmentView, IrBuilder,
+    PackageLineage, PreparedFragment, PrimitiveType, SemanticCoreReader, SourceIdentity, TypeNode,
+};
+use backend_semantic::vocabulary::{
+    CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage,
+};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
@@ -519,8 +521,10 @@ fn semantic_publication_is_order_stable_and_rejects_corrupted_paired_image() -> 
         ),
         Err(
             backend_engine::publication::publication::OpenPublishedError::ManifestFormat {
-                expected: backend_engine::publication::manifest::CompilationManifestFormat::CompactV1,
-                observed: backend_engine::publication::manifest::CompilationManifestFormat::SemanticV2,
+                expected:
+                    backend_engine::publication::manifest::CompilationManifestFormat::CompactV1,
+                observed:
+                    backend_engine::publication::manifest::CompilationManifestFormat::SemanticV3,
             }
         )
     ));
@@ -587,12 +591,143 @@ fn semantic_publication_is_order_stable_and_rejects_corrupted_paired_image() -> 
             },
         ),
         Err(
-            backend_engine::publication::publication::OpenPublishedError::SemanticImage { ordinal: 0, .. }
+            backend_engine::publication::publication::OpenPublishedError::SemanticImage {
+                ordinal: 0,
+                ..
+            }
         ) | Err(
-            backend_engine::publication::publication::OpenPublishedError::SemanticImage { ordinal: 1, .. }
+            backend_engine::publication::publication::OpenPublishedError::SemanticImage {
+                ordinal: 1,
+                ..
+            }
         )
     ));
     publisher.shutdown()?;
+    fixture.remove()?;
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "retains exact contextual publication and cold reopen failures"
+)]
+fn contextual_empty_python_modules_publish_reorder_and_cold_reopen() -> Result<(), TestError> {
+    let fixture = Fixture::new("contextual-empty-python")?;
+    let paths = PublicationPaths::in_directory(&fixture.journal());
+    let publisher = DurablePublisher::create(&paths, limits()?)?;
+    let source = SourceIdentity {
+        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b""),
+        byte_len: 0,
+    };
+    let recipe = CompileRecipeFact::derive(
+        LanguageProfile::Python(backend_semantic::vocabulary::PythonVersion::Python314),
+        Stage::LowerIr,
+        NativeTool::Python,
+        source.identity,
+        ContentId::<ToolchainDomain>::from_canonical_bytes(b"contextual-empty-python-toolchain"),
+    );
+    let mut bytes = [0_u8; 256];
+    let length = PreparedFragment::prepare(source, recipe, &[], &[], &[])?
+        .write_into(&mut bytes)?
+        .len();
+    let make = |path: &str| -> Result<CompiledSemantic<'_>, TestError> {
+        let artifact = compiled(&bytes[..length])?;
+        let lineage = PackageLineage::new("pypi", "httpie").map_err(TestError::Lineage)?;
+        let mut builder = IrBuilder::new();
+        builder.set_image_provenance(source, recipe, lineage, path)?;
+        Ok(CompiledSemantic {
+            artifact,
+            ir: builder.finish()?,
+        })
+    };
+    let first = publish_semantic_fixture(
+        &publisher,
+        &fixture.artifacts(),
+        &[
+            make("httpie/cli/__init__.py")?,
+            make("httpie/output/__init__.py")?,
+        ],
+        PublishControl::Continue,
+    )?;
+    assert_eq!(first.manifest.fragment_count, 2);
+    assert_eq!(
+        first.manifest.format,
+        backend_engine::publication::manifest::CompilationManifestFormat::SemanticV3
+    );
+    let second = publish_semantic_fixture(
+        &publisher,
+        &fixture.artifacts(),
+        &[
+            make("httpie/output/__init__.py")?,
+            make("httpie/cli/__init__.py")?,
+        ],
+        PublishControl::Continue,
+    )?;
+    assert_eq!(first.manifest, second.manifest);
+    assert_eq!(first.binding, second.binding);
+    // The content-addressed compact object is reused; contextual cardinality is two.
+    assert_eq!(
+        fs::read_dir(fixture.artifacts().join("fragments"))?.count(),
+        1
+    );
+    assert_eq!(
+        fs::read_dir(fixture.artifacts().join("semantic-images"))?.count(),
+        2
+    );
+    publisher.shutdown()?;
+    let reopened = DurablePublisher::reopen(&paths, limits()?)?;
+    let mut manifest_output = [0_u8; 1024];
+    let mut facts = [None; 2];
+    let mut compact_output = [0_u8; 1024];
+    let mut semantic_output = [0_u8; 16_384];
+    let mut locality_output = [0_u8; 1024];
+    let opened = open_published_semantic(
+        &reopened,
+        &fixture.artifacts(),
+        OpenSemanticPublicationScratch {
+            manifest_output: &mut manifest_output,
+            manifest_facts: &mut facts,
+            fragment_output: &mut compact_output,
+            semantic_image_output: &mut semantic_output,
+            locality_output: &mut locality_output,
+        },
+    )?
+    .expect("the durable contextual publication remains selected");
+    assert_eq!(*opened.manifest, first.manifest);
+    let mut retained_paths = Vec::new();
+    for artifact in opened.artifacts() {
+        let artifact = artifact?;
+        assert_eq!(artifact.fragment.view.as_ref(), &bytes[..length]);
+        if let backend_semantic::ir::ImageProvenance::Captured {
+            source: observed,
+            recipe: observed_recipe,
+            scope,
+            ..
+        } = artifact.semantic_image.image_facts().provenance
+        {
+            assert_eq!(observed, source);
+            assert_eq!(observed_recipe, recipe);
+            retained_paths.push(
+                artifact
+                    .semantic_image
+                    .atom(scope.path)
+                    .expect("captured path atom")
+                    .to_vec(),
+            );
+        } else {
+            panic!("context provenance was lost");
+        }
+    }
+    retained_paths.sort();
+    assert_eq!(
+        retained_paths,
+        [
+            b"httpie/cli/__init__.py".to_vec(),
+            b"httpie/output/__init__.py".to_vec()
+        ]
+    );
+    reopened.shutdown()?;
     fixture.remove()?;
     Ok(())
 }

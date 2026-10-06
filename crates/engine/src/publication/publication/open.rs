@@ -127,7 +127,7 @@ pub fn open_published<'manifest, 'facts>(
     }))
 }
 
-/// Reopens the journal-selected schema-2 semantic package and validates every
+/// Reopens the journal-selected paired semantic package and validates every
 /// compact fragment, full semantic image, and generation-closure fact before
 /// returning a paired borrowed reader.
 #[allow(
@@ -237,7 +237,7 @@ pub fn semantic_generation_requirements(
             observed: *manifest,
         });
     }
-    if manifest.format != CompilationManifestFormat::SemanticV2 {
+    if !manifest.format.is_semantic() {
         return Err(OpenPublishedError::ManifestFormat {
             expected: CompilationManifestFormat::SemanticV2,
             observed: manifest.format,
@@ -272,7 +272,7 @@ fn open_semantic_generation_from_binding<'manifest, 'facts, 'fragments, 'semanti
             observed: *manifest,
         });
     }
-    if manifest.format != CompilationManifestFormat::SemanticV2 {
+    if !manifest.format.is_semantic() {
         return Err(OpenPublishedError::ManifestFormat {
             expected: CompilationManifestFormat::SemanticV2,
             observed: manifest.format,

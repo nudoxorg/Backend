@@ -38,7 +38,7 @@ pub struct OpenPublicationScratch<'manifest, 'facts, 'fragments, 'locality> {
     pub locality_output: &'locality mut [u8],
 }
 
-/// Caller-owned buffers used to reopen a schema-2 semantic publication.
+/// Caller-owned buffers used to reopen a paired semantic publication.
 pub struct OpenSemanticPublicationScratch<'manifest, 'facts, 'fragments, 'semantic, 'locality> {
     /// Output for the complete immutable package manifest.
     pub manifest_output: &'manifest mut [u8],
@@ -129,7 +129,7 @@ impl<'manifest, 'facts, 'fragments, 'semantic>
 pub struct OpenedSemanticGeneration<'manifest, 'facts, 'fragments, 'semantic> {
     /// Immutable generation-to-manifest binding.
     pub binding: CompilationBindingFacts,
-    /// Validated schema-2 manifest pairing every artifact.
+    /// Validated semantic manifest pairing every artifact.
     pub manifest: CompilationManifestView<'manifest, 'facts>,
     pub(crate) fragments: &'fragments [u8],
     pub(crate) semantic_images: &'semantic [u8],
@@ -455,7 +455,7 @@ pub(super) fn opened_fragment<'fragment>(
 pub enum OpenedSemanticArtifactError {
     #[error("opened semantic artifact ordinal overflowed this address space")]
     OrdinalOverflow { facts: StoredFragmentFacts },
-    #[error("opened semantic artifact {ordinal} has no schema-2 semantic image fact")]
+    #[error("opened semantic artifact {ordinal} has no paired semantic image fact")]
     MissingSemanticImage {
         ordinal: usize,
         facts: StoredFragmentFacts,

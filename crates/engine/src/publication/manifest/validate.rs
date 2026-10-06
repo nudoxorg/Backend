@@ -14,7 +14,8 @@ use super::{
     CompilationManifestIdentity,
     build::{
         COMPILATION_MANIFEST_ENTRY_BYTES, COMPILATION_MANIFEST_HEADER_BYTES,
-        COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES, MAGIC, RANGE_COUNT, SEMANTIC_VERSION, VERSION,
+        COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES, CONTEXTUAL_SEMANTIC_VERSION, MAGIC, RANGE_COUNT,
+        SEMANTIC_VERSION, VERSION,
     },
     wire::{decode_entry, fixed},
 };
@@ -39,13 +40,22 @@ pub enum CompilationManifestFormat {
     CompactV1,
     /// Authoritative package binding compact fragments and full semantic images.
     SemanticV2,
+    /// Authoritative contextual package ordered by compact and full-image identity.
+    SemanticV3,
 }
 
 impl CompilationManifestFormat {
+    /// Whether this format binds both the compact object and its full semantic image.
+    #[must_use]
+    pub const fn is_semantic(self) -> bool {
+        matches!(self, Self::SemanticV2 | Self::SemanticV3)
+    }
+
     const fn from_version(version: u16) -> Option<Self> {
         match version {
             VERSION => Some(Self::CompactV1),
             SEMANTIC_VERSION => Some(Self::SemanticV2),
+            CONTEXTUAL_SEMANTIC_VERSION => Some(Self::SemanticV3),
             _ => None,
         }
     }
@@ -53,7 +63,7 @@ impl CompilationManifestFormat {
     const fn entry_bytes(self) -> usize {
         match self {
             Self::CompactV1 => COMPILATION_MANIFEST_ENTRY_BYTES,
-            Self::SemanticV2 => COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES,
+            Self::SemanticV2 | Self::SemanticV3 => COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES,
         }
     }
 }
@@ -120,20 +130,36 @@ impl<'manifest, 'facts> CompilationManifestView<'manifest, 'facts> {
         }
         let entries = &mut fact_scratch[..count];
         entries.fill(None);
-        let mut previous: Option<ArtifactId<IrFragmentEncoding, IrFragmentDomain>> = None;
+        let mut previous: Option<StoredFragmentFacts> = None;
         for (ordinal, slot) in entries.iter_mut().enumerate() {
             let offset = COMPILATION_MANIFEST_HEADER_BYTES + ordinal * entry_bytes;
             let entry = decode_entry(&bytes[offset..offset + entry_bytes], ordinal, format)?;
-            if let Some(previous_identity) = previous
-                && previous_identity.cmp(&entry.fragment) != Ordering::Less
-            {
-                return Err(CompilationManifestError::Order {
-                    ordinal,
-                    previous: previous_identity,
-                    observed: entry.fragment,
-                });
+            if let Some(previous_entry) = previous {
+                let compact_order = previous_entry.fragment.cmp(&entry.fragment);
+                if compact_order == Ordering::Greater
+                    || (compact_order == Ordering::Equal
+                        && format != CompilationManifestFormat::SemanticV3)
+                {
+                    return Err(CompilationManifestError::Order {
+                        ordinal,
+                        previous: previous_entry.fragment,
+                        observed: entry.fragment,
+                    });
+                }
+                if compact_order == Ordering::Equal {
+                    let previous_image = previous_entry.semantic_image.map(|facts| facts.identity);
+                    let observed_image = entry.semantic_image.map(|facts| facts.identity);
+                    if previous_image.cmp(&observed_image) != Ordering::Less {
+                        return Err(CompilationManifestError::SemanticOrder {
+                            ordinal,
+                            fragment: entry.fragment,
+                            previous: previous_image,
+                            observed: observed_image,
+                        });
+                    }
+                }
             }
-            previous = Some(entry.fragment);
+            previous = Some(entry);
             *slot = Some(entry);
         }
         let byte_length = u32::try_from(bytes.len()).map_err(|source| {
@@ -185,7 +211,7 @@ pub struct StoredFragmentFacts {
     pub fragment: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
     /// Exact complete fragment byte length.
     pub fragment_length: u32,
-    /// Full semantic image paired with this compatibility fragment in schema 2.
+    /// Full semantic image paired with this compact content object in semantic formats.
     pub semantic_image: Option<crate::publication::semantic_immutable::SemanticImageArtifactFacts>,
     /// Source fact retained by the complete fragment.
     pub source: SourceIdentity,
@@ -361,5 +387,15 @@ pub enum CompilationManifestError {
         ordinal: usize,
         previous: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
         observed: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
+    },
+    /// Repeated compact content did not retain strictly increasing full-image identity.
+    #[error(
+        "manifest contextual fragment {ordinal} semantic-image order is not strictly increasing"
+    )]
+    SemanticOrder {
+        ordinal: usize,
+        fragment: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
+        previous: Option<backend_semantic::ir::SemanticImageIdentity>,
+        observed: Option<backend_semantic::ir::SemanticImageIdentity>,
     },
 }

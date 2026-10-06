@@ -192,16 +192,17 @@ pub(super) fn decode_entry(
     }
     let semantic_image = match format {
         CompilationManifestFormat::CompactV1 => None,
-        CompilationManifestFormat::SemanticV2 => Some(SemanticImageArtifactFacts {
-            identity: ArtifactId::<IrSemanticImageEncoding, IrSemanticImageDomain>::try_from(
-                &bytes[SEMANTIC_IMAGE_IDENTITY_OFFSET..SEMANTIC_IMAGE_IDENTITY_OFFSET + 32],
-            )
-            .map_err(|source| CompilationManifestError::SemanticImageIdentity {
-                ordinal,
-                source,
-            })?,
-            byte_length: u32::from_le_bytes(fixed::<4>(bytes, SEMANTIC_IMAGE_LENGTH_OFFSET)),
-        }),
+        CompilationManifestFormat::SemanticV2 | CompilationManifestFormat::SemanticV3 => {
+            Some(SemanticImageArtifactFacts {
+                identity: ArtifactId::<IrSemanticImageEncoding, IrSemanticImageDomain>::try_from(
+                    &bytes[SEMANTIC_IMAGE_IDENTITY_OFFSET..SEMANTIC_IMAGE_IDENTITY_OFFSET + 32],
+                )
+                .map_err(|source| {
+                    CompilationManifestError::SemanticImageIdentity { ordinal, source }
+                })?,
+                byte_length: u32::from_le_bytes(fixed::<4>(bytes, SEMANTIC_IMAGE_LENGTH_OFFSET)),
+            })
+        }
     };
     Ok(StoredFragmentFacts {
         fragment,

@@ -812,7 +812,7 @@ fn validate_semantic_result(
     scratch.resize(fragment_count, None);
     let manifest = CompilationManifestView::validate(&manifest_bytes, &mut scratch)
         .map_err(|_| CompilerResultError::ManifestInvalid)?;
-    if manifest.format != CompilationManifestFormat::SemanticV2
+    if !manifest.format.is_semantic()
         || manifest.identity != envelope.manifest_identity
         || manifest.identity != envelope.binding_facts.manifest
         || manifest_member.reference

@@ -102,7 +102,7 @@ pub(crate) fn with_verified_semantic_generation<
     Ok(visit(&root, verified))
 }
 
-/// Rebuilds and verifies a schema-2 generation from caller-owned compact and
+/// Rebuilds and verifies a paired semantic generation from caller-owned compact and
 /// semantic artifact bytes in canonical manifest order.
 #[allow(
     clippy::result_large_err,

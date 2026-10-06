@@ -91,7 +91,7 @@ pub fn publish_compiled(
 /// Every semantic image is measured before caller output changes, encoded in
 /// input order, fully reopened once, checked against the compact artifact's
 /// exact source and recipe, then stored under its typed identity.  Journal
-/// admission occurs only after the schema-2 manifest and both artifact classes
+/// admission occurs only after the semantic manifest and both artifact classes
 /// form a verified complete generation.
 #[allow(
     clippy::result_large_err,
