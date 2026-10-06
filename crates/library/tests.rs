@@ -1376,6 +1376,49 @@ fn exact_address_names_retains_relative_qualified_ambiguity_without_scope_fallba
 }
 
 #[test]
+fn empty_address_leaf_never_enumerates_names_but_literal_empty_name_still_pages() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let first = RowId::Symbol(symbol_key("compiler-first"));
+    let second = RowId::Symbol(symbol_key("compiler-second"));
+    let library = projection(vec![
+        Row::new(first, basis, "pkg::semantic::hash::Foo::method"),
+        Row::new(second, basis, "pkg::semantic::other::Bar::method"),
+    ]);
+    let limit = QueryLimit::new(1).expect("bound");
+    for text in [
+        "/project::semantic::forged::",
+        "pkg::semantic::hash::",
+        "pkg::src/foo.py:4::",
+        "pkg::src/foo.py:0::",
+        "/project::",
+        "pkg:npm/example@1.0.0::",
+        "C:\\project::",
+        "Foo::",
+        "::",
+    ] {
+        let page = library
+            .names(&NameQuery::new(text, library.revision_root(), limit))
+            .expect("bounded malformed selector");
+        assert_eq!(page.root.row_count(), 0, "{text}");
+        assert!(page.next.is_none(), "{text}");
+    }
+    let page = library
+        .names(&NameQuery::new("", library.revision_root(), limit))
+        .expect("literal empty name");
+    assert_eq!(page.root.row_count(), 1);
+    let next = page.next.expect("global name continuation");
+    let second_page = library
+        .names(&NameQuery::new("", library.revision_root(), limit).with_cursor(next))
+        .expect("second global name page");
+    assert_eq!(second_page.root.row_count(), 1);
+    assert_ne!(name_page_ids(&page), name_page_ids(&second_page));
+    assert!(second_page.next.is_none());
+    assert!(!library.view().compatibility_rows_are_materialized());
+    assert_eq!(library.work_counters().scan_rows, 0);
+}
+
+#[test]
 fn exact_address_names_and_leaf_postings_agree_after_incremental_replacement() {
     let (root, object) = source();
     let basis = Basis::new(root, object);

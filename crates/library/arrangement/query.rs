@@ -181,6 +181,12 @@ impl ProjectionArrangement {
     {
         let text = selection.posting_text();
         if text.is_empty() {
+            if !selection.is_global() {
+                return ArrangementPage {
+                    ids: Vec::new(),
+                    has_more: false,
+                };
+            }
             let mut ids = self
                 .names
                 .as_ref()

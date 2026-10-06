@@ -665,6 +665,13 @@ pub(crate) struct SourceAddress<'a> {
 }
 
 impl<'a> NameSelection<'a> {
+    pub(crate) const fn is_global(self) -> bool {
+        match self {
+            Self::Name { text, .. } => text.is_empty(),
+            Self::Address(_) => false,
+        }
+    }
+
     pub(crate) const fn posting_text(self) -> &'a str {
         match self {
             Self::Name { name, .. } | Self::Address(AddressSelection { name, .. }) => name,
