@@ -262,75 +262,7 @@ pub(crate) fn supplied_among(
             supplied.push((LocalHostVariable::NudoxGoRoot, cache));
         }
     }
-    if !system.is_empty()
-        && !set("NUDOX_TSC")
-        && let Some(typescript) = find_typescript(variable, system)
-    {
-        supplied.push((LocalHostVariable::NudoxTypeScriptCompiler, typescript.tsc));
-        if !set("NUDOX_TYPESCRIPT_NODE") {
-            supplied.push((LocalHostVariable::NudoxTypeScriptNode, typescript.node));
-        }
-        if !set("NUDOX_TYPESCRIPT_MODULE_ROOT") {
-            supplied.push((LocalHostVariable::NudoxTypeScriptModuleRoot, typescript.module_root));
-        }
-    }
     supplied
-}
-
-/// A TypeScript checker found as one install: its `tsc`, a `node` to run the
-/// checker driver with, and the `node_modules` directory holding `typescript`.
-struct TypeScript {
-    tsc: PathBuf,
-    node: PathBuf,
-    module_root: PathBuf,
-}
-
-/// The first `tsc` on the process's `PATH`, in `~/.local/bin` (npm's
-/// `--prefix ~/.local`), Homebrew, Nix, or `/usr/bin`, with a `node` beside it
-/// or in the same places, and the module root its install resolves to. All
-/// three are found together or none is supplied, so the owner never sees a
-/// half-configured checker.
-fn find_typescript(variable: &dyn Fn(&str) -> Option<OsString>, system: &[(PathBuf, Place)]) -> Option<TypeScript> {
-    let value = |name: &str| variable(name).filter(|value| !value.is_empty());
-    let home = home_variable(&value).map(PathBuf::from).filter(|home| home.is_absolute());
-    let mut places: Vec<PathBuf> = Vec::new();
-    if let Some(path) = value("PATH") {
-        places.extend(std::env::split_paths(&path).filter(|dir| dir.is_absolute()));
-    }
-    if let Some(home) = &home {
-        places.push(home.join(".local/bin"));
-    }
-    for (dir, _) in system {
-        if !dir.ends_with("per-user") {
-            places.push(dir.clone());
-        }
-    }
-    if let Some(home) = &home {
-        places.push(home.join(".nix-profile/bin"));
-    }
-    places.push(PathBuf::from("/usr/bin"));
-    places.dedup();
-    let in_places = |tool: &str| places.iter().map(|dir| dir.join(executable(tool))).find(|candidate| candidate.is_file());
-    let tsc = in_places("tsc")?;
-    let node = tsc.with_file_name(executable("node")).is_file()
-        .then(|| tsc.with_file_name(executable("node")))
-        .or_else(|| in_places("node"))?;
-    let module_root = typescript_module_root(&tsc)?;
-    Some(TypeScript { tsc, node, module_root })
-}
-
-/// The `node_modules` directory that holds the `typescript` package a `tsc`
-/// belongs to: npm links `bin/tsc` to `node_modules/typescript/bin/tsc`, and a
-/// prefix install keeps it under `lib/node_modules` beside `bin`.
-fn typescript_module_root(tsc: &Path) -> Option<PathBuf> {
-    let resolved = std::fs::canonicalize(tsc).ok()?;
-    let package = resolved.ancestors().find(|dir| dir.file_name().is_some_and(|name| name == "typescript")
-        && dir.parent().is_some_and(|parent| parent.file_name().is_some_and(|name| name == "node_modules")));
-    if let Some(package) = package {
-        return package.parent().map(Path::to_path_buf);
-    }
-    let prefix_root = tsc.parent()?.parent()?.join("lib/node_modules");
-    prefix_root.join("typescript").is_dir().then_some(prefix_root)
 }
 
 /// Derivation does not create directories. Explicit paths are kept verbatim so

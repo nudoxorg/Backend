@@ -1615,7 +1615,10 @@ pub enum PackageSemanticError {
         path: Box<str>,
     },
     /// One authority, toolchain, lowering, or cancellation terminal occurred.
-    #[error("package semantic compilation failed for {path}: {terminal:?}")]
+    #[error(
+        "package semantic compilation failed for {path}: {terminal:?}{host_hint}",
+        host_hint = package_compile_host_hint(terminal)
+    )]
     Compile {
         /// Source member that reached the terminal.
         path: Box<str>,
@@ -1691,6 +1694,21 @@ pub enum PackageSemanticError {
     /// A bounded owned lane could not reserve its exact capacity.
     #[error("package semantic publication allocation failed")]
     Allocation(#[source] std::collections::TryReserveError),
+}
+
+fn package_compile_host_hint(terminal: &CompilerTerminal) -> &'static str {
+    if matches!(
+        terminal,
+        CompilerTerminal::Toolchain {
+            selected: NativeTool::TypeScriptCompiler,
+            configured: None,
+            ..
+        }
+    ) {
+        " TypeScript was not available from this project's installed dependencies or the host. Install the project's dependencies with npm or pnpm, or configure NUDOX_TSC, NUDOX_TYPESCRIPT_NODE, and NUDOX_TYPESCRIPT_MODULE_ROOT before starting backend-locald. A running backend-locald keeps the PATH and NUDOX_* settings it started with; stop and restart it after changing them."
+    } else {
+        ""
+    }
 }
 
 /// Concrete local compiler with bounded explicit native toolchains, publisher, paths, and scratch.
@@ -4180,6 +4198,30 @@ mod tests {
         bounded_error_chain, package_authority_terminal, request_source, select_toolchain,
     };
     use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
+    use backend_version::{ContentId, SourceFactDomain};
+
+    #[test]
+    fn missing_typescript_host_error_explains_dependencies_and_warm_daemon_restart() {
+        let terminal = CompilerTerminal::Toolchain {
+            source: backend_library::interface::SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"const x = 1;"),
+                byte_len: 12,
+            },
+            language: backend_semantic::vocabulary::Language::TypeScript,
+            stage: Stage::LowerIr,
+            selected: NativeTool::TypeScriptCompiler,
+            configured: None,
+        };
+        let message = PackageSemanticError::Compile {
+            path: "eslint.config.mjs".into(),
+            terminal: Box::new(terminal),
+        }
+        .to_string();
+        assert!(message.contains("npm or pnpm"), "{message}");
+        assert!(message.contains("NUDOX_TSC"), "{message}");
+        assert!(message.contains("backend-locald keeps the PATH"), "{message}");
+        assert!(message.contains("stop and restart"), "{message}");
+    }
 
     #[derive(Debug)]
     struct ChainDiagnosticError {

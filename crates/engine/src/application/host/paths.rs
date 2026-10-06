@@ -39,6 +39,13 @@ pub(super) struct TypeScriptNodeSelection {
     pub(super) origin: TypeScriptSelectionOrigin,
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct TypeScriptHostSelection {
+    pub(super) compiler: Option<PathBuf>,
+    pub(super) node: Option<TypeScriptNodeSelection>,
+    pub(super) module_root: Option<PathBuf>,
+}
+
 /// Closed file or directory authority role.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LocalHostPathRole {
@@ -99,16 +106,62 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         first_existing(role, candidates)
     }
 
+    /// Selects one complete global TypeScript fallback for every local service surface.
+    ///
+    /// Project-local TypeScript is still selected first by `TypeScriptProjectHost`. This host
+    /// tuple is used only when that project has no local compiler. An automatically discovered
+    /// `tsc` is admitted only when its package root and a Node runtime are both available, so a
+    /// PATH hit cannot create a half-configured global checker.
+    pub(super) fn typescript_host_selection(
+        &self,
+        home: Option<&Path>,
+    ) -> Result<TypeScriptHostSelection, LocalCompilerHostError> {
+        let variable = LocalHostVariable::NudoxTypeScriptCompiler;
+        let role = LocalHostPathRole::Native(NativeTool::TypeScriptCompiler);
+        let explicit_compiler = self.optional_absolute_path(variable)?;
+        let compiler_candidates = match explicit_compiler.as_ref() {
+            Some(path) => vec![self.validate_file(role, variable, path.clone())?],
+            None => typescript_compiler_candidates(home, self.environment.search_path()),
+        };
+
+        for candidate in compiler_candidates {
+            let compiler = if explicit_compiler.is_some() {
+                candidate
+            } else {
+                let mut one = ArrayVec::new();
+                push_candidate(&mut one, candidate);
+                let Some(compiler) = first_existing(role, one)? else {
+                    continue;
+                };
+                compiler
+            };
+            let module_root = self.typescript_module_root(Some(&compiler))?;
+            let node = self.typescript_node_executable(home, Some(&compiler))?;
+            if explicit_compiler.is_some() || (module_root.is_some() && node.is_some()) {
+                return Ok(TypeScriptHostSelection {
+                    compiler: Some(compiler),
+                    node,
+                    module_root,
+                });
+            }
+        }
+
+        Ok(TypeScriptHostSelection {
+            compiler: None,
+            node: self.typescript_node_executable(home, None)?,
+            module_root: self.typescript_module_root(None)?,
+        })
+    }
+
     /// Locates the Node runtime used by request-scoped project TypeScript admission.
     ///
-    /// Node is a host runtime for a compiler package already selected beneath the exact
-    /// project root; it is not a globally admitted native compiler capability. Keep its
-    /// discovery finite even when the long-running service uses `ExplicitOnly`, so ordinary
-    /// local projects can use their own `node_modules/typescript` without enabling ambient
-    /// `PATH` search or discovering other native compilers.
+    /// Node is paired with either a project-local TypeScript package or the global fallback
+    /// selected by [`Self::typescript_host_selection`]. Keep discovery limited to this host:
+    /// the service does not enable PATH discovery for other native compilers.
     pub(super) fn typescript_node_executable(
         &self,
         home: Option<&Path>,
+        compiler: Option<&Path>,
     ) -> Result<Option<TypeScriptNodeSelection>, LocalCompilerHostError> {
         let variable = LocalHostVariable::NudoxTypeScriptNode;
         let role = LocalHostPathRole::TypeScriptNode;
@@ -120,6 +173,17 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 })
             });
         }
+        if let Some(directory) = compiler.and_then(Path::parent) {
+            let candidate = directory.join(if cfg!(windows) { "node.exe" } else { "node" });
+            let mut candidates = ArrayVec::new();
+            push_candidate(&mut candidates, candidate);
+            if let Some(path) = first_existing(role, candidates)? {
+                return Ok(Some(TypeScriptNodeSelection {
+                    path,
+                    origin: TypeScriptSelectionOrigin::PairedHostInstall,
+                }));
+            }
+        }
         if let Some(path) = bundled_typescript_node(std::env::current_exe().ok().as_deref())? {
             return self.validate_file(role, variable, path).map(|path| {
                 Some(TypeScriptNodeSelection {
@@ -128,7 +192,11 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 })
             });
         }
-        if let Some(path) = first_existing_on_search_path(role, self.environment.search_path())? {
+        if let Some(path) = first_executable_on_search_path(
+            role,
+            self.environment.search_path(),
+            if cfg!(windows) { "node.exe" } else { "node" },
+        )? {
             return Ok(Some(TypeScriptNodeSelection {
                 path,
                 origin: TypeScriptSelectionOrigin::OrdinarySearchPath,
@@ -353,10 +421,9 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     }
 
     /// Locates the module root paired with one already-admitted TypeScript
-    /// compiler. Exact compiler-relative roots remain valid in explicit-only
-    /// mode because they derive from that selected compiler rather than an
-    /// ambient search. Platform roots are considered only under platform
-    /// discovery.
+    /// compiler. Exact compiler-relative roots remain valid in explicit-only mode because they
+    /// derive from that selected compiler rather than an ambient search. No unrelated module root
+    /// is selected when the compiler does not identify one.
     pub(super) fn typescript_module_root(
         &self,
         compiler: Option<&Path>,
@@ -385,16 +452,6 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                     }
                 }
             }
-        }
-        if self.discovery == LocalHostDiscovery::PlatformDefaults {
-            push_candidate(
-                &mut candidates,
-                PathBuf::from("/opt/homebrew/lib/node_modules"),
-            );
-            push_candidate(
-                &mut candidates,
-                PathBuf::from("/usr/local/lib/node_modules"),
-            );
         }
         first_existing_directory(LocalHostPathRole::TypeScriptModuleRoot, candidates)
     }
@@ -461,9 +518,10 @@ fn first_existing(
     Ok(None)
 }
 
-fn first_existing_on_search_path(
+fn first_executable_on_search_path(
     role: LocalHostPathRole,
     search_path: Option<std::ffi::OsString>,
+    executable: &str,
 ) -> Result<Option<PathBuf>, LocalCompilerHostError> {
     const MAX_SEARCH_PATH_BYTES: usize = 64 * 1024;
     const MAX_SEARCH_PATH_ENTRIES: usize = 256;
@@ -478,7 +536,7 @@ fn first_existing_on_search_path(
         if !directory.is_absolute() {
             continue;
         }
-        let path = directory.join(if cfg!(windows) { "node.exe" } else { "node" });
+        let path = directory.join(executable);
         match fs::metadata(&path) {
             Ok(metadata) if metadata.is_file() => {
                 return canonicalize_executable_existing(role, &path).map(Some);
@@ -495,6 +553,45 @@ fn first_existing_on_search_path(
         }
     }
     Ok(None)
+}
+
+fn typescript_compiler_candidates(
+    home: Option<&Path>,
+    search_path: Option<std::ffi::OsString>,
+) -> Vec<PathBuf> {
+    const MAX_SEARCH_PATH_BYTES: usize = 64 * 1024;
+    const MAX_SEARCH_PATH_ENTRIES: usize = 256;
+
+    let mut candidates = Vec::new();
+    if let Some(search_path) = search_path.filter(|path| path.len() <= MAX_SEARCH_PATH_BYTES) {
+        for directory in std::env::split_paths(&search_path)
+            .take(MAX_SEARCH_PATH_ENTRIES)
+            .filter(|directory| directory.is_absolute())
+        {
+            let candidate = directory.join(if cfg!(windows) { "tsc.exe" } else { "tsc" });
+            if !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    if let Some(home) = home {
+        let candidate = home.join(".local/bin/tsc");
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+    #[cfg(not(windows))]
+    for candidate in [
+        PathBuf::from("/opt/homebrew/bin/tsc"),
+        PathBuf::from("/usr/local/bin/tsc"),
+        PathBuf::from("/usr/bin/tsc"),
+    ] {
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+    candidates
 }
 
 fn first_existing_directory(
@@ -558,29 +655,23 @@ fn push_candidate(candidates: &mut ArrayVec<PathBuf, PLATFORM_PATH_CAPACITY>, ca
 
 fn typescript_node_candidates(home: Option<&Path>) -> ArrayVec<PathBuf, PLATFORM_PATH_CAPACITY> {
     let mut candidates = ArrayVec::new();
+    #[cfg(not(windows))]
     if let Some(home) = home {
         push_candidate(&mut candidates, home.join(".local/bin/node"));
-        push_candidate(&mut candidates, home.join(".nix-profile/bin/node"));
-        if let Some(user) = home.file_name().filter(|name| single_component(name)) {
-            push_candidate(
-                &mut candidates,
-                Path::new("/etc/profiles/per-user")
-                    .join(user)
-                    .join("bin/node"),
-            );
-        }
     }
-    push_candidate(&mut candidates, PathBuf::from("/opt/homebrew/bin/node"));
-    push_candidate(&mut candidates, PathBuf::from("/usr/local/bin/node"));
+    #[cfg(not(windows))]
+    for path in [
+        "/opt/homebrew/bin/node",
+        "/usr/local/bin/node",
+        "/usr/bin/node",
+    ] {
+        push_candidate(&mut candidates, PathBuf::from(path));
+    }
+    #[cfg(windows)]
     push_candidate(
         &mut candidates,
-        PathBuf::from("/run/current-system/sw/bin/node"),
+        PathBuf::from("C:/Program Files/nodejs/node.exe"),
     );
-    push_candidate(
-        &mut candidates,
-        PathBuf::from("/nix/var/nix/profiles/default/bin/node"),
-    );
-    push_candidate(&mut candidates, PathBuf::from("/usr/bin/node"));
     candidates
 }
 
@@ -905,6 +996,8 @@ mod tests {
     struct TestEnvironment {
         home: PathBuf,
         node: Option<PathBuf>,
+        compiler: Option<PathBuf>,
+        module_root: Option<PathBuf>,
         search_path: Option<std::ffi::OsString>,
     }
 
@@ -914,6 +1007,14 @@ mod tests {
                 LocalHostVariable::Home => Some(self.home.as_os_str().to_os_string()),
                 LocalHostVariable::NudoxTypeScriptNode => self
                     .node
+                    .as_ref()
+                    .map(|path| path.as_os_str().to_os_string()),
+                LocalHostVariable::NudoxTypeScriptCompiler => self
+                    .compiler
+                    .as_ref()
+                    .map(|path| path.as_os_str().to_os_string()),
+                LocalHostVariable::NudoxTypeScriptModuleRoot => self
+                    .module_root
                     .as_ref()
                     .map(|path| path.as_os_str().to_os_string()),
                 _ => None,
@@ -960,12 +1061,14 @@ mod tests {
             TestEnvironment {
                 home: home.clone(),
                 node: None,
+                compiler: None,
+                module_root: None,
                 search_path: None,
             },
             LocalHostDiscovery::ExplicitOnly,
         );
         assert_eq!(
-            host.typescript_node_executable(Some(&home))
+            host.typescript_node_executable(Some(&home), None)
                 .expect("finite node admission")
                 .map(|selection| selection.path),
             Some(fs::canonicalize(&node).expect("canonical node")),
@@ -992,12 +1095,14 @@ mod tests {
             TestEnvironment {
                 home: home.clone(),
                 node: Some(explicit.clone()),
+                compiler: None,
+                module_root: None,
                 search_path: Some(search_path),
             },
             LocalHostDiscovery::ExplicitOnly,
         );
         let selection = host
-            .typescript_node_executable(Some(&home))
+            .typescript_node_executable(Some(&home), None)
             .expect("explicit node admission")
             .expect("explicit Node is selected");
         assert_eq!(
@@ -1025,12 +1130,14 @@ mod tests {
             TestEnvironment {
                 home,
                 node: None,
+                compiler: None,
+                module_root: None,
                 search_path: Some(search_path),
             },
             LocalHostDiscovery::ExplicitOnly,
         );
         let selection = host
-            .typescript_node_executable(None)
+            .typescript_node_executable(None, None)
             .expect("PATH Node is canonicalized during host admission")
             .expect("Node from PATH is selected");
         assert_eq!(
@@ -1041,6 +1148,92 @@ mod tests {
             selection.origin,
             TypeScriptSelectionOrigin::OrdinarySearchPath
         );
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn explicit_only_service_discovers_a_paired_global_typescript_host_from_path() {
+        let root = private_test_directory("typescript-paired-install");
+        let home = root.join("home");
+        let module_root = root.join("prefix/lib/node_modules");
+        let compiler = module_root.join("typescript/bin/tsc");
+        let node = compiler.with_file_name("node");
+        executable(&compiler);
+        executable(&node);
+        let search_path = std::env::join_paths([compiler.parent().expect("compiler bin")])
+            .expect("encode fixture PATH");
+
+        let host = LocalCompilerHost::new(
+            TestEnvironment {
+                home,
+                node: None,
+                compiler: None,
+                module_root: None,
+                search_path: Some(search_path),
+            },
+            LocalHostDiscovery::ExplicitOnly,
+        );
+        let selection = host
+            .typescript_host_selection(None)
+            .expect("admit global TypeScript toolchain");
+        let selected_compiler = selection.compiler.expect("PATH contains tsc");
+        assert_eq!(
+            selected_compiler,
+            fs::canonicalize(&compiler).expect("canonical tsc")
+        );
+        assert_eq!(
+            selection.module_root,
+            Some(fs::canonicalize(&module_root).expect("canonical module root")),
+        );
+        let node_selection = selection.node.expect("compiler sibling provides Node");
+        assert_eq!(
+            node_selection.path,
+            fs::canonicalize(&node).expect("canonical Node")
+        );
+        assert_eq!(
+            node_selection.origin,
+            TypeScriptSelectionOrigin::PairedHostInstall
+        );
+
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn explicit_typescript_compiler_and_module_root_override_discovery() {
+        let root = private_test_directory("typescript-explicit-precedence");
+        let home = root.join("home");
+        let path_compiler = root.join("path/typescript/bin/tsc");
+        let explicit_compiler = root.join("chosen/typescript/bin/tsc");
+        let explicit_module_root = root.join("chosen/node_modules");
+        executable(&path_compiler);
+        executable(&explicit_compiler);
+        fs::create_dir_all(&explicit_module_root).expect("create selected module root");
+        let search_path = std::env::join_paths([path_compiler.parent().expect("PATH directory")])
+            .expect("encode fixture PATH");
+
+        let host = LocalCompilerHost::new(
+            TestEnvironment {
+                home,
+                node: None,
+                compiler: Some(explicit_compiler.clone()),
+                module_root: Some(explicit_module_root.clone()),
+                search_path: Some(search_path),
+            },
+            LocalHostDiscovery::ExplicitOnly,
+        );
+        let selection = host
+            .typescript_host_selection(None)
+            .expect("admit configured compiler");
+        let selected_compiler = selection.compiler.expect("explicit compiler is selected");
+        assert_eq!(
+            selected_compiler,
+            fs::canonicalize(&explicit_compiler).expect("canonical tsc")
+        );
+        assert_eq!(
+            selection.module_root,
+            Some(fs::canonicalize(&explicit_module_root).expect("canonical module root")),
+        );
+
         fs::remove_dir_all(root).expect("remove test directory");
     }
 

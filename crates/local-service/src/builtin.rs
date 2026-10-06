@@ -1558,6 +1558,7 @@ pub(crate) fn compose_owner(
         embedded_host::EmbeddedCompilerEnvironment {
             data_root: compiler_root,
             compiler_environment: config.compiler_environment.clone(),
+            search_path: std::env::var_os("PATH"),
         },
         backend_engine::application::LocalHostDiscovery::ExplicitOnly,
     )

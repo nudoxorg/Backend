@@ -1019,7 +1019,7 @@ impl fmt::Display for RuntimeError {
             ),
             Self::MissingExecutable(path) => write!(
                 formatter,
-                "backend-locald was not found at {}; install all backend binaries or set {LOCALD_BIN_ENV}",
+                "backend-locald companion executable was not found at {}; build or install backend-locald beside backend-cli/backend-mcp (cargo build -p backend-locald -p backend-cli -p backend-mcp), or set {LOCALD_BIN_ENV} to its absolute path",
                 path.display()
             ),
             Self::Spawn { executable, source } => {
@@ -1065,6 +1065,15 @@ impl std::error::Error for RuntimeError {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_locald_error_names_the_companion_build_and_override() {
+        let error = RuntimeError::MissingExecutable(PathBuf::from("/build/bin/backend-locald"));
+        let message = error.to_string();
+        assert!(message.contains("backend-locald companion executable"));
+        assert!(message.contains("cargo build -p backend-locald -p backend-cli -p backend-mcp"));
+        assert!(message.contains(LOCALD_BIN_ENV));
+    }
 
     #[cfg(unix)]
     #[test]

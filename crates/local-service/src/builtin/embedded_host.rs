@@ -83,11 +83,18 @@ pub(super) fn owner_open_refusal(
 pub(super) struct EmbeddedCompilerEnvironment {
     pub(super) data_root: PathBuf,
     pub(super) compiler_environment: Option<ClosedLocalHostEnvironmentSnapshot>,
+    /// Captured once while locald composes its compiler owner. The selected runtime is pinned
+    /// before the daemon starts serving requests; subsequent clients cannot refresh this PATH.
+    pub(super) search_path: Option<OsString>,
 }
 
 impl LocalHostEnvironment for EmbeddedCompilerEnvironment {
     fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
         self.value_with(variable, |variable| ProcessHostEnvironment.value(variable))
+    }
+
+    fn search_path(&self) -> Option<OsString> {
+        self.search_path.clone()
     }
 }
 
@@ -352,6 +359,7 @@ mod tests {
                 )])
                 .expect("valid closed compiler environment"),
             ),
+            search_path: Some(OsString::from("/captured/compiler/bin")),
         };
 
         assert_eq!(
@@ -362,6 +370,11 @@ mod tests {
             environment.value(LocalHostVariable::NudoxDataRoot),
             Some(OsString::from("/workspace/compiler")),
             "the compiler root stays the workspace's"
+        );
+        assert_eq!(
+            environment.search_path(),
+            Some(OsString::from("/captured/compiler/bin")),
+            "the service receives the process search path captured at startup for TypeScript host discovery",
         );
         let mut consulted_ambient = false;
         assert_eq!(
@@ -383,6 +396,7 @@ mod tests {
         let environment = EmbeddedCompilerEnvironment {
             data_root: PathBuf::from("/workspace/compiler"),
             compiler_environment: None,
+            search_path: None,
         };
         assert_eq!(
             environment.value_with(LocalHostVariable::Home, |_| {

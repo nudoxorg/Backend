@@ -12,8 +12,9 @@ mod remote;
 mod semantic;
 
 pub use local::{
-    CoverageBasis, Freshness, Lane, LaneReport, LeftOut, LocalAnswer, LocalQuery, QueryCoordinator,
-    QueryError, QueryResult, RankedRow, SearchSnapshotOwner, SemanticDocument, SourceBasis,
+    CoverageBasis, Freshness, Lane, LaneReport, LeftOut, LexicalFailureCause, LexicalPhase,
+    LocalAnswer, LocalQuery, QueryCoordinator, QueryError, QueryResult, RankedRow,
+    SearchSnapshotOwner, SemanticDocument, SourceBasis,
 };
 pub use remote::{
     ActiveQdrant, ConfiguredQdrant, EMBEDDING_DEVICE_ENV, EMBEDDING_DIMENSIONS_ENV,
