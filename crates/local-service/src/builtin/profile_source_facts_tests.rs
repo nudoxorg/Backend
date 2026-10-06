@@ -422,7 +422,12 @@ fn staged_large_parser_facts_use_small_queue_exact_shared_cas_and_cold_replay() 
         );
         let store = before.durable_store().unwrap();
         store.write_object(&orphan).unwrap();
-        let collector = backend_store::FileStore::open(store.root(), 64 * 1024 * 1024).unwrap();
+        let collector = backend_store::FileStore::open_with_registry(
+            store.root(),
+            64 * 1024 * 1024,
+            store.relation_registry().clone(),
+        )
+        .unwrap();
         let (completed, result) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             completed
