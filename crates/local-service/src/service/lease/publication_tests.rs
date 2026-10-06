@@ -340,7 +340,9 @@ fn a_slow_but_legitimate_multipage_reset_completes_within_the_allowance_it_earne
     let state = client
         .acquire_publications(Arc::clone(&base), cursor, &|| false)
         .expect("a slow reset inside its allowance is admitted");
-    assert!(clock.now() - started >= 18 * SECOND, "three pages of 6 s");
+    let elapsed = clock.now() - started;
+    assert!(elapsed >= 15 * SECOND, "three pages of 5 s");
+    assert!(elapsed <= 16 * SECOND, "reset stays within its earned allowance");
     assert_eq!(state.root().row_count(), 192);
     assert_eq!(state.root().root(), target.root());
     assert_eq!(state.cursor(), Cursor::for_view_root_at(&target, 1));
