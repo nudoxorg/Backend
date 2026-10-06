@@ -2102,6 +2102,25 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             } else {
                 None
             };
+        // Captured configuration and actual producer facts must affect identity,
+        // including direct callers whose source-only fallback claim omits config.
+        let plane_execution_seed = if let Some(project) = python_project.as_ref() {
+            let fingerprint = project.witness().fingerprint();
+            let mut root = blake3::Hasher::new();
+            root.update(b"compiler.python.project-input.v1\0");
+            root.update(input.input_root());
+            root.update(input.read_manifest_root().as_bytes());
+            root.update(&fingerprint.as_bytes());
+            let root = *root.finalize().as_bytes();
+            input = SemanticInputWitness::claimed_state(
+                root,
+                ScopeRoot::from_bytes(root),
+                Coverage::Partial,
+            );
+            plane_execution_seed.map(|seed| seed.with_python_project(fingerprint))
+        } else {
+            plane_execution_seed
+        };
         let source_count = package.compilation_sources().count();
         if target.profile.language() == backend_semantic::vocabulary::Language::Rust
             && let Some(configuration) = self.package_authority.rust

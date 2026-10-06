@@ -133,6 +133,23 @@ fn native_project_restores_cross_module_definitions_preserving_utf8() {
         report.witness().validate_current().is_err(),
         "new config invalidates admitted negative probe"
     );
+    let changed_configuration = checker
+        .analyze_project(
+            &root,
+            "pkg",
+            &sources,
+            PythonVersion::Python314,
+            PythonProjectControl {
+                cancelled: &cancelled,
+                deadline: Instant::now() + Duration::from_secs(30),
+            },
+        )
+        .expect("fresh configuration transaction");
+    assert_ne!(
+        report.witness().fingerprint(),
+        changed_configuration.witness().fingerprint(),
+        "present configuration changes cross-run identity even with identical source bytes"
+    );
     std::fs::remove_file(root.join("setup.cfg")).expect("restore absent config");
     // A fresh transaction gets the replacement captured bytes, despite the
     // original filesystem having none of the selected source files.

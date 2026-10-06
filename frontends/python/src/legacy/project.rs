@@ -94,6 +94,19 @@ impl PythonProjectReport {
 #[derive(Debug)]
 pub struct PythonProjectWitness {
     files: Vec<FileWitness>,
+    fingerprint: PythonProjectFingerprint,
+}
+
+/// Exact host-local transaction identity for source/configuration/producer facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PythonProjectFingerprint([u8; 32]);
+
+impl PythonProjectFingerprint {
+    /// The domain-separated captured project digest; no completeness promotion.
+    #[must_use]
+    pub const fn as_bytes(self) -> [u8; 32] {
+        self.0
+    }
 }
 
 #[derive(Debug)]
@@ -210,6 +223,12 @@ impl DirectoryWitness {
 }
 
 impl PythonProjectWitness {
+    /// Binds exact source/configuration probes, effective scope, and producer bytes.
+    #[must_use]
+    pub const fn fingerprint(&self) -> PythonProjectFingerprint {
+        self.fingerprint
+    }
+
     /// Revalidates both file bytes and absence before semantic image admission.
     ///
     /// # Errors
@@ -277,6 +296,7 @@ impl Pyrefly {
         }
         let mut witness = PythonProjectWitness {
             files: vec![FileWitness::capture(self.program.clone())?],
+            fingerprint: PythonProjectFingerprint([0; 32]),
         };
         witness.files.push(FileWitness::capture(
             std::env::current_exe().map_err(workspace_error)?,
@@ -415,18 +435,49 @@ impl Pyrefly {
             mirror_witness.push(FileWitness::capture(mirror.join("pyrefly.toml"))?);
         }
         let private_tree = DirectoryWitness::capture_tree(&mirror)?;
-        let modules = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            super::project_native::analyze(
-                &mirror,
-                package_root,
-                package_name,
-                sources,
-                &facts,
-                profile,
-                control,
-            )
-        }))
-        .map_err(|_| CheckerError::ProjectPanic)??;
+        let (modules, native_configuration) =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                super::project_native::analyze(
+                    &mirror,
+                    package_root,
+                    package_name,
+                    sources,
+                    &facts,
+                    profile,
+                    control,
+                )
+            }))
+            .map_err(|_| CheckerError::ProjectPanic)??;
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"compiler.python.captured-project.v1\0");
+        identity.update(&self.local_configuration_fingerprint());
+        identity.update(&native_configuration);
+        hash_field(&mut identity, package_name.as_bytes());
+        hash_field(&mut identity, super::profile_tag(profile).as_bytes());
+        let mut selected = sources.iter().collect::<Vec<_>>();
+        selected.sort_by_key(|source| source.relative_path);
+        for source in selected {
+            identity.update(b"selected-source\0");
+            hash_field(&mut identity, source.relative_path.as_bytes());
+            hash_field(&mut identity, source.source.as_bytes());
+        }
+        let mut probes = witness.files.iter().collect::<Vec<_>>();
+        probes.sort_by_key(|file| &file.path);
+        for file in probes {
+            identity.update(b"original-file-probe\0");
+            hash_field(&mut identity, file.path.as_os_str().as_encoded_bytes());
+            match file.digest {
+                Some((digest, size)) => {
+                    identity.update(&[1]);
+                    identity.update(digest.as_bytes());
+                    identity.update(&size.to_be_bytes());
+                }
+                None => {
+                    identity.update(&[0]);
+                }
+            }
+        }
+        witness.fingerprint = PythonProjectFingerprint(*identity.finalize().as_bytes());
         witness.validate_current()?;
         for directory in private_tree {
             checkpoint(control)?;
@@ -463,4 +514,9 @@ pub(super) fn checkpoint(control: PythonProjectControl<'_>) -> Result<(), Checke
         return Err(CheckerError::Deadline { phase: "project" });
     }
     Ok(())
+}
+
+fn hash_field(identity: &mut blake3::Hasher, bytes: &[u8]) {
+    identity.update(&(bytes.len() as u64).to_be_bytes());
+    identity.update(bytes);
 }

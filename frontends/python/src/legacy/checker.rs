@@ -37,8 +37,8 @@ mod project;
 #[path = "project_native.rs"]
 mod project_native;
 pub use project::{
-    DefinitionTarget, PythonProjectControl, PythonProjectReport, PythonProjectSource,
-    PythonProjectWitness, PythonTypeProjectionFault,
+    DefinitionTarget, PythonProjectControl, PythonProjectFingerprint, PythonProjectReport,
+    PythonProjectSource, PythonProjectWitness, PythonTypeProjectionFault,
 };
 
 use std::path::{Path, PathBuf};

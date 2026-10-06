@@ -557,6 +557,19 @@ impl LocalCompilerPlaneExecutionSeed {
         self
     }
 
+    /// The completed native project changes this host-local recipe before sealing.
+    pub(crate) fn with_python_project(
+        mut self,
+        fingerprint: backend_frontend_python::legacy::checker::PythonProjectFingerprint,
+    ) -> Self {
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"compiler.python.project-plane-authority.v1\0");
+        identity.update(&self.local_authority_fingerprint);
+        identity.update(&fingerprint.as_bytes());
+        self.local_authority_fingerprint = *identity.finalize().as_bytes();
+        self
+    }
+
     pub(crate) fn bind_input(
         self,
         input: SemanticInputWitness,

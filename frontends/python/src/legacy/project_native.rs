@@ -41,14 +41,14 @@ pub(super) fn analyze(
     syntax: &BTreeMap<&str, ModuleFacts>,
     profile: backend_semantic::vocabulary::PythonVersion,
     control: PythonProjectControl<'_>,
-) -> Result<BTreeMap<Box<str>, CheckerReport>, CheckerError> {
+) -> Result<(BTreeMap<Box<str>, CheckerReport>, [u8; 32]), CheckerError> {
     checkpoint(control)?;
     let minor = super::profile_tag(profile)
         .split('.')
         .nth(1)
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| project_error("", "invalid selected native Python version"))?;
-    let finder = captured_finder(
+    let (finder, configuration_fingerprint) = captured_finder(
         mirror,
         original_root,
         sources,
@@ -380,7 +380,7 @@ pub(super) fn analyze(
         );
     }
     checkpoint(control)?;
-    Ok(modules)
+    Ok((modules, configuration_fingerprint))
 }
 
 /// No ancestor discovery, interpreter/site-package probing, or external loader
@@ -392,7 +392,7 @@ fn captured_finder(
     sources: &[PythonProjectSource<'_>],
     version: NativeVersion,
     control: PythonProjectControl<'_>,
-) -> Result<ConfigFinder, CheckerError> {
+) -> Result<(ConfigFinder, [u8; 32]), CheckerError> {
     fn rebase(path: &mut PathBuf, mirror: &Path, original: &Path) -> Result<(), CheckerError> {
         if !path.is_absolute()
             || path
@@ -535,6 +535,9 @@ fn captured_finder(
         }
     }
     let mut effective = BTreeMap::new();
+    let mut scope_identity = blake3::Hasher::new();
+    scope_identity.update(b"compiler.python.effective-config-scope.v1\0");
+    scope_identity.update(b"root-isolated;native-priority;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
     for directory in directories {
         let mut candidates = Vec::new();
         for (depth, ancestor) in directory
@@ -548,46 +551,65 @@ fn captured_finder(
                 .enumerate()
             {
                 if let Some((priority, config)) = loaded.get(&ancestor.join(name)) {
-                    candidates.push(((*priority, depth, ordinal), config));
+                    candidates.push(((*priority, depth, ordinal), ancestor.join(name), config));
                 }
             }
         }
-        candidates.sort_by_key(|(priority, _)| *priority);
+        candidates.sort_by_key(|(priority, _, _)| *priority);
         let config = candidates
             .first()
-            .map_or_else(|| fallback.clone(), |(_, config)| (*config).clone());
+            .map_or_else(|| fallback.clone(), |(_, _, config)| (*config).clone());
+        for path in [
+            Some(directory.as_path()),
+            candidates.first().map(|(_, path, _)| path.as_path()),
+        ] {
+            if let Some(path) = path {
+                let relative = path
+                    .strip_prefix(mirror)
+                    .expect("captured configuration scope");
+                let bytes = relative.as_os_str().as_encoded_bytes();
+                scope_identity.update(&[1]);
+                scope_identity.update(&(bytes.len() as u64).to_be_bytes());
+                scope_identity.update(bytes);
+            } else {
+                scope_identity.update(&[0]);
+            }
+        }
         effective.insert(directory, config);
     }
     let before_root = mirror.to_path_buf();
     let before_fallback = fallback.clone();
     let load_fallback = fallback.clone();
-    Ok(ConfigFinder::new_custom(
-        Box::new(move |_, path| {
-            let path = path.as_path();
-            if path.is_absolute() {
-                // This cannot be reached by the validated resolver roots. A
-                // producer violation terminates before opening ambient bytes.
-                assert!(
-                    path.starts_with(&before_root),
-                    "native resolver escaped captured mirror"
-                );
-                let config = path
-                    .ancestors()
-                    .find_map(|ancestor| effective.get(ancestor))
-                    .unwrap_or(&before_fallback);
-                Ok(Some(config.clone()))
-            } else {
-                // Bundled module paths have no filesystem source path.
-                Ok(Some(before_fallback.clone()))
-            }
-        }),
-        Box::new(move |_| {
-            // python_file always returns above. No directory/config discovery
-            // can influence this producer through the fallback load callback.
-            (load_fallback.clone(), Vec::new())
-        }),
-        Box::new(move |_, _| fallback.clone()),
-        Box::new(|| {}),
+    Ok((
+        ConfigFinder::new_custom(
+            Box::new(move |_, path| {
+                let path = path.as_path();
+                if path.is_absolute() {
+                    // This cannot be reached by the validated resolver roots. A
+                    // producer violation terminates before opening ambient bytes.
+                    assert!(
+                        path.starts_with(&before_root),
+                        "native resolver escaped captured mirror"
+                    );
+                    let config = path
+                        .ancestors()
+                        .find_map(|ancestor| effective.get(ancestor))
+                        .unwrap_or(&before_fallback);
+                    Ok(Some(config.clone()))
+                } else {
+                    // Bundled module paths have no filesystem source path.
+                    Ok(Some(before_fallback.clone()))
+                }
+            }),
+            Box::new(move |_| {
+                // python_file always returns above. No directory/config discovery
+                // can influence this producer through the fallback load callback.
+                (load_fallback.clone(), Vec::new())
+            }),
+            Box::new(move |_, _| fallback.clone()),
+            Box::new(|| {}),
+        ),
+        *scope_identity.finalize().as_bytes(),
     ))
 }
 
