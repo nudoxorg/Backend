@@ -40,7 +40,12 @@ fn native_pending_reversal_and_resize_film() {
                 backend_library::view_state_root(&[("transit".to_owned(), "native film".to_owned())]), 4);
             let mut state = crate::model::SessionState::default();
             state.route = crate::shell::tests::page_route("RelationLabel");
-            let snapshot = crate::model::AppSnapshot::empty(key).with_session(state);
+            let mut snapshot = crate::model::AppSnapshot::empty(key).with_session(state);
+            let directory = std::env::temp_dir().join(format!("nudox-transit-native-{}", std::process::id()));
+            std::fs::create_dir_all(&directory).expect("private fixture project directory");
+            let mut workspace = snapshot.workspace().clone();
+            workspace.host = crate::core::LocalProjectId::from_path(&directory).ok();
+            snapshot = snapshot.with_workspace(workspace);
             let actor = EngineActor::start(crate::shell::tests::RootOnly, 8).expect("real actor");
             let graph = UiEntityGraph::install_with_reads(cx, DesktopRuntime::new(snapshot, actor), None, Some(pool));
             let shell = crate::shell::open_shell(&graph, window, cx);

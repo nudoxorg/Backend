@@ -2854,7 +2854,12 @@ impl Render for Reader {
         // Read readiness controls its body and native actions, not whether
         // the previous painted page survives or which spring Back reverses.
         // Check the frame first so an unmeasured arrival is not consumed.
-        if let Some(reader) = reader
+        // Peel needs the actual declaration line. Keep that arrival and any
+        // existing plate until the read answers; unlike Open it cannot grow
+        // an honest loading body from a declaration that is not served yet.
+        let can_begin = self.arrival.as_ref().is_some_and(|arrival|
+            arrival.verb != Verb::Peel || !waiting);
+        if can_begin && let Some(reader) = reader
             && let Some(arrival) = self.arrival.take()
         {
             self.begin(arrival, reader, window, cx);
