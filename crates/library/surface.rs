@@ -5647,6 +5647,7 @@ mod tests {
             ),
             package: PackageReference::parse("/workspace/demo").expect("package"),
             execution_intent: crate::CompileExecutionIntent::Interactive,
+            source_capture: None,
             state: IndexOperationState::Published(receipt),
             source_capture: None,
         };
@@ -5796,6 +5797,7 @@ mod tests {
             ),
             package,
             execution_intent: crate::CompileExecutionIntent::Interactive,
+            source_capture: None,
             state: IndexOperationState::Published(receipt.clone()),
             source_capture: None,
         };

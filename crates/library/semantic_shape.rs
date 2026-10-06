@@ -1625,7 +1625,7 @@ mod tests {
         let mut small_manifest_source = request.source().clone();
         small_manifest_source.semantic_bytes = 1;
         let small_manifest_request = SemanticShapeRequest::new(
-            request.basis().into(),
+            crate::view_state_root(&[]),
             small_manifest_source,
             request.symbols().to_vec().into_boxed_slice(),
             request.budget(),
