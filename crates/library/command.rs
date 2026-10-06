@@ -1115,10 +1115,9 @@ impl core::fmt::Display for CommandFailure {
             }
             Self::InvalidQuery(message) => write!(formatter, "invalid query: {message}"),
             Self::CompilerRefused { detail, failure } => {
-                let facts = serde_json::to_string(&failure.facts()).map_err(|_| fmt::Error)?;
                 write!(
                     formatter,
-                    "{detail}: {} ({}): {}; facts={facts}",
+                    "{detail}: {} ({}): {}",
                     failure.relative_path(),
                     failure.kind_tag(),
                     failure.detail(),

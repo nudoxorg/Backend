@@ -2178,21 +2178,22 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
             return sanitize_package_compiler_detail(&text, false);
         }
         PackageCompilerFailureCause::ToolingUnavailable { tool, .. } => {
+            let local_path = tool
+                .project_local_path()
+                .unwrap_or("a valid executable path");
             let text = format!(
-                "{} is unavailable; configure {} with a valid tool path",
+                "{} is unavailable; configure {} with a valid tool path, for example {}",
                 tool.executable(),
-                tool.configuration_variable()
+                tool.configuration_variable(),
+                local_path,
             );
             return sanitize_package_compiler_detail(&text, false);
         }
         PackageCompilerFailureCause::Lowering(_) => "lowering fault",
         PackageCompilerFailureCause::Authority { .. } => "authority fault",
     };
-    let facts = serde_json::to_string(cause)
-        .unwrap_or_else(|_| "facts unavailable".to_owned())
-        .replace('_', " ");
     let tag = cause.kind_tag().replace('_', " ");
-    let text = format!("{prefix} {tag}; facts={facts}");
+    let text = format!("{prefix}: {tag}");
     sanitize_package_compiler_detail(&text, false)
 }
 
@@ -4945,6 +4946,16 @@ mod tests {
         assert_eq!(decoded.phase(), PackageCompilerFailurePhase::Prepare);
         assert!(decoded.detail().contains("occurrence span"));
 
+        let command_failure = crate::CommandFailure::CompilerRefused {
+            detail: "local compiler rejected src/recovery.ts".to_owned(),
+            failure: failure.clone(),
+        };
+        let displayed = command_failure.to_string();
+        assert!(displayed.contains("src/recovery.ts"));
+        assert!(displayed.contains("build_invalid_occurrence_span"));
+        assert!(displayed.contains("occurrence span"));
+        assert!(!displayed.contains("facts="));
+
         let json: serde_json::Value = serde_json::from_slice(&encoded).expect("JSON object");
         assert_eq!(json["cause"]["family"], "fragment");
         assert_eq!(json["cause"]["fault"]["kind"]["family"], "build");
@@ -4967,6 +4978,21 @@ mod tests {
             failure.encoded_size_bound(),
             PackageCompilerFailure::MAX_ENCODED_BYTES
         );
+
+        let outcome = IndexJobOutcome::RefusedWithCompilerFailure {
+            detail: ProductText::new("local compiler refused src/recovery.ts")
+                .expect("bounded refusal text"),
+            failure: failure.clone(),
+        };
+        let outcome_json = serde_json::to_value(&outcome).expect("index outcome JSON");
+        assert_eq!(outcome_json["state"], "refused-with-compiler-failure");
+        assert_eq!(
+            serde_json::from_value::<IndexJobOutcome>(outcome_json.clone()),
+            Ok(outcome)
+        );
+        let mut unknown = outcome_json;
+        unknown["detail"]["extra"] = serde_json::json!("unknown future member");
+        assert!(serde_json::from_value::<IndexJobOutcome>(unknown).is_err());
     }
 
     #[test]
@@ -5060,6 +5086,27 @@ mod tests {
         );
         assert_eq!(json["recipe_identity"], serde_json::Value::Null);
         assert!(PackageCompilerFailure::decode_bounded_json(&encoded).is_ok());
+
+        let unavailable = CompilerTerminal::ToolingUnavailable {
+            source,
+            language: Language::Python,
+            stage: Stage::Parse,
+            tool: NativeTool::Python,
+        };
+        let unavailable = PackageCompilerFailure::from_package_terminal(
+            "tests/testserver/__init__.py",
+            &unavailable,
+        )
+        .expect("valid unavailable-tool summary")
+        .expect("unavailable terminal is projected");
+        assert_eq!(unavailable.recipe_identity(), None);
+        assert_eq!(unavailable.kind_tag(), "tooling_unavailable");
+        assert_eq!(
+            unavailable.required_native_tool(),
+            Some(CompilerNativeToolFact::Python)
+        );
+        assert!(unavailable.detail().contains("NUDOX_PYTHON"));
+        assert!(unavailable.detail().contains(".venv/bin/python"));
     }
 
     #[test]
@@ -5134,7 +5181,7 @@ mod tests {
         )
         .expect("angular JSON");
         assert_eq!(
-            angular_json["cause"]["fault"]["cause"]["kind"],
+            angular_json["cause"]["fault"]["cause"]["fault"],
             "type_child"
         );
         assert_eq!(angular_json["cause"]["fault"]["cause"]["position"], 2);
@@ -5154,7 +5201,7 @@ mod tests {
         let zod_json: serde_json::Value =
             serde_json::from_slice(&zod.encode_bounded_json().expect("encode zod refusal"))
                 .expect("zod JSON");
-        assert_eq!(zod_json["cause"]["fault"]["cause"]["kind"], "type_record");
+        assert_eq!(zod_json["cause"]["fault"]["cause"]["fault"], "type_record");
         assert_eq!(
             zod_json["cause"]["fault"]["cause"]["cause"]["fault"],
             "missing_cell"
@@ -5197,7 +5244,7 @@ mod tests {
             .encode_bounded_json()
             .expect("bounded authority JSON");
         assert!(!String::from_utf8_lossy(&encoded).contains("PRIVATE-RAW-COMPILER-OUTPUT"));
-        assert!(failure.detail().contains("type_check"));
+        assert!(failure.detail().contains("type check"));
         assert!(failure.detail().contains("type"));
         let json: serde_json::Value = serde_json::from_slice(&encoded).expect("authority JSON");
         assert_eq!(json["cause"]["fault"]["phase"], "type_check");
