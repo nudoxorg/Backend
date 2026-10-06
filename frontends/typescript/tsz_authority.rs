@@ -399,6 +399,32 @@ impl TszProject {
         (!token.is_empty()).then_some(token)
     }
 
+    /// Resolves a checker property name through the exact TSZ symbol's
+    /// declaration-name node and returns its raw source spelling. The lookup
+    /// searches only declaration nodes bound to this symbol, constrained by
+    /// the symbol's file-stable declaration range.
+    #[must_use]
+    pub fn symbol_name_source(&self, symbol: TszSymbolId, expected: &str) -> Option<&str> {
+        let symbol_data = self.program.symbols.get(symbol)?;
+        for declaration in &symbol_data.stable_declarations {
+            let file_index = usize::try_from(declaration.file_idx).ok()?;
+            let Some(file) = self.program.files.get(file_index) else {
+                continue;
+            };
+            if let Some(token) = symbol_name_in_arena(
+                &file.arena,
+                file.node_symbols.iter(),
+                symbol,
+                expected,
+                Some((declaration.pos, declaration.end)),
+                file.source_file,
+            ) {
+                return Some(token);
+            }
+        }
+        None
+    }
+
     /// Content identity for one exact retained project or library source.
     /// The stable path is included in the digest, so moving byte-identical
     /// content to another owner does not preserve a declaration identity.
@@ -412,6 +438,18 @@ impl TszProject {
     #[must_use]
     pub fn library_paths(&self) -> impl Iterator<Item = &str> {
         self.lib_files.iter().map(|lib| lib.file_name.as_str())
+    }
+
+    /// Borrows one exact source or library arena and its retained UTF-8 bytes
+    /// for syntax and coordinate projection. No filesystem lookup occurs.
+    #[must_use]
+    pub fn with_source_nodes<Output>(
+        &self,
+        path: &str,
+        consume: impl FnOnce(&tsz::parser::NodeArena, &str) -> Output,
+    ) -> Option<Output> {
+        let (arena, source) = self.source_arena_and_text(path)?;
+        Some(consume(arena, source))
     }
 
     fn source_arena_and_text(&self, path: &str) -> Option<(&tsz::parser::NodeArena, &str)> {
@@ -582,6 +620,52 @@ fn library_digest(lib_files: &[Arc<tsz::lib_loader::LibFile>]) -> Result<[u8; 32
 fn digest_part(digest: &mut Sha256, part: &[u8]) {
     digest.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_be_bytes());
     digest.update(part);
+}
+
+fn symbol_name_in_arena<'a, 'symbols, I>(
+    arena: &'a tsz::parser::NodeArena,
+    node_symbols: I,
+    symbol: TszSymbolId,
+    expected: &str,
+    range: Option<(u32, u32)>,
+    source_file: TszNodeIndex,
+) -> Option<&'a str>
+where
+    I: IntoIterator<Item = (&'symbols u32, &'symbols TszSymbolId)>,
+{
+    let source = arena.get_source_file_at(source_file)?.text.as_ref();
+    let mut candidates = Vec::new();
+    for (raw, candidate_symbol) in node_symbols {
+        if *candidate_symbol != symbol {
+            continue;
+        }
+        let node = TszNodeIndex(*raw);
+        let syntax_node = arena.get(node)?;
+        let Some(identifier) = arena.get_identifier(syntax_node) else {
+            continue;
+        };
+        if identifier.escaped_text != expected {
+            continue;
+        }
+        let Some((start, end)) = arena.pos_end_at(node) else {
+            continue;
+        };
+        if range.is_some_and(|(lower, upper)| start < lower || end > upper) {
+            continue;
+        }
+        let (Ok(start_index), Ok(end_index)) = (usize::try_from(start), usize::try_from(end))
+        else {
+            continue;
+        };
+        let Some(token) = source.get(start_index..end_index) else {
+            continue;
+        };
+        if !token.is_empty() {
+            candidates.push((start, end, token));
+        }
+    }
+    candidates.sort_unstable_by_key(|(start, end, _)| (*start, *end));
+    candidates.first().map(|(_, _, token)| *token)
 }
 
 fn checker_options_digest(options: &TszCheckerOptions) -> [u8; 32] {
@@ -787,6 +871,46 @@ mod tests {
             Some(source_digest("src/labels.ts", source)),
             "the admitted path and exact retained source have a stable identity"
         );
+    }
+
+    #[test]
+    fn symbol_name_source_uses_the_exact_cross_file_declaration_binding() {
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update(
+                vec![
+                    input(
+                        "types.d.ts",
+                        "export interface ExternalSettings { label: string }",
+                    ),
+                    input(
+                        "src/main.ts",
+                        "import type { ExternalSettings } from '../types';\nexport const settings: ExternalSettings = { label: 'ready' };",
+                    ),
+                ],
+                options(),
+                &[],
+            )
+            .expect("TSZ should build the cross-file project");
+        let project = authority.project().expect("project result exists");
+        let file = project
+            .program()
+            .files
+            .iter()
+            .find(|file| file.file_name == "types.d.ts")
+            .expect("declaration dependency is retained");
+        let symbol = file
+            .node_symbols
+            .iter()
+            .find_map(|(&raw, &symbol)| {
+                let node = file.arena.get(TszNodeIndex(raw))?;
+                let identifier = file.arena.get_identifier(node)?;
+                (identifier.escaped_text == "label").then_some(symbol)
+            })
+            .expect("the exact property-name node is bound to a symbol");
+
+        assert_eq!(project.symbol_name_source(symbol, "label"), Some("label"));
+        assert_eq!(project.symbol_name_source(symbol, "ExternalSettings"), None);
     }
 
     #[test]

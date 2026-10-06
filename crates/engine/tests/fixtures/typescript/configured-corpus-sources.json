@@ -1,0 +1,38 @@
+{
+  "evidence": "installed fully configured TypeScript checker on ILO, TypeScript 5.9.3; failure sources are byte-exact copies",
+  "sources": [
+    {
+      "repository": "colinhacks/zod",
+      "commit": "0b216ef674e297ebe41d8bf902262e56f8755822",
+      "tree": "24b5b50586a05b5f1965c6ee6b2b2b442b6eeffb",
+      "project_path": "packages/bench/compile-passthrough.ts",
+      "fixture_path": "corpora/colinhacks-zod/packages/bench/compile-passthrough.ts",
+      "bytes": 11265,
+      "sha256": "2f504d2f5a447f8a7a92ee416016a4825ea8070d31f37fa81f985e06d7843f10",
+      "config_sha256": {
+        "tsconfig.json": "79ff8445180c036872e7c6ada7c49993f7b4dc9523bea9060731773c4a9cced2",
+        ".configs/tsconfig.base.json": "226711c3bf0132b51dde119447fe52abd0afeea3c4ee39a7fe9bc6583267f28a",
+        "packages/bench/tsconfig.json": "96d27137278b5fbf0184153b590c21400e3c39934d74cb871b44193df924de04",
+        "packages/bench/tsconfig.bench.json": "042ace70e7f54a25369064f432fe9f163e6a369297ed3ded736fefcc34cbdc57"
+      },
+      "observed_failure": "FactRejected6 TypeRecord MissingCell{Mapped,Text}"
+    },
+    {
+      "repository": "realworld-apps/angular-realworld-example-app",
+      "commit": "dd99ed2cf39c805d719f943c5d7061a5683d98a8",
+      "submodule_path": "realworld",
+      "submodule_commit": "ffbd690089f05193733b20ee4ee98087892f714e",
+      "project_path": "realworld/specs/e2e/navigation.spec.ts",
+      "fixture_path": "corpora/realworld-angular/realworld/specs/e2e/navigation.spec.ts",
+      "bytes": 9953,
+      "sha256": "fa59b4d194d5a38122fa5caf74e867c5b003a443d0f1a19017a65c57415d54a0",
+      "config_sha256": {
+        "tsconfig.json": "eafea1dfa84b0859d4aa99d9cadbfdc1fa3351025d960082b3e108284a628856",
+        "tsconfig.spec.json": "20e274d5343a745e1af329aee929ea5c3a9a0659b4605614eea6680195326a59",
+        "tsconfig.app.json": "bbebf4cebcb4ef85c0aa2736e2fefc38edcab442dbbdf5f645c17414383bdadb",
+        "angular.json": "c1b7ad53b91f8e0cd88dc8401ca90995303bf860f56225f33c5ee3aa505965c3"
+      },
+      "observed_failure": "FactRejected14 TypeChild ChildNameRequired{AnonymousRecord,position2}"
+    }
+  ]
+}

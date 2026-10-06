@@ -18,9 +18,10 @@ use backend_frontend_typescript::{
     TszAtom, TszAuthorityError, TszBoundFile, TszCheckerState, TszNodeIndex, TszProject,
     TszSymbolId, TszTypeDatabase,
     tsz_type_handles::{
-        ConditionalType, FunctionShape, IntrinsicKind, LiteralValue as TszLiteral,
-        MappedModifier as TszMappedModifier, MappedType, ParamInfo, TemplateSpan, TypeData,
-        TypeId as TszTypeId, TypeParamInfo,
+        ConditionalType, FunctionShape, IndexSignature as TszIndexSignature, IntrinsicKind,
+        LiteralValue as TszLiteral, MappedModifier as TszMappedModifier, MappedType,
+        ObjectShape as TszObjectShape, ParamInfo, TemplateSpan, TypeData, TypeId as TszTypeId,
+        TypeParamInfo, TypeParamOrigin as TszTypeParamOrigin,
     },
 };
 use backend_semantic::ir::{
@@ -494,6 +495,8 @@ struct Projector<'x, 'report, 'source> {
 /// The definition lives beside the computed lowering functions below.
 struct FactRegistry<'a, 'source> {
     source: &'source str,
+    /// Exact retained project-source capability for native TSZ declarations.
+    tsz_project: Option<&'source TszProject>,
     decl_starts: &'a [u32],
     decl_ends: &'a [u32],
     name_starts: &'a [u32],
@@ -3884,7 +3887,7 @@ pub(crate) fn collect_with_checker<'source, 'report>(
 pub(crate) fn collect_with_tsz<'source>(
     profile: TypeScriptSource,
     source: &'source [u8],
-    project: &TszProject,
+    project: &'source TszProject,
     source_path: &str,
     facts: &mut FactSet<'source>,
 ) -> Result<(), TypeScriptCollectError> {
@@ -3951,7 +3954,7 @@ pub(crate) fn collect_with_tsz<'source>(
                     owner_ancestor: Vec::new(),
                 };
                 projector.run()?;
-                projector.pass_native_tsz(checker, bound_file, database)
+                projector.pass_native_tsz(checker, bound_file, database, project)
             };
             if declaration_file {
                 with_analysis_declaration(profile, source, true, build)
@@ -4901,6 +4904,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let declarations: Vec<_> = checker.declarations().copied().collect();
         let registry = FactRegistry {
             source: self.source,
+            tsz_project: None,
             decl_starts: &self.decl_starts,
             decl_ends: &self.decl_ends,
             name_starts: &self.name_starts,
@@ -4980,9 +4984,11 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         checker: &mut TszCheckerState<'_>,
         bound_file: &TszBoundFile,
         database: &dyn TszTypeDatabase,
+        project: &'source TszProject,
     ) -> Result<(), TypeScriptCollectError> {
         let registry = FactRegistry {
             source: self.source,
+            tsz_project: Some(project),
             decl_starts: &self.decl_starts,
             decl_ends: &self.decl_ends,
             name_starts: &self.name_starts,
@@ -5105,6 +5111,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let narrowings: Vec<_> = checker.narrowings().copied().collect();
         let registry = FactRegistry {
             source: self.source,
+            tsz_project: None,
             decl_starts: &self.decl_starts,
             decl_ends: &self.decl_ends,
             name_starts: &self.name_starts,
@@ -8316,65 +8323,9 @@ fn intern_native_tsz_type_inner<'source>(
             let shape = database.function_shape(shape_id);
             intern_native_tsz_function(registry, facts, database, &shape, owner, next_depth, active)
         }
-        TypeData::Object(shape_id) => {
+        TypeData::Object(shape_id) | TypeData::ObjectWithIndex(shape_id) => {
             let shape = database.object_shape(shape_id);
-            if shape.symbol.is_some()
-                || shape.string_index.is_some()
-                || shape.number_index.is_some()
-                || shape.symbol_index.is_some()
-                || shape.properties.len() > MAX_TYPE_CHILDREN
-            {
-                return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
-            }
-            // Admit all required names before staging children. A dependency
-            // property that is not written inside this owner cannot become a
-            // fabricated anonymous-record member.
-            let mut members = Vec::with_capacity(shape.properties.len());
-            for property in &shape.properties {
-                if property.is_symbol_named || property.write_type != property.type_id {
-                    return intern_computed_leaf(
-                        facts,
-                        unknown_record(TypeReason::OracleGap),
-                        owner,
-                    );
-                }
-                let name = database.resolve_atom_ref(property.name);
-                if name.starts_with("__@") {
-                    continue;
-                }
-                let Some(spelling) = native_tsz_source_name_bytes(registry, name.as_bytes(), owner)
-                else {
-                    return intern_computed_leaf(
-                        facts,
-                        unknown_record(TypeReason::OracleGap),
-                        owner,
-                    );
-                };
-                members.push((property, spelling));
-            }
-            let mut children = Vec::with_capacity(members.len());
-            for (property, spelling) in members {
-                let child = intern_native_tsz_type(
-                    registry,
-                    facts,
-                    database,
-                    property.type_id,
-                    owner,
-                    next_depth,
-                    active,
-                )?;
-                let mut flags = 0;
-                if property.optional {
-                    flags |= SemanticTypeChild::FLAG_OPTIONAL;
-                }
-                if property.readonly {
-                    flags |= SemanticTypeChild::FLAG_READONLY;
-                }
-                children.push((child, Some(spelling), flags));
-            }
-            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord);
-            record.payload0 = u32::from(AnonRecordForm::Interface);
-            intern_native_tsz_row(registry, facts, record, owner, &children)
+            intern_native_tsz_object(registry, facts, database, &shape, owner, next_depth, active)
         }
         TypeData::Application(application_id) => {
             let application = database.type_application(application_id);
@@ -8515,8 +8466,7 @@ fn intern_native_tsz_type_inner<'source>(
             active,
             SemanticTypeTag::Intersection,
         ),
-        TypeData::ObjectWithIndex(_)
-        | TypeData::Callable(_)
+        TypeData::Callable(_)
         | TypeData::BoundParameter(_)
         | TypeData::Lazy(_)
         | TypeData::Recursive(_)
@@ -8634,6 +8584,22 @@ fn native_tsz_source_name_bytes<'source>(
     None
 }
 
+fn native_tsz_decl_scoped_parameter_name<'source>(
+    registry: &FactRegistry<'_, 'source>,
+    database: &dyn TszTypeDatabase,
+    parameter: TypeParamInfo,
+) -> Option<&'source [u8]> {
+    let TszTypeParamOrigin::DeclScoped { file, node } = parameter.origin else {
+        return None;
+    };
+    let project = registry.tsz_project?;
+    let path = database.resolve_atom_ref(file);
+    let expected = database.resolve_atom_ref(parameter.name);
+    project
+        .declaration_name_source(path, node, expected)
+        .map(str::as_bytes)
+}
+
 const fn identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || byte >= 0x80
 }
@@ -8645,7 +8611,7 @@ fn intern_native_tsz_type_parameter<'source>(
     parameter: TypeParamInfo,
     owner: u32,
 ) -> Result<u32, TypeScriptCollectError> {
-    let Some(name) = native_tsz_source_name(registry, database, parameter.name, owner) else {
+    let Some(name) = native_tsz_decl_scoped_parameter_name(registry, database, parameter) else {
         return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
     };
     let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TypeVar);
@@ -8768,7 +8734,7 @@ fn intern_native_tsz_mapped<'source>(
     depth: u8,
     active: &mut std::collections::HashSet<TszTypeId>,
 ) -> Result<u32, TypeScriptCollectError> {
-    let Some(name) = native_tsz_source_name(registry, database, mapped.type_param.name, owner)
+    let Some(name) = native_tsz_decl_scoped_parameter_name(registry, database, mapped.type_param)
     else {
         return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
     };
@@ -8843,6 +8809,159 @@ fn intern_native_tsz_associative<'source>(
         owner,
         &children,
     )
+}
+
+fn intern_native_tsz_object<'source>(
+    registry: &FactRegistry<'_, 'source>,
+    facts: &mut FactSet<'source>,
+    database: &dyn TszTypeDatabase,
+    shape: &TszObjectShape,
+    owner: u32,
+    depth: u8,
+    active: &mut std::collections::HashSet<TszTypeId>,
+) -> Result<u32, TypeScriptCollectError> {
+    if shape.symbol.is_some() {
+        return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
+    }
+
+    // Resolve every public named property through its TSZ declaration symbol
+    // before lowering children. This prevents a dependency or library name
+    // from being borrowed from an unrelated homonym in the owner file.
+    let mut members = Vec::with_capacity(shape.properties.len());
+    for property in &shape.properties {
+        if property.is_symbol_named || property.write_type != property.type_id {
+            return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
+        }
+        let name = database.resolve_atom_ref(property.name);
+        let spelling = property
+            .parent_id
+            .and_then(|symbol| registry.tsz_project?.symbol_name_source(symbol, name))
+            .map(str::as_bytes);
+        let Some(spelling) = spelling else {
+            return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
+        };
+        members.push((property, spelling));
+    }
+
+    let mut parts = Vec::with_capacity(4);
+    let mut rows = Vec::with_capacity(members.len());
+    for (property, spelling) in members {
+        let child = intern_native_tsz_type(
+            registry,
+            facts,
+            database,
+            property.type_id,
+            owner,
+            depth,
+            active,
+        )?;
+        let mut flags = 0;
+        if property.optional {
+            flags |= SemanticTypeChild::FLAG_OPTIONAL;
+        }
+        if property.readonly {
+            flags |= SemanticTypeChild::FLAG_READONLY;
+        }
+        rows.push((child, Some(spelling), flags));
+    }
+
+    // Wide checker objects are folded without losing a property or creating
+    // unnamed AnonymousRecord children; each folded row is named by the exact
+    // source-backed member that closes its chunk.
+    while rows.len() > MAX_TYPE_CHILDREN {
+        let mut next = Vec::with_capacity(rows.len().div_ceil(MAX_TYPE_CHILDREN));
+        for chunk in rows.chunks(MAX_TYPE_CHILDREN) {
+            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord);
+            record.payload0 = u32::from(AnonRecordForm::Interface);
+            let folded = intern_native_tsz_row(registry, facts, record, owner, chunk)?;
+            let Some((_, Some(name), _)) = chunk.last() else {
+                return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
+            };
+            next.push((folded, Some(*name), 0));
+        }
+        rows = next;
+    }
+    if !rows.is_empty()
+        || (shape.string_index.is_none()
+            && shape.number_index.is_none()
+            && shape.symbol_index.is_none())
+    {
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord);
+        record.payload0 = u32::from(AnonRecordForm::Interface);
+        parts.push(intern_native_tsz_row(
+            registry, facts, record, owner, &rows,
+        )?);
+    }
+
+    for signature in [shape.string_index, shape.number_index, shape.symbol_index]
+        .into_iter()
+        .flatten()
+    {
+        parts.push(intern_native_tsz_index_signature(
+            registry, facts, database, signature, owner, depth, active,
+        )?);
+    }
+
+    match parts.as_slice() {
+        [only] => Ok(*only),
+        [] => intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner),
+        _ => {
+            let children = parts
+                .iter()
+                .map(|part| (*part, None, 0))
+                .collect::<Vec<_>>();
+            intern_native_tsz_row(
+                registry,
+                facts,
+                SemanticTypeRecord::leaf(SemanticTypeTag::Intersection),
+                owner,
+                &children,
+            )
+        }
+    }
+}
+
+fn intern_native_tsz_index_signature<'source>(
+    registry: &FactRegistry<'_, 'source>,
+    facts: &mut FactSet<'source>,
+    database: &dyn TszTypeDatabase,
+    signature: TszIndexSignature,
+    owner: u32,
+    depth: u8,
+    active: &mut std::collections::HashSet<TszTypeId>,
+) -> Result<u32, TypeScriptCollectError> {
+    let key = intern_native_tsz_type(
+        registry,
+        facts,
+        database,
+        signature.key_type,
+        owner,
+        depth,
+        active,
+    )?;
+    let value = intern_native_tsz_type(
+        registry,
+        facts,
+        database,
+        signature.value_type,
+        owner,
+        depth,
+        active,
+    )?;
+    let map = intern_native_tsz_row(
+        registry,
+        facts,
+        SemanticTypeRecord::leaf(SemanticTypeTag::Map),
+        owner,
+        &[(key, None, 0), (value, None, 0)],
+    )?;
+    if signature.readonly {
+        let mut readonly = SemanticTypeRecord::leaf(SemanticTypeTag::Annotated);
+        readonly.payload0 = AnnotationKind::Readonly as u32;
+        intern_native_tsz_row(registry, facts, readonly, owner, &[(map, None, 0)])
+    } else {
+        Ok(map)
+    }
 }
 
 fn intern_native_tsz_row<'source>(
