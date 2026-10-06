@@ -511,14 +511,47 @@ fn semantic_shapes_jsonrpc_refuses_oversized_view_without_dropping_required_fact
         "../../../../crates/library/fixtures/semantic-shape-read.json"
     ))
     .expect("operands");
-    // Keep the NotInView row honest. A large retained source operand alone
-    // exceeds the MCP packet budget; no unknown compiler fact is fabricated.
-    let package = format!("/abs/{}", "x".repeat(60000));
+    // Every text field remains under its public bound. Thirty-two display-only
+    // closure-unavailable entries retain their exact source operand and exceed
+    // the MCP packet budget without fabricating available compiler facts.
+    let package = format!("/abs/{}", "x".repeat(3500));
     view["source"]["package"]["value"] = json!(package);
     operands["source"]["package"]["value"] = json!(package);
     operands["source"]["selected_source_frontier"]["package"]["value"] = json!(package);
     view["max_bytes"] = json!(262144);
     operands["max_bytes"] = json!(262144);
+    let source: backend_library::SemanticVersionRecord =
+        serde_json::from_value(operands["source"].clone()).expect("bounded source operand");
+    let origin = backend_library::SemanticShapeSourceOrigin {
+        source: backend_library::SemanticShapeSelection::from_selected(&source)
+            .expect("selected fixture source"),
+        selection_root: [8; 32],
+        semantic_image_bytes: backend_library::SemanticImagePayloadBytes::new(4096)
+            .expect("bounded fixture extent"),
+        image: None,
+    };
+    let commitment = backend_library::semantic_shape_source_key(&origin);
+    let commitment_hex: String = commitment
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let origin_view = json!({
+        "source": view["source"], "selection_root": origin.selection_root,
+        "semantic_image_bytes": 4096, "image": null,
+        "source_commitment": commitment_hex,
+    });
+    let entries: Vec<_> = (1u8..=32)
+        .map(|id| {
+            json!({
+                "symbol":{"kind":{"kind":"selected"},"id":format!("{id:02x}").repeat(32)},
+                "identity":null,"origin":origin_view,
+                "fact":{"state":"unavailable","data":"missing_image_fact"},
+            })
+        })
+        .collect();
+    view["batch"]["entries"] = json!(entries);
+    operands["symbols"] = json!((1u8..=32).map(|id| [id; 32]).collect::<Vec<_>>());
     let export: backend_library::SemanticShapeExport =
         serde_json::from_value(view).expect("bounded view");
     for detail in ["summary", "full"] {
