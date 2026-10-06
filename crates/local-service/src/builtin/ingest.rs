@@ -3312,13 +3312,17 @@ mod tests {
         let scratch = Scratch(std::env::temp_dir().join(unique));
         fs::create_dir_all(&scratch.0).map_err(|error| error.to_string())?;
         let root = scratch.0.to_str().ok_or("non-UTF-8 scratch path")?;
-        let kept = "pub fn kept() {}";
-        let edited_v1 = "pub fn edited() {}";
+        // Include enough real source bytes that the retained path/profile/
+        // content handles are smaller than the compiler text they replace.
+        // Tiny one-line functions make fixed handle overhead dominate this
+        // memory assertion and do not measure the intended tradeoff.
+        let kept = format!("// {}\npub fn kept() {{}}\n", "k".repeat(512));
+        let edited_v1 = format!("// {}\npub fn edited() {{}}\n", "e".repeat(512));
         let edited_v2 = "pub fn edited() { let _ = 1; }";
         let edited_v3 = "pub fn edited() { let _ = 3; }";
         let kept_v4 = "pub fn kept() { let _ = 4; }";
-        fs::write(scratch.0.join("kept.rs"), kept).map_err(|error| error.to_string())?;
-        fs::write(scratch.0.join("edited.rs"), edited_v1).map_err(|error| error.to_string())?;
+        fs::write(scratch.0.join("kept.rs"), &kept).map_err(|error| error.to_string())?;
+        fs::write(scratch.0.join("edited.rs"), &edited_v1).map_err(|error| error.to_string())?;
         let project = [11; 32];
 
         let cold = scan_project(root, project, &BTreeMap::new())?;
@@ -3392,7 +3396,7 @@ mod tests {
                 .iter()
                 .map(|source| (source.relative_path.as_str(), source.source.as_str()))
                 .collect::<Vec<_>>(),
-            [("edited.rs", edited_v2), ("kept.rs", kept)]
+            [("edited.rs", edited_v2), ("kept.rs", kept.as_str())]
         );
         assert_eq!(
             admitted[0].source_fact_identity,
