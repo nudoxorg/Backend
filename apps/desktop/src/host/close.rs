@@ -549,10 +549,8 @@ impl Render for CloseView {
                         .items_center()
                         .justify_center()
                         .bg(palette.g1.hsla())
-                        // FocusTrapContainer delegates layout/input to its
-                        // base but does not forward that base's AX metadata.
-                        // Keep the named native dialog outside the wrapper;
-                        // its decision panel still owns the real focus trap.
+                        // The full scrim names the native modal dialog; Tab
+                        // cycles only the controls in its decision panel.
                         .child(panel.focus_trap("graceful-close-trap", &focus)),
                 )
             })
