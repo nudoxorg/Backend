@@ -15,8 +15,8 @@ use backend_frontend_typescript::legacy::{
     syntax_mapped_modifier, with_analysis, with_analysis_declaration,
 };
 use backend_frontend_typescript::{
-    TszAtom, TszAuthorityError, TszBoundFile, TszCheckerState, TszNodeArena, TszNodeIndex,
-    TszProject, TszSymbolId, TszSyntaxKind, TszTypeDatabase,
+    TszAtom, TszAuthorityError, TszBinderState, TszBoundFile, TszCheckerState, TszNodeArena,
+    TszNodeIndex, TszProject, TszSymbolId, TszSyntaxKind, TszTypeDatabase,
     tsz_type_handles::{
         ConditionalType, FunctionShape, IndexSignature as TszIndexSignature, IntrinsicKind,
         LiteralValue as TszLiteral, MappedModifier as TszMappedModifier, MappedType,
@@ -480,6 +480,7 @@ struct Projector<'x, 'report, 'source, 'tsz> {
     /// `typeof` syntax. They are absent on the legacy report-only path.
     tsz_project: Option<&'source TszProject>,
     tsz_bound_file: Option<&'tsz TszBoundFile>,
+    tsz_binder: Option<&'tsz TszBinderState>,
     tsz_file_index: Option<usize>,
     /// The pooled type-parameter start of the fact about to be pushed; every
     /// push path builds its extension immediately before pushing.
@@ -951,22 +952,48 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         // matching query/declaration SymbolIds, and a single admitted
         // declaration in this exact project file. Overloads and forwarded
         // declarations therefore remain explicit unresolved source types.
-        let (Some(project), Some(bound_file), Some(file_index)) =
-            (self.tsz_project, self.tsz_bound_file, self.tsz_file_index)
-        else {
+        let (Some(project), Some(bound_file), Some(binder), Some(file_index)) = (
+            self.tsz_project,
+            self.tsz_bound_file,
+            self.tsz_binder,
+            self.tsz_file_index,
+        ) else {
             return Some(target);
         };
-        let query_symbol = native_tsz_type_query_symbol(bound_file, query_span, name_span);
-        let declaration_symbol = native_tsz_symbol_at_identifier_span(bound_file, target_name);
-        #[cfg(test)]
-        eprintln!(
-            "TYPE_QUERY_BINDING_TRACE query={query_span:?} name={name_span:?} target={target} target_name={target_name:?} tsz_query={query_symbol:?} tsz_decl={declaration_symbol:?}",
-        );
-        let query_symbol = query_symbol?;
-        let declaration_symbol = declaration_symbol?;
-        if query_symbol != declaration_symbol {
+        let query_symbol = native_tsz_type_query_symbol(bound_file, binder, query_span, name_span)?;
+        let mut native_target = None;
+        for fact_index in 0..self.facts.len() {
+            let Some((&name_start, &name_end)) = self
+                .name_starts
+                .get(fact_index)
+                .zip(self.name_ends.get(fact_index))
+            else {
+                continue;
+            };
+            if name_start == UNSET || name_end == UNSET {
+                continue;
+            }
+            let candidate = usize::try_from(fact_index).ok()?;
+            let candidate_name = Span::new(name_start, name_end);
+            if native_tsz_symbol_at_identifier_span(bound_file, candidate_name)
+                == Some(query_symbol)
+            {
+                if native_target.is_some() {
+                    return None;
+                }
+                native_target = Some(u32::try_from(candidate).ok()?);
+            }
+        }
+        let Some(native_target) = native_target else {
+            return None;
+        };
+        if native_target != target {
             return None;
         }
+        #[cfg(test)]
+        eprintln!(
+            "TYPE_QUERY_BINDING_TRACE query={query_span:?} name={name_span:?} target={target} target_name={target_name:?} tsz_query={query_symbol:?}",
+        );
         let symbol = project.program().symbols.get(query_symbol)?;
         if symbol.stable_declarations.len() != 1 {
             return None;
@@ -4058,6 +4085,7 @@ pub(crate) fn collect_with_checker<'source, 'report>(
             checker: index,
             tsz_project: None,
             tsz_bound_file: None,
+            tsz_binder: None,
             tsz_file_index: None,
             pending_type_parameters: 0,
             extension_type_parameters: Vec::new(),
@@ -4138,6 +4166,7 @@ fn native_tsz_symbol_at_identifier_span(
 /// target form for source-owned declarations.
 fn native_tsz_type_query_symbol(
     bound_file: &TszBoundFile,
+    binder: &TszBinderState,
     query_span: Span,
     name_span: Span,
 ) -> Option<TszSymbolId> {
@@ -4159,10 +4188,11 @@ fn native_tsz_type_query_symbol(
         let candidate_name_span = bound_file.arena.pos_end_at(query.expr_name);
         let name = bound_file.arena.get(query.expr_name)?;
         let identifier = bound_file.arena.get_identifier(name).is_some();
-        let symbol = bound_file.node_symbols.get(&query.expr_name.0).copied();
+        let symbol = binder.resolve_identifier(&bound_file.arena, query.expr_name);
         #[cfg(test)]
         eprintln!(
-            "TSZ_TYPEQUERY_NODE_TRACE node={node_index:?} span={candidate_query_span:?} expr={candidate_name_span:?} identifier={identifier} symbol={symbol:?} expected_query={query_span:?} expected_name={name_span:?}",
+            "TSZ_TYPEQUERY_NODE_TRACE node={node_index:?} span={candidate_query_span:?} expr={candidate_name_span:?} identifier={identifier} node_symbol={:?} binder_symbol={symbol:?} expected_query={query_span:?} expected_name={name_span:?}",
+            bound_file.node_symbols.get(&query.expr_name.0),
         );
         if candidate_query_span != Some((query_span.start, query_span.end))
             || candidate_name_span != Some((name_span.start, name_span.end))
@@ -4393,6 +4423,7 @@ pub(crate) fn collect_with_tsz<'source>(
                     checker: None,
                     tsz_project: Some(project),
                     tsz_bound_file: Some($bound_file),
+                    tsz_binder: Some($binder),
                     tsz_file_index: Some(file_index),
                     pending_type_parameters: 0,
                     extension_type_parameters: Vec::new(),
