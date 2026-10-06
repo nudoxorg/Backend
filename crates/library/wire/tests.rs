@@ -1463,7 +1463,7 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
     display_only["batch"]["basis"] = serde_json::json!("92".repeat(32));
     assert!(serde_json::from_value::<crate::SemanticShapeExport>(display_only).is_ok());
     let other_basis_request = crate::SemanticShapeRequest::new(
-        crate::ViewRevision::from_bytes([92; 32]),
+        view_state_root(&[("different".to_owned(), "view".to_owned())]),
         source.clone(),
         request.symbols().to_vec().into_boxed_slice(),
         request.budget(),
