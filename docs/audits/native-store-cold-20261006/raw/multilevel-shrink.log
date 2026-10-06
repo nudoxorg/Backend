@@ -1,0 +1,22 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006/vendor/gpui_ce_components/Cargo.toml
+workspace: /Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006/Cargo.toml
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling thiserror v2.0.20
+   Compiling zerocopy v0.8.56
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling serde_spanned v1.1.1
+   Compiling serde_json v1.0.151
+   Compiling toml v1.1.5+spec-1.1.0
+   Compiling smallvec v1.16.0
+   Compiling trybuild v1.0.121
+   Compiling backend-version v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006/crates/version)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.99s
+     Running unittests src/lib.rs (.local/build/staged-ingest/.nudox-cargo/slot-0/debug/deps/backend_version-5ff8cbb966981fac)
+
+running 1 test
+test tests::multilevel_retained_shrink_has_the_same_root_as_independent_bulk_rows ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 104 filtered out; finished in 0.06s
+
