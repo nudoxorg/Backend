@@ -4986,10 +4986,9 @@ mod tests {
         };
         let outcome_json = serde_json::to_value(&outcome).expect("index outcome JSON");
         assert_eq!(outcome_json["state"], "refused-with-compiler-failure");
-        assert_eq!(
-            serde_json::from_value::<IndexJobOutcome>(outcome_json.clone()),
-            Ok(outcome)
-        );
+        let decoded_outcome = serde_json::from_value::<IndexJobOutcome>(outcome_json.clone())
+            .expect("decode typed compiler-refusal outcome");
+        assert_eq!(decoded_outcome, outcome);
         let mut unknown = outcome_json;
         unknown["detail"]["extra"] = serde_json::json!("unknown future member");
         assert!(serde_json::from_value::<IndexJobOutcome>(unknown).is_err());

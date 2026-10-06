@@ -5,9 +5,8 @@
 //! cause vocabulary suitable for durable receipts and CLI/MCP presentation.
 
 use crate::interface::{
-    AuthorityDiagnosticClass, AuthorityPhase, CompilerCause, CompilerDiagnostic,
-    CompilerFragmentFaultFacts, CompilerFragmentFaultKind, CompilerFragmentFaultPhase,
-    CompilerTerminal,
+    AuthorityDiagnosticClass, AuthorityPhase, CompilerCause, CompilerFragmentFaultFacts,
+    CompilerFragmentFaultKind, CompilerFragmentFaultPhase, CompilerTerminal,
 };
 use backend_semantic::vocabulary::{
     ClangProjectionFault, GoProjectionFault, JavaProjectionFault, LoweringUnsupported, NativeTool,
@@ -15,7 +14,7 @@ use backend_semantic::vocabulary::{
     ProjectionSemanticTypeFault, ProjectionSemanticTypeTag, ProjectionTypeCell,
     PythonProjectionFault, TypeScriptProjectionFault,
 };
-use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain};
+use backend_version::{CompileRecipeDomain, ContentId};
 use serde::{Deserialize, Serialize};
 
 /// Phase of a package compiler refusal. Fragment phases are derived from the

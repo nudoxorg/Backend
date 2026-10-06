@@ -230,7 +230,9 @@ pub use source_discovery::{
     MAX_DISCOVERY_REVISION_BYTES, RegistryFactReadError, RegistryFactVersionId,
 };
 pub use surface::{
-    DeclarationChange, DeclarationRecord, DiffRecord, ForgeDiscoveryCandidate, ForgeFact,
+    AuthorityClassFact, AuthorityPhaseFact, CompilerAuthorityDiagnosticFacts,
+    CompilerLanguageFact, CompilerNativeToolFact, CompilerStageFact, DeclarationChange,
+    DeclarationRecord, DiffRecord, ForgeDiscoveryCandidate, ForgeFact,
     ForgeManifestRecord, ForgePackageDetailRecord, ForgePackageManifestDetail, ForgePackagePin,
     ForgePackageRecord, ForgePackageRegistryEvidence, ForgeRepositoryMetadataRecord,
     IndexCancelReceipt, IndexCancelStatus, IndexJobObservation, IndexJobOutcome,
