@@ -2505,6 +2505,15 @@ impl Region for Reader {
         &mut self.core
     }
 
+    fn measure_frame(&mut self, frame: Bounds<Pixels>) {
+        // Both Reveal's ordinary scroll container and its graph container
+        // fill this embedding. Content padding, Ask's reservation and a pin
+        // beside Reader affect its contents or embedding, never this viewport.
+        // Publish before render: a resize must stage the plate against this
+        // frame, rather than the previous Reveal prepaint.
+        self.frame.set(Some(frame));
+    }
+
     fn keys(&self, snapshot: &AppSnapshot) -> Vec<PageKey> {
         reader_keys(snapshot)
     }
@@ -3430,8 +3439,8 @@ struct Reveal {
     content_layout: Rc<Cell<Option<gpui::LayoutId>>>,
     targets: Targets,
     scroll: ScrollHandle,
-    /// Where the reader is laid out, in window space, for the next frame's
-    /// plate.
+    /// The current viewport in window space, also measured by Region before
+    /// render. Reveal records the actual scroll viewport before its child.
     frame: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The page's flows, landed when a reflow scrolls to the focus.
     land: Vec<facet::motion::Flow>,
@@ -3598,6 +3607,96 @@ mod transit_tests {
     use std::collections::BTreeSet;
     use std::time::Duration;
 
+    struct HeldDestination {
+        gate: crate::runtime::owner::OwnerGate,
+        entered: std::sync::mpsc::Sender<()>,
+    }
+
+    impl crate::runtime::reads::PageReader for HeldDestination {
+        fn read(&mut self, request: &crate::runtime::reads::ReadRequest,
+            context: &crate::runtime::reads::ReadContext<'_>)
+            -> Result<crate::model::pages::PageValue, crate::model::pages::ReadFailure>
+        {
+            if matches!(request, crate::runtime::reads::ReadRequest::Symbol(symbol)
+                if symbol == &crate::shell::tests::symbol("TransitHeldDestination")) {
+                let _ = self.entered.send(());
+                self.gate.wait_cancelled(context.cancel)
+                    .map_err(|_| crate::model::pages::ReadFailure::Cancelled)?;
+            }
+            crate::runtime::reads::PageReader::read(&mut crate::shell::tests::Fixture, request, context)
+        }
+    }
+
+    struct ReleaseDestination(crate::runtime::owner::OwnerGate, crate::core::VersionedRoot);
+    impl Drop for ReleaseDestination {
+        fn drop(&mut self) {
+            self.0.publish(crate::runtime::owner::OwnerState::Ready {
+                key: self.1, mode: crate::model::ServiceMode::Attached,
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn a_pending_destination_retains_its_departure_and_reverses_at_200_percent(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::navigation::Intent;
+        let gate = crate::runtime::owner::OwnerGate::starting();
+        let held = gate.clone();
+        let (entered, received) = std::sync::mpsc::channel();
+        let pool = crate::runtime::reads::ReadPool::start(2, move |_| HeldDestination {
+            gate: held.clone(), entered: entered.clone(),
+        }).expect("real held destination pool");
+        let mut rig = crate::shell::tests::rig_with_reads(cx,
+            Some(crate::shell::tests::page_route("RelationLabel")), 1440.0, 900.0, pool);
+        let key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+        let release = ReleaseDestination(gate, key);
+        let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+        rig.go(Intent::ZoomTo { display, percent: 200 });
+        rig.cx.update(|window, cx| {
+            facet::probe::enable(cx);
+            cx.set_global(gpui::TextTrace);
+            window.set_a11y_forced(true);
+        });
+        rig.graph.root.update(rig.cx, |root, cx| root.queue(
+            Intent::Navigate(crate::shell::tests::page_route("TransitHeldDestination")), cx));
+        let first = shoot(&mut rig, 0, 0);
+        received.recv_timeout(Duration::from_secs(1)).expect("actual destination read entered");
+        assert_eq!(first.p, Some(0.0), "Pending has the same route-owned plate as Ready");
+        assert!(reading(&first).any(|text| text.alpha > 0.0 && text.text.as_ref() == "RelationLabel"),
+            "the departure still paints while the read is held: {first:#?}");
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 2);
+        assert!(rig.graph.store.read_with(rig.cx, |store, _| {
+            store.symbol(&crate::shell::tests::symbol("TransitHeldDestination")).loaded_value().is_none()
+        }), "no synthetic loaded value stands in for the held read");
+        let opened = shoot(&mut rig, 112, 112);
+        let before = opened.p.expect("the held route still owns its opening driver");
+        rig.cx.simulate_keystrokes("secondary-[");
+        let turned = shoot(&mut rig, 128, 16);
+        assert!((turned.p.expect("the same reversing driver") - before).abs() < 0.12,
+            "Back preserves the painted spring before any destination answer: {opened:#?} then {turned:#?}");
+        rig.cx.simulate_resize(size(px(1000.0), px(700.0)));
+        let resized = shoot(&mut rig, 144, 16);
+        let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+        let frame = reader.read_with(rig.cx, |reader, _| reader.frame.get().expect("current measured Reader frame"));
+        let viewport = rig.cx.debug_bounds("reader-scroll").expect("the actual current scroll viewport");
+        assert_eq!(frame, viewport, "the measured embedding and Reveal's scroll viewport agree on the first resized frame");
+        assert!(inside(resized.plate.expect("reversing resized plate"), frame),
+            "the reversing plate uses this resize's measured viewport: {resized:#?} in {frame:?}");
+        for text in &resized.texts {
+            assert!(text.bounds.left() >= px(0.0) && text.bounds.top() >= px(0.0)
+                && text.bounds.right() <= px(1000.0) && text.bounds.bottom() <= px(700.0),
+                "200% resize paints within the native viewport: {text:#?}");
+        }
+        drop(release);
+        rig.settle();
+        assert_eq!(rig.route(), crate::shell::tests::page_route("RelationLabel"),
+            "a late cancelled read cannot replace the newer Back destination");
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
+        assert_eq!(rig.cx.update(|window, cx| window.simulate_next_frame(cx)), 0,
+            "the settled route stops requesting motion frames");
+    }
+
     #[test]
     fn page_code_peel_opens_from_the_measured_line_and_reverses_without_lateral_motion() {
         let reader = Bounds::new(point(px(24.0), px(40.0)), size(px(320.0), px(520.0)));
@@ -3627,6 +3726,7 @@ mod transit_tests {
     #[derive(Debug)]
     struct Shot {
         at: u64,
+        reader: Bounds<Pixels>,
         plate: Option<Bounds<Pixels>>,
         gem: Option<Bounds<Pixels>>,
         p: Option<f32>,
@@ -3700,6 +3800,7 @@ mod transit_tests {
         };
         Shot {
             at,
+            reader: rig.shell.read_with(rig.cx, |shell, cx| shell.reader_entity().read(cx).frame.get().expect("Reader viewport")),
             plate,
             gem,
             p: track("reader.carry"),
@@ -3810,13 +3911,13 @@ mod transit_tests {
             let Some(plate) = shot.plate else { continue };
             assert!(inside(last, plate), "the plate never shrinks: {last:?} then {plate:?} at {} ms", shot.at);
             last = plate;
-            for text in &shot.texts {
+            for text in reading(shot) {
                 let content = text.text.to_string();
                 if old_only.contains(&content) && !crosses(text.bounds, plate) {
                     outside.insert(content.clone());
                 }
                 if new_only.contains(&content) {
-                    assert!(inside(text.bounds, plate), "`{content}` (the new page's) is painted outside the plate at {} ms", shot.at);
+                    assert!(inside(text.bounds, plate), "`{content}` (the new page's) is painted outside the plate at {} ms: {:?} vs {plate:?}, Reader {:?}", shot.at, text.bounds, shot.reader);
                     printed.insert((shot.at, content.clone()));
                 }
                 if crosses(text.bounds, plate) {
@@ -4017,7 +4118,7 @@ mod transit_tests {
     /// The reader's texts in a frame (the shelf and titlebar are not the
     /// reader's).
     fn reading(shot: &Shot) -> impl Iterator<Item = &PaintedText> {
-        shot.texts.iter().filter(|text| text.bounds.origin.x >= px(264.0) && text.bounds.origin.y >= px(50.0))
+        shot.texts.iter().filter(|text| inside(text.bounds, shot.reader))
     }
 
     fn near(a: Bounds<Pixels>, b: Bounds<Pixels>, within: f32) -> bool {
