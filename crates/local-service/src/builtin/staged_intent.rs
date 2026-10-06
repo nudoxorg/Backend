@@ -343,6 +343,23 @@ impl StagePool {
             max_metadata_bytes,
         }
     }
+    /// Applies a newly pinned source policy while keeping all previous
+    /// affine reservations in the same process-wide admission ledger.
+    pub(super) fn with_limits(
+        &self,
+        max_live: usize,
+        max_reserved_bytes: u64,
+        max_pages: usize,
+        max_metadata_bytes: usize,
+    ) -> Self {
+        Self {
+            usage: Arc::clone(&self.usage),
+            max_live,
+            max_reserved_bytes,
+            max_pages,
+            max_metadata_bytes,
+        }
+    }
     pub(super) fn begin(
         &self,
         store: &FileStore,
@@ -914,6 +931,20 @@ mod tests {
         assert!(pool.begin(&store, basis(), 8).is_ok());
         // Staging never writes FileStore's selected HEAD.
         assert!(!directory.path().join("HEAD").exists());
+    }
+    #[test]
+    fn reconfigured_limits_preserve_existing_affine_reservations() {
+        let directory = Directory::new();
+        let store = FileStore::open(directory.path(), 1024 * 1024).unwrap();
+        let initial = StagePool::new(2, 100, 32, StagePool::metadata_required(32).unwrap());
+        let held = initial.begin(&store, basis(), 50).unwrap();
+        let changed = initial.with_limits(2, 60, 32, StagePool::metadata_required(32).unwrap());
+        assert!(matches!(
+            changed.begin(&store, basis(), 20),
+            Err(StoreError::Bounds)
+        ));
+        drop(held);
+        assert!(changed.begin(&store, basis(), 20).is_ok());
     }
     #[test]
     fn duplicate_wrong_kind_missing_member_and_extra_member_fail_closed() {

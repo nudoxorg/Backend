@@ -88,14 +88,15 @@ fn budgets(
     ))
 }
 
-fn pool() -> Result<&'static StagePool, StoreError> {
+fn pool() -> Result<StagePool, StoreError> {
     static POOL: OnceLock<StagePool> = OnceLock::new();
     let (bytes, pages) = configured_limits()?;
     let metadata = ClosureCompositionBudget::metadata_bytes_for(pages + 256)?
         .checked_add(64 * 1024 * 8 + pages * size_of::<ObjectId>() * 4)
         .ok_or(StoreError::Bounds)?;
     let total = bytes.checked_mul(4).ok_or(StoreError::Bounds)?;
-    Ok(POOL.get_or_init(|| StagePool::new(4, total, pages, metadata)))
+    let shared = POOL.get_or_init(|| StagePool::new(4, total, pages, metadata));
+    Ok(shared.with_limits(4, total, pages, metadata))
 }
 
 fn basis(snapshot: &WorkspaceSnapshot, request: [u8; 32]) -> StageBasis {
