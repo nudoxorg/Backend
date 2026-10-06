@@ -8,11 +8,12 @@
 
 use super::*;
 use crate::engine::test_support::{
-    BINDING_FILE, DURABLE_ROOTS_DIRECTORY, INTEGRITY_FILE, MAX_PROJECTION_MANIFEST_BYTES,
-    MAX_ORDINAL_MAP_BYTES, MAX_RETAINED_DURABLE_ROOTS,
-    ORDINAL_MAP_FILE, ORDINAL_MAP_MAGIC, hex_fingerprint, projection_fingerprint, rank_cache_bytes,
-    ordinal_map_capacity, write_projection_manifest,
+    BINDING_FILE, DURABLE_ROOTS_DIRECTORY, INTEGRITY_FILE, MAX_ORDINAL_MAP_BYTES,
+    MAX_PROJECTION_MANIFEST_BYTES, MAX_RETAINED_DURABLE_ROOTS, ORDINAL_MAP_FILE, ORDINAL_MAP_MAGIC,
+    hex_fingerprint, ordinal_map_capacity, projection_fingerprint, rank_cache_bytes,
+    write_projection_manifest,
 };
+use backend_platform::DirectoryCapability;
 use backend_semantic::{Entity, EntityId, Source, entity_key};
 use backend_version::{
     AuthorityScopeClaim, Coverage, CoverageWitness, ProducerObservationClaims,
@@ -2098,7 +2099,18 @@ fn malformed_selected_root_and_interrupted_stage_rebuild_from_authoritative_stat
     let version_root = root.join(DURABLE_ROOTS_DIRECTORY);
     let selected = version_root.join(key);
     let incomplete = version_root.join(format!(".{}.building-1-1", "0".repeat(64)));
-    std::fs::create_dir(&incomplete).expect("incomplete staging directory");
+    let version_namespace = DirectoryCapability::open(&version_root)
+        .expect("open private durable namespace capability");
+    let incomplete_stage = version_namespace
+        .create_private_dir(
+            incomplete
+                .file_name()
+                .expect("stage name")
+                .to_str()
+                .expect("UTF-8 stage name"),
+        )
+        .expect("create private interrupted staging directory");
+    drop(incomplete_stage);
     std::fs::write(selected.join(BINDING_FILE), b"truncated authority stamp")
         .expect("corrupt generation marker");
 
@@ -2228,6 +2240,334 @@ fn durable_root_pin_survives_cross_process_pruning_then_releases_for_eviction() 
 }
 
 #[test]
+fn inactive_maintenance_reads_metadata_and_selected_admission_checks_payloads() {
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-metadata-prune-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let states: Vec<_> = (0..4_u8)
+        .map(|generation| {
+            state_for(
+                (1..=128)
+                    .map(|ordinal| {
+                        (
+                            document(ordinal),
+                            vec![(
+                                "name".into(),
+                                format!(
+                                    "generation{generation} item{ordinal} {}",
+                                    "payload ".repeat(128)
+                                ),
+                            )],
+                        )
+                    })
+                    .collect(),
+                [90 + generation; 32],
+            )
+        })
+        .collect();
+    for state in &states {
+        drop(
+            TantivySource::open_or_build_in_dir(state, Limits::default(), &root)
+                .expect("populate four retained real projections"),
+        );
+    }
+    let old_root = root
+        .join(DURABLE_ROOTS_DIRECTORY)
+        .join(hex_fingerprint(projection_fingerprint(states[0].binding())));
+    let payload = std::fs::read_dir(&old_root)
+        .expect("old projection files")
+        .map(|entry| entry.expect("file entry").path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "store")
+        })
+        .expect("real Tantivy stored payload");
+    let mut bytes = std::fs::read(&payload).expect("stored payload bytes");
+    bytes[0] ^= 1;
+    std::fs::write(&payload, &bytes).expect("same-size inactive payload corruption");
+
+    let began = std::time::Instant::now();
+    for _ in 0..8 {
+        let (source, action) =
+            TantivySource::open_or_build_in_dir_with_action(&states[3], Limits::default(), &root)
+                .expect("warm selected open and sweep");
+        assert_eq!(action, DurableProjectionAction::Opened);
+        assert_eq!(term_hits(&source, "item1"), vec![document(1)]);
+        drop(source);
+        assert!(
+            old_root.exists(),
+            "inactive payload is not hashed during metadata maintenance"
+        );
+    }
+    eprintln!(
+        "four retained real roots, eight warm selected opens with sweep: {:?}",
+        began.elapsed()
+    );
+    let (source, action) =
+        TantivySource::open_or_build_in_dir_with_action(&states[0], Limits::default(), &root)
+            .expect("selected admission rebuilds corrupt payload");
+    assert_eq!(action, DurableProjectionAction::Built);
+    assert_eq!(term_hits(&source, "item1"), vec![document(1)]);
+    drop(source);
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn unproven_private_projection_binding_retention_does_not_create_a_lease() {
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-foreign-binding-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let state = state_for(
+        vec![(document(1), vec![("name".into(), "selectedbinding".into())])],
+        [95; 32],
+    );
+    drop(
+        TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
+            .expect("populate valid selected root"),
+    );
+    let namespace = DirectoryCapability::open(&root.join(DURABLE_ROOTS_DIRECTORY))
+        .expect("pin fixture namespace");
+    let name = "e".repeat(64);
+    let foreign = root.join(DURABLE_ROOTS_DIRECTORY).join(&name);
+    let selected_root = root
+        .join(DURABLE_ROOTS_DIRECTORY)
+        .join(hex_fingerprint(projection_fingerprint(state.binding())));
+    let inventory = |path: &std::path::Path| {
+        let mut entries: Vec<_> = std::fs::read_dir(path)
+            .expect("enumerate foreign directory")
+            .map(|entry| {
+                let entry = entry.expect("foreign entry");
+                let metadata = std::fs::symlink_metadata(entry.path()).expect("entry metadata");
+                (
+                    entry.file_name(),
+                    metadata.file_type().is_file(),
+                    metadata.len(),
+                    std::fs::read(entry.path()).expect("foreign file bytes"),
+                )
+            })
+            .collect();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        entries
+    };
+    for binding in [None, Some([0x12_u8; 32])] {
+        drop(
+            namespace
+                .create_private_dir(&name)
+                .expect("private foreign directory"),
+        );
+        std::fs::write(
+            foreign.join("meta.json"),
+            b"preserve recognized foreign contents",
+        )
+        .expect("recognized foreign file layout");
+        if let Some(binding) = binding {
+            std::fs::write(foreign.join(BINDING_FILE), binding)
+                .expect("mismatched foreign binding");
+        }
+        let before = inventory(&foreign);
+        let selected = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
+            .expect("unproven inactive binding cannot supply or poison selected authority");
+        assert_eq!(term_hits(&selected, "selectedbinding"), vec![document(1)]);
+        drop(selected);
+        assert_eq!(
+            inventory(&foreign),
+            before,
+            "foreign directory's complete entry inventory and bytes are preserved"
+        );
+        assert!(!foreign.join(".backend-root-reader.lock").exists(), "retention cannot mint an ownership lease");
+        let root_bytes = |path: &std::path::Path| {
+            std::fs::read_dir(path)
+                .expect("fixture entries")
+                .map(|entry| entry.expect("entry").metadata().expect("metadata").len())
+                .sum::<u64>()
+        };
+        let total = root_bytes(&selected_root) + root_bytes(&foreign);
+        let budget = DurableCacheBudget::new(total - 1).expect("nonzero fixture budget");
+        assert!(matches!(
+            TantivySource::open_or_build_in_dir_with_budget_and_action(&state, Limits::default(), &root, budget),
+            Err(TantivySourceError::BudgetExceeded { budget_bytes, required_bytes })
+                if budget_bytes == total - 1 && required_bytes == total
+        ), "unproven bytes remain charged exactly");
+        assert_eq!(inventory(&foreign), before, "budget refusal preserves unproven bytes");
+        std::fs::remove_dir_all(&foreign).expect("remove fixture only");
+    }
+    drop(namespace);
+    let selected = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
+        .expect("selected projection survives unproven inactive roots");
+    assert_eq!(term_hits(&selected, "selectedbinding"), vec![document(1)]);
+    drop(selected);
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn inactive_projection_cleanup_requires_owned_layout_binding_and_exclusive_lease() {
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-owned-prune-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let old = state_for(
+        vec![(document(1), vec![("name".into(), "oldowned".into())])],
+        [85; 32],
+    );
+    let old_source = TantivySource::open_or_build_in_dir(&old, Limits::default(), &root)
+        .expect("owned old projection");
+    let old_root = root
+        .join(DURABLE_ROOTS_DIRECTORY)
+        .join(hex_fingerprint(projection_fingerprint(old.binding())));
+    let current = state_for(
+        vec![(document(2), vec![("name".into(), "currentowned".into())])],
+        [86; 32],
+    );
+    std::fs::write(old_root.join(INTEGRITY_FILE), b"interrupted manifest")
+        .expect("damage owned projection manifest");
+    let current_source = TantivySource::open_or_build_in_dir(&current, Limits::default(), &root)
+        .expect("pinned old projection remains untouched");
+    assert_eq!(term_hits(&old_source, "oldowned"), vec![document(1)]);
+    assert_eq!(
+        term_hits(&current_source, "currentowned"),
+        vec![document(2)]
+    );
+    assert!(old_root.exists(), "active reader owns old root");
+    drop(current_source);
+    drop(old_source);
+    let current_source = TantivySource::open_or_build_in_dir(&current, Limits::default(), &root)
+        .expect("discard owned invalid inactive projection");
+    assert!(!old_root.exists());
+    assert_eq!(
+        term_hits(&current_source, "currentowned"),
+        vec![document(2)]
+    );
+    drop(current_source);
+
+    let old_source = TantivySource::open_or_build_in_dir(&old, Limits::default(), &root)
+        .expect("rebuild old projection");
+    drop(old_source);
+    std::fs::write(old_root.join("foreign-entry"), b"preserve this")
+        .expect("foreign entry within a typed directory");
+    assert!(matches!(
+        TantivySource::open_or_build_in_dir(&current, Limits::default(), &root),
+        Err(TantivySourceError::Io(_))
+    ));
+    assert_eq!(
+        std::fs::read(old_root.join("foreign-entry")).expect("foreign bytes retained"),
+        b"preserve this"
+    );
+    std::fs::remove_file(old_root.join("foreign-entry")).expect("remove fixture");
+    #[cfg(unix)]
+    {
+        std::fs::remove_file(old_root.join(".last-used")).expect("remove fixture marker");
+        std::os::unix::fs::symlink("missing-target", old_root.join(".last-used"))
+            .expect("foreign symlink marker");
+        assert!(matches!(
+            TantivySource::open_or_build_in_dir(&current, Limits::default(), &root),
+            Err(TantivySourceError::Io(_))
+        ));
+        assert!(
+            std::fs::symlink_metadata(old_root.join(".last-used"))
+                .expect("symlink retained")
+                .file_type()
+                .is_symlink()
+        );
+        std::fs::remove_file(old_root.join(".last-used")).expect("remove fixture link");
+    }
+    let foreign_root = root.join(DURABLE_ROOTS_DIRECTORY).join("f".repeat(64));
+    std::fs::write(&foreign_root, b"foreign root bytes").expect("typed foreign file name");
+    assert!(matches!(
+        TantivySource::open_or_build_in_dir(&current, Limits::default(), &root),
+        Err(TantivySourceError::Io(_))
+    ));
+    assert_eq!(
+        std::fs::read(&foreign_root).expect("foreign typed file retained"),
+        b"foreign root bytes"
+    );
+    std::fs::remove_file(&foreign_root).expect("remove fixture file");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&old_root, &foreign_root).expect("typed foreign root link");
+        assert!(matches!(
+            TantivySource::open_or_build_in_dir(&current, Limits::default(), &root),
+            Err(TantivySourceError::Io(_))
+        ));
+        assert!(
+            std::fs::symlink_metadata(&foreign_root)
+                .expect("foreign root link retained")
+                .file_type()
+                .is_symlink()
+        );
+        assert!(old_root.exists(), "link target remains intact");
+        std::fs::remove_file(&foreign_root).expect("remove fixture link");
+    }
+    let reopened = TantivySource::open_or_build_in_dir(&current, Limits::default(), &root)
+        .expect("selected root still usable after foreign fixture removal");
+    assert_eq!(term_hits(&reopened, "currentowned"), vec![document(2)]);
+    drop(reopened);
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn torn_recency_stamp_on_another_root_cannot_disable_selected_search() {
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-torn-recency-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let previous = state_for(
+        vec![(
+            document(1),
+            vec![("name".into(), "previousrevision".into())],
+        )],
+        [81; 32],
+    );
+    let previous_source = TantivySource::open_or_build_in_dir(&previous, Limits::default(), &root)
+        .expect("publish and pin previous root");
+    let previous_root = root
+        .join(DURABLE_ROOTS_DIRECTORY)
+        .join(hex_fingerprint(projection_fingerprint(previous.binding())));
+    let selected = state_for(
+        vec![(document(2), vec![("name".into(), "currentrevision".into())])],
+        [82; 32],
+    );
+
+    // A crash while refreshing an advisory stamp can leave either an empty
+    // file or a partial write. This is independent of the immutable index.
+    for length in [0, 7, 17] {
+        std::fs::write(previous_root.join(".last-used"), vec![0_u8; length])
+            .expect("simulate interrupted recency update");
+        let current = TantivySource::open_or_build_in_dir(&selected, Limits::default(), &root)
+            .expect("another root's advisory metadata must not disable selected search");
+        assert_eq!(term_hits(&current, "currentrevision"), vec![document(2)]);
+        assert_eq!(
+            term_hits(&previous_source, "previousrevision"),
+            vec![document(1)]
+        );
+        drop(current);
+    }
+    drop(previous_source);
+    let reopened = TantivySource::open_or_build_in_dir(&selected, Limits::default(), &root)
+        .expect("cold selected reopen after old reader releases its lease");
+    assert_eq!(term_hits(&reopened, "currentrevision"), vec![document(2)]);
+    drop(reopened);
+    std::fs::remove_dir_all(root).expect("remove private projection fixture");
+}
+
+#[test]
 fn pinned_and_selected_root_bytes_remain_charged_after_evicting_unretained_roots() {
     let root = std::env::temp_dir().join(format!(
         "backend-tantivy-pin-quota-{}-{}",
@@ -2243,11 +2583,26 @@ fn pinned_and_selected_root_bytes_remain_charged_after_evicting_unretained_roots
     let pinned = root_path('1');
     let evictable_a = root_path('2');
     let evictable_b = root_path('3');
-    for path in [&selected, &pinned, &evictable_a, &evictable_b] {
-        std::fs::create_dir(path).expect("create generation root");
-        std::fs::write(path.join(BINDING_FILE), [0_u8; 32]).expect("binding stamp");
+    let namespace = DirectoryCapability::open(&root).expect("pin fixture namespace");
+    for (path, binding) in [
+        (&selected, 0x00),
+        (&pinned, 0x11),
+        (&evictable_a, 0x22),
+        (&evictable_b, 0x33),
+    ] {
+        let name = path
+            .file_name()
+            .expect("root name")
+            .to_str()
+            .expect("UTF-8 name");
+        let directory = namespace
+            .create_private_dir(name)
+            .expect("create private generation root");
+        drop(directory);
+        std::fs::write(path.join(BINDING_FILE), [binding; 32]).expect("matching binding stamp");
         std::fs::write(path.join(".last-used"), [0_u8; 16]).expect("use stamp");
     }
+    drop(namespace);
     let lease = engine::test_support::pin_durable_root_for_test(&pinned)
         .expect("hold independent reader pin");
     let budget = DurableCacheBudget::new(95).expect("nonzero byte budget");
@@ -2788,14 +3143,16 @@ fn cold_exact_posting_cover_rejects_surplus_edges_and_rebuilds_from_source() {
         .collect::<Vec<_>>();
     let state = state_for(documents, [0x92; 32]);
     std::fs::create_dir_all(&root).expect("create cache parent");
-    backend_platform::durable::ensure_private_child_directory(
-        &root.join(DURABLE_ROOTS_DIRECTORY),
-    )
-    .expect("create the production private cache namespace before forging a child");
-    let directory = root
-        .join(DURABLE_ROOTS_DIRECTORY)
-        .join(hex_fingerprint(projection_fingerprint(state.binding())));
-    std::fs::create_dir_all(&directory).expect("create forged selected projection directory");
+    backend_platform::durable::ensure_private_child_directory(&root.join(DURABLE_ROOTS_DIRECTORY))
+        .expect("create the production private cache namespace before forging a child");
+    let selected_key = hex_fingerprint(projection_fingerprint(state.binding()));
+    let version_namespace = DirectoryCapability::open(&root.join(DURABLE_ROOTS_DIRECTORY))
+        .expect("open private durable namespace capability");
+    let forged_directory = version_namespace
+        .create_private_dir(&selected_key)
+        .expect("create private forged selected projection directory");
+    drop(forged_directory);
+    let directory = root.join(DURABLE_ROOTS_DIRECTORY).join(selected_key);
     engine::test_support::write_projection_with_surplus_posting_fixture(
         &state,
         &directory,
@@ -2967,4 +3324,73 @@ fn workspace_alt() -> WorkspaceRoot {
     )
     .expect("alternate workspace")
     .root()
+}
+
+#[test]
+fn damaged_inactive_binding_remains_charged_without_poisoning_selected_search() {
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-inactive-binding-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let old = state_for(
+        vec![(document(1), vec![("name".into(), "previousbinding".into())])],
+        [91; 32],
+    );
+    let old_source = TantivySource::open_or_build_in_dir(&old, Limits::default(), &root)
+        .expect("owned previous root");
+    let old_root = root
+        .join(DURABLE_ROOTS_DIRECTORY)
+        .join(hex_fingerprint(projection_fingerprint(old.binding())));
+    let binding_path = old_root.join(BINDING_FILE);
+    let original = std::fs::read(&binding_path).expect("binding bytes");
+    let selected = state_for(
+        vec![(document(2), vec![("name".into(), "selectedbinding".into())])],
+        [92; 32],
+    );
+    for bytes in [vec![], vec![0; 7], vec![0; 32]] {
+        std::fs::write(&binding_path, &bytes).expect("damage owned inactive binding");
+        let current = TantivySource::open_or_build_in_dir(&selected, Limits::default(), &root)
+            .expect("inactive active-reader binding does not supply current authority");
+        assert_eq!(term_hits(&current, "selectedbinding"), vec![document(2)]);
+        assert_eq!(term_hits(&old_source, "previousbinding"), vec![document(1)]);
+        assert_eq!(
+            std::fs::read(&binding_path).expect("preserved unknown binding"),
+            bytes
+        );
+        drop(current);
+    }
+    drop(old_source);
+    let current = TantivySource::open_or_build_in_dir(&selected, Limits::default(), &root)
+        .expect("unprovable inactive binding is retained rather than deleted");
+    assert_eq!(term_hits(&current, "selectedbinding"), vec![document(2)]);
+    assert!(old_root.exists());
+    drop(current);
+    // Conservative retention remains inside the same byte quota.
+    let selected_root = root
+        .join(DURABLE_ROOTS_DIRECTORY)
+        .join(hex_fingerprint(projection_fingerprint(selected.binding())));
+    let root_bytes = |path: &std::path::Path| {
+        std::fs::read_dir(path)
+            .expect("owned files")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .metadata()
+                    .expect("regular metadata")
+                    .len()
+            })
+            .sum::<u64>()
+    };
+    let total = root_bytes(&selected_root) + root_bytes(&old_root);
+    let budget = DurableCacheBudget::new(total - 1).expect("nonzero budget");
+    assert!(
+        matches!(TantivySource::open_or_build_in_dir_with_budget_and_action(&selected, Limits::default(), &root, budget), Err(TantivySourceError::BudgetExceeded { budget_bytes, required_bytes }) if budget_bytes == total - 1 && required_bytes == total)
+    );
+    assert!(old_root.exists());
+    std::fs::write(&binding_path, original).expect("restore private fixture");
+    std::fs::remove_dir_all(root).expect("cleanup");
 }
