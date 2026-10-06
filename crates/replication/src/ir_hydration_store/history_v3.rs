@@ -253,11 +253,12 @@ impl SelectedNativeHistoryBinding {
         let stamp = source
             .current_selected_generation()
             .map_err(|error| format!("read committed selection for typed V3 history: {error}"))?;
+        let catalog_entry = usize::try_from(image_key.artifact_ordinal())
+            .ok()
+            .and_then(|ordinal| catalog.entries().get(ordinal))
+            .filter(|entry| entry.image() == image_key);
         if catalog.root() != stamp.catalog_root()
-            || !catalog
-                .entries()
-                .iter()
-                .any(|entry| entry.image() == image_key)
+            || catalog_entry.is_none()
             || image_key.manifest_root() != manifest.root()
             || image_key.semantic_generation() != manifest.semantic_generation()
             || manifest.build().profile() != stamp.profile()
@@ -270,10 +271,7 @@ impl SelectedNativeHistoryBinding {
         let manifest_bytes = manifest
             .encode()
             .map_err(|error| format!("encode selected typed V3 binding manifest: {error}"))?;
-        let catalog_entry = catalog
-            .entries()
-            .iter()
-            .find(|entry| entry.image() == image_key)
+        let catalog_entry = catalog_entry
             .ok_or_else(|| "selected image is absent from its committed catalog".to_owned())?;
         if usize::try_from(catalog_entry.manifest_length()).ok() != Some(manifest_bytes.len()) {
             return Err("selected manifest length differs from its committed catalog".to_owned());
@@ -431,7 +429,7 @@ impl SelectedNativeHistoryPackageBinding {
         catalog: SemanticPlaneCatalog,
         members: Vec<(SemanticPlaneImageKey, SemanticPlaneManifest)>,
     ) -> Result<Self, String> {
-        const MAX_PACKAGE_IMAGES: usize = 200_000;
+        const MAX_PACKAGE_IMAGES: usize = super::MAX_SELECTED_NATIVE_HISTORY_PACKAGE_IMAGES;
         if catalog.entries().is_empty()
             || catalog.entries().len() > MAX_PACKAGE_IMAGES
             || members.len() != catalog.entries().len()
@@ -1055,100 +1053,133 @@ impl FileSemanticRangeStore {
         package: &SelectedNativeHistoryPackageBinding,
         branch: &crate::HistoryRefName,
     ) -> Result<Box<[crate::HistoryCommitId]>, String> {
-        let _state_lock = self.acquire_state_lock()?;
         let target = package.target();
-        let Some(reference) =
-            self.generations
-                .history_ref(target, crate::HistoryRefKind::Branch, branch)?
-        else {
-            return Ok(Box::new([]));
+        let tip = {
+            let _state_lock = self.acquire_state_lock()?;
+            let Some(reference) =
+                self.generations
+                    .history_ref(target, crate::HistoryRefKind::Branch, branch)?
+            else {
+                return Ok(Box::new([]));
+            };
+            reference.commit()
         };
-        let mut current = reference.commit();
+        let mut current = tip;
         let mut newest_first = Vec::new();
         newest_first
             .try_reserve_exact(package.images().len())
             .map_err(|_| "selected package history prefix allocation failed".to_owned())?;
         let mut found_package_member = false;
         let mut reached_first_member = false;
+        let mut stopped_at_other_generation = false;
         let mut newer_member_index = None;
-        for _ in 0..package.images().len() {
-            let commit = self.generations.history_commit(target, current)?;
-            if commit.provenance() != package.package_identity() {
-                break;
-            }
-            found_package_member = true;
-            if commit.selected_stamp() != package.selected_stamp()
-                || commit.generation_root().typed_v3_claim().is_none()
-                || commit.parents().len() > 1
-            {
-                return Err(
-                    "selected package history contains a mixed or unsupported commit".to_owned(),
-                );
-            }
-            let snapshot = self
-                .generations
-                .typed_v3_publication_snapshot(target, current)?;
-            let manifest = snapshot.locator().validate()?;
-            if manifest.content_root_claim().as_bytes()
-                != snapshot.claim().content_root_claim().as_bytes()
-                || manifest.generation_root_claim().as_bytes()
-                    != snapshot.claim().generation_root_claim().as_bytes()
-            {
-                return Err("selected package history V3 roots differ from its commit".to_owned());
-            }
-            let generation = self
-                .generations
-                .typed_v3_history_generation(target, current)?;
-            let member_index = package.images().iter().position(|member| {
-                let selected = member.binding();
-                generation.image() == selected.image_key()
-                    && generation.image_identity() == selected.image_identity()
-                    && generation.manifest().root() == selected.manifest().root()
-            });
-            let Some(member_index) = member_index else {
-                return Err(
-                    "selected package history contains an extra or substituted image".to_owned(),
-                );
-            };
-            if generation.target() != target
-                || generation.selected_stamp() != package.selected_stamp()
-                || generation.catalog().root() != package.catalog().root()
-                || commit.manifest_root() != generation.manifest().root()
-                || manifest.build() != generation.manifest().build()
-                || manifest.input_claim()
-                    != SemanticInputClaimV2::from_witness(&generation.manifest().input())
-            {
-                return Err(
-                    "selected package history member differs from its authenticated catalog"
-                        .to_owned(),
-                );
-            }
-            if newer_member_index
-                .is_some_and(|newer_index| member_index.checked_add(1) != Some(newer_index))
-            {
-                return Err("selected package history members are not in catalog order".to_owned());
-            }
-            newer_member_index = Some(member_index);
-            newest_first.push(current);
-            if member_index == 0 {
-                reached_first_member = true;
-                if let Some(parent) = commit.parents().first() {
-                    let parent_commit = self.generations.history_commit(target, *parent)?;
-                    if parent_commit.provenance() == package.package_identity() {
-                        return Err(
-                            "selected package history contains a duplicate or extra member"
-                                .to_owned(),
-                        );
-                    }
+        while newest_first.len() < package.images().len()
+            && !reached_first_member
+            && !stopped_at_other_generation
+        {
+            let _state_lock = self.acquire_state_lock()?;
+            self.require_ancestry_ref_tip(target, crate::HistoryRefKind::Branch, branch, tip)?;
+            for _ in 0..crate::MAX_HISTORY_REPLAY_COMMITS {
+                if newest_first.len() >= package.images().len() {
+                    break;
                 }
-                break;
+                let commit = self.generations.history_commit(target, current)?;
+                if commit.provenance() != package.package_identity() {
+                    stopped_at_other_generation = true;
+                    break;
+                }
+                found_package_member = true;
+                if commit.selected_stamp() != package.selected_stamp()
+                    || commit.generation_root().typed_v3_claim().is_none()
+                    || commit.parents().len() > 1
+                {
+                    return Err(
+                        "selected package history contains a mixed or unsupported commit"
+                            .to_owned(),
+                    );
+                }
+                let snapshot = self
+                    .generations
+                    .typed_v3_publication_snapshot(target, current)?;
+                let manifest = snapshot.locator().validate()?;
+                if manifest.content_root_claim().as_bytes()
+                    != snapshot.claim().content_root_claim().as_bytes()
+                    || manifest.generation_root_claim().as_bytes()
+                        != snapshot.claim().generation_root_claim().as_bytes()
+                {
+                    return Err(
+                        "selected package history V3 roots differ from its commit".to_owned()
+                    );
+                }
+                let generation = self
+                    .generations
+                    .typed_v3_history_generation(target, current)?;
+                // The catalog ordinal is a bounded lookup coordinate only. The
+                // complete image key, content identity, and manifest root below
+                // remain the identity checks; identical image content at distinct
+                // ordinals is therefore still valid.
+                let member_index = usize::try_from(generation.image().artifact_ordinal())
+                    .ok()
+                    .filter(|index| *index < package.images().len())
+                    .ok_or_else(|| {
+                        "selected package history contains an extra or substituted image".to_owned()
+                    })?;
+                let selected = package.images()[member_index].binding();
+                if generation.image() != selected.image_key()
+                    || generation.image_identity() != selected.image_identity()
+                    || generation.manifest().root() != selected.manifest().root()
+                {
+                    return Err(
+                        "selected package history contains an extra or substituted image"
+                            .to_owned(),
+                    );
+                }
+                if generation.target() != target
+                    || generation.selected_stamp() != package.selected_stamp()
+                    || generation.catalog().root() != package.catalog().root()
+                    || commit.manifest_root() != generation.manifest().root()
+                    || manifest.build() != generation.manifest().build()
+                    || manifest.input_claim()
+                        != SemanticInputClaimV2::from_witness(&generation.manifest().input())
+                {
+                    return Err(
+                        "selected package history member differs from its authenticated catalog"
+                            .to_owned(),
+                    );
+                }
+                if newer_member_index
+                    .is_some_and(|newer_index| member_index.checked_add(1) != Some(newer_index))
+                {
+                    return Err(
+                        "selected package history members are not in catalog order".to_owned()
+                    );
+                }
+                newer_member_index = Some(member_index);
+                newest_first.push(current);
+                if member_index == 0 {
+                    reached_first_member = true;
+                    if let Some(parent) = commit.parents().first() {
+                        let parent_commit = self.generations.history_commit(target, *parent)?;
+                        if parent_commit.provenance() == package.package_identity() {
+                            return Err(
+                                "selected package history contains a duplicate or extra member"
+                                    .to_owned(),
+                            );
+                        }
+                    }
+                    break;
+                }
+                let Some(parent) = commit.parents().first().copied() else {
+                    return Err(
+                        "selected package history prefix is missing an earlier member".to_owned(),
+                    );
+                };
+                current = parent;
             }
-            let Some(parent) = commit.parents().first().copied() else {
-                return Err(
-                    "selected package history prefix is missing an earlier member".to_owned(),
-                );
-            };
-            current = parent;
+        }
+        {
+            let _state_lock = self.acquire_state_lock()?;
+            self.require_ancestry_ref_tip(target, crate::HistoryRefKind::Branch, branch, tip)?;
         }
         if found_package_member && !reached_first_member {
             return Err("selected package history is not a complete ordered prefix".to_owned());
@@ -2874,6 +2905,56 @@ mod tests {
             .expect("read exact complete ordered package history");
         assert_eq!(complete_prefix.as_ref(), &[first_commit, second_commit]);
         assert_eq!(complete_prefix.len(), package.images().len());
+        let chain_ancestry = cold_store
+            .history_ref_ancestry_proofs_for_chain(
+                &target,
+                crate::HistoryRefKind::Branch,
+                &branch,
+                &complete_prefix,
+                None,
+            )
+            .expect("one linear proof admits every exact package member");
+        assert_eq!(chain_ancestry.len(), complete_prefix.len());
+        for (proof, commit) in chain_ancestry.iter().zip(complete_prefix.iter()) {
+            assert_eq!(proof.ref_tip(), second_commit);
+            assert_eq!(proof.ancestor(), *commit);
+        }
+        assert!(
+            cold_store
+                .history_ref_ancestry_proofs_for_chain(
+                    &target,
+                    crate::HistoryRefKind::Branch,
+                    &branch,
+                    &complete_prefix,
+                    Some(first_commit),
+                )
+                .is_err(),
+            "the oldest package member must retain its exact prior-generation parent"
+        );
+        assert!(
+            cold_store
+                .history_ref_ancestry_proofs_for_chain(
+                    &target,
+                    crate::HistoryRefKind::Branch,
+                    &branch,
+                    &[second_commit, first_commit, second_commit],
+                    None,
+                )
+                .is_err(),
+            "a reordered chain cannot be proven from the public tip"
+        );
+        assert!(
+            cold_store
+                .history_ref_ancestry_proofs_for_chain(
+                    &target,
+                    crate::HistoryRefKind::Branch,
+                    &branch,
+                    &[first_commit],
+                    None,
+                )
+                .is_err(),
+            "a proper prefix does not prove reachability from a later branch tip"
+        );
         assert!(
             cold_store
                 .history_ref(&target, crate::HistoryRefKind::Branch, &public_branch,)
@@ -2901,14 +2982,7 @@ mod tests {
             &[first_commit, second_commit]
         );
         for (ordinal, commit) in complete_prefix.iter().enumerate() {
-            let ancestry = cold_store
-                .history_ref_ancestry_proof(
-                    &target,
-                    crate::HistoryRefKind::Branch,
-                    &branch,
-                    *commit,
-                )
-                .expect("complete package member ancestry proof");
+            let ancestry = &chain_ancestry[ordinal];
             let replay = cold_store
                 .replay_typed_v3_history(
                     &target,

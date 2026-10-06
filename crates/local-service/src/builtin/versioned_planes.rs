@@ -961,14 +961,15 @@ fn publish_native_history_commit(
                 "complete package history has no public branch tip".to_owned(),
             )
         })?;
+        let first_parent = history_prefix_parent(&history, package.target(), &public_prefix)?;
         let image_proofs = verify_native_history_package_prefix(
             &history,
             &package,
             &public_branch,
             tip,
             &public_prefix,
-            None,
-            false,
+            0,
+            first_parent,
         )?;
         ensure_native_history_selection(&work.loader, &work.key, claim, work.stamp)?;
         if history
@@ -1044,22 +1045,25 @@ fn publish_native_history_commit(
             "package staging prefix is rooted at another history generation".to_owned(),
         ));
     }
-    if !staging_prefix.is_empty() {
+    let mut image_proofs = if staging_prefix.is_empty() {
+        Vec::new()
+    } else {
         let tip = staging_tip_ready.ok_or_else(|| {
             NativeHistoryPublicationError::Refused(
                 "package staging prefix has no staging branch tip".to_owned(),
             )
         })?;
-        let _ = verify_native_history_package_prefix(
+        verify_native_history_package_prefix(
             &history,
             &package,
             &staging_branch,
             tip,
             &staging_prefix,
+            0,
             stage_anchor,
-            true,
-        )?;
-    }
+        )?
+        .into_vec()
+    };
 
     let policy = SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
         .map_err(|error| NativeHistoryPublicationError::Refused(error.to_string()))?;
@@ -1123,15 +1127,39 @@ fn publish_native_history_commit(
             "package staging branch moved during complete-set verification".to_owned(),
         ));
     }
-    let image_proofs = verify_native_history_package_prefix(
-        &history,
-        &package,
-        &staging_branch,
-        staged_tip,
-        &staged_ids,
-        stage_anchor,
-        true,
-    )?;
+    if staged_ids.get(..staging_prefix.len()) != Some(staging_prefix.as_ref())
+        || image_proofs.len() != staging_prefix.len()
+    {
+        return Err(NativeHistoryPublicationError::Refused(
+            "staging prefix changed after its exact cold replay".to_owned(),
+        ));
+    }
+    let suffix = staged_ids.get(staging_prefix.len()..).ok_or_else(|| {
+        NativeHistoryPublicationError::Refused(
+            "complete staged package omitted its previously checked prefix".to_owned(),
+        )
+    })?;
+    if !suffix.is_empty() {
+        let first_parent = staging_prefix.last().copied().or(stage_anchor);
+        image_proofs.extend(
+            verify_native_history_package_prefix(
+                &history,
+                &package,
+                &staging_branch,
+                staged_tip,
+                suffix,
+                staging_prefix.len(),
+                first_parent,
+            )?
+            .into_vec(),
+        );
+    }
+    if image_proofs.len() != package.images().len() {
+        return Err(NativeHistoryPublicationError::Refused(
+            "cold package history proof does not cover the complete selected catalog".to_owned(),
+        ));
+    }
+    let image_proofs = image_proofs.into_boxed_slice();
 
     let final_member = package.images().last().ok_or_else(|| {
         NativeHistoryPublicationError::Refused("selected package has no native images".to_owned())
@@ -1257,32 +1285,61 @@ fn verify_native_history_package_prefix(
     branch: &HistoryRefName,
     expected_tip: HistoryCommitId,
     commit_ids: &[HistoryCommitId],
+    start_ordinal: usize,
     expected_first_parent: Option<HistoryCommitId>,
-    enforce_first_parent: bool,
 ) -> Result<
     Box<[backend_engine::SemanticHistoryImagePublicationProof]>,
     NativeHistoryPublicationError,
 > {
-    if commit_ids.len() > package.images().len() {
+    let end_ordinal = start_ordinal
+        .checked_add(commit_ids.len())
+        .filter(|end| *end <= package.images().len())
+        .ok_or_else(|| {
+            NativeHistoryPublicationError::Refused(
+                "package history slice is outside the selected catalog".to_owned(),
+            )
+        })?;
+    if commit_ids.is_empty() {
         return Err(NativeHistoryPublicationError::Refused(
-            "package history has more commits than selected images".to_owned(),
+            "package history replay slice is empty".to_owned(),
         ));
     }
+    let ancestry_proofs = history
+        .history_ref_ancestry_proofs_for_chain(
+            package.target(),
+            backend_replication::HistoryRefKind::Branch,
+            branch,
+            commit_ids,
+            expected_first_parent,
+        )
+        .map_err(NativeHistoryPublicationError::Refused)?;
+    if ancestry_proofs.len() != commit_ids.len()
+        || ancestry_proofs
+            .last()
+            .is_none_or(|proof| proof.ref_tip() != expected_tip)
+    {
+        return Err(NativeHistoryPublicationError::Refused(
+            "package ancestry proof is not bound to the exact ref tip".to_owned(),
+        ));
+    }
+
     let mut proofs = Vec::new();
     proofs.try_reserve_exact(commit_ids.len()).map_err(|_| {
         NativeHistoryPublicationError::Refused("package history proof allocation failed".to_owned())
     })?;
-    for (ordinal, (member, commit_id)) in package.images().iter().zip(commit_ids).enumerate() {
-        let selected = member.binding();
-        let ancestry = history
-            .history_ref_ancestry_proof(
-                package.target(),
-                backend_replication::HistoryRefKind::Branch,
-                branch,
-                *commit_id,
-            )
-            .map_err(NativeHistoryPublicationError::Refused)?;
-        if ancestry.ref_tip() != expected_tip || ancestry.ancestor() != *commit_id {
+    for offset in 0..commit_ids.len() {
+        let ordinal = start_ordinal.checked_add(offset).ok_or_else(|| {
+            NativeHistoryPublicationError::Refused("package image ordinal overflow".to_owned())
+        })?;
+        if ordinal >= end_ordinal {
+            return Err(NativeHistoryPublicationError::Refused(
+                "package history slice exceeded its checked catalog range".to_owned(),
+            ));
+        }
+        let selected = package.images()[ordinal].binding();
+        let commit_id = commit_ids[offset];
+        let ancestry = &ancestry_proofs[offset];
+        if ancestry.ref_tip() != expected_tip || ancestry.ancestor() != commit_id {
             return Err(NativeHistoryPublicationError::Refused(
                 "package image is not reachable from the exact staged/public ref tip".to_owned(),
             ));
@@ -1292,23 +1349,19 @@ fn verify_native_history_package_prefix(
                 package.target(),
                 backend_replication::HistoryRefKind::Branch,
                 branch,
-                *commit_id,
-                &ancestry,
+                commit_id,
+                ancestry,
                 SemanticTypedPlaneVerificationTierV2::Standard,
                 JumboRopeLimits::default(),
             )
             .map_err(NativeHistoryPublicationError::Refused)?;
         let admitted = replay.commit();
-        let expected_parents = if ordinal == 0 {
-            if enforce_first_parent {
-                expected_first_parent.into_iter().collect::<Vec<_>>()
-            } else {
-                admitted.parents().to_vec()
-            }
+        let expected_parents = if offset == 0 {
+            expected_first_parent.into_iter().collect::<Vec<_>>()
         } else {
-            vec![commit_ids[ordinal - 1]]
+            vec![commit_ids[offset - 1]]
         };
-        if admitted.identity() != *commit_id
+        if admitted.identity() != commit_id
             || admitted.selected_stamp() != package.selected_stamp()
             || admitted.provenance() != package.package_identity()
             || admitted.manifest_root() != selected.manifest().root()
