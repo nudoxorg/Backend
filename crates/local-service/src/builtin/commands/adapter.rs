@@ -11,8 +11,8 @@ use super::browse_lane::{BrowseLane, Terminal as BrowseTerminal};
 use super::diff::execute_semantic_diff;
 use super::graph::{execute_certified_graph_query, execute_search};
 use super::index::{
-    DeferredIndex, DeferredProfileFailure, DeferredProfileTicket, IndexScanFailure, IndexScanResult,
-    IndexScanWork, PreparedIndex, PreparedProductSelection, capture_index_scan,
+    DeferredIndex, DeferredProfileFailure, DeferredProfileTicket, IndexScanFailure,
+    IndexScanResult, IndexScanWork, PreparedIndex, PreparedProductSelection, capture_index_scan,
     commit_pending_capture_failure, deferred_compile_was_cancelled, finish_deferred_index,
     finish_deferred_profile, finish_index_scan, index_project_intent_at,
     index_project_intent_with_cluster_and_intent, remove_project_intent, run_deferred_compile,
@@ -87,10 +87,9 @@ fn refused_index_outcome(
 ) -> backend_library::IndexJobOutcome {
     let detail = bounded_index_detail(detail);
     match compiler_failure {
-        Some(failure) => backend_library::IndexJobOutcome::RefusedWithCompilerFailure {
-            detail,
-            failure,
-        },
+        Some(failure) => {
+            backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, failure }
+        }
         None => backend_library::IndexJobOutcome::Refused(detail),
     }
 }
@@ -1831,6 +1830,7 @@ impl CommandAdapter {
         if let Some(mut indexing) = self.indexing.take() {
             let mut terminal;
             let mut legacy_reply = None;
+            let mut terminal_compiler_profile = None;
             let work = std::mem::replace(&mut indexing.work, IndexJobWork::Transition);
             // Candidate-attempt cleanup inventory is built only when a
             // compiler stage actually reaches a terminal path. Healthy polls
@@ -2023,8 +2023,9 @@ impl CommandAdapter {
                             // only its compact attempt capability; clone the
                             // queued list only if admission reports a terminal.
                             let current_attempt = profile.candidate_attempt().clone();
+                            let current_profile = profile.profile();
                             let progress = (
-                                backend_engine::SemanticLanguageProfile::new(profile.profile()),
+                                backend_engine::SemanticLanguageProfile::new(current_profile),
                                 profile.ordinal(),
                                 profile.total(),
                             );
@@ -2078,12 +2079,15 @@ impl CommandAdapter {
                                         }
                                     }
                                 }
-                            }
-                            Err(refusal) => {
-                                let mut attempts = vec![current_attempt];
-                                attempts.extend(job.pending_attempts());
-                                terminal_attempts = Some(attempts);
-                                terminal = Some(deferred_profile_refused_outcome(refusal));
+                                Err(refusal) => {
+                                    let mut attempts = vec![current_attempt];
+                                    attempts.extend(job.pending_attempts());
+                                    terminal_attempts = Some(attempts);
+                                    if refusal.compiler_failure.is_some() {
+                                        terminal_compiler_profile = Some(current_profile);
+                                    }
+                                    terminal = Some(deferred_profile_refused_outcome(refusal));
+                                }
                             }
                         }
                     }
@@ -2100,6 +2104,24 @@ impl CommandAdapter {
                 if !matches!(outcome, backend_library::IndexJobOutcome::Published)
                     && !indexing.captures.is_empty()
                 {
+                    let compiler_failure = match &outcome {
+                        backend_library::IndexJobOutcome::RefusedWithCompilerFailure {
+                            failure,
+                            ..
+                        } => terminal_compiler_profile.map(|profile| (profile, failure.clone())),
+                        _ => None,
+                    };
+                    if matches!(
+                        &outcome,
+                        backend_library::IndexJobOutcome::RefusedWithCompilerFailure { .. }
+                    ) && compiler_failure.is_none()
+                    {
+                        outcome = backend_library::IndexJobOutcome::Failed(
+                            backend_library::ProductText::from_static(
+                                "typed compiler refusal lost its captured profile binding",
+                            ),
+                        );
+                    }
                     let reason = if matches!(outcome, backend_library::IndexJobOutcome::Cancelled) {
                         backend_engine::builtin::SemanticUnavailableReason::Cancelled
                     } else {
@@ -2113,6 +2135,7 @@ impl CommandAdapter {
                         indexing.request_id,
                         &indexing.captures,
                         reason,
+                        compiler_failure,
                     ) {
                         outcome =
                             backend_library::IndexJobOutcome::Failed(bounded_index_detail(error));

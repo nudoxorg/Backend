@@ -480,6 +480,8 @@ pub(super) struct BuiltinCaptureChange {
     pub(super) expected: Option<ProductSemanticCaptureRecord>,
     pub(super) capture: SemanticSourceCapture,
     pub(super) outcome: ProductSemanticCaptureOutcome,
+    /// Optional closed compiler fault explaining a terminal unavailable result.
+    pub(super) compiler_failure: Option<backend_library::PackageCompilerFailure>,
 }
 
 /// Exact before/after evidence for one complete source-facts relation row.
@@ -517,6 +519,7 @@ impl BuiltinIntent {
     const KEYED_VERSION: u8 = 5;
     const CAPTURE_VERSION: u8 = 6;
     const FACTS_VERSION: u8 = 7;
+    const TYPED_FAILURE_VERSION: u8 = 8;
     const ADD: u8 = 1;
     const REMOVE: u8 = 2;
     const INDEX: u8 = 3;
@@ -665,8 +668,16 @@ impl BuiltinIntent {
         semantic_changes: Vec<BuiltinSemanticChange>,
         capture_changes: Vec<BuiltinCaptureChange>,
     ) -> Result<Self, BuiltinModelError> {
+        let version = if capture_changes
+            .iter()
+            .any(|change| change.compiler_failure.is_some())
+        {
+            Self::TYPED_FAILURE_VERSION
+        } else {
+            Self::CAPTURE_VERSION
+        };
         Self::new_with_version(
-            Self::CAPTURE_VERSION,
+            version,
             BuiltinIntentOperation::Index,
             package,
             label,
@@ -683,8 +694,17 @@ impl BuiltinIntent {
         self,
         source_facts_changes: Vec<BuiltinSourceFactsChange>,
     ) -> Result<Self, BuiltinModelError> {
+        let version = if self
+            .capture_changes
+            .iter()
+            .any(|change| change.compiler_failure.is_some())
+        {
+            Self::TYPED_FAILURE_VERSION
+        } else {
+            Self::FACTS_VERSION
+        };
         Self::new_with_version(
-            Self::FACTS_VERSION,
+            version,
             self.operation,
             self.package,
             self.label,
@@ -705,8 +725,16 @@ impl BuiltinIntent {
         capture_changes: Vec<BuiltinCaptureChange>,
         source_facts_changes: Vec<BuiltinSourceFactsChange>,
     ) -> Result<Self, BuiltinModelError> {
+        let version = if capture_changes
+            .iter()
+            .any(|change| change.compiler_failure.is_some())
+        {
+            Self::TYPED_FAILURE_VERSION
+        } else {
+            Self::FACTS_VERSION
+        };
         Self::new_with_version(
-            Self::FACTS_VERSION,
+            version,
             BuiltinIntentOperation::Index,
             package,
             label,
@@ -782,7 +810,11 @@ impl BuiltinIntent {
     ) -> Result<Self, BuiltinModelError> {
         if !matches!(
             encoding_version,
-            3 | Self::VERSION | Self::KEYED_VERSION | Self::CAPTURE_VERSION | Self::FACTS_VERSION
+            3 | Self::VERSION
+                | Self::KEYED_VERSION
+                | Self::CAPTURE_VERSION
+                | Self::FACTS_VERSION
+                | Self::TYPED_FAILURE_VERSION
         ) || (encoding_version < Self::VERSION
             && (matches!(operation, BuiltinIntentOperation::SelectSemanticGeneration)
                 || semantic_selection.is_some()))
@@ -791,6 +823,7 @@ impl BuiltinIntent {
             || (encoding_version != Self::KEYED_VERSION
                 && encoding_version != Self::CAPTURE_VERSION
                 && encoding_version != Self::FACTS_VERSION
+                && encoding_version != Self::TYPED_FAILURE_VERSION
                 && operation_key.is_some())
         {
             return Err(BuiltinModelError(
@@ -844,6 +877,13 @@ impl BuiltinIntent {
             || capture_changes.iter().any(|change| {
                 !change.key.is_selected()
                     || change.key.package_key() != package
+                    || (change.compiler_failure.is_some()
+                        && (encoding_version != Self::TYPED_FAILURE_VERSION
+                            || !matches!(
+                                change.outcome,
+                                ProductSemanticCaptureOutcome::Unavailable { .. }
+                                    | ProductSemanticCaptureOutcome::Failed { .. }
+                            )))
                     || change.capture.operation_key().is_some_and(|key| {
                         key.iter().all(|byte| *byte == 0)
                             || operation_key.is_some_and(|bound| &bound != key)
@@ -858,7 +898,7 @@ impl BuiltinIntent {
         source_facts_changes.sort_by_key(|change| change.key);
         if source_facts_changes.len() > BuiltinPackageRecord::MAX_PROJECT_FILES.saturating_mul(300)
             || (encoding_version == Self::FACTS_VERSION && source_facts_changes.is_empty())
-            || (encoding_version != Self::FACTS_VERSION && !source_facts_changes.is_empty())
+            || (encoding_version < Self::FACTS_VERSION && !source_facts_changes.is_empty())
             || source_facts_changes
                 .windows(2)
                 .any(|window| window[0].key >= window[1].key)
@@ -955,8 +995,16 @@ impl BuiltinIntent {
         self,
         capture_changes: Vec<BuiltinCaptureChange>,
     ) -> Result<Self, BuiltinModelError> {
+        let minimum_version = if capture_changes
+            .iter()
+            .any(|change| change.compiler_failure.is_some())
+        {
+            Self::TYPED_FAILURE_VERSION
+        } else {
+            Self::CAPTURE_VERSION
+        };
         Self::new_with_version(
-            self.encoding_version.max(Self::CAPTURE_VERSION),
+            self.encoding_version.max(minimum_version),
             self.operation,
             self.package,
             self.label,
@@ -981,7 +1029,8 @@ impl BuiltinIntent {
             4 => b"BPI4",
             5 => b"BPI5",
             6 => b"BPI6",
-            _ => b"BPI7",
+            7 => b"BPI7",
+            _ => b"BPI8",
         });
         bytes.push(self.encoding_version);
         bytes.push(match self.operation {
@@ -1067,6 +1116,9 @@ impl BuiltinIntent {
                 encode_optional_capture_record(change.expected.as_ref(), &mut bytes);
                 encode_source_capture(change.capture, &mut bytes);
                 encode_capture_outcome(change.outcome, &mut bytes);
+                if self.encoding_version >= Self::TYPED_FAILURE_VERSION {
+                    encode_optional_compiler_failure(change.compiler_failure.as_ref(), &mut bytes);
+                }
             }
             if self.encoding_version >= Self::FACTS_VERSION {
                 bytes.extend_from_slice(
@@ -1328,6 +1380,29 @@ fn encode_capture_outcome(outcome: ProductSemanticCaptureOutcome, output: &mut V
     }
 }
 
+fn encode_optional_compiler_failure(
+    failure: Option<&backend_library::PackageCompilerFailure>,
+    output: &mut Vec<u8>,
+) {
+    match failure {
+        None => output.push(0),
+        Some(failure) => {
+            if let Ok(bytes) = serde_json::to_vec(failure)
+                && bytes.len() <= backend_library::PackageCompilerFailure::MAX_ENCODED_BYTES
+            {
+                output.push(1);
+                output.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+                output.extend_from_slice(&bytes);
+            } else {
+                // Construction admits only bounded, serde-safe closed DTOs.
+                // This sentinel is rejected by the decoder if that invariant
+                // is ever broken, rather than encoding a partial refusal.
+                output.push(u8::MAX);
+            }
+        }
+    }
+}
+
 fn encode_optional_prior(prior: Option<SemanticPublicationVersion>, output: &mut Vec<u8>) {
     match prior {
         None => output.push(0),
@@ -1440,6 +1515,8 @@ impl<'a> IntentDecoder<'a> {
                     | (Some(b"BPI5"), 5)
                     | (Some(b"BPI6"), 6)
                     | (Some(b"BPI7"), 7)
+                    | (Some(b"BPI8"), 8)
+                    | (Some(b"BPI8"), 8)
             )
         {
             return Err(BuiltinModelError(
@@ -1633,7 +1710,7 @@ impl<'a> IntentDecoder<'a> {
         let count = self.read_u32()? as usize;
         let maximum = BuiltinPackageRecord::MAX_PROJECT_FILES.saturating_mul(300);
         let minimum_bytes_per_change = 34usize;
-        if count == 0
+        if (count == 0 && self.version == BuiltinIntent::FACTS_VERSION)
             || count > maximum
             || count > self.bytes.len().saturating_sub(self.at) / minimum_bytes_per_change
         {
@@ -1695,12 +1772,53 @@ impl<'a> IntentDecoder<'a> {
         };
         let capture = self.source_capture()?;
         let outcome = self.capture_outcome()?;
+        let compiler_failure = if self.version >= BuiltinIntent::TYPED_FAILURE_VERSION {
+            self.optional_compiler_failure()?
+        } else {
+            None
+        };
         Ok(BuiltinCaptureChange {
             key,
             expected,
             capture,
             outcome,
+            compiler_failure,
         })
+    }
+
+    fn optional_compiler_failure(
+        &mut self,
+    ) -> Result<Option<backend_library::PackageCompilerFailure>, BuiltinModelError> {
+        match self.take(1)?.first().copied() {
+            Some(0) => Ok(None),
+            Some(1) => {
+                let length = self.read_u32()? as usize;
+                if length == 0
+                    || length > backend_library::PackageCompilerFailure::MAX_ENCODED_BYTES
+                {
+                    return Err(BuiltinModelError(
+                        "malformed typed compiler-failure length".to_owned(),
+                    ));
+                }
+                let bytes = self.take(length)?;
+                let failure: backend_library::PackageCompilerFailure =
+                    serde_json::from_slice(bytes).map_err(|_| {
+                        BuiltinModelError("malformed typed compiler-failure payload".to_owned())
+                    })?;
+                let canonical = serde_json::to_vec(&failure).map_err(|_| {
+                    BuiltinModelError("could not re-encode typed compiler failure".to_owned())
+                })?;
+                if canonical.as_slice() != bytes {
+                    return Err(BuiltinModelError(
+                        "noncanonical typed compiler-failure payload".to_owned(),
+                    ));
+                }
+                Ok(Some(failure))
+            }
+            _ => Err(BuiltinModelError(
+                "malformed typed compiler-failure tag".to_owned(),
+            )),
+        }
     }
 
     fn source_capture(&mut self) -> Result<SemanticSourceCapture, BuiltinModelError> {
@@ -2181,9 +2299,56 @@ fn prepare_capture_relation_update(
     }
     let selected_capture_relation = semantic_capture_relation(base)
         .map_err(|error| BuiltinModelError(format!("open semantic capture relation: {error}")))?;
+    let source_relation = if intent
+        .capture_changes()
+        .iter()
+        .any(|change| change.compiler_failure.is_some())
+    {
+        Some(
+            base.relation::<BuiltinWorkspaceRelation>()
+                .map_err(|error| {
+                    BuiltinModelError(format!("open source rows for compiler refusal: {error}"))
+                })?,
+        )
+    } else {
+        None
+    };
     let mut capture_changes = Vec::with_capacity(intent.capture_changes().len());
     let mut capture_entries = Vec::with_capacity(intent.capture_changes().len());
     for change in intent.capture_changes() {
+        if let Some(failure) = &change.compiler_failure {
+            let project = change.key.package_key().to_bytes();
+            let file_key =
+                backend_engine::product_source_file_key(project, failure.relative_path());
+            let selected_source_relation = source_relation.as_ref().ok_or_else(|| {
+                BuiltinModelError("compiler failure has no selected source relation".to_owned())
+            })?;
+            let row = selected_source_relation
+                .lookup(&file_key)
+                .map_err(|error| {
+                    BuiltinModelError(format!("read source row for compiler refusal: {error}"))
+                })?
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "typed compiler refusal names a source path outside the captured project"
+                            .to_owned(),
+                    )
+                })?;
+            let fields = row.file_fields().ok_or_else(|| {
+                BuiltinModelError(
+                    "typed compiler refusal path resolves to a non-file source row".to_owned(),
+                )
+            })?;
+            if fields.project != project
+                || fields.path != failure.relative_path()
+                || fields.source_identity != Some(failure.source_identity())
+            {
+                return Err(BuiltinModelError(
+                    "typed compiler refusal source identity does not match captured source"
+                        .to_owned(),
+                ));
+            }
+        }
         let current = selected_capture_relation
             .as_ref()
             .map(|relation| relation.lookup(&change.key))
@@ -2227,7 +2392,7 @@ fn prepare_capture_relation_update(
                 let source_sequence = base_sequence.checked_add(1).ok_or_else(|| {
                     BuiltinModelError("semantic capture workspace sequence overflow".to_owned())
                 })?;
-                ProductSemanticCaptureRecord::new(
+                ProductSemanticCaptureRecord::new_with_compiler_failure(
                     change.capture.operation_key().copied(),
                     request_identity,
                     change.capture,
@@ -2237,6 +2402,7 @@ fn prepare_capture_relation_update(
                     source_sequence,
                     source_commit,
                     change.outcome,
+                    change.compiler_failure.clone(),
                 )
                 .map_err(|error| BuiltinModelError(error.to_owned()))?
             }
@@ -2284,6 +2450,12 @@ fn prepare_capture_relation_update(
                 let terminal = current
                     .with_outcome(outcome)
                     .map_err(|error| BuiltinModelError(error.to_owned()))?;
+                let terminal = match &change.compiler_failure {
+                    Some(failure) => terminal
+                        .with_compiler_failure(failure.clone())
+                        .map_err(|error| BuiltinModelError(error.to_owned()))?,
+                    None => terminal,
+                };
                 terminal
             }
             (None, _) => {
@@ -3109,6 +3281,31 @@ mod persisted_intent_tests {
         .expect("file intent")
     }
 
+    fn typed_compiler_failure() -> backend_library::PackageCompilerFailure {
+        use backend_library::interface::{CompilerFragmentFailure, SourceAuthority};
+        use backend_semantic::ir::{BuildError, EntityId};
+        use backend_version::{CompileRecipeDomain, SourceFactDomain};
+
+        let attempt = backend_library::CompilerAttempt {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"source bytes"),
+                byte_len: 12,
+            },
+            recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"recipe bytes"),
+        };
+        let failure = CompilerFragmentFailure::build(BuildError::InvalidOccurrenceSpan {
+            owner: EntityId::new(7),
+            start: 18,
+            end: 24,
+        });
+        backend_library::PackageCompilerFailure::from_fragment_failure(
+            "src/lib.rs",
+            attempt,
+            &failure,
+        )
+        .expect("bounded package compiler failure")
+    }
+
     #[test]
     fn keyed_index_intents_round_trip_and_have_distinct_workspace_request_identities() {
         let intent = file_intent(vec![declaration(backend_compile::Container::Module)]);
@@ -3135,6 +3332,49 @@ mod persisted_intent_tests {
             BuiltinModel.request_id(&second),
             "caller key must be bound into the exact workspace request identity",
         );
+    }
+
+    #[test]
+    fn typed_compiler_refusal_intent_round_trips_canonically() {
+        let label = "pkg:cargo/persisted-selection@1.0.0";
+        let package = backend_engine::PackageKey::from_value(label);
+        let package_reference = backend_engine::PackageReference::parse(label.to_owned())
+            .expect("compiler refusal package reference");
+        let coordinate = backend_semantic::vocabulary::PackageUrl::parse(label.to_owned())
+            .expect("compiler refusal coordinate");
+        let key = ProductSemanticPublicationKey::new(
+            package_reference,
+            coordinate,
+            backend_semantic::vocabulary::LanguageProfile::Rust(
+                backend_semantic::vocabulary::RustEdition::Rust2024,
+            ),
+        )
+        .expect("compiler refusal key");
+        let capture = SemanticSourceCapture::new(None, [5; 32], [6; 32], 1, 1)
+            .expect("source capture");
+        let intent = BuiltinIntent::index_with_capture(
+            package,
+            label,
+            Vec::new(),
+            Vec::new(),
+            vec![BuiltinCaptureChange {
+                key,
+                expected: None,
+                capture,
+                outcome: ProductSemanticCaptureOutcome::Unavailable {
+                    reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+                },
+                compiler_failure: Some(typed_compiler_failure()),
+            }],
+        )
+        .expect("typed refusal intent");
+        let encoded = intent.encode();
+        assert!(encoded.starts_with(b"BPI8"));
+        assert_eq!(BuiltinIntent::decode(&encoded).expect("decode BPI8"), intent);
+
+        let mut noncanonical = encoded;
+        *noncanonical.last_mut().expect("failure json byte") ^= 1;
+        assert!(BuiltinIntent::decode(&noncanonical).is_err());
     }
 
     fn declaration(container: backend_compile::Container) -> backend_compile::SourceDeclaration {

@@ -591,3 +591,84 @@ fn take_u64(bytes: &[u8]) -> Result<(u64, &[u8]), RelationDecodeError> {
     let (value, rest) = take::<8>(bytes)?;
     Ok((u64::from_be_bytes(value), rest))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use backend_library::interface::{CompilerFragmentFailure, SourceAuthority};
+    use backend_semantic::ir::{BuildError, EntityId};
+    use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain};
+
+    fn compiler_failure() -> backend_library::PackageCompilerFailure {
+        let attempt = backend_library::CompilerAttempt {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"source bytes"),
+                byte_len: 12,
+            },
+            recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"recipe bytes"),
+        };
+        let failure = CompilerFragmentFailure::build(BuildError::InvalidOccurrenceSpan {
+            owner: EntityId::new(7),
+            start: 18,
+            end: 24,
+        });
+        backend_library::PackageCompilerFailure::from_fragment_failure(
+            "src/recovery.ts",
+            attempt,
+            &failure,
+        )
+        .expect("bounded typed compiler failure")
+    }
+
+    fn capture_record(
+        failure: Option<backend_library::PackageCompilerFailure>,
+    ) -> ProductSemanticCaptureRecord {
+        let capture = SemanticSourceCapture::new(None, [5; 32], [6; 32], 1, 1)
+            .expect("valid source capture");
+        ProductSemanticCaptureRecord::new_with_compiler_failure(
+            None,
+            [1; 32],
+            capture,
+            [2; 32],
+            0,
+            [3; 32],
+            1,
+            [4; 32],
+            ProductSemanticCaptureOutcome::Unavailable {
+                reason: SemanticUnavailableReason::Rejected,
+            },
+            failure,
+        )
+        .expect("valid semantic capture record")
+    }
+
+    #[test]
+    fn typed_compiler_refusal_is_canonical_and_source_bound_in_capture_row() {
+        let failure = compiler_failure();
+        let record = capture_record(Some(failure.clone()));
+        let mut encoded = Vec::new();
+        ProductSemanticCaptureRelation::encode_value(&record, &mut encoded);
+        let decoded = ProductSemanticCaptureRelation::decode_value(&encoded)
+            .expect("canonical typed capture row");
+        assert_eq!(decoded.compiler_failure(), Some(&failure));
+
+        let last = encoded.last_mut().expect("encoded failure payload");
+        *last ^= 1;
+        assert!(ProductSemanticCaptureRelation::decode_value(&encoded).is_err());
+    }
+
+    #[test]
+    fn legacy_psc1_unavailable_rows_remain_readable() {
+        let record = capture_record(None);
+        let mut encoded = Vec::new();
+        ProductSemanticCaptureRelation::encode_value(&record, &mut encoded);
+        assert_eq!(encoded.get(..4), Some(MAGIC.as_slice()));
+        encoded[..4].copy_from_slice(LEGACY_MAGIC);
+        assert_eq!(encoded.pop(), Some(0));
+
+        let decoded = ProductSemanticCaptureRelation::decode_value(&encoded)
+            .expect("legacy PSC1 unavailable capture");
+        assert_eq!(decoded.outcome(), record.outcome());
+        assert!(decoded.compiler_failure().is_none());
+    }
+}

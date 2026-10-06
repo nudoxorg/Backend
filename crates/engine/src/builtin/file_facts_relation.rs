@@ -545,12 +545,12 @@ pub fn build_product_source_file_facts(
     let path = path.into();
     validate_file_facts_input(&path, declarations)?;
     let file_key = product_source_file_key(project, &path);
-    let inline_estimate = declarations.iter().try_fold(
+    let inline_estimate = declarations.iter().fold(
         96usize.saturating_add(path.len()),
         |total, declaration| {
-            estimate_declaration_bytes(declaration, &path).map(|size| total.saturating_add(size))
+            total.saturating_add(estimate_declaration_bytes(declaration, &path))
         },
-    )?;
+    );
     if inline_estimate <= ProductSourceFileFactsRecord::ROW_VALUE_CAPACITY {
         let inline_manifest = ProductSourceFileFactsManifest {
             project,
@@ -560,7 +560,7 @@ pub fn build_product_source_file_facts(
             source_identity,
             status: ProductSourceFileFactsStatus::InlineComplete(Arc::from(declarations)),
         };
-        let encoded_manifest = encode_manifest(&inline_manifest)?;
+        let encoded_manifest = encode_manifest(&inline_manifest);
         if encoded_manifest.len() <= ProductSourceFileFactsRecord::ROW_VALUE_CAPACITY {
             return finish_update(
                 file_key,
@@ -618,7 +618,7 @@ pub fn build_product_source_file_facts(
             pages: Arc::from(refs.into_boxed_slice()),
         };
         let directory_record = ProductSourceFileFactsRecord::Directory(directory);
-        let encoded = encode_record(&directory_record)?;
+        let encoded = encode_record(&directory_record);
         if encoded.len() > ProductSourceFileFactsRecord::ROW_VALUE_CAPACITY {
             return Err("facts directory exceeds canonical row capacity".to_owned());
         }
@@ -652,7 +652,7 @@ pub fn build_product_source_file_facts(
             directories: Arc::from(directory_refs.into_boxed_slice()),
         },
     };
-    let manifest_bytes = encode_manifest(&manifest)?;
+    let manifest_bytes = encode_manifest(&manifest);
     if manifest_bytes.len() > ProductSourceFileFactsRecord::ROW_VALUE_CAPACITY {
         return Err("facts manifest exceeds canonical row capacity".to_owned());
     }
@@ -907,7 +907,7 @@ fn build_declaration_pages(
         let mut end = start;
         let mut estimated = 128usize;
         while end < declarations.len() && end - start < MAX_DECLARATIONS_PER_PAGE {
-            let cost = estimate_declaration_bytes(&declarations[end], path)?;
+            let cost = estimate_declaration_bytes(&declarations[end], path);
             if end > start
                 && estimated.saturating_add(cost)
                     > ProductSourceFileFactsRecord::ROW_VALUE_CAPACITY
@@ -943,7 +943,7 @@ fn build_declaration_pages(
             &declarations[start..end],
             &boundaries[start..end],
         )?;
-        let mut encoded = encode_record(&ProductSourceFileFactsRecord::Page(page.clone()))?;
+        let mut encoded = encode_record(&ProductSourceFileFactsRecord::Page(page.clone()));
         while encoded.len() > ProductSourceFileFactsRecord::ROW_VALUE_CAPACITY {
             if end <= start + 1 {
                 return Err(
@@ -960,7 +960,7 @@ fn build_declaration_pages(
                 &declarations[start..end],
                 &boundaries[start..end],
             )?;
-            encoded = encode_record(&ProductSourceFileFactsRecord::Page(page.clone()))?;
+            encoded = encode_record(&ProductSourceFileFactsRecord::Page(page.clone()));
         }
         let key = content_key_bytes(&encoded);
         pages.push(BuiltPage {
@@ -1037,7 +1037,7 @@ fn build_page(
 fn estimate_declaration_bytes(
     declaration: &SourceDeclaration,
     path: &str,
-) -> Result<usize, String> {
+) -> usize {
     let excerpt = declaration.source_excerpt().text().map_or(0, str::len);
     let container = match declaration.container() {
         Container::Module => 1,
@@ -1059,7 +1059,7 @@ fn estimate_declaration_bytes(
     // Every text field has a four-byte length and each typed fact/enum adds a
     // small fixed tag. The 64-byte allowance deliberately overestimates that
     // overhead before bounded page scratch is allocated.
-    Ok(text.saturating_add(64))
+    text.saturating_add(64)
 }
 
 fn validate_file_facts_input(path: &str, declarations: &[SourceDeclaration]) -> Result<(), String> {
@@ -1335,7 +1335,7 @@ fn page_last_absolute_line(page: &ProductSourceFactsPage, base_line: u32) -> Res
 }
 
 fn record_content_key(record: &ProductSourceFileFactsRecord) -> Result<[u8; 32], String> {
-    let bytes = encode_record(record)?;
+    let bytes = encode_record(record);
     Ok(content_key_bytes(&bytes))
 }
 
@@ -1346,10 +1346,10 @@ fn content_key_bytes(bytes: &[u8]) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-fn encode_record(record: &ProductSourceFileFactsRecord) -> Result<Vec<u8>, String> {
+fn encode_record(record: &ProductSourceFileFactsRecord) -> Vec<u8> {
     let mut output = Vec::new();
     encode_record_infallible(record, &mut output);
-    Ok(output)
+    output
 }
 
 fn encode_record_infallible(record: &ProductSourceFileFactsRecord, output: &mut Vec<u8>) {
@@ -1357,31 +1357,7 @@ fn encode_record_infallible(record: &ProductSourceFileFactsRecord, output: &mut 
     match record {
         ProductSourceFileFactsRecord::Manifest(manifest) => {
             output.push(MANIFEST_TAG);
-            output.extend_from_slice(&manifest.project);
-            push_text_infallible(output, &manifest.path);
-            output.extend_from_slice(&manifest.content_version);
-            output.extend_from_slice(&manifest.analysis_version);
-            output.extend_from_slice(manifest.source_identity.as_ref());
-            match &manifest.status {
-                ProductSourceFileFactsStatus::InlineComplete(declarations) => {
-                    output.push(0);
-                    push_count_infallible(output, declarations.len());
-                    for declaration in declarations.iter() {
-                        encode_declaration_infallible(declaration, output);
-                    }
-                }
-                ProductSourceFileFactsStatus::Paged {
-                    declaration_count,
-                    directories,
-                } => {
-                    output.push(1);
-                    output.extend_from_slice(&declaration_count.to_be_bytes());
-                    push_count_infallible(output, directories.len());
-                    for directory in directories.iter() {
-                        encode_directory_ref(directory, output);
-                    }
-                }
-            }
+            encode_manifest_payload(manifest, output);
         }
         ProductSourceFileFactsRecord::Directory(directory) => {
             output.push(DIRECTORY_TAG);
@@ -1418,8 +1394,40 @@ fn encode_record_infallible(record: &ProductSourceFileFactsRecord, output: &mut 
     }
 }
 
-fn encode_manifest(manifest: &ProductSourceFileFactsManifest) -> Result<Vec<u8>, String> {
-    encode_record(&ProductSourceFileFactsRecord::Manifest(manifest.clone()))
+fn encode_manifest(manifest: &ProductSourceFileFactsManifest) -> Vec<u8> {
+    let mut output = Vec::new();
+    output.extend_from_slice(MAGIC);
+    output.push(MANIFEST_TAG);
+    encode_manifest_payload(manifest, &mut output);
+    output
+}
+
+fn encode_manifest_payload(manifest: &ProductSourceFileFactsManifest, output: &mut Vec<u8>) {
+    output.extend_from_slice(&manifest.project);
+    push_text_infallible(output, &manifest.path);
+    output.extend_from_slice(&manifest.content_version);
+    output.extend_from_slice(&manifest.analysis_version);
+    output.extend_from_slice(manifest.source_identity.as_ref());
+    match &manifest.status {
+        ProductSourceFileFactsStatus::InlineComplete(declarations) => {
+            output.push(0);
+            push_count_infallible(output, declarations.len());
+            for declaration in declarations.iter() {
+                encode_declaration_infallible(declaration, output);
+            }
+        }
+        ProductSourceFileFactsStatus::Paged {
+            declaration_count,
+            directories,
+        } => {
+            output.push(1);
+            output.extend_from_slice(&declaration_count.to_be_bytes());
+            push_count_infallible(output, directories.len());
+            for directory in directories.iter() {
+                encode_directory_ref(directory, output);
+            }
+        }
+    }
 }
 
 fn encode_directory_ref(reference: &ProductSourceFactsDirectoryRef, output: &mut Vec<u8>) {
@@ -1922,8 +1930,7 @@ mod tests {
             ProductSourceFileFactsRelation::decode_value(
                 &encode_record(&ProductSourceFileFactsRecord::Manifest(
                     update.manifest.clone(),
-                ))
-                .expect("manifest bytes"),
+                )),
             )
             .expect("canonical manifest")
         else {
@@ -2057,7 +2064,7 @@ mod tests {
                 matches!(record, ProductSourceFileFactsRecord::Page(_))
                     && prefixed_keys.contains(key)
             })
-            .map(|(_, record)| encode_record(record).expect("encoded page").len())
+            .map(|(_, record)| encode_record(record).len())
             .sum::<usize>();
 
         let comment_source = format!("// A harmless inventory note.\n\n{source}");
@@ -2123,7 +2130,7 @@ mod tests {
             .pages()
             .iter()
             .filter(|(_, record)| matches!(record, ProductSourceFileFactsRecord::Page(_)))
-            .map(|(_, record)| encode_record(record).expect("encoded page").len())
+            .map(|(_, record)| encode_record(record).len())
             .sum::<usize>();
         let comment_reused_bytes = first
             .pages()
@@ -2132,7 +2139,7 @@ mod tests {
                 matches!(record, ProductSourceFileFactsRecord::Page(_))
                     && comment_keys.contains(key)
             })
-            .map(|(_, record)| encode_record(record).expect("encoded page").len())
+            .map(|(_, record)| encode_record(record).len())
             .sum::<usize>();
         eprintln!(
             "TSX comment prefix: rewrote 1 first declaration page; reused {}/{} prior page bytes",
@@ -2176,7 +2183,7 @@ mod tests {
             .pages()
             .iter()
             .filter(|(_, record)| matches!(record, ProductSourceFileFactsRecord::Page(_)))
-            .map(|(_, record)| encode_record(record).expect("encoded page").len())
+            .map(|(_, record)| encode_record(record).len())
             .sum::<usize>();
         let reused_bytes = first
             .pages()
@@ -2185,7 +2192,7 @@ mod tests {
                 matches!(record, ProductSourceFileFactsRecord::Page(_))
                     && inserted_keys.contains(key)
             })
-            .map(|(_, record)| encode_record(record).expect("encoded page").len())
+            .map(|(_, record)| encode_record(record).len())
             .sum::<usize>();
         let rewritten_bytes = first
             .pages()
@@ -2197,7 +2204,7 @@ mod tests {
             .chain(inserted.pages().iter().filter(|(key, record)| {
                 matches!(record, ProductSourceFileFactsRecord::Page(_)) && !old_keys.contains(key)
             }))
-            .map(|(_, record)| encode_record(record).expect("encoded page").len())
+            .map(|(_, record)| encode_record(record).len())
             .sum::<usize>();
         let old_rewritten_pages = old_keys.difference(&inserted_keys).count();
         let new_rewritten_pages = inserted_keys.difference(&old_keys).count();

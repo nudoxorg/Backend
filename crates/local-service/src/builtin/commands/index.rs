@@ -713,6 +713,7 @@ pub(super) fn finish_index_scan(
                         daemon,
                         &captures,
                         backend_engine::builtin::SemanticUnavailableReason::Rejected,
+                        None,
                     )?;
                     commit_semantic_terminal(daemon, package, &label, request_id, terminal)?;
                     return Err(error);
@@ -755,6 +756,7 @@ pub(super) fn finish_index_scan(
                         daemon,
                         &captures,
                         backend_engine::builtin::SemanticUnavailableReason::Rejected,
+                        None,
                     )?;
                     commit_semantic_terminal(daemon, package, &label, request_id, terminal)?;
                     return Err(error);
@@ -1088,6 +1090,7 @@ fn prepare_source_capture_changes(
             expected,
             capture,
             outcome: ProductSemanticCaptureOutcome::Pending { prior },
+            compiler_failure: None,
         });
         captures.insert(key.clone(), capture);
         receipts.push((key, receipt.clone()));
@@ -1305,6 +1308,7 @@ fn terminal_capture_changes(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     reason: backend_engine::builtin::SemanticUnavailableReason,
+    compiler_failure: Option<(LanguageProfile, backend_library::PackageCompilerFailure)>,
 ) -> Result<Vec<BuiltinCaptureChange>, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let relation = semantic_capture_relation(&snapshot)
@@ -1313,6 +1317,7 @@ fn terminal_capture_changes(
             BuiltinModelError("pending semantic capture relation disappeared".to_owned())
         })?;
     let mut changes = Vec::new();
+    let mut failure_profiles = 0usize;
     for (key, capture) in captures {
         let current = relation.lookup(&key).map_err(|error| {
             BuiltinModelError(format!("read pending semantic capture: {error}"))
@@ -1340,7 +1345,19 @@ fn terminal_capture_changes(
             expected: Some(current),
             capture: *capture,
             outcome,
+            compiler_failure: compiler_failure
+                .as_ref()
+                .filter(|(profile, _)| *profile == key.profile())
+                .map(|(_, failure)| {
+                    failure_profiles += 1;
+                    failure.clone()
+                }),
         });
+    }
+    if compiler_failure.is_some() && failure_profiles != 1 {
+        return Err(BuiltinModelError(
+            "typed compiler refusal did not match exactly one captured profile".to_owned(),
+        ));
     }
     Ok(changes)
 }
@@ -1409,6 +1426,7 @@ fn completed_capture_changes(
             expected: Some(expected),
             capture: *capture,
             outcome,
+            compiler_failure: None,
         });
     }
     Ok(changes)
@@ -1456,8 +1474,9 @@ pub(super) fn commit_pending_capture_failure(
     request_id: u64,
     captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     reason: backend_engine::builtin::SemanticUnavailableReason,
+    compiler_failure: Option<(LanguageProfile, backend_library::PackageCompilerFailure)>,
 ) -> Result<(), BuiltinModelError> {
-    let changes = terminal_capture_changes(daemon, captures, reason)?;
+    let changes = terminal_capture_changes(daemon, captures, reason, compiler_failure)?;
     commit_semantic_terminal(daemon, package, label, request_id, changes)
 }
 
@@ -2029,10 +2048,8 @@ impl From<BuiltinModelError> for DeferredProfileFailure {
 fn typed_fragment_failure(
     compiled: &Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
 ) -> Result<Option<PackageCompilerFailure>, BuiltinModelError> {
-    let Err(PackageSemanticRuntimeError::Package(PackageSemanticError::Compile {
-        path,
-        terminal,
-    })) = compiled
+    let Err(PackageSemanticRuntimeError::Package(PackageSemanticError::Compile { path, terminal })) =
+        compiled
     else {
         return Ok(None);
     };
