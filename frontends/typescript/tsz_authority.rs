@@ -39,6 +39,12 @@ pub use tsz::parallel::{
 pub use tsz::tsz_solver::type_handles::TypeId as TszTypeId;
 pub use tsz_common::options::module_detection::ModuleDetectionKind as TszModuleDetectionKind;
 
+#[cfg(feature = "tsz-semantic-session-test-support")]
+#[path = "tsz_query_session.rs"]
+mod query_session;
+#[cfg(feature = "tsz-semantic-session-test-support")]
+pub use query_session::{TszProjectQuerySession, TszProjectQuerySessionError};
+
 /// Caller-computed identity for a fully resolved TypeScript project context.
 ///
 /// Include the normalized compiler options, tsconfig inheritance and project

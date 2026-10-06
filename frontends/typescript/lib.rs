@@ -41,6 +41,8 @@ pub use tsz_authority::{
     TszProjectModuleResolutionTarget, TszProjectOptions, TszProjectSemanticOptions,
     TszScriptTarget, TszSourceError, TszSymbolId, TszTypeId, TszUpdateReport,
 };
+#[cfg(feature = "tsz-semantic-session-test-support")]
+pub use tsz_authority::{TszProjectQuerySession, TszProjectQuerySessionError};
 /// Interned string handle used by TSZ shapes and member names.
 pub use tsz_common::interner::Atom as TszAtom;
 
