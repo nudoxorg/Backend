@@ -39,6 +39,40 @@ fn assert_content(ledger: &crate::probe::Ledger, card: Bounds<Pixels>) {
 }
 
 #[gpui::test]
+fn restored_selection_keeps_exact_camera_through_first_measured_frame_without_new_history(cx: &mut TestAppContext) {
+    cx.update(|cx| gpui_component::init(cx));
+    for reduced in [false, true] {
+        cx.update(|cx| set_facet(Facet { reduced_motion: reduced, ..Facet::default() }, cx));
+        let scene = scene();
+        let camera = crate::motion::Camera::new(f64::from(scene.layout.x[3]) + 13.25,
+            f64::from(scene.layout.y[3]) - 8.75, 91.5);
+        let (graph, cx) = cx.add_window_view(|window, cx|
+            GraphView::with_scene(scene.clone(), Start::Restore { camera, focus: Some(3) }, window, cx));
+        assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), Some(3), "semantics publish before first paint");
+        draw(cx);
+        graph.read_with(cx, |graph, _| {
+            assert_eq!(graph.camera(), Some(camera), "actual reading chrome cannot overwrite retained placement");
+            assert_eq!(graph.prism.as_ref().map(|prism| (prism.node, prism.g)), Some((3, 1.0)));
+            assert!(graph.trail.is_empty(), "restoration is not a navigation visit");
+            assert!(!graph.find_open() && graph.results.is_empty() && graph.state.pending_accept.is_none());
+            assert!(graph.hover.is_none() && graph.peek.is_none());
+        });
+        settle(cx);
+        assert_eq!(graph.read_with(cx, |graph, _| graph.camera()), Some(camera));
+        graph.update(cx, |graph, cx| graph.set_focus(Some(0), false, cx));
+        draw(cx);
+        graph.read_with(cx, |graph, _| {
+            assert_eq!(graph.focused(), Some(0));
+            assert_ne!(graph.camera(), Some(camera), "later semantic navigation owns framing");
+            assert!(!graph.retained_placement);
+        });
+        graph.update(cx, |graph, cx| graph.show_world(cx));
+        settle(cx);
+        assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), None);
+    }
+}
+
+#[gpui::test]
 fn first_draw_resize_uses_actual_embedded_region_and_preserves_native_find_focus(cx: &mut TestAppContext) {
     cx.update(|cx| { gpui_component::init(cx); crate::probe::enable(cx); });
     for (reduced, text_scale) in [(false, 1.0), (true, 1.0), (false, 2.0), (true, 2.0)] {

@@ -839,6 +839,111 @@ fn package_publication_discards_an_older_in_flight_graph_before_rereading(cx: &m
     assert_eq!(rig.route(), Route::World);
 }
 
+/// Exact producer locators, independent of temporary node ordering.
+fn continuity_world(names: &[&str]) -> (Arc<facet::graph::World>, Arc<IdentityAdapter>) {
+    use facet::graph::{Kind, Module, Node, Package, World};
+    use super::bodies::graph::identity::ResolvedSymbol;
+    let package = PackageRef::parse(PACKAGE).expect("exact fixture package");
+    let world = Arc::new(World::new(
+        vec![Package { name: "present".into(), version: "1".into(), yours: true, external: false, deps: vec![] }],
+        vec![Module { pkg: 0, path: "glyph".into(), file: "glyph.rs".into() }],
+        names.iter().map(|name| { let mut node = Node::new(Kind::Enum, *name, 0, 0); node.line = 138; node }).collect(), vec![],
+    ).expect("valid exact world"));
+    let exact = names.iter().enumerate().map(|(node, name)| (u32::try_from(node).expect("tiny fixture"),
+        ResolvedSymbol { package: package.clone(), symbol: super::tests::symbol(name), line: Some(138) })).collect();
+    let identities = Arc::new(IdentityAdapter::indexed(&world,
+        &std::collections::BTreeMap::from([(package, 0)]), exact));
+    (world, identities)
+}
+
+fn continuity_rig(cx: &mut TestAppContext, route: Route) -> Rig {
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    let (world, identities) = continuity_world(&["RelationLabel", "RelationDirection"]);
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    rig.cx.update(|_, cx| super::bodies::graph::install_test_world(root, world, identities, cx));
+    rig.go(Intent::Navigate(route));
+    rig
+}
+
+fn publish_continuity(rig: &mut Rig) {
+    let packages = std::collections::BTreeSet::from([PackageRef::parse(PACKAGE).expect("exact package")]);
+    rig.graph.store.update(rig.cx, |store, cx| store.packages_published(&packages, cx));
+    rig.cx.run_until_parked();
+}
+
+#[gpui::test]
+fn publication_preserves_selected_b_and_exact_camera_on_consumed_route_a(cx: &mut TestAppContext) {
+    let route = view_route("RelationLabel", View::Graph);
+    let mut rig = continuity_rig(cx, route.clone());
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.settle();
+    let before = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("mounted graph"));
+    let camera = facet::motion::Camera::new(13.25, -8.75, 133.5);
+    before.update(rig.cx, |graph, cx| graph.fly_to(camera, cx));
+    rig.settle();
+    assert_eq!(before.read_with(rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(1), Some(camera)));
+    let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    publish_continuity(&mut rig);
+    let after = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("publication mounts autonomously"));
+    assert_ne!(before.entity_id(), after.entity_id());
+    assert_eq!(after.read_with(rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(1), Some(camera)),
+        "consumed route A cannot override the user's actual selection B or placement");
+    assert_eq!(rig.route(), route);
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| Arc::ptr_eq(&snapshot, &store.snapshot())), "restoration appends no history");
+}
+
+#[gpui::test]
+fn publication_remaps_permuted_selection_and_anchor_on_first_ready_paint(cx: &mut TestAppContext) {
+    use crate::runtime::indexed_world::{self, TestProjectionGate};
+    let mut rig = continuity_rig(cx, view_route("RelationLabel", View::Graph));
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.settle();
+    let before = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("old graph"));
+    let geometry = before.read_with(rig.cx, |graph, _| graph.presentation().expect("actual selected geometry"));
+    let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let (world, identities) = continuity_world(&["RelationDirection", "RelationLabel", "KindGlyph"]);
+    let scene = facet::graph::scene::Scene::new(world.clone(), facet::graph::layout::layout_of(&world));
+    let expected = geometry.restore(&scene, Some(0)).expect("uniquely remapped B anchor");
+    let gate = Arc::new(TestProjectionGate::default());
+    rig.cx.update(|_, cx| indexed_world::install_test_projection(snapshot.key(), "permuted exact graph", world, identities, Some(gate.clone()), cx));
+    publish_continuity(&mut rig);
+    assert!(gate.entered());
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+    let probe = super::bodies::graph::FirstReadyFrameProbe::new(snapshot.key());
+    rig.cx.update(|_, cx| cx.set_global(probe.clone()));
+    gate.release();
+    rig.cx.run_until_parked();
+    let after = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("first ready wake mounts"));
+    assert_eq!(after.read_with(rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(0), Some(expected)),
+        "raw old node 1 now names A, while exact B restores at node 0");
+    let observed = probe.result.borrow();
+    let first = observed.as_ref().expect("passive first ready observation");
+    assert!(first.mounted_at_render && first.painted, "no navigation, input, explicit draw or second wake is needed");
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| Arc::ptr_eq(&snapshot, &store.snapshot())));
+}
+
+#[gpui::test]
+fn later_world_navigation_cancels_selection_restoration_while_projection_is_in_flight(cx: &mut TestAppContext) {
+    use crate::runtime::indexed_world::{self, TestProjectionGate};
+    let mut rig = continuity_rig(cx, view_route("RelationLabel", View::Graph));
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.settle();
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let (world, identities) = continuity_world(&["RelationDirection", "RelationLabel"]);
+    let gate = Arc::new(TestProjectionGate::default());
+    rig.cx.update(|_, cx| indexed_world::install_test_projection(root, "held replacement", world, identities, Some(gate.clone()), cx));
+    publish_continuity(&mut rig);
+    assert!(gate.entered());
+    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
+    rig.cx.run_until_parked();
+    gate.release();
+    rig.cx.run_until_parked();
+    assert_eq!(rig.route(), Route::World);
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("fresh world").read(cx).focused()), None,
+        "later explicit World wins over retained B from route A");
+}
+
 #[gpui::test]
 fn stale_graph_row_pointer_and_ax_cannot_take_current_focus_before_redraw(cx: &mut TestAppContext) {
     let (mut rig, gate) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);
