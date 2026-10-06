@@ -714,6 +714,18 @@ fn source_address(text: &str) -> (bool, Option<SourceAddress<'_>>) {
     (false, None)
 }
 
+fn semantic_address(text: &str) -> bool {
+    let Some((package, declaration)) = text.split_once("::semantic::") else {
+        return false;
+    };
+    let Some((identity, _)) = declaration.split_once("::") else {
+        return false;
+    };
+    !package.is_empty()
+        && identity.len() == 64
+        && identity.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 /// Name or exact declaration-address lookup pinned to a source root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NameQuery {
@@ -756,7 +768,7 @@ impl NameQuery {
         let windows_root = text.as_bytes().get(1) == Some(&b':')
             && matches!(text.as_bytes().get(2), Some(b'/' | b'\\'));
         if source_syntax
-            || text.contains("::semantic::")
+            || semantic_address(text)
             || text.starts_with('/')
             || text.starts_with("pkg:")
             || windows_root

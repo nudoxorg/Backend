@@ -1295,7 +1295,7 @@ fn exact_address_names_retains_relative_qualified_ambiguity_without_scope_fallba
     let first = RowId::Symbol(symbol_key("compiler-pkg-method"));
     let second = RowId::Symbol(symbol_key("compiler-other-method"));
     let unrelated = RowId::Symbol(symbol_key("compiler-bar-method"));
-    let address = "pkg::semantic::hash::Foo::method";
+    let address = "pkg::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::Foo::method";
     let library = projection(vec![
         Row::new(RowId::Package(package), basis, "pkg"),
         Row::new(RowId::Package(other_package), basis, "other"),
@@ -1305,14 +1305,14 @@ fn exact_address_names_retains_relative_qualified_ambiguity_without_scope_fallba
             second,
             basis,
             other_package,
-            "other::semantic::hash::Foo::method",
+            "other::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::Foo::method",
         )
         .with_source(SourceLocation::new("src/foo.py", 4).expect("other site")),
         Row::in_package(
             unrelated,
             basis,
             package,
-            "pkg::semantic::other::Bar::method",
+            "pkg::semantic::bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb::Bar::method",
         )
         .with_source(SourceLocation::new("src/bar.py", 8).expect("unrelated site")),
     ]);
@@ -1338,9 +1338,9 @@ fn exact_address_names_retains_relative_qualified_ambiguity_without_scope_fallba
         assert_eq!(name_page_ids(&names(exact)), [first], "{exact}");
     }
     for foreign in [
-        "forged::semantic::hash::Foo::method",
-        "pkg::semantic::forged::Foo::method",
-        "pkg::semantic::hash::Foo::Method",
+        "forged::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::Foo::method",
+        "pkg::semantic::cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc::Foo::method",
+        "pkg::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::Foo::Method",
         "forged::src/foo.py:4::Foo::method",
         "pkg::src/Foo.py:4::Foo::method",
         "pkg::src/foo.py:5::Foo::method",
@@ -1376,19 +1376,106 @@ fn exact_address_names_retains_relative_qualified_ambiguity_without_scope_fallba
 }
 
 #[test]
+fn qualified_semantic_namespaces_remain_names_and_producer_addresses_stay_exact() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let first = RowId::Symbol(symbol_key("namespace-thing-a"));
+    let second = RowId::Symbol(symbol_key("namespace-thing-b"));
+    let method = RowId::Symbol(symbol_key("namespace-method"));
+    let native = RowId::Symbol(symbol_key("compiler-addressed-thing"));
+    let address =
+        "pkg::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::Thing";
+    let library = projection(vec![
+        Row::new(first, basis, "one::crate::semantic::model::Thing"),
+        Row::new(second, basis, "two::crate::semantic::model::Thing"),
+        Row::new(method, basis, "scope::Foo::semantic::method"),
+        Row::new(native, basis, address),
+    ]);
+    let names = |text, limit| {
+        library
+            .names(&NameQuery::new(text, library.revision_root(), limit))
+            .expect("closed semantic namespace selector")
+    };
+    let mut expected = vec![first, second];
+    expected.sort_unstable();
+    for text in [
+        "crate::semantic::model::Thing",
+        "CRATE::SEMANTIC::MODEL::THING",
+        "crate::semantic::model::Thi",
+    ] {
+        assert_eq!(
+            name_page_ids(&names(text, QueryLimit::default())),
+            expected,
+            "{text}"
+        );
+    }
+    for text in [
+        "Foo::semantic::method",
+        "fOO::SEMANTIC::mETHod",
+        "Foo::semantic::met",
+    ] {
+        assert_eq!(
+            name_page_ids(&names(text, QueryLimit::default())),
+            [method],
+            "{text}"
+        );
+    }
+    assert_eq!(
+        name_page_ids(&names(address, QueryLimit::default())),
+        [native]
+    );
+    for text in [
+        "pkg::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::thing",
+        "PKG::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::Thing",
+        "pkg::semantic::bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb::Thing",
+        "/forged::crate::semantic::model::Thing",
+        "pkg:npm/forged@1.0.0::crate::semantic::model::Thing",
+        "C:\\forged::crate::semantic::model::Thing",
+        "pkg::src/model.py:4::crate::semantic::model::Thing",
+    ] {
+        assert_eq!(
+            names(text, QueryLimit::default()).root.row_count(),
+            0,
+            "{text}"
+        );
+    }
+    let query = NameQuery::new(
+        "crate::semantic::model::Thing",
+        library.revision_root(),
+        QueryLimit::new(1).expect("limit"),
+    );
+    let first_page = library.names(&query).expect("first namespace page");
+    let second_page = library
+        .names(&query.with_cursor(first_page.next.expect("ambiguity cursor")))
+        .expect("second namespace page");
+    assert_ne!(name_page_ids(&first_page), name_page_ids(&second_page));
+    assert!(second_page.next.is_none());
+    assert!(!library.view().compatibility_rows_are_materialized());
+    assert_eq!(library.work_counters().scan_rows, 0);
+}
+
+#[test]
 fn empty_address_leaf_never_enumerates_names_but_literal_empty_name_still_pages() {
     let (root, object) = source();
     let basis = Basis::new(root, object);
     let first = RowId::Symbol(symbol_key("compiler-first"));
     let second = RowId::Symbol(symbol_key("compiler-second"));
     let library = projection(vec![
-        Row::new(first, basis, "pkg::semantic::hash::Foo::method"),
-        Row::new(second, basis, "pkg::semantic::other::Bar::method"),
+        Row::new(
+            first,
+            basis,
+            "pkg::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::Foo::method",
+        ),
+        Row::new(
+            second,
+            basis,
+            "pkg::semantic::bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb::Bar::method",
+        ),
     ]);
     let limit = QueryLimit::new(1).expect("bound");
     for text in [
         "/project::semantic::forged::",
-        "pkg::semantic::hash::",
+        "pkg::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::",
         "pkg::src/foo.py:4::",
         "pkg::src/foo.py:0::",
         "/project::",
