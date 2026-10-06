@@ -1,7 +1,7 @@
 //! Small queue transport over exact typed CAS evidence.
 
 use super::profile::{BuiltinIntent, BuiltinIntentSchema, BuiltinModel, BuiltinModelError};
-use super::staged_intent::{self, EvidenceKind, StageBasis, StagePool, StagedEvidence};
+use super::staged_intent::{self, EvidenceKind, StageAdmission, StageBasis, StagePool};
 use backend_engine::{WorkspaceModel, WorkspaceSnapshot};
 use backend_store::{
     ArtifactBudget, ArtifactClosureClaim, ClosureCompositionBudget, DurableClosureManifest,
@@ -28,7 +28,7 @@ pub(super) struct StagedIntent {
     pub membership: DurableClosureManifest,
     store: FileStore,
     cancelled: Arc<AtomicBool>,
-    _admission: Option<Arc<StagedEvidence>>,
+    _admission: Option<Arc<StageAdmission>>,
 }
 
 impl std::fmt::Debug for StagedIntent {
@@ -281,7 +281,7 @@ pub(super) fn stage(
     }
     let (maximum_bytes, maximum_pages) =
         configured_limits().map_err(|e| error("stage source admission policy", e))?;
-    let (artifact_budget, composition_budget) =
+    let (_, composition_budget) =
         budgets(maximum_pages, maximum_bytes).map_err(|e| error("stage budgets", e))?;
     if bytes.len() as u64 > maximum_bytes {
         return Err(error("stage intent byte budget", StoreError::Bounds));
@@ -401,27 +401,20 @@ pub(super) fn stage(
         }
     }
     cancelled(&cancellation).map_err(|e| error("stage cancelled", e))?;
-    let admission = Arc::new(
-        writer
-            .finish()
-            .map_err(|e| error("finish staged evidence", e))?,
-    );
-    let pin = store
-        .reopen_pinned_stored_closure(
-            ArtifactClosureClaim::from_id(admission.receipt.receipt().closure()),
-            artifact_budget,
-        )
-        .map_err(|e| error("reopen staged scope", e))?;
+    let (manifest, pin, admission) = writer
+        .finish()
+        .map_err(|e| error("finish staged evidence", e))?
+        .into_transport();
     let membership = DurableClosureManifest::from_pinned(store, pin, composition_budget)
         .map_err(|e| error("admit staged membership", e))?
         .with_cancellation(Arc::clone(&cancellation));
     let staged = Arc::new(StagedIntent {
         basis: bound,
-        manifest: admission.manifest_id,
+        manifest,
         membership,
         store: store.clone(),
         cancelled: cancellation,
-        _admission: Some(admission),
+        _admission: Some(Arc::new(admission)),
     });
     intent.set_staged(staged, true);
     Ok(intent)

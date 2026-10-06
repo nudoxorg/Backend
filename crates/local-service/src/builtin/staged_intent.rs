@@ -565,6 +565,24 @@ pub(super) struct StagedEvidence {
     _lease: Reservation,
 }
 
+/// Affine live-work reservation after exact reachability has transferred to
+/// a per-closure membership lease. This does not hold a global GC barrier.
+pub(super) struct StageAdmission {
+    _lease: Reservation,
+}
+
+impl StagedEvidence {
+    pub(super) fn into_transport(self) -> (ObjectId, PinnedStoredClosureReceipt, StageAdmission) {
+        (
+            self.manifest_id,
+            self.receipt,
+            StageAdmission {
+                _lease: self._lease,
+            },
+        )
+    }
+}
+
 fn encode_manifest(basis: StageBasis, chains: [Chain; 3]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(MANIFEST_BYTES);
     bytes.extend_from_slice(b"BSM1");
