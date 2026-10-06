@@ -1180,11 +1180,11 @@ impl TypeScriptProjectWitness {
         );
         files.sort_unstable_by(|left, right| left.path.cmp(&right.path));
         files.dedup_by(|left, right| left.path == right.path);
-        let mut discovery_fingerprint = Sha256::new();
+        let mut discovery_fingerprint = Hasher::new();
         discovery_fingerprint.update(b"typescript.project-discovery-origin.v1\0");
-        discovery_fingerprint.update([discovered.discovery_origin as u8]);
-        discovery_fingerprint.update(witness_fingerprint(&files));
-        let fingerprint = discovery_fingerprint.finalize().into();
+        discovery_fingerprint.update(&[discovered.discovery_origin as u8]);
+        discovery_fingerprint.update(&witness_fingerprint(&files));
+        let fingerprint = *discovery_fingerprint.finalize().as_bytes();
         let selected_snapshot = |path: &Path| {
             files
                 .iter()
