@@ -8,6 +8,7 @@
 use std::{
     fs::{self, File},
     io::{self, Read},
+    ops::Deref,
     path::{Path, PathBuf},
 };
 
@@ -34,6 +35,10 @@ const MAX_TYPESCRIPT_PACKAGE_BYTES: u64 = 96 * 1024 * 1024;
 const MAX_NODE_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_COMPILER_SHIM_BYTES: usize = 16 * 1024;
 const MAX_SHEBANG_BYTES: usize = 256;
+const MAX_RESOLVER_DIRECTORIES: usize = 4096;
+const MAX_RESOLVER_OBSERVATIONS: usize = 16_384;
+const MAX_RESOLVER_DIRECTORY_ENTRIES: usize = 65_536;
+const MAX_RESOLVER_DEPTH: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FileIdentity {
@@ -97,6 +102,14 @@ pub(crate) enum TypeScriptSelectionOrigin {
 }
 
 impl TypeScriptProjectInputs<'_> {
+    /// Starts an isolated observation ledger for one compiler program.
+    pub(crate) fn resolver(&self) -> TypeScriptResolverCapability<'_> {
+        TypeScriptResolverCapability {
+            witness: self.witness,
+            observations: std::sync::Mutex::new(ResolverObservationLedger::default()),
+        }
+    }
+
     pub(crate) fn load_source(
         &self,
         path: &Path,
@@ -106,6 +119,604 @@ impl TypeScriptProjectInputs<'_> {
 
     pub(crate) fn validate_current(&self) -> Result<(), TypeScriptProjectHostError> {
         self.witness.validate_current()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TypeScriptDirectoryEntryKind {
+    RegularFile,
+    Directory,
+    Symlink,
+    Other,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TypeScriptDirectoryEntry {
+    pub(crate) path: Box<Path>,
+    pub(crate) canonical_path: Option<Box<Path>>,
+    pub(crate) kind: TypeScriptDirectoryEntryKind,
+    pub(crate) identity: FileIdentity,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TypeScriptResolverObservation {
+    Source {
+        path: Box<Path>,
+        content_id: ContentId<SourceFactDomain>,
+        identity: FileIdentity,
+        length: u64,
+    },
+    MissingPath {
+        path: Box<Path>,
+        nearest_existing_parent: Option<Box<Path>>,
+    },
+    Directory {
+        path: Box<Path>,
+        identity: FileIdentity,
+        entries: Box<[TypeScriptDirectoryEntry]>,
+    },
+    Realpath {
+        path: Box<Path>,
+        canonical_path: Option<Box<Path>>,
+        identity: Option<FileIdentity>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RealpathSnapshot {
+    path: Box<Path>,
+    canonical_path: Option<Box<Path>>,
+    identity: Option<FileIdentity>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DirectorySnapshot {
+    path: Box<Path>,
+    identity: FileIdentity,
+    entries: Box<[TypeScriptDirectoryEntry]>,
+}
+
+#[derive(Debug, Default)]
+struct ResolverObservationLedger {
+    loaded_sources: std::collections::BTreeMap<PathBuf, TypeScriptFileInput>,
+    missing_paths: std::collections::BTreeMap<PathBuf, Option<PathBuf>>,
+    directories: std::collections::BTreeMap<PathBuf, DirectorySnapshot>,
+    realpaths: std::collections::BTreeMap<PathBuf, RealpathSnapshot>,
+}
+
+impl ResolverObservationLedger {
+    fn observation_count(&self) -> usize {
+        self.loaded_sources
+            .len()
+            .saturating_add(self.missing_paths.len())
+            .saturating_add(self.directories.len())
+            .saturating_add(self.realpaths.len())
+    }
+}
+
+/// Per-program filesystem capability for TypeScript configuration and module resolution.
+///
+/// Every positive read and negative lookup is retained and can be included in the program recipe.
+/// The capability is scoped to the selected package workspace and TypeScript module root.
+#[derive(Debug)]
+pub(crate) struct TypeScriptResolverCapability<'a> {
+    witness: &'a TypeScriptProjectWitness,
+    observations: std::sync::Mutex<ResolverObservationLedger>,
+}
+
+pub(crate) struct TypeScriptLoadedSources<'a> {
+    guard: std::sync::MutexGuard<'a, ResolverObservationLedger>,
+}
+
+impl Deref for TypeScriptLoadedSources<'_> {
+    type Target = std::collections::BTreeMap<PathBuf, TypeScriptFileInput>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard.loaded_sources
+    }
+}
+
+impl TypeScriptResolverCapability<'_> {
+    pub(crate) fn try_load_source(
+        &self,
+        path: &Path,
+    ) -> Result<Option<TypeScriptFileInput>, TypeScriptProjectHostError> {
+        let lexical = self.witness.admit_lexical_path(path)?;
+        let Some((canonical, identity)) = self.capture_realpath(&lexical)? else {
+            self.record_missing(lexical, None)?;
+            return Ok(None);
+        };
+        if !self.witness.path_is_admitted(&canonical) {
+            return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+                path: canonical.into_boxed_path(),
+            });
+        }
+        let (snapshot, bytes) = read_regular_file(&canonical, MAX_SOURCE_FILE_BYTES)?;
+        if self
+            .capture_realpath(&lexical)?
+            .as_ref()
+            .map(|(path, id)| (path.as_path(), id))
+            != Some((canonical.as_path(), &identity))
+        {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: lexical.clone().into_boxed_path(),
+            });
+        }
+        let input = TypeScriptFileInput {
+            path: canonical.clone().into_boxed_path(),
+            content_id: ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes),
+            identity: snapshot.identity,
+            bytes: bytes.into_boxed_slice(),
+        };
+        let mut ledger = self.lock_observations(&canonical)?;
+        if ledger.missing_paths.contains_key(&lexical) {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: lexical.into_boxed_path(),
+            });
+        }
+        if let Some(previous) = ledger.loaded_sources.get(&canonical) {
+            if previous.identity != input.identity
+                || previous.content_id != input.content_id
+                || previous.bytes.as_ref() != input.bytes.as_ref()
+            {
+                return Err(TypeScriptProjectHostError::WitnessChanged {
+                    path: canonical.into_boxed_path(),
+                });
+            }
+        } else {
+            if ledger.observation_count() >= MAX_RESOLVER_OBSERVATIONS {
+                return Err(TypeScriptProjectHostError::ResolverObservationLimit {
+                    observed: ledger.observation_count().saturating_add(1),
+                    maximum: MAX_RESOLVER_OBSERVATIONS,
+                });
+            }
+            let observed_bytes = ledger
+                .loaded_sources
+                .values()
+                .map(|source| u64::try_from(source.bytes.len()).unwrap_or(u64::MAX))
+                .fold(
+                    u64::try_from(input.bytes.len()).unwrap_or(u64::MAX),
+                    u64::saturating_add,
+                );
+            if ledger.loaded_sources.len() >= MAX_RESOLVED_SOURCE_FILES {
+                return Err(TypeScriptProjectHostError::ResolvedSourceLimit {
+                    observed: ledger.loaded_sources.len().saturating_add(1),
+                    maximum: MAX_RESOLVED_SOURCE_FILES,
+                });
+            }
+            if observed_bytes > MAX_RESOLVED_SOURCE_BYTES {
+                return Err(TypeScriptProjectHostError::ResolvedSourceBytes {
+                    observed: observed_bytes,
+                    maximum: MAX_RESOLVED_SOURCE_BYTES,
+                });
+            }
+            ledger
+                .loaded_sources
+                .insert(canonical.clone(), input.clone());
+        }
+        self.record_realpath_locked(&mut ledger, lexical, Some(canonical), identity)?;
+        Ok(Some(input))
+    }
+
+    pub(crate) fn directory_exists(&self, path: &Path) -> Result<bool, TypeScriptProjectHostError> {
+        let lexical = self.witness.admit_lexical_path(path)?;
+        let Some((canonical, identity)) = self.capture_realpath(&lexical)? else {
+            self.record_missing(lexical, None)?;
+            return Ok(false);
+        };
+        if !self.witness.path_is_admitted(&canonical) {
+            return Err(TypeScriptProjectHostError::SourceOutsideCapability { path: canonical });
+        }
+        self.record_realpath(lexical.clone(), Some(canonical.clone()), identity)?;
+        let metadata =
+            fs::metadata(&canonical).map_err(|source| TypeScriptProjectHostError::PackagePath {
+                path: canonical.clone(),
+                source,
+            })?;
+        if !metadata.is_dir() {
+            return Ok(false);
+        }
+        self.observe_directory(&canonical)?;
+        Ok(true)
+    }
+
+    pub(crate) fn realpath(
+        &self,
+        path: &Path,
+    ) -> Result<Option<Box<Path>>, TypeScriptProjectHostError> {
+        let lexical = self.witness.admit_lexical_path(path)?;
+        let Some((canonical, identity)) = self.capture_realpath(&lexical)? else {
+            self.record_missing(lexical, None)?;
+            return Ok(None);
+        };
+        if !self.witness.path_is_admitted(&canonical) {
+            return Err(TypeScriptProjectHostError::SourceOutsideCapability { path: canonical });
+        }
+        self.record_realpath(lexical, Some(canonical.clone()), identity)?;
+        Ok(Some(canonical.into_boxed_path()))
+    }
+
+    /// Returns matching regular files, sorted by canonical path. Symlinked directories are
+    /// traversed only when their resolved target stays inside an admitted root.
+    pub(crate) fn read_directory(
+        &self,
+        path: &Path,
+        extensions: &[&str],
+        recursive: bool,
+        maximum_depth: usize,
+        maximum_entries: usize,
+    ) -> Result<Vec<TypeScriptDirectoryEntry>, TypeScriptProjectHostError> {
+        if maximum_depth > MAX_RESOLVER_DEPTH
+            || maximum_entries == 0
+            || maximum_entries > MAX_RESOLVER_DIRECTORY_ENTRIES
+        {
+            return Err(TypeScriptProjectHostError::ResolverDirectoryLimit {
+                requested_depth: maximum_depth,
+                requested_entries: maximum_entries,
+                maximum_depth: MAX_RESOLVER_DEPTH,
+                maximum_entries: MAX_RESOLVER_DIRECTORY_ENTRIES,
+            });
+        }
+        let mut pending = vec![(path.to_path_buf(), 0_usize)];
+        let mut visited = std::collections::BTreeSet::new();
+        let mut output = Vec::new();
+        while let Some((directory, depth)) = pending.pop() {
+            if !visited.insert(directory.clone()) {
+                continue;
+            }
+            if depth > maximum_depth {
+                return Err(TypeScriptProjectHostError::ResolverDirectoryLimit {
+                    requested_depth: depth,
+                    requested_entries: maximum_entries,
+                    maximum_depth,
+                    maximum_entries,
+                });
+            }
+            let lexical = self.witness.admit_lexical_path(&directory)?;
+            let Some((canonical, identity)) = self.capture_realpath(&lexical)? else {
+                self.record_missing(lexical, None)?;
+                continue;
+            };
+            if !self.witness.path_is_admitted(&canonical) {
+                return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+                    path: canonical,
+                });
+            }
+            let metadata = fs::metadata(&canonical).map_err(|source| {
+                TypeScriptProjectHostError::PackagePath {
+                    path: canonical.clone(),
+                    source,
+                }
+            })?;
+            if !metadata.is_dir() {
+                continue;
+            }
+            self.record_realpath(lexical, Some(canonical.clone()), identity)?;
+            let snapshot = self.observe_directory(&canonical)?;
+            for entry in snapshot.entries.iter() {
+                let actual = entry
+                    .canonical_path
+                    .as_deref()
+                    .unwrap_or(entry.path.as_ref());
+                if !self.witness.path_is_admitted(actual) {
+                    return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+                        path: actual.to_path_buf().into_boxed_path(),
+                    });
+                }
+                let actual_metadata = match fs::metadata(actual) {
+                    Ok(metadata) => metadata,
+                    Err(source) if source.kind() == io::ErrorKind::NotFound => continue,
+                    Err(source) => {
+                        return Err(TypeScriptProjectHostError::PackagePath {
+                            path: actual.to_path_buf().into_boxed_path(),
+                            source,
+                        });
+                    }
+                };
+                if actual_metadata.is_dir() {
+                    if recursive && depth < maximum_depth {
+                        pending.push((entry.path.to_path_buf(), depth + 1));
+                    }
+                    continue;
+                }
+                if !actual_metadata.is_file() || !extension_matches(&entry.path, extensions) {
+                    continue;
+                }
+                if !self.witness.path_is_admitted(actual) {
+                    return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+                        path: actual.to_path_buf().into_boxed_path(),
+                    });
+                }
+                output.push(entry.clone());
+                if output.len() > maximum_entries {
+                    return Err(TypeScriptProjectHostError::ResolverDirectoryLimit {
+                        requested_depth: depth,
+                        requested_entries: output.len(),
+                        maximum_depth,
+                        maximum_entries,
+                    });
+                }
+            }
+        }
+        output.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+        Ok(output)
+    }
+
+    pub(crate) fn loaded_sources(
+        &self,
+    ) -> Result<TypeScriptLoadedSources<'_>, TypeScriptProjectHostError> {
+        let guard = self.observations.lock().map_err(|_| {
+            TypeScriptProjectHostError::WitnessLockPoisoned {
+                path: self.witness.project_root.clone(),
+            }
+        })?;
+        Ok(TypeScriptLoadedSources { guard })
+    }
+
+    pub(crate) fn observations(
+        &self,
+    ) -> Result<Vec<TypeScriptResolverObservation>, TypeScriptProjectHostError> {
+        let ledger = self.lock_observations(&self.witness.project_root)?;
+        let mut output = Vec::new();
+        for input in ledger.loaded_sources.values() {
+            output.push(TypeScriptResolverObservation::Source {
+                path: input.path.clone(),
+                content_id: input.content_id,
+                identity: input.identity,
+                length: u64::try_from(input.bytes.len()).unwrap_or(u64::MAX),
+            });
+        }
+        for (path, parent) in &ledger.missing_paths {
+            output.push(TypeScriptResolverObservation::MissingPath {
+                path: path.clone().into_boxed_path(),
+                nearest_existing_parent: parent
+                    .as_ref()
+                    .map(|path| path.to_path_buf().into_boxed_path()),
+            });
+        }
+        for snapshot in ledger.directories.values() {
+            output.push(TypeScriptResolverObservation::Directory {
+                path: snapshot.path.clone(),
+                identity: snapshot.identity,
+                entries: snapshot.entries.clone(),
+            });
+        }
+        for snapshot in ledger.realpaths.values() {
+            output.push(TypeScriptResolverObservation::Realpath {
+                path: snapshot.path.clone(),
+                canonical_path: snapshot.canonical_path.clone(),
+                identity: snapshot.identity,
+            });
+        }
+        output.sort_unstable_by(|left, right| {
+            resolver_observation_path(left).cmp(resolver_observation_path(right))
+        });
+        Ok(output)
+    }
+
+    pub(crate) fn resolver_witness(&self) -> Result<[u8; 32], TypeScriptProjectHostError> {
+        let observations = self.observations()?;
+        let mut digest = Hasher::new();
+        digest.update(b"compiler.typescript.resolver-observations.v1\0");
+        for observation in &observations {
+            digest.update(format!("{observation:?}").as_bytes());
+            digest.update(&[0]);
+        }
+        Ok(*digest.finalize().as_bytes())
+    }
+
+    pub(crate) fn validate_current(&self) -> Result<(), TypeScriptProjectHostError> {
+        self.witness.validate_current()?;
+        let ledger = self.lock_observations(&self.witness.project_root)?;
+        for input in ledger.loaded_sources.values() {
+            let observed = capture_file_snapshot(&input.path, MAX_SOURCE_FILE_BYTES)?;
+            if observed.identity != input.identity
+                || observed.length != u64::try_from(input.bytes.len()).unwrap_or(u64::MAX)
+                || observed.digest != *blake3::hash(&input.bytes).as_bytes()
+            {
+                return Err(TypeScriptProjectHostError::WitnessChanged {
+                    path: input.path.clone(),
+                });
+            }
+        }
+        for (path, nearest_parent) in &ledger.missing_paths {
+            if !matches!(fs::symlink_metadata(path), Err(ref source) if source.kind() == io::ErrorKind::NotFound)
+            {
+                return Err(TypeScriptProjectHostError::WitnessChanged {
+                    path: path.clone().into_boxed_path(),
+                });
+            }
+            if let Some(parent) = nearest_parent {
+                let observed = capture_directory_snapshot(parent, self.witness)?;
+                if !ledger
+                    .directories
+                    .get(parent)
+                    .is_some_and(|expected| expected == &observed)
+                {
+                    return Err(TypeScriptProjectHostError::WitnessChanged {
+                        path: parent.clone().into_boxed_path(),
+                    });
+                }
+            }
+        }
+        for (path, expected) in &ledger.directories {
+            let observed = capture_directory_snapshot(path, self.witness)?;
+            if &observed != expected {
+                return Err(TypeScriptProjectHostError::WitnessChanged {
+                    path: path.clone().into_boxed_path(),
+                });
+            }
+        }
+        for (path, expected) in &ledger.realpaths {
+            let observed = self.capture_realpath(path)?;
+            let canonical = observed.as_ref().map(|(path, _)| path.as_path());
+            if canonical != expected.canonical_path.as_deref()
+                || observed.as_ref().map(|(_, identity)| *identity) != expected.identity
+            {
+                return Err(TypeScriptProjectHostError::WitnessChanged { path: path.clone() });
+            }
+        }
+        Ok(())
+    }
+
+    fn capture_realpath(
+        &self,
+        path: &Path,
+    ) -> Result<Option<(PathBuf, Option<FileIdentity>)>, TypeScriptProjectHostError> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                let identity = file_identity(&metadata).map_err(|source| {
+                    TypeScriptProjectHostError::PackagePath {
+                        path: path.to_path_buf().into_boxed_path(),
+                        source,
+                    }
+                })?;
+                let canonical = fs::canonicalize(path).map_err(|source| {
+                    TypeScriptProjectHostError::PackagePath {
+                        path: path.to_path_buf().into_boxed_path(),
+                        source,
+                    }
+                })?;
+                Ok(Some((canonical, Some(identity))))
+            }
+            Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(TypeScriptProjectHostError::PackagePath {
+                path: path.to_path_buf().into_boxed_path(),
+                source,
+            }),
+        }
+    }
+
+    fn record_missing(
+        &self,
+        path: PathBuf,
+        nearest_existing_parent: Option<PathBuf>,
+    ) -> Result<(), TypeScriptProjectHostError> {
+        let nearest_existing_parent = match nearest_existing_parent {
+            Some(parent) => Some(parent),
+            None => nearest_existing_admitted_parent(&path, self.witness)?,
+        };
+        let mut ledger = self.lock_observations(&path)?;
+        if ledger
+            .realpaths
+            .get(&path)
+            .is_some_and(|snapshot| snapshot.canonical_path.is_some())
+        {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: path.into_boxed_path(),
+            });
+        }
+        if !ledger.missing_paths.contains_key(&path)
+            && ledger.observation_count() >= MAX_RESOLVER_OBSERVATIONS
+        {
+            return Err(TypeScriptProjectHostError::ResolverObservationLimit {
+                observed: ledger.observation_count().saturating_add(1),
+                maximum: MAX_RESOLVER_OBSERVATIONS,
+            });
+        }
+        ledger
+            .missing_paths
+            .entry(path.clone())
+            .or_insert(nearest_existing_parent.clone());
+        if let Some(parent) = nearest_existing_parent {
+            drop(ledger);
+            self.observe_directory(&parent)?;
+        }
+        Ok(())
+    }
+
+    fn record_realpath(
+        &self,
+        path: PathBuf,
+        canonical_path: Option<PathBuf>,
+        identity: Option<FileIdentity>,
+    ) -> Result<(), TypeScriptProjectHostError> {
+        let mut ledger = self.lock_observations(&path)?;
+        self.record_realpath_locked(
+            &mut ledger,
+            path,
+            canonical_path.map(PathBuf::into_boxed_path),
+            identity,
+        )
+    }
+
+    fn record_realpath_locked(
+        &self,
+        ledger: &mut ResolverObservationLedger,
+        path: PathBuf,
+        canonical_path: Option<Box<Path>>,
+        identity: Option<FileIdentity>,
+    ) -> Result<(), TypeScriptProjectHostError> {
+        let snapshot = RealpathSnapshot {
+            path: path.clone().into_boxed_path(),
+            canonical_path,
+            identity,
+        };
+        if snapshot.canonical_path.is_some() && ledger.missing_paths.contains_key(&path) {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: path.into_boxed_path(),
+            });
+        }
+        if let Some(previous) = ledger.realpaths.get(&path) {
+            if previous != &snapshot {
+                return Err(TypeScriptProjectHostError::WitnessChanged {
+                    path: path.into_boxed_path(),
+                });
+            }
+        } else {
+            if ledger.observation_count() >= MAX_RESOLVER_OBSERVATIONS {
+                return Err(TypeScriptProjectHostError::ResolverObservationLimit {
+                    observed: ledger.observation_count().saturating_add(1),
+                    maximum: MAX_RESOLVER_OBSERVATIONS,
+                });
+            }
+            ledger.realpaths.insert(path, snapshot);
+        }
+        Ok(())
+    }
+
+    fn observe_directory(
+        &self,
+        path: &Path,
+    ) -> Result<DirectorySnapshot, TypeScriptProjectHostError> {
+        let snapshot = capture_directory_snapshot(path, self.witness)?;
+        let mut ledger = self.lock_observations(path)?;
+        if let Some(previous) = ledger.directories.get(path) {
+            if previous != &snapshot {
+                return Err(TypeScriptProjectHostError::WitnessChanged {
+                    path: path.to_path_buf().into_boxed_path(),
+                });
+            }
+        } else {
+            if ledger.directories.len() >= MAX_RESOLVER_DIRECTORIES {
+                return Err(TypeScriptProjectHostError::ResolverObservationLimit {
+                    observed: ledger.directories.len().saturating_add(1),
+                    maximum: MAX_RESOLVER_DIRECTORIES,
+                });
+            }
+            if ledger.observation_count() >= MAX_RESOLVER_OBSERVATIONS {
+                return Err(TypeScriptProjectHostError::ResolverObservationLimit {
+                    observed: ledger.observation_count().saturating_add(1),
+                    maximum: MAX_RESOLVER_OBSERVATIONS,
+                });
+            }
+            ledger
+                .directories
+                .insert(path.to_path_buf(), snapshot.clone());
+        }
+        Ok(snapshot)
+    }
+
+    fn lock_observations(
+        &self,
+        path: &Path,
+    ) -> Result<std::sync::MutexGuard<'_, ResolverObservationLedger>, TypeScriptProjectHostError>
+    {
+        self.observations
+            .lock()
+            .map_err(|_| TypeScriptProjectHostError::WitnessLockPoisoned {
+                path: path.to_path_buf().into_boxed_path(),
+            })
     }
 }
 
@@ -148,32 +759,49 @@ impl TypeScriptProjectWitness {
         package_root: &Path,
         workspace: Option<&WorkspaceBoundary>,
     ) -> Result<Self, TypeScriptProjectHostError> {
+        // Temporary directories on macOS commonly have both `/var/...` and
+        // `/private/var/...` spellings. Keep every boundary in the same
+        // canonical namespace as file snapshots so capability checks do not
+        // mistake the alias for an escape.
+        let project_root = canonical_directory(project_root)?;
+        let module_root = canonical_directory(module_root)?;
+        let package_root = fs::canonicalize(package_root).map_err(|source| {
+            TypeScriptProjectHostError::PackagePath {
+                path: package_root.to_path_buf().into_boxed_path(),
+                source,
+            }
+        })?;
+        let mut canonical_workspace = workspace.cloned();
+        if let Some(workspace) = canonical_workspace.as_mut() {
+            workspace.root = canonical_directory(&workspace.root)?.into_boxed_path();
+        }
         let mut files = Vec::new();
         files.push(capture_file_snapshot(node, MAX_NODE_EXECUTABLE_BYTES)?);
-        let typescript_files = collect_module_inputs(package_root)?;
+        let typescript_files = collect_module_inputs(&package_root)?;
         files.extend(
             typescript_files
                 .iter()
                 .map(|input| snapshot_from_input(input)),
         );
-        if !compiler.starts_with(package_root) {
+        if !compiler.starts_with(&package_root) {
             files.push(capture_file_snapshot(compiler, MAX_NODE_EXECUTABLE_BYTES)?);
         }
-        if let Some(workspace) = workspace {
+        if let Some(workspace) = canonical_workspace.as_ref() {
             files.extend(workspace.files.iter().cloned());
         }
-        let workspace_root = workspace
+        let workspace_root = canonical_workspace
+            .as_ref()
             .map(|workspace| workspace.root.as_ref())
-            .unwrap_or(project_root);
+            .unwrap_or(&project_root);
         let (selected_build_config_paths, angular_snapshot) =
-            angular_build_config_paths(workspace_root, module_root)?;
+            angular_build_config_paths(workspace_root, &module_root)?;
         if let Some(snapshot) = angular_snapshot {
             files.push(snapshot);
         }
         let config_candidates = collect_project_configs(
-            project_root,
+            &project_root,
             workspace_root,
-            module_root,
+            &module_root,
             &selected_build_config_paths,
         )?;
         files.extend(
@@ -185,16 +813,16 @@ impl TypeScriptProjectWitness {
         files.dedup_by(|left, right| left.path == right.path);
         let fingerprint = witness_fingerprint(&files);
         Ok(Self {
-            project_root: project_root.to_path_buf().into_boxed_path(),
+            project_root: project_root.into_boxed_path(),
             home_root: home_root.map(|root| root.to_path_buf().into_boxed_path()),
             discovered_compiler: discovered.compiler.to_path_buf().into_boxed_path(),
             discovered_module_root: discovered.module_root.to_path_buf().into_boxed_path(),
             discovered_version: discovered.version.clone().into_boxed_str(),
             compiler: compiler.to_path_buf().into_boxed_path(),
             node: node.to_path_buf().into_boxed_path(),
-            module_root: module_root.to_path_buf().into_boxed_path(),
-            package_root: package_root.to_path_buf().into_boxed_path(),
-            workspace: workspace.cloned(),
+            module_root: module_root.into_boxed_path(),
+            package_root: package_root.into_boxed_path(),
+            workspace: canonical_workspace,
             workspace_root: workspace_root.to_path_buf().into_boxed_path(),
             files: files.into_boxed_slice(),
             typescript_files: typescript_files.into_boxed_slice(),
@@ -270,6 +898,24 @@ impl TypeScriptProjectWitness {
         })
     }
 
+    fn path_is_admitted(&self, path: &Path) -> bool {
+        path.starts_with(&self.workspace_root) || path.starts_with(&self.module_root)
+    }
+
+    fn admit_lexical_path(&self, path: &Path) -> Result<PathBuf, TypeScriptProjectHostError> {
+        let Some(path) = normalize_absolute_path(path) else {
+            return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+                path: path.to_path_buf().into_boxed_path(),
+            });
+        };
+        if !self.path_is_admitted(&path) {
+            return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+                path: path.into_boxed_path(),
+            });
+        }
+        Ok(path)
+    }
+
     pub(crate) fn validate_current(&self) -> Result<(), TypeScriptProjectHostError> {
         let current_project =
             match find_project_typescript_with_home(&self.project_root, self.home_root.as_deref())?
@@ -341,6 +987,187 @@ impl TypeScriptProjectWitness {
     }
 }
 
+fn normalize_absolute_path(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(std::path::MAIN_SEPARATOR_STR),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+            std::path::Component::Normal(name) => normalized.push(name),
+        }
+    }
+    normalized.is_absolute().then_some(normalized)
+}
+
+fn nearest_existing_admitted_parent(
+    path: &Path,
+    witness: &TypeScriptProjectWitness,
+) -> Result<Option<PathBuf>, TypeScriptProjectHostError> {
+    let mut candidate = path.parent();
+    while let Some(parent) = candidate {
+        match fs::symlink_metadata(parent) {
+            Ok(_) => {
+                if !fs::metadata(parent)
+                    .map(|metadata| metadata.is_dir())
+                    .unwrap_or(false)
+                {
+                    return Err(TypeScriptProjectHostError::RegularDirectoryRequired {
+                        path: parent.to_path_buf().into_boxed_path(),
+                    });
+                }
+                let canonical = fs::canonicalize(parent).map_err(|source| {
+                    TypeScriptProjectHostError::PackagePath {
+                        path: parent.to_path_buf().into_boxed_path(),
+                        source,
+                    }
+                })?;
+                if !witness.path_is_admitted(&canonical) {
+                    return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+                        path: canonical.into_boxed_path(),
+                    });
+                }
+                return Ok(Some(canonical));
+            }
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                candidate = parent.parent();
+            }
+            Err(source) => {
+                return Err(TypeScriptProjectHostError::PackagePath {
+                    path: parent.to_path_buf().into_boxed_path(),
+                    source,
+                });
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn capture_directory_snapshot(
+    path: &Path,
+    witness: &TypeScriptProjectWitness,
+) -> Result<DirectorySnapshot, TypeScriptProjectHostError> {
+    let canonical =
+        fs::canonicalize(path).map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: path.to_path_buf().into_boxed_path(),
+            source,
+        })?;
+    if !witness.path_is_admitted(&canonical) {
+        return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+            path: canonical.into_boxed_path(),
+        });
+    }
+    let metadata =
+        fs::metadata(&canonical).map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: canonical.clone().into_boxed_path(),
+            source,
+        })?;
+    if !metadata.is_dir() {
+        return Err(TypeScriptProjectHostError::RegularDirectoryRequired {
+            path: canonical.into_boxed_path(),
+        });
+    }
+    let identity =
+        file_identity(&metadata).map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: canonical.clone().into_boxed_path(),
+            source,
+        })?;
+    let mut entries = Vec::new();
+    for entry in
+        fs::read_dir(&canonical).map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: canonical.clone().into_boxed_path(),
+            source,
+        })?
+    {
+        let entry = entry.map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: canonical.clone().into_boxed_path(),
+            source,
+        })?;
+        if entries.len() >= MAX_RESOLVER_DIRECTORY_ENTRIES {
+            return Err(TypeScriptProjectHostError::ResolverDirectoryLimit {
+                requested_depth: 0,
+                requested_entries: entries.len().saturating_add(1),
+                maximum_depth: MAX_RESOLVER_DEPTH,
+                maximum_entries: MAX_RESOLVER_DIRECTORY_ENTRIES,
+            });
+        }
+        let entry_path = entry.path();
+        let entry_metadata = fs::symlink_metadata(&entry_path).map_err(|source| {
+            TypeScriptProjectHostError::PackagePath {
+                path: entry_path.clone().into_boxed_path(),
+                source,
+            }
+        })?;
+        let entry_identity = file_identity(&entry_metadata).map_err(|source| {
+            TypeScriptProjectHostError::PackagePath {
+                path: entry_path.clone().into_boxed_path(),
+                source,
+            }
+        })?;
+        let kind = if entry_metadata.file_type().is_symlink() {
+            TypeScriptDirectoryEntryKind::Symlink
+        } else if entry_metadata.is_dir() {
+            TypeScriptDirectoryEntryKind::Directory
+        } else if entry_metadata.is_file() {
+            TypeScriptDirectoryEntryKind::RegularFile
+        } else {
+            TypeScriptDirectoryEntryKind::Other
+        };
+        let canonical_path = match fs::canonicalize(&entry_path) {
+            Ok(path) => Some(path.into_boxed_path()),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => None,
+            Err(source) => {
+                return Err(TypeScriptProjectHostError::PackagePath {
+                    path: entry_path.into_boxed_path(),
+                    source,
+                });
+            }
+        };
+        entries.push(TypeScriptDirectoryEntry {
+            path: entry_path.into_boxed_path(),
+            canonical_path,
+            kind,
+            identity: entry_identity,
+        });
+    }
+    entries.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+    Ok(DirectorySnapshot {
+        path: canonical.into_boxed_path(),
+        identity,
+        entries: entries.into_boxed_slice(),
+    })
+}
+
+fn extension_matches(path: &Path, extensions: &[&str]) -> bool {
+    if extensions.is_empty() {
+        return true;
+    }
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| {
+            extensions
+                .iter()
+                .any(|candidate| candidate.trim_start_matches('.') == extension)
+        })
+}
+
+fn resolver_observation_path(observation: &TypeScriptResolverObservation) -> &Path {
+    match observation {
+        TypeScriptResolverObservation::Source { path, .. }
+        | TypeScriptResolverObservation::MissingPath { path, .. }
+        | TypeScriptResolverObservation::Directory { path, .. }
+        | TypeScriptResolverObservation::Realpath { path, .. } => path,
+    }
+}
+
 fn snapshot_from_input(input: &TypeScriptFileInput) -> FileSnapshot {
     FileSnapshot {
         path: input.path.clone(),
@@ -384,6 +1211,25 @@ fn witness_fingerprint(files: &[FileSnapshot]) -> [u8; 32] {
         digest.update(&file.digest);
     }
     *digest.finalize().as_bytes()
+}
+
+fn canonical_directory(path: &Path) -> Result<PathBuf, TypeScriptProjectHostError> {
+    let canonical =
+        fs::canonicalize(path).map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: path.to_path_buf().into_boxed_path(),
+            source,
+        })?;
+    let metadata =
+        fs::metadata(&canonical).map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: canonical.clone().into_boxed_path(),
+            source,
+        })?;
+    if !metadata.is_dir() {
+        return Err(TypeScriptProjectHostError::RegularDirectoryRequired {
+            path: canonical.into_boxed_path(),
+        });
+    }
+    Ok(canonical)
 }
 
 fn capture_file_snapshot(
@@ -579,8 +1425,11 @@ fn collect_project_configs(
     module_root: &Path,
     selected_build_configs: &[PathBuf],
 ) -> Result<Vec<TypeScriptConfigInput>, TypeScriptProjectHostError> {
+    let project_root = canonical_directory(project_root)?;
+    let workspace_root = canonical_directory(workspace_root)?;
+    let module_root = canonical_directory(module_root)?;
     let mut paths = Vec::new();
-    collect_tsconfig_paths(workspace_root, &mut paths, 0)?;
+    collect_tsconfig_paths(&workspace_root, &mut paths, 0)?;
     paths.extend(selected_build_configs.iter().cloned());
     if paths.is_empty() {
         return Ok(Vec::new());
@@ -596,11 +1445,19 @@ fn collect_project_configs(
 
     let mut candidate_paths = std::collections::BTreeSet::new();
     for path in &paths {
-        candidate_paths.insert(canonical_regular_config(path, workspace_root, module_root)?);
+        candidate_paths.insert(canonical_regular_config(
+            path,
+            &workspace_root,
+            &module_root,
+        )?);
     }
     let mut selected_paths = std::collections::BTreeSet::new();
     for path in selected_build_configs {
-        selected_paths.insert(canonical_regular_config(path, workspace_root, module_root)?);
+        selected_paths.insert(canonical_regular_config(
+            path,
+            &workspace_root,
+            &module_root,
+        )?);
     }
     let mut pending = paths;
     let mut captured = std::collections::BTreeMap::<PathBuf, TypeScriptConfigInput>::new();
@@ -615,7 +1472,7 @@ fn collect_project_configs(
                 maximum: MAX_PROJECT_CONFIG_FILES,
             });
         }
-        let canonical = canonical_regular_config(&path, workspace_root, module_root)?;
+        let canonical = canonical_regular_config(&path, &workspace_root, &module_root)?;
         if captured.contains_key(&canonical) {
             continue;
         }
@@ -628,17 +1485,17 @@ fn collect_project_configs(
             "extends",
             &canonical,
             project_root,
-            workspace_root,
-            module_root,
+            &workspace_root,
+            &module_root,
             false,
         )?;
         let references = config_paths_from_field(
             &value,
             "references",
             &canonical,
-            project_root,
-            workspace_root,
-            module_root,
+            &project_root,
+            &workspace_root,
+            &module_root,
             true,
         )?;
         pending.extend(extends.iter().cloned());
@@ -708,6 +1565,8 @@ fn angular_build_config_paths(
     workspace_root: &Path,
     module_root: &Path,
 ) -> Result<(Vec<PathBuf>, Option<FileSnapshot>), TypeScriptProjectHostError> {
+    let workspace_root = canonical_directory(workspace_root)?;
+    let module_root = canonical_directory(module_root)?;
     let path = workspace_root.join("angular.json");
     match fs::symlink_metadata(&path) {
         Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok((Vec::new(), None)),
@@ -755,8 +1614,8 @@ fn angular_build_config_paths(
         let candidate = workspace_root.join(raw);
         resolved.push(resolve_relative_config(
             &candidate,
-            workspace_root,
-            module_root,
+            &workspace_root,
+            &module_root,
         )?);
     }
     resolved.sort_unstable();
@@ -1568,7 +2427,21 @@ fn find_project_typescript_with_home(
     root: &Path,
     home_root: Option<&Path>,
 ) -> Result<ProjectTypeScriptSearch, TypeScriptProjectHostError> {
-    let workspace = discover_workspace_boundary(root, home_root)?;
+    let canonical_root =
+        fs::canonicalize(root).map_err(|source| TypeScriptProjectHostError::PackageRoot {
+            package_root: root.to_path_buf().into_boxed_path(),
+            source,
+        })?;
+    let canonical_home = home_root
+        .map(|home| {
+            fs::canonicalize(home).map_err(|source| TypeScriptProjectHostError::HomePath {
+                home: home.to_path_buf().into_boxed_path(),
+                source,
+            })
+        })
+        .transpose()?;
+    let root = canonical_root.as_path();
+    let workspace = discover_workspace_boundary(root, canonical_home.as_deref())?;
     let scan_root = workspace
         .as_ref()
         .map(|workspace| workspace.root.as_ref())
@@ -1731,8 +2604,29 @@ fn discover_workspace_boundary(
     root: &Path,
     home_root: Option<&Path>,
 ) -> Result<Option<WorkspaceBoundary>, TypeScriptProjectHostError> {
-    for (index, ancestor) in root.ancestors().take(MAX_PROJECT_ANCESTORS).enumerate() {
-        if index > 0 && home_root.is_some_and(|home| ancestor == home) {
+    let canonical_root =
+        fs::canonicalize(root).map_err(|source| TypeScriptProjectHostError::PackageRoot {
+            package_root: root.to_path_buf().into_boxed_path(),
+            source,
+        })?;
+    let canonical_home = home_root
+        .map(|home| {
+            fs::canonicalize(home).map_err(|source| TypeScriptProjectHostError::HomePath {
+                home: home.to_path_buf().into_boxed_path(),
+                source,
+            })
+        })
+        .transpose()?;
+    for (index, ancestor) in canonical_root
+        .ancestors()
+        .take(MAX_PROJECT_ANCESTORS)
+        .enumerate()
+    {
+        if index > 0
+            && canonical_home
+                .as_deref()
+                .is_some_and(|home| ancestor == home)
+        {
             break;
         }
         if index > 0 && home_root.is_none() {
@@ -2163,6 +3057,17 @@ pub enum TypeScriptProjectHostError {
     ResolvedSourceLimit { observed: usize, maximum: usize },
     #[error("resolved TypeScript source bytes {observed} exceed the {maximum}-byte bound")]
     ResolvedSourceBytes { observed: u64, maximum: u64 },
+    #[error("TypeScript resolver observations {observed} exceed the {maximum}-observation bound")]
+    ResolverObservationLimit { observed: usize, maximum: usize },
+    #[error(
+        "TypeScript directory query requested depth {requested_depth} and {requested_entries} entries; limits are {maximum_depth} and {maximum_entries}"
+    )]
+    ResolverDirectoryLimit {
+        requested_depth: usize,
+        requested_entries: usize,
+        maximum_depth: usize,
+        maximum_entries: usize,
+    },
     #[error("TypeScript project witness lock was poisoned at {path:?}")]
     WitnessLockPoisoned { path: Box<Path> },
     #[error("TypeScript compiler entry {compiler:?} is outside package {package:?}")]
@@ -2559,6 +3464,8 @@ printf 'Version 5.9.3\n'
             Err(TypeScriptProjectHostError::WorkspaceConfigInvalid { .. })
         ));
 
+        fs::remove_file(fixture.0.join("package.json"))
+            .expect("remove malformed workspace declaration");
         let modules = fixture.install("5.9.3");
         fs::write(fixture.0.join("tsconfig.json"), r#"{"compilerOptions": }"#)
             .expect("write malformed TypeScript config");
@@ -2847,6 +3754,94 @@ printf 'Version 5.9.3\n'
             Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
         ));
         fs::remove_file(outside).expect("remove external declaration");
+    }
+
+    #[test]
+    fn resolver_capability_records_positive_negative_and_directory_witnesses() {
+        let fixture = Fixture::new();
+        fixture.install("5.9.3");
+        let project_root = fs::canonicalize(&fixture.0).expect("canonical project root");
+        fs::create_dir_all(project_root.join("src")).expect("create source directory");
+        let source = project_root.join("src/main.ts");
+        fs::write(&source, b"export const answer = 42;").expect("write source");
+        let missing = project_root.join("src/missing.d.ts");
+        let ProjectTypeScriptSearch::Found(project) =
+            find_project_typescript(&project_root).expect("discover project TypeScript")
+        else {
+            panic!("local TypeScript package should be found");
+        };
+        let node = project_root.join("node");
+        fs::write(&node, b"node witness").expect("write fake Node bytes");
+        let node = fs::canonicalize(node).expect("canonical Node");
+        let package_root = fs::canonicalize(project.module_root.join("typescript"))
+            .expect("canonical TypeScript package root");
+        let witness = TypeScriptProjectWitness::capture(
+            &project_root,
+            None,
+            &project,
+            &project.compiler,
+            &node,
+            &project.module_root,
+            &package_root,
+            project.workspace.as_ref(),
+        )
+        .expect("capture project witness");
+        let capability = TypeScriptResolverCapability {
+            witness: &witness,
+            observations: std::sync::Mutex::new(ResolverObservationLedger::default()),
+        };
+
+        let loaded = capability
+            .try_load_source(&source)
+            .expect("read admitted source")
+            .expect("source is present");
+        assert_eq!(
+            loaded.content_id,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(&loaded.bytes)
+        );
+        assert!(
+            capability
+                .try_load_source(&missing)
+                .expect("observe absent declaration")
+                .is_none()
+        );
+        assert!(
+            capability
+                .directory_exists(&project_root.join("src"))
+                .expect("observe source directory")
+        );
+        let entries = capability
+            .read_directory(&project_root.join("src"), &[".ts"], false, 0, 8)
+            .expect("read bounded TypeScript directory");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].canonical_path.as_deref(), Some(source.as_path()));
+        assert!(
+            capability
+                .loaded_sources()
+                .expect("borrow captured sources")
+                .contains_key(&source)
+        );
+        let observations = capability.observations().expect("capture observations");
+        assert!(observations.iter().any(|observation| matches!(
+            observation,
+            TypeScriptResolverObservation::MissingPath { path, .. } if path.as_ref() == missing
+        )));
+        assert!(observations.iter().any(|observation| matches!(
+            observation,
+            TypeScriptResolverObservation::Directory { path, .. } if path.as_ref() == project_root.join("src")
+        )));
+        let fingerprint = capability.resolver_witness().expect("hash observations");
+        assert_ne!(fingerprint, [0; 32]);
+        capability
+            .validate_current()
+            .expect("admitted resolver observations remain current");
+
+        fs::write(&missing, b"declare const missing: string;")
+            .expect("materialize formerly missing candidate");
+        assert!(matches!(
+            capability.validate_current(),
+            Err(TypeScriptProjectHostError::WitnessChanged { .. })
+        ));
     }
 
     #[test]
