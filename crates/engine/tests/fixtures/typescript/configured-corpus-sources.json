@@ -1,5 +1,12 @@
 {
-  "evidence": "installed fully configured TypeScript checker on ILO, TypeScript 5.9.3; failure sources are byte-exact copies",
+  "evidence": "installed fully configured TypeScript checker on ILO; failure sources are byte-exact copies",
+  "checker": {
+    "version": "TypeScript 5.9.3",
+    "program": "/nix/store/v59vm08hwc74g9c8444cvkg56clr0r9n-nudox-typescript-checker/bin/nudox-typescript-checker",
+    "embedded_main_cjs_sha256": "e7836dfe39a1875e12defb59def53581b70635aad33b6457014ea13b2b763fcc",
+    "module_root": "/nix/store/3dqddf8p7vxrynviiaasayl3iqyh923p-typescript-5.9.3/lib/node_modules",
+    "runtime_env_sha256": "a1c6e5a5f4ad3fcd6e802c5f149e769fe5d9d56d5f23dd24482444c9c0c0e7ba"
+  },
   "sources": [
     {
       "repository": "colinhacks/zod",
@@ -9,6 +16,9 @@
       "fixture_path": "corpora/colinhacks-zod/packages/bench/compile-passthrough.ts",
       "bytes": 11265,
       "sha256": "2f504d2f5a447f8a7a92ee416016a4825ea8070d31f37fa81f985e06d7843f10",
+      "compiler_content_id": "0e1f2f9debec1fe56bb0a6a4cc99b49db880b63767c3ce6ea6726ee064835715",
+      "compiler_recipe_id": "115b5dc8bf1fd5dcd193c9591f27ac79b68752c4ab183779381bfee3338dc6f2",
+      "configured_summary_sha256": "fab688edfa94ca7b66ed942d2c72efbdf6d20bc3de5e963826a33a6d7ffa876c",
       "config_sha256": {
         "tsconfig.json": "79ff8445180c036872e7c6ada7c49993f7b4dc9523bea9060731773c4a9cced2",
         ".configs/tsconfig.base.json": "226711c3bf0132b51dde119447fe52abd0afeea3c4ee39a7fe9bc6583267f28a",
@@ -26,6 +36,9 @@
       "fixture_path": "corpora/realworld-angular/realworld/specs/e2e/navigation.spec.ts",
       "bytes": 9953,
       "sha256": "fa59b4d194d5a38122fa5caf74e867c5b003a443d0f1a19017a65c57415d54a0",
+      "compiler_content_id": "0e7cc1d389fc9ae5fde102a5c18eabb6910ffff8c1018fbb08bf8e5d3d6933de",
+      "compiler_recipe_id": "117eb251c6e236b028e2ed71d8223ca2d7882da898df777fc14288c5be384c91",
+      "configured_summary_sha256": "4bd6b2070e2b1d1a2d2bf7c26572a26ab7f3816f9ed8a047d2a6c197ccf8ef4e",
       "config_sha256": {
         "tsconfig.json": "eafea1dfa84b0859d4aa99d9cadbfdc1fa3351025d960082b3e108284a628856",
         "tsconfig.spec.json": "20e274d5343a745e1af329aee929ea5c3a9a0659b4605614eea6680195326a59",
