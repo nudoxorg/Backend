@@ -1,0 +1,46 @@
+{
+  "source_revision": "e4a4808bfff4e00eeed510cef10a265836a7a716",
+  "patch_sha256": "bb2883801de62210fbf803d1226c4584476db0cc04c1fc2de7bd06980c070c6a",
+  "test_binary": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/build/mcp/.nudox-cargo/slot-0/debug/deps/backend_local_service-89b66b0188ecc952",
+  "test_binary_sha256": "9ad30946c74dd542cf25ebd9737babf011f78bb9175b0a25d05db1c181557f41",
+  "profile": "Cargo test profile optimized + debuginfo, debug assertions; not release",
+  "cases": [
+    {
+      "argv": [
+        "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/build/mcp/.nudox-cargo/slot-0/debug/deps/backend_local_service-89b66b0188ecc952",
+        "--exact",
+        "query::tests::search_selection_refuses_a_view_from_the_previous_workspace_frontier",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "seconds": 0.01212791699799709,
+      "output_file": "search_selection_refuses_a_view_from_the_previous_workspace_frontier.txt",
+      "output_sha256": "b0ad4d80d297aeedfce9efe8a33133dcab7e69725158a50eabd0429d4f3ac265",
+      "classification": "wrong filter: zero tests; not a pass"
+    },
+    {
+      "argv": [
+        "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/build/mcp/.nudox-cargo/slot-0/debug/deps/backend_local_service-89b66b0188ecc952",
+        "--exact",
+        "builtin::commands::adapter::tests::source_capture_terminalization_failure_keeps_primary_typed_refusal",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "seconds": 0.012076209000952076,
+      "output_file": "source_capture_terminalization_failure_keeps_primary_typed_refusal.txt",
+      "output_sha256": "cecfea950b702d33d258944985fce23e3e578f30f328a2eb0230ba2fe1985938"
+    },
+    {
+      "argv": [
+        "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/build/mcp/.nudox-cargo/slot-0/debug/deps/backend_local_service-89b66b0188ecc952",
+        "--exact",
+        "builtin::query::tests::search_selection_refuses_a_view_from_the_previous_workspace_frontier",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "seconds": 0.01760420899518067,
+      "output_file": "stale_view_negative_actual.txt",
+      "output_sha256": "5c37211abf3cd25da2308d7bdf80dc8a7eca91356dcfb2ad0a31d94e3cf502f3"
+    }
+  ]
+}

@@ -2023,7 +2023,13 @@ impl CommandAdapter {
                             }
                             Ok(PreparedIndex::Compile(job)) if job.has_pending_profiles() => {
                                 indexing.captures = job.captures.clone();
-                                match self.spawn_next_index_profile(&mut indexing, job) {
+                                // The source and Pending capture already committed.
+                                // Publish their authenticated current view before
+                                // compiler work can leave the owner serving reads.
+                                match self
+                                    .publish_view(daemon, None)
+                                    .and_then(|()| self.spawn_next_index_profile(&mut indexing, job))
+                                {
                                     Ok(()) => {
                                         self.indexing = Some(indexing);
                                         return self.with_browse_completions(daemon, ready);
@@ -4974,11 +4980,33 @@ mod tests {
         ));
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut replies = Vec::new();
+        let mut observed_inflight_capture = false;
         while adapter.indexing.is_some() {
             replies.extend(adapter.poll_deferred(daemon));
+            if adapter.indexing.as_ref().is_some_and(|job| {
+                matches!(&job.work, IndexJobWork::Compiling { .. })
+            }) {
+                // The background result is not applied until the next owner
+                // poll. Read the committed Pending frontier in that interval.
+                let snapshot = daemon.engine().daemon().owner().snapshot();
+                let expected = crate::builtin::builtin_view_capability_for_workspace(&snapshot)
+                    .expect("current Pending capture capability");
+                let view = daemon.engine().daemon().library().view();
+                assert_ne!(view.root(), before, "initial capture is visible before compilation");
+                assert_eq!(view.capability(), Some(expected));
+                let query = backend_engine::Query::new(
+                    "captured_name",
+                    view.root(),
+                    backend_engine::QueryLimit::default(),
+                );
+                let (reply, _) = adapter.search(daemon, &query, None).expect("Pending owner query");
+                assert!(matches!(reply, backend_engine::CommandReply::Search(_)), "{reply:?}");
+                observed_inflight_capture = true;
+            }
             assert!(std::time::Instant::now() < deadline, "refused add terminal");
             std::thread::sleep(Duration::from_millis(2));
         }
+        assert!(observed_inflight_capture, "query the committed capture before terminal refusal");
         let reply = replies
             .into_iter()
             .find(|(ticket, _)| *ticket == 9850)
@@ -5004,7 +5032,7 @@ mod tests {
             backend_engine::QueryLimit::default(),
         );
         let (reply, _) = adapter.search(daemon, &query, None).expect("owner query reply");
-        assert!(matches!(reply, CommandReply::Search(_)), "{reply:?}");
+        assert!(matches!(reply, backend_engine::CommandReply::Search(_)), "{reply:?}");
         assert!(adapter.poll_deferred(daemon).is_empty());
         assert_eq!(
             daemon.engine().daemon().library().view().capability(),
