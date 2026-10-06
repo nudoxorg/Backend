@@ -424,7 +424,7 @@ fn a_same_authority_retained_library_cannot_hide_a_fresh_owner_failure(cx: &mut 
     let key = VersionedRoot::synthetic(
         backend_library::view_state_root(&[("library failure".into(), "unchanged".into())]), 1,
     );
-    let gate = OwnerGate::ready(key, crate::model::ServiceMode::Attached);
+    let gate = OwnerGate::starting();
     let (graph, _shell) = window_before_its_owner(cx, &gate);
     let window = cx.windows().into_iter().next().expect("window");
     let cx = VisualTestContext::from_window(window, cx).into_mut();
@@ -432,6 +432,12 @@ fn a_same_authority_retained_library_cannot_hide_a_fresh_owner_failure(cx: &mut 
         cx.set_global(gpui::TextTrace);
         window.set_a11y_forced(true);
     });
+    // This helper launches from an unserved snapshot. Admit the real owner
+    // publication after mounting instead of installing a Ready epoch-zero
+    // gate whose key was never delivered to the root's watcher.
+    draw(cx);
+    assert!(graph.store.read_with(cx, |store, _| store.snapshot().key().is_unserved()));
+    gate.publish(OwnerState::Ready { key, mode: crate::model::ServiceMode::Attached });
     until(cx, "Library has its real owner read", |cx| {
         graph.store.read_with(cx, |store, _| {
             let resource = store.orbit();
