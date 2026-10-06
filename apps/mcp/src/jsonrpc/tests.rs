@@ -1578,11 +1578,11 @@ fn index_requires_its_advertised_path_before_owner_admission() {
         let response = request(&mut server, "tools/call", &params);
         assert_eq!(response["id"], 9);
         assert_eq!(response["error"]["code"], -32602, "{params}: {response}");
-        assert!(
-            response["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("path")
+        assert_eq!(response["error"]["message"], "Invalid params");
+        assert_eq!(response["error"]["data"]["kind"], "invalid_params");
+        assert_eq!(
+            response["error"]["data"]["detail"],
+            "path must be a non-empty string"
         );
         assert!(server.product.index_paths.is_empty(), "{params}");
         assert!(server.product.surface_commands.is_empty(), "{params}");
