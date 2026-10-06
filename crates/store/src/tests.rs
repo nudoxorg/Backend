@@ -1824,6 +1824,100 @@ fn tree_cas_reopens_transitively_and_writes_one_edit_boundary() {
 }
 
 #[test]
+fn staged_workspace_missing_page_cannot_publish_or_repair_head() {
+    for remove_after_publish_frame in [false, true] {
+        let path = std::env::temp_dir().join(format!(
+            "backend-store-staged-missing-{}-{remove_after_publish_frame}",
+            std::process::id(),
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        let store = must(FileStore::open(&path, 8192));
+        let authority_version =
+            backend_version::ObjectVersion::<TestCoverageSchema>::from_value(&7);
+        let target = must(backend_version::CheckedWorkspaceManifest::from_versions(
+            1,
+            Vec::new(),
+            Vec::new(),
+            authority_version,
+            coverage(),
+        ));
+        let authority_object = TypedObject::from_value(
+            &backend_version::ObjectKey::<TestCoverageSchema>::from_value(&7),
+            &7,
+        );
+        let page = TypedObject::from_value(
+            &backend_version::ObjectKey::<TestCoverageSchema>::from_value(&8),
+            &8,
+        );
+        must(store.write_object(&authority_object));
+        must(store.write_object(&page));
+        let controls = must(
+            WorkspaceClosure::from_checked_manifest_root_only_with_registry(
+                &target,
+                must(ClosureManifest::new(vec![authority_object.clone()])),
+                &RelationAdmissionRegistry::default(),
+            ),
+        );
+        let budget = ClosureCompositionBudget::new(
+            2,
+            2,
+            8192,
+            must(ClosureCompositionBudget::metadata_bytes_for(2)),
+        );
+        let receipt = must(store.compose_workspace_closure_index(
+            None,
+            &[
+                ClosureMembershipChange::add(authority_object.id()),
+                ClosureMembershipChange::add(page.id()),
+            ],
+            budget,
+        ));
+        let membership = must(DurableClosureManifest::from_pinned(&store, receipt, budget));
+        let closure = must(controls.with_stored_membership(membership));
+        let layout = LayoutId::derive(b"staged-missing-page");
+        let pack = must(encode_pack(
+            &checked_map([(b"pack".to_vec(), v(1))]),
+            layout,
+            8192,
+        ));
+        let pack_id = must(store.write_pack(&pack));
+        let prepared = must(store.prepare_workspace_publication(
+            target.root(),
+            layout,
+            pack_id,
+            closure,
+            None,
+        ));
+        let durable = must(prepared.durable());
+        let publication_authority = must(store.acquire_publication_authority());
+        let page_path = path
+            .join("objects")
+            .join(format!("{}.object", test_hex(page.id().as_bytes())));
+        if !remove_after_publish_frame {
+            must(std::fs::remove_file(&page_path));
+        }
+        let result = durable.publish_with_authority_before_head(&publication_authority, || {
+            if remove_after_publish_frame {
+                std::fs::remove_file(&page_path)?;
+            }
+            Ok::<_, std::io::Error>(())
+        });
+        assert!(matches!(result, Err(StoreError::Corrupt)));
+        assert!(!path.join("HEAD").exists());
+        drop(publication_authority);
+        drop(store);
+        let reopened = must(FileStore::open(&path, 8192));
+        if remove_after_publish_frame {
+            assert!(matches!(reopened.head(), Err(StoreError::Corrupt)));
+        } else {
+            assert!(must(reopened.head()).is_none());
+        }
+        assert!(!path.join("HEAD").exists());
+        must(std::fs::remove_dir_all(path));
+    }
+}
+
+#[test]
 fn checked_workspace_publication_binds_manifest_refs_and_typed_root() {
     let authority_value = 7u64;
     let authority_key =

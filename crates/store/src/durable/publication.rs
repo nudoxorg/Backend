@@ -396,6 +396,9 @@ impl WorkspaceFileDurable {
         if !descriptor_matches_base(current.as_ref(), &self.descriptor) {
             return Err(StoreError::StaleHead);
         }
+        // The paired publish frame is a durable recovery decision. Recheck
+        // live stored evidence before recording it, as well as before HEAD.
+        self.store.validate_workspace_membership(&self.closure)?;
         let sequence =
             self.store
                 .append_record(PUBLISHED_TAG, &self.descriptor, self.prepared_sequence)?;

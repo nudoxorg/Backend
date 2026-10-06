@@ -106,7 +106,7 @@ fn missing_reachable_object_fails_closed_before_sweep() {
 }
 
 #[test]
-fn direct_object_mark_pages_continue_at_the_existing_byte_limit() {
+fn staged_direct_object_mark_pages_continue_at_the_existing_byte_limit() {
     struct PageSchema;
     impl Schema for PageSchema {
         const DOMAIN: u8 = 0xf1;

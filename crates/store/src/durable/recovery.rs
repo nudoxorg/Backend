@@ -197,12 +197,16 @@ impl FileStore {
             },
         };
         match recovered {
-            RecoveredHead::RepairMissing(selected) => self.write_head(&selected)?,
+            RecoveredHead::RepairMissing(selected) => {
+                self.validate_recovered_workspace_membership(&selected)?;
+                self.write_head(&selected)?;
+            }
             RecoveredHead::RepairInterrupted {
                 selected,
                 orphaned_temps,
             } => {
                 debug_assert_ne!(orphaned_temps, 0);
+                self.validate_recovered_workspace_membership(&selected)?;
                 self.write_head(&selected)?;
             }
             RecoveredHead::Current(selected) => debug_assert_eq!(tail.selected, Some(selected)),
@@ -211,6 +215,48 @@ impl FileStore {
         Ok(JournalState {
             selected: tail.selected,
         })
+    }
+
+    fn validate_recovered_workspace_membership(
+        &self,
+        head: &SelectedHead,
+    ) -> Result<(), StoreError> {
+        let Some(binding) = head.descriptor.workspace() else {
+            return Ok(());
+        };
+        binding.verify()?;
+        if binding.root() != &head.descriptor.target()
+            || binding.closure() != head.descriptor.closure()
+        {
+            return Err(StoreError::Corrupt);
+        }
+        let index = self.open_closure(binding.closure())?;
+        let mut after = None;
+        let mut seen = 0_u64;
+        loop {
+            let page = index.page_ids(after, 128)?;
+            for &id in page.object_ids() {
+                if after.is_some_and(|previous| id <= previous) {
+                    return Err(StoreError::Corrupt);
+                }
+                self.verify_closure_member_limited(id, None)?;
+                seen = seen.checked_add(1).ok_or(StoreError::Bounds)?;
+                if seen > index.object_count() {
+                    return Err(StoreError::Corrupt);
+                }
+                after = Some(id);
+            }
+            if page.next().is_none() {
+                break;
+            }
+            if page.next() != after {
+                return Err(StoreError::Corrupt);
+            }
+        }
+        if seen != index.object_count() {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(())
     }
 
     pub(super) fn ensure_head_file(&self, head: &SelectedHead) -> Result<(), StoreError> {
