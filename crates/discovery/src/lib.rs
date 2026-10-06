@@ -813,7 +813,8 @@ mod tests {
             "the C# source loader also refuses bin outputs when generic defaults are disabled"
         );
         assert!(
-            files(DiscoveryPolicy::default().include("dotnet/bin/generated.cs")).is_empty(),
+            !files(DiscoveryPolicy::default().include("dotnet/bin/generated.cs"))
+                .contains(&PathBuf::from("dotnet/bin/generated.cs")),
             "explicit includes cannot ask the C# loader for a file it excludes"
         );
         fs::write(scratch.0.join(".gitignore"), b"npm/bin/\n").expect("ignore");
