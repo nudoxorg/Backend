@@ -182,10 +182,11 @@ pub trait LocalHostEnvironment {
     /// Returns one exact OS-native value when the named variable is present.
     fn value(&self, variable: LocalHostVariable) -> Option<OsString>;
 
-    /// Returns the process search path for selecting a project-scoped Node host runtime.
+    /// Returns the process search path for selecting a TypeScript host runtime/compiler.
     ///
-    /// Host admission immediately resolves the selected `node` to one canonical executable and
-    /// captures its version and bytes. The search path itself is never passed to compiler children.
+    /// Host admission resolves the selected `tsc` and `node` to canonical executables and pairs
+    /// them with a TypeScript module root. The search path itself is never passed to compiler
+    /// children.
     fn search_path(&self) -> Option<OsString> {
         None
     }
@@ -228,8 +229,9 @@ impl LocalHostEnvironment for WorkspaceCompilerEnvironment {
 /// Whether host admission may inspect its finite documented platform locations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LocalHostDiscovery {
-    /// Only explicitly supplied typed environment paths participate, except that project-scoped
-    /// TypeScript admission may use the finite Node host-runtime table.
+    /// Only explicitly supplied typed paths participate for native compilers other than the
+    /// TypeScript host. TypeScript can use bounded PATH and platform discovery for its paired
+    /// Node/compiler fallback.
     ExplicitOnly,
     /// Explicit paths take precedence, followed by the finite platform table.
     PlatformDefaults,
@@ -382,6 +384,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalHostPathRole::JdkRoot,
             self.jdk_candidates(home.as_deref()),
         )?;
+        let typescript_host = self.typescript_host_selection(home.as_deref())?;
         let executables = NativeExecutables {
             rustc: self.executable(
                 LocalHostVariable::NudoxRustc,
@@ -408,11 +411,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 LocalHostPathRole::Native(NativeTool::Python),
                 self.executable_candidates(home.as_deref(), NativeTool::Python),
             )?,
-            typescript: self.executable(
-                LocalHostVariable::NudoxTypeScriptCompiler,
-                LocalHostPathRole::Native(NativeTool::TypeScriptCompiler),
-                self.executable_candidates(home.as_deref(), NativeTool::TypeScriptCompiler),
-            )?,
+            typescript: typescript_host.compiler.clone(),
             go: self.executable(
                 LocalHostVariable::NudoxGo,
                 LocalHostPathRole::Native(NativeTool::GoCompiler),
@@ -442,6 +441,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let (package_authority, typescript_project_host) = self.package_authority(
             home.as_deref(),
             &executables,
+            typescript_host,
             jdk_root,
             go_module_cache.as_deref(),
             &paths.native_work_directory,
@@ -548,9 +548,9 @@ impl LocalCompilerHost<ProcessHostEnvironment> {
 
 impl LocalCompilerHost<WorkspaceCompilerEnvironment> {
     /// Production compiler ownership with an explicit workspace-owned durable
-    /// root and explicitly configured native authorities. Project-scoped TypeScript is the narrow
-    /// exception: it may use a Node host runtime from the finite platform table so its
-    /// package-owned compiler can be admitted without ambient PATH search.
+    /// root and explicitly configured native authorities. TypeScript remains the narrow
+    /// exception: it may use a paired host `tsc`/Node installation so projects work without
+    /// manually duplicating the desktop's compiler-discovery policy.
     ///
     /// A long-running service must bind its listener independently of ambient
     /// developer toolchains. Missing authority variables therefore enter the

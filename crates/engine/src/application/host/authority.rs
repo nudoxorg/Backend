@@ -17,7 +17,7 @@ use backend_frontend_typescript::legacy::Checker as TypeScriptChecker;
 use backend_library::interface::PackageEcosystem;
 use backend_semantic::vocabulary::NativeTool;
 
-use super::paths::canonicalize_existing;
+use super::paths::{TypeScriptHostSelection, canonicalize_existing};
 use super::{
     AUTHORITY_IMAGE_BYTES, LocalCompilerHost, LocalCompilerHostError, LocalHostEnvironment,
     LocalHostPathRole, LocalHostVariable, PACKAGE_SOURCE_BYTES, nonzero,
@@ -64,6 +64,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         &self,
         home: Option<&Path>,
         executables: &NativeExecutables,
+        typescript_host: TypeScriptHostSelection,
         jdk_root: Option<PathBuf>,
         go_module_cache: Option<&Path>,
         native_work_directory: &Path,
@@ -82,13 +83,11 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalHostPathRole::TypeScriptReportProgram,
             ArrayVec::new(),
         )?;
-        let node_selection = self.typescript_node_executable(home)?;
-        let (node, node_origin) = match node_selection {
+        let (node, node_origin) = match typescript_host.node {
             Some(selection) => (Some(selection.path), Some(selection.origin)),
             None => (None, None),
         };
-        let typescript_module_root =
-            self.typescript_module_root(executables.typescript.as_deref())?;
+        let typescript_module_root = typescript_host.module_root;
         let typescript_project_host = TypeScriptProjectHost::new_with_node_origin(
             self.environment
                 .value(LocalHostVariable::NudoxTypeScriptCompiler)

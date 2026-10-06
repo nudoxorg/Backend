@@ -27,6 +27,23 @@ Launch the native package browser directly from a project:
 cargo run -p backend-desktop
 ```
 
+Headless CLI and MCP runs also need the companion `backend-locald` executable.
+Build the three binaries together so they land beside one another:
+
+```console
+cargo build --locked -p backend-locald -p backend-cli -p backend-mcp
+```
+
+If the daemon is installed elsewhere, set `BACKEND_LOCALD_BIN` to its absolute
+path. Desktop, CLI, MCP, and standalone locald share TypeScript host discovery:
+an installed project-local `node_modules/typescript` takes precedence, with a
+host TypeScript install used when the project has none. Nudox does not run npm
+or pnpm and does not download missing project dependencies. Install the
+project's dependencies yourself, or configure `NUDOX_TSC`,
+`NUDOX_TYPESCRIPT_NODE`, and `NUDOX_TYPESCRIPT_MODULE_ROOT` for a host install.
+`backend-locald` captures those settings and `PATH` at startup; stop and
+restart an already-running daemon after changing them.
+
 On macOS, build a normal application bundle with:
 
 ```console

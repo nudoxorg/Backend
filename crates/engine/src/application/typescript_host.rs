@@ -101,6 +101,8 @@ pub(crate) enum TypeScriptSelectionOrigin {
     OrdinarySearchPath = 3,
     PlatformLocation = 4,
     ValidatedApplicationBundle = 5,
+    /// A Node runtime in the same executable directory as a selected global `tsc`.
+    PairedHostInstall = 6,
 }
 
 impl TypeScriptProjectInputs<'_> {
