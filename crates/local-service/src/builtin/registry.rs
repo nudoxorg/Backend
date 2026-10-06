@@ -629,9 +629,9 @@ impl RegistryGateway {
         // Open owners hold the previous authority as their resolver; they
         // reopen lazily with the new one.
         self.slots.clear();
-        // Keep old callers' Arcs valid, but make the next catalog read project
-        // the newly committed feed generation immediately.
-        self.projection = None;
+        // The advisory generation in the projection key invalidates the row
+        // overlay and search index. Retain the previous projection so its
+        // unchanged dependency facts can be borrowed by that rebuild.
         Ok(states)
     }
 
