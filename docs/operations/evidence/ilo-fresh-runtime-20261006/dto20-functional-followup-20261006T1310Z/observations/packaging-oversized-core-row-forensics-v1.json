@@ -1,0 +1,748 @@
+{
+  "schema": "nudox.retained-native-core-row-structural-forensics.v1",
+  "whole_package_pass": false,
+  "outer_store_crypto_readmission_claimed": false,
+  "product_execution_performed": false,
+  "state_mutated": false,
+  "selected_head_before_sha256": "89ff975d6b340c5e2b957b7b96089b67480ec503cf36b0bd7cbb49be42803bee",
+  "selected_head_after_sha256": "89ff975d6b340c5e2b957b7b96089b67480ec503cf36b0bd7cbb49be42803bee",
+  "state": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state",
+  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project",
+  "manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "source_commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+  "history_receipt_sha256": "d06b631b516b2026584a27935cbe17b95e8ab5d7b7dac91f9a70f56756b6486a",
+  "observer_sha256": "b5022344870a0ca99bc20a5d096d8773d902fd9602afef96e6a7183df8fa9b09",
+  "nxfi_images_examined": 118,
+  "oversized_core_rows": [
+    {
+      "object": {
+        "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/1829457358057004472782a81310f7d50adff3b8de46f92ee2e5616fdd389c13.object",
+        "sha256": "ee2fe0bb9e4e2e97b8a6d29007eaf1629e9bd976f87896d5047094d386c8bde3",
+        "bytes": 99426,
+        "nxfi_offset": 123,
+        "nxfi_sha256": "a9287cb8867ee00129c6b47caf572502f4d45b9aa53b9424e4238c32fbf950a6",
+        "nxfi_schema": 3
+      },
+      "family": "SemanticPlaneKind::Ir(Core)",
+      "tag": 1,
+      "entity_row": 215,
+      "key": "d96e123028d2925bfce925f213a5e6d008bdf37222ab43cb56a170dad618379a",
+      "name": "test_normalized_versions",
+      "source_path": "tests/test_version.py",
+      "source_byte_span": [
+        6076,
+        10324
+      ],
+      "members": 0,
+      "attributes": 1,
+      "field_bytes": {
+        "identity": 32,
+        "name": 28,
+        "kind": 2,
+        "visibility": 1,
+        "parent": 33,
+        "parentage": 33,
+        "authority_flags": 8,
+        "member_count": 4,
+        "member_identities": 0,
+        "attribute_count": 4,
+        "attributes": 4121
+      },
+      "payload_bytes": 4266,
+      "payload_sha256": "3c48caaa00693932e07c2d4913fa012cc81e9407a809d88aac63e891e0d7fb2a",
+      "segment_header_bytes": 11,
+      "record_header_bytes": 37,
+      "observed_segment_bytes": 4314,
+      "segment_ceiling": 4096,
+      "attribute_values": [
+        {
+          "bytes": 4117,
+          "sha256": "14f8c36599adaa6a4b444ca56da74abb57ff7e5ce9aefb6b561a970a360fcb79",
+          "prefix": "pytest.mark.parametrize(\n        (\"version\", \"normalized\"),\n        [\n          "
+        }
+      ],
+      "source_sha256": "41231199da5559098698684691f75f3ed0269e45f79ee0e7a9e5313fa85ca9d5",
+      "source_decorator_matches": [
+        {
+          "declaration": "test_normalized_versions",
+          "start_line": 246,
+          "end_line": 361,
+          "bytes": 4117,
+          "sha256": "14f8c36599adaa6a4b444ca56da74abb57ff7e5ce9aefb6b561a970a360fcb79"
+        }
+      ]
+    },
+    {
+      "object": {
+        "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/1be2da2608a5479bbf73f1688189fcb9373e6a3d9a7ba077737ed4a37cd7b24c.object",
+        "sha256": "11131dbe0324b04b0c0db3b5fa28dbe8c94b9a591eccbd5feba3b8b4c740d20f",
+        "bytes": 99426,
+        "nxfi_offset": 123,
+        "nxfi_sha256": "a9287cb8867ee00129c6b47caf572502f4d45b9aa53b9424e4238c32fbf950a6",
+        "nxfi_schema": 3
+      },
+      "family": "SemanticPlaneKind::Ir(Core)",
+      "tag": 1,
+      "entity_row": 215,
+      "key": "d96e123028d2925bfce925f213a5e6d008bdf37222ab43cb56a170dad618379a",
+      "name": "test_normalized_versions",
+      "source_path": "tests/test_version.py",
+      "source_byte_span": [
+        6076,
+        10324
+      ],
+      "members": 0,
+      "attributes": 1,
+      "field_bytes": {
+        "identity": 32,
+        "name": 28,
+        "kind": 2,
+        "visibility": 1,
+        "parent": 33,
+        "parentage": 33,
+        "authority_flags": 8,
+        "member_count": 4,
+        "member_identities": 0,
+        "attribute_count": 4,
+        "attributes": 4121
+      },
+      "payload_bytes": 4266,
+      "payload_sha256": "3c48caaa00693932e07c2d4913fa012cc81e9407a809d88aac63e891e0d7fb2a",
+      "segment_header_bytes": 11,
+      "record_header_bytes": 37,
+      "observed_segment_bytes": 4314,
+      "segment_ceiling": 4096,
+      "attribute_values": [
+        {
+          "bytes": 4117,
+          "sha256": "14f8c36599adaa6a4b444ca56da74abb57ff7e5ce9aefb6b561a970a360fcb79",
+          "prefix": "pytest.mark.parametrize(\n        (\"version\", \"normalized\"),\n        [\n          "
+        }
+      ],
+      "source_sha256": "41231199da5559098698684691f75f3ed0269e45f79ee0e7a9e5313fa85ca9d5",
+      "source_decorator_matches": [
+        {
+          "declaration": "test_normalized_versions",
+          "start_line": 246,
+          "end_line": 361,
+          "bytes": 4117,
+          "sha256": "14f8c36599adaa6a4b444ca56da74abb57ff7e5ce9aefb6b561a970a360fcb79"
+        }
+      ]
+    },
+    {
+      "object": {
+        "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/48339e72205d8f8941c9b4e780716880ab222cebb0c9ded07e884984cb3bc55e.object",
+        "sha256": "8691347c041bd18cb5c2c56593353b733b1504d406f401805e7b468d8af1c5c8",
+        "bytes": 209323,
+        "nxfi_offset": 123,
+        "nxfi_sha256": "b3da8f5b4089be9cec866b793ff54e70b5c58361a592b45f7cca752b9325633b",
+        "nxfi_schema": 3
+      },
+      "family": "SemanticPlaneKind::Ir(Core)",
+      "tag": 1,
+      "entity_row": 19,
+      "key": "09f5e0e77d6e05ec70b867d3b28be47fcc2550eb4cba97cf1cd764af0b9fac98",
+      "name": "test_contains_exclusionary_bridges",
+      "source_path": "tests/test_specifiers.py",
+      "source_byte_span": [
+        75318,
+        84518
+      ],
+      "members": 0,
+      "attributes": 1,
+      "field_bytes": {
+        "identity": 32,
+        "name": 38,
+        "kind": 2,
+        "visibility": 1,
+        "parent": 33,
+        "parentage": 33,
+        "authority_flags": 8,
+        "member_count": 4,
+        "member_identities": 0,
+        "attribute_count": 4,
+        "attributes": 8500
+      },
+      "payload_bytes": 8655,
+      "payload_sha256": "e3c1868be0262e30dc5bbae258c18eaa70a13ca843ee42867144a2c5f84fa034",
+      "segment_header_bytes": 11,
+      "record_header_bytes": 37,
+      "observed_segment_bytes": 8703,
+      "segment_ceiling": 4096,
+      "attribute_values": [
+        {
+          "bytes": 8496,
+          "sha256": "023d34287f0bdfa67f1189f72be4e10973d734909e548177eb273efed6859fcc",
+          "prefix": "pytest.mark.parametrize(\n        (\"specifier\", \"prereleases\", \"version\", \"expect"
+        }
+      ],
+      "source_sha256": "aae41bc22b6463126f422b671e65dd8b18d26f5e68db7cda0a656561ef726a4c",
+      "source_decorator_matches": [
+        {
+          "declaration": "test_contains_exclusionary_bridges",
+          "start_line": 1932,
+          "end_line": 2077,
+          "bytes": 8496,
+          "sha256": "023d34287f0bdfa67f1189f72be4e10973d734909e548177eb273efed6859fcc"
+        }
+      ]
+    },
+    {
+      "object": {
+        "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/48339e72205d8f8941c9b4e780716880ab222cebb0c9ded07e884984cb3bc55e.object",
+        "sha256": "8691347c041bd18cb5c2c56593353b733b1504d406f401805e7b468d8af1c5c8",
+        "bytes": 209323,
+        "nxfi_offset": 123,
+        "nxfi_sha256": "b3da8f5b4089be9cec866b793ff54e70b5c58361a592b45f7cca752b9325633b",
+        "nxfi_schema": 3
+      },
+      "family": "SemanticPlaneKind::Ir(Core)",
+      "tag": 1,
+      "entity_row": 77,
+      "key": "2abce65a6aed894736144792b2ac3b80d1365abb5963e3cc0d0338420ac44111",
+      "name": "test_specifiers_prereleases",
+      "source_path": "tests/test_specifiers.py",
+      "source_byte_span": [
+        28766,
+        33860
+      ],
+      "members": 0,
+      "attributes": 1,
+      "field_bytes": {
+        "identity": 32,
+        "name": 31,
+        "kind": 2,
+        "visibility": 1,
+        "parent": 33,
+        "parentage": 33,
+        "authority_flags": 8,
+        "member_count": 4,
+        "member_identities": 0,
+        "attribute_count": 4,
+        "attributes": 4760
+      },
+      "payload_bytes": 4908,
+      "payload_sha256": "fa5e71bfe6da156d07c2233a4d77eda8fb8938893773a7d2de74de77e3d0d13c",
+      "segment_header_bytes": 11,
+      "record_header_bytes": 37,
+      "observed_segment_bytes": 4956,
+      "segment_ceiling": 4096,
+      "attribute_values": [
+        {
+          "bytes": 4756,
+          "sha256": "9a7e2e96169d7b8e4035ed3375ae1969396b3d1dd31e9e4ffa74c921b1b3a11b",
+          "prefix": "pytest.mark.parametrize(\n        (\"specifier\", \"version\", \"spec_pre\", \"contains_"
+        }
+      ],
+      "source_sha256": "aae41bc22b6463126f422b671e65dd8b18d26f5e68db7cda0a656561ef726a4c",
+      "source_decorator_matches": [
+        {
+          "declaration": "test_specifiers_prereleases",
+          "start_line": 794,
+          "end_line": 879,
+          "bytes": 4756,
+          "sha256": "9a7e2e96169d7b8e4035ed3375ae1969396b3d1dd31e9e4ffa74c921b1b3a11b"
+        }
+      ]
+    },
+    {
+      "object": {
+        "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/48339e72205d8f8941c9b4e780716880ab222cebb0c9ded07e884984cb3bc55e.object",
+        "sha256": "8691347c041bd18cb5c2c56593353b733b1504d406f401805e7b468d8af1c5c8",
+        "bytes": 209323,
+        "nxfi_offset": 123,
+        "nxfi_sha256": "b3da8f5b4089be9cec866b793ff54e70b5c58361a592b45f7cca752b9325633b",
+        "nxfi_schema": 3
+      },
+      "family": "SemanticPlaneKind::Ir(Core)",
+      "tag": 1,
+      "entity_row": 174,
+      "key": "5ed399844685d99556dd913efc7f202188cd919488078fe826121702542060e3",
+      "name": "test_filter_exclusionary_bridges",
+      "source_path": "tests/test_specifiers.py",
+      "source_byte_span": [
+        67399,
+        75312
+      ],
+      "members": 0,
+      "attributes": 1,
+      "field_bytes": {
+        "identity": 32,
+        "name": 36,
+        "kind": 2,
+        "visibility": 1,
+        "parent": 33,
+        "parentage": 33,
+        "authority_flags": 8,
+        "member_count": 4,
+        "member_identities": 0,
+        "attribute_count": 4,
+        "attributes": 7098
+      },
+      "payload_bytes": 7251,
+      "payload_sha256": "d60541341741186819621b6c923456553403cb764b9aa4aa34a8476cadc6b543",
+      "segment_header_bytes": 11,
+      "record_header_bytes": 37,
+      "observed_segment_bytes": 7299,
+      "segment_ceiling": 4096,
+      "attribute_values": [
+        {
+          "bytes": 7094,
+          "sha256": "09aa2847e688bee423f2eabc745e31a685aa70733699241b2eb65e548215a067",
+          "prefix": "pytest.mark.parametrize(\n        (\"specifier\", \"prereleases\", \"input\", \"expected"
+        }
+      ],
+      "source_sha256": "aae41bc22b6463126f422b671e65dd8b18d26f5e68db7cda0a656561ef726a4c",
+      "source_decorator_matches": [
+        {
+          "declaration": "test_filter_exclusionary_bridges",
+          "start_line": 1688,
+          "end_line": 1908,
+          "bytes": 7094,
+          "sha256": "09aa2847e688bee423f2eabc745e31a685aa70733699241b2eb65e548215a067"
+        }
+      ]
+    },
+    {
+      "object": {
+        "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/48339e72205d8f8941c9b4e780716880ab222cebb0c9ded07e884984cb3bc55e.object",
+        "sha256": "8691347c041bd18cb5c2c56593353b733b1504d406f401805e7b468d8af1c5c8",
+        "bytes": 209323,
+        "nxfi_offset": 123,
+        "nxfi_sha256": "b3da8f5b4089be9cec866b793ff54e70b5c58361a592b45f7cca752b9325633b",
+        "nxfi_schema": 3
+      },
+      "family": "SemanticPlaneKind::Ir(Core)",
+      "tag": 1,
+      "entity_row": 240,
+      "key": "7caa0ca2b95b6c48babaa74185205b7ebc441eaff046ba49315811904641f299",
+      "name": "test_specifiers",
+      "source_path": "tests/test_specifiers.py",
+      "source_byte_span": [
+        8891,
+        18943
+      ],
+      "members": 0,
+      "attributes": 1,
+      "field_bytes": {
+        "identity": 32,
+        "name": 19,
+        "kind": 2,
+        "visibility": 1,
+        "parent": 33,
+        "parentage": 33,
+        "authority_flags": 8,
+        "member_count": 4,
+        "member_identities": 0,
+        "attribute_count": 4,
+        "attributes": 8957
+      },
+      "payload_bytes": 9093,
+      "payload_sha256": "9b172e9e4f6165344d20b275cd40cd169d13fa1488b8e886ca5de42e52b99045",
+      "segment_header_bytes": 11,
+      "record_header_bytes": 37,
+      "observed_segment_bytes": 9141,
+      "segment_ceiling": 4096,
+      "attribute_values": [
+        {
+          "bytes": 8953,
+          "sha256": "ba09327bef8ede1d7547cb0f29d96d41a06f56c87ff59ec9b012bfc78150333a",
+          "prefix": "pytest.mark.parametrize(\n        (\"version\", \"spec_str\", \"expected\"),\n        [\n"
+        }
+      ],
+      "source_sha256": "aae41bc22b6463126f422b671e65dd8b18d26f5e68db7cda0a656561ef726a4c",
+      "source_decorator_matches": [
+        {
+          "declaration": "test_specifiers",
+          "start_line": 311,
+          "end_line": 536,
+          "bytes": 8953,
+          "sha256": "ba09327bef8ede1d7547cb0f29d96d41a06f56c87ff59ec9b012bfc78150333a"
+        }
+      ]
+    },
+    {
+      "object": {
+        "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/48339e72205d8f8941c9b4e780716880ab222cebb0c9ded07e884984cb3bc55e.object",
+        "sha256": "8691347c041bd18cb5c2c56593353b733b1504d406f401805e7b468d8af1c5c8",
+        "bytes": 209323,
+        "nxfi_offset": 123,
+        "nxfi_sha256": "b3da8f5b4089be9cec866b793ff54e70b5c58361a592b45f7cca752b9325633b",
+        "nxfi_schema": 3
+      },
+      "family": "SemanticPlaneKind::Ir(Core)",
+      "tag": 1,
+      "entity_row": 261,
+      "key": "8a8871f0c89fba503073c36112736be833e72a3994438f4844c1b04604c23003",
+      "name": "test_specifier_filter",
+      "source_path": "tests/test_specifiers.py",
+      "source_byte_span": [
+        58274,
+        65921
+      ],
+      "members": 0,
+      "attributes": 1,
+      "field_bytes": {
+        "identity": 32,
+        "name": 25,
+        "kind": 2,
+        "visibility": 1,
+        "parent": 33,
+        "parentage": 33,
+        "authority_flags": 8,
+        "member_count": 4,
+        "member_identities": 0,
+        "attribute_count": 4,
+        "attributes": 6774
+      },
+      "payload_bytes": 6916,
+      "payload_sha256": "1960e33cbcfc011b507689d487eeb835b025ff36ad344d81b965a689d0242288",
+      "segment_header_bytes": 11,
+      "record_header_bytes": 37,
+      "observed_segment_bytes": 6964,
+      "segment_ceiling": 4096,
+      "attribute_values": [
+        {
+          "bytes": 6770,
+          "sha256": "295d757dbc447fc5bd65f4700af0c7ec557ea0d854b711ab516d09c243b3edf5",
+          "prefix": "pytest.mark.parametrize(\n        (\"specifier\", \"specifier_prereleases\", \"prerele"
+        }
+      ],
+      "source_sha256": "aae41bc22b6463126f422b671e65dd8b18d26f5e68db7cda0a656561ef726a4c",
+      "source_decorator_matches": [
+        {
+          "declaration": "test_specifier_filter",
+          "start_line": 1491,
+          "end_line": 1612,
+          "bytes": 6770,
+          "sha256": "295d757dbc447fc5bd65f4700af0c7ec557ea0d854b711ab516d09c243b3edf5"
+        }
+      ]
+    },
+    {
+      "object": {
+        "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/99051b85e923fea25184dc1833ec2569a2b494bb5b80c905b4a720dd6e61c075.object",
+        "sha256": "40791afea0f85fd219fef394579baf700bd852e085d00545288015443dc38dfe",
+        "bytes": 209323,
+        "nxfi_offset": 123,
+        "nxfi_sha256": "b3da8f5b4089be9cec866b793ff54e70b5c58361a592b45f7cca752b9325633b",
+        "nxfi_schema": 3
+      },
+      "family": "SemanticPlaneKind::Ir(Core)",
+      "tag": 1,
+      "entity_row": 19,
+      "key": "09f5e0e77d6e05ec70b867d3b28be47fcc2550eb4cba97cf1cd764af0b9fac98",
+      "name": "test_contains_exclusionary_bridges",
+      "source_path": "tests/test_specifiers.py",
+      "source_byte_span": [
+        75318,
+        84518
+      ],
+      "members": 0,
+      "attributes": 1,
+      "field_bytes": {
+        "identity": 32,
+        "name": 38,
+        "kind": 2,
+        "visibility": 1,
+        "parent": 33,
+        "parentage": 33,
+        "authority_flags": 8,
+        "member_count": 4,
+        "member_identities": 0,
+        "attribute_count": 4,
+        "attributes": 8500
+      },
+      "payload_bytes": 8655,
+      "payload_sha256": "e3c1868be0262e30dc5bbae258c18eaa70a13ca843ee42867144a2c5f84fa034",
+      "segment_header_bytes": 11,
+      "record_header_bytes": 37,
+      "observed_segment_bytes": 8703,
+      "segment_ceiling": 4096,
+      "attribute_values": [
+        {
+          "bytes": 8496,
+          "sha256": "023d34287f0bdfa67f1189f72be4e10973d734909e548177eb273efed6859fcc",
+          "prefix": "pytest.mark.parametrize(\n        (\"specifier\", \"prereleases\", \"version\", \"expect"
+        }
+      ],
+      "source_sha256": "aae41bc22b6463126f422b671e65dd8b18d26f5e68db7cda0a656561ef726a4c",
+      "source_decorator_matches": [
+        {
+          "declaration": "test_contains_exclusionary_bridges",
+          "start_line": 1932,
+          "end_line": 2077,
+          "bytes": 8496,
+          "sha256": "023d34287f0bdfa67f1189f72be4e10973d734909e548177eb273efed6859fcc"
+        }
+      ]
+    },
+    {
+      "object": {
+        "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/99051b85e923fea25184dc1833ec2569a2b494bb5b80c905b4a720dd6e61c075.object",
+        "sha256": "40791afea0f85fd219fef394579baf700bd852e085d00545288015443dc38dfe",
+        "bytes": 209323,
+        "nxfi_offset": 123,
+        "nxfi_sha256": "b3da8f5b4089be9cec866b793ff54e70b5c58361a592b45f7cca752b9325633b",
+        "nxfi_schema": 3
+      },
+      "family": "SemanticPlaneKind::Ir(Core)",
+      "tag": 1,
+      "entity_row": 77,
+      "key": "2abce65a6aed894736144792b2ac3b80d1365abb5963e3cc0d0338420ac44111",
+      "name": "test_specifiers_prereleases",
+      "source_path": "tests/test_specifiers.py",
+      "source_byte_span": [
+        28766,
+        33860
+      ],
+      "members": 0,
+      "attributes": 1,
+      "field_bytes": {
+        "identity": 32,
+        "name": 31,
+        "kind": 2,
+        "visibility": 1,
+        "parent": 33,
+        "parentage": 33,
+        "authority_flags": 8,
+        "member_count": 4,
+        "member_identities": 0,
+        "attribute_count": 4,
+        "attributes": 4760
+      },
+      "payload_bytes": 4908,
+      "payload_sha256": "fa5e71bfe6da156d07c2233a4d77eda8fb8938893773a7d2de74de77e3d0d13c",
+      "segment_header_bytes": 11,
+      "record_header_bytes": 37,
+      "observed_segment_bytes": 4956,
+      "segment_ceiling": 4096,
+      "attribute_values": [
+        {
+          "bytes": 4756,
+          "sha256": "9a7e2e96169d7b8e4035ed3375ae1969396b3d1dd31e9e4ffa74c921b1b3a11b",
+          "prefix": "pytest.mark.parametrize(\n        (\"specifier\", \"version\", \"spec_pre\", \"contains_"
+        }
+      ],
+      "source_sha256": "aae41bc22b6463126f422b671e65dd8b18d26f5e68db7cda0a656561ef726a4c",
+      "source_decorator_matches": [
+        {
+          "declaration": "test_specifiers_prereleases",
+          "start_line": 794,
+          "end_line": 879,
+          "bytes": 4756,
+          "sha256": "9a7e2e96169d7b8e4035ed3375ae1969396b3d1dd31e9e4ffa74c921b1b3a11b"
+        }
+      ]
+    },
+    {
+      "object": {
+        "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/99051b85e923fea25184dc1833ec2569a2b494bb5b80c905b4a720dd6e61c075.object",
+        "sha256": "40791afea0f85fd219fef394579baf700bd852e085d00545288015443dc38dfe",
+        "bytes": 209323,
+        "nxfi_offset": 123,
+        "nxfi_sha256": "b3da8f5b4089be9cec866b793ff54e70b5c58361a592b45f7cca752b9325633b",
+        "nxfi_schema": 3
+      },
+      "family": "SemanticPlaneKind::Ir(Core)",
+      "tag": 1,
+      "entity_row": 174,
+      "key": "5ed399844685d99556dd913efc7f202188cd919488078fe826121702542060e3",
+      "name": "test_filter_exclusionary_bridges",
+      "source_path": "tests/test_specifiers.py",
+      "source_byte_span": [
+        67399,
+        75312
+      ],
+      "members": 0,
+      "attributes": 1,
+      "field_bytes": {
+        "identity": 32,
+        "name": 36,
+        "kind": 2,
+        "visibility": 1,
+        "parent": 33,
+        "parentage": 33,
+        "authority_flags": 8,
+        "member_count": 4,
+        "member_identities": 0,
+        "attribute_count": 4,
+        "attributes": 7098
+      },
+      "payload_bytes": 7251,
+      "payload_sha256": "d60541341741186819621b6c923456553403cb764b9aa4aa34a8476cadc6b543",
+      "segment_header_bytes": 11,
+      "record_header_bytes": 37,
+      "observed_segment_bytes": 7299,
+      "segment_ceiling": 4096,
+      "attribute_values": [
+        {
+          "bytes": 7094,
+          "sha256": "09aa2847e688bee423f2eabc745e31a685aa70733699241b2eb65e548215a067",
+          "prefix": "pytest.mark.parametrize(\n        (\"specifier\", \"prereleases\", \"input\", \"expected"
+        }
+      ],
+      "source_sha256": "aae41bc22b6463126f422b671e65dd8b18d26f5e68db7cda0a656561ef726a4c",
+      "source_decorator_matches": [
+        {
+          "declaration": "test_filter_exclusionary_bridges",
+          "start_line": 1688,
+          "end_line": 1908,
+          "bytes": 7094,
+          "sha256": "09aa2847e688bee423f2eabc745e31a685aa70733699241b2eb65e548215a067"
+        }
+      ]
+    },
+    {
+      "object": {
+        "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/99051b85e923fea25184dc1833ec2569a2b494bb5b80c905b4a720dd6e61c075.object",
+        "sha256": "40791afea0f85fd219fef394579baf700bd852e085d00545288015443dc38dfe",
+        "bytes": 209323,
+        "nxfi_offset": 123,
+        "nxfi_sha256": "b3da8f5b4089be9cec866b793ff54e70b5c58361a592b45f7cca752b9325633b",
+        "nxfi_schema": 3
+      },
+      "family": "SemanticPlaneKind::Ir(Core)",
+      "tag": 1,
+      "entity_row": 240,
+      "key": "7caa0ca2b95b6c48babaa74185205b7ebc441eaff046ba49315811904641f299",
+      "name": "test_specifiers",
+      "source_path": "tests/test_specifiers.py",
+      "source_byte_span": [
+        8891,
+        18943
+      ],
+      "members": 0,
+      "attributes": 1,
+      "field_bytes": {
+        "identity": 32,
+        "name": 19,
+        "kind": 2,
+        "visibility": 1,
+        "parent": 33,
+        "parentage": 33,
+        "authority_flags": 8,
+        "member_count": 4,
+        "member_identities": 0,
+        "attribute_count": 4,
+        "attributes": 8957
+      },
+      "payload_bytes": 9093,
+      "payload_sha256": "9b172e9e4f6165344d20b275cd40cd169d13fa1488b8e886ca5de42e52b99045",
+      "segment_header_bytes": 11,
+      "record_header_bytes": 37,
+      "observed_segment_bytes": 9141,
+      "segment_ceiling": 4096,
+      "attribute_values": [
+        {
+          "bytes": 8953,
+          "sha256": "ba09327bef8ede1d7547cb0f29d96d41a06f56c87ff59ec9b012bfc78150333a",
+          "prefix": "pytest.mark.parametrize(\n        (\"version\", \"spec_str\", \"expected\"),\n        [\n"
+        }
+      ],
+      "source_sha256": "aae41bc22b6463126f422b671e65dd8b18d26f5e68db7cda0a656561ef726a4c",
+      "source_decorator_matches": [
+        {
+          "declaration": "test_specifiers",
+          "start_line": 311,
+          "end_line": 536,
+          "bytes": 8953,
+          "sha256": "ba09327bef8ede1d7547cb0f29d96d41a06f56c87ff59ec9b012bfc78150333a"
+        }
+      ]
+    },
+    {
+      "object": {
+        "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/99051b85e923fea25184dc1833ec2569a2b494bb5b80c905b4a720dd6e61c075.object",
+        "sha256": "40791afea0f85fd219fef394579baf700bd852e085d00545288015443dc38dfe",
+        "bytes": 209323,
+        "nxfi_offset": 123,
+        "nxfi_sha256": "b3da8f5b4089be9cec866b793ff54e70b5c58361a592b45f7cca752b9325633b",
+        "nxfi_schema": 3
+      },
+      "family": "SemanticPlaneKind::Ir(Core)",
+      "tag": 1,
+      "entity_row": 261,
+      "key": "8a8871f0c89fba503073c36112736be833e72a3994438f4844c1b04604c23003",
+      "name": "test_specifier_filter",
+      "source_path": "tests/test_specifiers.py",
+      "source_byte_span": [
+        58274,
+        65921
+      ],
+      "members": 0,
+      "attributes": 1,
+      "field_bytes": {
+        "identity": 32,
+        "name": 25,
+        "kind": 2,
+        "visibility": 1,
+        "parent": 33,
+        "parentage": 33,
+        "authority_flags": 8,
+        "member_count": 4,
+        "member_identities": 0,
+        "attribute_count": 4,
+        "attributes": 6774
+      },
+      "payload_bytes": 6916,
+      "payload_sha256": "1960e33cbcfc011b507689d487eeb835b025ff36ad344d81b965a689d0242288",
+      "segment_header_bytes": 11,
+      "record_header_bytes": 37,
+      "observed_segment_bytes": 6964,
+      "segment_ceiling": 4096,
+      "attribute_values": [
+        {
+          "bytes": 6770,
+          "sha256": "295d757dbc447fc5bd65f4700af0c7ec557ea0d854b711ab516d09c243b3edf5",
+          "prefix": "pytest.mark.parametrize(\n        (\"specifier\", \"specifier_prereleases\", \"prerele"
+        }
+      ],
+      "source_sha256": "aae41bc22b6463126f422b671e65dd8b18d26f5e68db7cda0a656561ef726a4c",
+      "source_decorator_matches": [
+        {
+          "declaration": "test_specifier_filter",
+          "start_line": 1491,
+          "end_line": 1612,
+          "bytes": 6770,
+          "sha256": "295d757dbc447fc5bd65f4700af0c7ec557ea0d854b711ab516d09c243b3edf5"
+        }
+      ]
+    }
+  ],
+  "implicated_objects": [
+    {
+      "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/1829457358057004472782a81310f7d50adff3b8de46f92ee2e5616fdd389c13.object",
+      "sha256": "ee2fe0bb9e4e2e97b8a6d29007eaf1629e9bd976f87896d5047094d386c8bde3",
+      "bytes": 99426,
+      "nxfi_offset": 123,
+      "nxfi_sha256": "a9287cb8867ee00129c6b47caf572502f4d45b9aa53b9424e4238c32fbf950a6",
+      "nxfi_schema": 3
+    },
+    {
+      "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/1be2da2608a5479bbf73f1688189fcb9373e6a3d9a7ba077737ed4a37cd7b24c.object",
+      "sha256": "11131dbe0324b04b0c0db3b5fa28dbe8c94b9a591eccbd5feba3b8b4c740d20f",
+      "bytes": 99426,
+      "nxfi_offset": 123,
+      "nxfi_sha256": "a9287cb8867ee00129c6b47caf572502f4d45b9aa53b9424e4238c32fbf950a6",
+      "nxfi_schema": 3
+    },
+    {
+      "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/48339e72205d8f8941c9b4e780716880ab222cebb0c9ded07e884984cb3bc55e.object",
+      "sha256": "8691347c041bd18cb5c2c56593353b733b1504d406f401805e7b468d8af1c5c8",
+      "bytes": 209323,
+      "nxfi_offset": 123,
+      "nxfi_sha256": "b3da8f5b4089be9cec866b793ff54e70b5c58361a592b45f7cca752b9325633b",
+      "nxfi_schema": 3
+    },
+    {
+      "path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state/semantic-objects/objects/99051b85e923fea25184dc1833ec2569a2b494bb5b80c905b4a720dd6e61c075.object",
+      "sha256": "40791afea0f85fd219fef394579baf700bd852e085d00545288015443dc38dfe",
+      "bytes": 209323,
+      "nxfi_offset": 123,
+      "nxfi_sha256": "b3da8f5b4089be9cec866b793ff54e70b5c58361a592b45f7cca752b9325633b",
+      "nxfi_schema": 3
+    }
+  ]
+}

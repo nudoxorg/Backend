@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin/npm",
+    "install",
+    "--package-lock-only",
+    "--ignore-scripts",
+    "--no-audit",
+    "--no-fund",
+    "--lockfile-version=3"
+  ],
+  "cwd": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/consumer",
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/home",
+    "LANG": "C.UTF-8",
+    "PATH": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin",
+    "npm_config_cache": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/npm-cache",
+    "npm_config_registry": "https://registry.npmjs.org/"
+  },
+  "exit": 0,
+  "seconds": 0.8155802231049165
+}

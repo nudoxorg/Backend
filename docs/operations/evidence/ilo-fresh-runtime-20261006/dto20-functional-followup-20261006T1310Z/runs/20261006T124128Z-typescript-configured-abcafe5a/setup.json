@@ -1,0 +1,373 @@
+{
+  "schema": "nudox.fresh-real-remote-runtime.v1",
+  "root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T124128Z-typescript-configured-abcafe5a",
+  "language": "typescript",
+  "mode": "configured",
+  "source": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/project",
+  "source_origin": {
+    "consumer_manifest": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/consumer/package.json",
+    "consumer_manifest_sha256": "20667d539f141f6450feb090bd4d51a417f60b609ba7f4607c93c80f7ebb6608",
+    "env": {
+      "HOME": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/home",
+      "LANG": "C.UTF-8",
+      "PATH": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin",
+      "npm_config_cache": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/npm-cache",
+      "npm_config_registry": "https://registry.npmjs.org/"
+    },
+    "extra_consumer_dependencies": {
+      "@types/node": "^24.3.1"
+    },
+    "install_command": {
+      "argv": [
+        "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin/npm",
+        "ci",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "cwd": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/consumer",
+      "env": {
+        "HOME": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/home",
+        "LANG": "C.UTF-8",
+        "PATH": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin",
+        "npm_config_cache": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/npm-cache",
+        "npm_config_registry": "https://registry.npmjs.org/"
+      },
+      "exit": 0,
+      "seconds": 0.31443788402248174
+    },
+    "installed": [
+      {
+        "archive_sha256": "4605482935b2a8c26c53c7637fbc20665e49f9b0b6dc0db50449500e86727a82",
+        "package": {
+          "ecosystem": "npm",
+          "id": "@types/node",
+          "version": "24.19.1"
+        },
+        "path": "node_modules/@types/node",
+        "verified_files": 75
+      },
+      {
+        "archive_sha256": "2abf595a86b87dd22951218848ec4ad89c018db0e656716dc04b8b2f9290a0f4",
+        "package": {
+          "ecosystem": "npm",
+          "id": "undici-types",
+          "version": "7.24.6"
+        },
+        "path": "node_modules/undici-types",
+        "verified_files": 47
+      }
+    ],
+    "lifecycle_scripts_executed": false,
+    "lock_command": {
+      "argv": [
+        "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin/npm",
+        "install",
+        "--package-lock-only",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--lockfile-version=3"
+      ],
+      "cwd": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/consumer",
+      "env": {
+        "HOME": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/home",
+        "LANG": "C.UTF-8",
+        "PATH": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin",
+        "npm_config_cache": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/npm-cache",
+        "npm_config_registry": "https://registry.npmjs.org/"
+      },
+      "exit": 0,
+      "seconds": 0.8155802231049165
+    },
+    "lock_sha256": "a994b35fea264c3e5ddd1e86be38a5b897917914af345001d642103b1cf3a06b",
+    "product_runtime_started": false,
+    "project": "/root/nudox-corpus-20261006/artifacts/immer-11.1.18-node-type-closure-20261006T1240Z/project",
+    "resource_before": {
+      "disk_free_bytes": 56064471040,
+      "memory_available_kib": 56195532
+    },
+    "root_inventory": "/root/nudox-corpus-20261006/artifacts/stratified-typescript-library-dossiers-20261006T1238Z/npm-immer/source-inventory.json",
+    "root_inventory_sha256": "2e3556b594a7ad1fbc26cdbfa9af54e51cd2f45711b9d0ecbff2e51a4f900dc8",
+    "root_origin": "/root/nudox-corpus-20261006/artifacts/stratified-typescript-library-dossiers-20261006T1238Z/npm-immer/registry-origin.json",
+    "root_origin_sha256": "d80f0fbe005a1d137cca07189bd6c928f542d86e69c9817fc934b0d386befba0",
+    "root_package": {
+      "ecosystem": "npm",
+      "id": "immer",
+      "version": "11.1.18"
+    },
+    "schema": "nudox.official-npm-private-runtime-closure.v1",
+    "source_package_json_sha256": "0d3b8584ed366d3ac74e335e7951395b94cf7fa3ef2ba36ace152995b14100b7",
+    "source_package_json_unchanged": true,
+    "tools": {
+      "node": {
+        "path": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin/node",
+        "sha256": "47ce0b0ce242dc8a97a9c9fe5fda1d0c0ff1430457b6efe71072274b76a67c9e",
+        "version": "v24.18.0"
+      },
+      "npm": {
+        "path": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin/npm",
+        "sha256": "6761b97a075380a8977803d988ddd9fe19616b0b861bc922c9bebf66318d5e40",
+        "version": "11.16.0"
+      }
+    },
+    "unique_releases": 2,
+    "whole_package_pass": false
+  },
+  "source_before": {
+    "files": [
+      [
+        "LICENSE",
+        1074,
+        "99cf22f6960a6fe228ec84ea9aefb0d75b27999ece83a3a9801e1c2081fa270b"
+      ],
+      [
+        "dist/cjs/immer.cjs.development.js",
+        53695,
+        "a531d218132e2a8d5500881df3f0315bacc488fc0104659ba3f62829716dbe3f"
+      ],
+      [
+        "dist/cjs/immer.cjs.development.js.map",
+        126539,
+        "c9bfd4baa47e70d8445a84bc2bfebc7ba988f0b6640ba16f29278d75da427750"
+      ],
+      [
+        "dist/cjs/immer.cjs.production.js",
+        16857,
+        "8f8d192851f2090effc5ed6d82942b737d8969e847407d60e10f30797307f28c"
+      ],
+      [
+        "dist/cjs/immer.cjs.production.js.map",
+        130583,
+        "0f5f0b35693f6ae7ff26d3c31f9c560cc34a036f5579c1b4ce73b2e10e58c651"
+      ],
+      [
+        "dist/cjs/index.js",
+        183,
+        "7f637a5b444a27f4c6d66bd5be1bb0582691a449f0d3f15223d2463f9ceccf3a"
+      ],
+      [
+        "dist/cjs/index.js.flow",
+        4407,
+        "57ae057f3380b8620834d47172abab986d5e80333b8aee6d4354b320e382dceb"
+      ],
+      [
+        "dist/immer.d.ts",
+        16599,
+        "57658b130a56abe2ba4f7eb1490038f0b31aa2f3cc2e42d24032626fcf6b1be3"
+      ],
+      [
+        "dist/immer.legacy-esm.js",
+        53781,
+        "53966617bd290260325c0978ecadf51b8aeb8ed9245bbc784888ea74d2dbeac4"
+      ],
+      [
+        "dist/immer.legacy-esm.js.map",
+        126527,
+        "d4f579bfd9ff1566ef3158ef5a9d5fe752b609d394844ef116a06ea7c92e587f"
+      ],
+      [
+        "dist/immer.mjs",
+        51984,
+        "d5264bb1245a752266754a57d00a9e8982a97bb5016f386e99bcc7559caf3436"
+      ],
+      [
+        "dist/immer.mjs.map",
+        126335,
+        "23c0383c9fd5ad9308a82669eb304ad990819f63781714c743af765c22156eb4"
+      ],
+      [
+        "dist/immer.production.mjs",
+        16077,
+        "30fec64eb16c235f5fe771ed7e4be08eb0f67cb46c44917424a6e643f3d677b9"
+      ],
+      [
+        "dist/immer.production.mjs.map",
+        129907,
+        "f6c99fccaaf1b1c3e960cfc249307393f9886b1274fdaebe6e3165aa0681d15e"
+      ],
+      [
+        "package.json",
+        2933,
+        "0d3b8584ed366d3ac74e335e7951395b94cf7fa3ef2ba36ace152995b14100b7"
+      ],
+      [
+        "readme.md",
+        1880,
+        "aa4c25aa3b251470ec5512d4271c202d229a0a9ffcf377762be331a5157edfba"
+      ],
+      [
+        "src/core/current.ts",
+        1278,
+        "f3668fb84b200a24d663cbe50bf7e8be3fbfa9ff75500d69da15873b4a84a006"
+      ],
+      [
+        "src/core/finalize.ts",
+        8486,
+        "f5c76275dc374fb22367e21ab9348ca663dd681588b0becfb9564754d4fb913b"
+      ],
+      [
+        "src/core/immerClass.ts",
+        7772,
+        "8cf35b67c6f31fb1e1d861dde65c5db106a90178aaf2d6f1a18fc0683a45eb01"
+      ],
+      [
+        "src/core/proxy.ts",
+        10306,
+        "f70de38d04577282f1bda56d5ad08eae52639acffb5b77072fec5dd1ce07853d"
+      ],
+      [
+        "src/core/scope.ts",
+        2172,
+        "ccfd3cabb86ea9568b5ea18d36aeaec7426f8cbc0bc4107624ad4348ea146056"
+      ],
+      [
+        "src/immer.ts",
+        3850,
+        "bd03701f0efd7596cc393dc392da38aa5686217ad9db0608625363957e6a9a19"
+      ],
+      [
+        "src/internal.ts",
+        355,
+        "3d8f2bd0bc4379a9f6709a907029d02029c93cad75fed586cfbab88060a35896"
+      ],
+      [
+        "src/plugins/arrayMethods.ts",
+        16414,
+        "85386e4b46d5d5ab09bdca5633a4d78c9ae9cc74642bf889e1487806c7ffa0c3"
+      ],
+      [
+        "src/plugins/mapset.ts",
+        8459,
+        "ddd28f1e237410b2bc631b5cb83fd636a5b0af7dfcfa4943a81c7ef760cfad00"
+      ],
+      [
+        "src/plugins/patches.ts",
+        10683,
+        "48675aa78e843f08e801223d9465848886dce16c0005a63592bff49aa2a6c852"
+      ],
+      [
+        "src/types/globals.d.ts",
+        31,
+        "7a3e25d022daacb54a8bfdaeabea263c6266cfc19c9d855d002b7014beb8dc8d"
+      ],
+      [
+        "src/types/index.js.flow",
+        4407,
+        "57ae057f3380b8620834d47172abab986d5e80333b8aee6d4354b320e382dceb"
+      ],
+      [
+        "src/types/types-external.ts",
+        8751,
+        "567ef259fb823d1af6c9dfab6607b4c39ebbf55c629d2feecfd59c3af005b422"
+      ],
+      [
+        "src/types/types-internal.ts",
+        1193,
+        "41d6f552263a3812607f9a47d12224f5d4ce6b8934664fff828d4967bf9ed659"
+      ],
+      [
+        "src/utils/common.ts",
+        8121,
+        "4796d4c122c913f4cf67688528972544be2d8d38fe9db8d4f700f76d98d49db2"
+      ],
+      [
+        "src/utils/env.ts",
+        666,
+        "c8b9b7d096f5eb90aaadf4d0c1947217635381dd990ff317b83111d5424a624e"
+      ],
+      [
+        "src/utils/errors.ts",
+        2214,
+        "6041b13b5252df6908e9b693ab114eddc21c0967b6d9bf255f5120278bfd2cec"
+      ],
+      [
+        "src/utils/plugins.ts",
+        2332,
+        "a124c5fa095b7592d35bdc88ded44f5e2fa6ca7b90cee2cd36c034a4a8d15132"
+      ]
+    ],
+    "sha256": "03af71674617d0acf1c15fa08f2a2c128b51820e5dead8dc15cadb63ee0c5670"
+  },
+  "runtime_manifest": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+  "runtime_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "runtime_manifest_content": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "binaries": {
+    "backend-cli": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+      "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d"
+    },
+    "backend-locald": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+      "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb"
+    },
+    "backend-mcp": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+      "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb"
+    }
+  },
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T124128Z-typescript-configured-abcafe5a/home",
+    "XDG_CONFIG_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T124128Z-typescript-configured-abcafe5a/home/.config",
+    "XDG_DATA_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T124128Z-typescript-configured-abcafe5a/home/.local/share",
+    "XDG_STATE_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T124128Z-typescript-configured-abcafe5a/home/.local/state",
+    "TMPDIR": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T124128Z-typescript-configured-abcafe5a/tmp",
+    "PATH": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin:/nix/store/1xklj6dmgcpgz60c9w2ynaq7ynzfsrrq-go-1.26.4/share/go/bin:/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin:/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin:/root/nudox-corpus-20261006/corpora/next-react-alias-fixture/node_modules/typescript/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "USER": "root",
+    "LOGNAME": "root",
+    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "{\"version\":1,\"paths\":[{\"variable\":\"NUDOX_PYTHON\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,57,114,48,50,121,107,120,57,121,51,53,108,102,52,103,107,54,103,99,51,48,103,110,97,103,49,121,56,110,99,112,55,45,112,121,116,104,111,110,51,45,51,46,49,51,46,49,53,47,98,105,110,47,112,121,116,104,111,110,51,46,49,51]}},{\"variable\":\"NUDOX_TSC\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115,47,116,121,112,101,115,99,114,105,112,116,47,98,105,110,47,116,115,99]}},{\"variable\":\"NUDOX_GO\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111,47,98,105,110,47,103,111]}},{\"variable\":\"NUDOX_TYPESCRIPT_NODE\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,48,110,98,112,48,51,48,51,56,115,51,51,99,107,55,49,50,121,120,57,50,49,57,103,99,106,51,97,50,115,113,109,45,110,111,100,101,106,115,45,115,108,105,109,45,50,52,46,49,56,46,48,47,98,105,110,47,110,111,100,101]}},{\"variable\":\"NUDOX_TYPESCRIPT_MODULE_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115]}},{\"variable\":\"NUDOX_PYREFLY\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,113,100,120,122,120,107,119,104,49,51,98,103,118,53,48,48,54,54,102,107,50,107,97,51,112,49,122,112,110,106,97,112,45,112,121,114,101,102,108,121,45,49,46,50,46,48,45,100,101,118,46,49,47,98,105,110,47,112,121,114,101,102,108,121]}},{\"variable\":\"NUDOX_GO_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111]}}]}"
+  },
+  "compiler_snapshot_sha256": "0f13715f573afb87eb795bc2eb7960737abd1b7e7cd8a35ddf54a46f4a51e066",
+  "workspace_preexisting": false,
+  "endpoint_preexisting": false,
+  "fresh_home_entries": [],
+  "installer_tested": false,
+  "dependency_closure_copied": true,
+  "accepted_project_pass": false,
+  "journey_options": {
+    "skip_update_cancel": false,
+    "cancel_before_first_add": false,
+    "transport_only": false,
+    "public_compiler_variables": [],
+    "requested_queries": [
+      "WritableDraft"
+    ],
+    "edit_file": "src/types/types-external.ts",
+    "keep_edited_source": true,
+    "first_publish_only": false,
+    "witness_path": "src/types/types-external.ts",
+    "witness_line": 31,
+    "resolve_detail": "summary",
+    "resolve_limit": 10
+  }
+}

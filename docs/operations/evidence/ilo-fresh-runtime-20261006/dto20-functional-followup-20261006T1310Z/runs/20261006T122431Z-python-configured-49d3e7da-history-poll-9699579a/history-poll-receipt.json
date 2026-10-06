@@ -1,0 +1,1942 @@
+{
+  "schema": "nudox.actual-eventual-semantic-history.v1",
+  "root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a",
+  "original_run": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da",
+  "original_state_mutated": false,
+  "manifest": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "observer_sha256": "0510501c3e64644ea703a18ed77d8cac46fb5bcf4f28bb14d55cf1424e341160",
+  "started_utc": "2026-10-06T12:51:08Z",
+  "budget_seconds": 180,
+  "memory_start_kib": 57035464,
+  "selected_head_before": "89ff975d6b340c5e2b957b7b96089b67480ec503cf36b0bd7cbb49be42803bee",
+  "commands": [
+    {
+      "label": "cold-health",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state",
+        "--endpoint",
+        "/tmp/nudox-history-poll-c309be069c364e77.sock",
+        "--passive",
+        "health"
+      ],
+      "exit": 0,
+      "seconds": 0.10931734996847808,
+      "utc": "2026-10-06T12:51:17Z",
+      "stdout_sha256": "60cc950901d5d8c613a1ef97efce1bd46c6080a00ec87f9caf4fbc6070816b57",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payload": {
+        "readiness": "ready",
+        "revision": "6a4544134c6fb1ab0b457ad25d25e47f8094affe34604228e4b661817369c3bc",
+        "revision_tag": "6a454413",
+        "source": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+        "source_tag": "a98a2689",
+        "sequence": 9,
+        "rows": 8867,
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "state": "unavailable",
+            "reason": "unconfigured"
+          }
+        ],
+        "capabilities": {
+          "frontends_ready": 9,
+          "frontends_total": 9,
+          "oracles_ready": 0,
+          "oracles_total": 18,
+          "embedding": "unconfigured",
+          "unavailable": [
+            {
+              "reason": "no-manifest",
+              "count": 11
+            }
+          ],
+          "summary": "frontends 9/9 ready \u00b7 oracles 0/18 ready \u00b7 11 no-manifest \u00b7 embedding unconfigured"
+        },
+        "answer": "status",
+        "detail": "full",
+        "budget": {
+          "bytes": 805,
+          "estimatedTokens": 202,
+          "bytesPerToken": 4
+        }
+      }
+    },
+    {
+      "label": "history-1",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state",
+        "--endpoint",
+        "/tmp/nudox-history-poll-c309be069c364e77.sock",
+        "semantic-versions",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+      ],
+      "exit": 0,
+      "seconds": 0.0223280779318884,
+      "utc": "2026-10-06T12:51:17Z",
+      "stdout_sha256": "ed0f86e8fc687468a10df7c0e5beb647d0d5e3c5b932eb39e000ebdae3f8a5a1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payload": {
+        "heading": "semantic-versions",
+        "records": [
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "06128cbd0fff4ae1d26b1a96f62b9a119df54d7de5943b775df44f07a9163812",
+            "tags": [
+              "generation 06128cbd",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "selected",
+              "current source input",
+              "derived history pending"
+            ],
+            "history_status": {
+              "state": "pending",
+              "selection_id": [
+                158,
+                153,
+                50,
+                206,
+                116,
+                76,
+                110,
+                184,
+                252,
+                162,
+                10,
+                26,
+                193,
+                87,
+                170,
+                162,
+                116,
+                134,
+                127,
+                20,
+                20,
+                47,
+                155,
+                209,
+                57,
+                8,
+                86,
+                60,
+                174,
+                109,
+                227,
+                219
+              ]
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          },
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "0612fd8d0496645592c5c0de0192fe23237d51a31006c3db1d827616e97adee1",
+            "tags": [
+              "generation 0612fd8d",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "historical source input f9656ad3346d \u00b7 latest 50fa8ced3bd3",
+              "derived history not selected"
+            ],
+            "history_status": {
+              "state": "not_selected"
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          }
+        ],
+        "selected_source_frontier": {
+          "package": {
+            "kind": "local",
+            "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+          },
+          "source_relation_root": [
+            209,
+            126,
+            251,
+            183,
+            186,
+            239,
+            17,
+            236,
+            45,
+            143,
+            66,
+            174,
+            147,
+            183,
+            7,
+            113,
+            161,
+            120,
+            121,
+            1,
+            125,
+            59,
+            164,
+            201,
+            37,
+            234,
+            93,
+            40,
+            136,
+            233,
+            21,
+            183
+          ],
+          "source_version": [
+            35,
+            71,
+            86,
+            109,
+            14,
+            99,
+            213,
+            245,
+            142,
+            159,
+            97,
+            27,
+            178,
+            138,
+            168,
+            213,
+            150,
+            62,
+            242,
+            104,
+            15,
+            176,
+            229,
+            158,
+            183,
+            219,
+            109,
+            156,
+            110,
+            79,
+            163,
+            251
+          ],
+          "file_count": 58
+        },
+        "answer": "product",
+        "detail": "full",
+        "budget": {
+          "bytes": 1552,
+          "estimatedTokens": 388,
+          "bytesPerToken": 4
+        }
+      },
+      "owner_resources": {
+        "rss_kib": 845728,
+        "threads": 27,
+        "cpu_seconds": 14.26,
+        "available_memory_kib": 55489264
+      }
+    },
+    {
+      "label": "history-2",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state",
+        "--endpoint",
+        "/tmp/nudox-history-poll-c309be069c364e77.sock",
+        "semantic-versions",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+      ],
+      "exit": 0,
+      "seconds": 0.021654463023878634,
+      "utc": "2026-10-06T12:51:19Z",
+      "stdout_sha256": "ed0f86e8fc687468a10df7c0e5beb647d0d5e3c5b932eb39e000ebdae3f8a5a1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payload": {
+        "heading": "semantic-versions",
+        "records": [
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "06128cbd0fff4ae1d26b1a96f62b9a119df54d7de5943b775df44f07a9163812",
+            "tags": [
+              "generation 06128cbd",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "selected",
+              "current source input",
+              "derived history pending"
+            ],
+            "history_status": {
+              "state": "pending",
+              "selection_id": [
+                158,
+                153,
+                50,
+                206,
+                116,
+                76,
+                110,
+                184,
+                252,
+                162,
+                10,
+                26,
+                193,
+                87,
+                170,
+                162,
+                116,
+                134,
+                127,
+                20,
+                20,
+                47,
+                155,
+                209,
+                57,
+                8,
+                86,
+                60,
+                174,
+                109,
+                227,
+                219
+              ]
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          },
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "0612fd8d0496645592c5c0de0192fe23237d51a31006c3db1d827616e97adee1",
+            "tags": [
+              "generation 0612fd8d",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "historical source input f9656ad3346d \u00b7 latest 50fa8ced3bd3",
+              "derived history not selected"
+            ],
+            "history_status": {
+              "state": "not_selected"
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          }
+        ],
+        "selected_source_frontier": {
+          "package": {
+            "kind": "local",
+            "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+          },
+          "source_relation_root": [
+            209,
+            126,
+            251,
+            183,
+            186,
+            239,
+            17,
+            236,
+            45,
+            143,
+            66,
+            174,
+            147,
+            183,
+            7,
+            113,
+            161,
+            120,
+            121,
+            1,
+            125,
+            59,
+            164,
+            201,
+            37,
+            234,
+            93,
+            40,
+            136,
+            233,
+            21,
+            183
+          ],
+          "source_version": [
+            35,
+            71,
+            86,
+            109,
+            14,
+            99,
+            213,
+            245,
+            142,
+            159,
+            97,
+            27,
+            178,
+            138,
+            168,
+            213,
+            150,
+            62,
+            242,
+            104,
+            15,
+            176,
+            229,
+            158,
+            183,
+            219,
+            109,
+            156,
+            110,
+            79,
+            163,
+            251
+          ],
+          "file_count": 58
+        },
+        "answer": "product",
+        "detail": "full",
+        "budget": {
+          "bytes": 1552,
+          "estimatedTokens": 388,
+          "bytesPerToken": 4
+        }
+      },
+      "owner_resources": {
+        "rss_kib": 865932,
+        "threads": 27,
+        "cpu_seconds": 16.39,
+        "available_memory_kib": 55409648
+      }
+    },
+    {
+      "label": "history-3",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state",
+        "--endpoint",
+        "/tmp/nudox-history-poll-c309be069c364e77.sock",
+        "semantic-versions",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+      ],
+      "exit": 0,
+      "seconds": 0.012805880978703499,
+      "utc": "2026-10-06T12:51:21Z",
+      "stdout_sha256": "ed0f86e8fc687468a10df7c0e5beb647d0d5e3c5b932eb39e000ebdae3f8a5a1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payload": {
+        "heading": "semantic-versions",
+        "records": [
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "06128cbd0fff4ae1d26b1a96f62b9a119df54d7de5943b775df44f07a9163812",
+            "tags": [
+              "generation 06128cbd",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "selected",
+              "current source input",
+              "derived history pending"
+            ],
+            "history_status": {
+              "state": "pending",
+              "selection_id": [
+                158,
+                153,
+                50,
+                206,
+                116,
+                76,
+                110,
+                184,
+                252,
+                162,
+                10,
+                26,
+                193,
+                87,
+                170,
+                162,
+                116,
+                134,
+                127,
+                20,
+                20,
+                47,
+                155,
+                209,
+                57,
+                8,
+                86,
+                60,
+                174,
+                109,
+                227,
+                219
+              ]
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          },
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "0612fd8d0496645592c5c0de0192fe23237d51a31006c3db1d827616e97adee1",
+            "tags": [
+              "generation 0612fd8d",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "historical source input f9656ad3346d \u00b7 latest 50fa8ced3bd3",
+              "derived history not selected"
+            ],
+            "history_status": {
+              "state": "not_selected"
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          }
+        ],
+        "selected_source_frontier": {
+          "package": {
+            "kind": "local",
+            "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+          },
+          "source_relation_root": [
+            209,
+            126,
+            251,
+            183,
+            186,
+            239,
+            17,
+            236,
+            45,
+            143,
+            66,
+            174,
+            147,
+            183,
+            7,
+            113,
+            161,
+            120,
+            121,
+            1,
+            125,
+            59,
+            164,
+            201,
+            37,
+            234,
+            93,
+            40,
+            136,
+            233,
+            21,
+            183
+          ],
+          "source_version": [
+            35,
+            71,
+            86,
+            109,
+            14,
+            99,
+            213,
+            245,
+            142,
+            159,
+            97,
+            27,
+            178,
+            138,
+            168,
+            213,
+            150,
+            62,
+            242,
+            104,
+            15,
+            176,
+            229,
+            158,
+            183,
+            219,
+            109,
+            156,
+            110,
+            79,
+            163,
+            251
+          ],
+          "file_count": 58
+        },
+        "answer": "product",
+        "detail": "full",
+        "budget": {
+          "bytes": 1552,
+          "estimatedTokens": 388,
+          "bytesPerToken": 4
+        }
+      },
+      "owner_resources": {
+        "rss_kib": 865992,
+        "threads": 27,
+        "cpu_seconds": 16.74,
+        "available_memory_kib": 55602800
+      }
+    },
+    {
+      "label": "history-4",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state",
+        "--endpoint",
+        "/tmp/nudox-history-poll-c309be069c364e77.sock",
+        "semantic-versions",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+      ],
+      "exit": 0,
+      "seconds": 0.012575607048347592,
+      "utc": "2026-10-06T12:51:23Z",
+      "stdout_sha256": "ed0f86e8fc687468a10df7c0e5beb647d0d5e3c5b932eb39e000ebdae3f8a5a1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payload": {
+        "heading": "semantic-versions",
+        "records": [
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "06128cbd0fff4ae1d26b1a96f62b9a119df54d7de5943b775df44f07a9163812",
+            "tags": [
+              "generation 06128cbd",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "selected",
+              "current source input",
+              "derived history pending"
+            ],
+            "history_status": {
+              "state": "pending",
+              "selection_id": [
+                158,
+                153,
+                50,
+                206,
+                116,
+                76,
+                110,
+                184,
+                252,
+                162,
+                10,
+                26,
+                193,
+                87,
+                170,
+                162,
+                116,
+                134,
+                127,
+                20,
+                20,
+                47,
+                155,
+                209,
+                57,
+                8,
+                86,
+                60,
+                174,
+                109,
+                227,
+                219
+              ]
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          },
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "0612fd8d0496645592c5c0de0192fe23237d51a31006c3db1d827616e97adee1",
+            "tags": [
+              "generation 0612fd8d",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "historical source input f9656ad3346d \u00b7 latest 50fa8ced3bd3",
+              "derived history not selected"
+            ],
+            "history_status": {
+              "state": "not_selected"
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          }
+        ],
+        "selected_source_frontier": {
+          "package": {
+            "kind": "local",
+            "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+          },
+          "source_relation_root": [
+            209,
+            126,
+            251,
+            183,
+            186,
+            239,
+            17,
+            236,
+            45,
+            143,
+            66,
+            174,
+            147,
+            183,
+            7,
+            113,
+            161,
+            120,
+            121,
+            1,
+            125,
+            59,
+            164,
+            201,
+            37,
+            234,
+            93,
+            40,
+            136,
+            233,
+            21,
+            183
+          ],
+          "source_version": [
+            35,
+            71,
+            86,
+            109,
+            14,
+            99,
+            213,
+            245,
+            142,
+            159,
+            97,
+            27,
+            178,
+            138,
+            168,
+            213,
+            150,
+            62,
+            242,
+            104,
+            15,
+            176,
+            229,
+            158,
+            183,
+            219,
+            109,
+            156,
+            110,
+            79,
+            163,
+            251
+          ],
+          "file_count": 58
+        },
+        "answer": "product",
+        "detail": "full",
+        "budget": {
+          "bytes": 1552,
+          "estimatedTokens": 388,
+          "bytesPerToken": 4
+        }
+      },
+      "owner_resources": {
+        "rss_kib": 865992,
+        "threads": 27,
+        "cpu_seconds": 16.84,
+        "available_memory_kib": 55645364
+      }
+    },
+    {
+      "label": "history-5",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state",
+        "--endpoint",
+        "/tmp/nudox-history-poll-c309be069c364e77.sock",
+        "semantic-versions",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+      ],
+      "exit": 0,
+      "seconds": 0.014626918942667544,
+      "utc": "2026-10-06T12:51:25Z",
+      "stdout_sha256": "ed0f86e8fc687468a10df7c0e5beb647d0d5e3c5b932eb39e000ebdae3f8a5a1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payload": {
+        "heading": "semantic-versions",
+        "records": [
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "06128cbd0fff4ae1d26b1a96f62b9a119df54d7de5943b775df44f07a9163812",
+            "tags": [
+              "generation 06128cbd",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "selected",
+              "current source input",
+              "derived history pending"
+            ],
+            "history_status": {
+              "state": "pending",
+              "selection_id": [
+                158,
+                153,
+                50,
+                206,
+                116,
+                76,
+                110,
+                184,
+                252,
+                162,
+                10,
+                26,
+                193,
+                87,
+                170,
+                162,
+                116,
+                134,
+                127,
+                20,
+                20,
+                47,
+                155,
+                209,
+                57,
+                8,
+                86,
+                60,
+                174,
+                109,
+                227,
+                219
+              ]
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          },
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "0612fd8d0496645592c5c0de0192fe23237d51a31006c3db1d827616e97adee1",
+            "tags": [
+              "generation 0612fd8d",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "historical source input f9656ad3346d \u00b7 latest 50fa8ced3bd3",
+              "derived history not selected"
+            ],
+            "history_status": {
+              "state": "not_selected"
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          }
+        ],
+        "selected_source_frontier": {
+          "package": {
+            "kind": "local",
+            "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+          },
+          "source_relation_root": [
+            209,
+            126,
+            251,
+            183,
+            186,
+            239,
+            17,
+            236,
+            45,
+            143,
+            66,
+            174,
+            147,
+            183,
+            7,
+            113,
+            161,
+            120,
+            121,
+            1,
+            125,
+            59,
+            164,
+            201,
+            37,
+            234,
+            93,
+            40,
+            136,
+            233,
+            21,
+            183
+          ],
+          "source_version": [
+            35,
+            71,
+            86,
+            109,
+            14,
+            99,
+            213,
+            245,
+            142,
+            159,
+            97,
+            27,
+            178,
+            138,
+            168,
+            213,
+            150,
+            62,
+            242,
+            104,
+            15,
+            176,
+            229,
+            158,
+            183,
+            219,
+            109,
+            156,
+            110,
+            79,
+            163,
+            251
+          ],
+          "file_count": 58
+        },
+        "answer": "product",
+        "detail": "full",
+        "budget": {
+          "bytes": 1552,
+          "estimatedTokens": 388,
+          "bytesPerToken": 4
+        }
+      },
+      "owner_resources": {
+        "rss_kib": 865992,
+        "threads": 27,
+        "cpu_seconds": 17.12,
+        "available_memory_kib": 55533084
+      }
+    },
+    {
+      "label": "history-6",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state",
+        "--endpoint",
+        "/tmp/nudox-history-poll-c309be069c364e77.sock",
+        "semantic-versions",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+      ],
+      "exit": 0,
+      "seconds": 0.012576200999319553,
+      "utc": "2026-10-06T12:51:27Z",
+      "stdout_sha256": "ed0f86e8fc687468a10df7c0e5beb647d0d5e3c5b932eb39e000ebdae3f8a5a1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payload": {
+        "heading": "semantic-versions",
+        "records": [
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "06128cbd0fff4ae1d26b1a96f62b9a119df54d7de5943b775df44f07a9163812",
+            "tags": [
+              "generation 06128cbd",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "selected",
+              "current source input",
+              "derived history pending"
+            ],
+            "history_status": {
+              "state": "pending",
+              "selection_id": [
+                158,
+                153,
+                50,
+                206,
+                116,
+                76,
+                110,
+                184,
+                252,
+                162,
+                10,
+                26,
+                193,
+                87,
+                170,
+                162,
+                116,
+                134,
+                127,
+                20,
+                20,
+                47,
+                155,
+                209,
+                57,
+                8,
+                86,
+                60,
+                174,
+                109,
+                227,
+                219
+              ]
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          },
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "0612fd8d0496645592c5c0de0192fe23237d51a31006c3db1d827616e97adee1",
+            "tags": [
+              "generation 0612fd8d",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "historical source input f9656ad3346d \u00b7 latest 50fa8ced3bd3",
+              "derived history not selected"
+            ],
+            "history_status": {
+              "state": "not_selected"
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          }
+        ],
+        "selected_source_frontier": {
+          "package": {
+            "kind": "local",
+            "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+          },
+          "source_relation_root": [
+            209,
+            126,
+            251,
+            183,
+            186,
+            239,
+            17,
+            236,
+            45,
+            143,
+            66,
+            174,
+            147,
+            183,
+            7,
+            113,
+            161,
+            120,
+            121,
+            1,
+            125,
+            59,
+            164,
+            201,
+            37,
+            234,
+            93,
+            40,
+            136,
+            233,
+            21,
+            183
+          ],
+          "source_version": [
+            35,
+            71,
+            86,
+            109,
+            14,
+            99,
+            213,
+            245,
+            142,
+            159,
+            97,
+            27,
+            178,
+            138,
+            168,
+            213,
+            150,
+            62,
+            242,
+            104,
+            15,
+            176,
+            229,
+            158,
+            183,
+            219,
+            109,
+            156,
+            110,
+            79,
+            163,
+            251
+          ],
+          "file_count": 58
+        },
+        "answer": "product",
+        "detail": "full",
+        "budget": {
+          "bytes": 1552,
+          "estimatedTokens": 388,
+          "bytesPerToken": 4
+        }
+      },
+      "owner_resources": {
+        "rss_kib": 865984,
+        "threads": 27,
+        "cpu_seconds": 17.33,
+        "available_memory_kib": 55533560
+      }
+    },
+    {
+      "label": "history-7",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state",
+        "--endpoint",
+        "/tmp/nudox-history-poll-c309be069c364e77.sock",
+        "semantic-versions",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+      ],
+      "exit": 0,
+      "seconds": 0.013664002064615488,
+      "utc": "2026-10-06T12:51:29Z",
+      "stdout_sha256": "ed0f86e8fc687468a10df7c0e5beb647d0d5e3c5b932eb39e000ebdae3f8a5a1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payload": {
+        "heading": "semantic-versions",
+        "records": [
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "06128cbd0fff4ae1d26b1a96f62b9a119df54d7de5943b775df44f07a9163812",
+            "tags": [
+              "generation 06128cbd",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "selected",
+              "current source input",
+              "derived history pending"
+            ],
+            "history_status": {
+              "state": "pending",
+              "selection_id": [
+                158,
+                153,
+                50,
+                206,
+                116,
+                76,
+                110,
+                184,
+                252,
+                162,
+                10,
+                26,
+                193,
+                87,
+                170,
+                162,
+                116,
+                134,
+                127,
+                20,
+                20,
+                47,
+                155,
+                209,
+                57,
+                8,
+                86,
+                60,
+                174,
+                109,
+                227,
+                219
+              ]
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          },
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "0612fd8d0496645592c5c0de0192fe23237d51a31006c3db1d827616e97adee1",
+            "tags": [
+              "generation 0612fd8d",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "historical source input f9656ad3346d \u00b7 latest 50fa8ced3bd3",
+              "derived history not selected"
+            ],
+            "history_status": {
+              "state": "not_selected"
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          }
+        ],
+        "selected_source_frontier": {
+          "package": {
+            "kind": "local",
+            "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+          },
+          "source_relation_root": [
+            209,
+            126,
+            251,
+            183,
+            186,
+            239,
+            17,
+            236,
+            45,
+            143,
+            66,
+            174,
+            147,
+            183,
+            7,
+            113,
+            161,
+            120,
+            121,
+            1,
+            125,
+            59,
+            164,
+            201,
+            37,
+            234,
+            93,
+            40,
+            136,
+            233,
+            21,
+            183
+          ],
+          "source_version": [
+            35,
+            71,
+            86,
+            109,
+            14,
+            99,
+            213,
+            245,
+            142,
+            159,
+            97,
+            27,
+            178,
+            138,
+            168,
+            213,
+            150,
+            62,
+            242,
+            104,
+            15,
+            176,
+            229,
+            158,
+            183,
+            219,
+            109,
+            156,
+            110,
+            79,
+            163,
+            251
+          ],
+          "file_count": 58
+        },
+        "answer": "product",
+        "detail": "full",
+        "budget": {
+          "bytes": 1552,
+          "estimatedTokens": 388,
+          "bytesPerToken": 4
+        }
+      },
+      "owner_resources": {
+        "rss_kib": 865984,
+        "threads": 27,
+        "cpu_seconds": 17.43,
+        "available_memory_kib": 55540032
+      }
+    },
+    {
+      "label": "history-8",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state",
+        "--endpoint",
+        "/tmp/nudox-history-poll-c309be069c364e77.sock",
+        "semantic-versions",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+      ],
+      "exit": 0,
+      "seconds": 0.014676243998110294,
+      "utc": "2026-10-06T12:51:31Z",
+      "stdout_sha256": "ed0f86e8fc687468a10df7c0e5beb647d0d5e3c5b932eb39e000ebdae3f8a5a1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payload": {
+        "heading": "semantic-versions",
+        "records": [
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "06128cbd0fff4ae1d26b1a96f62b9a119df54d7de5943b775df44f07a9163812",
+            "tags": [
+              "generation 06128cbd",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "selected",
+              "current source input",
+              "derived history pending"
+            ],
+            "history_status": {
+              "state": "pending",
+              "selection_id": [
+                158,
+                153,
+                50,
+                206,
+                116,
+                76,
+                110,
+                184,
+                252,
+                162,
+                10,
+                26,
+                193,
+                87,
+                170,
+                162,
+                116,
+                134,
+                127,
+                20,
+                20,
+                47,
+                155,
+                209,
+                57,
+                8,
+                86,
+                60,
+                174,
+                109,
+                227,
+                219
+              ]
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          },
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "0612fd8d0496645592c5c0de0192fe23237d51a31006c3db1d827616e97adee1",
+            "tags": [
+              "generation 0612fd8d",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "historical source input f9656ad3346d \u00b7 latest 50fa8ced3bd3",
+              "derived history not selected"
+            ],
+            "history_status": {
+              "state": "not_selected"
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          }
+        ],
+        "selected_source_frontier": {
+          "package": {
+            "kind": "local",
+            "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+          },
+          "source_relation_root": [
+            209,
+            126,
+            251,
+            183,
+            186,
+            239,
+            17,
+            236,
+            45,
+            143,
+            66,
+            174,
+            147,
+            183,
+            7,
+            113,
+            161,
+            120,
+            121,
+            1,
+            125,
+            59,
+            164,
+            201,
+            37,
+            234,
+            93,
+            40,
+            136,
+            233,
+            21,
+            183
+          ],
+          "source_version": [
+            35,
+            71,
+            86,
+            109,
+            14,
+            99,
+            213,
+            245,
+            142,
+            159,
+            97,
+            27,
+            178,
+            138,
+            168,
+            213,
+            150,
+            62,
+            242,
+            104,
+            15,
+            176,
+            229,
+            158,
+            183,
+            219,
+            109,
+            156,
+            110,
+            79,
+            163,
+            251
+          ],
+          "file_count": 58
+        },
+        "answer": "product",
+        "detail": "full",
+        "budget": {
+          "bytes": 1552,
+          "estimatedTokens": 388,
+          "bytesPerToken": 4
+        }
+      },
+      "owner_resources": {
+        "rss_kib": 865964,
+        "threads": 27,
+        "cpu_seconds": 17.83,
+        "available_memory_kib": 55538572
+      }
+    },
+    {
+      "label": "history-9",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state",
+        "--endpoint",
+        "/tmp/nudox-history-poll-c309be069c364e77.sock",
+        "semantic-versions",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+      ],
+      "exit": 0,
+      "seconds": 0.016359779052436352,
+      "utc": "2026-10-06T12:51:33Z",
+      "stdout_sha256": "3b7fce464e86ac7cbe83cd5eb0b658976865ae1c751581317d9e839e1c63167f",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payload": {
+        "heading": "semantic-versions",
+        "records": [
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "06128cbd0fff4ae1d26b1a96f62b9a119df54d7de5943b775df44f07a9163812",
+            "tags": [
+              "generation 06128cbd",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "selected",
+              "current source input",
+              "derived history refused"
+            ],
+            "history_status": {
+              "state": "refused",
+              "selection_id": [
+                158,
+                153,
+                50,
+                206,
+                116,
+                76,
+                110,
+                184,
+                252,
+                162,
+                10,
+                26,
+                193,
+                87,
+                170,
+                162,
+                116,
+                134,
+                127,
+                20,
+                20,
+                47,
+                155,
+                209,
+                57,
+                8,
+                86,
+                60,
+                174,
+                109,
+                227,
+                219
+              ],
+              "reason": "VerifyPayloadClosure refused (ResourceLimit): one canonical row needs 4314 bytes; segment ceiling is 4096"
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          },
+          {
+            "title": "pkg:pypi/local-d5ef2b432aca51a4b73e0a96da75fd7adabe4edac895a6b0b8710781ac5f5b57@0.0.0-local",
+            "operand": "0612fd8d0496645592c5c0de0192fe23237d51a31006c3db1d827616e97adee1",
+            "tags": [
+              "generation 0612fd8d",
+              "58 artifact(s)",
+              "25536 manifest byte(s)",
+              "complete",
+              "historical source input f9656ad3346d \u00b7 latest 50fa8ced3bd3",
+              "derived history not selected"
+            ],
+            "history_status": {
+              "state": "not_selected"
+            },
+            "compiler_profile": [
+              2,
+              4
+            ]
+          }
+        ],
+        "selected_source_frontier": {
+          "package": {
+            "kind": "local",
+            "value": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project"
+          },
+          "source_relation_root": [
+            209,
+            126,
+            251,
+            183,
+            186,
+            239,
+            17,
+            236,
+            45,
+            143,
+            66,
+            174,
+            147,
+            183,
+            7,
+            113,
+            161,
+            120,
+            121,
+            1,
+            125,
+            59,
+            164,
+            201,
+            37,
+            234,
+            93,
+            40,
+            136,
+            233,
+            21,
+            183
+          ],
+          "source_version": [
+            35,
+            71,
+            86,
+            109,
+            14,
+            99,
+            213,
+            245,
+            142,
+            159,
+            97,
+            27,
+            178,
+            138,
+            168,
+            213,
+            150,
+            62,
+            242,
+            104,
+            15,
+            176,
+            229,
+            158,
+            183,
+            219,
+            109,
+            156,
+            110,
+            79,
+            163,
+            251
+          ],
+          "file_count": 58
+        },
+        "answer": "product",
+        "detail": "full",
+        "budget": {
+          "bytes": 1669,
+          "estimatedTokens": 418,
+          "bytesPerToken": 4
+        }
+      },
+      "owner_resources": {
+        "rss_kib": 865952,
+        "threads": 27,
+        "cpu_seconds": 18.2,
+        "available_memory_kib": 55759524
+      }
+    },
+    {
+      "label": "after-poll-health",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state",
+        "--endpoint",
+        "/tmp/nudox-history-poll-c309be069c364e77.sock",
+        "--passive",
+        "health"
+      ],
+      "exit": 0,
+      "seconds": 0.09257400105707347,
+      "utc": "2026-10-06T12:51:33Z",
+      "stdout_sha256": "60cc950901d5d8c613a1ef97efce1bd46c6080a00ec87f9caf4fbc6070816b57",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "payload": {
+        "readiness": "ready",
+        "revision": "6a4544134c6fb1ab0b457ad25d25e47f8094affe34604228e4b661817369c3bc",
+        "revision_tag": "6a454413",
+        "source": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+        "source_tag": "a98a2689",
+        "sequence": 9,
+        "rows": 8867,
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "state": "unavailable",
+            "reason": "unconfigured"
+          }
+        ],
+        "capabilities": {
+          "frontends_ready": 9,
+          "frontends_total": 9,
+          "oracles_ready": 0,
+          "oracles_total": 18,
+          "embedding": "unconfigured",
+          "unavailable": [
+            {
+              "reason": "no-manifest",
+              "count": 11
+            }
+          ],
+          "summary": "frontends 9/9 ready \u00b7 oracles 0/18 ready \u00b7 11 no-manifest \u00b7 embedding unconfigured"
+        },
+        "answer": "status",
+        "detail": "full",
+        "budget": {
+          "bytes": 805,
+          "estimatedTokens": 202,
+          "bytesPerToken": 4
+        }
+      }
+    }
+  ],
+  "whole_project_pass": false,
+  "owner_pid": 1283715,
+  "owner_argv": [
+    "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+    "--workspace",
+    "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T122431Z-python-configured-49d3e7da-history-poll-9699579a/state",
+    "--endpoint",
+    "/tmp/nudox-history-poll-c309be069c364e77.sock",
+    "--idle-timeout-ms",
+    "0"
+  ],
+  "owner_ready": true,
+  "latest_history_statuses": [
+    {
+      "state": "refused",
+      "selection_id": [
+        158,
+        153,
+        50,
+        206,
+        116,
+        76,
+        110,
+        184,
+        252,
+        162,
+        10,
+        26,
+        193,
+        87,
+        170,
+        162,
+        116,
+        134,
+        127,
+        20,
+        20,
+        47,
+        155,
+        209,
+        57,
+        8,
+        86,
+        60,
+        174,
+        109,
+        227,
+        219
+      ],
+      "reason": "VerifyPayloadClosure refused (ResourceLimit): one canonical row needs 4314 bytes; segment ceiling is 4096"
+    },
+    {
+      "state": "not_selected"
+    }
+  ],
+  "terminal_observed": true,
+  "polls": 9,
+  "elapsed_seconds": 16.145539816934615,
+  "owner_exit": -15,
+  "selected_head_unchanged": true,
+  "memory_end_kib": 56563648,
+  "owner_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "finished_utc": "2026-10-06T12:51:33Z"
+}
