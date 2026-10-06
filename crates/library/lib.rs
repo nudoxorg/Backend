@@ -128,7 +128,7 @@ pub use cargo_source::{
     MAX_CARGO_PACKAGE_SOURCE_INVENTORY_SCAN_ENTRIES, MAX_CARGO_PACKAGE_SOURCE_PATH_BYTES,
     MAX_CARGO_SOURCE_COORDINATE_BYTES, MAX_CARGO_SOURCE_DETAIL_BYTES,
 };
-pub use catalog::{Library, RankedSearchSnapshot};
+pub use catalog::{Library, QueryPageRecipe, RankedSearchSnapshot};
 pub use command::ReferenceFact;
 pub use command::{
     Command, CommandFailure, CommandId, CommandReply, CompileExecutionIntent, DocumentQuery,

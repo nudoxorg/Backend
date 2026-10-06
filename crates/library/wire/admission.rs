@@ -243,20 +243,17 @@ fn admit_query_page(
     command: &Command,
     snapshot: &crate::ViewSnapshot,
 ) -> Result<(), ReplyAdmissionError> {
-    use crate::catalog::{QueryPageKind, projection_recipe, query_page_preimage};
-    let (kind, text, limit, manifest, predecessor) = match command {
+    use crate::QueryPageRecipe;
+    let source_root = snapshot.root.basis().root;
+    let (recipe, limit, predecessor) = match command {
         Command::Name(query) => (
-            QueryPageKind::Names,
-            query.text(),
+            QueryPageRecipe::names(source_root, query),
             query.limit(),
-            query.read_manifest(),
             query.cursor(),
         ),
         Command::Search(query) => (
-            QueryPageKind::Search,
-            query.text(),
+            QueryPageRecipe::search(source_root, query),
             query.limit(),
-            query.read_manifest(),
             query.cursor(),
         ),
         _ => {
@@ -265,11 +262,7 @@ fn admit_query_page(
             ));
         }
     };
-    let expected_recipe = projection_recipe(
-        &query_page_preimage(kind, text, limit),
-        snapshot.root.basis().root,
-        manifest,
-    );
+    let expected_recipe = recipe.identity();
     let invalid = || {
         ReplyAdmissionError::Protocol(
             "query page does not match its continuation contract".to_owned(),

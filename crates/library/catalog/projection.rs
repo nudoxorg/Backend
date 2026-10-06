@@ -30,15 +30,89 @@ pub(crate) fn query_page_preimage(kind: QueryPageKind, text: &str, limit: QueryL
     bytes
 }
 
+/// Canonical witness for a names or search page's continuation contract.
+///
+/// Producers, certificate builders, and consumers use this same encoding of
+/// query family, text, page credit, source root, and optional read manifest.
+/// Its private fields keep the identity paired with its exact preimage.
+#[derive(Debug)]
+pub struct QueryPageRecipe {
+    identity: ViewRecipeId,
+    preimage: Box<[u8]>,
+}
+
+impl QueryPageRecipe {
+    /// Binds a names request to its selected source root.
+    #[must_use]
+    pub fn names(root: ViewStateRoot, query: &NameQuery) -> Self {
+        Self::new(
+            QueryPageKind::Names,
+            query.text(),
+            query.limit(),
+            root,
+            query.read_manifest(),
+        )
+    }
+
+    /// Binds a search request to its selected source root.
+    #[must_use]
+    pub fn search(root: ViewStateRoot, query: &Query) -> Self {
+        Self::new(
+            QueryPageKind::Search,
+            query.text(),
+            query.limit(),
+            root,
+            query.read_manifest(),
+        )
+    }
+
+    fn new(
+        kind: QueryPageKind,
+        text: &str,
+        limit: QueryLimit,
+        root: ViewStateRoot,
+        manifest: Option<&ReadManifest>,
+    ) -> Self {
+        let recipe = query_page_preimage(kind, text, limit);
+        let manifest = manifest_preimage(manifest);
+        let preimage = crate::canonical::view_identity_preimage(&[
+            b"query",
+            &recipe,
+            root.as_bytes(),
+            &manifest,
+        ])
+        .into_boxed_slice();
+        let identity = ViewRecipeId::from_value(&preimage);
+        Self { identity, preimage }
+    }
+
+    /// The identity admitted by this canonical witness.
+    #[must_use]
+    pub const fn identity(&self) -> ViewRecipeId {
+        self.identity
+    }
+
+    /// Exact recipe bytes carried by a wire identity certificate.
+    #[must_use]
+    pub fn canonical_preimage(&self) -> &[u8] {
+        &self.preimage
+    }
+}
+
+fn manifest_preimage(manifest: Option<&ReadManifest>) -> Vec<u8> {
+    let mut bytes = vec![u8::from(manifest.is_some())];
+    if let Some(manifest) = manifest {
+        bytes.extend_from_slice(&manifest.canonical_bytes());
+    }
+    bytes
+}
+
 pub(crate) fn projection_recipe(
     recipe: &[u8],
     root: ViewStateRoot,
     manifest: Option<&ReadManifest>,
 ) -> ViewRecipeId {
-    let mut bytes = vec![u8::from(manifest.is_some())];
-    if let Some(manifest) = manifest {
-        bytes.extend_from_slice(&manifest.canonical_bytes());
-    }
+    let bytes = manifest_preimage(manifest);
     projection_recipe_with_manifest(recipe, root, &bytes)
 }
 
@@ -146,8 +220,7 @@ impl Library {
     /// [`LibraryError::View`] when the bounded snapshot cannot be constructed.
     pub fn names(&self, query: &NameQuery) -> Result<ViewSnapshot, LibraryError> {
         self.check_basis(query.basis)?;
-        let recipe_bytes = query_page_preimage(QueryPageKind::Names, query.text(), query.limit());
-        let recipe = self.query_recipe(&recipe_bytes, query.read_manifest.as_ref());
+        let recipe = QueryPageRecipe::names(self.revision_root(), query).identity();
         self.work.record_seek();
         let limit = usize::from(query.limit.get());
         let start = self.check_query_cursor(query.cursor, recipe, limit, |offset| {
@@ -175,15 +248,14 @@ impl Library {
             .filter_map(|&id| self.view.row(id))
             .collect::<Vec<_>>();
         self.work.record_output(rows.len());
-        self.snapshot_for(
-            &recipe_bytes,
+        self.snapshot_with_recipe(
+            recipe,
             rows,
             if page.has_more {
                 Some(self.cursor)
             } else {
                 None
             },
-            query.read_manifest.as_ref(),
             Some(start.saturating_add(limit)),
         )
     }
@@ -358,8 +430,7 @@ impl Library {
                 "search text is empty".to_owned(),
             ));
         }
-        let recipe_bytes = query_page_preimage(QueryPageKind::Search, query.text(), query.limit());
-        let recipe = self.query_recipe(&recipe_bytes, query.read_manifest.as_ref());
+        let recipe = QueryPageRecipe::search(self.revision_root(), query).identity();
         self.work.record_seek();
         let limit = usize::from(query.limit.get());
         let start = self.check_query_cursor(query.cursor, recipe, limit, |offset| {
@@ -387,15 +458,14 @@ impl Library {
             .filter_map(|&id| self.view.row(id))
             .collect::<Vec<_>>();
         self.work.record_output(rows.len());
-        let snapshot = self.snapshot_for(
-            &recipe_bytes,
+        let snapshot = self.snapshot_with_recipe(
+            recipe,
             rows,
             if page.has_more {
                 Some(self.cursor)
             } else {
                 None
             },
-            query.read_manifest.as_ref(),
             Some(start.saturating_add(limit)),
         )?;
         Ok(RankedSearchSnapshot {
@@ -438,8 +508,7 @@ impl Library {
                 "ranked search identities are not a subset of the selected view".to_owned(),
             ));
         }
-        let recipe_bytes = query_page_preimage(QueryPageKind::Search, query.text(), query.limit());
-        let recipe = self.query_recipe(&recipe_bytes, query.read_manifest.as_ref());
+        let recipe = QueryPageRecipe::search(self.revision_root(), query).identity();
         let limit = usize::from(query.limit.get());
         let ranked_page = |start: usize| {
             let mut ids = ranked_ids
@@ -485,11 +554,10 @@ impl Library {
             .collect::<Vec<_>>();
         self.work.record_seek();
         self.work.record_output(rows.len());
-        self.snapshot_for(
-            &recipe_bytes,
+        self.snapshot_with_recipe(
+            recipe,
             rows,
             page.has_more.then_some(self.cursor),
-            query.read_manifest.as_ref(),
             page.has_more.then_some(start.saturating_add(limit)),
         )
     }
@@ -885,16 +953,21 @@ impl Library {
         read_manifest: Option<&ReadManifest>,
         next_offset: Option<usize>,
     ) -> Result<ViewSnapshot, LibraryError> {
-        let manifest_bytes = read_manifest.map_or_else(
-            || vec![0],
-            |manifest| {
-                let mut bytes = Vec::with_capacity(manifest.canonical_bytes().len() + 1);
-                bytes.push(1);
-                bytes.extend_from_slice(&manifest.canonical_bytes());
-                bytes
-            },
-        );
-        let id = self.query_recipe_with_manifest(recipe, &manifest_bytes);
+        self.snapshot_with_recipe(
+            self.query_recipe(recipe, read_manifest),
+            rows,
+            next,
+            next_offset,
+        )
+    }
+
+    fn snapshot_with_recipe(
+        &self,
+        id: ViewRecipeId,
+        rows: Vec<Row>,
+        next: Option<Cursor>,
+        next_offset: Option<usize>,
+    ) -> Result<ViewSnapshot, LibraryError> {
         let next_offset = next_offset
             .map(u64::try_from)
             .transpose()
@@ -933,10 +1006,6 @@ impl Library {
 
     fn query_recipe(&self, recipe: &[u8], read_manifest: Option<&ReadManifest>) -> ViewRecipeId {
         projection_recipe(recipe, self.revision_root(), read_manifest)
-    }
-
-    fn query_recipe_with_manifest(&self, recipe: &[u8], manifest_bytes: &[u8]) -> ViewRecipeId {
-        projection_recipe_with_manifest(recipe, self.revision_root(), manifest_bytes)
     }
 
     fn check_query_cursor(

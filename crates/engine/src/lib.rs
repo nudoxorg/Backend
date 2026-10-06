@@ -148,7 +148,7 @@ pub use backend_library::{
     PackageDependencyTarget, PackageGraphSourceAuthority, PackageGraphSourceKey, PackageKey,
     PackageReference, PageContinuation, PageRequest, PageTerminal, PolicyReason,
     ProductAdmissionError, ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector,
-    ProjectionPage, Query, QueryLimit, REGISTRY_FORGE_ASSOCIATION_VERSION,
+    ProjectionPage, Query, QueryLimit, QueryPageRecipe, REGISTRY_FORGE_ASSOCIATION_VERSION,
     REGISTRY_FORGE_BLOB_FRONTIER_VERSION, Reason, ReferenceFact, ReferenceRecord,
     RegistryAuthorityId, RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness,
     RegistryDiscoveryFreshness, RegistryDiscoveryStanding, RegistryDownloadCount,

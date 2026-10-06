@@ -9,7 +9,7 @@ mod command;
 mod projection;
 mod subscription;
 
-pub(crate) use projection::{QueryPageKind, projection_recipe, query_page_preimage};
+pub use projection::QueryPageRecipe;
 
 use crate::arrangement::{ProjectionArrangement, WorkCounters};
 use crate::{

@@ -354,12 +354,16 @@ const fn lane_tag(lane: crate::Lane) -> u8 {
 /// Hashes length-delimited recipe/source parts into one view identity.
 #[must_use]
 pub fn view_identity_bytes(parts: &[&[u8]]) -> ViewRecipeId {
+    ViewRecipeId::from_value(&view_identity_preimage(parts))
+}
+
+pub(crate) fn view_identity_preimage(parts: &[&[u8]]) -> Vec<u8> {
     let mut bytes = Vec::new();
     for part in parts {
         bytes.extend_from_slice(&(part.len() as u64).to_be_bytes());
         bytes.extend_from_slice(part);
     }
-    ViewRecipeId::from_value(&bytes)
+    bytes
 }
 
 /// Marker used to retain a generic type parameter in APIs that store a wire

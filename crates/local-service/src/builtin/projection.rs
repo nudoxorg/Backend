@@ -28,14 +28,27 @@ pub(crate) fn reply_certificate(
             command, page, owner_root, base,
         )?),
         CommandReply::Names(snapshot) | CommandReply::Search(snapshot) => {
-            let text = match command {
-                Command::Name(query) => query.text().as_bytes(),
-                Command::Search(query) => query.text().as_bytes(),
-                _ => b"",
+            let recipe = match (command, reply) {
+                (Command::Name(query), CommandReply::Names(_)) => {
+                    backend_engine::QueryPageRecipe::names(snapshot.root.basis().root, query)
+                }
+                (Command::Search(query), CommandReply::Search(_)) => {
+                    backend_engine::QueryPageRecipe::search(snapshot.root.basis().root, query)
+                }
+                _ => {
+                    return Err(BuiltinModelError(
+                        "query page reply does not match its command".to_owned(),
+                    ));
+                }
             };
+            if recipe.identity() != snapshot.root.recipe() {
+                return Err(BuiltinModelError(
+                    "query page reply does not match its recipe witness".to_owned(),
+                ));
+            }
             Some(view_certificate(
                 &snapshot.root,
-                &identity_preimage(&[b"query", text, snapshot.root.basis().root.as_bytes(), &[0]]),
+                recipe.canonical_preimage(),
                 Some(owner_root),
                 base,
             )?)
@@ -1097,6 +1110,126 @@ fn add_symbol_claim(
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_page_certificate_round_trips_the_actual_producer_contract() {
+        use backend_library::{CommandDto, Library, NameQuery, Query, QueryLimit, ReplyDto};
+        let (template, _) = super::super::initial_view().expect("initial view");
+        let owner = checked_root(
+            (0..7)
+                .map(|index| {
+                    let label = format!("Thing{index}");
+                    backend_engine::Row::new(
+                        RowId::Symbol(backend_engine::symbol_key(&label)),
+                        template.basis(),
+                        label,
+                    )
+                })
+                .collect(),
+        );
+        let library = Library::from_view(
+            owner.clone(),
+            backend_engine::Cursor::for_view_root_at(&owner, 5),
+        )
+        .expect("owner library");
+        let limit = QueryLimit::new(3).expect("page credit");
+        let manifests = [
+            None,
+            Some(backend_library::ReadManifest::new(Vec::new()).expect("explicit empty manifest")),
+            Some(
+                backend_library::ReadManifest::new(vec![backend_library::Read::exact(
+                    backend_semantic::FacetKind::Signature,
+                    backend_engine::ScopeRoot::from_bytes([42; 32]),
+                )])
+                .expect("nonempty manifest"),
+            ),
+        ];
+        for manifest in manifests {
+            for names in [true, false] {
+                let mut command = if names {
+                    let mut query = NameQuery::new("Thing", library.revision_root(), limit);
+                    if let Some(manifest) = &manifest {
+                        query = query.with_read_manifest(manifest.clone());
+                    }
+                    Command::Name(query)
+                } else {
+                    let mut query = Query::new("Thing", library.revision_root(), limit);
+                    if let Some(manifest) = &manifest {
+                        query = query.with_read_manifest(manifest.clone());
+                    }
+                    Command::Search(query)
+                };
+                for page_index in 0..3 {
+                    let reply = library
+                        .execute(command.clone())
+                        .expect("produce query page");
+                    let certificate =
+                        reply_certificate(&command, &reply, &owner, library.cursor(), None)
+                            .expect("service certificate")
+                            .expect("query certificate");
+                    let dto = ReplyDto::new(page_index, reply).with_certificate(certificate);
+                    let encoded = serde_json::to_vec(&dto).expect("serialize actual service reply");
+                    let decoded = ReplyDto::decode_against(&encoded, &dto)
+                        .expect("admit actual recipe certificate");
+                    backend_library::admit_reply(
+                        &CommandDto::new(page_index, command.clone()),
+                        &decoded,
+                    )
+                    .expect("shared query admission");
+                    let snapshot = match &decoded.reply {
+                        CommandReply::Names(snapshot) | CommandReply::Search(snapshot) => snapshot,
+                        _ => panic!("query page"),
+                    };
+                    assert_eq!(
+                        snapshot.root.row_count(),
+                        if page_index == 2 { 1 } else { 3 }
+                    );
+                    if let Some(cursor) = snapshot.next {
+                        command = match command {
+                            Command::Name(query) => Command::Name(query.with_cursor(cursor)),
+                            Command::Search(query) => Command::Search(query.with_cursor(cursor)),
+                            _ => panic!("query command"),
+                        };
+                    } else {
+                        assert_eq!(page_index, 2, "only terminal page has no cursor");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn query_page_certificate_refuses_family_credit_and_manifest_substitution() {
+        use backend_library::{Library, NameQuery, Query, QueryLimit};
+        let (template, _) = super::super::initial_view().expect("initial view");
+        let label = "Thing";
+        let owner = checked_root(vec![backend_engine::Row::new(
+            RowId::Symbol(backend_engine::symbol_key(label)),
+            template.basis(),
+            label,
+        )]);
+        let library =
+            Library::from_view(owner.clone(), backend_engine::Cursor::for_view_root(&owner))
+                .expect("library");
+        let limit = QueryLimit::new(3).expect("credit");
+        let query = Query::new(label, library.revision_root(), limit);
+        let reply = library
+            .execute(Command::Search(query.clone()))
+            .expect("search");
+        for command in [
+            Command::Name(NameQuery::new(label, library.revision_root(), limit)),
+            Command::Search(Query::new(
+                label,
+                library.revision_root(),
+                QueryLimit::new(4).expect("other credit"),
+            )),
+            Command::Search(query.with_read_manifest(
+                backend_library::ReadManifest::new(Vec::new()).expect("explicit manifest"),
+            )),
+        ] {
+            assert!(reply_certificate(&command, &reply, &owner, library.cursor(), None).is_err());
+        }
+    }
 
     #[test]
     fn commitment_certificate_size_is_independent_of_hidden_rows() {
