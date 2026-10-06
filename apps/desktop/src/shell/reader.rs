@@ -3167,7 +3167,7 @@ impl Render for Reader {
             scroll_mount: Some((Rc::clone(&self.scroll_mounted), current.key)),
             child: scroller.into_any_element(),
         });
-        let scroller = scroller.into_any_element();
+        let scroller = facet::motion::flow::local_paint("reader-flow-paint", scroller).into_any_element();
         #[cfg(test)]
         let scroller = transit_tests::owned_ink(Some(current.key), scroller).into_any_element();
         let mut root = div().relative().size_full();
@@ -3215,28 +3215,19 @@ impl Render for Reader {
                 root = root.child(plate_ground(&staged)).child(masked(staged.plate, scroller));
             }
             (Some(staged), Some(transit), Some(leaving)) if staged.verb == Verb::Close => {
-                // The parent is uncovered around the closing plate; the page
-                // it came back from folds on the plate, then the plate shuts.
-                let [above, below] = staged.outside;
-                root = root.child(masked(above, scroller));
-                if below.size.height > Pixels::ZERO && below.size.width > Pixels::ZERO {
-                    let page = self.still_page(&current, self.scroll.offset(), below, None, staged.outside_drift, &snapshot, &layout, &facet, window, cx);
-                    root = root.child(div().id("parent-below").absolute().top_0().left_0().size_full().child(page));
-                }
-                // What the fold has taken from the plate is the parent, not an
-                // empty ground: the page it came back from shows through as the
-                // leaving page folds away, so there is no frame with an empty
-                // reader between the one and the other.
-                let folded = staged.edge.map(|edge| {
-                    let top = edge.y.max(staged.plate.top()).min(staged.plate.bottom());
-                    Bounds::from_corners(point(staged.plate.left(), top), staged.plate.bottom_right())
+                // One live parent layout is uncovered beneath the old page.
+                // Its local Flow draws finish before this later plate overlay;
+                // resize cannot assemble a second, differently sampled parent.
+                root = root.child(scroller);
+                let occupied = staged.edge.map_or(staged.plate, |edge| {
+                    let bottom = edge.y.max(staged.plate.top()).min(staged.plate.bottom());
+                    Bounds::from_corners(staged.plate.top_left(), point(staged.plate.right(), bottom))
                 });
-                let page = self.still_page(&leaving, transit.scroll, staged.plate, staged.edge, staged.inside_drift, &snapshot, &layout, &facet, window, cx);
-                root = root.child(plate_ground(&staged));
-                if let Some(folded) = folded.filter(|folded| folded.size.height > Pixels::ZERO && folded.size.width > Pixels::ZERO) {
-                    let parent = self.still_page(&current, self.scroll.offset(), folded, None, staged.outside_drift, &snapshot, &layout, &facet, window, cx);
-                    root = root.child(div().id("parent-folded").absolute().top_0().left_0().size_full().child(parent));
+                if occupied.size.height > Pixels::ZERO && occupied.size.width > Pixels::ZERO {
+                    root = root.child(masked(occupied, plate_ground(&staged)));
                 }
+                let page = self.still_page(&leaving, transit.scroll, staged.plate,
+                    staged.edge, staged.inside_drift, &snapshot, &layout, &facet, window, cx);
                 root = root.child(div().id("leaving-plate").absolute().top_0().left_0().size_full().child(page));
             }
             (Some(staged), Some(_), _) if staged.verb == Verb::Unfold => {

@@ -105,7 +105,7 @@ fn capture_native_transit(session: &mut backend_gui_harness::Session,
     let (drawn, image) = session.frame(true).expect("native GPU frame");
     let image = image.expect("actual PNG pixels");
     image.save(out.join(format!("{name}.png"))).expect("native PNG");
-    let (frame, native, ink, ledger) = session.update(|window, cx| {
+    let (frame, native, ink, all_ink, ledger) = session.update(|window, cx| {
         let frame = shell.read(cx).reader_entity().read(cx).frame.get().expect("actual Reader frame");
         let native = window.debug_a11y_tree_json().expect("native frame tree");
         let ink: Vec<_> = cx.global::<InkTrace>().0.iter().map(|(owner, text)| serde_json::json!({
@@ -113,7 +113,20 @@ fn capture_native_transit(session: &mut backend_gui_harness::Session,
             "bounds": [f32::from(text.bounds.left()), f32::from(text.bounds.top()),
                 f32::from(text.bounds.right()), f32::from(text.bounds.bottom())],
         })).collect();
-        (frame, native, ink, format!("{:#?}", facet::probe::take(cx)))
+        let all_ink: Vec<_> = window.painted_texts().iter().map(|text| serde_json::json!({
+            "text": text.text.as_ref(), "alpha": text.alpha,
+            "bounds": [f32::from(text.bounds.left()), f32::from(text.bounds.top()),
+                f32::from(text.bounds.right()), f32::from(text.bounds.bottom())],
+        })).collect();
+        if matches!(name, "reverse-128" | "resize-first-128" | "resize-144") {
+            for unique in ["The readable label of RelationLabel.", "It names one relation group."] {
+                let runs: Vec<_> = window.painted_texts().iter()
+                    .filter(|run| run.text.as_ref() == unique).collect();
+                assert_eq!(runs.len(), 1,
+                    "{name}: the original prose has one native run, including deferred paint: {runs:#?}");
+            }
+        }
+        (frame, native, ink, all_ink, format!("{:#?}", facet::probe::take(cx)))
     }).expect("native capture evidence");
     let x = f32::from(frame.left()).max(0.0).floor() as u32;
     let y = f32::from(frame.top()).max(0.0).floor() as u32;
@@ -125,6 +138,7 @@ fn capture_native_transit(session: &mut backend_gui_harness::Session,
     let evidence = serde_json::json!({ "compiled_revision": revision, "frame": name,
         "at_ms": drawn.at_ms, "viewport": [drawn.viewport.width, drawn.viewport.height],
         "reader_crop": [x, y, width, height], "owned_native_ink": ink,
+        "all_native_ink": all_ink,
         "accesskit": serde_json::from_str::<serde_json::Value>(&native).expect("native AX JSON"),
         "motion": ledger,
     });
