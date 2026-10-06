@@ -497,6 +497,50 @@ fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
     assert!(server.product.surface_commands.is_empty());
 }
 
+#[test]
+fn semantic_shapes_jsonrpc_refuses_oversized_view_without_dropping_required_facts() {
+    // This is an untrusted egress fixture at the surface budget seam, not a
+    // synthetic certificate-admitted compiler product or a corpus pass.
+    let mut view: Value = serde_json::from_str(include_str!(
+        "../../../../crates/library/fixtures/semantic-shape-egress-view.json"
+    ))
+    .expect("view");
+    let mut operands: Value = serde_json::from_str(include_str!(
+        "../../../../crates/library/fixtures/semantic-shape-read.json"
+    ))
+    .expect("operands");
+    let mut entries = Vec::new();
+    let mut symbols = Vec::new();
+    for ordinal in 1u8..=32 {
+        let mut entry = view["batch"]["entries"][0].clone();
+        entry["symbol"]["id"] = json!(format!("{ordinal:02x}").repeat(32));
+        entry["fact"] = json!({"state":"unknown","data":{"reason":0,"spelling":"x".repeat(2048)}});
+        entries.push(entry);
+        symbols.push(vec![ordinal; 32]);
+    }
+    view["batch"]["entries"] = json!(entries);
+    view["max_bytes"] = json!(262144);
+    operands["symbols"] = json!(symbols);
+    operands["max_bytes"] = json!(262144);
+    let export: backend_library::SemanticShapeExport =
+        serde_json::from_value(view).expect("bounded view");
+    for detail in ["summary", "full"] {
+        let mut server = ready(Fake {
+            surface_reply: Some(SurfaceReply::SemanticShapes(export.clone())),
+            ..Fake::default()
+        });
+        let result = call(
+            &mut server,
+            "backend.semantic_shapes",
+            &json!({"request":operands,"detail":detail}),
+        );
+        assert_context_bounded(&result);
+        assert_eq!(result["isError"], true);
+        assert_eq!(result["structuredContent"]["cause"], "oversized");
+        assert!(result["structuredContent"].get("semantic_data").is_none());
+    }
+}
+
 fn text_of(result: &Value) -> String {
     result["content"][0]["text"]
         .as_str()
