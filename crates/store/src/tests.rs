@@ -1906,11 +1906,11 @@ fn staged_workspace_missing_page_cannot_publish_or_repair_head() {
         assert!(!path.join("HEAD").exists());
         drop(publication_authority);
         drop(store);
-        let reopened = must(FileStore::open(&path, 8192));
+        let reopened = FileStore::open(&path, 8192);
         if remove_after_publish_frame {
-            assert!(matches!(reopened.head(), Err(StoreError::Corrupt)));
+            assert!(matches!(reopened, Err(StoreError::Corrupt)));
         } else {
-            assert!(must(reopened.head()).is_none());
+            assert!(must(must(reopened).head()).is_none());
         }
         assert!(!path.join("HEAD").exists());
         must(std::fs::remove_dir_all(path));
