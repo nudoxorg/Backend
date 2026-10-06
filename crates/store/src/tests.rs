@@ -1220,6 +1220,171 @@ fn root_only_extension_tracks_all_checked_relation_roots_by_binding() {
 }
 
 #[test]
+fn stored_extension_installs_auxiliary_children_before_membership_rebind() {
+    let old_raw = must(backend_version::RelationState::<RawRelation>::from_entries(
+        [(
+            b"raw".to_vec(),
+            RawValue {
+                value: b"old".to_vec(),
+                availability: 1,
+                references: Vec::new(),
+            },
+        )],
+        coverage(),
+    ));
+    let target_raw = must(backend_version::RelationState::<RawRelation>::from_entries(
+        [(
+            b"raw".to_vec(),
+            RawValue {
+                value: b"new".to_vec(),
+                availability: 1,
+                references: Vec::new(),
+            },
+        )],
+        coverage(),
+    ));
+    let old_auxiliary = must(
+        backend_version::RelationState::<AuxiliaryRelation>::from_entries([(1, 2)], coverage()),
+    );
+    let target_auxiliary = must(
+        backend_version::RelationState::<AuxiliaryRelation>::from_entries(
+            (0..20_000).map(|key| (key, key * 2)),
+            coverage(),
+        ),
+    );
+    assert!(target_auxiliary.root_handle().canonical().level() > 0);
+    let authority_version = backend_version::ObjectVersion::<TestCoverageSchema>::from_value(&7);
+    let authority = TypedObject::from_value(
+        &backend_version::ObjectKey::<TestCoverageSchema>::from_value(&7),
+        &7,
+    );
+    let base_manifest = must(backend_version::CheckedWorkspaceManifest::from_versions(
+        1,
+        vec![
+            backend_version::RelationBinding::from_state(&old_auxiliary),
+            backend_version::RelationBinding::from_state(&old_raw),
+        ],
+        Vec::new(),
+        authority_version,
+        coverage(),
+    ));
+    let target_manifest = must(backend_version::CheckedWorkspaceManifest::from_versions(
+        1,
+        vec![
+            backend_version::RelationBinding::from_state(&target_auxiliary),
+            backend_version::RelationBinding::from_state(&target_raw),
+        ],
+        Vec::new(),
+        authority_version,
+        coverage(),
+    ));
+    let registry = must(RelationAdmissionRegistry::default().with_relation::<AuxiliaryRelation>());
+    let base = must(
+        WorkspaceClosure::from_checked_manifest_root_only_with_registry(
+            &base_manifest,
+            must(ClosureManifest::new(vec![
+                must(TypedObject::from_relation_state(&old_raw)),
+                must(TypedObject::from_relation_state(&old_auxiliary)),
+                authority.clone(),
+            ])),
+            &registry,
+        ),
+    );
+    let path = std::env::temp_dir().join(format!(
+        "backend-store-stored-aux-frontier-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&path);
+    let store = must(FileStore::open_with_registry(
+        &path,
+        8 * 1024 * 1024,
+        registry.clone(),
+    ));
+    must(store.stage_workspace_frontier(&base));
+    let budget = ClosureCompositionBudget::new(
+        32,
+        16,
+        8 * 1024 * 1024,
+        must(ClosureCompositionBudget::metadata_bytes_for(16)),
+    );
+    let edits = base
+        .control_manifest()
+        .objects()
+        .iter()
+        .map(|object| ClosureMembershipChange::add(object.id()))
+        .collect::<Vec<_>>();
+    let receipt = must(store.compose_workspace_closure_index(None, &edits, budget));
+    let base = must(
+        base.with_stored_membership(must(DurableClosureManifest::from_pinned(
+            &store, receipt, budget,
+        ))),
+    );
+    let target_auxiliary_object = must(TypedObject::from_relation_state(&target_auxiliary));
+
+    // Selecting only the branch root cannot prove its newly emitted child
+    // nodes. The strict composer must continue to refuse this incomplete CAS.
+    assert!(matches!(
+        WorkspaceClosure::extend_checked_nodes_with_registry(
+            &base,
+            &target_manifest,
+            target_raw.root(),
+            [target_raw.root_handle()],
+            [target_auxiliary_object.clone(), authority.clone()],
+            &registry,
+        ),
+        Err(StoreError::Corrupt)
+    ));
+
+    let frontier = target_auxiliary
+        .node_closure()
+        .map(|node| {
+            must(TypedObject::from_checked_state_object_ref(
+                node.state_object(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    assert!(frontier.len() > 1);
+    let next = must(
+        WorkspaceClosure::extend_checked_nodes_with_registry_and_frontier(
+            &base,
+            &target_manifest,
+            target_raw.root(),
+            [target_raw.root_handle()],
+            [target_auxiliary_object.clone(), authority],
+            frontier.clone(),
+            &registry,
+        ),
+    );
+    assert_eq!(next.control_manifest().objects().len(), 3);
+    assert_eq!(present(next.stored_membership()).object_count(), 3);
+    assert!(must(next.contains(target_auxiliary_object.id())));
+    for node in frontier
+        .iter()
+        .filter(|node| node.id() != target_auxiliary_object.id())
+    {
+        assert!(!must(next.contains(node.id())));
+        assert_eq!(must(store.read_object(node.id())), *node);
+    }
+    let cold = must(FileStore::open_with_registry(
+        &path,
+        8 * 1024 * 1024,
+        registry,
+    ));
+    let recovered = must(cold.reopen_pinned_workspace_closure(
+        ArtifactClosureClaim::from_id(next.membership_id()),
+        budget,
+    ));
+    assert_eq!(recovered.receipt().closure(), next.membership_id());
+    assert_eq!(recovered.receipt().object_count(), 3);
+    drop(recovered);
+    drop(next);
+    drop(base);
+    drop(store);
+    drop(cold);
+    must(std::fs::remove_dir_all(path));
+}
+
+#[test]
 fn root_only_extension_durably_writes_every_registered_relation_root() {
     let old_raw = must(backend_version::RelationState::<RawRelation>::from_entries(
         [(

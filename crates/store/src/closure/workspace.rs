@@ -129,6 +129,42 @@ impl WorkspaceClosure {
         N: CheckedRelationNode<R>,
         J: IntoIterator<Item = super::TypedObject>,
     {
+        Self::extend_checked_nodes_with_registry_and_frontier(
+            base,
+            target,
+            target_root,
+            changed_nodes,
+            extra_objects,
+            std::iter::empty(),
+            registry,
+        )
+    }
+
+    /// Extends bounded controls and supplies the complete changed physical
+    /// frontier before a stored membership is rebound. Auxiliary relation
+    /// children remain in the authenticated relation CAS, not the control
+    /// manifest. Their exact typed nodes must reach CAS before composition
+    /// validates any newly selected root referring to them.
+    ///
+    /// # Errors
+    /// Returns an admission error for invalid nodes, missing references,
+    /// cancelled membership validation, or failed durable composition.
+    pub fn extend_checked_nodes_with_registry_and_frontier<R, I, J, N, P>(
+        base: &Self,
+        target: &backend_version::CheckedWorkspaceManifest,
+        target_root: StateRoot<R>,
+        changed_nodes: I,
+        extra_objects: J,
+        physical_frontier: P,
+        registry: &RelationAdmissionRegistry,
+    ) -> Result<Self, StoreError>
+    where
+        R: CanonicalRelation,
+        I: IntoIterator<Item = N>,
+        N: CheckedRelationNode<R>,
+        J: IntoIterator<Item = super::TypedObject>,
+        P: IntoIterator<Item = super::TypedObject>,
+    {
         target.validate().map_err(|_| StoreError::Corrupt)?;
         let schema = SchemaIdentity::of_relation::<R>();
         let target_version = target_root.to_bytes();
@@ -212,7 +248,8 @@ impl WorkspaceClosure {
         ensure_refs(&refs, &manifest, registry)?;
         publication_nodes.sort_by_key(super::TypedObject::id);
         publication_nodes.dedup_by_key(|object| object.id());
-        let next = Self::new_root_only_with_selected(target.root(), manifest, publication_nodes);
+        let next = Self::new_root_only_with_selected(target.root(), manifest, publication_nodes)
+            .with_checked_relation_frontier(physical_frontier, registry)?;
         base.preserve_stored_membership(next)
     }
 
