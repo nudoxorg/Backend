@@ -117,53 +117,92 @@ preserved in `gui-audit/builds/desktop-native-recovery*`. The failures include
 real publication/focus/animation defects, invalid test assumptions, and missing
 Cargo-cache inputs. Classification does not close the runtime gate.
 
-The close integration at `ececf4d9` passed eight tests and failed six: the
-remaining failures exposed gpui-component's focus trap dropping its base's
-accessibility hooks. The general wrapper repair forwards native roles,
-properties/actions, synthetic children and inspector/source metadata; a real
-dialog/remount/Tab/Shift-Tab regression was added. The exact `de45163ff1`
-rerun passes fourteen and fails one new regression because its external
-fixture handles were not Tab stops. That fixture now explicitly registers
-the stops and preserves the original complete keyboard sequence; rerun remains
-required. The first combined Shelf/Reader compile at `6f8c518219` failed on two
-missing native root-replacement trait imports, before executing tests. The
-two-line import repair is frozen in `6f38cd7cc` for the next run.
-The lifecycle integration passed ten and failed one before its retained-library
-precondition; the fixture now delivers the actual owner publication before
-checking fresh failure and Retry. Its rerun is also pending.
+The joined native baseline `6f38cd7cc` passes eight Reader tests with three
+ignored capture tests, eleven host lifecycle tests, seven index-preflight tests,
+eleven owner-publication tests, and the failed-outline reread regression.
+The close selector passes fourteen and fails one checkpoint-ack timeout; an
+isolated retry passes, leaving the intermittent failure open. The body selector
+passes 146 and fails eighteen. Fixture repairs and product repairs have separate
+source commits; those failures are not closed by classification.
 
-Publication, graph selection/camera continuity, Settings native ownership,
-reader plate lifetime, and responsive Shelf repairs remain distinct source
-packets until their exact native tests and image captures pass. No candidate
-application has yet passed live GUI computer-use acceptance after this restart.
+The actual native pending/resize film passes its existing assertion, but root
+inspection of all seven PNG crops rejects it: prose/caption duplication and
+misalignment after resize, a mostly blank pending plate, and incomplete ink
+tracing remain visible. `root_visual_acceptance` is **FAIL** in
+`gui-audit/captures/reader-native-6f38-20261006/root-visual-review.json`.
+The compositor packet now scopes deferred motion below later plates, retains
+one readable departure while awaiting data, and keys cached native text on
+trace state. A first-resize negative control and native cache/clip tests are
+source checkpoints; the joined runtime and every capture still need checking.
+
+The retained-local Graph/Source worker now uses an actual production owner and
+certified assembled rows. Its latest run reaches retained Graph state after
+owner withdrawal, but fails Settings return because Reader incorrectly requires
+an owner attachment for a local painted place. The repair separates actual
+local paint ownership from resource authority. Positive keyboard paths after
+reconnect prevent a blanket denial from satisfying its negative checks.
+The dependency Back tests independently expose a missing native focus owner;
+the current packet is still being audited for duplicate card/link Tab owners.
+
+Native hint actions now use continuously painted mount receipts, the original
+typed payload, exact visit and window-bound input leases. Tree requests now
+separate exact submitted identity from canonical physical invocation and
+refuse alias retargeting. These are uncompiled source packets, not completed
+native or cold-start acceptance. No candidate application has passed live GUI
+computer-use acceptance after this restart.
 
 ## Current compiler/index gates
 
-Paged source facts and a lazy verified consumer have source checkpoints; the
-local-service check passed before the typed compiler-failure DTO was added.
-Capture-before-compilation, typed terminal refusal persistence, complete
-overflow-file reads, and actual 84+ MiB ingestion still need one integrated
-matched-binary run. Raising a quota alone is not storage or memory acceptance.
+Paged source facts and lazy verified reads are joined with bounded compiler
+source handles. The source-admission checkpoint `4f10910d5` passes eleven
+focused checks, including an 85 MiB structural scan/reopen and selected source
+materialization. This is not an 85 MiB semantic index, publication or GUI gate.
+The 128 MiB accepted compact-row ledger did not bound peak projection heap or
+complete-fact accumulation. Root-alias handoff, cooperative reopen cancellation
+and pre-accumulation accounting remain separate work.
 
-The TypeScript host has an embedded relocatable checker driver and typed
-project-local toolchain admission. Its frozen `ad2450fec` host selector passes
-thirteen and fails six tests at macOS path aliases. The expanded resolver
-checkpoint `e9b82f694` fails compilation with eleven type/borrow errors before
-tests. Its ownership and observation design is also under revision: repeated
-source copies, noncanonical debug-format hashing, quadratic byte accounting,
-and per-directory rather than aggregate limits are not acceptable cutover
-foundations. Packaging currently supplies default checker/compiler overrides
-that bypass project-local admission; its launcher contract is being corrected.
-TSZ's immutable per-program options are vendored in a separate packet. Complete
-config/import/library/ambient/reference closure, including negative resolution
-witnesses, is required before its production dispatch cutover.
+The actual 900-function TSX cold-capture test exposed another overflow at
+`0c5ff1a8f`: attaching source identity after compaction changes both the header
+and every declaration's containment encoding, producing a row 14 bytes beyond
+capacity. `f6a5701bb` constructs and probes the final identified encoding and
+strictly refuses an oversized post-construction identity attachment. Its
+local-service test compilation passes; the exact cold-capture runtime rerun is
+pending. Full file facts remain in separate pages; this repair does not raise
+the canonical row limit or claim that compact summaries contain every fact.
 
-Typed fragment failure DTO v17 has a source checkpoint, but its first compiler
-run failed before tests. Closed nested operands and bounded wire serialization
-are being reworked; this packet is not a passing API or an installed fix.
-Requests class-source reopening, checked empty Python modules, Go closure
-authority, and concrete cross-file TypeScript call/reference joins also remain
-under implementation and native validation.
+The TypeScript host checkpoint `4be9e6e323` passes Rust test compilation,
+twenty-one host tests and five path tests. It embeds the relocatable driver,
+admits project-local TypeScript, binds ordinary config/import/library closure,
+and distinguishes discovered package roots from explicitly pinned module
+roots. The launcher no longer forces bundled checker, module, compiler or Node
+paths over project admission. Twenty-six launcher contracts pass at
+`dd57cd84ea`; the joined bundle has not been built or installed.
+TSZ's immutable options and exact resolver bindings pass focused frontend
+checks, but full configured production dispatch, bounded shared queries and
+cross-file reference fidelity are still open. No native semantic fallback is
+credited as the authority.
+
+The typed compiler refusal producer `a02e2ac8b` passes Rust test compilation.
+Fragment kind and operands form one checked pair at construction and strict
+wire decoding; human detail uses closed phase/kind labels and preserves source
+paths. Projection admission errors propagate instead of silently erasing the
+failure. Its runtime package selector is pending. Shared CLI/MCP consumer
+`373cb11833` retains the exact bounded failure and getter-derived tool setup
+facts while excluding raw legacy detail. Consumer compilation and installed
+acceptance remain pending; this does not close `Fragment(Prepare)` itself.
+
+Python `f8321dbeab` and `fd1d2c5382` pass five focused checks. A real empty
+Requests module compiles with admitted Pyrefly authority; class-source lookup
+retains the exact path/digest/kind. Full Requests publication and cold-owner
+retrieval are unproven, and an unrelated indexed-path punctuation test fails.
+Go `e4576da2dc` passes 36 protocol tests and focused Go closure checks, including
+child/descendant timeout cleanup. The full helper suite still fails its cgo
+promoted-method expectation; no complete Go product acceptance is claimed.
+
+Several Luna workers stopped with provider-capacity errors. Their dirty source
+and receipts are preserved. Root took over the ingest and compiler-fault
+repairs; the Sol CLI/MCP worker completed host corrections and owns consumer
+acceptance. Unfinished workers are not credited as running or passing.
 
 Npm's post-integrity live run streamed 25 packages with zero failures and 31,288
 selected version rows. Ten npm tests, bounded-manifest and chunk-integrity
