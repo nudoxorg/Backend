@@ -65,9 +65,9 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version; version 18 separates exact Tree observation
-/// identity from retained source capability. Version 17's compiler-failure
-/// family and earlier membership/frontier evidence remain intact. Clients
-/// and services must agree on the version; old optional Tree bindings cannot
-/// be interpreted as retained source authority.
-pub const DTO_VERSION: u16 = 18;
+/// Current transport DTO version. Version 19 carries durable typed compiler
+/// refusals, complete-package semantic history proofs, and checked view patches
+/// that can rebind unchanged rows to a new workspace authority. Clients and
+/// services must use matching contracts; older single-image history summaries
+/// and empty-patch rejection cannot represent these publications.
+pub const DTO_VERSION: u16 = 19;
