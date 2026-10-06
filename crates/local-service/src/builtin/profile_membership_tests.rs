@@ -625,7 +625,15 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         .analyze(Path::new(path), source.as_bytes())
         .expect("actual TSX source analysis");
     let declarations = analysis.declarations().to_vec();
-    assert_eq!(declarations.len(), 900);
+    let expected_declaration_count = declarations.len();
+    assert_eq!(
+        declarations
+            .iter()
+            .filter(|declaration| declaration.kind() == backend_compile::DeclarationKind::Function)
+            .count(),
+        900,
+        "the producer emits all 900 actual panel functions"
+    );
     let source_identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
     let content_version = *source_identity.as_ref();
     let analysis_version = [0x61; 32];
@@ -664,7 +672,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         &declarations,
     )
     .expect("complete paged declaration facts");
-    assert_eq!(facts.declaration_count(), 900);
+    assert_eq!(facts.declaration_count(), expected_declaration_count);
     assert!(
         facts
             .pages()
@@ -806,14 +814,24 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
             panic!("900 declarations must remain page bounded")
         }
     };
-    assert_eq!(admitted.declaration_count(), 900);
+    assert_eq!(
+        usize::try_from(admitted.declaration_count()).expect("bounded declaration count"),
+        expected_declaration_count
+    );
     let mut visited = 0usize;
+    let mut complete_panel_facts = 0usize;
     admitted
         .visit_pages(|page| {
             for index in 0..page.len() {
                 let declaration = page
                     .declaration(index)
                     .ok_or_else(|| "cold admitted declaration".to_owned())?;
+                visited += 1;
+                if declaration.source_declaration().kind()
+                    == backend_compile::DeclarationKind::Module
+                {
+                    continue;
+                }
                 if declaration.source_declaration().documentation().is_empty()
                     || declaration
                         .source_declaration()
@@ -823,12 +841,17 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
                 {
                     return Err("cold source facts lost complete prose or excerpt".to_owned());
                 }
-                visited += 1;
+                if declaration.source_declaration().kind()
+                    == backend_compile::DeclarationKind::Function
+                {
+                    complete_panel_facts += 1;
+                }
             }
             Ok(())
         })
         .expect("cold bounded page visitation");
-    assert_eq!(visited, 900);
+    assert_eq!(visited, expected_declaration_count);
+    assert_eq!(complete_panel_facts, 900);
 
     let captures = semantic_capture_relation(&snapshot)
         .expect("cold semantic capture relation")
