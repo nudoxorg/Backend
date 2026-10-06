@@ -24,6 +24,8 @@ repo_root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
 source_script="${NUDOX_CARGO_CACHE_SCRIPT:-$repo_root/.config/scripts/cargo-shared-cache.sh}"
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/nudox-cargo-cache.XXXXXX")"
 cleanup() {
+  if [ -n "${ceiling_release:-}" ]; then touch "$ceiling_release"; fi
+  if [ -n "${ceiling_owner:-}" ]; then wait "$ceiling_owner" 2>/dev/null || true; fi
   if [ -n "${socket_pid:-}" ]; then
     kill "$socket_pid" 2>/dev/null || true
     wait "$socket_pid" 2>/dev/null || true
@@ -98,6 +100,13 @@ printf '%s\n' '#!/bin/sh' \
   'if [ "${NUDOX_TEST_CARGO_SLEEP:-0}" != 0 ]; then' \
   '  end=$(( $(date +%s) + NUDOX_TEST_CARGO_SLEEP ))' \
   '  while [ "$(date +%s)" -lt "$end" ]; do :; done' \
+  'fi' \
+  'if [ -n "${NUDOX_TEST_CARGO_RELEASE_FILE:-}" ]; then' \
+  '  release_deadline=$(( $(date +%s) + 30 ))' \
+  '  while [ ! -f "$NUDOX_TEST_CARGO_RELEASE_FILE" ]; do' \
+  '    [ "$(date +%s)" -lt "$release_deadline" ] || exit 45' \
+  '    sleep 0.05' \
+  '  done' \
   'fi' \
   'exit "${NUDOX_TEST_CARGO_STATUS:-0}"' > "$test_root/bin/cargo"
 chmod +x "$test_root/bin/cargo"
@@ -802,9 +811,10 @@ rm -rf "$slot_wait_cache/locks/slot-0.lock"
 # compiler. It fails at the configured bound, then succeeds after release.
 ceiling_cache="$test_root/ceiling-cache"
 ceiling_log="$test_root/ceiling.log"
+ceiling_release="$test_root/ceiling.release"
 NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$ceiling_log" \
   NUDOX_BUILD_CACHE_ROOT="$ceiling_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
-  NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=1 \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_RELEASE_FILE="$ceiling_release" \
   SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build &
 ceiling_owner="$!"
 ceiling_waited=0
@@ -836,7 +846,9 @@ if NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$ceiling_log" \
 fi
 assert_file_lines "$ceiling_log" 1
 [ ! -d "$test_root/blocked-explicit-build" ] || fail "blocked explicit compile started Cargo"
+touch "$ceiling_release"
 wait "$ceiling_owner"
+ceiling_owner=""
 NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$ceiling_log" \
   NUDOX_BUILD_CACHE_ROOT="$ceiling_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
   NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP=0 \
