@@ -184,6 +184,18 @@ pub fn split(args: &[String]) -> Result<(Options, Vec<String>), Fault> {
             other => rest.push(other.to_owned()),
         }
     }
+    if limit.is_some()
+        && let Some(grammar) = rest.first().and_then(|word| grammar_for(word))
+        && !grammar
+            .options()
+            .iter()
+            .any(|option| option.name() == "limit")
+    {
+        return Err(Fault::usage(
+            "--limit",
+            format!("{} does not take a page bound", grammar.name()),
+        ));
+    }
     if passive
         && !rest
             .first()
