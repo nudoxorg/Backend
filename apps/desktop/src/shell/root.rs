@@ -202,6 +202,9 @@ pub struct Shell {
     painted_native_input: Option<PageInputScope>,
     /// Changes on every user input to cancel a deferred focus return.
     transient_generation: Option<u64>,
+    /// One transition-time permission for Graph's first paint. Rendering
+    /// cannot recreate it after a later native focus or input choice.
+    graph_arrival_focus: Option<super::keyboard::NativeReturnLease>,
     /// The shelf's width the person has dragged it to, at 100 % text.
     shelf_width: Pixels,
     /// The shell's layout modes (the shelf beside the page, a spine, or a
@@ -372,6 +375,7 @@ impl Shell {
             local_native_input: gpui::NativeActivationScope::new(cx.entity_id(), Some(0)),
             painted_native_input: None,
             transient_generation: Some(0),
+            graph_arrival_focus: None,
             shelf_width: geo::SHELF,
             modes: Modes::new(),
             zone: Zone::Reader,
@@ -395,6 +399,7 @@ impl Shell {
         };
         shell.apply_facet(cx);
         shell.focus.focus(window, cx);
+        shell.arm_graph_arrival_focus(window, cx);
         shell
     }
 
@@ -554,6 +559,30 @@ impl Shell {
 
     pub(crate) fn allows_reader_native_return(&self, window: &Window) -> bool {
         window.is_window_active() && self.zone == Zone::Reader && !self.ask_open && self.focus.is_focused(window)
+    }
+
+    fn arm_graph_arrival_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.graph_arrival_focus = None;
+        let snapshot = self.links.snapshot(cx);
+        if !window.is_window_active() || !super::bodies::graph::is_graph(snapshot.route())
+            || snapshot.overlay().is_some() || super::titlebar::menu_open(window, cx) { return; }
+        // The old page may retire before Graph exists. Give the requested
+        // visit a stable receiver now, then freeze permission before another
+        // ordinary native event can occur ahead of its first paint.
+        self.set_zone(Zone::Reader, cx);
+        self.focus.focus(window, cx);
+        self.graph_arrival_focus = super::keyboard::NativeReturnLease::new(
+            window.window_handle().window_id(), self.transient_generation, window.focus_epoch(),
+        );
+    }
+
+    pub(crate) fn take_graph_arrival_focus(&mut self, route: &Route, window: &Window, cx: &App) -> Option<super::keyboard::NativeReturnLease> {
+        let snapshot = self.links.snapshot(cx);
+        if snapshot.route() != route || snapshot.overlay().is_some() { return None; }
+        let lease = self.graph_arrival_focus.take()?;
+        (window.is_window_active() && lease.current(
+            window.window_handle().window_id(), self.transient_generation, window.focus_epoch(),
+        )).then_some(lease)
     }
 
     pub(crate) fn park_retired_reader_focus(&mut self, origin: &FocusHandle, window: &mut Window, cx: &mut Context<Self>) -> Option<super::keyboard::NativeReturnLease> {
@@ -759,6 +788,9 @@ impl Shell {
                         .update(cx, |reader, _| reader.cancel_native_return());
                 }
                 self.sync_overlay(window, cx);
+                // Dismissing a cover is not new Graph navigation. Its
+                // actual origin receipt separately admits any native return.
+                self.graph_arrival_focus = None;
             }
             StoreEvent::Snapshot(Branch::Route) => {
                 self.advance_transient_generation();
@@ -819,6 +851,7 @@ impl Shell {
                     cx.notify();
                 }
                 self.sync_overlay(window, cx);
+                self.arm_graph_arrival_focus(window, cx);
             }
             StoreEvent::Resource(key) => {
                 // The open card reads the store each frame: redraw it.

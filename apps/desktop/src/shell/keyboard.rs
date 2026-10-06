@@ -10,7 +10,7 @@ use gpui::{FocusHandle, WindowId};
 /// A deferred return may run only while its stable handoff still owns input.
 /// Window identity, native focus changes, and user navigation independently
 /// revoke it; an exhausted generation can never grant a new return.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct NativeReturnLease {
     window: WindowId,
     generation: u64,

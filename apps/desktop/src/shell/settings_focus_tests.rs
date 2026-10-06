@@ -10,10 +10,18 @@ use gpui_component::WindowExt as _;
 fn escape_from_settings_returns_to_the_exact_reader_target(cx: &mut TestAppContext) {
     let route = page_route("RelationLabel");
     let mut rig = rig(cx, Some(route.clone()), 320.0, 900.0);
-    rig.keys("j");
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let target = targets.native_keys().into_iter().next().expect("a registered native Reader control");
+    rig.cx.update(|window, cx| {
+        assert!(targets.focus_native(&target, window, cx));
+        targets.focus(target);
+    });
     let (zone, before) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(zone, Zone::Reader);
-    let before = before.expect("J focused a real reader target");
+    let before = before.expect("the registered native control has a logical target");
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)
+        .and_then(|origin| targets.target_for_native_handle(&origin))), Some(before.clone()),
+        "the positive return begins at the actual registered native control");
     rig.go(Intent::OpenSettings(SettingsPage::Appearance));
     let (_, covered) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
     assert_ne!(covered.as_ref(), Some(&before), "Settings owns a separate page");
@@ -62,7 +70,7 @@ fn settings_unmatched_markdown_origin_never_restores_a_stale_logical_row(cx: &mu
             gpui_component::Root::new(view, window, cx).bordered(false)
         });
     });
-    rig.repaint();
+    rig.settle();
     let document = rig.cx.debug_bounds("unmatched-markdown").expect("actual mounted Markdown");
     let before_click = rig.cx.update(|window, cx| window.focused(cx));
     rig.cx.simulate_click(document.origin + gpui::point(gpui::px(8.0), gpui::px(8.0)), gpui::Modifiers::none());
@@ -92,8 +100,9 @@ fn focus_find(rig: &mut super::tests::Rig) -> gpui::FocusHandle {
     let role = tree["nodes"].as_object().expect("nodes").values()
         .find(|node| node["aria"]["label"] == "Find query")
         .and_then(|node| node["aria"]["role"].as_str()).expect("query role").to_owned();
-    let query = super::tests::native_bounds(rig, &role, "Find query", true).expect("actual query");
+    let query = super::tests::native_bounds(rig, &role, "Find query", false).expect("actual query");
     rig.cx.simulate_click(query.center(), gpui::Modifiers::none());
+    assert!(rig.cx.update(|window, cx| window.has_focused_input(cx)), "the actual Find text engine receives the pointer");
     rig.cx.update(|window, cx| window.focused(cx)).expect("query receiver")
 }
 
@@ -107,7 +116,10 @@ fn settings_returns_the_retained_find_input_and_unsent_draft(cx: &mut TestAppCon
         rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))));
         let query = focus_find(&mut rig);
         rig.cx.simulate_input("unsubmitted draft");
-        rig.keys("secondary-, escape");
+        rig.keys("secondary-,");
+        assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
+        assert!(!rig.cx.update(|window, _| window.is_focus_handle_mounted(&query)), "a settled Settings page actually unmounts Find at {percent}%");
+        rig.keys("escape");
         assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(query), "the same retained native input returns at {percent}%");
         assert!(rig.cx.update(|window, cx| window.has_focused_input(cx)));
         rig.keys("x enter");
@@ -145,7 +157,14 @@ fn settings_find_native_origin_survives_an_ask_cover_of_settings(cx: &mut TestAp
     rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))));
     let query = focus_find(&mut rig);
     rig.cx.simulate_input("covered draft");
-    rig.keys("secondary-, secondary-k escape escape");
+    rig.keys("secondary-,");
+    assert!(!rig.cx.update(|window, _| window.is_focus_handle_mounted(&query)), "the settled Settings cover unmounts Find");
+    rig.keys("secondary-k");
+    assert!(rig.shell.read_with(rig.cx, |shell, _| shell.transients().0), "Ask is mounted above Settings");
+    rig.keys("escape");
+    assert!(!rig.shell.read_with(rig.cx, |shell, _| shell.transients().0));
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
+    rig.keys("escape");
     assert!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay().is_none()));
     assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(query), "Ask returns to Settings, whose original Reader native origin still owns the final return");
     rig.keys("x enter");

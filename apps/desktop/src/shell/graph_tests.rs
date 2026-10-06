@@ -1107,6 +1107,156 @@ fn indexed_projection_callback_mounts_on_its_first_announced_draw(cx: &mut TestA
 }
 
 #[gpui::test]
+fn settings_returns_only_an_admitted_native_graph_root(cx: &mut TestAppContext) {
+    use gpui::Focusable as _;
+    for origin in ["root", "descendant", "shelf"] {
+        let (mut rig, _) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+        match origin {
+            "descendant" => tab_to_graph_control(&mut rig, "Declarations"),
+            "shelf" => {
+                rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx| shell.take_zone(super::focus::Zone::Shelf, window, cx)));
+                let shelf = rig.shell.read_with(rig.cx, |shell, _| shell.shelf_entity());
+                let targets = shelf.read_with(rig.cx, |shelf, _| shelf.targets.clone());
+                let target = targets.native_keys().into_iter().next().expect("a real registered Shelf control");
+                rig.cx.update(|window, cx| assert!(targets.focus_native(&target, window, cx)));
+            }
+            _ => {}
+        }
+        let before = rig.cx.update(|window, cx| window.focused(cx)).expect("actual native origin");
+        rig.keys("secondary-,");
+        assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
+        assert_ne!(rig.cx.update(|window, cx| window.focused(cx)), Some(before));
+        rig.keys("escape");
+        let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("current graph");
+        assert_eq!(rig.cx.update(|window, cx| graph.focus_handle(cx).is_focused(window)), origin == "root", "only an actual root origin admits Graph-root return from {origin}");
+        assert!(rig.cx.update(|window, cx| window.focused(cx).is_some_and(|focus| window.is_focus_handle_mounted(&focus))), "the uncovered receiver remains mounted");
+        if origin != "root" {
+            rig.keys("secondary-,");
+            assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
+        }
+    }
+}
+
+#[gpui::test]
+fn settings_graph_root_return_survives_scene_retirement_without_stealing_focus(cx: &mut TestAppContext) {
+    use crate::runtime::indexed_world::TestProjectionGate;
+    use gpui::Focusable as _;
+    for cover_painted in [false, true] {
+        for return_frame_queued in [false, true] {
+            for later_blur in [false, true] {
+                let (mut rig, owner) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+                let predecessor = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("mounted predecessor");
+                assert!(rig.cx.update(|window, cx| predecessor.focus_handle(cx).is_focused(window)), "the actual Graph root owns the departure");
+                let predecessor_id = predecessor.entity_id();
+                drop(predecessor);
+                rig.native_press("secondary-,");
+                assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
+                if cover_painted { rig.settle(); }
+                rig.native_press("escape");
+                assert!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay().is_none()), "the complete native dismissal precedes retirement");
+                if return_frame_queued { rig.draw_frame(); }
+                if later_blur { rig.cx.update(|window, _| window.blur()); }
+                let key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+                let projection = Arc::new(TestProjectionGate::default());
+                rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture_with_gate(key, Some(projection.clone()), cx));
+                owner.publish(crate::runtime::owner::OwnerState::Starting);
+                rig.cx.run_until_parked();
+                assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment()).is_none());
+                owner.publish(crate::runtime::owner::OwnerState::Ready { key, mode: crate::model::ServiceMode::Attached });
+                rig.cx.run_until_parked();
+                assert!(projection.entered(), "the replacement's real Memo worker is held");
+                assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+                projection.release();
+                rig.cx.run_until_parked();
+                let replacement = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("Memo completion mounts its new scene without another input or forced draw");
+                assert_ne!(replacement.entity_id(), predecessor_id);
+                // Complete the ordinary next platform frame. A callback
+                // already queued for A may run too; B must schedule its own
+                // current-frame check, without an extra redraw or gesture.
+                rig.cx.update(|window, cx| { window.simulate_next_frame(cx); });
+                rig.cx.run_until_parked();
+                assert_eq!(rig.cx.update(|window, cx| replacement.focus_handle(cx).is_focused(window)), !later_blur,
+                    "current root return obeys cover_painted={cover_painted}, return_frame_queued={return_frame_queued}, later_blur={later_blur}");
+                if later_blur { assert!(rig.cx.update(|window, cx| window.focused(cx).is_none())); }
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn first_graph_paint_cannot_recreate_permission_after_later_native_input(cx: &mut TestAppContext) {
+    use gpui::Focusable as _;
+    for covered in [false, true] {
+        for change in ["blur", "key", "inactive"] {
+            let mut rig = super::tests::rig(cx, None, 1440.0, 900.0);
+            rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+            if covered {
+                rig.go(Intent::Navigate(Route::World));
+                rig.keys("secondary-,");
+                assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
+                let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+                let links = reader.read_with(rig.cx, |reader, _| reader.navigation_links());
+                rig.cx.update(|_, cx| links.dispatch(Intent::DismissOverlay, cx));
+            } else {
+                rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
+            }
+            // Each update above completes ordinary store subscribers. A
+            // subsequent platform event can arrive before the first paint;
+            // no event is inserted into reducer/subscriber execution.
+            match change {
+                "blur" => rig.cx.update(|window, _| window.blur()),
+                "key" => rig.native_press("left"),
+                "inactive" => { rig.cx.deactivate_window(); rig.cx.update(|window, _| window.blur()); }
+                _ => unreachable!(),
+            }
+            let later = rig.cx.update(|window, cx| window.focused(cx));
+            rig.settle();
+            let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("the requested graph still mounts");
+            assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), later, "later {change} before first paint owns covered={covered}");
+            assert!(!rig.cx.update(|window, cx| graph.focus_handle(cx).is_focused(window)));
+        }
+    }
+}
+
+#[gpui::test]
+fn ask_opened_from_the_painted_loading_frame_owns_focus_after_graph_completion(cx: &mut TestAppContext) {
+    use crate::runtime::indexed_world::TestProjectionGate;
+    use gpui::Focusable as _;
+    use gpui_component::WindowExt as _;
+    let launch = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+    let owner = crate::runtime::owner::OwnerGate::ready(launch, crate::model::ServiceMode::Attached);
+    let mut rig = super::tests::rig_with_engine_gate(cx, None, 1440.0, 900.0,
+        crate::runtime::reads::ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), super::tests::RootOnly, Some(owner));
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    let key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let gate = Arc::new(TestProjectionGate::default());
+    rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture_with_gate(key, Some(gate.clone()), cx));
+    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
+    // The current loading frame supplies the real Shell action context; the
+    // requested Graph itself has never mounted or painted.
+    rig.draw();
+    assert!(gate.entered(), "the actual projection is still held after its loading frame");
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+    rig.native_press("secondary-k");
+    rig.draw();
+    assert!(rig.shell.read_with(rig.cx, |shell, _| shell.transients().0), "the native shortcut opens actual Ask from the current loading frame");
+    rig.cx.update(|window, cx| { window.simulate_next_frame(cx); });
+    rig.cx.run_until_parked();
+    let ask = rig.cx.update(|window, cx| {
+        assert!(window.has_focused_input(cx), "the mounted Ask editing engine owns typing");
+        window.focused(cx).expect("actual Ask receiver")
+    });
+    gate.release();
+    rig.cx.run_until_parked();
+    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("the projection's ordinary completion mounts the underlying graph");
+    rig.cx.update(|window, cx| { window.simulate_next_frame(cx); });
+    rig.cx.run_until_parked();
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(ask.clone()));
+    assert!(rig.cx.update(|window, cx| window.is_focus_handle_mounted(&ask) && window.has_focused_input(cx)));
+    assert!(!rig.cx.update(|window, cx| graph.focus_handle(cx).is_focused(window)));
+}
+
+#[gpui::test]
 fn delayed_graph_mount_respects_native_focus_intent(cx: &mut TestAppContext) {
     use crate::runtime::indexed_world::TestProjectionGate;
     use gpui::Focusable as _;
@@ -1116,6 +1266,7 @@ fn delayed_graph_mount_respects_native_focus_intent(cx: &mut TestAppContext) {
         let mut rig = super::tests::rig_with_engine_gate(cx, None, 1440.0, 900.0,
             crate::runtime::reads::ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), super::tests::RootOnly, Some(owner));
         rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+        let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
         let gate = Arc::new(TestProjectionGate::default());
         rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture_with_gate(root, Some(gate.clone()), cx));
         rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));

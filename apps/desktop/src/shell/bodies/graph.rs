@@ -111,6 +111,15 @@ struct GraphMountFocus {
     // Retain the displaced receiver until handoff. Dropping the old Graph
     // must not manufacture a native blur that revokes its own valid lease.
     _origin: Option<gpui::FocusHandle>,
+    settings_return: Option<(crate::navigation::presentation::VisitId, ProducerAuthority)>,
+    scheduled: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct SettingsGraphOrigin {
+    pub component: gpui::EntityId,
+    pub visit: crate::navigation::presentation::VisitId,
+    handle: gpui::FocusHandle,
 }
 
 /// Native paint evidence only, separate from every serving capability. The
@@ -380,7 +389,18 @@ impl Map {
         // mounted predecessor (or an unconsumed arrival), never visibility.
         if let Some(mut departing) = self.mounted_focus.take() {
             departing.retired = true;
-            self.focus_on_mount = Some(departing);
+            // A Settings return is a newer, admitted handoff. A fast cover
+            // dismissal can leave this predecessor's older mounted receipt
+            // present until paint; it cannot replace the return's permission.
+            if !self.focus_on_mount.as_ref().is_some_and(|pending| pending.settings_return.is_some()) {
+                self.focus_on_mount = Some(departing);
+            }
+        }
+        if let Some(pending) = &mut self.focus_on_mount {
+            // A callback queued for the retired scene cannot finish a return
+            // to its replacement. Let that replacement schedule its own
+            // after-paint check using the same existing permission receipt.
+            pending.scheduled = false;
         }
         self._graph_events = None;
         self.load_error = None;
@@ -619,7 +639,12 @@ impl Map {
         let changed_route = self.route.as_ref() != Some(route);
         let arriving = !self.visible || changed_route;
         if arriving {
-            self.focus_on_mount = self.mount_focus_lease(window, cx);
+            // First paint consumes the store transition's permission. A
+            // newer blur/focus/input before this render cannot grant a lease.
+            let entry = self.links.shell.upgrade().and_then(|shell|
+                shell.update(cx, |shell, cx| shell.take_graph_arrival_focus(route, window, cx)))
+                .map(|lease| GraphMountFocus { lease, retired: false, restore_scene: true, _origin: window.focused(cx), settings_return: None, scheduled: false });
+            if entry.is_some() || changed_route || self.focus_on_mount.is_none() { self.focus_on_mount = entry; }
             self.painted_focus = None;
             self.entry_origin = route_symbol(route).and_then(|symbol| {
                 let key = crate::shell::kit::shared_id(&symbol);
@@ -776,7 +801,58 @@ impl Map {
         let lease = crate::shell::keyboard::NativeReturnLease::new(
             window.window_handle().window_id(), shell.read(cx).focus_return_generation(), window.focus_epoch(),
         )?;
-        Some(GraphMountFocus { lease, retired: false, restore_scene: true, _origin: window.focused(cx) })
+        Some(GraphMountFocus { lease, retired: false, restore_scene: true, _origin: window.focused(cx), settings_return: None, scheduled: false })
+    }
+
+    fn current_scene_owner_frame(&self, cx: &mut Context<Self>) -> bool {
+        let snapshot = self.links.snapshot(cx);
+        if !self.visible || self.route.as_ref() != Some(snapshot.route()) || !self.links.store.read(cx).owner_serving() { return false; }
+        let preferred = snapshot.workspace().active.as_ref().or(snapshot.workspace().host.as_ref())
+            .and_then(|project| PackageRef::parse(project.as_str()).ok());
+        let Some(key) = indexed_world::key(snapshot.key(), preferred, cx) else { return false; };
+        self.world_key.as_ref() == Some(&key) && self.graph.as_ref().is_some_and(|graph|
+            self.painted_scene.as_ref().is_some_and(|painted| painted.graph == graph.entity_id() && painted.key == key))
+    }
+
+    pub(crate) fn capture_settings_root(&self, origin: Option<&gpui::FocusHandle>, cx: &mut Context<Self>) -> Option<SettingsGraphOrigin> {
+        if !self.current_scene_owner_frame(cx) { return None; }
+        let handle = self.graph.as_ref()?.focus_handle(cx);
+        if origin != Some(&handle) { return None; }
+        Some(SettingsGraphOrigin { component: cx.entity_id(), visit: self.links.snapshot(cx).session().reading.current.id, handle })
+    }
+
+    pub(crate) fn arm_settings_root_return(&mut self, origin: SettingsGraphOrigin, authority: ProducerAuthority, lease: crate::shell::keyboard::NativeReturnLease, cx: &mut Context<Self>) -> bool {
+        let snapshot = self.links.snapshot(cx);
+        if origin.component != cx.entity_id() || origin.visit != snapshot.session().reading.current.id
+            || authority != snapshot.key().authority() || !is_graph(snapshot.route()) || snapshot.overlay().is_some() { return false; }
+        self.focus_on_mount = Some(GraphMountFocus { lease, retired: false, restore_scene: true,
+            _origin: Some(origin.handle), settings_return: Some((origin.visit, authority)), scheduled: false });
+        cx.notify();
+        true
+    }
+
+    fn complete_settings_root_return(&mut self, lease: crate::shell::keyboard::NativeReturnLease, graph_id: gpui::EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.focus_on_mount.as_mut().filter(|pending| pending.lease == lease && pending.settings_return.is_some()) else { return; };
+        pending.scheduled = false;
+        let snapshot = self.links.snapshot(cx);
+        let scope = pending.settings_return.expect("checked return");
+        let current = window.is_window_active() && snapshot.overlay().is_none()
+            && scope == (snapshot.session().reading.current.id, snapshot.key().authority())
+            && !crate::shell::titlebar::menu_open(window, cx)
+            && self.links.shell.upgrade().is_some_and(|shell| {
+                let shell = shell.read(cx);
+                lease.current(window.window_handle().window_id(), shell.focus_return_generation(), window.focus_epoch())
+                    && shell.allows_reader_native_return(window)
+            });
+        if !current { self.focus_on_mount = None; return; }
+        if self.graph.as_ref().is_some_and(|graph| graph.entity_id() == graph_id)
+            && self.current_scene_owner_frame(cx)
+            && let Some(graph) = &self.graph
+            && window.is_focus_handle_mounted(&graph.focus_handle(cx))
+        {
+            self.focus_on_mount = None;
+            graph.focus_handle(cx).focus(window, cx);
+        }
     }
 
     fn park_retired_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1635,7 +1711,14 @@ impl Render for Map {
         }
         let mut root = div().relative().size_full();
         if let Some(graph) = &self.graph {
-            if let Some(lease) = self.focus_on_mount.take() {
+            if let Some(pending) = self.focus_on_mount.as_mut().filter(|pending| pending.settings_return.is_some()) {
+                if !pending.scheduled {
+                    pending.scheduled = true;
+                    let lease = pending.lease;
+                    let graph_id = graph.entity_id();
+                    cx.on_next_frame(window, move |map, window, cx| map.complete_settings_root_return(lease, graph_id, window, cx));
+                }
+            } else if let Some(lease) = self.focus_on_mount.take() {
                 let snapshot = self.links.snapshot(cx);
                 let current = window.is_window_active() && self.visible
                     && self.route.as_ref() == Some(snapshot.route()) && snapshot.page_overlay().is_none()

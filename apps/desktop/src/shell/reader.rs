@@ -1200,10 +1200,13 @@ impl Reader {
                 && mounted.route == *self.links.snapshot(cx).route()
                 && mounted.root.same_authority(self.links.snapshot(cx).key())
         });
+        let graph = self.map.as_ref().and_then(|map| map.update(cx, |map, cx| map.capture_settings_root(origin, cx)));
         let receipt = if let Some(target) = target {
             SettingsNativeOrigin::Target(target)
         } else if let Some(find) = find {
             SettingsNativeOrigin::Find(find.focus.clone().expect("matched native query"))
+        } else if let Some(graph) = graph {
+            SettingsNativeOrigin::Graph(graph)
         } else {
             SettingsNativeOrigin::Unmatched
         };
@@ -1231,6 +1234,19 @@ impl Reader {
     pub(super) fn arm_settings_focus_return(&mut self, lease: NativeReturnLease, cx: &mut Context<Self>) {
         if let Some(pending) = &mut self.pending_settings_focus {
             pending.lease = Some(lease);
+            if let SettingsNativeOrigin::Graph(origin) = &pending.origin {
+                if self.places.last().is_some_and(|place| place.visit == origin.visit)
+                    && pending.focus.has_same_authority(self.links.snapshot(cx).key())
+                    && let Some(map) = &self.map
+                    && map.entity_id() == origin.component
+                {
+                    let origin = origin.clone();
+                    let authority = pending.focus.root.authority();
+                    map.update(cx, |map, cx| { map.arm_settings_root_return(origin, authority, lease, cx); });
+                }
+                self.targets.clear_focus();
+                self.pending_settings_focus = None;
+            }
             cx.notify();
         }
     }
@@ -2235,6 +2251,7 @@ struct PendingSettingsReturn {
 enum SettingsNativeOrigin {
     Target(SharedString),
     Find(FocusHandle),
+    Graph(bodies::graph::SettingsGraphOrigin),
     Unmatched,
 }
 
