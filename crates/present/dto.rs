@@ -831,6 +831,9 @@ pub struct ProductDto {
     /// Exact existing shape wire tree exported after direct certificate admission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_data: Option<crate::product::ProductSemanticData>,
+    /// Exact source-only package metadata lookup evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_discovery: Option<crate::product::PackageDiscoveryProjection>,
 }
 
 /// Shared page envelope projected for CLI, MCP, and desktop product replies.
@@ -918,6 +921,7 @@ impl ProductDto {
             selected_source_frontier: view.selected_source_frontier().cloned(),
             package_source_membership_page: view.package_source_membership_page().cloned(),
             semantic_data: view.semantic_data().cloned(),
+            package_discovery: view.package_discovery().cloned(),
         }
     }
 }

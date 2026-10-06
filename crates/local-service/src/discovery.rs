@@ -36,6 +36,8 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod package_metadata;
+
 const JOURNAL_MAGIC: &[u8; 8] = b"DISCOV01";
 const JOURNAL_VERSION: u16 = DISCOVERY_BATCH_ENVELOPE_VERSION;
 const MAX_FRAME_BYTES: usize = MAX_DISCOVERY_BATCH_ENCODED_BYTES;
@@ -180,6 +182,9 @@ pub(crate) struct DiscoveryGateway {
     receiver: Receiver<DiscoveryWorkerMessage>,
     workers: Vec<JoinHandle<()>>,
     cancelled: Arc<AtomicBool>,
+    metadata_sources: Vec<RegistryEndpoint>,
+    metadata_offline: bool,
+    package_metadata: package_metadata::PackageMetadataCache,
 }
 
 enum DiscoveryWorkerMessage {
@@ -206,6 +211,8 @@ impl DiscoveryGateway {
         let mut workers = Vec::new();
         let mut seen = BTreeSet::new();
         let mut sources = Vec::new();
+        let metadata_sources = config.sources.clone();
+        let metadata_offline = config.offline;
         for endpoint in config.sources {
             let source = discovery_source_identity(&endpoint);
             if seen.insert(source) {
@@ -254,6 +261,9 @@ impl DiscoveryGateway {
             receiver,
             workers,
             cancelled,
+            metadata_sources,
+            metadata_offline,
+            package_metadata: package_metadata::PackageMetadataCache::default(),
         })
     }
 

@@ -3592,6 +3592,33 @@ pub struct RegistryDiscoveryCandidate {
     pub metadata: RegistryDiscoveryMetadata,
 }
 
+/// Exact registry metadata lookup, without acquisition or compiler authority.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum RegistryPackageDiscoveryObservation {
+    /// Source-attributed claims for the requested immutable release.
+    Observed {
+        /// Separate claims from each source; these are never acquired records.
+        candidates: Box<[RegistryDiscoveryCandidate]>,
+    },
+    /// A validated complete package document did not contain this release.
+    Missing {
+        /// Exact metadata endpoint identity.
+        source: [u8; 32],
+        /// Digest of the response establishing absence.
+        proof: [u8; 32],
+        /// Time of this negative observation.
+        observed_at_millis: u64,
+    },
+    /// The configured metadata authority could not establish an answer.
+    Unavailable {
+        /// Endpoint identity, when a compatible authority was configured.
+        source: Option<[u8; 32]>,
+        /// Bounded explanation; absence must never be inferred from this state.
+        reason: ProductText,
+    },
+}
+
 impl RegistryDiscoveryCandidate {
     /// Checks the user-facing candidate boundary after decoding.
     pub fn admit(&self) -> Result<(), ProductAdmissionError> {
@@ -4264,6 +4291,13 @@ pub enum SurfaceReply {
     Explored(Box<[RegistryPackageRecord]>),
     /// Exact package records.
     Package(Box<[RegistryPackageRecord]>),
+    /// Exact source metadata, kept separate from acquired package authority.
+    PackageDiscovery {
+        /// Exact version-pinned package requested by the caller.
+        package: PackageCoordinate,
+        /// Positive, negative, or unavailable metadata evidence.
+        observation: RegistryPackageDiscoveryObservation,
+    },
     /// Exact package records from registry and forge authorities, kept apart.
     PackageDetails {
         /// Acquired registry facts matching the requested PURL.
@@ -4374,6 +4408,7 @@ impl SurfaceReply {
             Self::Diff(_) => CommandId::Diff,
             Self::Explored(_) => CommandId::Explore,
             Self::Package(_) => CommandId::Package,
+            Self::PackageDiscovery { .. } => CommandId::Package,
             Self::PackageDetails { .. } => CommandId::Package,
             Self::ForgePackageAdded(_) => CommandId::ForgeAdd,
             Self::ForgePackageReferenced(_) => CommandId::ForgeReference,
@@ -4457,6 +4492,10 @@ impl SurfaceReply {
             | Self::Dependents(RegistryMetadata::Partial { value: v, .. })
             | Self::Owner(RegistryMetadata::Partial { value: v, .. }) => v.len(),
             Self::IndexSearchWithDiscovery(hits) => hits.len(),
+            Self::PackageDiscovery { observation, .. } => match observation {
+                RegistryPackageDiscoveryObservation::Observed { candidates } => candidates.len(),
+                _ => 1,
+            },
             Self::PackageDetails { registry, forge } => registry.len().saturating_add(forge.len()),
             Self::IndexSearchPage(page) => page.hits.len(),
             Self::Dependencies(DependencyFacts::Known(v)) => v.len(),
@@ -4588,6 +4627,24 @@ impl SurfaceReply {
                         }
                     }
                 }
+                Self::PackageDiscovery {
+                    package,
+                    observation,
+                } => {
+                    if let RegistryPackageDiscoveryObservation::Observed { candidates } =
+                        observation
+                    {
+                        if candidates.is_empty() {
+                            return Err(ProductAdmissionError::RegistryAuthority);
+                        }
+                        for candidate in candidates {
+                            candidate.admit()?;
+                            if &candidate.coordinate != package {
+                                return Err(ProductAdmissionError::RegistryAuthority);
+                            }
+                        }
+                    }
+                }
                 Self::IndexSearchPage(page) => {
                     if page.hits.len() > MAX_PRODUCT_ROWS {
                         return Err(ProductAdmissionError::RowBound);
@@ -4695,6 +4752,12 @@ impl SurfaceReply {
             }),
             Self::IndexSearchPage(page) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(page).map_or(0, |bytes| bytes.len())),
+            Self::PackageDiscovery {
+                package,
+                observation,
+            } => fixed_record_bound()
+                .saturating_add(package.as_str().len())
+                .saturating_add(serialized_json_size(observation)),
             Self::ForgePackageAdded(record) | Self::ForgePackageReferenced(record) => {
                 fixed_record_bound()
                     .saturating_add(serde_json::to_vec(record).map_or(0, |bytes| bytes.len()))

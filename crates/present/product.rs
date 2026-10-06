@@ -319,6 +319,16 @@ pub struct ProductView {
     selected_source_frontier: Option<SelectedProjectSourceFrontier>,
     package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
     semantic_data: Option<ProductSemanticData>,
+    package_discovery: Option<PackageDiscoveryProjection>,
+}
+
+/// Exact metadata lookup evidence retained by CLI and MCP presentation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PackageDiscoveryProjection {
+    /// Exact immutable registry package requested by the caller.
+    pub package: backend_library::PackageCoordinate,
+    /// Source-only positive, negative, or unavailable evidence.
+    pub observation: backend_library::RegistryPackageDiscoveryObservation,
 }
 
 /// Exact owner-issued indexing state retained alongside its readable projection.
@@ -487,6 +497,12 @@ impl ProductView {
         self.note.as_deref()
     }
 
+    /// Returns exact package metadata evidence, separate from acquired records.
+    #[must_use]
+    pub fn package_discovery(&self) -> Option<&PackageDiscoveryProjection> {
+        self.package_discovery.as_ref()
+    }
+
     /// Returns the fault explaining a fact the configured feed does not publish.
     #[must_use]
     pub const fn fault(&self) -> Option<&Fault> {
@@ -615,6 +631,7 @@ impl ProductView {
             selected_source_frontier: None,
             package_source_membership_page: None,
             semantic_data: None,
+            package_discovery: None,
         }
     }
 
@@ -632,6 +649,7 @@ impl ProductView {
             selected_source_frontier: None,
             package_source_membership_page: None,
             semantic_data: None,
+            package_discovery: None,
         }
     }
 
@@ -647,6 +665,7 @@ impl ProductView {
             selected_source_frontier: None,
             package_source_membership_page: None,
             semantic_data: None,
+            package_discovery: None,
         }
     }
 
@@ -662,6 +681,7 @@ impl ProductView {
             selected_source_frontier: None,
             package_source_membership_page: None,
             semantic_data: None,
+            package_discovery: None,
         }
     }
 
@@ -677,6 +697,7 @@ impl ProductView {
             selected_source_frontier: None,
             package_source_membership_page: None,
             semantic_data: None,
+            package_discovery: None,
         }
     }
 }
@@ -704,6 +725,44 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         }
         SurfaceReply::Explored(records) => ProductView::rows("explore", registry_rows(records)),
         SurfaceReply::Package(records) => ProductView::rows("package", registry_rows(records)),
+        SurfaceReply::PackageDiscovery {
+            package,
+            observation,
+        } => {
+            use backend_library::RegistryPackageDiscoveryObservation;
+            let mut view = match observation {
+                RegistryPackageDiscoveryObservation::Observed { candidates } => ProductView::rows(
+                    "package",
+                    candidates
+                        .iter()
+                        .cloned()
+                        .map(RegistrySearchHit::Discovered)
+                        .map(|hit| registry_search_hit_row(&hit))
+                        .collect(),
+                ),
+                RegistryPackageDiscoveryObservation::Missing { .. } => ProductView::scalar(
+                    "package",
+                    format!(
+                        "{} is absent from the observed registry package metadata",
+                        package.as_str()
+                    ),
+                ),
+                RegistryPackageDiscoveryObservation::Unavailable { reason, .. } => {
+                    ProductView::scalar(
+                        "package",
+                        format!(
+                            "registry package metadata is unavailable: {}",
+                            reason.as_str()
+                        ),
+                    )
+                }
+            };
+            view.package_discovery = Some(PackageDiscoveryProjection {
+                package: package.clone(),
+                observation: observation.clone(),
+            });
+            view
+        }
         SurfaceReply::PackageDetails { registry, forge } => {
             let mut rows = registry_rows(registry);
             rows.extend(forge.iter().map(forge_package_detail_row));
@@ -3476,5 +3535,46 @@ mod tests {
         );
         assert!(json["records"][0]["forge_package_detail"]["package_coordinate"].is_null());
         assert_eq!(json["records"][0]["operand"], source_text);
+    }
+
+    #[test]
+    fn package_metadata_closed_states_survive_shared_json_presentation() {
+        use backend_library::{PackageCoordinate, RegistryPackageDiscoveryObservation};
+        let package = PackageCoordinate::parse("pkg:pypi/requests@0.0.0").expect("package");
+        for observation in [
+            RegistryPackageDiscoveryObservation::Missing {
+                source: [1; 32],
+                proof: [2; 32],
+                observed_at_millis: 100,
+            },
+            RegistryPackageDiscoveryObservation::Unavailable {
+                source: Some([1; 32]),
+                reason: backend_library::ProductText::new("HTTP 503".to_owned()).expect("reason"),
+            },
+        ] {
+            let reply = SurfaceReply::PackageDiscovery {
+                package: package.clone(),
+                observation: observation.clone(),
+            };
+            assert_eq!(reply.id(), backend_library::CommandId::Package);
+            reply.admit().expect("admitted metadata reply");
+            let view = product_view(&reply);
+            let dto = crate::dto::ProductDto::new(&view);
+            let encoded = serde_json::to_value(&dto).expect("shared JSON");
+            assert_eq!(encoded["package_discovery"]["package"], package.as_str());
+            let decoded: crate::dto::ProductDto =
+                serde_json::from_value(encoded).expect("closed typed presentation roundtrip");
+            assert_eq!(
+                decoded
+                    .package_discovery
+                    .expect("metadata evidence")
+                    .observation,
+                observation
+            );
+            assert!(
+                view.records().is_empty(),
+                "negative evidence is never an acquired row"
+            );
+        }
     }
 }

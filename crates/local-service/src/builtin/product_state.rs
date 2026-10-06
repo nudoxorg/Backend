@@ -382,15 +382,11 @@ impl ProductState {
                     PackageReference::Local(_) => Vec::new(),
                 };
                 if forge_details.is_empty() {
-                    (
-                        SurfaceReply::Package(package_page(
-                            view,
-                            catalog,
-                            catalog_index,
-                            &package,
-                        )?),
-                        false,
-                    )
+                    let reply = match package_page(view, catalog, catalog_index, &package) {
+                        Ok(rows) => SurfaceReply::Package(rows),
+                        Err(error) => discovered_package(discovery, &package)?.ok_or(error)?,
+                    };
+                    (reply, false)
                 } else {
                     let registry = packages(catalog, catalog_index, &package)?;
                     (
@@ -2143,6 +2139,92 @@ fn index_search_with_discovery(
         .map(|ranked| ranked.hit)
         .collect::<Vec<_>>()
         .into_boxed_slice())
+}
+
+fn discovered_package(
+    discovery: Option<&DiscoveryStore>,
+    package: &PackageReference,
+) -> Result<Option<SurfaceReply>, String> {
+    let PackageReference::Purl(coordinate) = package else {
+        return Ok(None);
+    };
+    let Some(discovery) = discovery else {
+        return Ok(None);
+    };
+    let now = discovery_now();
+    let mut candidates = Vec::new();
+    for (source, fact) in discovery
+        .facts()
+        .filter(|(_, fact)| &fact.coordinate == coordinate)
+    {
+        let observed_at = fact.observed_at.as_unix_millis();
+        let valid_until = observed_at.saturating_add(DISCOVERY_FRESHNESS_MILLIS);
+        let historical = discovery.is_historical(*source);
+        let freshness = if discovery.is_unavailable(*source) {
+            RegistryDiscoveryFreshness::Unavailable {
+                observed_at_millis: observed_at,
+                historical,
+            }
+        } else if historical {
+            RegistryDiscoveryFreshness::Historical {
+                observed_at_millis: observed_at,
+            }
+        } else if now > valid_until {
+            RegistryDiscoveryFreshness::Expired {
+                observed_at_millis: observed_at,
+                valid_until_millis: valid_until,
+            }
+        } else {
+            RegistryDiscoveryFreshness::Current {
+                observed_at_millis: observed_at,
+                valid_until_millis: valid_until,
+            }
+        };
+        let standing = match fact.standing {
+            backend_engine::registry::DiscoveryStanding::Published => {
+                RegistryDiscoveryStanding::Published
+            }
+            backend_engine::registry::DiscoveryStanding::Yanked => {
+                RegistryDiscoveryStanding::Yanked
+            }
+            backend_engine::registry::DiscoveryStanding::Withdrawn => {
+                RegistryDiscoveryStanding::Withdrawn
+            }
+            backend_engine::registry::DiscoveryStanding::RecipeAvailable => {
+                RegistryDiscoveryStanding::RecipeAvailable
+            }
+        };
+        let completeness = match discovery.completeness(*source) {
+            Some(backend_engine::registry::DiscoveryCompleteness::CompleteThroughCursor) => {
+                RegistryDiscoveryCompleteness::CompleteThroughCursor
+            }
+            Some(backend_engine::registry::DiscoveryCompleteness::Windowed) => {
+                RegistryDiscoveryCompleteness::Windowed
+            }
+            Some(backend_engine::registry::DiscoveryCompleteness::Unsupported) => {
+                RegistryDiscoveryCompleteness::Unsupported
+            }
+            _ => RegistryDiscoveryCompleteness::Incomplete,
+        };
+        candidates.push(RegistryDiscoveryCandidate {
+            source: source.id(),
+            coordinate: coordinate.clone(),
+            standing,
+            completeness,
+            caught_up: discovery.is_caught_up(*source),
+            freshness,
+            proof: fact.proof,
+            metadata: registry_discovery_metadata(&fact.metadata)?,
+        });
+    }
+    Ok(
+        (!candidates.is_empty()).then(|| SurfaceReply::PackageDiscovery {
+            package: coordinate.clone(),
+            observation: backend_library::RegistryPackageDiscoveryObservation::Observed {
+                candidates: candidates.into_boxed_slice(),
+            },
+        }),
+    )
 }
 
 fn registry_discovery_metadata(

@@ -2027,10 +2027,9 @@ impl CommandAdapter {
                                 // The source and Pending capture already committed.
                                 // Publish their authenticated current view before
                                 // compiler work can leave the owner serving reads.
-                                match self
-                                    .publish_view(daemon, None)
-                                    .and_then(|()| self.spawn_next_index_profile(&mut indexing, job))
-                                {
+                                match self.publish_view(daemon, None).and_then(|()| {
+                                    self.spawn_next_index_profile(&mut indexing, job)
+                                }) {
                                     Ok(()) => {
                                         self.indexing = Some(indexing);
                                         return self.with_browse_completions(daemon, ready);
@@ -3712,6 +3711,16 @@ impl CommandAdapter {
                             ))
                         }),
                 };
+                // Known-package metadata is independent of the asynchronous
+                // namespace walk. Acquired records keep their existing owner.
+                let package_observation = match &surface {
+                    backend_engine::SurfaceCommand::Package {
+                        package: backend_engine::PackageReference::Purl(coordinate),
+                    } if !catalog.records().iter().any(|record| record.coordinate.as_str() == coordinate.as_str()) => {
+                        self.discovery.as_mut().and_then(|gateway| gateway.observe_package(coordinate))
+                    }
+                    _ => None,
+                };
                 let manifests = &self.manifests;
                 let graph_limits = self.graph_limits;
                 ResidentDependencies::select(
@@ -3798,6 +3807,14 @@ impl CommandAdapter {
                             &forge_records,
                         ),
                 };
+                let reply = reply.or_else(|error| match (&surface, package_observation) {
+                    (backend_engine::SurfaceCommand::Package {
+                        package: backend_engine::PackageReference::Purl(package),
+                    }, Some(observation)) => Ok(backend_engine::SurfaceReply::PackageDiscovery {
+                        package: package.clone(), observation,
+                    }),
+                    _ => Err(error),
+                });
                 reply.map_or_else(
                     |error| {
                         CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error))
@@ -4987,30 +5004,44 @@ mod tests {
         let mut observed_inflight_capture = false;
         while adapter.indexing.is_some() {
             replies.extend(adapter.poll_deferred(daemon));
-            if adapter.indexing.as_ref().is_some_and(|job| {
-                matches!(&job.work, IndexJobWork::Compiling { .. })
-            }) {
+            if adapter
+                .indexing
+                .as_ref()
+                .is_some_and(|job| matches!(&job.work, IndexJobWork::Compiling { .. }))
+            {
                 // The background result is not applied until the next owner
                 // poll. Read the committed Pending frontier in that interval.
                 let snapshot = daemon.engine().daemon().owner().snapshot();
                 let expected = crate::builtin::builtin_view_capability_for_workspace(&snapshot)
                     .expect("current Pending capture capability");
                 let view = daemon.engine().daemon().library().view();
-                assert_ne!(view.root(), before, "initial capture is visible before compilation");
+                assert_ne!(
+                    view.root(),
+                    before,
+                    "initial capture is visible before compilation"
+                );
                 assert_eq!(view.capability(), Some(expected));
                 let query = backend_engine::Query::new(
                     "captured_name",
                     view.root(),
                     backend_engine::QueryLimit::default(),
                 );
-                let (reply, _) = adapter.search(daemon, &query, None).expect("Pending owner query");
-                assert!(matches!(reply, backend_engine::CommandReply::Search(_)), "{reply:?}");
+                let (reply, _) = adapter
+                    .search(daemon, &query, None)
+                    .expect("Pending owner query");
+                assert!(
+                    matches!(reply, backend_engine::CommandReply::Search(_)),
+                    "{reply:?}"
+                );
                 observed_inflight_capture = true;
             }
             assert!(std::time::Instant::now() < deadline, "refused add terminal");
             std::thread::sleep(Duration::from_millis(2));
         }
-        assert!(observed_inflight_capture, "query the committed capture before terminal refusal");
+        assert!(
+            observed_inflight_capture,
+            "query the committed capture before terminal refusal"
+        );
         let reply = replies
             .into_iter()
             .find(|(ticket, _)| *ticket == 9850)
@@ -5019,12 +5050,19 @@ mod tests {
             .expect("encode typed refusal");
         let reply: serde_json::Value = serde_json::from_slice(&reply).expect("actual DTO reply");
         assert_eq!(reply["reply"]["kind"], "failed", "{reply}");
-        assert_eq!(reply["reply"]["data"]["kind"], "compiler_refused", "{reply}");
+        assert_eq!(
+            reply["reply"]["data"]["kind"], "compiler_refused",
+            "{reply}"
+        );
         let snapshot = daemon.engine().daemon().owner().snapshot();
         let expected = crate::builtin::builtin_view_capability_for_workspace(&snapshot)
             .expect("current committed workspace capability");
         let view = daemon.engine().daemon().library().view();
-        assert_ne!(view.root(), before, "captured structural rows are published");
+        assert_ne!(
+            view.root(),
+            before,
+            "captured structural rows are published"
+        );
         assert_eq!(view.capability(), Some(expected.clone()));
         assert!(
             view.row_refs()
@@ -5035,8 +5073,13 @@ mod tests {
             view.root(),
             backend_engine::QueryLimit::default(),
         );
-        let (reply, _) = adapter.search(daemon, &query, None).expect("owner query reply");
-        assert!(matches!(reply, backend_engine::CommandReply::Search(_)), "{reply:?}");
+        let (reply, _) = adapter
+            .search(daemon, &query, None)
+            .expect("owner query reply");
+        assert!(
+            matches!(reply, backend_engine::CommandReply::Search(_)),
+            "{reply:?}"
+        );
         assert!(adapter.poll_deferred(daemon).is_empty());
         assert_eq!(
             daemon.engine().daemon().library().view().capability(),
