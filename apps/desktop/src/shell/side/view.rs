@@ -314,6 +314,8 @@ impl Shelf {
             pinned = pinned.child(
                 div()
                     .id(SharedString::from(format!("{}#sticky", item.key)))
+                    .role(gpui::Role::Button)
+                    .aria_label(format!("Return to {}", item.name))
                     .h(height)
                     .flex_none()
                     .flex()

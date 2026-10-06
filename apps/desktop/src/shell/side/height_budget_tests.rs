@@ -238,11 +238,18 @@ fn compact_two_hundred_percent_reaches_every_declaration_and_scrolls_chrome_inde
     let after = fit_tests::painted(&mut rig);
     assert!((scroll(&after, "shelf-rows").offset.expect("row owner").y - rows_offset).abs() < 0.5,
         "reaching all view controls and Trail links preserves the declaration scroll owner");
-    // Return through native wheel to the real disclosure, then collapse.
-    // Descendants must disappear, rather than staying in an old list cache.
-    wheel(&mut rig, "shelf-rows", 10_000.0);
+    // The actual pinned ancestor is an action, not merely a measured overlay.
+    // After reading to the end with native wheel, click it to return to the
+    // real disclosure, then collapse all descendants out of the native list.
+    let sticky = tests::native_bounds(&mut rig, "Button", "Return to Types", true)
+        .expect("the scrolled declaration list paints its actual pinned ancestor");
+    let clip = rig.cx.debug_bounds("shelf-sticky-clip").expect("mounted sticky clip");
+    assert!(sticky.top() >= clip.top() && sticky.bottom() <= clip.bottom(),
+        "the entire pinned native action fits its current-frame renderer clip");
+    rig.cx.simulate_click(sticky.center(), Modifiers::none());
+    rig.settle();
     let collapse = tests::native_bounds(&mut rig, "Button", "Collapse Types", true)
-        .expect("native wheel reaches the collapse control");
+        .expect("clicking the pinned ancestor reaches the original collapse control");
     let ledger = fit_tests::painted(&mut rig);
     let viewport = &scroll(&ledger, "shelf-rows").viewport;
     assert!(f32::from(collapse.top()) >= viewport.y - 0.5
