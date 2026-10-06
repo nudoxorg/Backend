@@ -1,0 +1,11 @@
+nudox cargo: explicit build or target directory aliases pooled slot 1
+nudox cargo: explicit build or target directory aliases pooled slot 1
+nudox cargo: all 4 build slots are busy; waited 0ms
+nudox cargo: all 6 build slots are busy; waited 0ms
+NUDOX_CARGO_BUILD_SLOTS must be an integer from 1 through 6
+nudox cargo: explicit target directory belongs to another worktree
+nudox cargo: refusing unmarked mutable role graph
+nudox cargo: refusing unmarked explicit target directory
+nudox cargo: explicit target directory belongs to another worktree
+nudox cargo: all 1 build slots are busy; waited 0ms
+cargo-shared-cache: explicit directory bypassed the busy build ceiling

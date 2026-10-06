@@ -1,0 +1,19 @@
+{
+  "source": "a47b44edcbe6090c14ae0463ca9889ea286cb991",
+  "tree": "620232673e1fb12084ecf0668fce88ab697cbd4b",
+  "scope": "Exact source protocol on canonical-based private worktree; no Nix eval or Rust compilation in this gate",
+  "logs": [
+    {
+      "path": "standalone-protocol.log",
+      "sha256": "eb713c507e80e698a87c4767a5c81947aad3518138127a16cf67031d0bec7a82",
+      "result": "FAIL",
+      "kind": "protocol with simulated Cargo; no workspace compilation"
+    },
+    {
+      "path": "standalone-protocol-successor.log",
+      "sha256": "e86dba967238deccdd402e7b64b818408018a6d9bbfc09d71d76858ebc33c5ba",
+      "result": "PASS",
+      "kind": "protocol with simulated Cargo; no workspace compilation"
+    }
+  ]
+}
