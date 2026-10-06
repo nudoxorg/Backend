@@ -746,7 +746,8 @@ fn assert_first_refusal_has_no_authority(
         package: package.clone(),
         coordinate: backend_library::PackageCoordinate::parse(
             "pkg:cargo/public_operation_lifecycle_fixture@0.1.0".to_owned(),
-        )?,
+        )
+        .map_err(|error| io::Error::other(error.to_string()))?,
         profile: backend_library::SemanticLanguageProfile::new(
             backend_semantic::vocabulary::LanguageProfile::Rust(
                 backend_semantic::vocabulary::RustEdition::Rust2021,
