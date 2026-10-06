@@ -1,6 +1,6 @@
 # Meeting blockers and durable recovery
 
-Recorded 2026-10-05 after the local restart. This is an acceptance ledger,
+Updated 2026-10-06 after the local restart. This is an acceptance ledger,
 not a declaration of production readiness.
 
 ## Release blockers
@@ -70,11 +70,27 @@ use and ordinary TypeScript setup remain open acceptance gaps.
 
 The preserved r3 bundle is at
 `/Users/mileswirht/Downloads/Nudox-preview-20261005-9d29-r3`.
-Its six Mach-O files pass strict signature verification before installation;
-this does not establish compiler or GUI readiness. Public asset ranged GETs
-succeed. The existing public Homebrew recipe still permits relocation to
-rewrite the signed application. A byte-preserving install repair needs exact
-local validation, publication and a fresh public Homebrew install test.
+The byte-preserving Homebrew repair was published to tap `main` at
+`310fd41e1033bc33d980c4fe6d8659e65f3b623e`. A real Homebrew install completed
+with exit zero; all six installed Mach-O hashes match the preserved bundle,
+strict deep signature verification passes, the three executable help commands
+launch, and rerunning post-install is idempotent. The receipt is
+`delivery/brew-installed-payload-verification-20261006.json`.
+
+This is installer acceptance, not compiler or GUI acceptance. The stock CLI
+acceptance already reports zero admitted oracles and refuses a tiny TypeScript
+project with `TypeScriptCompiler configured: None`; adding project-local
+TypeScript and testing actual MCP/cold-restart behavior remains in progress.
+`brew test` is separately blocked by this Nix-provided Homebrew's read-only
+vendored Gem marker, although its three help assertions were exercised directly.
+
+GitHub release ID `404084754` became draft twice. Republish at 00:52:47 UTC
+restored an anonymous ranged tarball GET (206). The second state change was
+observed at the time of a formula asset upload; the exact CLI upload code has no
+release-state mutation, so its cause is not established. Never infer public
+availability from authenticated upload success: recheck the anonymous tag and
+asset URLs after all release mutations. The tarball hash remains
+`09ba4990d2b0bf45d95d341d2ddd546ffe63224bbfa609715ce7dfe9212ed34b`.
 
 The remote Mac's SSH attempt timed out while local Tailscale was stopped.
 Its process state and unrecovered install receipts remain unknown.
@@ -83,6 +99,58 @@ Two user-restored GUI instances are running. Native computer-use input is
 held while the user is active; source reviews, owned fixtures and GPUI tests
 continue. Screenshots of the running r3 Settings page are observations, not
 acceptance of the new candidate.
+
+## Current native GUI results
+
+The complete pinned baseline desktop library suite at
+`4b1e6af973e7d34eadc368f1e47b3efc63ce40fb` finished with **1,248 passed,
+131 failed, and 10 ignored** (exit 101). Its log and every failure body are
+preserved in `gui-audit/builds/desktop-native-recovery*`. The failures include
+real publication/focus/animation defects, invalid test assumptions, and missing
+Cargo-cache inputs. Classification does not close the runtime gate.
+
+The close integration at `ececf4d9` passed eight tests and failed six: the
+remaining failures exposed gpui-component's focus trap dropping its base's
+accessibility hooks. The general wrapper repair forwards native roles,
+properties/actions, synthetic children and inspector/source metadata; a real
+dialog/remount/Tab/Shift-Tab regression was added. Its warm rerun is pending.
+The lifecycle integration passed ten and failed one before its retained-library
+precondition; the fixture now delivers the actual owner publication before
+checking fresh failure and Retry. Its rerun is also pending.
+
+Publication, graph selection/camera continuity, Settings native ownership,
+reader plate lifetime, and responsive Shelf repairs remain distinct source
+packets until their exact native tests and image captures pass. No candidate
+application has yet passed live GUI computer-use acceptance after this restart.
+
+## Current compiler/index gates
+
+Paged source facts and a lazy verified consumer have source checkpoints; the
+local-service check passed before the typed compiler-failure DTO was added.
+Capture-before-compilation, typed terminal refusal persistence, complete
+overflow-file reads, and actual 84+ MiB ingestion still need one integrated
+matched-binary run. Raising a quota alone is not storage or memory acceptance.
+
+The TypeScript host has an embedded relocatable checker driver and typed
+project-local toolchain admission. A relocation selector passed once; newer
+host tests exposed production type errors that were fixed and are being rerun.
+TSZ's immutable per-program options are vendored in a separate packet. Complete
+config/import/library/ambient/reference closure, including negative resolution
+witnesses, is required before its production dispatch cutover.
+
+Typed fragment failure DTO v17 has a source checkpoint, but its first compiler
+run failed before tests. Closed nested operands and bounded wire serialization
+are being reworked; this packet is not a passing API or an installed fix.
+Requests class-source reopening, checked empty Python modules, Go closure
+authority, and concrete cross-file TypeScript call/reference joins also remain
+under implementation and native validation.
+
+Npm's post-integrity live run streamed 25 packages with zero failures and 31,288
+selected version rows. Ten npm tests, bounded-manifest and chunk-integrity
+regressions passed in the later exact receipt. The bounded version window is
+explicitly partial; this does not establish complete all-version ingestion.
+CLI/MCP parity by itself also does not establish semantic correctness: the
+recovered Nest and Requests runs agree on missing concrete reference edges.
 
 ## Build discipline
 
