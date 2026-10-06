@@ -834,20 +834,25 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
                 let declaration = page
                     .declaration(index)
                     .ok_or_else(|| "cold admitted declaration".to_owned())?;
-                visited += 1;
-                if declaration.source_declaration().kind()
-                    == backend_compile::DeclarationKind::Module
-                {
-                    continue;
+                let expected = declarations
+                    .get(visited)
+                    .ok_or_else(|| "cold source facts exceeded syntax producer output".to_owned())?;
+                if declaration.source_declaration() != expected {
+                    return Err(format!(
+                        "cold source facts differ from SyntaxFrontend output at ordinal {visited}: {} {:?}",
+                        expected.name(),
+                        expected.kind()
+                    ));
                 }
-                if declaration.source_declaration().documentation().is_empty()
-                    || declaration
-                        .source_declaration()
-                        .source_excerpt()
-                        .text()
-                        .is_none()
+                visited += 1;
+                if expected.kind() == backend_compile::DeclarationKind::Function
+                    && (expected.documentation().is_empty()
+                        || expected.source_excerpt().text().is_none())
                 {
-                    return Err("cold source facts lost complete prose or excerpt".to_owned());
+                    return Err(format!(
+                        "cold function fact lost prose or excerpt for {}",
+                        expected.name()
+                    ));
                 }
                 if declaration.source_declaration().kind()
                     == backend_compile::DeclarationKind::Function
