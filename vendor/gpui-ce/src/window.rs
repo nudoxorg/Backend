@@ -10431,9 +10431,9 @@ mod deferred_clip_tests {
             };
             let child = self.child.take().expect("native child defers once");
             if self.local {
-                window.defer_draw_local(child, bounds.origin, 0, mask);
+                window.defer_draw_local(child, window.element_offset(), 0, mask);
             } else {
-                window.defer_draw(child, bounds.origin, 0, mask);
+                window.defer_draw(child, window.element_offset(), 0, mask);
             }
         }
         fn paint(
