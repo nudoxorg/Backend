@@ -456,7 +456,7 @@ impl ImportModule {
 /// Every declared fact's name span, declaring span, and kind are retained so
 /// type references, occurrence owners, and doc links resolve by exact source
 /// coordinates.
-struct Projector<'x, 'report, 'source> {
+struct Projector<'x, 'report, 'source, 'tsz> {
     semantic: &'x Semantic<'x>,
     /// Span index built once for this projection; type probes use binary
     /// search instead of rescanning the complete syntax arena.
@@ -476,6 +476,11 @@ struct Projector<'x, 'report, 'source> {
     import_module_len: usize,
     /// The span-bound checker report, when the authority ran.
     checker: Option<CheckerIndex<'report>>,
+    /// Exact native TypeScript parser/binder witnesses for authored
+    /// `typeof` syntax. They are absent on the legacy report-only path.
+    tsz_project: Option<&'source TszProject>,
+    tsz_bound_file: Option<&'tsz TszBoundFile>,
+    tsz_file_index: Option<usize>,
     /// The pooled type-parameter start of the fact about to be pushed; every
     /// push path builds its extension immediately before pushing.
     pending_type_parameters: u32,
@@ -540,7 +545,7 @@ struct FactRegistry<'a, 'source> {
     fact_len: u32,
 }
 
-impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
+impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     /// Borrows the exact source bytes one OXC span names.
     fn slice_span(&self, span: Span) -> Option<&'source [u8]> {
         let start = usize::try_from(span.start).ok()?;
@@ -889,6 +894,78 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             }
         }
         self.fact_by_name_prefix(start)
+    }
+
+    /// Resolves one authored TypeQuery only through exact bound identifiers.
+    /// The OXC source node supplies the declared syntax; the native TSZ AST
+    /// and binder must independently confirm that the query and its unique
+    /// same-file entity declaration name the same compiler symbol. This is
+    /// intentionally stricter than `local_fact_at`, whose name fallback is
+    /// useful for reference recovery but cannot authorize a TypeQuery target.
+    fn type_query_entity_at(&self, query_span: Span, name_span: Span) -> Option<u32> {
+        let semantic = self.semantic;
+        let nodes = semantic.nodes();
+        let first = self.node_index.partition_point(|(known, _)| {
+            (known.start, known.end) < (name_span.start, name_span.end)
+        });
+        let mut oxc_symbol = None;
+        for (known, node_id) in self.node_index.get(first..).unwrap_or(&[]) {
+            if (known.start, known.end) != (name_span.start, name_span.end) {
+                break;
+            }
+            let Some(identifier) = nodes.get_node(*node_id).kind().as_identifier_reference() else {
+                continue;
+            };
+            let Some(reference) = identifier.reference_id.get() else {
+                continue;
+            };
+            let Some(symbol) = semantic.scoping().get_reference(reference).symbol_id() else {
+                continue;
+            };
+            if oxc_symbol.is_some_and(|existing| existing != symbol) {
+                return None;
+            }
+            oxc_symbol = Some(symbol);
+        }
+        let oxc_symbol = oxc_symbol?;
+        let target_start = semantic.scoping().symbol_span(oxc_symbol).start;
+        let target = self.fact_at_name_start(target_start)?;
+        let target_index = usize::try_from(target).ok()?;
+        let target_name = Span::new(
+            *self.name_starts.get(target_index)?,
+            *self.name_ends.get(target_index)?,
+        );
+        if target_name.start == UNSET || target_name.end == UNSET {
+            return None;
+        }
+
+        // A legacy caller has only the exact OXC reference binding. Native
+        // collection additionally requires a matching TypeQuery AST node,
+        // matching query/declaration SymbolIds, and a single admitted
+        // declaration in this exact project file. Overloads and forwarded
+        // declarations therefore remain explicit unresolved source types.
+        let (Some(project), Some(bound_file), Some(file_index)) =
+            (self.tsz_project, self.tsz_bound_file, self.tsz_file_index)
+        else {
+            return Some(target);
+        };
+        let query_symbol = native_tsz_type_query_symbol(bound_file, query_span, name_span)?;
+        let declaration_symbol = native_tsz_symbol_at_identifier_span(bound_file, target_name)?;
+        if query_symbol != declaration_symbol {
+            return None;
+        }
+        let symbol = project.program().symbols.get(query_symbol)?;
+        if symbol.stable_declarations.len() != 1 {
+            return None;
+        }
+        let declaration = symbol.stable_declarations.first()?;
+        if usize::try_from(declaration.file_idx).ok()? != file_index
+            || declaration.pos > target_name.start
+            || declaration.end < target_name.end
+        {
+            return None;
+        }
+        Some(target)
     }
 
     /// Reports whether the identifier at `span` sits in callee position of an
@@ -3124,8 +3201,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
         if let Some(query) = kind.as_ts_type_query() {
             let inner = query.expr_name.span();
-            if let Some(fact) = self.local_fact_at(inner.start) {
-                return Ok(TypeOutcome::Existing(fact));
+            if let Some(target) = self.type_query_entity_at(span, inner) {
+                let mut cells = TypeCells::leaf(SemanticTypeTag::TypeOf);
+                cells.record.payload0 = target;
+                return Ok(TypeOutcome::Cells(cells));
             }
             let mut cells = TypeCells::unknown(TypeReason::UnresolvedExternal);
             cells.record.text = self.slice_span(span);
@@ -3964,6 +4043,9 @@ pub(crate) fn collect_with_checker<'source, 'report>(
             import_modules: Vec::new(),
             import_module_len: 0,
             checker: index,
+            tsz_project: None,
+            tsz_bound_file: None,
+            tsz_file_index: None,
             pending_type_parameters: 0,
             extension_type_parameters: Vec::new(),
             staged_members: Vec::new(),
@@ -4010,6 +4092,67 @@ fn native_tsz_program_identity(files: &[TszBoundFile]) -> Option<[u8; 32]> {
         sources.push((file.file_name.clone(), *identity));
     }
     typescript_program_identity(&sources)
+}
+
+/// Returns the one TSZ binder symbol attached to an exact identifier source
+/// span. The parser node and byte range are checked together; matching names
+/// elsewhere in the file cannot lend an identity.
+fn native_tsz_symbol_at_identifier_span(
+    bound_file: &TszBoundFile,
+    span: Span,
+) -> Option<TszSymbolId> {
+    let mut found = None;
+    for (&raw_node, &symbol) in bound_file.node_symbols.iter() {
+        let node_index = TszNodeIndex(raw_node);
+        if bound_file.arena.pos_end_at(node_index) != Some((span.start, span.end)) {
+            continue;
+        }
+        let node = bound_file.arena.get(node_index)?;
+        if bound_file.arena.get_identifier(node).is_none() {
+            continue;
+        }
+        if found.is_some_and(|existing| existing != symbol) {
+            return None;
+        }
+        found = Some(symbol);
+    }
+    found
+}
+
+/// Matches an OXC TypeQuery node to the exact TSZ TypeQuery AST node and
+/// returns the symbol bound to its simple identifier expression. Qualified
+/// queries are intentionally left unresolved until the IR has an exact path
+/// target form for source-owned declarations.
+fn native_tsz_type_query_symbol(
+    bound_file: &TszBoundFile,
+    query_span: Span,
+    name_span: Span,
+) -> Option<TszSymbolId> {
+    let mut found = None;
+    for (raw_node, node) in bound_file.arena.nodes.iter().enumerate() {
+        if node.kind != TszSyntaxKind::TYPE_QUERY {
+            continue;
+        }
+        let node_index = TszNodeIndex(u32::try_from(raw_node).ok()?);
+        if bound_file.arena.pos_end_at(node_index) != Some((query_span.start, query_span.end)) {
+            continue;
+        }
+        let node = bound_file.arena.get(node_index)?;
+        let query = bound_file.arena.get_type_query(node)?;
+        if bound_file.arena.pos_end_at(query.expr_name) != Some((name_span.start, name_span.end)) {
+            continue;
+        }
+        let name = bound_file.arena.get(query.expr_name)?;
+        if bound_file.arena.get_identifier(name).is_none() {
+            return None;
+        }
+        let symbol = *bound_file.node_symbols.get(&query.expr_name.0)?;
+        if found.is_some_and(|existing| existing != symbol) {
+            return None;
+        }
+        found = Some(symbol);
+    }
+    found
 }
 
 #[derive(Clone, Debug)]
@@ -4222,6 +4365,9 @@ pub(crate) fn collect_with_tsz<'source>(
                     import_modules: Vec::new(),
                     import_module_len: 0,
                     checker: None,
+                    tsz_project: Some(project),
+                    tsz_bound_file: Some($bound_file),
+                    tsz_file_index: Some(file_index),
                     pending_type_parameters: 0,
                     extension_type_parameters: Vec::new(),
                     staged_members: Vec::new(),
@@ -4295,7 +4441,7 @@ pub(crate) fn collect_with_tsz<'source>(
     lowered
 }
 
-impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
+impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     /// Runs the ordered projection: the self-nominal declaration pass, the
     /// alias/member/signature/variable pass, the checker computed pass, the
     /// narrowing pass, the reference pass, the checker-only reference pass,
@@ -8872,40 +9018,6 @@ fn intern_native_tsz_type<'source>(
     // `resolve_lazy_type` leaves unresolved handles lazy; a result of `any`
     // therefore comes from the checker-owned body and must keep its native
     // dynamically-typed meaning instead of being confused with a failed lookup.
-    #[cfg(test)]
-    if depth == 0 {
-        let owner_index = usize::try_from(owner).ok();
-        let name = owner_index
-            .and_then(|index| {
-                registry
-                    .name_starts
-                    .get(index)
-                    .zip(registry.name_ends.get(index))
-            })
-            .and_then(|(start, end)| {
-                registry
-                    .source
-                    .get(usize::try_from(*start).ok()?..usize::try_from(*end).ok()?)
-            });
-        if matches!(
-            name,
-            Some("Labels" | "MarkerQuery" | "Keys" | "Value" | "wide" | "Recursive" | "deep")
-        ) {
-            let input_data = database.lookup(type_id);
-            let resolved_data = database.lookup(resolved_type_id);
-            let details = match resolved_data {
-                Some(TypeData::Mapped(id)) => format!(" mapped={:#?}", database.mapped_type(id)),
-                Some(TypeData::Tuple(id)) => format!(" tuple={:#?}", database.tuple_list(id)),
-                Some(TypeData::Object(id) | TypeData::ObjectWithIndex(id)) => {
-                    format!(" object={:#?}", database.object_shape(id))
-                }
-                _ => String::new(),
-            };
-            eprintln!(
-                "TSZ_NATIVE_TYPE_TRACE name={name:?} input={type_id:?} input_data={input_data:#?} resolved={resolved_type_id:?} resolved_data={resolved_data:#?}{details}"
-            );
-        }
-    }
     if !active.insert(resolved_type_id) {
         return Err(computed_fault(
             registry,
@@ -10752,10 +10864,6 @@ mod lane_tests {
         let observed = extension
             .observed
             .ok_or(LaneError::Missing("native TSZ mapped observation"))?;
-        eprintln!(
-            "MAPPED_IR_TRACE row={observed:?} type={:?}",
-            ir.ty(observed)
-        );
         if !matches!(
             ir.ty(observed),
             Some(backend_semantic::ir::TypeExpr::Computed(
@@ -10770,10 +10878,11 @@ mod lane_tests {
     }
 
     #[test]
-    fn native_tsz_preserves_distinct_keyof_indexed_access_and_local_typeof() -> Result<(), LaneError>
-    {
+    fn native_tsz_preserves_declared_typeof_and_distinct_keyof_indexed_access()
+    -> Result<(), LaneError> {
         let source = concat!(
-            "export function marker(): typeof marker { throw 'recursive typeof'; }\n",
+            "export const marker = { value: 1 };\n",
+            "export type MarkerQuery = typeof marker;\n",
             "export type Keys<T> = keyof T;\n",
             "export type Value<T, K extends keyof T> = T[K];\n",
         );
@@ -10792,32 +10901,24 @@ mod lane_tests {
             .items()
             .find(|item| item.name() == b"marker")
             .ok_or(LaneError::Missing("typeof target entity"))?;
-        eprintln!(
-            "TYPE_OPERATOR_IR_TRACE marker={:?} Keys={:?} Value={:?}",
-            native_observation(&ir, b"marker"),
-            native_observation(&ir, b"Keys"),
-            native_observation(&ir, b"Value"),
-        );
-        let TypeExpr::Concrete(backend_semantic::ir::ConcreteType::Function { results, .. }) = ir
-            .ty(observed(b"marker")?)
-            .ok_or(LaneError::Missing("recursive typeof function row"))?
+        let marker_query = ir
+            .items()
+            .find(|item| item.name() == b"MarkerQuery")
+            .ok_or(LaneError::Missing("typeof alias entity"))?;
+        let declared = ir
+            .typescript_extension(marker_query.id())
+            .and_then(|extension| extension.declared)
+            .ok_or(LaneError::Missing("declared TypeQuery cell"))?;
+        let TypeExpr::Computed(ComputedType::TypeOf(TypeQuery::Entity(target))) =
+            ir.ty(declared)
+                .ok_or(LaneError::Missing("declared TypeOf row"))?
         else {
-            return Err(LaneError::Missing(
-                "recursive typeof remains in the native function result",
-            ));
-        };
-        let result = ir
-            .tuple_elements(results)
-            .and_then(|results| results.first())
-            .ok_or(LaneError::Missing("recursive typeof result slot"))?;
-        let TypeExpr::Computed(ComputedType::TypeOf(TypeQuery::Entity(target))) = ir
-            .ty(result.ty)
-            .ok_or(LaneError::Missing("typeof computed result row"))?
-        else {
-            return Err(LaneError::Missing("distinct entity-targeted TypeOf row"));
+            return Err(LaneError::Missing("declared entity-targeted TypeOf row"));
         };
         if target != marker.id() {
-            return Err(LaneError::Missing("exact TypeOf entity coordinate"));
+            return Err(LaneError::Missing(
+                "exact declared TypeOf entity coordinate",
+            ));
         }
 
         if !matches!(
@@ -10833,6 +10934,16 @@ mod lane_tests {
             return Err(LaneError::Missing(
                 "distinct object/index-ordered IndexedAccess row",
             ));
+        }
+        // The authored query belongs to the declared lane. The checker may
+        // normalize its observed value type; this test must not demand that
+        // the observation repeat the source operator.
+        if ir
+            .typescript_extension(marker_query.id())
+            .and_then(|extension| extension.observed)
+            .is_none()
+        {
+            return Err(LaneError::Missing("checker-observed alias value type"));
         }
         Ok(())
     }
