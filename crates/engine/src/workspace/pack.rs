@@ -19,12 +19,45 @@ pub(crate) fn workspace_pack_layout() -> LayoutId {
 
 /// Fixed authenticated pointers needed to recover a typed workspace
 /// transition without scanning the closure's compatibility export.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(super) struct WorkspacePackIndex {
     pub(super) transaction: TransactionId,
     pub(super) payloads: [ObjectId; TRANSITION_PAYLOAD_COUNT],
     pub(super) auxiliary: Vec<ObjectId>,
     pub(super) catalog_descriptor: Option<ObjectId>,
+    pub(super) frontier: AuthenticatedRecoveryFrontier,
+}
+
+/// A closed witness minted only by canonical selected-pack admission below.
+#[derive(Debug)]
+pub(super) struct AuthenticatedRecoveryFrontier {
+    target: [u8; 32],
+    closure: backend_store::ClosureId,
+    transaction: TransactionId,
+    payloads: [ObjectId; TRANSITION_PAYLOAD_COUNT],
+    auxiliary: Vec<ObjectId>,
+}
+
+impl AuthenticatedRecoveryFrontier {
+    pub(super) fn admit_transition(
+        self,
+        transition: &PreparedTransition,
+    ) -> Result<Vec<ObjectId>, WorkspaceError> {
+        if transition.target().to_bytes() != self.target
+            || transition.closure().membership_id() != self.closure
+            || transition.transaction() != self.transaction
+            || transition.payload_object_ids() != self.payloads
+            || self.auxiliary.iter().any(|id| {
+                !transition.auxiliary_object_ids().contains(id)
+                    || !transition.closure().control_manifest().contains_object_id(*id)
+            })
+        {
+            return Err(WorkspaceError::Corrupt(
+                "authenticated recovery frontier differs from typed selected controls",
+            ));
+        }
+        Ok(self.auxiliary)
+    }
 }
 
 /// Builds the canonical physical materialization for one checked workspace
@@ -138,6 +171,14 @@ pub(super) fn read_workspace_pack_index(
         ));
     }
     let map = backend_store::decode_pack(&pack).map_err(WorkspaceError::store)?;
+    let canonical = backend_store::encode_pack(&map, expected_layout, pack.bytes().len())
+        .map_err(WorkspaceError::store)?;
+    if descriptor.layout() != expected_layout
+        || pack.id() != descriptor.pack()
+        || canonical.id() != pack.id()
+    {
+        return Err(WorkspaceError::Corrupt("workspace index is not canonical selected pack"));
+    }
     if map.len() != 1 {
         return Err(WorkspaceError::Store(
             "workspace index entry count mismatch".to_owned(),
@@ -207,6 +248,13 @@ pub(super) fn read_workspace_pack_index(
     Ok(WorkspacePackIndex {
         transaction: TransactionId::from_bytes(transaction),
         payloads,
+        frontier: AuthenticatedRecoveryFrontier {
+            target,
+            closure: manifest.id(),
+            transaction: TransactionId::from_bytes(transaction),
+            payloads,
+            auxiliary: auxiliary.clone(),
+        },
         auxiliary,
         catalog_descriptor,
     })
@@ -269,6 +317,11 @@ fn read_pack_auxiliary(
             if payloads.contains(&object_id) || auxiliary.contains(&object_id) {
                 return Err(WorkspaceError::Corrupt(
                     "workspace auxiliary object identity is duplicated",
+                ));
+            }
+            if auxiliary.last().is_some_and(|previous| previous >= &object_id) {
+                return Err(WorkspaceError::Corrupt(
+                    "workspace auxiliary frontier is not in canonical order",
                 ));
             }
             auxiliary.push(object_id);

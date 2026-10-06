@@ -3680,8 +3680,32 @@ fn validate_persisted_capture_changes(
     } else {
         let predecessor = selected_base_publication
             .ok_or_else(|| BuiltinModelError("capture base publication disappeared".to_owned()))?;
-        backend_engine::workspace::recovery::control_frontier(store, &predecessor.descriptor())
-            .map_err(|e| BuiltinModelError(format!("read bounded capture base controls: {e}")))?
+        let controls =
+            backend_engine::workspace::recovery::control_frontier(store, &predecessor.descriptor())
+                .map_err(|e| BuiltinModelError(format!("read bounded capture base controls: {e}")))?;
+        let intent_schema = backend_version::SchemaIdentity::new(
+            BuiltinIntentSchema::DOMAIN,
+            BuiltinIntentSchema::TYPE,
+            BuiltinIntentSchema::VERSION,
+        );
+        let staged = controls.objects().iter().any(|object| {
+            object.schema() == intent_schema && object.bytes().starts_with(b"BPS1")
+        });
+        if staged {
+            controls
+        } else {
+            // Legacy root-only publications could omit inherited auxiliary
+            // pointers from their fixed recovery pack. Their selected closure
+            // still authenticates those pointers. Use the same bounded,
+            // identity-checking reader as legacy target admission; never infer
+            // a predecessor pointer from the successor's claimed basis.
+            admit_persisted_intent(controls.objects())?;
+            store
+                .read_workspace_root_closure(predecessor.descriptor().closure())
+                .map_err(|e| {
+                    BuiltinModelError(format!("read exact legacy capture base closure: {e:?}"))
+                })?
+        }
     };
     let base_membership = store
         .open_closure(backend_store::ClosureId::from_bytes(

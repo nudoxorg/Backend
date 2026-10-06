@@ -226,6 +226,11 @@ pub(crate) fn recover_store_head<M: WorkspaceModel>(
     } else {
         transition
     };
+    // Old root-only publications retained fewer auxiliary pointers in their
+    // fixed pack than their authenticated closure. Keep the original frontier
+    // for exact pack verification after typed closure admission, rather than
+    // silently rewriting a selected publication into the newer writer form.
+    let transition = transition.with_recovery_frontier(index.frontier)?;
     if transition.transaction() != index.transaction {
         return Err(WorkspaceError::Corrupt(
             "store/typed transition transaction mismatch",
