@@ -1203,17 +1203,26 @@ mod tsz_source_coordinate_tests {
         join_project_field, typescript_program_identity,
     };
     use backend_semantic::ir::{
-        BorrowedTree, CompileRecipeFact, Confidence, CorePayloadHash, DeclarationFamilyId,
-        DeclarationIdentity, EntityAuthorityFacts, EntityVersion, ExternalDeclarationIdentity,
-        ExternalTarget, FactAvailability, ForeignDeclarationId, ForeignExternalTarget,
-        ForeignTargetOrigin, IrBuilder, ItemKind, LanguageProfile, LinkKind, NativeTool,
-        OccurrenceAuthorityFacts, PackageUrl, ParentageAuthority, SemanticImageView,
-        SourceIdentity, SourceSpan, Stage, TreeEntityId, TreeItemInput, TreeLinkInput,
-        TreeLinkTarget, TypeScriptSource, TypeScriptSourceCoordinate, VariantAvailability,
-        VariantFingerprint, Visibility, encode_full_semantic_image, full_semantic_image_len,
+        BorrowedTree, Confidence, CorePayloadHash, DeclarationFamilyId, DeclarationIdentity,
+        EntityAuthorityFacts, EntityVersion, ExternalDeclarationIdentity, ExternalTarget,
+        FactAvailability, ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin,
+        IrBuilder, ItemKind, LanguageProfile, LinkKind, OccurrenceAuthorityFacts,
+        ParentageAuthority, SemanticImageView, SemanticReader, SourceIdentity, SourceSpan,
+        TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeScriptSource,
+        TypeScriptSourceCoordinate, VariantAvailability, VariantFingerprint, Visibility,
+        encode_full_semantic_image, full_semantic_image_len,
     };
+    use backend_semantic::vocabulary::{CompileRecipeFact, NativeTool, PackageUrl, Stage};
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
     use std::collections::{BTreeMap, BTreeSet};
+
+    fn fixture_version(identity: u8) -> EntityVersion {
+        EntityVersion {
+            family: DeclarationFamilyId::from_raw([identity; 16]),
+            variant: VariantFingerprint::from_raw([identity; 16]),
+            core_payload: CorePayloadHash::from_raw([identity; 16]),
+        }
+    }
 
     fn identity(bytes: u8) -> DeclarationIdentity {
         DeclarationIdentity {
