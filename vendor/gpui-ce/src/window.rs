@@ -1819,6 +1819,7 @@ pub(crate) struct Frame {
     inert_hitbox_ids: Vec<HitboxId>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
+    local_draw_scopes: FxHashMap<GlobalElementId, SmallVec<[usize; 8]>>,
     pub(crate) input_handlers: Vec<FrameInputHandler>,
     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
@@ -1914,6 +1915,7 @@ impl Frame {
             inert_hitbox_ids: Vec::new(),
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
+            local_draw_scopes: FxHashMap::default(),
             input_handlers: Vec::new(),
             tooltip_requests: Vec::new(),
             cursor_styles: Vec::new(),
@@ -1949,6 +1951,7 @@ impl Frame {
         self.inert_hitbox_ids.clear();
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
+        self.local_draw_scopes.clear();
         self.tab_stops.clear();
         self.focus = None;
         self.inert_focus_ids.clear();
@@ -4769,10 +4772,16 @@ impl Window {
                         None,
                         &inert_owner_boundaries,
                         None,
-                        |window| window.reuse_prepaint(prepaint_range),
+                        |window| {
+                            window.with_deferred_draw_scope(local_scope.clone(), |window| {
+                                window.reuse_prepaint(prepaint_range)
+                            })
+                        },
                     );
                 } else {
-                    self.reuse_prepaint(prepaint_range);
+                    self.with_deferred_draw_scope(local_scope, |window| {
+                        window.reuse_prepaint(prepaint_range)
+                    });
                 }
                 let prepaint_end = self.prepaint_index();
                 self.next_frame.deferred_draws[deferred_draw_ix].prepaint_range =
@@ -4805,8 +4814,8 @@ impl Window {
             current_view: entry.current_view,
             priority: entry.priority,
             parent_node: entry.parent_node,
-            element_id_stack: entry.element_id_stack.clone(),
-            text_style_stack: entry.text_style_stack.clone(),
+            element_id_stack: mem::take(&mut entry.element_id_stack),
+            text_style_stack: mem::take(&mut entry.text_style_stack),
             content_mask: entry.content_mask,
             rem_size: entry.rem_size,
             element: entry.element.take(),
@@ -4816,20 +4825,20 @@ impl Window {
             group_opacity: entry.group_opacity,
             inert_subtree: entry.inert_subtree,
             native_activation_scope: entry.native_activation_scope,
-            inert_boundaries: entry.inert_boundaries.clone(),
-            inert_owner_boundaries: entry.inert_owner_boundaries.clone(),
+            inert_boundaries: mem::take(&mut entry.inert_boundaries),
+            inert_owner_boundaries: mem::take(&mut entry.inert_owner_boundaries),
             prepaint_range: entry.prepaint_range.clone(),
             paint_range: entry.paint_range.clone(),
-            local_scope: entry.local_scope.clone(),
+            local_scope: entry.local_scope.take(),
             painted: true,
         };
         let previous_ids = mem::replace(
             &mut self.element_id_stack,
-            deferred_draw.element_id_stack.clone(),
+            mem::take(&mut deferred_draw.element_id_stack),
         );
         let previous_styles = mem::replace(
             &mut self.text_style_stack,
-            deferred_draw.text_style_stack.clone(),
+            mem::take(&mut deferred_draw.text_style_stack),
         );
         let previous_node = self.next_frame.dispatch_tree.active_node_id();
         self.next_frame
@@ -4865,8 +4874,8 @@ impl Window {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let content_mask = deferred_draw.content_mask;
             let inert_subtree = deferred_draw.inert_subtree;
-            let inert_boundaries = deferred_draw.inert_boundaries.clone();
-            let inert_owner_boundaries = deferred_draw.inert_owner_boundaries.clone();
+            let inert_boundaries = &deferred_draw.inert_boundaries;
+            let inert_owner_boundaries = &deferred_draw.inert_owner_boundaries;
             if let Some(element) = deferred_draw.element.as_mut() {
                 let mut paint = |window: &mut Window| {
                     window.with_rendered_view(deferred_draw.current_view, |window| {
@@ -4892,9 +4901,9 @@ impl Window {
                 };
                 if inert_subtree {
                     self.with_inert_boundaries(
-                        &inert_boundaries,
+                        inert_boundaries,
                         None,
-                        &inert_owner_boundaries,
+                        inert_owner_boundaries,
                         None,
                         paint,
                     );
@@ -4903,9 +4912,9 @@ impl Window {
                 }
             } else if inert_subtree {
                 self.with_inert_boundaries(
-                    &inert_boundaries,
+                    inert_boundaries,
                     None,
-                    &inert_owner_boundaries,
+                    inert_owner_boundaries,
                     None,
                     |window| window.reuse_paint(deferred_draw.paint_range.clone()),
                 );
@@ -4915,9 +4924,13 @@ impl Window {
         }));
         let paint_end = self.paint_index();
         self.next_frame.deferred_draws[ix].paint_range = paint_start..paint_end;
-        self.next_frame.deferred_draws[ix].element = deferred_draw.element;
-        self.element_id_stack = previous_ids;
-        self.text_style_stack = previous_styles;
+        let entry = &mut self.next_frame.deferred_draws[ix];
+        entry.element = deferred_draw.element;
+        entry.element_id_stack = mem::replace(&mut self.element_id_stack, previous_ids);
+        entry.text_style_stack = mem::replace(&mut self.text_style_stack, previous_styles);
+        entry.inert_boundaries = deferred_draw.inert_boundaries;
+        entry.inert_owner_boundaries = deferred_draw.inert_owner_boundaries;
+        entry.local_scope = deferred_draw.local_scope;
         if let Some(node) = previous_node {
             self.next_frame.dispatch_tree.set_active_node(node);
         } else {
@@ -4953,6 +4966,8 @@ impl Window {
     }
 
     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
+        let deferred_start = self.next_frame.deferred_draws.len();
+        let ambient_scope = self.local_deferred_draw_scope();
         let is_inert = self.is_inert_subtree();
         let live_owner_paths = &self.rendered_frame.live_element_owner_path_order
             [range.start.live_element_owner_paths_index..range.end.live_element_owner_paths_index];
@@ -5123,6 +5138,20 @@ impl Window {
                     }),
             );
         }
+        for ix in deferred_start..self.next_frame.deferred_draws.len() {
+            let draw = &mut self.next_frame.deferred_draws[ix];
+            if let Some(scope) = &draw.local_scope {
+                // An owner introduced inside a cached subtree already flushed
+                // into that subtree's paint range. An ambient owner flushes
+                // outside it and must stay pending. No scene-wide search.
+                draw.painted = ambient_scope.as_ref() != Some(&scope.id);
+                self.next_frame
+                    .local_draw_scopes
+                    .entry(scope.id.clone())
+                    .or_default()
+                    .push(ix);
+            }
+        }
     }
 
     pub(crate) fn paint_index(&self) -> PaintIndex {
@@ -5142,14 +5171,6 @@ impl Window {
         if self.text_trace_enabled {
             self.painted_texts.extend_from_slice(&self.rendered_frame.painted_texts
                 [range.start.painted_texts_index..range.end.painted_texts_index]);
-        }
-        for draw in &mut self.next_frame.deferred_draws {
-            if draw.local_scope.is_some() && draw.element.is_none()
-                && draw.paint_range.start.scene_index >= range.start.scene_index
-                && draw.paint_range.end.scene_index <= range.end.scene_index
-                && draw.paint_range.start.scene_index < draw.paint_range.end.scene_index {
-                draw.painted = true;
-            }
         }
 
         if !self.is_inert_subtree() {
@@ -6188,27 +6209,28 @@ impl Window {
         mask: Option<ContentMask<Pixels>>,
     ) {
         self.defer_draw(element, offset, priority, mask);
-        self.next_frame
-            .deferred_draws
-            .last_mut()
-            .unwrap()
-            .local_scope = self.local_deferred_scope.borrow().clone();
+        let ix = self.next_frame.deferred_draws.len() - 1;
+        let scope = self.local_deferred_scope.borrow().clone();
+        if let Some(scope) = &scope {
+            self.next_frame
+                .local_draw_scopes
+                .entry(scope.id.clone())
+                .or_default()
+                .push(ix);
+        }
+        self.next_frame.deferred_draws[ix].local_scope = scope;
     }
 
     /// Paints this owner's deferred motion after its own static content and
     /// before subsequent siblings. Draws live in the current frame only.
     pub fn paint_local_deferred_draws(&mut self, id: &GlobalElementId, cx: &mut App) {
         self.invalidator.debug_assert_paint();
-        let order = self.deferred_draw_traversal_order();
+        let Some(mut order) = self.next_frame.local_draw_scopes.remove(id) else {
+            return;
+        };
+        order.sort_by_key(|ix| self.next_frame.deferred_draws[*ix].priority);
         for ix in order {
-            if self.next_frame.deferred_draws[ix]
-                .local_scope
-                .as_ref()
-                .map(|scope| &scope.id)
-                == Some(id)
-            {
-                self.paint_deferred_draw_at(ix, cx);
-            }
+            self.paint_deferred_draw_at(ix, cx);
         }
     }
 
@@ -10328,67 +10350,294 @@ pub struct PaintedText {
 mod deferred_clip_tests {
     use super::*;
     use crate::{
-        InteractiveElement as _, IntoElement as _, ParentElement as _, Styled as _, TestAppContext,
-        div,
+        InspectorElementId, InteractiveElement as _, ParentElement as _, Styled as _,
+        TestAppContext, div,
     };
 
     fn local_id() -> GlobalElementId {
         GlobalElementId(Arc::from([ElementId::Name("native-local-motion".into())]))
     }
 
-    struct CachedLocal;
+    // Native wrappers use the child's actual Taffy layout and Element hooks.
+    // Deferred children are mounted through the same queue as moving Flow,
+    // rather than a separate low-level drawing surface.
+    enum Clip {
+        Inherited,
+        Fixed(ContentMask<Pixels>),
+        Unclipped,
+    }
+    struct DeferredNative {
+        child: Option<AnyElement>,
+        local: bool,
+        clip: Clip,
+    }
+    impl DeferredNative {
+        fn new(child: impl IntoElement, local: bool, clip: Clip) -> Self {
+            Self {
+                child: Some(child.into_any_element()),
+                local,
+                clip,
+            }
+        }
+    }
+    impl IntoElement for DeferredNative {
+        type Element = Self;
+        fn into_element(self) -> Self {
+            self
+        }
+    }
+    impl Element for DeferredNative {
+        type RequestLayoutState = ();
+        type PrepaintState = ();
+        fn id(&self) -> Option<ElementId> {
+            None
+        }
+        fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+            None
+        }
+        fn request_layout(
+            &mut self,
+            _: Option<&GlobalElementId>,
+            _: Option<&InspectorElementId>,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> (LayoutId, ()) {
+            (
+                self.child
+                    .as_mut()
+                    .expect("native child")
+                    .request_layout(window, cx),
+                (),
+            )
+        }
+        fn prepaint(
+            &mut self,
+            _: Option<&GlobalElementId>,
+            _: Option<&InspectorElementId>,
+            bounds: Bounds<Pixels>,
+            _: &mut (),
+            window: &mut Window,
+            _: &mut App,
+        ) {
+            let mask = match self.clip {
+                Clip::Inherited => Some(window.content_mask()),
+                Clip::Fixed(mask) => Some(mask),
+                Clip::Unclipped => None,
+            };
+            let child = self.child.take().expect("native child defers once");
+            if self.local {
+                window.defer_draw_local(child, bounds.origin, 0, mask);
+            } else {
+                window.defer_draw(child, bounds.origin, 0, mask);
+            }
+        }
+        fn paint(
+            &mut self,
+            _: Option<&GlobalElementId>,
+            _: Option<&InspectorElementId>,
+            _: Bounds<Pixels>,
+            _: &mut (),
+            _: &mut (),
+            _: &mut Window,
+            _: &mut App,
+        ) {
+        }
+    }
+
+    struct NativeScope<E> {
+        child: E,
+        name: Option<&'static str>,
+        ancestor: bool,
+    }
+    fn local(name: &'static str, child: impl IntoElement) -> impl IntoElement {
+        NativeScope {
+            child: child.into_element(),
+            name: Some(name),
+            ancestor: false,
+        }
+    }
+    fn ancestor(child: impl IntoElement) -> impl IntoElement {
+        NativeScope {
+            child: child.into_element(),
+            name: None,
+            ancestor: true,
+        }
+    }
+    fn with_ancestor<R>(
+        window: &mut Window,
+        bounds: Bounds<Pixels>,
+        f: impl FnOnce(&mut Window) -> R,
+    ) -> R {
+        window.with_layer_transform(
+            LayerTransform::translation(point(px(20.0), px(10.0))),
+            |window| {
+                window.with_element_opacity(Some(0.5), |window| {
+                    window.with_group_opacity(bounds, 0.5, f)
+                })
+            },
+        )
+    }
+    impl<E: Element> IntoElement for NativeScope<E> {
+        type Element = Self;
+        fn into_element(self) -> Self {
+            self
+        }
+    }
+    impl<E: Element> Element for NativeScope<E> {
+        type RequestLayoutState = E::RequestLayoutState;
+        type PrepaintState = E::PrepaintState;
+        fn id(&self) -> Option<ElementId> {
+            self.name.map(Into::into).or_else(|| self.child.id())
+        }
+        fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+            self.child.source_location()
+        }
+        fn a11y_role(&self) -> Option<crate::Role> {
+            self.child.a11y_role()
+        }
+        fn write_a11y_info(&self, node: &mut crate::accesskit::Node) {
+            self.child.write_a11y_info(node);
+        }
+        fn a11y_synthetic_children(
+            &mut self,
+            state: &mut Self::PrepaintState,
+            builder: &mut A11ySubtreeBuilder,
+        ) {
+            self.child.a11y_synthetic_children(state, builder);
+        }
+        fn request_layout(
+            &mut self,
+            id: Option<&GlobalElementId>,
+            inspector: Option<&InspectorElementId>,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> (LayoutId, Self::RequestLayoutState) {
+            self.child.request_layout(id, inspector, window, cx)
+        }
+        fn prepaint(
+            &mut self,
+            id: Option<&GlobalElementId>,
+            inspector: Option<&InspectorElementId>,
+            bounds: Bounds<Pixels>,
+            state: &mut Self::RequestLayoutState,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> Self::PrepaintState {
+            let scoped = self.name.is_some();
+            let mut paint = |window: &mut Window| {
+                if scoped {
+                    window.with_local_deferred_draw_scope(
+                        id.expect("actual native owner"),
+                        |window| {
+                            self.child
+                                .prepaint(id, inspector, bounds, state, window, cx)
+                        },
+                    )
+                } else {
+                    self.child
+                        .prepaint(id, inspector, bounds, state, window, cx)
+                }
+            };
+            if self.ancestor {
+                with_ancestor(window, bounds, paint)
+            } else {
+                paint(window)
+            }
+        }
+        fn paint(
+            &mut self,
+            id: Option<&GlobalElementId>,
+            inspector: Option<&InspectorElementId>,
+            bounds: Bounds<Pixels>,
+            state: &mut Self::RequestLayoutState,
+            prepaint: &mut Self::PrepaintState,
+            window: &mut Window,
+            cx: &mut App,
+        ) {
+            let scoped = self.name.is_some();
+            let mut paint = |window: &mut Window| {
+                self.child
+                    .paint(id, inspector, bounds, state, prepaint, window, cx);
+                if scoped {
+                    window.paint_local_deferred_draws(id.expect("actual native owner"), cx);
+                }
+            };
+            if self.ancestor {
+                with_ancestor(window, bounds, paint)
+            } else {
+                paint(window)
+            }
+        }
+    }
+
+    struct CachedLocal {
+        inside: bool,
+    }
     impl Render for CachedLocal {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            crate::canvas(
-                |_, window, cx| {
-                    let id = local_id();
-                    window.with_local_deferred_draw_scope(&id, |window| {
-                        let mut moving = div()
-                            .w(px(300.0))
-                            .h(px(80.0))
-                            .bg(crate::rgb(0xffffff))
-                            .child("Local moving prose")
-                            .into_any_element();
-                        moving.layout_as_root(size(px(300.0), px(80.0)).into(), window, cx);
-                        window.defer_draw_local(
-                            moving,
-                            Point::default(),
-                            0,
-                            Some(window.content_mask()),
-                        );
-                        // A global overlay is deliberately scheduled beneath the
-                        // local scope: it must still remain above later siblings.
-                        let mut overlay = div()
-                            .w(px(20.0))
-                            .h(px(20.0))
-                            .bg(crate::rgb(0x00ff00))
-                            .into_any_element();
-                        overlay.layout_as_root(size(px(20.0), px(20.0)).into(), window, cx);
-                        window.defer_draw(
-                            overlay,
-                            Point::default(),
-                            0,
-                            Some(window.content_mask()),
-                        );
-                    });
-                },
-                |_, _, window, cx| window.paint_local_deferred_draws(&local_id(), cx),
-            )
-            .size_full()
+            let body = div()
+                .relative()
+                .w(px(300.0))
+                .h(px(80.0))
+                .child(DeferredNative::new(
+                    div()
+                        .w(px(300.0))
+                        .h(px(80.0))
+                        .bg(crate::rgb(0xffffff))
+                        .child("Local moving prose"),
+                    true,
+                    Clip::Inherited,
+                ))
+                // Global overlay remains above later siblings even when
+                // scheduled lexically beneath a native local owner.
+                .child(DeferredNative::new(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .w(px(20.0))
+                        .h(px(20.0))
+                        .bg(crate::rgb(0x00ff00)),
+                    false,
+                    Clip::Inherited,
+                ));
+            if self.inside {
+                local("native-local-motion", body).into_any_element()
+            } else {
+                body.into_any_element()
+            }
         }
     }
     struct LocalAndPlate {
         part: Entity<CachedLocal>,
         present: bool,
+        prefix: bool,
+        inside: bool,
     }
     impl Render for LocalAndPlate {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
                 .relative()
                 .size_full()
+                .children(self.prefix.then(|| {
+                    div()
+                        .absolute()
+                        .left(px(400.0))
+                        .top_0()
+                        .w(px(10.0))
+                        .h(px(10.0))
+                        .bg(crate::rgb(0x0000ff))
+                }))
                 .children(self.present.then(|| {
-                    self.part.clone().cached(crate::StyleRefinement::default()
-                        .w(px(300.0)).h(px(80.0)))
+                    let part = self
+                        .part
+                        .clone()
+                        .cached(crate::StyleRefinement::default().w(px(300.0)).h(px(80.0)));
+                    if self.inside {
+                        part.into_any_element()
+                    } else {
+                        local("native-local-motion", part).into_any_element()
+                    }
                 }))
                 .child(
                     div()
@@ -10407,109 +10656,85 @@ mod deferred_clip_tests {
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| cx.set_global(TextTrace));
-        let (root, cx) = cx.add_window_view(|_, cx| LocalAndPlate {
-            part: cx.new(|_| CachedLocal),
-            present: true,
-        });
-        for _ in 0..3 {
-            root.update(cx, |_, cx| cx.notify());
-            cx.update(|window, cx| {
+        for inside in [true, false] {
+            let (root, cx) = cx.add_window_view(|_, cx| LocalAndPlate {
+                part: cx.new(|_| CachedLocal { inside }),
+                present: true,
+                prefix: false,
+                inside,
+            });
+            for prefix in [false, true, false] {
+                root.update(cx, |root, cx| {
+                    root.prefix = prefix;
+                    cx.notify();
+                });
+                cx.update(|window, cx| {
                 window.draw(cx).clear(cx);
                 let quads = &window.rendered_scene_for_test().quads;
-                assert_eq!(quads.len(), 3, "cached local motion is never painted twice");
+                assert_eq!(quads.len(), if prefix { 4 } else { 3 }, "cached local motion is never painted twice");
+                let white = quads.iter().find(|quad| quad.background.solid.l > 0.9).expect("local white content");
+                let red = quads.iter().find(|quad| quad.background.solid.h < 0.1 && quad.background.solid.l < 0.9)
+                    .expect("later native red plate");
+                let green = quads.iter().find(|quad| quad.background.solid.h > 0.2 && quad.background.solid.h < 0.4)
+                    .expect("global native green overlay");
+                assert!(white.order < red.order && red.order < green.order,
+                    "local content stays below later plate; global overlay remains above it");
+                assert_eq!(window.painted_texts().iter().filter(|run|
+                    run.text.as_ref() == "Local moving prose").count(), 1,
+                    "native ledger replays one cached run even after the preceding scene range changes");
+            });
+            }
+            root.update(cx, |root, cx| {
+                root.present = false;
+                cx.notify();
+            });
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
                 assert_eq!(
-                    window
-                        .painted_texts()
-                        .iter()
-                        .filter(|run| run.text.as_ref() == "Local moving prose")
-                        .count(),
+                    window.rendered_scene_for_test().quads.len(),
                     1,
-                    "the native ledger replays the single cached moving text run"
-                );
-                assert!(
-                    quads[0].order < quads[1].order && quads[1].order < quads[2].order,
-                    "local content stays below the later plate; global overlay stays above it"
+                    "an unmounted owner cannot replay an old local or global draw"
                 );
             });
         }
-        root.update(cx, |root, cx| {
-            root.present = false;
-            cx.notify();
-        });
-        cx.update(|window, cx| {
-            window.draw(cx).clear(cx);
-            assert_eq!(
-                window.rendered_scene_for_test().quads.len(),
-                1,
-                "an unmounted local scope cannot replay an old deferred draw"
-            );
-        });
     }
 
     struct LocalAncestor;
     impl Render for LocalAncestor {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            crate::canvas(
-                |bounds, window, cx| {
-                    window.with_layer_transform(
-                        LayerTransform::translation(point(px(20.0), px(10.0))),
-                        |window| {
-                            window.with_element_opacity(Some(0.5), |window| {
-                                window.with_group_opacity(bounds, 0.5, |window| {
-                                    let child = |label: &'static str| {
-                                        div()
-                                            .w(px(300.0))
-                                            .h(px(80.0))
-                                            .opacity(0.5)
-                                            .bg(crate::rgb(0xffffff))
-                                            .child(label)
-                                            .into_any_element()
-                                    };
-                                    let mut direct = child("Direct ancestor comparison");
-                                    direct.layout_as_root(
-                                        size(px(300.0), px(80.0)).into(),
-                                        window,
-                                        cx,
-                                    );
-                                    direct.prepaint_at(point(px(40.0), px(30.0)), window, cx);
-                                    window.with_local_deferred_draw_scope(&local_id(), |window| {
-                                        let mut moving = child("Local ancestor comparison");
-                                        moving.layout_as_root(
-                                            size(px(300.0), px(80.0)).into(),
-                                            window,
-                                            cx,
-                                        );
-                                        window.defer_draw_local(
-                                            moving,
-                                            point(px(40.0), px(30.0)),
-                                            0,
-                                            Some(window.content_mask()),
-                                        );
-                                    });
-                                    direct
-                                })
-                            })
-                        },
+            ancestor(local(
+                "native-local-motion",
+                div()
+                    .relative()
+                    .w(px(400.0))
+                    .h(px(120.0))
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(40.0))
+                            .top(px(30.0))
+                            .w(px(300.0))
+                            .h(px(80.0))
+                            .opacity(0.5)
+                            .bg(crate::rgb(0xffffff))
+                            .child("Direct ancestor comparison"),
                     )
-                },
-                |bounds, mut direct, window, cx| {
-                    window.with_layer_transform(
-                        LayerTransform::translation(point(px(20.0), px(10.0))),
-                        |window| {
-                            window.with_element_opacity(Some(0.5), |window| {
-                                window.with_group_opacity(bounds, 0.5, |window| {
-                                    direct.paint(window, cx);
-                                    window.paint_local_deferred_draws(&local_id(), cx);
-                                })
-                            })
-                        },
-                    );
-                },
-            )
-            .size_full()
+                    .child(DeferredNative::new(
+                        div()
+                            .absolute()
+                            .left(px(40.0))
+                            .top(px(30.0))
+                            .w(px(300.0))
+                            .h(px(80.0))
+                            .opacity(0.5)
+                            .bg(crate::rgb(0xffffff))
+                            .child("Local ancestor comparison"),
+                        true,
+                        Clip::Inherited,
+                    )),
+            ))
         }
     }
-
     #[gpui::test]
     fn local_motion_restores_transform_and_fades_relative_to_its_real_ancestor(
         cx: &mut TestAppContext,
@@ -10522,11 +10747,11 @@ mod deferred_clip_tests {
             assert_eq!(
                 quads.len(),
                 2,
-                "direct and local native controls each paint once"
+                "direct and locally deferred native controls each paint once"
             );
             assert_eq!(
                 quads[0].bounds, quads[1].bounds,
-                "local motion does not apply the real ancestor transform twice"
+                "the native ancestor transform applies once"
             );
             assert_eq!(quads[0].content_mask, quads[1].content_mask);
             assert_eq!(
@@ -10550,67 +10775,48 @@ mod deferred_clip_tests {
     }
 
     struct NestedLocalAndPlate;
+    fn clip() -> ContentMask<Pixels> {
+        ContentMask {
+            bounds: Bounds::new(point(px(40.0), px(30.0)), size(px(120.0), px(60.0))),
+        }
+    }
     impl Render for NestedLocalAndPlate {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
                 .relative()
                 .size_full()
-                .child(
-                    crate::canvas(
-                        |_, window, cx| {
-                            let clip = ContentMask {
-                                bounds: Bounds::new(
-                                    point(px(40.0), px(30.0)),
-                                    size(px(120.0), px(60.0)),
-                                ),
-                            };
-                            window.with_local_deferred_draw_scope(&local_id(), |window| {
-                                let mut moving = crate::canvas(
-                                    |_, window, cx| {
-                                        let inner = GlobalElementId(Arc::from([ElementId::Name(
-                                            "nested-motion".into(),
-                                        )]));
-                                        window.with_local_deferred_draw_scope(&inner, |window| {
-                                            let mut child = div()
-                                                .id("nested-local-control")
-                                                .role(crate::Role::Button)
-                                                .aria_label("Nested local prose")
-                                                .w(px(300.0))
-                                                .h(px(80.0))
-                                                .bg(crate::rgb(0xffffff))
-                                                .child("Nested local prose")
-                                                .into_any_element();
-                                            child.layout_as_root(
-                                                size(px(300.0), px(80.0)).into(),
-                                                window,
-                                                cx,
-                                            );
-                                            window.defer_draw_local(
-                                                child,
-                                                point(px(40.0), px(30.0)),
-                                                0,
-                                                Some(window.content_mask()),
-                                            );
-                                        });
-                                    },
-                                    |_, _, window, cx| {
-                                        let inner = GlobalElementId(Arc::from([ElementId::Name(
-                                            "nested-motion".into(),
-                                        )]));
-                                        window.paint_local_deferred_draws(&inner, cx);
-                                    },
-                                )
-                                .w(px(300.0))
-                                .h(px(80.0))
-                                .into_any_element();
-                                moving.layout_as_root(size(px(300.0), px(80.0)).into(), window, cx);
-                                window.defer_draw_local(moving, Point::default(), 0, Some(clip));
-                            });
-                        },
-                        |_, _, window, cx| window.paint_local_deferred_draws(&local_id(), cx),
-                    )
-                    .size_full(),
-                )
+                .child(local(
+                    "native-local-motion",
+                    div()
+                        .relative()
+                        .w(px(300.0))
+                        .h(px(80.0))
+                        .child(DeferredNative::new(
+                            local(
+                                "nested-motion",
+                                div()
+                                    .absolute()
+                                    .left(px(40.0))
+                                    .top(px(30.0))
+                                    .w(px(300.0))
+                                    .h(px(80.0))
+                                    .child(DeferredNative::new(
+                                        div()
+                                            .id("nested-local-control")
+                                            .role(crate::Role::Button)
+                                            .aria_label("Nested local prose")
+                                            .w(px(300.0))
+                                            .h(px(80.0))
+                                            .bg(crate::rgb(0xffffff))
+                                            .child("Nested local prose"),
+                                        true,
+                                        Clip::Inherited,
+                                    )),
+                            ),
+                            true,
+                            Clip::Fixed(clip()),
+                        )),
+                ))
                 .child(
                     div()
                         .absolute()
@@ -10622,7 +10828,6 @@ mod deferred_clip_tests {
                 )
         }
     }
-
     #[gpui::test]
     fn nested_local_motion_keeps_its_clip_and_paints_beneath_the_later_plate(
         cx: &mut TestAppContext,
@@ -10636,26 +10841,19 @@ mod deferred_clip_tests {
             assert_eq!(quads.len(), 2, "each nested native draw is issued once");
             assert!(
                 quads[0].order < quads[1].order,
-                "the nested moving child is below the later plate"
+                "nested motion remains below later plate"
             );
             assert!(
-                f32::from(quads[0].content_mask.bounds.size.width) / window.scale_factor() <= 120.0,
-                "the inner local scope inherits the deferred parent's clip"
+                f32::from(quads[0].content_mask.bounds.size.width) / window.scale_factor() <= 120.0
             );
             let runs: Vec<_> = window
                 .painted_texts()
                 .iter()
                 .filter(|run| run.text.as_ref() == "Nested local prose")
                 .collect();
-            assert_eq!(
-                runs.len(),
-                1,
-                "the actual nested native text is recorded once"
-            );
-            assert!(runs[0].bounds.size.width <= px(120.0));
-            let native = window
-                .debug_a11y_tree_json()
-                .expect("nested local native tree");
+            assert_eq!(runs.len(), 1, "actual nested native text is recorded once");
+            assert_eq!(runs[0].bounds.intersect(&clip().bounds), runs[0].bounds);
+            let native = window.debug_a11y_tree_json().expect("nested native tree");
             assert!(native.contains("Nested local prose") && native.contains("Button"));
         });
     }
@@ -10682,99 +10880,75 @@ mod deferred_clip_tests {
     }
     impl Render for NestedClip {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            let inherit = self.inherit;
-            crate::canvas(
-                move |_, window, cx| {
-                    let mut nested = crate::canvas(
-                        |_, window, cx| {
-                            let mut control = div()
-                                .id("nested-deferred-control")
-                                .role(crate::Role::Button)
-                                .aria_label("Nested clipped decision")
-                                .w(px(300.0))
-                                .h(px(80.0))
-                                .bg(crate::rgb(0xffffff))
-                                .child("Nested clipped decision")
-                                .into_any_element();
-                            control.layout_as_root(size(px(300.0), px(80.0)).into(), window, cx);
-                            window.defer_draw(
-                                control,
-                                point(px(40.0), px(30.0)),
-                                0,
-                                Some(window.content_mask()),
-                            );
-                        },
-                        |_, _, _, _| {},
-                    )
+            let inherited = if self.inherit {
+                Clip::Fixed(clip())
+            } else {
+                Clip::Unclipped
+            };
+            div().relative().size_full().child(DeferredNative::new(
+                div()
+                    .absolute()
+                    .left(px(40.0))
+                    .top(px(30.0))
                     .w(px(300.0))
                     .h(px(80.0))
-                    .into_any_element();
-                    nested.layout_as_root(size(px(300.0), px(80.0)).into(), window, cx);
-                    let clip = ContentMask {
-                        bounds: Bounds::new(point(px(40.0), px(30.0)), size(px(120.0), px(60.0))),
-                    };
-                    // None is the negative control: descendants capture viewport
-                    // clipping, exactly as the old deferred-prepaint path did.
-                    window.defer_draw(
-                        nested,
-                        point(px(40.0), px(30.0)),
-                        0,
-                        inherit.then_some(clip),
-                    );
-                },
-                |_, _, _, _| {},
-            )
-            .size_full()
+                    .child(DeferredNative::new(
+                        div()
+                            .id("nested-deferred-control")
+                            .role(crate::Role::Button)
+                            .aria_label("Nested clipped decision")
+                            .w(px(300.0))
+                            .h(px(80.0))
+                            .bg(crate::rgb(0xffffff))
+                            .child("Nested clipped decision"),
+                        false,
+                        Clip::Inherited,
+                    )),
+                false,
+                inherited,
+            ))
         }
     }
-
     #[gpui::test]
     fn nested_deferred_prepaint_preserves_parent_native_clip(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(TextTrace));
         let (fixture, cx) = cx.add_window_view(|_, _| NestedClip { inherit: true });
         cx.update(|window, cx| {
             window.set_a11y_forced(true);
-            cx.set_global(TextTrace);
             window.draw(cx).clear(cx);
-            let expected = Bounds::new(point(px(40.0), px(30.0)), size(px(120.0), px(60.0)));
+            let expected = clip().bounds;
             let quad = window
                 .rendered_scene_for_test()
                 .quads
                 .first()
-                .expect("real native deferred background");
-            let clip = quad
+                .expect("native deferred background");
+            let painted_clip = quad
                 .content_mask
                 .bounds
                 .map(|p| px(f32::from(p) / window.scale_factor()));
             assert_eq!(
-                clip, expected,
-                "nested native primitives retain their inherited clip"
+                painted_clip, expected,
+                "nested native primitives retain the original inherited clip"
             );
             assert!(
                 window
                     .painted_texts()
                     .iter()
-                    .any(|text| text.text.as_ref() == "Nested clipped decision")
+                    .any(|run| run.text.as_ref() == "Nested clipped decision")
             );
-            for text in window.painted_texts() {
-                assert_eq!(
-                    text.bounds.intersect(&expected),
-                    text.bounds,
-                    "all actual deferred text ink is clipped: {text:?}"
-                );
+            for run in window.painted_texts() {
+                assert_eq!(run.bounds.intersect(&expected), run.bounds);
             }
-            let tree = window.a11y_tree().expect("native deferred decision tree");
+            let tree = window.a11y_tree().expect("native deferred tree");
             let (id, _) = tree
                 .nodes
                 .iter()
                 .find(|(_, node)| node.label() == Some("Nested clipped decision"))
-                .expect("real native control survives nested deferral");
-            assert_eq!(
-                window
-                    .a11y_node_bounds(*id)
-                    .expect("native control geometry")
-                    .intersect(&expected),
-                window.a11y_node_bounds(*id).unwrap()
-            );
+                .expect("real native decision");
+            let bounds = window
+                .a11y_node_bounds(*id)
+                .expect("actual native control bounds");
+            assert_eq!(bounds.intersect(&expected), bounds);
         });
         fixture.update(cx, |fixture, cx| {
             fixture.inherit = false;
@@ -10787,13 +10961,13 @@ mod deferred_clip_tests {
                 .quads
                 .first()
                 .expect("negative-control native primitive");
-            let clip = quad
+            let painted_clip = quad
                 .content_mask
                 .bounds
                 .map(|p| px(f32::from(p) / window.scale_factor()));
             assert!(
-                clip.size.width > px(120.0),
-                "the native clip assertion detects missing inheritance"
+                painted_clip.size.width > px(120.0),
+                "the native test detects missing clip inheritance"
             );
         });
     }
