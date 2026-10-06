@@ -2995,6 +2995,25 @@ mod deferred_target_admission_tests {
     use crate::runtime::reads::ReadPool;
     use gpui::AppContext as _;
 
+    fn open_mounted_fixture_module(rig: &mut super::super::tests::Rig) {
+        rig.cx.update(|window, _| window.set_a11y_forced(true));
+        rig.repaint();
+        // The overview starts with its real modules folded. Open the actual
+        // painted module through the physical Shell walk before looking for
+        // declaration cards; no logical registration can stand in for paint.
+        for _ in 0..32 {
+            if rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).focused())
+                .as_deref() == Some("pkg-module-glyph") { break; }
+            rig.keys("j");
+        }
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        assert_eq!(targets.focused().as_deref(), Some("pkg-module-glyph"));
+        let mount = targets.mount_claim("pkg-module-glyph").expect("actual painted module");
+        assert!(rig.cx.update(|window, _| targets.admits_mount(&mount, window)));
+        rig.keys("enter");
+        rig.repaint();
+    }
+
     fn mounted_declaration_handoff(cx: &mut gpui::TestAppContext, source_key: bool) {
         let route = Route::Package(crate::navigation::PackageRoute {
             cargo: None,
@@ -3006,6 +3025,7 @@ mod deferred_target_admission_tests {
         });
         let mut rig = super::super::tests::rig(cx, Some(route.clone()), 1440.0, 900.0);
         rig.settle();
+        open_mounted_fixture_module(&mut rig);
         let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader.read(cx).targets.clone());
         let frame = targets.hint_frame();
         let target = targets.placed().into_iter()
@@ -3073,6 +3093,7 @@ mod deferred_target_admission_tests {
             super::super::tests::RootOnly, Some(gate.clone()),
         );
         rig.settle();
+        open_mounted_fixture_module(&mut rig);
         let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader.read(cx).targets.clone());
         let selected = targets.placed().into_iter()
             .find(|(target, _)| target.peek.is_some() && target.source.is_some())

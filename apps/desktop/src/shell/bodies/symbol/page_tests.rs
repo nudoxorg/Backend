@@ -538,6 +538,8 @@ fn clicking_a_chip_filters_to_that_verb_and_a_test_place_shows_when_tests_are_in
 }
 
 fn choose_hint(rig: &mut Rig, id: &str) {
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
     rig.keys("f");
     let choice = rig.shell.read_with(rig.cx, |shell, _| shell.hinted_target_for(id))
         .unwrap_or_else(|| panic!("painted target {id} has an original hint receipt"));
