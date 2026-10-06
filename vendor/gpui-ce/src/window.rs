@@ -1750,6 +1750,14 @@ pub(crate) struct TooltipRequest {
     tooltip: AnyTooltip,
 }
 
+#[derive(Clone)]
+struct LocalDeferredDrawScope {
+    id: GlobalElementId,
+    // Prepaint ancestry, independent of renderer opacity fallback at paint.
+    element_opacity: f32,
+    group_opacity: f32,
+}
+
 pub(crate) struct DeferredDraw {
     current_view: EntityId,
     priority: usize,
@@ -1772,7 +1780,7 @@ pub(crate) struct DeferredDraw {
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
     /// Local motion is painted at its owning subtree, rather than above overlays.
-    local_scope: Option<GlobalElementId>,
+    local_scope: Option<LocalDeferredDrawScope>,
     /// Per-frame only. Cached replay resets this before contributing its ranges.
     painted: bool,
 }
@@ -2114,7 +2122,7 @@ pub struct Window {
     inert_subtree_depth: Rc<Cell<usize>>,
     /// Drawing context only: native activation ownership never changes element IDs.
     native_activation_scope: Rc<Cell<Option<crate::NativeActivationScope>>>,
-    local_deferred_scope: Rc<RefCell<Option<GlobalElementId>>>,
+    local_deferred_scope: Rc<RefCell<Option<LocalDeferredDrawScope>>>,
     /// The wrapper element paths currently defining inert boundaries. Stored
     /// separately so deferred draws can restore the same ownership scope.
     inert_boundary_stack: Rc<RefCell<Vec<GlobalElementId>>>,
@@ -4828,6 +4836,32 @@ impl Window {
             .dispatch_tree
             .set_active_node(deferred_draw.parent_node);
         let paint_start = self.paint_index();
+        let (transform, element_opacity, group_opacity) =
+            if let Some(scope) = &deferred_draw.local_scope {
+                // Local paint is still inside the owner's ancestry. Restore only
+                // the extra ancestry of the deferred child, rather than applying
+                // the owner's transform or fade twice. Prepaint opacity ancestry
+                // is the denominator, since renderer fallback can multiply the
+                // current paint opacity when it cannot isolate a group.
+                let transform = self
+                    .layer_transform
+                    .inverse()
+                    .map(|inverse| deferred_draw.layer_transform.then(inverse))
+                    .unwrap_or(LayerTransform::IDENTITY);
+                let ratio =
+                    |captured: f32, owner: f32| if owner > 0.0 { captured / owner } else { 1.0 };
+                (
+                    transform,
+                    ratio(deferred_draw.element_opacity, scope.element_opacity),
+                    ratio(deferred_draw.group_opacity, scope.group_opacity),
+                )
+            } else {
+                (
+                    deferred_draw.layer_transform,
+                    deferred_draw.element_opacity,
+                    deferred_draw.group_opacity,
+                )
+            };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let content_mask = deferred_draw.content_mask;
             let inert_subtree = deferred_draw.inert_subtree;
@@ -4836,31 +4870,23 @@ impl Window {
             if let Some(element) = deferred_draw.element.as_mut() {
                 let mut paint = |window: &mut Window| {
                     window.with_rendered_view(deferred_draw.current_view, |window| {
-                        window.with_layer_transform(deferred_draw.layer_transform, |window| {
-                            window.with_element_opacity(
-                                Some(deferred_draw.element_opacity),
-                                |window| {
-                                    let viewport =
-                                        Bounds::new(Point::default(), window.viewport_size);
-                                    window.with_group_opacity(
-                                        viewport,
-                                        deferred_draw.group_opacity,
-                                        |window| {
-                                            window.with_content_mask(content_mask, |window| {
-                                                window.with_rem_size(
-                                                    Some(deferred_draw.rem_size),
-                                                    |window| {
-                                                        window.with_native_activation_scope(
-                                                            deferred_draw.native_activation_scope,
-                                                            |window| element.paint(window, cx),
-                                                        );
-                                                    },
+                        window.with_layer_transform(transform, |window| {
+                            window.with_element_opacity(Some(element_opacity), |window| {
+                                let viewport = Bounds::new(Point::default(), window.viewport_size);
+                                window.with_group_opacity(viewport, group_opacity, |window| {
+                                    window.with_content_mask(content_mask, |window| {
+                                        window.with_rem_size(
+                                            Some(deferred_draw.rem_size),
+                                            |window| {
+                                                window.with_native_activation_scope(
+                                                    deferred_draw.native_activation_scope,
+                                                    |window| element.paint(window, cx),
                                                 );
-                                            });
-                                        },
-                                    )
-                                },
-                            )
+                                            },
+                                        );
+                                    });
+                                })
+                            })
                         })
                     })
                 };
@@ -6110,21 +6136,35 @@ impl Window {
         id: &GlobalElementId,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.with_deferred_draw_scope(Some(id.clone()), f)
+        self.with_deferred_draw_scope(
+            Some(LocalDeferredDrawScope {
+                id: id.clone(),
+                element_opacity: self.element_opacity,
+                group_opacity: self.group_opacity,
+            }),
+            f,
+        )
     }
 
     pub(crate) fn local_deferred_draw_scope(&self) -> Option<GlobalElementId> {
-        self.local_deferred_scope.borrow().clone()
+        self.local_deferred_scope
+            .borrow()
+            .as_ref()
+            .map(|scope| scope.id.clone())
+    }
+
+    pub(crate) fn group_opacity(&self) -> f32 {
+        self.group_opacity
     }
 
     fn with_deferred_draw_scope<R>(
         &mut self,
-        scope: Option<GlobalElementId>,
+        scope: Option<LocalDeferredDrawScope>,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
         struct Restore {
-            context: Rc<RefCell<Option<GlobalElementId>>>,
-            previous: Option<GlobalElementId>,
+            context: Rc<RefCell<Option<LocalDeferredDrawScope>>>,
+            previous: Option<LocalDeferredDrawScope>,
         }
         impl Drop for Restore {
             fn drop(&mut self) {
@@ -6161,7 +6201,12 @@ impl Window {
         self.invalidator.debug_assert_paint();
         let order = self.deferred_draw_traversal_order();
         for ix in order {
-            if self.next_frame.deferred_draws[ix].local_scope.as_ref() == Some(id) {
+            if self.next_frame.deferred_draws[ix]
+                .local_scope
+                .as_ref()
+                .map(|scope| &scope.id)
+                == Some(id)
+            {
                 self.paint_deferred_draw_at(ix, cx);
             }
         }
@@ -10398,6 +10443,109 @@ mod deferred_clip_tests {
                 1,
                 "an unmounted local scope cannot replay an old deferred draw"
             );
+        });
+    }
+
+    struct LocalAncestor;
+    impl Render for LocalAncestor {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            crate::canvas(
+                |bounds, window, cx| {
+                    window.with_layer_transform(
+                        LayerTransform::translation(point(px(20.0), px(10.0))),
+                        |window| {
+                            window.with_element_opacity(Some(0.5), |window| {
+                                window.with_group_opacity(bounds, 0.5, |window| {
+                                    let child = |label: &'static str| {
+                                        div()
+                                            .w(px(300.0))
+                                            .h(px(80.0))
+                                            .opacity(0.5)
+                                            .bg(crate::rgb(0xffffff))
+                                            .child(label)
+                                            .into_any_element()
+                                    };
+                                    let mut direct = child("Direct ancestor comparison");
+                                    direct.layout_as_root(
+                                        size(px(300.0), px(80.0)).into(),
+                                        window,
+                                        cx,
+                                    );
+                                    direct.prepaint_at(point(px(40.0), px(30.0)), window, cx);
+                                    window.with_local_deferred_draw_scope(&local_id(), |window| {
+                                        let mut moving = child("Local ancestor comparison");
+                                        moving.layout_as_root(
+                                            size(px(300.0), px(80.0)).into(),
+                                            window,
+                                            cx,
+                                        );
+                                        window.defer_draw_local(
+                                            moving,
+                                            point(px(40.0), px(30.0)),
+                                            0,
+                                            Some(window.content_mask()),
+                                        );
+                                    });
+                                    direct
+                                })
+                            })
+                        },
+                    )
+                },
+                |bounds, mut direct, window, cx| {
+                    window.with_layer_transform(
+                        LayerTransform::translation(point(px(20.0), px(10.0))),
+                        |window| {
+                            window.with_element_opacity(Some(0.5), |window| {
+                                window.with_group_opacity(bounds, 0.5, |window| {
+                                    direct.paint(window, cx);
+                                    window.paint_local_deferred_draws(&local_id(), cx);
+                                })
+                            })
+                        },
+                    );
+                },
+            )
+            .size_full()
+        }
+    }
+
+    #[gpui::test]
+    fn local_motion_restores_transform_and_fades_relative_to_its_real_ancestor(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_global(TextTrace));
+        let (_, cx) = cx.add_window_view(|_, _| LocalAncestor);
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let quads = &window.rendered_scene_for_test().quads;
+            assert_eq!(
+                quads.len(),
+                2,
+                "direct and local native controls each paint once"
+            );
+            assert_eq!(
+                quads[0].bounds, quads[1].bounds,
+                "local motion does not apply the real ancestor transform twice"
+            );
+            assert_eq!(quads[0].content_mask, quads[1].content_mask);
+            assert_eq!(
+                quads[0].background, quads[1].background,
+                "native fades match direct paint, including renderer group fallback"
+            );
+            let direct = window
+                .painted_texts()
+                .iter()
+                .find(|run| run.text.as_ref() == "Direct ancestor comparison")
+                .expect("actual direct ink");
+            let local = window
+                .painted_texts()
+                .iter()
+                .find(|run| run.text.as_ref() == "Local ancestor comparison")
+                .expect("actual local ink");
+            assert_eq!(direct.bounds.origin, local.bounds.origin);
+            assert_eq!(direct.alpha, local.alpha);
+            assert!(local.alpha > 0.0 && local.alpha < 1.0);
         });
     }
 
