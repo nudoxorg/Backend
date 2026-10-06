@@ -37,9 +37,9 @@ const MAX_COMPILER_WORKSPACE_FILE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_COMPILER_WORKSPACE_STREAM_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_COMPILER_WORKSPACE_CHUNK_BYTES: usize = 1024 * 1024;
 #[cfg(windows)]
-const COMPILER_WORKSPACE_POLICY_IDENTITY: &str = "nudox.compiler-workspace.v1/gitignore+generated-defaults.v1;ignore-case=insensitive;portable-case-collision=reject;symlink=reject";
+const COMPILER_WORKSPACE_POLICY_IDENTITY: &str = "nudox.compiler-workspace.v1/gitignore+generated-defaults.v2;csharp-bin-source-filter.v1;ignore-case=insensitive;portable-case-collision=reject;symlink=reject";
 #[cfg(not(windows))]
-const COMPILER_WORKSPACE_POLICY_IDENTITY: &str = "nudox.compiler-workspace.v1/gitignore+generated-defaults.v1;ignore-case=sensitive;portable-case-collision=reject;symlink=reject";
+const COMPILER_WORKSPACE_POLICY_IDENTITY: &str = "nudox.compiler-workspace.v1/gitignore+generated-defaults.v2;csharp-bin-source-filter.v1;ignore-case=sensitive;portable-case-collision=reject;symlink=reject";
 const MAX_COMPILER_CONFIGURATION_FILES_PER_LANGUAGE: usize = 4_096;
 pub(super) const MAX_COMPILER_CONFIGURATION_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_COMPILER_CONFIGURATION_BYTES_PER_LANGUAGE: usize = 32 * 1024 * 1024;
@@ -5625,12 +5625,16 @@ mod profile_tests {
     /// Mirrors `frontends/csharp/helper/SourceLoader.cs:73`.
     #[test]
     fn discovery_skips_every_directory_the_csharp_oracle_skips() {
-        for name in ["bin", "obj", ".git", ".vs", "node_modules"] {
+        for name in ["obj", ".git", ".vs", "node_modules"] {
             assert!(
                 backend_library::is_hard_ignored_directory(std::ffi::OsStr::new(name)),
                 "{name} is excluded by the C# source loader but still walked here"
             );
         }
+        assert!(
+            !backend_library::is_hard_ignored_directory(std::ffi::OsStr::new("bin")),
+            "bin is a source directory for Python and npm; C# files are filtered by the shared language-specific discovery policy"
+        );
     }
 
     /// The tool and cache directories a real checkout carries are not walked.
