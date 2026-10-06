@@ -242,7 +242,7 @@ pub struct DepLink {
     parent: SharedString,
     measure: Measure,
     on_open: Option<Open>,
-    focus: Option<FocusHandle>,
+    focus: Option<(FocusHandle, Rc<dyn Fn(&mut App) -> bool>)>,
     sheet: Option<u64>,
 }
 
@@ -263,8 +263,8 @@ pub fn dep_link(id: impl Into<ElementId>, facts: DepFacts, parent: impl Into<Sha
 impl DepLink {
     /// The host's existing native target, shared with this painted link.
     #[must_use]
-    pub fn focus_handle(mut self, focus: FocusHandle) -> Self {
-        self.focus = Some(focus);
+    pub fn focus_handle(mut self, focus: FocusHandle, admit: Rc<dyn Fn(&mut App) -> bool>) -> Self {
+        self.focus = Some((focus, admit));
         self
     }
 
@@ -320,7 +320,14 @@ impl RenderOnce for DepLink {
         let measure = self.measure;
         let s = measure.scale();
         let key = ElementId::NamedChild(Arc::new(self.id.clone()), "card".into());
-        let live = card::live(&self.id, &key, window, cx);
+        let host_bound = self.focus.is_some();
+        let live = match self.focus {
+            Some((focus, admit)) => card::native_link_live(
+                &self.id, &key, focus, format!("Open dependency {}", self.facts.name).into(),
+                admit, window, cx,
+            ),
+            None => card::live(&self.id, &key, window, cx),
+        };
         let diamond = diamond_element(diamond_kind(&self.facts), 6.5 * s, diamond_ink(&self.facts, palette));
         let name_key = ElementId::NamedChild(Arc::new(self.id.clone()), "name".into());
         let Some(target) = self.facts.target.clone() else {
@@ -345,8 +352,6 @@ impl RenderOnce for DepLink {
         // tall, its words centred in it.
         let link = div()
             .id(ElementId::NamedChild(Arc::new(self.id.clone()), "link".into()))
-            .role(gpui::Role::Link)
-            .aria_label(format!("Open dependency {}", self.facts.name))
             .flex()
             .items_center()
             .min_h(px(24.0 * s))
@@ -359,8 +364,11 @@ impl RenderOnce for DepLink {
                 open(&click_target, window, cx);
             }
         };
-        let link = if let Some(focus) = self.focus {
-            crate::controls::button::native_button(link, &focus, activate_link)
+        // The existing outer card trigger is the one native owner. It owns
+        // Enter/pointer/AX activation and Space disclosure without an inner
+        // focusable Link competing for the same words.
+        let link = if host_bound {
+            link
         } else {
             link.on_click(move |_: &ClickEvent, window, cx| activate_link(window, cx))
         };
@@ -472,7 +480,7 @@ pub struct DepLine {
     open_look: bool,
     card_look: Vec<(SharedString, u64)>,
     wrap: Option<Rc<dyn Fn(&DepFacts, AnyElement) -> AnyElement>>,
-    native_focus: Option<Rc<dyn Fn(&DepFacts, &mut App) -> Option<FocusHandle>>>,
+    native_focus: Option<(Rc<dyn Fn(&DepFacts, &mut App) -> Option<FocusHandle>>, Rc<dyn Fn(&mut App) -> bool>)>,
 }
 
 /// The dependency line of `parent` over `deps`, as wide as `measure`.
@@ -498,8 +506,9 @@ impl DepLine {
     pub fn native_focus(
         mut self,
         focus: impl Fn(&DepFacts, &mut App) -> Option<FocusHandle> + 'static,
+        admit: Rc<dyn Fn(&mut App) -> bool>,
     ) -> Self {
-        self.native_focus = Some(Rc::new(focus));
+        self.native_focus = Some((Rc::new(focus), admit));
         self
     }
 
@@ -648,9 +657,10 @@ impl RenderOnce for DepLine {
                 &measure,
             );
             if dep.target.is_some()
-                && let Some(focus) = self.native_focus.as_ref().and_then(|focus| focus(dep, cx))
+                && let Some((focus, admit)) = &self.native_focus
+                && let Some(focus) = focus(dep, cx)
             {
-                link = link.focus_handle(focus);
+                link = link.focus_handle(focus, admit.clone());
             }
             if let Some(open) = self.on_open.clone() {
                 link = link.on_open(move |target, window, cx| open(target, window, cx));

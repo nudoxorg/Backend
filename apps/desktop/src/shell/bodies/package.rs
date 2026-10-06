@@ -833,7 +833,7 @@ fn hero(
             dep_line("mk-deps", facts, parent, measure)
                 .native_focus(move |dep, cx| on_page.then(|| {
                     native_targets.native_handle(&PageTarget::Dependency(dep.name.clone()).id(), cx)
-                }))
+                }), dep_admit.clone())
                 .on_open(move |place, _window, cx| {
                     if !click_admit(cx) { return; }
                     let door = door_of

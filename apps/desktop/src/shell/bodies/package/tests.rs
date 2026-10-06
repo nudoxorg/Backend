@@ -2025,7 +2025,19 @@ fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut Tes
     );
     walk_to(&mut rig, "pkg-dep-serde", 24);
     assert_dependency_native_focus(&mut rig);
-    rig.keys("enter");
+    let enter = gpui::Keystroke::parse("enter").expect("native dependency activation");
+    rig.cx.simulate_event(gpui::KeyDownEvent {
+        keystroke: enter.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    assert_eq!(
+        rig.route(),
+        package_route(),
+        "KeyDown alone cannot follow the dependency"
+    );
+    rig.cx.simulate_event(gpui::KeyUpEvent { keystroke: enter });
+    rig.settle();
     let opened = rig.route();
     assert_eq!(
         opened, expected_destination,
@@ -2039,6 +2051,34 @@ fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut Tes
         "and the keyboard stands on the door it left by"
     );
     assert_dependency_native_focus(&mut rig);
+    let link = gpui::ElementId::NamedChild(
+        Arc::new(gpui::ElementId::Name("mk-deps".into())),
+        "dep-serde-0".into(),
+    );
+    let card = gpui::ElementId::NamedChild(Arc::new(link), "card".into());
+    let space = gpui::Keystroke::parse("space").expect("native dependency disclosure");
+    rig.cx.simulate_event(gpui::KeyDownEvent {
+        keystroke: space.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    assert!(
+        !rig.cx
+            .update(|window, cx| facet::overlay::float::is_open(&card, window, cx)),
+        "Space KeyDown does not disclose the card prematurely"
+    );
+    rig.cx.simulate_event(gpui::KeyUpEvent { keystroke: space });
+    rig.settle();
+    assert_eq!(
+        rig.route(),
+        package_route(),
+        "Space discloses the dependency card without following its link"
+    );
+    assert!(
+        rig.cx
+            .update(|window, cx| facet::overlay::float::is_open(&card, window, cx)),
+        "the same native dependency owner preserves Space's existing card behavior"
+    );
 }
 
 /// Back puts the keyboard on the door the page was left by, and the focus
