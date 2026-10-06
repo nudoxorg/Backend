@@ -275,3 +275,92 @@ between pooled slots caused avoidable cold rebuilds. Start with at most four
 local builds, two compiler jobs each, and check memory headroom. Remote work
 is admitted from a live process census, not from an assumption that an SSH
 timeout killed it. Preserve receipts and source commits before long tests.
+
+## Linux report 7 and latest measured gates
+
+This section supersedes pending statuses above only for the exact revisions
+and selectors listed here. The report was read in full on 2026-10-06. Its
+Automatic-Schedule-Planner checkout is Next.js 15 / React 19, approximately
+30 source files, without `node_modules`. At canonical `6c98128cc`, the report
+demonstrates a configured 850-row publication and working source/graph reads,
+but no-environment headless TypeScript admission, every lexical search, and
+automatic GUI visibility still fail. Successful configured indexing does not
+close those separate paths.
+
+- **Headless toolchain gap:** bundled Node admission already exists in the
+  shared engine host. `EmbeddedCompilerEnvironment` does not forward the
+  process search path, while desktop has a separate global TypeScript finder.
+  The repair must unify paired toolchain discovery below both entry points,
+  preserve project-local and explicit pin precedence, and run a cold CLI/MCP
+  index with no overrides. Source tracing is complete; runtime acceptance is
+  pending. Companion `locald` installation and helpful missing-helper errors
+  belong to the same installed gate.
+- **Search:** thirteen provider/composition errors and an outer string-only
+  query boundary discard distinct causes. The exact publication/search
+  mismatch is not yet reproduced or diagnosed. Cause-preserving typed errors
+  must accompany a real warm/cold search repair, not replace it. Cross-file
+  alias references, source byte-offset presentation and `outline .` also
+  remain open.
+- **Automatic GUI publication:** an actual completed index must appear
+  without navigating away and back. Retained-local Graph/Source tests and
+  index-preflight tests do not certify this subscription. Cold launch,
+  held completion, retry and owner replacement need explicit production
+  fixtures and installed GUI observation.
+
+At joined `19618e7ea6`, all seven native vendor deferred clip/cache/accessibility
+tests pass. Native desktop test compilation also passes. The primary film
+produced all fourteen full PNGs, Reader crops and native ledgers under
+`gui-audit/captures/reader-native-19618e7e-20261006`, then failed its final
+zero-requested-frame assertion. Root inspected every full PNG: prior departure
+prose duplication is absent, but breadcrumbs overlap the current title on
+same-clock expansion, and the ready incoming plate is blank at the sampled
+opening frame. Visual acceptance is **FAIL**. The harness advanced time without
+rendering intermediate platform frames; the repair will draw actual continuous
+frames, inspect destination ink as well as departure ink, and retain a bounded
+strict idle assertion. Header topology is a separate product repair.
+
+The same exact desktop binary's focused joined selectors pass 21 and fail 5:
+seven preflight, six queue, three native hint and four native receipt checks
+pass; deferred admission passes one and fails three; dependency Back and
+Reader native-hint selectors each fail one. The Reader fixture lacks native
+accessibility and three admission fixtures request cards before actual module
+disclosure; those premises are being corrected without planted registrations.
+Dependency Back loses real native focus and requires a product repair at the
+child's painted mount boundary. Logs and binary hash are in
+`gui-audit/builds/native-joined-19618e7e-slices-20261006/summary.json`.
+
+The Graph worker's broader checkpoint `ba4702209b` passes 32 and fails 16;
+its new real unavailable-resource focus/Tab-boundary law passes. The remaining
+failures are still open, including stale-frame temporal premises and a
+nonunique `keep_local` fixture coordinate. No full Graph-suite or installed
+GUI success is claimed.
+
+Root source admission at `549428bda` passes nine budget laws and eight runtime
+selectors, including a 10,880-file, 85 MiB cold/warm structural scan. Policy v4
+at `2b779a5d9` also passes the actual warm-frontier aggregate-fact-page charge
+regression: an edited file fits alone but is correctly refused when unchanged
+files' retained facts exhaust the project allowance. These are parser/storage
+gates, not full semantic compilation of that corpus.
+
+Review found two additional production commit defects: cached files lost their
+complete facts during warm commits, and shrinking files left obsolete pages in
+the selected relation. At `02c0e017d`, the production preparation/owner commit
+and cold-open regression passes with all 900 functions and exact absolute
+source lines retained, then proves shrinking, unavailable and deleted files
+retire old rows while preserving other files. A separate exact-provenance
+refusal test at `797688c9c` is checkpointed and awaiting runtime validation.
+Fact construction precedes coordinator charging; these limits still do not
+constitute a hard peak-RAM bound.
+
+The compiler diagnostic library at `1c764d19b` passes 282 tests, with one
+ignored. The full scoped MCP library at `870cf402be` passes all 93 tests,
+including actual typed-client-error adapter checks and human protocol text
+that must never be promoted to a compiler fault. Neither suite demonstrates
+that the original `Fragment(Prepare)` lowering cause is fixed.
+
+Cold capture replay remains blocked on provenance: validating a caller-supplied
+closure's contents does not prove that the claimed generation selected it.
+The exact authenticated predecessor descriptor must bind the closure ID and
+capture root, including a forged hybrid token with a current sequence and an
+older valid closure sharing the same workspace manifest. That negative test
+and repair remain pending. No cutover or release approval is requested.
