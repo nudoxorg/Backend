@@ -77,17 +77,25 @@ strict deep signature verification passes, the three executable help commands
 launch, and rerunning post-install is idempotent. The receipt is
 `delivery/brew-installed-payload-verification-20261006.json`.
 
-This is installer acceptance, not compiler or GUI acceptance. The stock CLI
-acceptance already reports zero admitted oracles and refuses a tiny TypeScript
-project with `TypeScriptCompiler configured: None`; adding project-local
-TypeScript and testing actual MCP/cold-restart behavior remains in progress.
+This is installer acceptance, not compiler or GUI acceptance. The completed
+stock CLI/MCP acceptance fails even after installing project-local TypeScript
+5.9.3 with an ordinary Homebrew Node runtime: `tsc --noEmit` passes, while
+both installed surfaces refuse the tiny project with
+`TypeScriptCompiler configured: None`. Twelve paired DTO checks agree across
+warm and cold owners, but agree on failures and empty results. A real new owner
+starts after controlled shutdown; no semantic generation was published, so
+semantic persistence is unproven. The exact wire, source, binary hashes, and
+receipt are in `cli-mcp/homebrew-acceptance-20261006`. Its eight troubleshooting
+packets total 25,185 response bytes; the catalog alone is 18,855 bytes. Byte
+counts are measured; byte/4 token counts are estimates.
 `brew test` is separately blocked by this Nix-provided Homebrew's read-only
 vendored Gem marker, although its three help assertions were exercised directly.
 
-GitHub release ID `404084754` became draft twice. Republish at 00:52:47 UTC
-restored an anonymous ranged tarball GET (206). The second state change was
-observed at the time of a formula asset upload; the exact CLI upload code has no
-release-state mutation, so its cause is not established. Never infer public
+GitHub release ID `404084754` became draft three times. The third update at
+01:00:09 UTC followed no further asset upload; republish at 01:05:51 restored
+an anonymous ranged tarball GET (206), and the subsequent checks remain public.
+The exact CLI upload code has no release-state mutation; the actor causing
+these changes is not established. Never infer public
 availability from authenticated upload success: recheck the anonymous tag and
 asset URLs after all release mutations. The tarball hash remains
 `09ba4990d2b0bf45d95d341d2ddd546ffe63224bbfa609715ce7dfe9212ed34b`.
@@ -113,7 +121,13 @@ The close integration at `ececf4d9` passed eight tests and failed six: the
 remaining failures exposed gpui-component's focus trap dropping its base's
 accessibility hooks. The general wrapper repair forwards native roles,
 properties/actions, synthetic children and inspector/source metadata; a real
-dialog/remount/Tab/Shift-Tab regression was added. Its warm rerun is pending.
+dialog/remount/Tab/Shift-Tab regression was added. The exact `de45163ff1`
+rerun passes fourteen and fails one new regression because its external
+fixture handles were not Tab stops. That fixture now explicitly registers
+the stops and preserves the original complete keyboard sequence; rerun remains
+required. The first combined Shelf/Reader compile at `6f8c518219` failed on two
+missing native root-replacement trait imports, before executing tests. The
+two-line import repair is frozen in `6f38cd7cc` for the next run.
 The lifecycle integration passed ten and failed one before its retained-library
 precondition; the fixture now delivers the actual owner publication before
 checking fresh failure and Retry. Its rerun is also pending.
@@ -132,8 +146,14 @@ overflow-file reads, and actual 84+ MiB ingestion still need one integrated
 matched-binary run. Raising a quota alone is not storage or memory acceptance.
 
 The TypeScript host has an embedded relocatable checker driver and typed
-project-local toolchain admission. A relocation selector passed once; newer
-host tests exposed production type errors that were fixed and are being rerun.
+project-local toolchain admission. Its frozen `ad2450fec` host selector passes
+thirteen and fails six tests at macOS path aliases. The expanded resolver
+checkpoint `e9b82f694` fails compilation with eleven type/borrow errors before
+tests. Its ownership and observation design is also under revision: repeated
+source copies, noncanonical debug-format hashing, quadratic byte accounting,
+and per-directory rather than aggregate limits are not acceptable cutover
+foundations. Packaging currently supplies default checker/compiler overrides
+that bypass project-local admission; its launcher contract is being corrected.
 TSZ's immutable per-program options are vendored in a separate packet. Complete
 config/import/library/ambient/reference closure, including negative resolution
 witnesses, is required before its production dispatch cutover.
@@ -149,6 +169,15 @@ Npm's post-integrity live run streamed 25 packages with zero failures and 31,288
 selected version rows. Ten npm tests, bounded-manifest and chunk-integrity
 regressions passed in the later exact receipt. The bounded version window is
 explicitly partial; this does not establish complete all-version ingestion.
+The legacy Zustand report refusal measures the first over-limit read,
+16,785,408 bytes (16 MiB plus one 8 KiB buffer), rather than complete report size.
+The native TSZ path avoids the JSON type report, but currently requires the
+source-frontier experiment. Configured production cutover needs the exact
+program closure, cancellation/work bounds, reuse of checked program queries,
+and assignment-narrowing parity. Per-file projector lanes currently allocate
+about 1.69 MiB before facts; reducing that allocation is separate from proving
+semantic fidelity.
+
 CLI/MCP parity by itself also does not establish semantic correctness: the
 recovered Nest and Requests runs agree on missing concrete reference edges.
 
