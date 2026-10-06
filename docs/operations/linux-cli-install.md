@@ -6,13 +6,13 @@ The Linux archive contains the matched `backend-cli`, `backend-mcp` and `backend
 
 The candidate installer embeds a unique checkpoint tag and the SHA-256 digest of its exact release manifest. It fetches that manifest and the archive over HTTPS, verifies the pinned manifest bytes, then checks archive size and SHA-256 before safe extraction. This path is usable while `linux-x64` remains `legacy` in the public catalog. The checkpoint installer is not a claim that the stable public channel is available.
 
-For the first accepted source checkpoint `1840fca247`, the one-line command is:
+Once a real candidate has passed every Ubuntu native QA case and its GitHub release assets have been read-back verified, publish the exact command printed for its immutable tag. The command will have this form:
 
 ```sh
-curl -fsSL https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261006-1840fca247-linux-x64/install-linux-x64.py | python3 -
+curl -fsSL "https://github.com/nudoxorg/Backend/releases/download/${NUDOX_LINUX_TAG}/install-linux-x64.py" | python3 -
 ```
 
-Publish and communicate that command only after the exact archive passes all Ubuntu native QA cases and the GitHub release assets are read-back verified. The bootstrap uses Python 3, installs by default under `~/.local`, does not invoke `sudo`, and prints a PATH line when `~/.local/bin` is not on `PATH`. It creates both `nudox` aliases and the `backend-cli`, `backend-mcp`, and `backend-locald` compatibility names used by current MCP setup guidance. It checks the detected glibc against the package's measured minimum before installing, refuses unsupported architectures, and reports HTTP, metadata, checksum or extraction failures without claiming success.
+`NUDOX_LINUX_TAG` is a placeholder until an actual candidate passes QA and is published; this example is not an installable release URL. The bootstrap uses Python 3, installs by default under `~/.local`, does not invoke `sudo`, and prints a PATH line when `~/.local/bin` is not on `PATH`. It creates both `nudox` aliases and the `backend-cli`, `backend-mcp`, and `backend-locald` compatibility names used by current MCP setup guidance. It checks the detected glibc against the package's measured minimum before installing, refuses unsupported architectures, and reports HTTP, metadata, checksum or extraction failures without claiming success.
 
 ## Build/package and validate
 
