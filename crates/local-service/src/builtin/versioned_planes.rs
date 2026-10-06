@@ -2225,7 +2225,8 @@ mod tests {
         let store = FileStore::open(&directory, 8 * 1024 * 1024).expect("open history CAS");
         let history = FileSemanticRangeStore::open(store.clone(), TransportLimits::default())
             .expect("open history facade");
-        let branch = selected_native_history_staging_branch().expect("staging branch");
+        let branch = selected_native_history_staging_branch()
+            .unwrap_or_else(|_| panic!("valid staging branch"));
         let target = target();
         let unknown = HistoryCommitId::from_bytes([0x91; 32]);
 
