@@ -12,7 +12,7 @@ For the first accepted source checkpoint `1840fca247`, the one-line command is:
 curl -fsSL https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261006-1840fca247-linux-x64/install-linux-x64.py | python3 -
 ```
 
-Publish and communicate that command only after the exact archive passes all Ubuntu native QA cases and the GitHub release assets are read-back verified. The bootstrap uses Python 3, installs by default under `~/.local`, does not invoke `sudo`, and prints a PATH line when `~/.local/bin` is not on `PATH`. It checks the detected glibc against the package's measured minimum before installing, refuses unsupported architectures, and reports HTTP, metadata, checksum or extraction failures without claiming success.
+Publish and communicate that command only after the exact archive passes all Ubuntu native QA cases and the GitHub release assets are read-back verified. The bootstrap uses Python 3, installs by default under `~/.local`, does not invoke `sudo`, and prints a PATH line when `~/.local/bin` is not on `PATH`. It creates both `nudox` aliases and the `backend-cli`, `backend-mcp`, and `backend-locald` compatibility names used by current MCP setup guidance. It checks the detected glibc against the package's measured minimum before installing, refuses unsupported architectures, and reports HTTP, metadata, checksum or extraction failures without claiming success.
 
 ## Build/package and validate
 
@@ -46,4 +46,4 @@ python3 tools/package/release_contract.py validate \
 
 After review, `release_contract.py candidate --candidate-tag <printed-release-tag>` stages only the immutable platform-qualified assets on the distribution GitHub release. The release manifest and native QA assets are named `release-manifest-linux-x64.json` and `native-qa-linux-x64.json`; the checkpoint bootstrap is `install-linux-x64.py`. The packager also emits `install-linux-x64-channel.py`, which is published under `install-linux-x64.py` only with a later stable release and still requires the public catalog entry and SHA-256. Release asset uploads are read back and hash checked. The public catalog remains `legacy` until a separately accepted stable release is promoted.
 
-The channel bootstrap refuses the current legacy catalog entry because it has no digest. Python 3 is required. Node.js and the project's installed `typescript` package are needed for TypeScript indexing; Python and Go toolchains are needed only for projects that use those languages.
+The channel bootstrap refuses the current legacy catalog entry because it has no digest. Python 3 is required. Language compiler integrations are discovered separately from this CLI package; TypeScript indexing uses host Node and the project's installed `typescript` package when configured.

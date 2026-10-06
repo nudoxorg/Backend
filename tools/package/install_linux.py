@@ -406,6 +406,34 @@ def _replace_symlink(link: Path, target: str) -> None:
             pass
 
 
+def verify_existing_install(final: Path, expected_marker: dict, entry: dict, manifest: dict) -> None:
+    """Reuse a prior release only after rechecking the files on disk."""
+    installed_marker = final / ".installed-release.json"
+    try:
+        existing_marker = json.loads(installed_marker.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise InstallError(f"refusing to reuse existing unverified install at {final}") from error
+    if existing_marker != expected_marker:
+        raise InstallError(f"release {entry['tag']} is already installed with different bytes")
+    try:
+        verify_package(final, entry, manifest)
+    except (InstallError, OSError, KeyError, TypeError, ValueError) as error:
+        raise InstallError(f"existing release at {final} failed its integrity/startup recheck; refusing to reuse it: {error}") from error
+
+
+def command_links(managed_root: Path) -> dict[str, str]:
+    binaries = {
+        "nudox": "backend-cli",
+        "nudox-mcp": "backend-mcp",
+        "nudox-locald": "backend-locald",
+        # Keep the executable names used by current MCP setup guidance.
+        "backend-cli": "backend-cli",
+        "backend-mcp": "backend-mcp",
+        "backend-locald": "backend-locald",
+    }
+    return {name: str(managed_root / "current" / "bin" / binary) for name, binary in binaries.items()}
+
+
 def install(prefix: Path, entry: dict, manifest: dict, archive: Path) -> None:
     os.umask(0o077)
     prefix.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -435,7 +463,7 @@ def install(prefix: Path, entry: dict, manifest: dict, archive: Path) -> None:
     bin_dir.mkdir(mode=0o700, exist_ok=True)
     if not bin_dir.is_dir():
         raise InstallError(f"command install path is not a directory: {bin_dir}")
-    links = {"nudox": str(managed_root / "current/bin/backend-cli"), "nudox-mcp": str(managed_root / "current/bin/backend-mcp"), "nudox-locald": str(managed_root / "current/bin/backend-locald")}
+    links = command_links(managed_root)
     for name, target in links.items():
         link = bin_dir / name
         if link.exists() and not link.is_symlink():
@@ -457,13 +485,7 @@ def install(prefix: Path, entry: dict, manifest: dict, archive: Path) -> None:
         if final.exists() or final.is_symlink():
             if final.is_symlink() or not final.is_dir():
                 raise InstallError(f"version path already exists and is not an install directory: {final}")
-            installed_marker = final / ".installed-release.json"
-            try:
-                existing = json.loads(installed_marker.read_text())
-            except (OSError, json.JSONDecodeError):
-                raise InstallError(f"refusing to replace existing unverified install at {final}")
-            if existing != marker:
-                raise InstallError(f"release {entry['tag']} is already installed with different bytes")
+            verify_existing_install(final, marker, entry, manifest)
             shutil.rmtree(stage)
         else:
             os.replace(stage, final)
@@ -500,7 +522,8 @@ def main(argv: list[str] | None = None) -> int:
             download_archive(url, manifest["sha256"], manifest["size_bytes"], archive)
         install(prefix, entry, manifest, archive)
     print(f"Installed NuDox {entry['version']} CLI, MCP server and local daemon in {prefix}.")
-    print("Commands: nudox, nudox-mcp, nudox-locald")
+    print("Commands: nudox, nudox-mcp, nudox-locald, backend-cli, backend-mcp, backend-locald")
+    print(f"MCP executable for client configuration: {prefix / 'bin' / 'backend-mcp'}")
     path_parts = os.environ.get("PATH", "").split(os.pathsep)
     if str(prefix / "bin") not in path_parts:
         print(f"Add this line to your shell profile to use the commands by name:\n  export PATH={shlex_quote(str(prefix / 'bin'))}:\"$PATH\"")
