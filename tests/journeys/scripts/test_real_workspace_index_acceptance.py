@@ -315,6 +315,44 @@ class SelectedProjectFrontierTests(unittest.TestCase):
 
 
 class CorpusManifestCandidateFloorTests(unittest.TestCase):
+    def test_pypa_src_build_package_is_admitted_but_build_artifacts_are_not(self) -> None:
+        # Exact production paths from pypa/build's ProjectBuilder source witness.
+        extensions, _ = runner.parse_language_contract(REPOSITORY)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "package"
+            sources = {
+                "src/build/_builder.py": "class ProjectBuilder:\n    pass\n",
+                "src/build/__main__.py": "builder = ProjectBuilder(source_dir)\n",
+                "src/build/util.py": "builder = ProjectBuilder(source_dir)\n",
+                "build/lib/build/_builder.py": "class ProjectBuilder:\n    pass\n",
+                "src/build/dist/artifact.py": "class GeneratedArtifact:\n    pass\n",
+            }
+            for relative, content in sources.items():
+                path = project / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+            manifest = root / "manifest.json"
+            value = {"schema": runner.MANIFEST_SCHEMA, "projects": [{
+                "id": "pypa-build", "path": str(project), "large": False,
+                "minimum_source_candidates": 0,
+                "symbols": [{"profile": "python", "path": "src/build/_builder.py",
+                             "name": "ProjectBuilder"}],
+            }]}
+            manifest.write_text(json.dumps(value))
+            cases, _ = runner.validate_corpus_manifest(
+                manifest, root / "evidence", extensions, 2046, "python")
+            census = runner.project_census(project)
+            self.assertEqual(census.files, 3)
+            self.assertEqual(census.extension_counts, {".py": 3})
+            self.assertEqual(cases[0].symbols[0]["path"], "src/build/_builder.py")
+            for excluded in ["build/lib/build/_builder.py", "src/build/dist/artifact.py"]:
+                value["projects"][0]["symbols"][0]["path"] = excluded
+                manifest.write_text(json.dumps(value))
+                with self.assertRaisesRegex(runner.Blocked, "noncanonical relative source path"):
+                    runner.validate_corpus_manifest(
+                        manifest, root / "evidence", extensions, 2046, "python")
+
     def test_language_shards_are_explicit_and_do_not_weaken_default_gates(self) -> None:
         extensions, _ = runner.parse_language_contract(REPOSITORY)
         floor = runner.source_capacity_contract(REPOSITORY)["large_project_candidate_census_minimum"]

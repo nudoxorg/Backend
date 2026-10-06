@@ -114,6 +114,18 @@ IGNORED_DIRECTORIES = frozenset(
         "vendor",
     }
 )
+
+
+def ignored_source_directory(parts: tuple[str, ...]) -> bool:
+    """Keep generated roots excluded without dropping the Python src/build package."""
+    for position, name in enumerate(parts):
+        if name in IGNORED_DIRECTORIES:
+            if name == "build" and position == 1 and parts[0] == "src":
+                continue
+            return True
+    return False
+
+
 SOURCE_EXTENSIONS = frozenset(
     {
         ".rs",
@@ -1484,9 +1496,9 @@ def validate_corpus_manifest(
                 relative_path.is_absolute()
                 or not relative_path.parts
                 or any(part in {"", ".", ".."} for part in relative_path.parts)
-            or "\\" in relative
-            or any(part in IGNORED_DIRECTORIES for part in relative_path.parts)
-        ):
+                or "\\" in relative
+                or ignored_source_directory(relative_path.parts[:-1])
+            ):
                 raise Blocked(f"project {project_id} has a noncanonical relative source path")
             if len(relative.encode("utf-8")) > 4096 or len(name.encode("utf-8")) > 4096:
                 raise Blocked(f"project {project_id} has an oversized symbol expectation")
@@ -1603,7 +1615,7 @@ def project_census(root: Path, deadline: Deadline | None = None) -> Census:
             if entry.is_symlink():
                 continue
             if entry.is_dir(follow_symlinks=False):
-                if entry.name not in IGNORED_DIRECTORIES:
+                if not ignored_source_directory(Path(entry.path).relative_to(root).parts):
                     stack.append(Path(entry.path))
                 continue
             suffix = Path(entry.name).suffix.lower()
