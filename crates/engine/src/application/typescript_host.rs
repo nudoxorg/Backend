@@ -4992,16 +4992,20 @@ if [ "$1" = "--version" ]; then printf 'v22.0.0\n'; elif [ "$2" = "--version" ];
 
     #[test]
     fn installed_fallback_witness_refuses_changed_or_deleted_host_sdk_and_node() {
-        let fixture = Fixture::new();
-        let witness = installed_fallback_witness(&fixture);
-        fs::write(fixture.0.join("host-node"), b"changed node executable").unwrap();
-        assert!(witness.validate_current().is_err(), "Node bytes remain witnessed");
-        fs::write(fixture.0.join("host-node"), b"captured node executable").unwrap();
-        fs::write(fixture.0.join("host-modules/typescript/package.json"),
-            r#"{"name":"typescript","version":"5.8.4"}"#).unwrap();
-        assert!(witness.validate_current().is_err(), "selected SDK version cannot change");
-        fs::remove_dir_all(fixture.0.join("host-modules/typescript")).unwrap();
-        assert!(witness.validate_current().is_err(), "missing SDK cannot silently fall back");
+        for mutation in ["node", "sdk-version", "sdk-deleted", "compiler"] {
+            let fixture = Fixture::new();
+            let witness = installed_fallback_witness(&fixture);
+            witness.validate_current().expect("each independent baseline is valid");
+            match mutation {
+                "node" => fs::write(fixture.0.join("host-node"), b"changed node executable").unwrap(),
+                "sdk-version" => fs::write(fixture.0.join("host-modules/typescript/package.json"),
+                    r#"{"name":"typescript","version":"5.8.4"}"#).unwrap(),
+                "sdk-deleted" => fs::remove_dir_all(fixture.0.join("host-modules/typescript")).unwrap(),
+                "compiler" => fs::write(fixture.0.join("host-modules/typescript/bin/tsc"), b"changed compiler entry").unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(witness.validate_current().is_err(), "independent {mutation} corruption must refuse");
+        }
     }
 
     #[test]
