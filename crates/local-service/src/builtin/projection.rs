@@ -1175,7 +1175,7 @@ mod tests {
         let dto = ReplyDto::new(99, CommandReply::Document(document));
         let dto = dto.with_certificate(certificate);
         let bytes = serde_json::to_vec(&dto).expect("encode real certificate");
-        let capability = owner.capability().cloned();
+        let capability = owner.capability();
         let decoded = ReplyDto::decode_with_certificate(&bytes, capability.clone())
             .expect("independent certificate decoder");
         let CommandReply::Document(decoded_document) = &decoded.reply else {
