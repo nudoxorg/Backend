@@ -1,0 +1,107 @@
+[
+  {
+    "path": "build-receipt.json",
+    "bytes": 7501,
+    "sha256": "8e65ce2e33bc14b23e42c7541ae547e34e391c64ea7424e27ef49a26eb1c13fc"
+  },
+  {
+    "path": "build.log",
+    "bytes": 281067,
+    "sha256": "b36a3dce8a859713f7fec26e8442ad317bab020b9922f34829526b637d1e837e"
+  },
+  {
+    "path": "configured-clang-receipt.json",
+    "bytes": 227,
+    "sha256": "0bec760f278e42e44f601ec4cea12361614c445c906e65c381bbac1eb005cebf"
+  },
+  {
+    "path": "rank-exact.log",
+    "bytes": 213,
+    "sha256": "30f022d1a20697365b15b0ee740be662cc770f6c8071fc465bfdef68dfb07462"
+  },
+  {
+    "path": "rank-receipt.json",
+    "bytes": 633,
+    "sha256": "af81444c2d739789589144acfc44e6769104b51571080c8522583292a43d2495"
+  },
+  {
+    "path": "test-0.log",
+    "bytes": 238,
+    "sha256": "a1468a80eb864ce69e1608e5bb88bfdcf21f77246bce4f1d2a1521ed14d44e89"
+  },
+  {
+    "path": "test-1.log",
+    "bytes": 246,
+    "sha256": "14632e3105ae05dc6db94321e53dfa2c1603a3cffb88a12f217f8938454a7d1b"
+  },
+  {
+    "path": "test-10.log",
+    "bytes": 230,
+    "sha256": "ac97ee7799c6435a9676452f6e7e3625b7a088b043277500dd565551038fe38c"
+  },
+  {
+    "path": "test-11-configured-clang.log",
+    "bytes": 1686,
+    "sha256": "b6ca241cb15956e68523f8863fadef5f63da9812b1ce8d76607db59986759e4c"
+  },
+  {
+    "path": "test-11.log",
+    "bytes": 737,
+    "sha256": "a356cf76993b0b00dcae57390621d03820e81fdefb04c36bc3a97255ff81cee7"
+  },
+  {
+    "path": "test-12.log",
+    "bytes": 326,
+    "sha256": "48c4af956bafddd7f6701f5dd416f32f481efa4540605da9cc16cb0c96eaab0f"
+  },
+  {
+    "path": "test-13.log",
+    "bytes": 218,
+    "sha256": "e2d46106a45832d101f02e5c17092453a38d867386bf675296002f7a6dbc0a5d"
+  },
+  {
+    "path": "test-2.log",
+    "bytes": 226,
+    "sha256": "11a21b408477c946a0a86dd246c75bbc761da97be45bb68254717324f57a8bb3"
+  },
+  {
+    "path": "test-3.log",
+    "bytes": 211,
+    "sha256": "fc615b98058cc476feb6cd4cd4daf3ae3ea9afaa3fa85de3e579380133a3bbfa"
+  },
+  {
+    "path": "test-4.log",
+    "bytes": 226,
+    "sha256": "22c7e580006a14fe75a7b5f8c9a062d1990eda6c13aa0bd87b07055719ac88fb"
+  },
+  {
+    "path": "test-5.log",
+    "bytes": 212,
+    "sha256": "b0e278b0961d9ea2804923596e49c26bf256647a8879b3d3c8eba6847a72d701"
+  },
+  {
+    "path": "test-6.log",
+    "bytes": 705,
+    "sha256": "d195b58f0104558489700e1a3d31f0bd46eccdd00d5f744a86101202ac3dbd8e"
+  },
+  {
+    "path": "test-7.log",
+    "bytes": 837,
+    "sha256": "9858999677029e4adf56d46ef85c9191aa9fbb76d62c6be97b655d19641549b8"
+  },
+  {
+    "path": "test-8.log",
+    "bytes": 700,
+    "sha256": "c148728a793985dfe536911c21387c1d5bc02c6cf808bc7b7c1a980c472cfbdb"
+  },
+  {
+    "path": "test-9.log",
+    "bytes": 238,
+    "sha256": "f36b0189ff9697553139465f3ed72e24edca00730c4a299e3f17c759131ec3d8"
+  },
+  {
+    "path": "tests-receipt.json",
+    "bytes": 4537,
+    "sha256": "d8fb358ab00137102c818d57256a2ba838da3cc715f11a63abaf5dd3d22eaec7"
+  }
+]
