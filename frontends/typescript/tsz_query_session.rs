@@ -2,10 +2,9 @@
 //!
 //! A session is created from one fully checked [`TszProject`] and borrows its
 //! exact merged program, checker options, resolved library closure, and
-//! exact project context. This temporary semantic-test adapter deliberately
-//! has no execution budget and is available only with the
-//! `tsz-semantic-session-test-support` feature. It must not be used by the
-//! production compiler path. The vendored TSZ session owns the project-wide
+//! exact project context. Production sessions borrow the execution
+//! checkpoint that governed parsing, binding, merging, and checking. The
+//! vendored TSZ session owns the project-wide
 //! binders, arenas, resolution outcomes, symbol-to-file map, library contexts,
 //! and shared query cache.
 //! Each file checker is created on the stack from that shared context and is
@@ -20,14 +19,15 @@ use std::collections::HashMap;
 
 use super::{TszAuthorityError, TszProject};
 use tsz::tsz_solver::construction::TypeDatabase;
+use tsz_common::ExecutionCheckpoint;
 
 /// Typed failure to open a native query session for a project.
 pub type TszProjectQuerySessionError = tsz::parallel::ProjectCheckerSessionError;
 
-/// One mutable query session tied to the exact lifetime of a checked project.
+/// One query session tied to the exact lifetime of a checked project.
 ///
-/// Keep one session for the package-lowering loop and borrow it mutably for
-/// each source file. It retains project query caches and resolution context,
+/// Keep one session for the package-lowering loop and borrow it for each
+/// source file. It retains project query caches and resolution context,
 /// but no file checker survives an individual callback.
 pub struct TszProjectQuerySession<'project> {
     project: &'project TszProject,
@@ -36,16 +36,31 @@ pub struct TszProjectQuerySession<'project> {
 }
 
 impl TszProject {
+    /// Opens a budgeted native query session for exact semantic projection.
+    ///
+    /// The same checkpoint must have governed this project's update. The
+    /// returned session retains the exact checked project and shared query
+    /// context; each file checker remains stack-local to its callback.
+    ///
+    /// # Errors
+    /// Returns a typed failure when the project lacks an exact resolution
+    /// witness or the shared execution checkpoint has stopped.
+    pub fn checked_query_session<'project>(
+        &'project self,
+        checkpoint: &'project dyn ExecutionCheckpoint,
+    ) -> Result<TszProjectQuerySession<'project>, TszProjectQuerySessionError> {
+        TszProjectQuerySession::new(self, checkpoint)
+    }
+
     /// Opens an unmetered native query session for semantic regression tests.
     ///
     /// The project must carry an explicit compiler-owned module-resolution
     /// outcome map. TSZ refuses to open a session when that witness is absent,
     /// rather than falling back to guessed filename resolution.
     ///
-    /// This method is gated by `tsz-semantic-session-test-support`, has no
-    /// cancellation/deadline/work budget, and is not valid for production
-    /// compiler use. The budget-bearing constructor replaces it before any
-    /// native-query cutover.
+    /// This method is gated by `tsz-semantic-session-test-support` and is not
+    /// valid for production compiler use. Production uses
+    /// [`Self::checked_query_session`] with the project's shared checkpoint.
     ///
     /// # Errors
     /// Returns [`TszProjectQuerySessionError::MissingProjectModuleResolutions`]
@@ -54,19 +69,34 @@ impl TszProject {
     pub fn checked_query_session_unmetered_for_test(
         &self,
     ) -> Result<TszProjectQuerySession<'_>, TszProjectQuerySessionError> {
-        TszProjectQuerySession::new_unmetered_for_test(self)
+        TszProjectQuerySession::new(self, &UNMETERED_TEST_CHECKPOINT)
     }
 }
 
+#[cfg(feature = "tsz-semantic-session-test-support")]
+struct UnmeteredTestCheckpoint;
+
+#[cfg(feature = "tsz-semantic-session-test-support")]
+impl ExecutionCheckpoint for UnmeteredTestCheckpoint {
+    fn checkpoint(&self, _work_units: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "tsz-semantic-session-test-support")]
+static UNMETERED_TEST_CHECKPOINT: UnmeteredTestCheckpoint = UnmeteredTestCheckpoint;
+
 impl<'project> TszProjectQuerySession<'project> {
-    fn new_unmetered_for_test(
+    fn new(
         project: &'project TszProject,
+        checkpoint: &'project dyn ExecutionCheckpoint,
     ) -> Result<Self, TszProjectQuerySessionError> {
         let checker_session = tsz::parallel::ProjectCheckerSession::new(
             &project.program,
             &project.options.checker,
             &project.lib_files,
             project.options.semantic_options,
+            checkpoint,
         )?;
         let file_indexes = project
             .program
@@ -105,7 +135,7 @@ impl<'project> TszProjectQuerySession<'project> {
     /// # Errors
     /// Returns a typed checker-session error for an invalid merged file index.
     pub fn with_file_checker_and_types<Output>(
-        &mut self,
+        &self,
         file_index: usize,
         consume: impl for<'checker> FnOnce(
             &mut super::TszCheckerState<'checker>,

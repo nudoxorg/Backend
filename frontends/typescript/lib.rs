@@ -41,7 +41,6 @@ pub use tsz_authority::{
     TszProjectModuleResolutionTarget, TszProjectOptions, TszProjectSemanticOptions,
     TszScriptTarget, TszSourceError, TszSymbolId, TszTypeId, TszUpdateReport,
 };
-#[cfg(feature = "tsz-semantic-session-test-support")]
 pub use tsz_authority::{TszProjectQuerySession, TszProjectQuerySessionError};
 /// Shared cancellation, deadline, and work control for one native TSZ project.
 pub use tsz_common::{
