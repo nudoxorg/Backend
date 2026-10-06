@@ -409,11 +409,20 @@ def _replace_symlink(link: Path, target: str) -> None:
 def install(prefix: Path, entry: dict, manifest: dict, archive: Path) -> None:
     os.umask(0o077)
     prefix.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lib_dir = prefix / "lib"
+    if lib_dir.is_symlink():
+        raise InstallError(f"managed install parent must not be a symlink: {lib_dir}")
+    lib_dir.mkdir(mode=0o700, exist_ok=True)
+    if not lib_dir.is_dir():
+        raise InstallError(f"managed install parent is not a directory: {lib_dir}")
     managed_root = prefix / "lib" / "nudox"
     if managed_root.is_symlink():
         raise InstallError(f"managed install root must not be a symlink: {managed_root}")
+    managed_root.mkdir(mode=0o700, exist_ok=True)
+    if not managed_root.is_dir():
+        raise InstallError("managed install root is not a directory")
     version_root = _version_root(prefix)
-    version_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    version_root.mkdir(mode=0o700, exist_ok=True)
     if version_root.is_symlink() or not version_root.is_dir():
         raise InstallError("managed install versions path must be a real directory")
     install_id = entry.get("tag")
@@ -421,7 +430,11 @@ def install(prefix: Path, entry: dict, manifest: dict, archive: Path) -> None:
         raise InstallError("release has an unsafe install identity")
     final = version_root / install_id
     bin_dir = prefix / "bin"
-    bin_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if bin_dir.is_symlink():
+        raise InstallError(f"command install directory must not be a symlink: {bin_dir}")
+    bin_dir.mkdir(mode=0o700, exist_ok=True)
+    if not bin_dir.is_dir():
+        raise InstallError(f"command install path is not a directory: {bin_dir}")
     links = {"nudox": str(managed_root / "current/bin/backend-cli"), "nudox-mcp": str(managed_root / "current/bin/backend-mcp"), "nudox-locald": str(managed_root / "current/bin/backend-locald")}
     for name, target in links.items():
         link = bin_dir / name
@@ -432,6 +445,8 @@ def install(prefix: Path, entry: dict, manifest: dict, archive: Path) -> None:
     current = managed_root / "current"
     if current.exists() and not current.is_symlink():
         raise InstallError(f"refusing to replace non-symlink active install pointer: {current}")
+    if current.is_symlink() and not _managed_link(current, managed_root):
+        raise InstallError(f"refusing to replace active install pointer outside the managed NuDox install: {current}")
     stage = Path(tempfile.mkdtemp(prefix=".staging-", dir=version_root))
     try:
         safe_extract(archive, stage)
