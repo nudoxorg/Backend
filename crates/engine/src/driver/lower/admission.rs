@@ -117,6 +117,9 @@ fn portable_type_tag(tag: SemanticTypeTag) -> ProjectionSemanticTypeTag {
         SemanticTypeTag::ArrayConstExpression => ProjectionSemanticTypeTag::ArrayConstExpression,
         SemanticTypeTag::ArrayIncomplete => ProjectionSemanticTypeTag::ArrayIncomplete,
         SemanticTypeTag::CQualified => ProjectionSemanticTypeTag::CQualified,
+        SemanticTypeTag::KeyOf => ProjectionSemanticTypeTag::KeyOf,
+        SemanticTypeTag::IndexedAccess => ProjectionSemanticTypeTag::IndexedAccess,
+        SemanticTypeTag::TypeOf => ProjectionSemanticTypeTag::TypeOf,
     }
 }
 
@@ -286,6 +289,24 @@ pub(crate) fn portable_admission(fault: FactFault) -> ProjectionAdmissionFault {
         },
         FactFault::TypeRowCapacity => ProjectionAdmissionFault::TypeRowCapacity,
         FactFault::ComputedRowCapacity => ProjectionAdmissionFault::ComputedRowCapacity,
+        FactFault::TypeProjectionDepthLimit { depth, maximum } => {
+            ProjectionAdmissionFault::TypeProjectionDepthLimit {
+                depth: u64::from(depth),
+                maximum: u64::from(maximum),
+            }
+        }
+        FactFault::TypeProjectionCycle { type_id } => {
+            ProjectionAdmissionFault::TypeProjectionCycle { type_id }
+        }
+        FactFault::TypeProjectionRecursiveReference { distance } => {
+            ProjectionAdmissionFault::TypeProjectionRecursiveReference { distance }
+        }
+        FactFault::TypeProjectionWidth { actual, maximum } => {
+            ProjectionAdmissionFault::TypeProjectionWidth {
+                actual: portable_count(actual),
+                maximum: portable_count(maximum),
+            }
+        }
         FactFault::OccurrenceOwner { owner, fact_count } => {
             ProjectionAdmissionFault::OccurrenceOwner {
                 owner,

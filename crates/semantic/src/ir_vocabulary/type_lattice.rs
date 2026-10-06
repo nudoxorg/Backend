@@ -123,6 +123,12 @@ pub enum SemanticTypeTag {
     /// child. It keeps a pointee's qualifiers separate from a pointer's own
     /// qualifiers.
     CQualified = 31,
+    /// TypeScript's unevaluated `keyof T` operator with its operand retained.
+    KeyOf = 32,
+    /// TypeScript's unevaluated `T[K]` operator with both operands ordered.
+    IndexedAccess = 33,
+    /// TypeScript's `typeof value` query to an exact entity row.
+    TypeOf = 34,
 }
 
 /// Closed staged callable-tail discriminator carried in a function record's
@@ -261,6 +267,9 @@ impl TryFrom<u8> for SemanticTypeTag {
             29 => Ok(Self::ArrayConstExpression),
             30 => Ok(Self::ArrayIncomplete),
             31 => Ok(Self::CQualified),
+            32 => Ok(Self::KeyOf),
+            33 => Ok(Self::IndexedAccess),
+            34 => Ok(Self::TypeOf),
             actual => Err(SemanticTypeTagError { actual }),
         }
     }
@@ -1089,8 +1098,11 @@ impl SemanticTypeRecord<'_> {
             | SemanticTypeTag::ArrayFixed
             | SemanticTypeTag::ArrayConstExpression
             | SemanticTypeTag::ArrayIncomplete
-            | SemanticTypeTag::CQualified => ChildCountLaw { min: 1, max: 1 },
-            SemanticTypeTag::Map => ChildCountLaw { min: 2, max: 2 },
+            | SemanticTypeTag::CQualified
+            | SemanticTypeTag::KeyOf => ChildCountLaw { min: 1, max: 1 },
+            SemanticTypeTag::Map | SemanticTypeTag::IndexedAccess => {
+                ChildCountLaw { min: 2, max: 2 }
+            }
             SemanticTypeTag::Conditional => ChildCountLaw { min: 4, max: 4 },
             // constraint, optional key-remap (`as`), value
             SemanticTypeTag::Mapped => ChildCountLaw { min: 2, max: 3 },
@@ -1117,7 +1129,8 @@ impl SemanticTypeRecord<'_> {
             | SemanticTypeTag::Unknown
             | SemanticTypeTag::Nominal
             | SemanticTypeTag::TypeVar
-            | SemanticTypeTag::Inferred => ChildCountLaw { min: 0, max: 0 },
+            | SemanticTypeTag::Inferred
+            | SemanticTypeTag::TypeOf => ChildCountLaw { min: 0, max: 0 },
             // The primitive tag-level law stays permissive: pointer and
             // reference shapes own exactly one child, every other shape
             // owns none, and `validate_primitive` proves the exact law
@@ -1154,6 +1167,13 @@ impl SemanticTypeRecord<'_> {
             | SemanticTypeTag::DynTrait
             | SemanticTypeTag::TemplateLiteral => {
                 self.require_no_cells()?;
+            }
+            SemanticTypeTag::KeyOf | SemanticTypeTag::IndexedAccess => {
+                self.require_no_cells()?;
+            }
+            SemanticTypeTag::TypeOf => {
+                self.require_zero_payload1()?;
+                self.require_no_text()?;
             }
             // `Self` needs no spelling, but TypeScript's distinct `this`
             // type must survive the common row so language policy can render

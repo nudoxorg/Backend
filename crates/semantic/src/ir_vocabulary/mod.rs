@@ -18,12 +18,14 @@ pub use self::coordinates::{
     Product, ProductChildren, ProductId, ProductListId, SemanticAtom, Type, TypeId,
 };
 pub use self::entity::{EntityKind, EntityKindCodeError};
+pub use self::identity::typescript_program_identity;
 pub use self::identity::{
     DeclarationFamilyId, DeclarationIdentity, DeclarationKey, DeclarationKeyFault,
     DeclarationPathFault, ExternalDeclarationIdentity, ForeignDeclarationId, ForeignKey,
     ForeignKeyFault, ForeignOrigin, Occurrence, OccurrenceTarget, PackageLineage,
     PackageLineageFault, PackageLineageView, PreimageOverflow, Resolution, StableRef,
-    VariantAvailability, VariantFingerprint,
+    TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeScriptSourceCoordinate, VariantAvailability,
+    VariantFingerprint,
 };
 pub use self::occurrence::{
     Confidence, ConfidenceCodeError, ReferenceKind, ReferenceKindCodeError, RelSpan, RelSpanFault,

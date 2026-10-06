@@ -32,6 +32,10 @@ use backend_frontend_rust::legacy::{
     RustWorkspaceSessionLease,
 };
 use backend_frontend_typescript::legacy::TypeScriptInvocationModeV1;
+use backend_frontend_typescript::{
+    TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszProject, TszProjectAuthority,
+    TszProjectExecutionBudget, TszProjectOptions, TszSourceError,
+};
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerFragmentFailure, CompilerReadiness,
     CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, FragmentCause,
@@ -1759,6 +1763,8 @@ pub(crate) struct StagedPackageCompilation {
     cargo_workspace_facts: Option<std::sync::Arc<RustCargoWorkspaceFactsV1>>,
     typescript_witness:
         Option<std::sync::Arc<crate::application::typescript_host::TypeScriptProjectWitness>>,
+    typescript_closure_witness:
+        Option<crate::application::typescript_program::TypeScriptProgramClosureWitness>,
     embeddings: Option<StagedEmbeddingOutput>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
 }
@@ -2045,6 +2051,111 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         if let Some(project) = typescript_project.as_ref() {
             package_authority_configuration.typescript = Some(&project.checker);
         }
+        // A configured TypeScript package is resolved once into the exact
+        // compiler-owned program, then all package files borrow one TSZ
+        // checker session. The same finite checkpoint covers parse, bind,
+        // merge, check, and every lazy per-file query.
+        let mut tsz_authority = None;
+        let mut tsz_budget = None;
+        let mut tsz_package_paths = std::collections::BTreeMap::<Box<str>, Box<str>>::new();
+        let mut typescript_closure_witness = None;
+        if let Some(project) = typescript_project.as_ref() {
+            let inputs = project.inputs();
+            let mut resolver = inputs.resolver();
+            let package_sources = package.compilation_sources().collect::<Vec<_>>();
+            let native = crate::application::typescript_program::build_native_inputs(
+                &inputs,
+                &mut resolver,
+                &package_sources,
+                control.deadline,
+                cancelled,
+            )
+            .map_err(|cause| {
+                let toolchain = self.toolchain(first_application_request).unwrap_or(
+                    ToolchainSelection::ExplicitlyUnavailable {
+                        tool: NativeTool::TypeScriptCompiler,
+                    },
+                );
+                let terminal = package_authority_terminal(
+                    package.package_target.target(),
+                    first_application_request,
+                    first_authority,
+                    toolchain,
+                    PackageAuthorityError::TypeScriptProjectHost(cause),
+                );
+                PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(terminal),
+                }
+            })?;
+            typescript_closure_witness = Some(native.closure_witness);
+            let budget =
+                TszProjectExecutionBudget::new(control.deadline, cancelled, native.work_units);
+            let mut authority = TszProjectAuthority::new();
+            authority
+                .update_with_execution_checkpoint(
+                    native.sources,
+                    native.options,
+                    &native.libraries,
+                    &budget,
+                )
+                .map_err(|cause| {
+                    let toolchain = self.toolchain(first_application_request).unwrap_or(
+                        ToolchainSelection::ExplicitlyUnavailable {
+                            tool: NativeTool::TypeScriptCompiler,
+                        },
+                    );
+                    let terminal = package_authority_terminal(
+                        package.package_target.target(),
+                        first_application_request,
+                        first_authority,
+                        toolchain,
+                        PackageAuthorityError::TypeScriptTsz(cause),
+                    );
+                    PackageSemanticError::Compile {
+                        path: first_source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    }
+                })?;
+            tsz_package_paths = native.package_paths;
+            tsz_budget = Some(budget);
+            tsz_authority = Some(authority);
+        }
+        let tsz_project = tsz_authority
+            .as_ref()
+            .and_then(TszProjectAuthority::project);
+        let tsz_session = match (tsz_project, tsz_budget.as_ref()) {
+            (Some(project), Some(budget)) => {
+                Some(project.checked_query_session(budget).map_err(|cause| {
+                    let toolchain = self.toolchain(first_application_request).unwrap_or(
+                        ToolchainSelection::ExplicitlyUnavailable {
+                            tool: NativeTool::TypeScriptCompiler,
+                        },
+                    );
+                    let terminal = package_authority_terminal(
+                        package.package_target.target(),
+                        first_application_request,
+                        first_authority,
+                        toolchain,
+                        PackageAuthorityError::TypeScriptTsz(
+                            backend_frontend_typescript::TszAuthorityError::ProjectCheckerSession(
+                                cause,
+                            ),
+                        ),
+                    );
+                    PackageSemanticError::Compile {
+                        path: first_source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    }
+                })?)
+            }
+            (None, None) => None,
+            _ => {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "TypeScript project checker session",
+                });
+            }
+        };
         let source_count = package.compilation_sources().count();
         if target.profile.language() == backend_semantic::vocabulary::Language::Rust
             && let Some(configuration) = self.package_authority.rust
@@ -2388,7 +2499,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     }
                 })?;
             let source_path = package.package_root.join(source.relative_path);
-            let transient_authority = if rust_workspace_authority.is_none() {
+            let transient_authority = if rust_workspace_authority.is_none() && tsz_project.is_none()
+            {
                 Some(
                     enter_package_authority_with_go_authority_witness(
                         PackageAuthorityRequest {
@@ -2420,13 +2532,27 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             } else {
                 None
             };
-            let authority_owner = rust_workspace_authority
-                .as_ref()
-                .or(transient_authority.as_ref())
-                .ok_or(PackageSemanticError::Capacity {
-                    lane: "package authority owner",
-                })?;
-            let authority = authority_owner.input(&source_path);
+            let authority =
+                if let (Some(project), Some(session)) = (tsz_project, tsz_session.as_ref()) {
+                    let source_path = tsz_package_paths.get(source.relative_path()).ok_or(
+                        PackageSemanticError::Capacity {
+                            lane: "TypeScript package source path mapping",
+                        },
+                    )?;
+                    crate::driver::SemanticAuthorityInput::TypeScriptTsz {
+                        project,
+                        session,
+                        source_path,
+                    }
+                } else {
+                    let authority_owner = rust_workspace_authority
+                        .as_ref()
+                        .or(transient_authority.as_ref())
+                        .ok_or(PackageSemanticError::Capacity {
+                            lane: "package authority owner",
+                        })?;
+                    authority_owner.input(&source_path)
+                };
             let compiled = match self.stage_prepared(
                 application_request,
                 source_authority,
@@ -2637,6 +2763,22 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 terminal: Box::new(terminal),
             });
         }
+        match (
+            typescript_project.as_ref(),
+            typescript_closure_witness.as_ref(),
+        ) {
+            (Some(project), Some(resolver_witness)) => {
+                resolver_witness
+                    .validate_current(project.witness.as_ref())
+                    .map_err(PackageSemanticError::TypeScriptProjectWitness)?;
+            }
+            (None, None) => {}
+            _ => {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "TypeScript compiler read closure",
+                });
+            }
+        }
         let project_plane_seed = typescript_toolchain.and_then(|toolchain| {
             typescript_project.as_ref().and_then(|project| {
                 LocalCompilerPlaneExecutionSeed::for_typescript_project(
@@ -2672,6 +2814,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             typescript_witness: typescript_project
                 .as_ref()
                 .map(|project| std::sync::Arc::clone(&project.witness)),
+            typescript_closure_witness,
             embeddings: embedding_identity.map(|identity| StagedEmbeddingOutput {
                 identity,
                 artifacts: if embedding_unavailable.is_some() {
@@ -2918,6 +3061,20 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                 .validate_current()
                 .map_err(PackageSemanticError::TypeScriptProjectWitness)?;
         }
+        match (
+            staged.typescript_witness.as_ref(),
+            staged.typescript_closure_witness.as_ref(),
+        ) {
+            (Some(project), Some(resolver)) => resolver
+                .validate_current(project.as_ref())
+                .map_err(PackageSemanticError::TypeScriptProjectWitness)?,
+            (None, None) => {}
+            _ => {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "TypeScript compiler read closure",
+                });
+            }
+        }
         let count = staged.artifacts.len();
         if count == 0 {
             return Err(PackageSemanticError::Capacity { lane: "manifest" });
@@ -3046,6 +3203,20 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
             witness
                 .validate_current()
                 .map_err(PackageSemanticError::TypeScriptProjectWitness)?;
+        }
+        match (
+            staged.typescript_witness.as_ref(),
+            staged.typescript_closure_witness.as_ref(),
+        ) {
+            (Some(project), Some(resolver)) => resolver
+                .validate_current(project.as_ref())
+                .map_err(PackageSemanticError::TypeScriptProjectWitness)?,
+            (None, None) => {}
+            _ => {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "TypeScript compiler read closure",
+                });
+            }
         }
         let package_identity = staged.package_identity;
         let target_identity = staged.target_identity;
@@ -4116,9 +4287,9 @@ fn package_authority_projection(
         PackageAuthorityError::RustProject(_) => (Phase::Resolve, Class::Authority),
         PackageAuthorityError::GoOracle(cause) => go_authority_projection(cause),
         PackageAuthorityError::CSharp(_) => (Phase::TypeCheck, Class::Authority),
-        PackageAuthorityError::TypeScript(_) | PackageAuthorityError::TypeScriptProjectHost(_) => {
-            (Phase::TypeCheck, Class::Authority)
-        }
+        PackageAuthorityError::TypeScript(_) => (Phase::TypeCheck, Class::Authority),
+        PackageAuthorityError::TypeScriptTsz(_) => (Phase::Resolve, Class::Authority),
+        PackageAuthorityError::TypeScriptProjectHost(_) => (Phase::TypeCheck, Class::Authority),
         PackageAuthorityError::JavaHarness(_)
         | PackageAuthorityError::GoAuthorityWitness(_)
         | PackageAuthorityError::ImageTooLarge { .. }

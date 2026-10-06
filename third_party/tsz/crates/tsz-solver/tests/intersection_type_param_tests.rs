@@ -1,0 +1,437 @@
+//! Tests for intersection types with type parameters
+//! Specifically the pattern `T & {}` which TypeScript uses to exclude null/undefined
+
+use super::*;
+use crate::intern::TypeInterner;
+use crate::relations::subtype::SubtypeChecker;
+use crate::types::{MappedType, PropertyInfo, TypeParamInfo};
+
+#[test]
+fn test_intersection_with_empty_object_assignable_to_type_param() {
+    // T & {} should be assignable to T
+    // This is a common TypeScript pattern to exclude null/undefined from T
+    let interner = TypeInterner::new();
+
+    // Create type parameter T
+    let t_name = interner.intern_string("T");
+    let t_param = interner.intern(TypeData::TypeParameter(TypeParamInfo {
+        name: t_name,
+        constraint: None,
+        default: None,
+        is_const: false,
+        origin: crate::types::TypeParamOrigin::User,
+    }));
+
+    // Create {} (empty object type)
+    let empty_obj = interner.object(vec![]);
+
+    // Create T & {}
+    let t_and_empty = interner.intersection(vec![t_param, empty_obj]);
+
+    // Check: T & {} <: T should be true
+    let mut checker = SubtypeChecker::new(&interner);
+    assert!(
+        checker.is_subtype_of(t_and_empty, t_param),
+        "T & {{}} should be assignable to T"
+    );
+}
+
+#[test]
+fn test_type_param_union_undefined_intersect_empty_or_null_assignable_to_type_param() {
+    // Regression: `(T | undefined) & ({} | null)` must be assignable to `T`.
+    //
+    // This is the `indexedAccessAndNullableNarrowing` shape: `Partial<X>[K]` is
+    // `T[K] | undefined`, and tsc narrows / intersects it with the "non-undefined"
+    // filter `{} | null`. Distributing the cross product drops the impossible
+    // arms (`undefined & {}` and `undefined & null` are both `never`), leaving
+    // `(T & {}) | (T & null)`, which is assignable to `T`. Without the
+    // distribution the intersection survives unsimplified and the relation
+    // cannot prove the subtype, producing a spurious TS2322.
+    let interner = TypeInterner::new();
+
+    let t_name = interner.intern_string("T");
+    let t_param = interner.intern(TypeData::TypeParameter(TypeParamInfo {
+        name: t_name,
+        constraint: None,
+        default: None,
+        is_const: false,
+        origin: crate::types::TypeParamOrigin::User,
+    }));
+
+    let empty_obj = interner.object(vec![]);
+
+    // (T | undefined)
+    let t_or_undefined = interner.union(vec![t_param, TypeId::UNDEFINED]);
+    // ({} | null)
+    let empty_or_null = interner.union(vec![empty_obj, TypeId::NULL]);
+    // (T | undefined) & ({} | null)
+    let source = interner.intersection(vec![t_or_undefined, empty_or_null]);
+
+    let mut checker = SubtypeChecker::new(&interner);
+    assert!(
+        checker.is_subtype_of(source, t_param),
+        "(T | undefined) & ({{}} | null) should be assignable to T"
+    );
+
+    // The companion `& {}` form (single non-union filter) must keep working too.
+    let source_empty_only = interner.intersection(vec![t_or_undefined, empty_obj]);
+    assert!(
+        checker.is_subtype_of(source_empty_only, t_param),
+        "(T | undefined) & {{}} should be assignable to T"
+    );
+}
+
+#[test]
+fn test_non_reducing_cross_product_intersection_is_not_distributed() {
+    // Guard: a cross product whose arms cannot merge and where nothing reduces
+    // to `never` — `(A | B) & (C | D)` over distinct type parameters — must NOT
+    // be distributed. It stays an intersection of unions exactly as tsc keeps
+    // it, pinning the boundary of the distribution refinement above (which only
+    // fires when an impossible arm is eliminated).
+    let interner = TypeInterner::new();
+
+    let mk = |n: &str| {
+        interner.intern(TypeData::TypeParameter(TypeParamInfo {
+            name: interner.intern_string(n),
+            constraint: None,
+            default: None,
+            is_const: false,
+            origin: crate::types::TypeParamOrigin::User,
+        }))
+    };
+    let (a, b, c, d) = (mk("A"), mk("B"), mk("C"), mk("D"));
+
+    let a_or_b = interner.union(vec![a, b]);
+    let c_or_d = interner.union(vec![c, d]);
+    let result = interner.intersection(vec![a_or_b, c_or_d]);
+
+    assert!(
+        matches!(interner.lookup(result), Some(TypeData::Intersection(_))),
+        "non-reducing cross product should remain an intersection, got {:?}",
+        interner.lookup(result)
+    );
+}
+
+#[test]
+fn test_value_union_filter_intersection_is_not_distributed() {
+    // Guard against over-eager distribution: `(T | undefined) & ({ a } | { b })`
+    // eliminates `undefined & { a }` / `undefined & { b }` arms, but `{ a } | { b }`
+    // is a genuine value union, NOT a nullish-removal filter. Distributing it would
+    // drop the alias display tsc keeps and perturb relation-complexity accounting
+    // (regression witness: relationComplexityError.ts). It must stay an intersection.
+    let interner = TypeInterner::new();
+
+    let t_param = interner.intern(TypeData::TypeParameter(TypeParamInfo {
+        name: interner.intern_string("T"),
+        constraint: None,
+        default: None,
+        is_const: false,
+        origin: crate::types::TypeParamOrigin::User,
+    }));
+    let obj_a = interner.object(vec![PropertyInfo::new(
+        interner.intern_string("a"),
+        TypeId::STRING,
+    )]);
+    let obj_b = interner.object(vec![PropertyInfo::new(
+        interner.intern_string("b"),
+        TypeId::NUMBER,
+    )]);
+
+    let t_or_undefined = interner.union(vec![t_param, TypeId::UNDEFINED]);
+    let a_or_b = interner.union(vec![obj_a, obj_b]);
+    let result = interner.intersection(vec![t_or_undefined, a_or_b]);
+
+    assert!(
+        matches!(interner.lookup(result), Some(TypeData::Intersection(_))),
+        "value-union filter intersection should remain an intersection, got {:?}",
+        interner.lookup(result)
+    );
+}
+
+#[test]
+fn test_intersection_with_type_param_and_constraint() {
+    // T & string should be assignable to T extends string
+    let interner = TypeInterner::new();
+
+    // Create type parameter T extends string
+    let t_name = interner.intern_string("T");
+    let t_param = interner.intern(TypeData::TypeParameter(TypeParamInfo {
+        name: t_name,
+        constraint: Some(TypeId::STRING),
+        default: None,
+        is_const: false,
+        origin: crate::types::TypeParamOrigin::User,
+    }));
+
+    // Create T & string
+    let t_and_string = interner.intersection(vec![t_param, TypeId::STRING]);
+
+    // Check: T & string <: T should be true
+    let mut checker = SubtypeChecker::new(&interner);
+    assert!(
+        checker.is_subtype_of(t_and_string, t_param),
+        "T & string should be assignable to T when T extends string"
+    );
+}
+
+#[test]
+fn test_concrete_intersection_with_empty_still_works() {
+    // string & {} should still be assignable to string (existing behavior)
+    let interner = TypeInterner::new();
+
+    let empty_obj = interner.object(vec![]);
+    let string_and_empty = interner.intersection(vec![TypeId::STRING, empty_obj]);
+
+    let mut checker = SubtypeChecker::new(&interner);
+    assert!(
+        checker.is_subtype_of(string_and_empty, TypeId::STRING),
+        "string & {{}} should be assignable to string"
+    );
+}
+
+#[test]
+fn test_intersection_with_mapped_type_member_matches_target() {
+    // Readonly<T> & { name: string } should be assignable to Readonly<T>
+    // This tests the fix where source intersection member check runs before
+    // type-specific target handlers (mapped type expansion) that would
+    // otherwise return False without decomposing the source intersection.
+    let interner = TypeInterner::new();
+
+    // Create type parameter T
+    let t_name = interner.intern_string("T");
+    let t_param = interner.intern(TypeData::TypeParameter(TypeParamInfo {
+        name: t_name,
+        constraint: None,
+        default: None,
+        is_const: false,
+        origin: crate::types::TypeParamOrigin::User,
+    }));
+
+    // Create type parameter P (for the mapped type iteration variable)
+    let p_name = interner.intern_string("P");
+    let p_param = TypeParamInfo {
+        name: p_name,
+        constraint: None,
+        default: None,
+        is_const: false,
+        origin: crate::types::TypeParamOrigin::User,
+    };
+
+    // Create keyof T
+    let keyof_t = interner.keyof(t_param);
+
+    // Create a mapped type like Readonly<T>: { readonly [P in keyof T]: T[P] }
+    let p_param_type = interner.intern(TypeData::TypeParameter(p_param));
+    let t_index_p = interner.index_access(t_param, p_param_type);
+    let mapped = interner.mapped(MappedType {
+        type_param: p_param,
+        constraint: keyof_t,
+        name_type: None,
+        template: t_index_p,
+        optional_modifier: None,
+        readonly_modifier: None,
+    });
+
+    // Create { name: string }
+    let name_atom = interner.intern_string("name");
+    let name_obj = interner.object(vec![PropertyInfo::new(name_atom, TypeId::STRING)]);
+
+    // Create: MappedType<T> & { name: string }
+    let intersection = interner.intersection(vec![mapped, name_obj]);
+
+    // Check: MappedType<T> & { name: string } <: MappedType<T>
+    let mut checker = SubtypeChecker::new(&interner);
+    assert!(
+        checker.is_subtype_of(intersection, mapped),
+        "MappedType<T> & {{ name: string }} should be assignable to MappedType<T>"
+    );
+}
+
+#[test]
+fn test_intersection_member_check_with_application_type() {
+    // Application<T> & { x: number } should be assignable to Application<T>
+    // Tests that the intersection member check works with Application types too.
+    let interner = TypeInterner::new();
+
+    // Create a base type (simulating a type alias like `Readonly`)
+    let base = interner.lazy(crate::def::DefId(999));
+
+    // Create type parameter T
+    let t_param = interner.intern(TypeData::TypeParameter(TypeParamInfo {
+        name: interner.intern_string("T"),
+        constraint: None,
+        default: None,
+        is_const: false,
+        origin: crate::types::TypeParamOrigin::User,
+    }));
+
+    // Create Application<T> (like Readonly<T>)
+    let app = interner.application(base, vec![t_param]);
+
+    // Create { x: number }
+    let x_atom = interner.intern_string("x");
+    let x_obj = interner.object(vec![PropertyInfo::new(x_atom, TypeId::NUMBER)]);
+
+    // Create: Application<T> & { x: number }
+    let intersection = interner.intersection(vec![app, x_obj]);
+
+    // Check: Application<T> & { x: number } <: Application<T>
+    let mut checker = SubtypeChecker::new(&interner);
+    assert!(
+        checker.is_subtype_of(intersection, app),
+        "Application<T> & {{ x: number }} should be assignable to Application<T>"
+    );
+}
+
+#[test]
+fn test_intersection_member_check_does_not_allow_non_member() {
+    // { name: string } & { age: number } should NOT be assignable to { name: string; age: number; active: boolean }
+    // The member check should fail (no individual member has all 3 properties),
+    // and property merging should also fail (missing 'active').
+    let interner = TypeInterner::new();
+
+    let name_atom = interner.intern_string("name");
+    let age_atom = interner.intern_string("age");
+    let active_atom = interner.intern_string("active");
+
+    let name_obj = interner.object(vec![PropertyInfo::new(name_atom, TypeId::STRING)]);
+    let age_obj = interner.object(vec![PropertyInfo::new(age_atom, TypeId::NUMBER)]);
+    let target_obj = interner.object(vec![
+        PropertyInfo::new(name_atom, TypeId::STRING),
+        PropertyInfo::new(age_atom, TypeId::NUMBER),
+        PropertyInfo::new(active_atom, TypeId::BOOLEAN),
+    ]);
+
+    let intersection = interner.intersection(vec![name_obj, age_obj]);
+
+    let mut checker = SubtypeChecker::new(&interner);
+    assert!(
+        !checker.is_subtype_of(intersection, target_obj),
+        "{{ name: string }} & {{ age: number }} should NOT be assignable to {{ name, age, active }}"
+    );
+}
+
+#[test]
+fn test_intersection_type_params_assignable_to_constraint_union_intersection() {
+    // T & U should be assignable to (A | B) & T & U when T extends A and U extends B
+    // This is the pattern: function f2<T extends A, U extends B>(ab: T & U): (A | B) & T & U { return ab; }
+    // where A = 1 | 2, B = 2 | 3
+    let interner = TypeInterner::new();
+
+    let lit_1 = interner.literal_number(1.0);
+    let lit_2 = interner.literal_number(2.0);
+    let lit_3 = interner.literal_number(3.0);
+
+    // A = 1 | 2, B = 2 | 3
+    let a_type = interner.union(vec![lit_1, lit_2]);
+    let b_type = interner.union(vec![lit_2, lit_3]);
+
+    // T extends A
+    let t_param = interner.intern(TypeData::TypeParameter(TypeParamInfo {
+        name: interner.intern_string("T"),
+        constraint: Some(a_type),
+        default: None,
+        is_const: false,
+        origin: crate::types::TypeParamOrigin::User,
+    }));
+
+    // U extends B
+    let u_param = interner.intern(TypeData::TypeParameter(TypeParamInfo {
+        name: interner.intern_string("U"),
+        constraint: Some(b_type),
+        default: None,
+        is_const: false,
+        origin: crate::types::TypeParamOrigin::User,
+    }));
+
+    // Source: T & U
+    let t_and_u = interner.intersection(vec![t_param, u_param]);
+
+    // Target: (A | B) & T & U
+    let a_or_b = interner.union(vec![a_type, b_type]);
+    let target = interner.intersection(vec![a_or_b, t_param, u_param]);
+
+    // T & U <: (A | B) & T & U should be TRUE
+    let mut checker = SubtypeChecker::new(&interner);
+    assert!(
+        checker.is_subtype_of(t_and_u, target),
+        "T & U should be assignable to (A | B) & T & U when T extends A and U extends B"
+    );
+}
+
+/// Test that indexed access on intersection with unconstrained type parameter
+/// correctly produces a deferred `IndexAccess` that blocks assignability.
+/// This is the core of the indexedAccessRelation.ts test case.
+#[test]
+fn test_indexed_access_intersection_with_unconstrained_type_param() {
+    use crate::TypeEvaluator;
+    use crate::types::Visibility;
+
+    let interner = TypeInterner::new();
+
+    // Create S (unconstrained type parameter, implicit constraint = unknown)
+    let s_name = interner.intern_string("S");
+    let s_param = interner.intern(TypeData::TypeParameter(TypeParamInfo {
+        name: s_name,
+        constraint: Some(TypeId::UNKNOWN),
+        default: None,
+        is_const: false,
+        origin: crate::types::TypeParamOrigin::User,
+    }));
+
+    // Create T (constrained type parameter, e.g., extends Foo)
+    let foo = interner.object(vec![]); // Simplified Foo
+    let t_name = interner.intern_string("T");
+    let t_param = interner.intern(TypeData::TypeParameter(TypeParamInfo {
+        name: t_name,
+        constraint: Some(foo),
+        default: None,
+        is_const: false,
+        origin: crate::types::TypeParamOrigin::User,
+    }));
+
+    // Create State<T> = { a?: T }
+    let a_name = interner.intern_string("a");
+    let state_t = interner.object(vec![PropertyInfo {
+        name: a_name,
+        type_id: interner.union2(t_param, TypeId::UNDEFINED),
+        write_type: interner.union2(t_param, TypeId::UNDEFINED),
+        optional: true,
+        readonly: false,
+        is_method: false,
+        is_class_prototype: false,
+        visibility: Visibility::Public,
+        parent_id: None,
+        declaration_order: 0,
+        is_string_named: false,
+        is_symbol_named: false,
+        single_quoted_name: false,
+        non_widening: false,
+    }]);
+
+    // Create intersection S & State<T>
+    let intersection = interner.intersection(vec![s_param, state_t]);
+
+    // Create index type "a"
+    let index_a = interner.literal_string("a");
+
+    // Evaluate (S & State<T>)["a"]
+    let mut evaluator = TypeEvaluator::new(&interner);
+    let index_access = interner.index_access(intersection, index_a);
+    let result = evaluator.evaluate(index_access);
+
+    println!("Result of (S & State<T>)['a']: {result:?}");
+    println!("Result type data: {:?}", interner.lookup(result));
+
+    // Check if T is assignable to the result - it should NOT be
+    // The result should be S["a"] & (T | undefined), and T is not assignable to S["a"]
+    let mut checker = SubtypeChecker::new(&interner);
+    let is_subtype = checker.is_subtype_of(t_param, result);
+    println!("T <: result? {is_subtype} (should be false)");
+
+    // T should NOT be assignable to (S & State<T>)["a"] because S["a"] is unknown
+    assert!(
+        !is_subtype,
+        "T should not be assignable to (S & State<T>)['a'] since S['a'] could be any type"
+    );
+}

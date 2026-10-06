@@ -193,6 +193,12 @@ pub enum ProjectionSemanticTypeTag {
     ArrayIncomplete,
     /// C-family qualified type.
     CQualified,
+    /// TypeScript's unevaluated `keyof` operator.
+    KeyOf,
+    /// TypeScript's unevaluated indexed-access operator.
+    IndexedAccess,
+    /// TypeScript's exact entity-targeted `typeof` query.
+    TypeOf,
 }
 
 /// Closed type-record cell used by the portable admission snapshot.
@@ -464,6 +470,30 @@ pub enum ProjectionAdmissionFault {
     TypeRowCapacity,
     /// Computed type-row lane was full.
     ComputedRowCapacity,
+    /// Native type recursion exceeded the projector's explicit depth bound.
+    TypeProjectionDepthLimit {
+        /// Depth observed at the rejected type node.
+        depth: u64,
+        /// Maximum admitted projection depth.
+        maximum: u64,
+    },
+    /// Native type interning graph revisited a node already on the active path.
+    TypeProjectionCycle {
+        /// Exact interned type handle that closes the cycle.
+        type_id: u32,
+    },
+    /// Native checker exposed a recursive back-reference that cannot be represented as a local row.
+    TypeProjectionRecursiveReference {
+        /// De Bruijn-style number of enclosing recursive scopes to reference.
+        distance: u32,
+    },
+    /// A non-associative native type constructor exceeds the row child bound.
+    TypeProjectionWidth {
+        /// Exact number of children required by the source constructor.
+        actual: u64,
+        /// Maximum children admitted for one row.
+        maximum: u64,
+    },
     /// Occurrence owner was outside the pushed prefix.
     OccurrenceOwner {
         /// Zero-based emitted fact ordinal claimed as the occurrence owner.

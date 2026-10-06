@@ -117,6 +117,15 @@ pub enum AuthorityFailure<'diagnostic> {
         #[source]
         cause: backend_frontend_typescript::legacy::AuthorityError,
     },
+    /// Native TSZ could not prove the selected project/file transaction.
+    #[error("native TypeScript project authority failed")]
+    TypeScriptTsz {
+        /// Bounded source diagnostic retained by the TSZ adapter, when present.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Exact typed project authority failure.
+        #[source]
+        cause: backend_frontend_typescript::TszAuthorityError,
+    },
     /// TypeScript source bytes could not be lent to OXC as valid UTF-8 text.
     #[error("TypeScript source is not valid UTF-8")]
     TypeScriptUtf8 {
@@ -303,6 +312,11 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                 class: typescript_class(cause),
                 diagnostic: *diagnostic,
             },
+            Self::TypeScriptTsz { diagnostic, .. } => AuthorityFailureProjection {
+                phase: AuthorityPhase::Project,
+                class: AuthorityDiagnosticClass::Projection,
+                diagnostic: *diagnostic,
+            },
             Self::TypeScriptUtf8 { diagnostic, .. } | Self::TypeScriptSpan { diagnostic, .. } => {
                 AuthorityFailureProjection {
                     phase: AuthorityPhase::Parse,
@@ -395,6 +409,7 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
             ) | (Self::Rust { .. }, LanguageProfile::Rust(_))
                 | (
                     Self::TypeScript { .. }
+                        | Self::TypeScriptTsz { .. }
                         | Self::TypeScriptUtf8 { .. }
                         | Self::TypeScriptSpan { .. },
                     LanguageProfile::TypeScript(_)

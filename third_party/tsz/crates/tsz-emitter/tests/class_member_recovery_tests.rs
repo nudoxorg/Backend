@@ -1,0 +1,604 @@
+//! Integration tests for malformed class member emit recovery.
+
+use tsz_emitter::emitter::{Printer as EmitterPrinter, PrinterOptions, ScriptTarget};
+use tsz_emitter::output::printer::PrintOptions;
+use tsz_emitter::{context::emit::EmitContext, lowering::LoweringPass};
+
+#[path = "test_support.rs"]
+mod test_support;
+
+use test_support::{parse_and_print_with_opts, parse_source};
+
+fn print_es2015(source: &str) -> String {
+    parse_and_print_with_opts(source, PrintOptions::es6())
+}
+
+fn print_with_printer_options(source: &str, opts: PrinterOptions) -> String {
+    let (parser, root) = parse_source(source);
+    let mut printer = EmitterPrinter::with_options(&parser.arena, opts);
+    printer.set_source_text(source);
+    printer.emit(root);
+    printer.get_output().to_string()
+}
+
+fn print_with_cli_style_pipeline(source: &str, opts: PrinterOptions) -> String {
+    let (parser, root) = parse_source(source);
+    let ctx = EmitContext::with_options(opts.clone());
+    let transforms = LoweringPass::new(&parser.arena, &ctx).run(root);
+    let mut printer = EmitterPrinter::with_transforms_and_options(&parser.arena, transforms, opts);
+    printer.set_source_text(source);
+    printer.set_source_map_text(source);
+    printer.emit(root);
+    printer.get_output().to_string()
+}
+
+#[test]
+fn public_empty_block_member_emits_recovered_block_statement() {
+    let output = print_es2015("class C {\n    public {};\n}\n");
+    assert_eq!(output, "class C {\n}\n{ }\n;\n");
+}
+
+#[test]
+fn public_index_signature_block_member_emits_recovered_block_statement() {
+    let output = print_es2015("class C {\n    public {[name:string]:VariableDeclaration};\n}\n");
+    assert_eq!(
+        output,
+        "class C {\n}\n{\n    [name, string];\n    VariableDeclaration;\n}\n;\n"
+    );
+}
+
+#[test]
+fn es2015_type_only_class_property_is_erased() {
+    let output = print_es2015("class C {\n    foo: string;\n}\n");
+    assert_eq!(output, "class C {\n}\n");
+}
+
+#[test]
+fn computed_string_field_preserves_source_quotes_with_constructor() {
+    let output = print_with_printer_options(
+        "class C {\n    ['this'] = '';\n    constructor() {}\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.contains("this['this'] = '';"),
+        "Computed string field should preserve its source quote style.\nOutput:\n{output}"
+    );
+    assert!(
+        !output.contains("this[\"this\"]"),
+        "Computed string field should not be rewritten to double quotes.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn computed_field_initializer_continues_with_next_bracketed_line() {
+    let output = print_with_printer_options(
+        "class C {\n    [e] = 0\n    [e2] = 1\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.contains("this[_a] = 0[e2] = 1;"),
+        "A following bracketed line should be parsed as the field initializer's element-access continuation.\nOutput:\n{output}"
+    );
+    assert!(
+        !output.contains("_b = e2"),
+        "The bracketed continuation must not become a second computed class field.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn computed_field_typed_initializer_continues_with_next_bracketed_line() {
+    let output = print_with_printer_options(
+        "class C {\n    [key]: number = 0\n    [next]: number\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.contains("this[_a] = 0[next];"),
+        "Typed computed fields should keep the following bracketed line as an initializer continuation.\nOutput:\n{output}"
+    );
+    assert!(
+        !output.contains("_b = next"),
+        "The continuation should not allocate a second computed-field temp.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn computed_field_initializer_continues_into_recovered_method_call() {
+    let output = print_with_printer_options(
+        "class C {\n    [e] = 0\n    [e2]() { }\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.contains("this[_a] = 0[e2]();"),
+        "A following computed method-like line should recover as a call continuation on the initializer.\nOutput:\n{output}"
+    );
+    assert!(
+        output.ends_with("{ }\n"),
+        "The recovered method body should remain as a trailing block statement.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn cli_style_computed_string_field_preserves_source_quotes_with_crlf() {
+    let source = "class C {\r\n    data = { foo: '' };\r\n    ['this'] = '';\r\n    constructor() {\r\n        var copy: typeof this.data = { foo: '' };\r\n    }\r\n}\r\n";
+    let output = print_with_cli_style_pipeline(
+        source,
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.contains("this['this'] = '';"),
+        "Computed string field should preserve its source quote style.\nOutput:\n{output}"
+    );
+    assert!(
+        !output.contains("this[\"this\"]"),
+        "Computed string field should not be rewritten to double quotes.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn constructor_recovered_return_type_survives_arrow_parameter_syntax() {
+    let output = print_with_printer_options(
+        "class C {\n    constructor(fn: (x: number) => void, value = () => 1): Result {}\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.contains("constructor(fn, value = () => 1): Result"),
+        "Constructor recovery should preserve the return type after arrow syntax.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn lowered_instance_field_arrow_initializer_keeps_trailing_comment_after_semicolon() {
+    let output = print_with_printer_options(
+        "class C {\n    a = () => arguments // should error\n    constructor() {}\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            use_define_for_class_fields: false,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.contains("this.a = () => arguments; // should error"),
+        "Lowered class field arrow comment should follow the generated assignment semicolon.\nOutput:\n{output}"
+    );
+    assert!(
+        !output.contains("this.a = () => arguments // should error\n;"),
+        "Arrow body should not emit the field comment before the assignment semicolon.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn lowered_class_expression_field_arrow_initializer_keeps_trailing_comment_after_semicolon() {
+    let output = print_with_cli_style_pipeline(
+        "function D() {\n    return class T {\n        a = () => arguments // should error\n    };\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            use_define_for_class_fields: false,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.contains("this.a = () => arguments; // should error"),
+        "Lowered class expression field arrow comment should follow the generated assignment semicolon.\nOutput:\n{output}"
+    );
+    assert!(
+        !output.contains("this.a = () => arguments // should error\n;"),
+        "Transformed class-expression field should not let the arrow body steal the field comment.\nOutput:\n{output}"
+    );
+}
+
+/// Under `useDefineForClassFields` (target < ES2022) a no-initializer field is
+/// NOT erased: tsc materializes it as a defined field and hoists its non-literal
+/// computed name to a temp, exactly as for an initialized computed field. See the
+/// tsc baseline `staticPropertyNameConflicts(target=es2015,usedefineforclassfields=true)`,
+/// where `[FunctionPropertyNames.name]: number;` emits
+/// `Object.defineProperty(this, _b, { ... value: void 0 })` + `_b = FunctionPropertyNames.name`.
+#[test]
+fn downlevel_define_type_only_computed_property_hoists_temp() {
+    let output = print_with_printer_options(
+        "class C {\n    [side.effect]: string;\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            use_define_for_class_fields: true,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.contains("Object.defineProperty(this, _a, {"),
+        "No-init computed field under define semantics must materialize through the hoisted temp.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("value: void 0"),
+        "No-init defined field uses `value: void 0`.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("_a = side.effect;"),
+        "Computed name expression must be hoisted to the temp after the class body.\nOutput:\n{output}"
+    );
+    // The name must NOT be inlined as a literal property key.
+    assert!(
+        !output.contains("Object.defineProperty(this, \"side.effect\""),
+        "Computed name must not be inlined as a literal property name.\nOutput:\n{output}"
+    );
+}
+
+/// Without `useDefineForClassFields`, a no-initializer typed-only computed
+/// property has no runtime field, so no temp is allocated; only the side-effect
+/// of evaluating the name expression is emitted.
+#[test]
+fn downlevel_no_define_type_only_computed_property_does_not_allocate_temp() {
+    let output = print_with_printer_options(
+        "class C {\n    [side.effect]: string;\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            use_define_for_class_fields: false,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        !output.contains("_a = side.effect"),
+        "Without define semantics, type-only computed property should not allocate a temp.\nOutput:\n{output}"
+    );
+    assert!(
+        !output.contains("Object.defineProperty(this, _a"),
+        "Without define semantics, type-only computed property must not be materialized.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("}\nside.effect;"),
+        "Side-effectful computed property expression should still be emitted.\nOutput:\n{output}"
+    );
+}
+
+/// With `useDefineForClassFields: true` and target < ES2022, a typed-only
+/// field (no initializer) must still be materialized as
+/// `Object.defineProperty(this, "name", { value: void 0 })` in the
+/// constructor — matching tsc semantics where every class field
+/// declaration creates a runtime property under define-fields mode.
+#[test]
+fn downlevel_define_typed_only_field_emits_void0_define_property() {
+    let output = print_with_printer_options(
+        "class Base {}\nclass Test extends Base {\n    prop: number;\n    constructor(public p: number) {\n        super();\n    }\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            use_define_for_class_fields: true,
+            ..Default::default()
+        },
+    );
+
+    let define_prop = "Object.defineProperty(this, \"prop\", {\n            enumerable: true,\n            configurable: true,\n            writable: true,\n            value: void 0\n        });";
+    assert!(
+        output.contains(define_prop),
+        "Typed-only field should be lowered to Object.defineProperty with void 0.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn es5_define_computed_field_temp_hoists_before_user_vars() {
+    let output = print_with_printer_options(
+        "var x = \"p\";\nclass A {\n    [x] = 14;\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES5,
+            use_define_for_class_fields: true,
+            ..Default::default()
+        },
+    );
+
+    let temp_decl = output
+        .find("var _a;")
+        .unwrap_or_else(|| panic!("Missing computed field temp declaration.\nOutput:\n{output}"));
+    let user_var = output
+        .find("var x = \"p\";")
+        .unwrap_or_else(|| panic!("Missing user variable declaration.\nOutput:\n{output}"));
+    let class_decl = output
+        .find("var A =")
+        .unwrap_or_else(|| panic!("Missing lowered class declaration.\nOutput:\n{output}"));
+
+    assert!(
+        temp_decl < user_var && user_var < class_decl,
+        "Computed field temp should be hoisted before top-level user vars.\nOutput:\n{output}"
+    );
+    assert_eq!(
+        output.matches("var _a;").count(),
+        1,
+        "Computed field temp should be declared once.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn es5_define_no_init_computed_field_hoists_temp_and_preserves_comment() {
+    let output = print_with_printer_options(
+        "var x = \"p\";\nclass A {\n    [x]: string; // ok\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES5,
+            use_define_for_class_fields: true,
+            ..Default::default()
+        },
+    );
+
+    let temp_decl = output
+        .find("var _a;")
+        .unwrap_or_else(|| panic!("Missing computed field temp declaration.\nOutput:\n{output}"));
+    let user_var = output
+        .find("var x = \"p\";")
+        .unwrap_or_else(|| panic!("Missing user variable declaration.\nOutput:\n{output}"));
+    let class_decl = output
+        .find("var A =")
+        .unwrap_or_else(|| panic!("Missing lowered class declaration.\nOutput:\n{output}"));
+    let temp_init = output
+        .find("_a = x;")
+        .unwrap_or_else(|| panic!("Missing computed field temp initializer.\nOutput:\n{output}"));
+    let define = output
+        .find("Object.defineProperty(this, _a, {")
+        .unwrap_or_else(|| panic!("Missing computed field define.\nOutput:\n{output}"));
+    let trailing_comment = output.find("        }); // ok").unwrap_or_else(|| {
+        panic!("Field trailing comment should stay on the lowered define.\nOutput:\n{output}")
+    });
+
+    assert!(
+        temp_decl < user_var && user_var < class_decl,
+        "Computed field temp should be hoisted before top-level user vars.\nOutput:\n{output}"
+    );
+    assert!(
+        class_decl < define && define < temp_init,
+        "No-init computed field define should use the temp before the temp initializer statement.\nOutput:\n{output}"
+    );
+    assert!(
+        trailing_comment < temp_init,
+        "Field trailing comment should remain on the define, not the hoisted temp initializer.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("value: void 0"),
+        "No-init define field should materialize `value: void 0`.\nOutput:\n{output}"
+    );
+}
+
+/// Without `useDefineForClassFields`, a typed-only field has no runtime
+/// effect and must not produce any assignment. This guards against the
+/// fix above accidentally widening to all targets.
+#[test]
+fn downlevel_assign_typed_only_field_emits_nothing() {
+    let output = print_with_printer_options(
+        "class Test {\n    prop: number;\n    constructor() {}\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            use_define_for_class_fields: false,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        !output.contains("this.prop"),
+        "Typed-only field without define-fields must not emit a runtime assignment.\nOutput:\n{output}"
+    );
+    assert!(
+        !output.contains("defineProperty(this, \"prop\""),
+        "Typed-only field without define-fields must not emit defineProperty.\nOutput:\n{output}"
+    );
+}
+
+/// In native class-field mode (ES2022+ with `useDefineForClassFields`), TypeScript erases
+/// type annotations but keeps the field declaration itself. Only fields marked with `declare`
+/// are truly ambient and get erased entirely. This matches tsc behavior where
+/// `prop: number;` → `prop;` and `declare baz: boolean;` → nothing.
+#[test]
+fn native_define_typed_public_field_emits_bare_field_declaration() {
+    let output = print_with_printer_options(
+        "class Test {\n    prop: number;\n    bare;\n    #privateProp: number;\n    declare ambient: string;\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES2022,
+            use_define_for_class_fields: true,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.contains("prop;"),
+        "Typed public field should emit as a bare native field declaration (type erased).\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("bare;"),
+        "Untyped public field should remain a runtime class field.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("#privateProp;"),
+        "Private typed field should remain a runtime class field declaration.\nOutput:\n{output}"
+    );
+    assert!(
+        !output.contains("ambient"),
+        "`declare` fields are ambient-only and must be erased entirely.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn native_define_decorated_typed_public_field_stays_runtime_field() {
+    let output = print_with_printer_options(
+        "class Test {\n    @dec\n    prop: number;\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES2022,
+            use_define_for_class_fields: true,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.contains("@dec"),
+        "ES decorator should be preserved.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("prop;"),
+        "Decorated typed field remains a runtime class field.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn duplicate_static_field_modifier_lowers_as_instance_field() {
+    let output = print_with_cli_style_pipeline(
+        "class C {\n    static static foo = 1;\n    public static static bar() { }\n}\n",
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.contains("constructor() {\n        this.foo = 1;\n    }"),
+        "Duplicate static field recovery should lower `foo` as an instance field.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("bar() { }"),
+        "Duplicate static method recovery should emit `bar` as an instance method.\nOutput:\n{output}"
+    );
+    assert!(
+        !output.contains("C.foo = 1"),
+        "Duplicate static field recovery must not emit a static field assignment.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn orphan_case_after_malformed_if_recovers_as_class_field() {
+    let source = r#"class Program {
+    static Main() {
+        try {
+            if (retValue != 0 ^= {
+                return 1;
+            }
+            case = bfs.STATEMENTS(4);
+            if (retValue != 0) {
+                return 1;
+            ^
+            retValue = bfs.TYPES();
+            if (retValue != 0) {
+                return 1 &&
+            }
+        }
+        catch (e) {
+            console.log(e);
+        }
+        finally {
+        }
+    }
+}
+"#;
+
+    let output = print_with_printer_options(
+        source,
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            use_define_for_class_fields: false,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.contains(
+            "if (retValue != 0)\n                 ^= {\n                    return: 1\n                };"
+        ),
+        "Malformed assignment after a binary if-condition should remain in the body.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("constructor() {\n        this.case = bfs.STATEMENTS(4);\n    }"),
+        "Recovered orphan `case` assignment should become a class field initializer.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("if(retValue) { }"),
+        "Recovered control-keyword class member with an invalid header should emit an empty body.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("}\ntry {\n}\ncatch (e)"),
+        "Recovered orphan catch should be emitted after the class body, not as a class member.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("}\n != 0;\n{"),
+        "Recovered comparison tail should be emitted after the class body.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("bfs.TYPES();") && !output.contains(" = bfs.TYPES();"),
+        "Recovered leading assignment should emit the right-hand call without the synthetic `=`.\nOutput:\n{output}"
+    );
+    assert!(
+        !output.contains("        catch(e)"),
+        "Recovered orphan catch must not remain indented inside the class body.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn malformed_while_colon_tail_preserves_tsc_recovery_shape() {
+    let source = "public Overloads( while : string, ...rest: string[]) {  &\npublic DefaultValue(value?: string = \"Hello\") { }\n";
+    let output = print_with_printer_options(
+        source,
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            use_define_for_class_fields: false,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.contains("while ()\n    : string, ;\nrest: string[];"),
+        "Recovered `while : string, ...rest` tail should preserve tsc-compatible layout.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn malformed_catch_question_tail_does_not_emit_extra_semicolon() {
+    let source = r#"function f() {
+    try {
+        throw null;
+    }
+    catch (Exception)  ?
+    }
+    finally {
+        try { }
+        catch (Exception) { }
+    }
+}
+"#;
+    let output = print_with_printer_options(
+        source,
+        PrinterOptions {
+            target: ScriptTarget::ES2015,
+            use_define_for_class_fields: false,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.contains("catch (Exception) { }"),
+        "Recovered dangling `?` after catch should still emit the catch clause.\nOutput:\n{output}"
+    );
+    assert!(
+        !output.contains("catch (Exception) { }\n    ;"),
+        "Recovered dangling `?` after catch must not emit an extra semicolon.\nOutput:\n{output}"
+    );
+    assert!(
+        !output.contains("?"),
+        "Recovered dangling `?` after catch must not survive in output.\nOutput:\n{output}"
+    );
+}

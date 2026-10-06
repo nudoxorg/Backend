@@ -7,6 +7,7 @@
 
 use std::{
     collections::TryReserveError,
+    ffi::OsString,
     fmt,
     io::{self, Read},
     num::NonZeroUsize,
@@ -119,6 +120,8 @@ pub enum ToolchainProbePrimary {
         /// Exact configured interval.
         timeout: Duration,
     },
+    /// The caller's cancellation flag stopped the child transaction.
+    Cancelled,
 }
 
 /// Closed cleanup operation that failed after a probe had already reached a terminal.
@@ -370,7 +373,7 @@ pub(crate) fn probe_command(
     let mut command = Command::new(executable);
     NativeCompilerEnvironment::apply(&mut command, tool);
     command.args(arguments);
-    probe_prepared_command(tool, executable, command, limits)
+    probe_prepared_command(tool, executable, command, limits, None)
 }
 
 /// Probes the package-owned TypeScript JavaScript entry through one exact Node executable.
@@ -399,7 +402,37 @@ pub(crate) fn probe_typescript_script_with_node(
         command.env("PATH", node_directory);
     }
     command.arg(compiler_script).arg("--version");
-    probe_prepared_command(tool, node, command, limits)
+    probe_prepared_command(tool, node, command, limits, None)
+}
+
+/// Runs the admitted TypeScript compiler API bridge through the exact Node
+/// executable under bounded output, deadline, and caller cancellation.
+pub(crate) fn run_typescript_program_bridge(
+    node: &Path,
+    script: &str,
+    arguments: &[OsString],
+    working_directory: &Path,
+    limits: ToolchainProbeLimits,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<Box<[u8]>, ToolchainProbeError> {
+    let tool = NativeTool::TypeScriptCompiler;
+    if !node.is_absolute() {
+        return Err(ToolchainProbeError::RelativeExecutable {
+            tool,
+            executable: node.to_path_buf(),
+        });
+    }
+    let mut command = Command::new(node);
+    NativeCompilerEnvironment::apply(&mut command, tool);
+    if let Some(node_directory) = node.parent() {
+        command.env("PATH", node_directory);
+    }
+    command
+        .arg("-e")
+        .arg(script)
+        .args(arguments)
+        .current_dir(working_directory);
+    probe_prepared_command(tool, node, command, limits, Some(cancelled))
 }
 
 fn probe_prepared_command(
@@ -407,6 +440,7 @@ fn probe_prepared_command(
     executable: &Path,
     mut command: Command,
     limits: ToolchainProbeLimits,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Box<[u8]>, ToolchainProbeError> {
     command
         .stdin(Stdio::null())
@@ -509,6 +543,17 @@ fn probe_prepared_command(
                 ));
                 break;
             }
+        }
+        if cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+            preceding = Some(terminate_and_reap(
+                tool,
+                &mut child,
+                ToolchainProbeError::Bounded {
+                    tool,
+                    primary: ToolchainProbePrimary::Cancelled,
+                },
+            ));
+            break;
         }
         if started.elapsed() >= limits.timeout {
             let primary = ToolchainProbePrimary::Deadline {

@@ -63,9 +63,10 @@ pub use crate::ir_vocabulary::{
     ProductConstructorTag, ProductId, ProductList, ProductListId, ProductRef, ReferenceKind,
     ReferenceKindCodeError, RelSpan, RelSpanFault, Resolution, SemanticAtom, SemanticProduct,
     SemanticProductChild, SemanticProductConstructor, SemanticTypeChild, SemanticTypeFault,
-    SemanticTypeRecord, SemanticTypeTag, SemanticTypeTagError, StableRef, TypeCell,
-    TypeChildTarget, TypeChildren, TypeFactId, TypeReason, TypeReasonError, TypeRef, TypeWidth,
-    TypeWidthError, VariantAvailability, VariantFingerprint,
+    SemanticTypeRecord, SemanticTypeTag, SemanticTypeTagError, StableRef,
+    TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeCell, TypeChildTarget, TypeChildren, TypeFactId,
+    TypeReason, TypeReasonError, TypeRef, TypeScriptSourceCoordinate, TypeWidth, TypeWidthError,
+    VariantAvailability, VariantFingerprint, typescript_program_identity,
 };
 pub use crate::ir_vocabulary::{
     MappedModifier as LatticeMappedModifier, Variance as LatticeVariance,

@@ -1,0 +1,459 @@
+//! Tests for TS2352 type-assertion overlap when the assertion target is a
+//! constrained type parameter `T extends C`.
+//!
+//! Reported via #10676 (kysely false-positive `Readonly<X> as T` assertions).
+//!
+//! Structural rule, matching tsc's `checkAssertionDeferred`: the cast
+//! `source as T extends C` is permitted iff source's REQUIRED object members
+//! structurally fit C (allowing primitive↔literal comparable narrowing).
+//! Source's optional members are ignored. If source has any REQUIRED member
+//! not present in C with a comparable type, tsc emits TS2352 with the
+//! "T could be instantiated with a different subtype of constraint"
+//! elaboration.
+//!
+//! The check runs at the checker level so that interface-shaped constraints
+//! (stored as `Lazy(DefId)` references on the type-parameter info) are
+//! resolved before the structural walk — purely solver-level checks see an
+//! opaque constraint and miss the structural overlap that tsc accepts.
+
+use crate::test_utils::check_source_strict_codes as check_strict;
+
+// ---------------------------------------------------------------------------
+// Source structurally fits constraint → no TS2352
+// ---------------------------------------------------------------------------
+
+/// `Readonly<X> as T extends C` where X conforms to C must NOT emit TS2352.
+/// Reduced from kysely's `operation-node-transformer.ts` row.
+#[test]
+fn readonly_concrete_subtype_as_constrained_type_param_no_ts2352() {
+    for (op_name, sn_name, t_name) in [
+        ("OperationNode", "SelectNode", "T"),
+        ("Op", "SN", "U"),
+        ("Base", "Concrete", "K"),
+    ] {
+        let source = format!(
+            r#"
+interface {op_name} {{ readonly kind: string }}
+interface {sn_name} {{ readonly kind: 'SelectNode'; readonly stuff?: string }}
+
+function transform<{t_name} extends {op_name}>(node: Readonly<{sn_name}>): {t_name} {{
+    return node as {t_name};
+}}
+"#
+        );
+        let codes = check_strict(&source);
+        let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+        assert!(
+            ts2352.is_empty(),
+            "[{op_name}/{sn_name}/{t_name}] no TS2352 expected — `Readonly<{sn_name}>` \
+             structurally fits constraint `{op_name}`. Got: {codes:?}"
+        );
+    }
+}
+
+/// Inline object literal with a literal-narrowed property assigned to a
+/// constrained type parameter must NOT emit TS2352 — the literal at the
+/// matching key is comparable to the constraint's primitive at the same key.
+#[test]
+fn inline_literal_property_as_constrained_type_param_no_ts2352() {
+    let source = r#"
+interface Op { kind: string }
+function f<T extends Op>(): T {
+    return { kind: 'foo' } as T;
+}
+function g<U extends { kind: string }>(): U {
+    return { kind: 'bar' } as U;
+}
+"#;
+    let codes = check_strict(source);
+    let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+    assert!(
+        ts2352.is_empty(),
+        "no TS2352 expected — `kind:'foo'`/`kind:'bar'` are comparable to constraint's \
+         `kind:string`. Got: {codes:?}"
+    );
+}
+
+/// A source whose only required member matches the constraint exactly must
+/// NOT emit TS2352, even when the source carries additional OPTIONAL members.
+#[test]
+fn source_with_optional_extras_no_ts2352() {
+    let source = r#"
+interface Op { kind: string }
+function f<T extends Op>(x: { kind: string; extra?: number }): T {
+    return x as T;
+}
+function g<T extends Op>(x: { kind: 'a'; extra?: number }): T {
+    return x as T;
+}
+"#;
+    let codes = check_strict(source);
+    let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+    assert!(
+        ts2352.is_empty(),
+        "no TS2352 expected — `extra` is optional, not a required extra. Got: {codes:?}"
+    );
+}
+
+/// `{}` source against a constrained type parameter whose constraint
+/// contains an object-like member must remain comparable. Anti-regression
+/// for the existing `{}`-special-case rule.
+#[test]
+fn empty_object_as_constrained_type_param_no_ts2352() {
+    let source = r#"
+function yes<T extends object | null | undefined>() {
+    let x = {};
+    x as T;
+}
+"#;
+    let codes = check_strict(source);
+    let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+    assert!(
+        ts2352.is_empty(),
+        "no TS2352 expected — `{{}}` overlaps with `object` member of T's constraint. \
+         Got: {codes:?}"
+    );
+}
+
+/// A universal index-signature record (`{ [k: string]: unknown }`, the inline
+/// shape of `Record<PropertyKey, unknown>`) asserted to a `T extends object`
+/// must NOT emit TS2352 — the record is object-like and comparable to the
+/// `object` constraint. Mirrors remeda's `clone.ts` `copiedValue as T` (#14152).
+/// The record has NO required named members, so the structural-fit walk is
+/// vacuously satisfied; only the empty-`{}` special case currently covers this,
+/// and it excludes objects carrying an index signature.
+#[test]
+fn index_signature_record_as_object_constrained_type_param_no_ts2352() {
+    for (rec, t_name) in [
+        ("{ [k: string]: unknown }", "T"),
+        ("{ [p: string]: unknown }", "U"),
+        ("{ [key: string]: any }", "Elem"),
+    ] {
+        let source = format!(
+            r#"
+function clone<{t_name} extends object>(value: {t_name}): {t_name} {{
+    const copied: {rec} = {{}};
+    return copied as {t_name};
+}}
+"#
+        );
+        let codes = check_strict(&source);
+        let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+        assert!(
+            ts2352.is_empty(),
+            "[{rec}/{t_name}] no TS2352 expected — an index-signature record is object-like \
+             and comparable to the `object` constraint. Got: {codes:?}"
+        );
+    }
+}
+
+/// Negative control for the index-signature-record rule: a primitive source
+/// asserted to a `T extends object` must STILL emit TS2352 (a primitive does
+/// not overlap an object constraint). Guards against over-permitting the
+/// constraint walk.
+#[test]
+fn primitive_as_object_constrained_type_param_still_emits_ts2352() {
+    let source = r#"
+function f<T extends object>(): T {
+    return 123 as T;
+}
+"#;
+    let codes = check_strict(source);
+    let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+    assert!(
+        !ts2352.is_empty(),
+        "TS2352 expected — a number primitive does not overlap an `object` constraint. \
+         Got: {codes:?}"
+    );
+}
+
+/// Source assigned to a constrained type parameter whose constraint is an
+/// intersection of object-likes — ANY intersection member providing a
+/// matching property is sufficient (the intersection exposes all members'
+/// properties).
+#[test]
+fn source_fits_intersection_constraint_no_ts2352() {
+    for (op_name, t_name) in [("Op", "T"), ("Base", "U"), ("Node", "K")] {
+        let source = format!(
+            r#"
+interface {op_name} {{ kind: string }}
+function f<{t_name} extends {op_name} & {{ other: number }}>(x: {{ kind: 'a'; other: 1 }}): {t_name} {{
+    return x as {t_name};
+}}
+"#
+        );
+        let codes = check_strict(&source);
+        let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+        assert!(
+            ts2352.is_empty(),
+            "[{op_name}/{t_name}] no TS2352 expected — both required source members fit \
+             members of the intersection constraint. Got: {codes:?}"
+        );
+    }
+}
+
+/// Source assigned to a constrained type parameter whose constraint is a
+/// union of object-likes — SOME union member must provide the required
+/// property for the cast to be accepted.
+#[test]
+fn source_fits_some_union_member_in_constraint_no_ts2352() {
+    for (op_name, other_name, t_name) in [
+        ("Op", "Other", "T"),
+        ("First", "Second", "U"),
+        ("A", "B", "K"),
+    ] {
+        let source = format!(
+            r#"
+interface {op_name} {{ kind: string }}
+interface {other_name} {{ otherKey: number }}
+function f<{t_name} extends {op_name} | {other_name}>(x: {{ kind: 'a' }}): {t_name} {{
+    return x as {t_name};
+}}
+"#
+        );
+        let codes = check_strict(&source);
+        let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+        assert!(
+            ts2352.is_empty(),
+            "[{op_name}/{other_name}/{t_name}] no TS2352 expected — `kind:'a'` fits the \
+             `{op_name}` member of the constraint union. Got: {codes:?}"
+        );
+    }
+}
+
+/// Anti-regression for the Lazy-wrapped union: when the constraint is named
+/// via a type alias whose body is a union, the structural fit still applies
+/// — the helper must resolve the alias before decomposing the union.
+#[test]
+fn source_fits_lazy_aliased_union_constraint_no_ts2352() {
+    let source = r#"
+interface Op { kind: string }
+interface Other { otherKey: number }
+type OpOrOther = Op | Other;
+function f<T extends OpOrOther>(x: { kind: 'a' }): T {
+    return x as T;
+}
+"#;
+    let codes = check_strict(source);
+    let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+    assert!(
+        ts2352.is_empty(),
+        "no TS2352 expected — alias `OpOrOther` resolves to a union whose `Op` member fits \
+         `kind:'a'`. Got: {codes:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Source has REQUIRED extras beyond constraint → TS2352 still fires
+// ---------------------------------------------------------------------------
+
+/// Source class has a required member that does not exist in the constraint.
+/// tsc emits TS2352 with the "different subtype of constraint" elaboration;
+/// tsz must continue to emit TS2352. Mirrors `genericTypeAssertions4.ts`.
+#[test]
+fn subclass_with_required_extras_as_constrained_type_param_emits_ts2352() {
+    for (a_name, b_name) in [("A", "B"), ("Base", "Derived"), ("Animal", "Dog")] {
+        let source = format!(
+            r#"
+class {a_name} {{ foo() {{ return ""; }} }}
+class {b_name} extends {a_name} {{ bar() {{ return 1; }} }}
+declare let b: {b_name};
+function f<T extends {a_name}>() {{
+    let y = b as T;
+}}
+"#
+        );
+        let codes = check_strict(&source);
+        let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+        assert!(
+            !ts2352.is_empty(),
+            "[{a_name}/{b_name}] TS2352 expected — `{b_name}` has REQUIRED `bar` not in \
+             constraint `{a_name}`. Got: {codes:?}"
+        );
+    }
+}
+
+/// Source object literal with a REQUIRED extra property emits TS2352, even
+/// when the matching property fits the constraint.
+#[test]
+fn object_literal_with_required_extra_emits_ts2352() {
+    let source = r#"
+interface Op { kind: string }
+function f<T extends Op>(x: { kind: string; extra: number }): T {
+    return x as T;
+}
+function g<T extends Op>(x: { kind: 'a'; extra: number }): T {
+    return x as T;
+}
+"#;
+    let codes = check_strict(source);
+    let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+    assert!(
+        ts2352.len() >= 2,
+        "TS2352 expected on both casts — `extra` is required and absent from constraint. \
+         Got: {codes:?}"
+    );
+}
+
+/// Source completely unrelated to constraint still emits TS2352. The
+/// constraint-fit rule does not over-permit primitive/object mismatches.
+#[test]
+fn unrelated_shape_emits_ts2352() {
+    let source = r#"
+interface Op { kind: string }
+function a<T extends Op>(x: { foo: number }): T { return x as T; }
+function b<T extends Op>(x: number): T { return x as T; }
+function c<T extends Op>(x: boolean): T { return x as T; }
+"#;
+    let codes = check_strict(source);
+    let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+    assert!(
+        ts2352.len() >= 3,
+        "TS2352 expected on all three casts. Got: {codes:?}"
+    );
+}
+
+/// Source against a constrained type parameter whose constraint is
+/// `null | undefined` (no object-like member) must emit TS2352 even when
+/// source is `{}`. Anti-regression for the empty-object special case.
+#[test]
+fn empty_object_as_typeparam_without_object_in_constraint_emits_ts2352() {
+    let source = r#"
+function f<T extends null | undefined>() {
+    let x = {};
+    x as T;
+}
+"#;
+    let codes = check_strict(source);
+    let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+    assert!(
+        !ts2352.is_empty(),
+        "TS2352 expected — `{{}}` has no overlap with `null | undefined`. Got: {codes:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Callable source asserted to a type parameter with a function-union
+// constraint (#14318, mined from es-toolkit `once.ts`). tsc resolves the bare
+// type-parameter target to its constraint and treats the assertion as
+// overlapping iff the callable is comparable to any union member.
+// ---------------------------------------------------------------------------
+
+/// A concrete function asserted to `F` whose constraint is a union of function
+/// types must NOT emit TS2352. Binder names are varied to keep the rule
+/// structural rather than name-driven.
+#[test]
+fn callable_as_function_union_constrained_type_param_no_ts2352() {
+    for (f_name, p_name) in [("F", "fn"), ("Fun", "callback"), ("G", "handler")] {
+        let source = format!(
+            r#"
+function wrap<{f_name} extends ((...args: any[]) => any) | ((...args: any[]) => void)>(
+    {p_name}: (x: number) => string,
+): {f_name} {{
+    return {p_name} as {f_name};
+}}
+"#
+        );
+        let codes = check_strict(&source);
+        let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+        assert!(
+            ts2352.is_empty(),
+            "[{f_name}/{p_name}] no TS2352 expected — a callable overlaps a \
+             function-union constraint. Got: {codes:?}"
+        );
+    }
+}
+
+/// The constraint may be a union of *distinct* function shapes; overlap holds
+/// when the source is comparable to at least one member.
+#[test]
+fn callable_as_union_of_distinct_function_shapes_no_ts2352() {
+    let source = r#"
+function pick<F extends ((a: number) => number) | ((b: string) => string)>(
+    fn: (x: number) => number,
+): F {
+    return fn as F;
+}
+"#;
+    let codes = check_strict(source);
+    let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+    assert!(
+        ts2352.is_empty(),
+        "no TS2352 expected — `(x: number) => number` overlaps the first union member. \
+         Got: {codes:?}"
+    );
+}
+
+/// A construct-signature source asserted to a type parameter whose constraint
+/// is a union of construct signatures overlaps as well.
+#[test]
+fn constructor_as_constructor_union_constrained_type_param_no_ts2352() {
+    let source = r#"
+function make<F extends (new () => object) | (new (x: number) => object)>(
+    k: new () => object,
+): F {
+    return k as F;
+}
+"#;
+    let codes = check_strict(source);
+    let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+    assert!(
+        ts2352.is_empty(),
+        "no TS2352 expected — a constructor overlaps a construct-signature-union \
+         constraint. Got: {codes:?}"
+    );
+}
+
+/// A single-function constraint (not a union) already accepts a callable source
+/// — guard against regressing the non-union path.
+#[test]
+fn callable_as_single_function_constrained_type_param_no_ts2352() {
+    let source = r#"
+function once<F extends (...args: any[]) => any>(fn: () => number): F {
+    return fn as F;
+}
+"#;
+    let codes = check_strict(source);
+    let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+    assert!(
+        ts2352.is_empty(),
+        "no TS2352 expected — single-function constraint accepts a callable. Got: {codes:?}"
+    );
+}
+
+/// Negative control: a primitive source stays incomparable to a
+/// function-union constraint, so TS2352 must still fire.
+#[test]
+fn primitive_as_function_union_constrained_type_param_emits_ts2352() {
+    let source = r#"
+function bad<F extends (() => void) | ((x: number) => number)>(s: number): F {
+    return s as F;
+}
+"#;
+    let codes = check_strict(source);
+    let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+    assert!(
+        !ts2352.is_empty(),
+        "TS2352 expected — `number` does not overlap a function-union constraint. \
+         Got: {codes:?}"
+    );
+}
+
+/// Negative control: a callable source vs a type parameter constrained to a
+/// non-callable object shape must still emit TS2352 (the resolution is gated on
+/// a callable on the other side, so this does not over-permit).
+#[test]
+fn callable_as_object_constrained_type_param_emits_ts2352() {
+    let source = r#"
+function bad<F extends { a: number }>(fn: () => void): F {
+    return fn as F;
+}
+"#;
+    let codes = check_strict(source);
+    let ts2352: Vec<&u32> = codes.iter().filter(|c| **c == 2352).collect();
+    assert!(
+        !ts2352.is_empty(),
+        "TS2352 expected — `() => void` does not overlap an object constraint. \
+         Got: {codes:?}"
+    );
+}

@@ -890,6 +890,9 @@ pub enum PackageAuthorityError {
     /// The package-aware TypeScript checker returned its exact terminal.
     #[error(transparent)]
     TypeScript(#[from] TypeScriptCheckerError),
+    /// Native TSZ project admission returned its exact terminal.
+    #[error(transparent)]
+    TypeScriptTsz(#[from] backend_frontend_typescript::TszAuthorityError),
     /// The selected project's TypeScript compiler or module installation was rejected.
     #[error(transparent)]
     TypeScriptProjectHost(#[from] super::typescript_host::TypeScriptProjectHostError),

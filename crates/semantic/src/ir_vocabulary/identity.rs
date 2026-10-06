@@ -444,6 +444,145 @@ pub enum ForeignOrigin<'bytes> {
     },
 }
 
+/// Ecosystem discriminator for a TypeScript reference whose target is known
+/// by a source coordinate in the same admitted TSZ program. The external
+/// target remains a [`ForeignKey`] in the canonical occurrence lane, while
+/// project query joins can distinguish this typed coordinate from a package
+/// or a name-only universe reference.
+pub const TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM: &str = "typescript-tsz-source-v1";
+
+/// One exact TypeScript declaration-name coordinate in a compiled source
+/// file. The coordinate is a byte offset in the admitted UTF-8 source, not a
+/// line number, node ordinal, symbol name, or guessed module target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TypeScriptSourceCoordinate<'source> {
+    /// Deterministic identity of the complete admitted project source set.
+    pub program: [u8; 32],
+    /// Content identity of the target source file in that project.
+    pub source: [u8; 32],
+    /// Stable project-relative source path supplied to the TSZ project.
+    pub path: &'source str,
+    /// Start of the exact target declaration span in UTF-8 bytes.
+    pub declaration_start: u32,
+    /// End of the exact target declaration span in UTF-8 bytes.
+    pub declaration_end: u32,
+    /// Byte offset of the declaration name token in that exact file.
+    pub name_start: u32,
+}
+
+impl<'source> TypeScriptSourceCoordinate<'source> {
+    const PREFIX: &'static str = "tsz-source-coordinate-v2:";
+
+    /// Encodes a coordinate into the existing validated foreign-key path
+    /// cell. A byte-length prefix keeps paths containing colons or Unicode
+    /// unambiguous without introducing a second persisted operand.
+    #[must_use]
+    pub fn encode(self) -> Option<String> {
+        if self.path.is_empty()
+            || self.path.contains('\\')
+            || self.path.contains('\0')
+            || self.declaration_start >= self.declaration_end
+            || self.name_start < self.declaration_start
+            || self.name_start >= self.declaration_end
+        {
+            return None;
+        }
+        Some(format!(
+            "{}{}:{}:{}:{}:{}:{}:{}",
+            Self::PREFIX,
+            hex_digest(&self.program),
+            hex_digest(&self.source),
+            self.path.len(),
+            self.path,
+            self.declaration_start,
+            self.declaration_end,
+            self.name_start
+        ))
+    }
+
+    /// Decodes only this closed versioned source-coordinate grammar.
+    #[must_use]
+    pub fn decode(encoded: &'source str) -> Option<Self> {
+        let rest = encoded.strip_prefix(Self::PREFIX)?;
+        let (program, rest) = rest.split_once(':')?;
+        let program = parse_hex_digest(program)?;
+        let (source, rest) = rest.split_once(':')?;
+        let source = parse_hex_digest(source)?;
+        let (path_len, rest) = rest.split_once(':')?;
+        let path_len = path_len.parse::<usize>().ok()?;
+        let path = rest.get(..path_len)?;
+        let (declaration_start, rest) = rest.get(path_len..)?.strip_prefix(':')?.split_once(':')?;
+        let (declaration_end, name_start) = rest.split_once(':')?;
+        let declaration_start = declaration_start.parse().ok()?;
+        let declaration_end = declaration_end.parse().ok()?;
+        let name_start = name_start.parse().ok()?;
+        if path.is_empty()
+            || path.contains('\\')
+            || path.contains('\0')
+            || declaration_start >= declaration_end
+            || name_start < declaration_start
+            || name_start >= declaration_end
+        {
+            return None;
+        }
+        Some(Self {
+            program,
+            source,
+            path,
+            declaration_start,
+            declaration_end,
+            name_start,
+        })
+    }
+}
+
+/// Hashes one exact project source manifest. Duplicate paths are rejected,
+/// rather than allowing source order or accidental last-writer wins to
+/// decide which program a cross-file reference names.
+#[must_use]
+pub fn typescript_program_identity(sources: &[(String, [u8; 32])]) -> Option<[u8; 32]> {
+    if sources.is_empty() {
+        return None;
+    }
+    let mut ordered = sources.to_vec();
+    ordered.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    if ordered.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return None;
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"typescript-tsz-program-source-manifest-v1\0");
+    for (path, source) in ordered {
+        let length = u32::try_from(path.len()).ok()?;
+        hasher.update(&length.to_le_bytes());
+        hasher.update(path.as_bytes());
+        hasher.update(&source);
+    }
+    Some(*hasher.finalize().as_bytes())
+}
+
+fn hex_digest(digest: &[u8; 32]) -> String {
+    let mut output = String::with_capacity(64);
+    for byte in digest {
+        use core::fmt::Write;
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+fn parse_hex_digest(digest: &str) -> Option<[u8; 32]> {
+    if digest.len() != 64 {
+        return None;
+    }
+    let mut decoded = [0_u8; 32];
+    for (index, byte) in decoded.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(digest.get(index * 2..index * 2 + 2)?, 16).ok()?;
+    }
+    if hex_digest(&decoded) != digest {
+        return None;
+    }
+    Some(decoded)
+}
+
 impl<'bytes> ForeignOrigin<'bytes> {
     /// Stable wire tag of the [`ForeignOrigin::Package`] family.
     pub const PACKAGE_TAG: u8 = 0;
@@ -705,4 +844,77 @@ fn write_str_cell(out: &mut [u8], cursor: usize, bytes: &[u8]) -> Result<usize, 
     length_cell.copy_from_slice(&len.to_le_bytes());
     payload.copy_from_slice(bytes);
     Ok(after)
+}
+
+#[cfg(test)]
+mod typescript_source_coordinate_tests {
+    use super::TypeScriptSourceCoordinate;
+
+    #[test]
+    fn source_coordinate_round_trips_colons_and_utf8_by_byte_length() {
+        let path = "src/über:service.ts";
+        let encoded = TypeScriptSourceCoordinate {
+            program: [4; 32],
+            source: [5; 32],
+            path,
+            declaration_start: 30,
+            declaration_end: 41,
+            name_start: 37,
+        }
+        .encode()
+        .expect("valid source coordinate");
+        assert_eq!(
+            TypeScriptSourceCoordinate::decode(&encoded),
+            Some(TypeScriptSourceCoordinate {
+                program: [4; 32],
+                source: [5; 32],
+                path,
+                declaration_start: 30,
+                declaration_end: 41,
+                name_start: 37,
+            })
+        );
+    }
+
+    #[test]
+    fn source_coordinate_rejects_noncanonical_paths_and_malformed_lengths() {
+        assert!(
+            TypeScriptSourceCoordinate {
+                program: [4; 32],
+                source: [5; 32],
+                path: "src\\service.ts",
+                declaration_start: 0,
+                declaration_end: 1,
+                name_start: 1,
+            }
+            .encode()
+            .is_none()
+        );
+        assert!(TypeScriptSourceCoordinate::decode("tsz-source-coordinate-v2:999:a:1").is_none());
+        assert!(TypeScriptSourceCoordinate::decode("tsz-source-coordinate-v2:3:a:b:1").is_none());
+    }
+
+    #[test]
+    fn project_identity_commits_sorted_complete_sources_and_rejects_duplicate_paths() {
+        let forward = typescript_program_identity(&[
+            ("src/b.ts".to_owned(), [2; 32]),
+            ("src/a.ts".to_owned(), [1; 32]),
+        ]);
+        let reverse = typescript_program_identity(&[
+            ("src/a.ts".to_owned(), [1; 32]),
+            ("src/b.ts".to_owned(), [2; 32]),
+        ]);
+        assert_eq!(forward, reverse);
+        assert_ne!(
+            forward,
+            typescript_program_identity(&[("src/a.ts".to_owned(), [1; 32])])
+        );
+        assert!(
+            typescript_program_identity(&[
+                ("src/a.ts".to_owned(), [1; 32]),
+                ("src/a.ts".to_owned(), [1; 32])
+            ])
+            .is_none()
+        );
+    }
 }

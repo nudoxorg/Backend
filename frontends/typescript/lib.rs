@@ -1,17 +1,19 @@
-//! TypeScript OXC/checker native authority adapter.
+//! TypeScript OXC syntax and native TSZ project checker authority adapters.
 #![forbid(unsafe_code)]
 
 mod authority;
 mod coordinate;
 mod error;
 mod package;
+mod tsz_authority;
 
 #[path = "src/legacy/mod.rs"]
 pub mod legacy;
 
 pub use authority::{
-    OxcDeclaration, OxcDeclarationKind, OxcModule, SyntaxMappedModifier, analyze,
-    syntax_mapped_modifier, with_analysis,
+    OxcDeclaration, OxcDeclarationKind, OxcModule, OxcSyntaxProjection, SyntaxMappedModifier,
+    TypeScriptSemanticAuthority, TypeScriptSyntaxAuthority, analyze, syntax_mapped_modifier,
+    with_analysis,
 };
 pub use coordinate::{CoordinateError, Utf8Span, Utf8ToUtf16Cursor, Utf16Span};
 pub use error::{OxcAuthorityError, OxcAuthorityError as AuthorityError};
@@ -19,6 +21,39 @@ pub use package::{
     LocatedPackage, MAX_TARBALL_MEMBERS, MAX_TARBALL_UNCOMPRESSED_BYTES, PackageError, PackagePurl,
     PackagePurlError, RegistryMetadata, TarballMember, TarballMemberKind, decode_packument,
     locate_package, read_tarball,
+};
+/// TypeScript module-resolution mode carried by exact compiler API requests.
+pub use tsz::checker::context::ResolutionModeOverride as TszResolutionModeOverride;
+/// In-memory compiler library admitted for one TSZ project.
+pub use tsz::lib_loader::LibFile as TszLibFile;
+/// One merged source file and its TSZ-owned syntax/binder spans.
+pub use tsz::parallel::BoundFile as TszBoundFile;
+/// Native TSZ syntax arena used by exact source-coordinate occurrence joins.
+pub use tsz::parser::node::NodeArena as TszNodeArena;
+/// Native TSZ syntax-kind constants used by the compiler's exact source joins.
+pub use tsz::parser::syntax_kind_ext as TszSyntaxKind;
+/// Read-only view over the native TSZ type interner, exposed so consumers can
+/// map checker results directly into their existing typed IR.
+pub use tsz::tsz_solver::construction::TypeDatabase as TszTypeDatabase;
+/// Native TSZ type handles and structural shapes used by direct IR adapters.
+pub use tsz::tsz_solver::type_handles as tsz_type_handles;
+pub use tsz_authority::{
+    TszAuthorityError, TszBinderState, TszCheckerOptions, TszCheckerState, TszCompilerOptionsError,
+    TszDiagnostic, TszEnvironmentFingerprint, TszFileInput, TszLibraryInput,
+    TszModuleDetectionKind, TszModuleKind, TszNodeIndex, TszParseDiagnostic, TszProject,
+    TszProjectAuthority, TszProjectModuleRequestKind, TszProjectModuleResolution,
+    TszProjectModuleResolutionError, TszProjectModuleResolutionTarget, TszProjectOptions,
+    TszProjectSemanticOptions, TszScriptTarget, TszSourceError, TszSymbolId, TszTypeId,
+    TszUpdateReport, checker_options_from_compiler_api_json,
+};
+pub use tsz_authority::{TszProjectQuerySession, TszProjectQuerySessionError};
+/// Interned string handle used by TSZ shapes and member names.
+pub use tsz_common::interner::Atom as TszAtom;
+/// Shared cancellation, deadline, and work control for one native TSZ project.
+pub use tsz_common::{
+    ExecutionCheckpoint as TszExecutionCheckpoint,
+    ProjectExecutionBudget as TszProjectExecutionBudget,
+    ProjectExecutionStop as TszProjectExecutionStop,
 };
 
 use backend_compile::{
