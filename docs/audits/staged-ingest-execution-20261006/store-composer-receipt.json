@@ -1,0 +1,17 @@
+{
+  "source_commit": "6a64059b9b33c81d8ad00694b882c8b7d329c9c9",
+  "source_tree": "df23d8dfdca2a2375e612dd14cfc1c2144b531e9",
+  "host": "h16001mac",
+  "worktree": "/Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006",
+  "jobs": 4,
+  "managed_cargo": "own .local/fcb-managed-runner/cargo",
+  "log": "docs/audits/staged-ingest-execution-20261006/raw/store-composer-6a64059b.log",
+  "log_sha256": "19230933ea4bb94ba070f0b8d32fff90c61abc160d378c99b8ecfb4111d3503b",
+  "command": "cargo test -p backend-store --lib durable::closure_composer::tests -j 4 -- --test-threads=1 --nocapture",
+  "exit": 0,
+  "passed": 14,
+  "failed": 0,
+  "test_executable_sha256": "885d25a1b86997e84bd315e4cafd029514b47be467e52257dff92847656fc4f4",
+  "test_executable": "/Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006/.local/build/staged-ingest/.nudox-cargo/slot-0/debug/deps/backend_store-65a87ee3f06cd377",
+  "fleet_sample": "raw/store-composer-6a64059b-fleet.json"
+}
