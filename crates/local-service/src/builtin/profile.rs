@@ -3361,7 +3361,19 @@ fn validate_persisted_capture_changes(
                 .to_owned(),
         ));
     }
+    let selected_base_publication = store
+        .workspace_base_publication(*target_manifest.root().as_bytes(), target_sequence)
+        .map_err(|error| {
+            BuiltinModelError(format!(
+                "resolve authenticated persisted capture target base: {error:?}"
+            ))
+        })?;
     let selected_base_closure_id = if base_sequence == 0 {
+        if selected_base_publication.is_some() {
+            return Err(BuiltinModelError(
+                "genesis capture base unexpectedly has a prior publication".to_owned(),
+            ));
+        }
         let genesis = super::genesis()?;
         if *genesis.root().as_bytes() != basis.workspace_root {
             return Err(BuiltinModelError(
@@ -3370,23 +3382,23 @@ fn validate_persisted_capture_changes(
         }
         *genesis.closure().binding().closure().as_bytes()
     } else {
-        store
-            .workspace_base_publication(basis.workspace_root, basis.workspace_sequence)
-            .map_err(|error| {
-                BuiltinModelError(format!(
-                    "resolve authenticated persisted capture base publication: {error:?}"
-                ))
-            })?
+        let descriptor = selected_base_publication
             .ok_or_else(|| {
                 BuiltinModelError(
                     "persisted capture base publication is absent from the selected journal"
                         .to_owned(),
                 )
             })?
-            .descriptor()
-            .closure()
-            .as_bytes()
-            .to_owned()
+            .descriptor();
+        if descriptor.target() != basis.workspace_root
+            || descriptor.target_generation() != basis.workspace_sequence
+        {
+            return Err(BuiltinModelError(
+                "persisted capture basis does not match its authenticated selected base descriptor"
+                    .to_owned(),
+            ));
+        }
+        *descriptor.closure().as_bytes()
     };
     validate_capture_basis_closure_id(
         basis,

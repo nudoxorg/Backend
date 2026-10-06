@@ -1008,8 +1008,13 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         }],
     )
     .expect("typed terminal semantic refusal intent");
+    let stale_snapshot = daemon.engine().daemon().owner().snapshot();
     super::super::commands::commit_builtin_intent(&mut daemon, 7, &terminal_intent)
         .expect("commit terminal typed refusal against its exact pending capture");
+    assert!(
+        stale_snapshot.selected_base_publication().is_err(),
+        "a snapshot that is no longer selected cannot resolve the current base publication"
+    );
     let terminal_snapshot = daemon.engine().daemon().owner().snapshot();
     let selected_base = terminal_snapshot
         .selected_base_publication()
@@ -1017,12 +1022,12 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         .expect("terminal capture has a durable base publication")
         .descriptor();
     assert_eq!(
-        selected_base.base(),
-        Some(basis_after_unrelated.workspace_root()),
+        selected_base.target(),
+        basis_after_unrelated.workspace_root(),
         "the authenticated descriptor binds the basis workspace root"
     );
     assert_eq!(
-        selected_base.base_generation(),
+        selected_base.target_generation(),
         basis_after_unrelated.workspace_sequence(),
         "the authenticated descriptor binds the basis sequence"
     );

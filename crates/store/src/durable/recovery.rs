@@ -122,11 +122,11 @@ pub(super) fn descriptor_matches_base(
 }
 
 impl FileStore {
-    /// Reopens the exact selected publication immediately before the current
-    /// selected head. The current publication's authenticated journal
-    /// descriptor binds the requested base root and generation; this method
-    /// then replays the hash-chained journal prefix to recover that base's
-    /// exact closure descriptor.
+    /// Reopens the exact publication selected immediately before the named
+    /// current workspace head. The current publication's authenticated
+    /// journal descriptor binds its base root and generation; this method
+    /// replays the hash-chained journal prefix to recover that base's exact
+    /// closure descriptor.
     ///
     /// The scan uses constant memory and stops at the requested generation.
     /// It is intended for cold persisted-transition admission, not a hot
@@ -134,12 +134,12 @@ impl FileStore {
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::Corrupt`] when the request is not the exact base
-    /// of the selected publication or the journal prefix is malformed.
+    /// Returns [`StoreError::Corrupt`] when the named workspace head is not
+    /// currently selected or its publication history is malformed.
     pub fn workspace_base_publication(
         &self,
-        base_root: Hash,
-        base_generation: u64,
+        target_root: Hash,
+        target_generation: u64,
     ) -> Result<Option<SelectedHead>, StoreError> {
         let _process_lock = self.acquire_process_lock()?;
         let current = self.read_state()?.selected.ok_or(StoreError::Corrupt)?;
@@ -148,12 +148,15 @@ impl FileStore {
         if binding.root() != &descriptor.target() || binding.closure() != descriptor.closure() {
             return Err(StoreError::Corrupt);
         }
-        if descriptor.base() != Some(base_root) || descriptor.base_generation() != base_generation {
+        if descriptor.target() != target_root || descriptor.target_generation() != target_generation
+        {
             return Err(StoreError::Corrupt);
         }
+        let base_generation = descriptor.base_generation();
         if base_generation == 0 {
             return Ok(None);
         }
+        let base_root = descriptor.base().ok_or(StoreError::Corrupt)?;
 
         let publication =
             find_workspace_publication(&self.root.join("journal"), base_root, base_generation)?;
