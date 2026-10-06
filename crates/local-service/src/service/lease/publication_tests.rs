@@ -327,10 +327,11 @@ fn a_slow_but_legitimate_multipage_reset_completes_within_the_allowance_it_earne
     let target = certified_root(192, 1);
     let wire = Wire::start(&clock, SubscriptionLeaseLimits::default(), |source| {
         source.replies.push_back(Ok(reset_to(&target, 1)));
-        // Three 64-row pages, each taking 6 s to produce: the reset lasts
-        // longer than the 10 s base allowance, inside the 10 s + 3 x 2 s the
-        // first descriptor earned, and every page renews a 10 s lease term.
-        source.set_page_cost(6 * SECOND);
+        // Three 64-row pages, each taking 5 s to produce: the 15 s reset is
+        // longer than the 10 s base allowance but inside the 16 s allowance
+        // (10 s + 3 x 2 s) the first descriptor earned. Every page renews a
+        // 10 s lease term.
+        source.set_page_cost(5 * SECOND);
     });
     let base = certified_root(0, 0);
     let cursor = Cursor::for_view_root_at(&base, 0);
@@ -368,10 +369,13 @@ fn a_reset_slower_than_its_allowance_is_abandoned_and_its_lease_released_on_the_
         .acquire_publications(Arc::clone(&base), cursor, &|| false)
         .err()
         .expect("the reset is slower than it earned");
+    // The fixed reset deadline expires while the page request is in flight,
+    // so this exchange reports the observation budget edge. The owner must
+    // still release the lease on the same socket below.
     assert_eq!(
         error,
         backend_client::ClientError::Protocol(
-            "publication reset exceeded its time budget".to_owned()
+            "publication observation exceeded its time budget".to_owned()
         )
     );
     let ledger = wire.wait_until("the abandoned lease to be cancelled", |ledger| {

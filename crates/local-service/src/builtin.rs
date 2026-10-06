@@ -2327,7 +2327,7 @@ mod authority_tests {
 #[allow(clippy::expect_used, clippy::panic)]
 mod owner_fairness_tests {
     use super::*;
-    use crate::protocol::EngineRequest;
+    use crate::protocol::{EngineRequest, FrameLimits, ResponseFrame, decode_response};
     use crate::service::{
         LocaldOwner, NoCompletionAdmission, OwnerService, ReplicationAdmission,
         SubscriptionLeaseLimits,
@@ -2409,6 +2409,29 @@ mod owner_fairness_tests {
         Ok(Vec::new())
     }
 
+    fn prepared_status(
+        owner: &mut TestOwner,
+        request_id: u64,
+        request: backend_engine::LocalSubscriptionRequest,
+    ) -> Result<EngineStatus, crate::ProtocolError> {
+        let limits = FrameLimits::default();
+        let encoded = OwnerService::engine_prepared(
+            owner,
+            request_id,
+            EngineRequest::Subscription(request),
+            limits,
+        )?;
+        match decode_response(&encoded, limits)? {
+            ResponseFrame::Engine {
+                request_id: response_id,
+                status,
+            } if response_id == request_id => Ok(status),
+            _ => Err(crate::ProtocolError::InvalidControl(
+                "prepared test response correlation",
+            )),
+        }
+    }
+
     fn owner(
         directory: &Path,
         remote_progress: Arc<RemoteProgressState>,
@@ -2467,17 +2490,17 @@ mod owner_fairness_tests {
                 .expect("small finite lease bounds"),
         );
 
-        let opened = OwnerService::engine(
+        let opened = prepared_status(
             &mut owner,
             401,
-            EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+            backend_engine::LocalSubscriptionRequest {
                 request_id: 401,
                 operation: backend_engine::LocalSubscriptionOperation::Open {
                     cursor: cursor.clone(),
                     credit: 1,
                     lease_ms: 5_000,
                 },
-            }),
+            },
         )
         .expect("open retained test lease");
         let EngineStatus::Subscription(backend_engine::LocalSubscriptionResponse::Opened {
@@ -2488,16 +2511,16 @@ mod owner_fairness_tests {
         else {
             panic!("open operation must return its owner-issued lease");
         };
-        let acknowledged = OwnerService::engine(
+        let acknowledged = prepared_status(
             &mut owner,
             402,
-            EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+            backend_engine::LocalSubscriptionRequest {
                 request_id: 402,
                 operation: backend_engine::LocalSubscriptionOperation::Ack {
                     lease,
                     cursor: cursor.clone(),
                 },
-            }),
+            },
         )
         .expect("active lease acknowledges its exact cursor");
         assert!(matches!(
@@ -2508,17 +2531,17 @@ mod owner_fairness_tests {
             }) if acknowledged_lease == lease
         ));
 
-        let expired_open = OwnerService::engine(
+        let expired_open = prepared_status(
             &mut owner,
             403,
-            EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+            backend_engine::LocalSubscriptionRequest {
                 request_id: 403,
                 operation: backend_engine::LocalSubscriptionOperation::Open {
                     cursor: cursor.clone(),
                     credit: 1,
                     lease_ms: 5,
                 },
-            }),
+            },
         )
         .expect("open short-lived test lease");
         let EngineStatus::Subscription(backend_engine::LocalSubscriptionResponse::Opened {
@@ -2566,25 +2589,25 @@ mod owner_fairness_tests {
             "the expired lease was already swept on a productive turn, so the next idle turn does no work"
         );
         assert!(matches!(
-            OwnerService::engine(
+            prepared_status(
                 &mut owner,
                 405,
-                EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+                backend_engine::LocalSubscriptionRequest {
                     request_id: 405,
                     operation: backend_engine::LocalSubscriptionOperation::Cancel {
                         lease: expired_lease,
                     },
-                }),
+                },
             ),
             Err(crate::ProtocolError::InvalidControl(
                 "unknown subscription lease"
             ))
         ));
 
-        let renewed = OwnerService::engine(
+        let renewed = prepared_status(
             &mut owner,
             406,
-            EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+            backend_engine::LocalSubscriptionRequest {
                 request_id: 406,
                 operation: backend_engine::LocalSubscriptionOperation::Renew {
                     lease,
@@ -2592,7 +2615,7 @@ mod owner_fairness_tests {
                     credit: 1,
                     lease_ms: 100,
                 },
-            }),
+            },
         )
         .expect("active lease renews after the fair query turn");
         assert!(matches!(
@@ -2612,13 +2635,13 @@ mod owner_fairness_tests {
             "the expired lease is reclaimed only once"
         );
         assert!(matches!(
-            OwnerService::engine(
+            prepared_status(
                 &mut owner,
                 407,
-                EngineRequest::Subscription(backend_engine::LocalSubscriptionRequest {
+                backend_engine::LocalSubscriptionRequest {
                     request_id: 407,
                     operation: backend_engine::LocalSubscriptionOperation::Cancel { lease },
-                }),
+                },
             ),
             Err(crate::ProtocolError::InvalidControl(
                 "unknown subscription lease"

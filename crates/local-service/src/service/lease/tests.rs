@@ -354,7 +354,7 @@ impl Harness {
     ) -> Result<LocalSubscriptionResponse, ProtocolError> {
         self.script(reply);
         self.call(LocalSubscriptionOperation::Open {
-            cursor: Box::new([]),
+            cursor: Cursor::new().encode_control(),
             credit,
             lease_ms,
         })
@@ -626,19 +626,21 @@ fn event_and_page_credit_are_bounded_at_both_ends() {
 fn an_open_whose_exact_outer_reply_does_not_fit_does_not_retain_or_consume_a_lease() {
     let mut harness = Harness::default();
     harness.script(SubscriptionReply::Accepted { credit: CREDIT });
+    let cursor = Cursor::new().encode_control();
+    let cursor_bound = cursor.len();
     let limits = FrameLimits {
-        max_frame: 96,
-        max_cursor: 96,
+        max_frame: cursor_bound,
+        max_cursor: cursor_bound,
         max_frames_per_connection: 8,
         transport: TransportLimits {
-            max_frame: 96,
-            max_chunk: 96,
+            max_frame: cursor_bound,
+            max_chunk: cursor_bound,
             ..TransportLimits::default()
         },
     };
     let result = harness.call_prepared(
         LocalSubscriptionOperation::Open {
-            cursor: Box::new([]),
+            cursor,
             credit: CREDIT,
             lease_ms: PUBLICATION_LEASE.get(),
         },
@@ -2176,7 +2178,8 @@ fn a_resume_whose_reset_needs_more_pages_than_the_budget_releases_the_lease() {
 #[test]
 fn an_open_answered_with_events_holds_the_lease_at_the_batch_cursor_and_resume_advances_it() {
     let mut harness = Harness::default();
-    let batch_cursor: Box<[u8]> = Box::from(b"after-the-batch".as_slice());
+    let cursor_root = reset_root(&[]);
+    let batch_cursor = Cursor::for_view_root_at(&cursor_root, 0).encode_control();
     let response = harness
         .open_with(
             SubscriptionReply::Events {
@@ -2205,7 +2208,7 @@ fn an_open_answered_with_events_holds_the_lease_at_the_batch_cursor_and_resume_a
     );
     // A resume from that cursor is answered by the next batch and moves the
     // lease's cursor with it.
-    let next_cursor: Box<[u8]> = Box::from(b"after-the-next-batch".as_slice());
+    let next_cursor = Cursor::for_view_root_at(&cursor_root, 1).encode_control();
     harness.script(SubscriptionReply::Events {
         credit: CREDIT,
         cursor: next_cursor.clone(),
