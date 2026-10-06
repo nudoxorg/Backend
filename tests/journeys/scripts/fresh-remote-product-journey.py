@@ -13,6 +13,7 @@ import json
 import math
 import os
 from pathlib import Path
+import select
 import selectors
 import shutil
 import signal
@@ -43,6 +44,51 @@ def tree(root):
         if path.is_file() and not path.is_symlink() and "node_modules" not in path.parts:
             rows.append([path.relative_to(root).as_posix(), path.stat().st_size, digest(path)])
     return {"files": rows, "sha256": hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()}
+
+
+def retire_owned_process(pid, timeout=20, *, child=None):
+    """Signal one proven-owned process and await its actual kernel exit.
+
+    A detached Linux owner's leader can lose its cmdline before its remaining
+    threads release the listening socket. Neither cmdline absence nor a
+    zombie leader proves the endpoint has retired. A pidfd pins that exact
+    process identity and becomes readable only after the thread group exits.
+    Other hosts can supply their retained Popen child handle; detached owners
+    without a kernel identity are refused rather than guessed to be stopped.
+    """
+    if timeout <= 0:
+        raise ValueError("retirement timeout must be positive")
+    started = time.monotonic()
+    if child is not None:
+        if child.pid != pid:
+            raise ValueError("owned child identity differs from requested pid")
+        child.terminate()
+        try:
+            exit_code = child.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            raise TimeoutError("owned process did not retire") from error
+        return {"exit_proof": "owned-child-wait", "pid": pid,
+                "exit_code": exit_code, "seconds": time.monotonic() - started}
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        raise RuntimeError("detached owner retirement requires a Linux pidfd")
+    descriptor = os.pidfd_open(pid)
+    try:
+        try:
+            signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+        except ProcessLookupError:
+            # It may finish after opening the exact identity. The same pidfd
+            # must still prove exit; a recycled numeric PID is never signalled.
+            pass
+        poller = select.poll()
+        poller.register(descriptor, select.POLLIN)
+        remaining = max(0, timeout - (time.monotonic() - started))
+        events = poller.poll(math.ceil(remaining * 1000))
+        if not any(fd == descriptor and mask & select.POLLIN for fd, mask in events):
+            raise TimeoutError("owned process did not retire")
+        return {"exit_proof": "linux-pidfd", "pid": pid,
+                "seconds": time.monotonic() - started}
+    finally:
+        os.close(descriptor)
 
 
 def main():
@@ -134,14 +180,10 @@ def main():
     def stop_owner(label):
         for pid, words in owner_rows():
             assert pid in owners, "unowned process must not be terminated"
-            os.kill(pid, signal.SIGTERM)
-            deadline = time.monotonic() + 20
-            while any(row[0] == pid for row in owner_rows()):
-                if time.monotonic() > deadline:
-                    raise TimeoutError("owned locald did not retire")
-                time.sleep(.05)
+            retirement = retire_owned_process(pid)
             owners.discard(pid)
-            record("owner-stopped", label=label, pid=pid, argv=words)
+            record("owner-stopped", label=label, pid=pid, argv=words,
+                   retirement=retirement)
 
     def run(argv, label, timeout=120):
         start = time.monotonic()

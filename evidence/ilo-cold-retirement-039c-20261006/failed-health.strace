@@ -1,0 +1,16 @@
+1025189 1791287692.791914 execve("/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli", ["/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli", "--json", "--detail", "full", "--project", "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project", "--workspace", "/root/nudox-corpus-20261006/runs/sol-mac-independent-retirement-pair-039c-20261006/cmdline-observer/state", "--endpoint", "/tmp/nudox-retirement-cmdline-observer-1024710.sock", "health"], 0x7ffc20178688 /* 11 vars */) = 0
+1025189 1791287692.794311 socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0) = 3<UNIX-STREAM:[586644524]>
+1025189 1791287692.794460 connect(3<UNIX-STREAM:[586644524]>, {sa_family=AF_UNIX, sun_path="/tmp/nudox-retirement-cmdline-observer-1024710.sock"}, 54) = 0
+1025189 1791287692.794532 socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0) = 3<UNIX-STREAM:[586644525]>
+1025189 1791287692.794595 connect(3<UNIX-STREAM:[586644525]>, {sa_family=AF_UNIX, sun_path="/tmp/nudox-retirement-cmdline-observer-1024710.sock"}, 54) = 0
+1025189 1791287692.794675 setsockopt(3<UNIX-STREAM:[586644525]>, SOL_SOCKET, SO_RCVTIMEO_OLD, "\36\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16) = 0
+1025189 1791287692.794714 setsockopt(3<UNIX-STREAM:[586644525]>, SOL_SOCKET, SO_SNDTIMEO_OLD, "\36\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16) = 0
+1025189 1791287692.794776 getpeername(3<UNIX-STREAM:[586644525]>, {sa_family=AF_UNIX, sun_path="/tmp/nudox-retirement-cmdline-observer-1024710.sock"}, [110 => 54]) = 0
+1025189 1791287692.794817 getsockopt(3<UNIX-STREAM:[586644525]>, SOL_SOCKET, SO_PEERCRED, {pid=1024771, uid=0, gid=0}, [12]) = 0
+1025189 1791287692.794911 setsockopt(3<UNIX-STREAM:[586644525]>, SOL_SOCKET, SO_RCVTIMEO_OLD, "\36\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16) = 0
+1025189 1791287692.794951 setsockopt(3<UNIX-STREAM:[586644525]>, SOL_SOCKET, SO_SNDTIMEO_OLD, "\36\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16) = 0
+1025189 1791287692.795096 sendto(3<UNIX-STREAM:[586644525]>, "\0\0\0V", 4, MSG_NOSIGNAL, NULL, 0) = 4
+1025189 1791287692.795142 sendto(3<UNIX-STREAM:[586644525]>, "{\"version\":20,\"request_id\":1,\"command\":{\"kind\":\"health\",\"data\":{}},\"certificate\":null}", 86, MSG_NOSIGNAL, NULL, 0) = 86
+1025189 1791287692.795181 recvfrom(3<UNIX-STREAM:[586644525]>, 0x7ffe3c6e9f3c, 1, 0, NULL, NULL) = -1 ECONNRESET (Connection reset by peer)
+1025189 1791287692.806666 exit_group(1) = ?
+1025189 1791287692.806995 +++ exited with 1 +++

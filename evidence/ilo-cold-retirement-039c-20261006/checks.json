@@ -1,0 +1,86 @@
+{
+  "members_verified": 123,
+  "archive_sha256": "2f083bcdcfb5b3a1b8f198c0221a3abd05af5e9eed022d8bafa04954f7252ddb",
+  "cause": {
+    "old_pid": 1024771,
+    "cmdline_empty": true,
+    "leader_state": "Z",
+    "leader_threads": 5,
+    "pidfd_not_ready": true,
+    "connected_peer_pid": 1024771,
+    "recvfrom": "ECONNRESET",
+    "no_new_owner_exec": true,
+    "request_id": 1,
+    "command": "health",
+    "request_frame_bytes": 90
+  },
+  "paired": {
+    "cmdline": {
+      "first_exit": 1,
+      "first_seconds": 0.039444330031983554,
+      "second_exit": 0,
+      "second_seconds": 4.0355974399717525
+    },
+    "kernel-pidfd": {
+      "first_exit": 0,
+      "first_seconds": 4.509923842037097,
+      "second_exit": 0,
+      "second_seconds": 0.09642457193695009
+    }
+  },
+  "repaired": {
+    "quart039c": {
+      "first_exit": 0,
+      "first_seconds": 4.557815562002361,
+      "revision": "c02acd20761f78b2ca946453ad2c21c4f1ae23dc491d80e145e1977193e24f25",
+      "sequence": 9,
+      "rows": 3622,
+      "cli_mcp_roots_equal": true,
+      "retirement": {
+        "exit_proof": "linux-pidfd",
+        "pid": 1030057,
+        "seconds": 0.022975769941695035
+      },
+      "original_state_source_unchanged": true,
+      "remaining_owners": 0
+    },
+    "click039c": {
+      "first_exit": 0,
+      "first_seconds": 6.989404588006437,
+      "revision": "3853f8d57a7ca092c19f258df2c376d560e056763ca78606bffb5735994f8bc5",
+      "sequence": 9,
+      "rows": 7529,
+      "cli_mcp_roots_equal": true,
+      "retirement": {
+        "exit_proof": "linux-pidfd",
+        "pid": 1030105,
+        "seconds": 0.036535914056003094
+      },
+      "original_state_source_unchanged": true,
+      "remaining_owners": 0
+    }
+  },
+  "linux_timeout": {
+    "host": "Linux-6.18.38-x86_64-with-glibc2.42",
+    "observer_sha256": "bd2246da2fa9a61e431adb6bcd17a0e76b2293c9dc5ffa1c33d3546007c1132b",
+    "branch": "linux-pidfd",
+    "pid": 1031773,
+    "outcome": "bounded-timeout",
+    "exception": "owned process did not retire",
+    "seconds": 0.05013927607797086,
+    "child_still_alive": true,
+    "cleanup_exit": -9
+  },
+  "mac_owned_child_timeout": {
+    "host": "macOS-15.7.4-arm64-64bit-Mach-O",
+    "observer_sha256": "bd2246da2fa9a61e431adb6bcd17a0e76b2293c9dc5ffa1c33d3546007c1132b",
+    "branch": "retained-owned-Popen-child",
+    "pid": 84001,
+    "outcome": "bounded-timeout",
+    "exception": "owned process did not retire",
+    "seconds": 0.05068595799821196,
+    "child_still_alive": true,
+    "cleanup_exit": -9
+  },
+  "observer_sha256": "bd2246da2fa9a61e431adb6bcd17a0e76b2293c9dc5ffa1c33d3546007c1132b"
+}
