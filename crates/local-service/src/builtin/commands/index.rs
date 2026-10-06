@@ -796,7 +796,7 @@ pub(super) fn finish_index_scan(
                 )
                 .map(PreparedIndex::Compile);
             }
-            let (semantic_changes, selected, aliases, completions) = match compile_semantic_publications(
+            let (mut semantic_changes, selected, aliases, completions) = match compile_semantic_publications(
                 daemon,
                 &semantic_context,
                 sources,
@@ -820,9 +820,10 @@ pub(super) fn finish_index_scan(
                     return Err(error);
                 }
             };
-            let capture_changes =
+            let completed =
                 completed_capture_changes(daemon, &captures, &semantic_changes, &completions)?;
-            (semantic_changes, selected, aliases, capture_changes)
+            semantic_changes.extend(completed.retained_publications);
+            (semantic_changes, selected, aliases, completed.captures)
         }
     };
     let committed_relation = daemon
@@ -1471,12 +1472,20 @@ fn terminal_capture_changes(
     Ok(changes)
 }
 
+/// Capture terminal rows and the exact retained semantic after-images needed
+/// to bind them in the same intent. An unchanged after-image is an observation
+/// of admitted publication, not a claim that an ordinary relation row changed.
+struct CompletedCaptureChanges {
+    captures: Vec<BuiltinCaptureChange>,
+    retained_publications: Vec<BuiltinSemanticChange>,
+}
+
 fn completed_capture_changes(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     semantic_changes: &[BuiltinSemanticChange],
     completions: &[AdmittedCapturePublication],
-) -> Result<Vec<BuiltinCaptureChange>, BuiltinModelError> {
+) -> Result<CompletedCaptureChanges, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let publications = snapshot
         .relation::<BuiltinSemanticRelation>()
@@ -1485,6 +1494,7 @@ fn completed_capture_changes(
         .map_err(|error| BuiltinModelError(format!("open completed semantic captures: {error}")))?
         .ok_or_else(|| BuiltinModelError("semantic capture relation disappeared".to_owned()))?;
     let mut changes = Vec::with_capacity(captures.len());
+    let mut retained_publications = Vec::new();
     for (key, capture) in captures {
         let expected = relation
             .lookup(key)
@@ -1513,10 +1523,13 @@ fn completed_capture_changes(
                 "semantic capture has duplicate admitted profile completions".to_owned(),
             ));
         }
-        let delta = semantic_changes
-            .iter()
-            .find(|change| change.key == *key)
-            .and_then(|change| change.after.clone());
+        let mut deltas = semantic_changes.iter().filter(|change| change.key == *key);
+        let delta = deltas.next().and_then(|change| change.after.clone());
+        if deltas.next().is_some() {
+            return Err(BuiltinModelError(
+                "semantic capture has duplicate selected publication after-images".to_owned(),
+            ));
+        }
         let publication = match (delta, completion) {
             (
                 Some(record @ ProductSemanticPublicationRecord::Published { .. }),
@@ -1543,6 +1556,10 @@ fn completed_capture_changes(
                             .to_owned(),
                     ));
                 }
+                retained_publications.push(BuiltinSemanticChange {
+                    key: key.clone(),
+                    after: retained.clone(),
+                });
                 retained
             }
             (None, None) => None,
@@ -1581,7 +1598,10 @@ fn completed_capture_changes(
             compiler_failure: None,
         });
     }
-    Ok(changes)
+    Ok(CompletedCaptureChanges {
+        captures: changes,
+        retained_publications,
+    })
 }
 
 fn commit_semantic_terminal(
@@ -2320,12 +2340,14 @@ pub(super) fn finish_deferred_index(
             .to_owned(),
         ));
     }
-    let capture_changes = completed_capture_changes(
+    let completed = completed_capture_changes(
         daemon,
         &job.captures,
         &job.semantic_changes,
         &job.capture_publications,
     )?;
+    job.semantic_changes.extend(completed.retained_publications);
+    let capture_changes = completed.captures;
     let owner = daemon.engine().daemon().owner();
     let relation = owner
         .snapshot()
@@ -4031,6 +4053,8 @@ mod admitted_capture_publication_tests {
             .lookup(&key)
             .expect("pending lookup")
             .expect("pending row");
+        let unchanged_semantic_root = crate::builtin::view_publish::semantic_root(&snapshot)
+            .expect("selected semantic root");
         let mut no_delta = Vec::new();
         let completion = record_semantic_publication(
             &relation,
@@ -4044,12 +4068,17 @@ mod admitted_capture_publication_tests {
             no_delta.is_empty(),
             "the actual recorder suppresses identical history and selection deltas"
         );
-        let changes =
+        let completed =
             completed_capture_changes(&daemon, &captures, &no_delta, &[completion.clone()])
                 .expect("exact admitted equal-generation completion");
-        assert_eq!(changes.len(), 1);
+        assert_eq!(completed.captures.len(), 1);
+        assert_eq!(completed.retained_publications.len(), 1);
         assert_eq!(
-            changes[0].outcome,
+            completed.retained_publications[0].after,
+            Some(completion.record())
+        );
+        assert_eq!(
+            completed.captures[0].outcome,
             ProductSemanticCaptureOutcome::Published {
                 coverage: SemanticPublicationCoverage::Complete,
                 claim: original_claim,
@@ -4059,7 +4088,7 @@ mod admitted_capture_publication_tests {
             completed_capture_changes(&daemon, &captures, &[], &[]).expect("no invented admission");
         assert!(
             matches!(
-                unproved[0].outcome,
+                unproved.captures[0].outcome,
                 ProductSemanticCaptureOutcome::Failed {
                     reason: backend_engine::builtin::SemanticUnavailableReason::ProjectAuthority,
                     ..
@@ -4092,7 +4121,7 @@ mod admitted_capture_publication_tests {
         let unrelated = completed_capture_changes(&daemon, &captures, &[], &[wrong_key])
             .expect("unrelated proof proves nothing");
         assert!(matches!(
-            unrelated[0].outcome,
+            unrelated.captures[0].outcome,
             ProductSemanticCaptureOutcome::Failed { .. }
         ));
         assert!(
@@ -4120,9 +4149,37 @@ mod admitted_capture_publication_tests {
         }];
         assert!(completed_capture_changes(&daemon, &captures, &published_delta, &[]).is_err());
         assert!(
-            completed_capture_changes(&daemon, &captures, &published_delta, &[wrong_claim])
+            completed_capture_changes(&daemon, &captures, &published_delta, &[wrong_claim.clone()])
                 .is_err()
         );
+        let wrong_published_delta = vec![BuiltinSemanticChange {
+            key: key.clone(),
+            after: Some(wrong_claim.record()),
+        }];
+        assert!(
+            completed_capture_changes(
+                &daemon,
+                &captures,
+                &wrong_published_delta,
+                &[completion.clone()]
+            )
+            .is_err()
+        );
+        for duplicate_delta in [
+            vec![published_delta[0].clone(), contradictory[0].clone()],
+            vec![published_delta[0].clone(), published_delta[0].clone()],
+        ] {
+            assert!(
+                completed_capture_changes(
+                    &daemon,
+                    &captures,
+                    &duplicate_delta,
+                    &[completion.clone()]
+                )
+                .is_err(),
+                "duplicate selected keys are refused before any first match can lend authority"
+            );
+        }
         let snapshot = daemon.engine().daemon().owner().snapshot();
         assert_eq!(
             semantic_capture_relation(&snapshot)
@@ -4133,12 +4190,22 @@ mod admitted_capture_publication_tests {
             Some(before_capture),
             "controls never mutate durable capture state"
         );
-        let terminal =
-            BuiltinIntent::index_with_capture(package, label, Vec::new(), Vec::new(), changes)
-                .expect("actual admitted terminal update");
+        let terminal = BuiltinIntent::index_with_capture(
+            package,
+            label,
+            Vec::new(),
+            completed.retained_publications,
+            completed.captures,
+        )
+        .expect("actual admitted terminal update");
         super::super::adapter::commit_builtin_intent(&mut daemon, 3, &terminal)
             .expect("persist admitted completion");
         let snapshot = daemon.engine().daemon().owner().snapshot();
+        assert_eq!(
+            crate::builtin::view_publish::semantic_root(&snapshot).expect("terminal semantic root"),
+            unchanged_semantic_root,
+            "the explicit publication observation does not invent an ordinary semantic row change"
+        );
         assert_eq!(
             semantic_capture_relation(&snapshot)
                 .expect("terminal relation")
