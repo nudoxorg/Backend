@@ -3526,26 +3526,31 @@ fn durable_root_last_used(
     root: &Path,
     fallback: std::time::SystemTime,
 ) -> Result<u128, io::Error> {
+    // Recency is advisory eviction metadata, outside the authenticated
+    // projection. An interrupted stamp update must not poison a different,
+    // valid selected root. File admission and all other I/O failures remain
+    // strict; only missing or torn timestamp bytes use directory recency.
+    let fallback = fallback
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     let path = root.join(".last-used");
     let mut file = match backend_platform::durability::open_regular_file_nofollow(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(fallback
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos());
+            return Ok(fallback);
         }
         Err(error) => return Err(error),
     };
     if file.metadata()?.len() != 16 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "durable root last-used stamp has an invalid size",
-        ));
+        return Ok(fallback);
     }
     let mut bytes = [0_u8; 16];
-    file.read_exact(&mut bytes)?;
-    Ok(u128::from_le_bytes(bytes))
+    match file.read_exact(&mut bytes) {
+        Ok(()) => Ok(u128::from_le_bytes(bytes)),
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(fallback),
+        Err(error) => Err(error),
+    }
 }
 
 fn remove_unpinned_projection_root(path: &Path) -> Result<(), io::Error> {
