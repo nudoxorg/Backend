@@ -774,12 +774,16 @@ pub fn parse_pypi_project_metadata(
         metadata.deprecation = DiscoveryFacet::Absent;
         let is_yanked = yanked == DiscoveryFacet::Known(true);
         metadata.yanked = yanked;
-        // This endpoint exposes package-level vulnerability evidence, not a
-        // complete affected-version interval. Keep its `fixed_in` boundaries
-        // intact and leave version ordering to a typed consumer.
-        metadata.advisories = latest_advisories
-            .clone()
-            .map_or(DiscoveryFacet::Unknown, DiscoveryFacet::Known);
+        // The project JSON endpoint scopes vulnerabilities to info.version.
+        // Even an empty list cannot establish advisory absence for another
+        // release. Preserve fixed_in evidence only within the reported scope.
+        metadata.advisories = if is_latest {
+            latest_advisories
+                .clone()
+                .map_or(DiscoveryFacet::Unknown, DiscoveryFacet::Known)
+        } else {
+            DiscoveryFacet::Unknown
+        };
         metadata.downloads = DiscoveryFacet::Absent;
         metadata.admit()?;
         let proof = hash_typed_json(files)?;
@@ -2632,6 +2636,7 @@ mod tests {
             .expect("older release");
         assert_eq!(old.standing, DiscoveryStanding::Yanked);
         assert_eq!(old.source_event_time, None);
+        assert_eq!(old.metadata.advisories, DiscoveryFacet::Unknown);
         assert_eq!(
             old.metadata.published_at,
             DiscoveryFacet::Known("2025-01-01T00:00:00Z".to_owned())
@@ -2658,6 +2663,44 @@ mod tests {
         assert_eq!(
             advisories[0].fixed_in,
             DiscoveryFacet::Known(vec!["2.0".to_owned()])
+        );
+    }
+
+    #[test]
+    fn pypi_project_empty_advisories_do_not_clear_historical_release_status() {
+        let project = parse_pypi_project_metadata(
+            br#"{"info":{"name":"scope","version":"2.0"},"vulnerabilities":[],"releases":{"1.0":[{"yanked":false}],"2.0":[{"yanked":false}]}}"#,
+            "scope",
+            10,
+        )
+        .expect("latest-release advisory scope");
+        let old = project
+            .releases
+            .iter()
+            .find(|release| release.coordinate.as_str() == "pkg:pypi/scope@1.0")
+            .expect("historical release");
+        let latest = project
+            .releases
+            .iter()
+            .find(|release| release.coordinate.as_str() == "pkg:pypi/scope@2.0")
+            .expect("reported latest release");
+        assert_eq!(old.metadata.advisories, DiscoveryFacet::Unknown);
+        assert_eq!(
+            latest.metadata.advisories,
+            DiscoveryFacet::Known(Vec::new())
+        );
+        assert_eq!(old.standing, DiscoveryStanding::Published);
+        assert_eq!(old.metadata.yanked, DiscoveryFacet::Known(false));
+
+        let unscoped = parse_pypi_project_metadata(
+            br#"{"info":{"name":"scope"},"vulnerabilities":[],"releases":{"1.0":[{"yanked":false}]}}"#,
+            "scope",
+            10,
+        )
+        .expect("no reported release scope");
+        assert_eq!(
+            unscoped.releases[0].metadata.advisories,
+            DiscoveryFacet::Unknown
         );
     }
 
