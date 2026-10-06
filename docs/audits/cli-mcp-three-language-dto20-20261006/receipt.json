@@ -1,0 +1,28 @@
+{
+  "schema": "nudox.cli-mcp-three-language-observation.v1",
+  "scope": "configured matched DTO20 diagnostic; no whole-package acceptance",
+  "whole_package_passes": 0,
+  "cases": {
+    "semver": {
+      "packet_path": "semver.json",
+      "packet_sha256": "4cc6cc23aa0b448d3374c012d9bfb102cc58c861c63bc6c6684fa5d087ab106a",
+      "raw_result_sha256": "14fd6eee3ae20ad37961fb5af35b6785f3531be98c0dc62603844ed67bfd1c0e",
+      "whole_package_passes": 0
+    },
+    "requests": {
+      "packet_path": "requests.json",
+      "packet_sha256": "5b0362ef903d8c37a90d49ad6a857c27d131d60073cd9fdd205a8b6abaf83b30",
+      "raw_result_sha256": "74a759d91a7cc9094c4e18ba3e72c64d53750641fde3838c3c00152f228db086",
+      "whole_package_passes": 0
+    },
+    "gorilla": {
+      "packet_path": "gorilla.json",
+      "packet_sha256": "1beae3a4fc5418d2731bdea93e2143b02746001f05132e3db600da6c2f943909",
+      "raw_result_sha256": "7a3ff54cd54811221d090e294ea3308a14f01650fd462b530b2af68943642188",
+      "whole_package_passes": 0
+    }
+  },
+  "semver_native_history_typed_parity": true,
+  "semver_full_mcp_search_failure": "mcp-warm-npm-types-semver-7.8.0-typescript-Options-search MCP typed fault: {\"answer\":\"fault\",\"cause\":\"oversized\",\"detail\":\"response is 56807 bytes, above the 49152 byte budget; lower limit or request detail=summary\",\"operand\":\"response\",\"slug\":\"transport\"}",
+  "semver_initial_result_sha256": "576a8c75cfe09ebb1030f82cc787c0d6404dfaa04a86b0fa331f7129ad4d5f2f"
+}

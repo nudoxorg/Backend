@@ -1,0 +1,13 @@
+# Actual matched DTO20 CLI/MCP observations
+
+These configured runs used clean source `039c360d286962a6cf19488fb86caabd1d8c93de` and verified manifest `a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8`. All owners stopped before final hashing. No whole-package passes are claimed.
+
+Semver has exact decoded named CLI/MCP selected native/history parity for 42 artifacts. Full MCP Options search refuses a 56,807-byte reply against the 49,152-byte limit. Two private cold opens preserve the old declaration coordinate and exact source bytes. Indexed source membership is 42 unique files with a terminal cursor. References return two same-file uses but omit 31 source-backed cross-file obligations; graph remains the Options row. The diagnostic emits 871,260 stdout bytes (217,815 estimated tokens), demonstrating aggregate cost despite bounded packets.
+
+Requests initially publishes its native package and remains history Pending during the bounded initial wait. Cold observation reaches terminal history Refused: one canonical row needs 6,037 bytes while the segment ceiling is 4,096. Exact api.py::request source and seven same-file calls/compiler references survive both cold runs. Its graph still omits sessions.py::Session and exposes three separate generic external target rows. This is partial source/reference evidence, not complete native/history acceptance.
+
+Gorilla refuses native authority opening for bench_test.go. Two actual cold opens preserve the same durable Failed state and full typed compiler failure through CLI and MCP, with exact source/recipe/phase/family/diagnostic facts. NewRoute source bytes and copyRouteConf graph adjacency remain source-only observations; required method-call references are absent. They do not override the native refusal.
+
+The supplemental generic backend.surface semantic-version wrapper intentionally differs from named-tool presentation. Diagnostic search cursors were attempted across separate MCP server processes and are not counted as an independent continuation defect. The full same-process cursor contract requires separate proof. Neither observation changes the original failures.
+
+The raw remote results are retained under `/root/nudox-corpus-20261006/artifacts/canonical-{npm-semver,python-requests,go-gorilla}-dto20/`, in surface-diagnostic-v2 directories timestamped 20261006T114055Z, 20261006T114618Z, and 20261006T114619Z respectively. These packets bind their exact hashes and retain typed status, source, reference, graph, history and membership values.
