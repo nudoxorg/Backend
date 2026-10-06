@@ -279,6 +279,7 @@ struct ResolverObservationLedger {
     loaded_sources: std::collections::BTreeMap<PathBuf, TypeScriptFileInput>,
     missing_paths: std::collections::BTreeMap<PathBuf, Option<PathBuf>>,
     directories: std::collections::BTreeMap<PathBuf, DirectorySnapshot>,
+    external_negative_parents: std::collections::BTreeMap<PathBuf, RealpathSnapshot>,
     realpaths: std::collections::BTreeMap<PathBuf, RealpathSnapshot>,
     loaded_source_bytes: u64,
     directory_entries: usize,
@@ -292,6 +293,7 @@ impl ResolverObservationLedger {
             .saturating_add(self.missing_paths.len())
             .saturating_add(self.directories.len())
             .saturating_add(self.realpaths.len())
+            .saturating_add(self.external_negative_parents.len())
     }
 }
 
@@ -686,6 +688,21 @@ impl TypeScriptResolverCapability<'_> {
                 }
             }
         }
+        for (path, parent) in &self.observations.external_negative_parents {
+            digest.update(&[5]);
+            update_logical_path(&mut digest, self.witness, path)?;
+            for parent_path in [Some(parent.path.as_ref()), parent.canonical_path.as_deref()] {
+                if let Some(parent_path) = parent_path {
+                    let bytes = parent_path.as_os_str().as_encoded_bytes();
+                    update_len(&mut digest, bytes.len());
+                    digest.update(bytes);
+                }
+            }
+            if let Some(identity) = parent.identity {
+                digest.update(&identity.first.to_le_bytes());
+                digest.update(&identity.second.to_le_bytes());
+            }
+        }
         for snapshot in self.observations.directories.values() {
             digest.update(&[3]);
             update_logical_path(&mut digest, self.witness, &snapshot.path)?;
@@ -732,9 +749,7 @@ impl TypeScriptResolverCapability<'_> {
         Ok(*digest.finalize().as_bytes())
     }
 
-    pub(crate) fn seal(
-        &mut self,
-    ) -> Result<TypeScriptResolverWitness, TypeScriptProjectHostError> {
+    pub(crate) fn seal(&mut self) -> Result<TypeScriptResolverWitness, TypeScriptProjectHostError> {
         self.validate_current()?;
         let digest = self.resolver_witness()?;
         Ok(TypeScriptResolverWitness {
@@ -761,6 +776,37 @@ impl TypeScriptResolverCapability<'_> {
         path: PathBuf,
         nearest_existing_parent: Option<PathBuf>,
     ) -> Result<(), TypeScriptProjectHostError> {
+        if !self.witness.path_is_admitted(&path) {
+            if !self.witness.external_negative_module_candidate(&path) {
+                return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+                    path: path.into_boxed_path(),
+                });
+            }
+            let parent = capture_external_negative_parent(&path)?;
+            if let Some(previous) = self.observations.external_negative_parents.get(&path) {
+                if previous != &parent {
+                    return Err(TypeScriptProjectHostError::WitnessChanged {
+                        path: path.into_boxed_path(),
+                    });
+                }
+                return Ok(());
+            }
+            ensure_observation_capacity(&self.observations, &path)?;
+            let cost = path.as_os_str().as_encoded_bytes().len()
+                + parent.path.as_os_str().as_encoded_bytes().len()
+                + parent
+                    .canonical_path
+                    .as_deref()
+                    .map_or(0, |p| p.as_os_str().as_encoded_bytes().len());
+            ensure_metadata_capacity(&self.observations, cost, &path)?;
+            self.observations.retained_metadata_bytes += cost;
+            self.observations
+                .external_negative_parents
+                .insert(path.clone(), parent);
+            ensure_observation_capacity(&self.observations, &path)?;
+            self.observations.missing_paths.insert(path, None);
+            return Ok(());
+        }
         let nearest_existing_parent = match nearest_existing_parent {
             Some(parent) => Some(parent),
             None => nearest_existing_admitted_parent(&path, self.witness)?,
@@ -886,6 +932,15 @@ fn validate_resolver_observations(
                     path: parent.clone().into_boxed_path(),
                 });
             }
+        }
+    }
+    for (path, expected) in &observations.external_negative_parents {
+        if !witness.external_negative_module_candidate(path)
+            || &capture_external_negative_parent(path)? != expected
+        {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: path.clone().into_boxed_path(),
+            });
         }
     }
     for (path, expected) in &observations.directories {
@@ -1320,13 +1375,27 @@ impl TypeScriptProjectWitness {
         path.starts_with(&self.workspace_root) || path.starts_with(&self.module_root)
     }
 
+    fn external_negative_module_candidate(&self, path: &Path) -> bool {
+        self.workspace_root
+            .ancestors()
+            .skip(1)
+            .take(MAX_PROJECT_ANCESTORS)
+            .any(|ancestor| {
+                let modules = ancestor.join("node_modules");
+                path == modules || path == modules.join("@types")
+            })
+    }
+
     fn admit_lexical_path(&self, path: &Path) -> Result<PathBuf, TypeScriptProjectHostError> {
         let Some(path) = normalize_absolute_path(path) else {
             return Err(TypeScriptProjectHostError::SourceOutsideCapability {
                 path: path.to_path_buf().into_boxed_path(),
             });
         };
-        if !self.path_is_admitted(&path) {
+        if !self.path_is_admitted(&path)
+            && !(self.external_negative_module_candidate(&path)
+                && matches!(fs::symlink_metadata(&path), Err(ref error) if error.kind() == io::ErrorKind::NotFound))
+        {
             return Err(TypeScriptProjectHostError::SourceOutsideCapability {
                 path: path.into_boxed_path(),
             });
@@ -1339,25 +1408,40 @@ impl TypeScriptProjectWitness {
             match find_project_typescript_with_home(&self.project_root, self.home_root.as_deref())?
             {
                 ProjectTypeScriptSearch::Found(project)
-                    if self.discovery_origin == TypeScriptProjectDiscoveryOrigin::ProjectLocal => project,
+                    if self.discovery_origin == TypeScriptProjectDiscoveryOrigin::ProjectLocal =>
+                {
+                    project
+                }
                 ProjectTypeScriptSearch::NotFound
-                    if self.discovery_origin == TypeScriptProjectDiscoveryOrigin::InstalledFallback => {
-                        // Revalidate the originally selected host installation. Never select a
-                        // new PATH entry or turn a vanished project installation into fallback.
-                        let (module_root, version) = read_typescript_module(&self.discovered_module_root)?;
-                        let compiler = fs::canonicalize(&self.discovered_compiler).map_err(|source| {
+                    if self.discovery_origin
+                        == TypeScriptProjectDiscoveryOrigin::InstalledFallback =>
+                {
+                    // Revalidate the originally selected host installation. Never select a
+                    // new PATH entry or turn a vanished project installation into fallback.
+                    let (module_root, version) =
+                        read_typescript_module(&self.discovered_module_root)?;
+                    let compiler =
+                        fs::canonicalize(&self.discovered_compiler).map_err(|source| {
                             TypeScriptProjectHostError::PackagePath {
-                                path: self.discovered_compiler.clone(), source,
+                                path: self.discovered_compiler.clone(),
+                                source,
                             }
                         })?;
-                        ProjectTypeScript {
-                            module_root, compiler, version,
-                            workspace: discover_workspace_boundary(&self.project_root, self.home_root.as_deref())?,
-                            compiler_origin: self.discovered_compiler_origin,
-                            discovery_origin: TypeScriptProjectDiscoveryOrigin::InstalledFallback,
-                        }
+                    ProjectTypeScript {
+                        module_root,
+                        compiler,
+                        version,
+                        workspace: discover_workspace_boundary(
+                            &self.project_root,
+                            self.home_root.as_deref(),
+                        )?,
+                        compiler_origin: self.discovered_compiler_origin,
+                        discovery_origin: TypeScriptProjectDiscoveryOrigin::InstalledFallback,
                     }
-                ProjectTypeScriptSearch::Found(_) | ProjectTypeScriptSearch::NotFound | ProjectTypeScriptSearch::Pnp(_) => {
+                }
+                ProjectTypeScriptSearch::Found(_)
+                | ProjectTypeScriptSearch::NotFound
+                | ProjectTypeScriptSearch::Pnp(_) => {
                     return Err(TypeScriptProjectHostError::WitnessChanged {
                         path: self.project_root.to_path_buf().into_boxed_path(),
                     });
@@ -1455,6 +1539,50 @@ fn normalize_absolute_path(path: &Path) -> Option<PathBuf> {
         }
     }
     normalized.is_absolute().then_some(normalized)
+}
+
+// Only absence and the nearest parent's identity are inspected outside the capability.
+// This never enumerates or reads an external directory's contents.
+fn capture_external_negative_parent(
+    path: &Path,
+) -> Result<RealpathSnapshot, TypeScriptProjectHostError> {
+    if !matches!(fs::symlink_metadata(path), Err(ref error) if error.kind() == io::ErrorKind::NotFound)
+    {
+        return Err(TypeScriptProjectHostError::WitnessChanged {
+            path: path.to_path_buf().into_boxed_path(),
+        });
+    }
+    for parent in path.ancestors().skip(1) {
+        match fs::symlink_metadata(parent) {
+            Ok(_) => {
+                let Some((canonical, identity)) = capture_realpath_snapshot(parent)? else {
+                    return Err(TypeScriptProjectHostError::WitnessChanged {
+                        path: parent.to_path_buf().into_boxed_path(),
+                    });
+                };
+                if !fs::metadata(&canonical).is_ok_and(|metadata| metadata.is_dir()) {
+                    return Err(TypeScriptProjectHostError::RegularDirectoryRequired {
+                        path: canonical.into_boxed_path(),
+                    });
+                }
+                return Ok(RealpathSnapshot {
+                    path: parent.to_path_buf().into_boxed_path(),
+                    canonical_path: Some(canonical.into_boxed_path()),
+                    identity,
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(TypeScriptProjectHostError::PackagePath {
+                    path: parent.to_path_buf().into_boxed_path(),
+                    source,
+                });
+            }
+        }
+    }
+    Err(TypeScriptProjectHostError::SourceOutsideCapability {
+        path: path.to_path_buf().into_boxed_path(),
+    })
 }
 
 fn nearest_existing_admitted_parent(
@@ -1660,6 +1788,23 @@ fn update_logical_path(
         (1_u8, witness.workspace_root.as_ref())
     } else if path.starts_with(witness.module_root.as_ref()) {
         (2_u8, witness.module_root.as_ref())
+    } else if witness.external_negative_module_candidate(path) {
+        let index = witness
+            .workspace_root
+            .ancestors()
+            .skip(1)
+            .take(MAX_PROJECT_ANCESTORS)
+            .position(|ancestor| {
+                path == ancestor.join("node_modules")
+                    || path == ancestor.join("node_modules/@types")
+            })
+            .expect("bounded candidate ancestor");
+        digest.update(&[3]);
+        update_len(digest, index);
+        digest.update(&[u8::from(
+            path.file_name().is_some_and(|name| name == "@types"),
+        )]);
+        return Ok(());
     } else {
         return Err(TypeScriptProjectHostError::SourceOutsideCapability {
             path: path.to_path_buf().into_boxed_path(),
@@ -4694,7 +4839,6 @@ printf 'Version 5.9.3\n'
 
         fs::create_dir_all(&ancestor_modules).expect("materialize ancestor module root");
         assert!(matches!(
-
             capability.validate_current(),
             Err(TypeScriptProjectHostError::WitnessChanged { .. })
         ));
@@ -4894,20 +5038,17 @@ if [ "$1" = "--version" ]; then printf 'v22.0.0\n'; elif [ "$2" = "--version" ];
         fs::set_permissions(&node, fs::Permissions::from_mode(0o755))
             .expect("make Node probe executable");
 
-        let admitted = TypeScriptProjectHost::new(
-            None,
-            Some(node),
-            None,
-            None,
-            Fixture::limits(),
-        )
-        .with_installed_default(Some(compiler.clone()), Some(modules.clone()))
-        .admit(&workspace)
-        .expect("admit captured installed-host TypeScript")
-        .expect("installed host compiler is usable without a project-local copy");
+        let admitted = TypeScriptProjectHost::new(None, Some(node), None, None, Fixture::limits())
+            .with_installed_default(Some(compiler.clone()), Some(modules.clone()))
+            .admit(&workspace)
+            .expect("admit captured installed-host TypeScript")
+            .expect("installed host compiler is usable without a project-local copy");
 
         assert_eq!(admitted.compiler.as_ref(), compiler);
-        assert_eq!(admitted.compiler_origin, TypeScriptSelectionOrigin::InstalledHostSelection);
+        assert_eq!(
+            admitted.compiler_origin,
+            TypeScriptSelectionOrigin::InstalledHostSelection
+        );
         assert_eq!(
             admitted.inputs().typescript_module_root,
             fs::canonicalize(modules).expect("canonical TypeScript module root")
@@ -4941,19 +5082,16 @@ if [ "$1" = "--version" ]; then printf 'v22.0.0\n'; elif [ "$2" = "--version" ];
         let installed_compiler = fs::canonicalize(host_modules.join("typescript/bin/tsc"))
             .expect("canonical installed-host compiler");
 
-        let admitted = TypeScriptProjectHost::new(
-            None,
-            Some(node),
-            None,
-            None,
-            Fixture::limits(),
-        )
-        .with_installed_default(Some(installed_compiler), Some(host_modules))
-        .admit(&workspace)
-        .expect("admit project-local TypeScript ahead of host default")
-        .expect("project-local compiler is usable");
+        let admitted = TypeScriptProjectHost::new(None, Some(node), None, None, Fixture::limits())
+            .with_installed_default(Some(installed_compiler), Some(host_modules))
+            .admit(&workspace)
+            .expect("admit project-local TypeScript ahead of host default")
+            .expect("project-local compiler is usable");
 
-        assert_eq!(admitted.compiler_origin, TypeScriptSelectionOrigin::ProjectLocalInstallation);
+        assert_eq!(
+            admitted.compiler_origin,
+            TypeScriptSelectionOrigin::ProjectLocalInstallation
+        );
         assert_eq!(
             admitted.inputs().typescript_module_root,
             fs::canonicalize(local_modules).expect("canonical project-local module root")
@@ -4971,23 +5109,91 @@ if [ "$1" = "--version" ]; then printf 'v22.0.0\n'; elif [ "$2" = "--version" ];
         fs::write(&node, b"captured node executable").unwrap();
         let package_root = fs::canonicalize(module_root.join("typescript")).unwrap();
         let project = ProjectTypeScript {
-            module_root: module_root.clone(), compiler: compiler.clone(), version: "5.9.3".into(),
-            workspace: None, compiler_origin: TypeScriptSelectionOrigin::InstalledHostSelection,
+            module_root: module_root.clone(),
+            compiler: compiler.clone(),
+            version: "5.9.3".into(),
+            workspace: None,
+            compiler_origin: TypeScriptSelectionOrigin::InstalledHostSelection,
             discovery_origin: TypeScriptProjectDiscoveryOrigin::InstalledFallback,
         };
-        TypeScriptProjectWitness::capture(&project_root, None, &project, &compiler, &node,
-            &module_root, &package_root, None).expect("capture exact host fallback")
+        TypeScriptProjectWitness::capture(
+            &project_root,
+            None,
+            &project,
+            &compiler,
+            &node,
+            &module_root,
+            &package_root,
+            None,
+        )
+        .expect("capture exact host fallback")
+    }
+
+    #[test]
+    fn absent_ancestor_types_witness_refuses_materialized_types_or_parent() {
+        for materialize_types in [false, true] {
+            let outer = Fixture::new();
+            let project = outer.0.join("isolated-project");
+            fs::create_dir_all(&project).expect("private project");
+            let fixture = Fixture(project);
+            let mut witness = installed_fallback_witness(&fixture);
+            witness.workspace_root = fs::canonicalize(&fixture.0).unwrap().into_boxed_path();
+            let candidate = outer.0.join("node_modules/@types");
+            assert!(!witness.path_is_admitted(&candidate));
+            let mut capability = TypeScriptResolverCapability {
+                witness: &witness,
+                observations: ResolverObservationLedger::default(),
+            };
+            assert!(
+                !capability
+                    .directory_exists(&candidate)
+                    .expect("bounded negative @types probe")
+            );
+            assert!(
+                capability
+                    .read_directory(&candidate, &[".d.ts"], false, 0, 64)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_ne!(capability.resolver_witness().unwrap(), [0; 32]);
+            capability
+                .validate_current()
+                .expect("absence and parent remain unchanged");
+            fs::create_dir_all(if materialize_types {
+                candidate.as_path()
+            } else {
+                candidate.parent().unwrap()
+            })
+            .unwrap();
+            assert!(matches!(
+                capability.validate_current(),
+                Err(TypeScriptProjectHostError::WitnessChanged { .. })
+            ));
+            if materialize_types {
+                assert!(matches!(
+                    witness.admit_lexical_path(&candidate),
+                    Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
+                ));
+            }
+        }
     }
 
     #[test]
     fn installed_fallback_witness_revalidates_without_project_sdk_and_refuses_new_local_sdk() {
         let fixture = Fixture::new();
         let witness = installed_fallback_witness(&fixture);
-        witness.validate_current().expect("unchanged installed fallback remains valid");
+        witness
+            .validate_current()
+            .expect("unchanged installed fallback remains valid");
         let project_modules = fixture.0.join("project/node_modules");
         install_at(&project_modules, "5.9.3");
-        assert!(matches!(witness.validate_current(), Err(TypeScriptProjectHostError::WitnessChanged { .. })),
-            "a newly present project installation requires a new selection even at the same version");
+        assert!(
+            matches!(
+                witness.validate_current(),
+                Err(TypeScriptProjectHostError::WitnessChanged { .. })
+            ),
+            "a newly present project installation requires a new selection even at the same version"
+        );
     }
 
     #[test]
@@ -4995,16 +5201,32 @@ if [ "$1" = "--version" ]; then printf 'v22.0.0\n'; elif [ "$2" = "--version" ];
         for mutation in ["node", "sdk-version", "sdk-deleted", "compiler"] {
             let fixture = Fixture::new();
             let witness = installed_fallback_witness(&fixture);
-            witness.validate_current().expect("each independent baseline is valid");
+            witness
+                .validate_current()
+                .expect("each independent baseline is valid");
             match mutation {
-                "node" => fs::write(fixture.0.join("host-node"), b"changed node executable").unwrap(),
-                "sdk-version" => fs::write(fixture.0.join("host-modules/typescript/package.json"),
-                    r#"{"name":"typescript","version":"5.8.4"}"#).unwrap(),
-                "sdk-deleted" => fs::remove_dir_all(fixture.0.join("host-modules/typescript")).unwrap(),
-                "compiler" => fs::write(fixture.0.join("host-modules/typescript/bin/tsc"), b"changed compiler entry").unwrap(),
+                "node" => {
+                    fs::write(fixture.0.join("host-node"), b"changed node executable").unwrap()
+                }
+                "sdk-version" => fs::write(
+                    fixture.0.join("host-modules/typescript/package.json"),
+                    r#"{"name":"typescript","version":"5.8.4"}"#,
+                )
+                .unwrap(),
+                "sdk-deleted" => {
+                    fs::remove_dir_all(fixture.0.join("host-modules/typescript")).unwrap()
+                }
+                "compiler" => fs::write(
+                    fixture.0.join("host-modules/typescript/bin/tsc"),
+                    b"changed compiler entry",
+                )
+                .unwrap(),
                 _ => unreachable!(),
             }
-            assert!(witness.validate_current().is_err(), "independent {mutation} corruption must refuse");
+            assert!(
+                witness.validate_current().is_err(),
+                "independent {mutation} corruption must refuse"
+            );
         }
     }
 
@@ -5015,17 +5237,35 @@ if [ "$1" = "--version" ]; then printf 'v22.0.0\n'; elif [ "$2" = "--version" ];
         let project_root = fixture.0.join("project");
         let modules = project_root.join("node_modules");
         install_at(&modules, "5.9.3");
-        let ProjectTypeScriptSearch::Found(project) = find_project_typescript(&project_root).unwrap() else {
+        let ProjectTypeScriptSearch::Found(project) =
+            find_project_typescript(&project_root).unwrap()
+        else {
             panic!("actual project installation required");
         };
         let node = fixture.0.join("host-node");
         let package_root = fs::canonicalize(modules.join("typescript")).unwrap();
-        let witness = TypeScriptProjectWitness::capture(&project_root, None, &project,
-            &project.compiler, &node, &modules, &package_root, project.workspace.as_ref()).unwrap();
-        witness.validate_current().expect("unchanged local selection");
+        let witness = TypeScriptProjectWitness::capture(
+            &project_root,
+            None,
+            &project,
+            &project.compiler,
+            &node,
+            &modules,
+            &package_root,
+            project.workspace.as_ref(),
+        )
+        .unwrap();
+        witness
+            .validate_current()
+            .expect("unchanged local selection");
         fs::remove_dir_all(modules).unwrap();
-        assert!(matches!(witness.validate_current(), Err(TypeScriptProjectHostError::WitnessChanged { .. })),
-            "a disappeared project installation does not inherit the valid host installation");
+        assert!(
+            matches!(
+                witness.validate_current(),
+                Err(TypeScriptProjectHostError::WitnessChanged { .. })
+            ),
+            "a disappeared project installation does not inherit the valid host installation"
+        );
     }
 
     fn install_at(modules: &Path, version: &str) {
