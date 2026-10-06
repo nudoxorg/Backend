@@ -4366,12 +4366,12 @@ fn native_tsz_declaration_coordinate(
     fields.into_iter().next()
 }
 
-pub(crate) fn collect_with_tsz<'source>(
+pub(crate) fn collect_with_tsz<'source, 'session>(
     profile: TypeScriptSource,
     source: &'source [u8],
     project: &'source TszProject,
     source_path: &str,
-    session: &'source backend_frontend_typescript::TszProjectQuerySession<'source>,
+    session: &'session backend_frontend_typescript::TszProjectQuerySession<'source>,
     facts: &mut FactSet<'source>,
 ) -> Result<(), TypeScriptCollectError> {
     let source = std::str::from_utf8(source).map_err(TypeScriptCollectError::Utf8)?;
@@ -10482,7 +10482,7 @@ mod lane_tests {
             .project()
             .ok_or(LaneError::Missing("native TSZ project result"))?;
         let mut facts = FactSet::new();
-        collect_with_tsz_unmetered_for_test(
+        super::collect_with_tsz_unmetered_for_test(
             TypeScriptSource::TypeScript,
             source.as_bytes(),
             project,
@@ -10616,7 +10616,7 @@ mod lane_tests {
         source: &'source str,
     ) -> Result<FactSet<'source>, LaneError> {
         let mut facts = FactSet::new();
-        collect_with_tsz_unmetered_for_test(
+        super::collect_with_tsz_unmetered_for_test(
             TypeScriptSource::TypeScript,
             source.as_bytes(),
             project,
