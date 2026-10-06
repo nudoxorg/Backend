@@ -10773,8 +10773,7 @@ mod lane_tests {
     fn native_tsz_preserves_distinct_keyof_indexed_access_and_local_typeof() -> Result<(), LaneError>
     {
         let source = concat!(
-            "export const marker = { value: 1 };\n",
-            "export type MarkerQuery = typeof marker;\n",
+            "export function marker(): typeof marker { throw 'recursive typeof'; }\n",
             "export type Keys<T> = keyof T;\n",
             "export type Value<T, K extends keyof T> = T[K];\n",
         );
@@ -10794,14 +10793,26 @@ mod lane_tests {
             .find(|item| item.name() == b"marker")
             .ok_or(LaneError::Missing("typeof target entity"))?;
         eprintln!(
-            "TYPE_OPERATOR_IR_TRACE MarkerQuery={:?} Keys={:?} Value={:?}",
-            native_observation(&ir, b"MarkerQuery"),
+            "TYPE_OPERATOR_IR_TRACE marker={:?} Keys={:?} Value={:?}",
+            native_observation(&ir, b"marker"),
             native_observation(&ir, b"Keys"),
             native_observation(&ir, b"Value"),
         );
+        let TypeExpr::Concrete(backend_semantic::ir::ConcreteType::Function { results, .. }) = ir
+            .ty(observed(b"marker")?)
+            .ok_or(LaneError::Missing("recursive typeof function row"))?
+        else {
+            return Err(LaneError::Missing(
+                "recursive typeof remains in the native function result",
+            ));
+        };
+        let result = ir
+            .tuple_elements(results)
+            .and_then(|results| results.first())
+            .ok_or(LaneError::Missing("recursive typeof result slot"))?;
         let TypeExpr::Computed(ComputedType::TypeOf(TypeQuery::Entity(target))) = ir
-            .ty(observed(b"MarkerQuery")?)
-            .ok_or(LaneError::Missing("typeof computed row"))?
+            .ty(result.ty)
+            .ok_or(LaneError::Missing("typeof computed result row"))?
         else {
             return Err(LaneError::Missing("distinct entity-targeted TypeOf row"));
         };
