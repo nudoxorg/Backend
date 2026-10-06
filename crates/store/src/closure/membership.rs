@@ -3,7 +3,7 @@
 use super::{ClosureId, ObjectId, StoreError, TypedObject};
 use crate::{
     ArtifactClosureClaim, ClosureCompositionBudget, ClosureMembershipChange, DurableManifest,
-    FileStore, GcPinGuard, PinnedStoredClosureReceipt,
+    FileStore, PinnedStoredClosureReceipt,
 };
 use std::sync::Arc;
 
@@ -24,10 +24,8 @@ pub struct DurableClosureManifest {
 
 #[derive(Debug)]
 struct MembershipPin {
-    receipt: PinnedStoredClosureReceipt,
-    // A receipt can come from a different FileStore handle. Protect this
-    // reader's store as well until the exact membership is selected.
-    _reader_pin: GcPinGuard,
+    receipt: crate::StoredClosureReceipt,
+    _lease: crate::durable::ClosureMembershipLease,
 }
 
 impl PartialEq for DurableClosureManifest {
@@ -54,12 +52,18 @@ impl DurableClosureManifest {
         if index.id() != admitted.closure() || index.object_count() != admitted.object_count() {
             return Err(StoreError::Corrupt);
         }
+        let lease = store.lease_closure_membership(index.id())?;
+        // Registration is complete while both global admission barriers are
+        // held. Every clone now retains an exact per-closure reachability
+        // lease, allowing GC of unrelated interrupted admissions.
+        drop(receipt);
+        drop(reader_pin);
         Ok(Self {
             store: store.clone(),
             index,
             pin: Arc::new(MembershipPin {
-                receipt,
-                _reader_pin: reader_pin,
+                receipt: admitted,
+                _lease: lease,
             }),
             budget,
             cancellation: None,
@@ -196,6 +200,6 @@ impl DurableClosureManifest {
     /// Returns the immutable receipt while this handle keeps its pin alive.
     #[must_use]
     pub fn receipt(&self) -> crate::StoredClosureReceipt {
-        self.pin.receipt.receipt()
+        self.pin.receipt
     }
 }

@@ -31,6 +31,7 @@ mod artifact_fs;
 mod closure_composer;
 mod gc;
 mod layout;
+mod membership_lease;
 mod nodes;
 mod objects;
 mod publication;
@@ -53,6 +54,7 @@ pub use layout::{
     FileStore, GcPinGuard, PublicationAuthorityError, PublicationBase, PublicationDescriptor,
     SelectedHead, StorePublicationAuthority, TransactionId,
 };
+pub(crate) use membership_lease::ClosureMembershipLease;
 pub use nodes::{
     DurableManifest, DurableManifestIdPage, DurableManifestPage, DurableTree, ManifestReadStats,
     OwnedRelationNodeLoader, RelationNodeChild, RelationNodeRead, RelationNodeWriteStats,

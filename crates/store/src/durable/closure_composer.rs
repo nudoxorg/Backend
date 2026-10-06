@@ -1179,6 +1179,82 @@ mod tests {
         assert!(test.store.read_closure_index(closure).is_ok());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn durable_membership_clones_retain_old_roots_while_orphans_are_collected() {
+        let test = TestStore::new();
+        let retained = object(b"retained old snapshot member");
+        let abandoned = object(b"unselected interrupted admission");
+        test.store.write_object(&retained).unwrap();
+        test.store.write_object(&abandoned).unwrap();
+        let receipt = compose(
+            &test.store,
+            None,
+            &[ClosureMembershipChange::add(retained.id())],
+        );
+        let membership =
+            crate::DurableClosureManifest::from_pinned(&test.store, receipt, budget()).unwrap();
+        let old_snapshot = membership.clone();
+        drop(membership);
+        // A separately opened collector must discover the held lease. No
+        // global admission lock may prevent reclaiming unrelated objects.
+        let collector = FileStore::open(&test.path, 1024 * 1024).unwrap();
+        collector
+            .collect_garbage(&GcRoots::new(), GcLimits::default())
+            .unwrap();
+        assert!(collector.contains_object(retained.id()).unwrap());
+        assert!(!collector.contains_object(abandoned.id()).unwrap());
+        assert!(old_snapshot.get(retained.id()).unwrap().is_some());
+        drop(old_snapshot);
+        collector
+            .collect_garbage(&GcRoots::new(), GcLimits::default())
+            .unwrap();
+        assert!(!collector.contains_object(retained.id()).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_membership_visit_observes_cancellation_between_members() {
+        let test = TestStore::new();
+        let objects = [
+            object(b"cancel first"),
+            object(b"cancel second"),
+            object(b"cancel third"),
+        ];
+        let mut changes = objects
+            .iter()
+            .map(|item| {
+                test.store.write_object(item).unwrap();
+                ClosureMembershipChange::add(item.id())
+            })
+            .collect::<Vec<_>>();
+        changes.sort_by_key(|change| change.object_id());
+        let receipt = compose(&test.store, None, &changes);
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let membership = crate::DurableClosureManifest::from_pinned(&test.store, receipt, budget())
+            .unwrap()
+            .with_cancellation(Arc::clone(&flag));
+        let mut visits = 0;
+        assert!(
+            membership
+                .visit_ids(|_| {
+                    visits += 1;
+                    flag.store(true, Ordering::Release);
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert_eq!(visits, 1);
+        flag.store(false, Ordering::Release);
+        membership
+            .visit_ids(|_| {
+                visits += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(visits, 4);
+    }
+
     #[test]
     fn descriptor_fault_has_cold_reopenable_orphan_boundary() {
         let test = TestStore::new();

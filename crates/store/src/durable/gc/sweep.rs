@@ -624,6 +624,8 @@ impl FileStore {
         limits: GcLimits,
     ) -> Result<GcReport, StoreError> {
         validate_limits(limits)?;
+        let mut roots = roots.clone();
+        self.add_leased_closure_roots(&mut roots)?;
         let items = roots.normalized_items(limits.max_roots)?;
         let mut state = self.open_or_start_gc(&items, limits)?;
         let mut mark_index = if state.phase == Phase::Mark {
