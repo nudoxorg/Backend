@@ -69,7 +69,7 @@ use crate::application::executor::{
     BoundedLaneQueue, LaneIdentity, LaneSendError, StagedOutputBudget, StagedOutputLease,
 };
 use crate::application::toolchain_probe::{
-    ToolchainProbeError, ToolchainProbeLimits, probe_typescript_script_with_node, probe_version,
+    ToolchainProbeError, ToolchainProbeLimits, admit_typescript_script_invocation, probe_version,
 };
 use crate::application::typescript_host::TypeScriptProjectHost;
 use crate::application::{
@@ -992,6 +992,16 @@ fn package_authority_fingerprint(
                     .as_ref()?
                     .local_configuration_fingerprint(),
             );
+            match runtime.and_then(LocalRuntimeToolchain::invocation_identities) {
+                Some((content, location)) => {
+                    identity.update(&[1]);
+                    identity.update(content.as_ref());
+                    identity.update(&location);
+                }
+                None => {
+                    identity.update(&[0]);
+                }
+            }
         }
         Language::Python => {
             identity.update(&authority.python.as_ref()?.local_configuration_fingerprint());
@@ -1262,14 +1272,16 @@ fn portable_invocation_options_digest(
         }
         Language::TypeScript => {
             let checker = authority.typescript.as_ref()?;
+            let runtime = runtime?;
             if checker.portable_invocation_mode() != TypeScriptInvocationModeV1::ReportProgram
-                || !checker.uses_toolchain_executable(runtime?.executable_path()?)
+                || !checker.uses_toolchain_executable(runtime.executable_path()?)
             {
                 // Node mode also depends on the external TypeScript module tree. Until that tree
                 // is admitted as a typed closure, its identity cannot be stated portably.
                 return None;
             }
             options.update(b"typescript-report-program-v1\0");
+            options.update(runtime.invocation_identity()?.as_ref());
         }
         Language::Python => {
             let checker = authority.python.as_ref()?;
@@ -1518,6 +1530,9 @@ enum ToolchainProbeInvocation {
     Native,
     TypeScriptScript {
         node: Box<Path>,
+        interpreter_identity: Option<ContentId<ToolchainDomain>>,
+        script_file_digest: Option<[u8; 32]>,
+        interpreter_file_digest: Option<[u8; 32]>,
     },
 }
 
@@ -1545,19 +1560,29 @@ impl PendingToolchainProbe {
         self,
         limits: ToolchainProbeLimits,
     ) -> Result<LocalRuntimeToolchain, ToolchainProbeError> {
-        let tool = self.tool();
-        let (executable, version) = match self {
+        match self {
             Self::Native { tool, executable } => {
                 let version = probe_version(tool, &executable, limits)?;
-                (executable, version)
+                LocalRuntimeToolchain::resolved(tool, executable, &version)
+                    .map_err(|source| ToolchainProbeError::Resolution { tool, source })
             }
             Self::TypeScriptScript { compiler, node } => {
-                let version = probe_typescript_script_with_node(&compiler, &node, limits)?;
-                (compiler, version)
+                let (script_version, interpreter_version, script_digest, interpreter_digest) =
+                    admit_typescript_script_invocation(&compiler, &node, limits)?;
+                LocalRuntimeToolchain::resolved_typescript_script(
+                    compiler,
+                    node,
+                    &script_version,
+                    &interpreter_version,
+                    script_digest,
+                    interpreter_digest,
+                )
+                .map_err(|source| ToolchainProbeError::Resolution {
+                    tool: NativeTool::TypeScriptCompiler,
+                    source,
+                })
             }
-        };
-        LocalRuntimeToolchain::resolved(tool, executable, &version)
-            .map_err(|source| ToolchainProbeError::Resolution { tool, source })
+        }
     }
 }
 
@@ -1636,8 +1661,48 @@ impl LocalRuntimeToolchain {
         let mut row = Self::probing(NativeTool::TypeScriptCompiler, compiler);
         row.probe_invocation = ToolchainProbeInvocation::TypeScriptScript {
             node: node.into_boxed_path(),
+            interpreter_identity: None,
+            script_file_digest: None,
+            interpreter_file_digest: None,
         };
         row
+    }
+
+    fn resolved_typescript_script(
+        compiler: PathBuf,
+        node: Box<Path>,
+        script_version: &[u8],
+        interpreter_version: &[u8],
+        script_file_digest: [u8; 32],
+        interpreter_file_digest: [u8; 32],
+    ) -> Result<Self, ToolchainResolutionError> {
+        let (compiler_identity, interpreter_identity) = {
+            let resolved = ResolvedToolchain::from_interpreted_script(
+                NativeTool::TypeScriptCompiler,
+                &node,
+                &compiler,
+                script_version,
+                interpreter_version,
+                script_file_digest,
+                interpreter_file_digest,
+            )?;
+            (resolved.identity, resolved.interpreter_identity())
+        };
+        Ok(Self {
+            facts: LocalRuntimeToolchainFacts {
+                tool: NativeTool::TypeScriptCompiler,
+                identity: Some(compiler_identity),
+                state: LocalRuntimeToolchainState::Ready,
+            },
+            executable: Some(compiler.into_boxed_path()),
+            probe_failure: None,
+            probe_invocation: ToolchainProbeInvocation::TypeScriptScript {
+                node,
+                interpreter_identity,
+                script_file_digest: Some(script_file_digest),
+                interpreter_file_digest: Some(interpreter_file_digest),
+            },
+        })
     }
 
     pub(crate) fn admit_pending(
@@ -1652,6 +1717,23 @@ impl LocalRuntimeToolchain {
 
     fn executable_path(&self) -> Option<&Path> {
         self.executable.as_deref()
+    }
+
+    fn invocation_identity(&self) -> Option<ContentId<ToolchainDomain>> {
+        match self.selection().ok()? {
+            ToolchainSelection::ResolvedNative(toolchain) => Some(toolchain.invocation_identity()),
+            ToolchainSelection::ExplicitlyUnavailable { .. } => None,
+        }
+    }
+
+    fn invocation_identities(&self) -> Option<(ContentId<ToolchainDomain>, [u8; 32])> {
+        match self.selection().ok()? {
+            ToolchainSelection::ResolvedNative(toolchain) => Some((
+                toolchain.invocation_identity(),
+                toolchain.invocation_location_identity()?,
+            )),
+            ToolchainSelection::ExplicitlyUnavailable { .. } => None,
+        }
     }
 
     pub(crate) fn probe_failed(tool: NativeTool, failure: ToolchainProbeError) -> Self {
@@ -1685,7 +1767,7 @@ impl LocalRuntimeToolchain {
                     tool: self.facts.tool,
                     executable,
                 },
-                ToolchainProbeInvocation::TypeScriptScript { node } => {
+                ToolchainProbeInvocation::TypeScriptScript { node, .. } => {
                     PendingToolchainProbe::TypeScriptScript {
                         compiler: executable,
                         node: node.clone(),
@@ -1702,9 +1784,29 @@ impl LocalRuntimeToolchain {
             self.facts.identity,
         ) {
             (LocalRuntimeToolchainState::Ready, Some(executable), Some(identity)) => {
-                Ok(ToolchainSelection::ResolvedNative(
-                    ResolvedToolchain::from_identity(self.facts.tool, executable, identity)?,
-                ))
+                let resolved = match &self.probe_invocation {
+                    ToolchainProbeInvocation::Native => {
+                        ResolvedToolchain::from_identity(self.facts.tool, executable, identity)?
+                    }
+                    ToolchainProbeInvocation::TypeScriptScript {
+                        node,
+                        interpreter_identity: Some(interpreter_identity),
+                        script_file_digest: Some(script_file_digest),
+                        interpreter_file_digest: Some(interpreter_file_digest),
+                    } => ResolvedToolchain::from_interpreted_identities(
+                        self.facts.tool,
+                        node,
+                        executable,
+                        identity,
+                        *interpreter_identity,
+                        *script_file_digest,
+                        *interpreter_file_digest,
+                    )?,
+                    ToolchainProbeInvocation::TypeScriptScript { .. } => unreachable!(
+                        "ready interpreted toolchain retains all admitted invocation facts"
+                    ),
+                };
+                Ok(ToolchainSelection::ResolvedNative(resolved))
             }
             (
                 LocalRuntimeToolchainState::Unavailable
@@ -1732,21 +1834,40 @@ impl core::ops::Deref for LocalRuntimeToolchain {
 mod global_typescript_probe_tests {
     use super::*;
 
+    fn executable_script(path: &Path, contents: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::write(path, contents).expect("write executable script");
+        let mut permissions = std::fs::metadata(path)
+            .expect("script metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("make executable");
+    }
+
+    fn fake_node(directory: &Path) -> PathBuf {
+        let node = directory.join("node");
+        executable_script(
+            &node,
+            "#!/bin/sh\nif [ \"$1\" = '--version' ]; then printf 'v24.21.0\\n'; exit 0; fi\ncompiler=$1\nshift\nexec /bin/sh \"$compiler\" \"$@\"\n",
+        );
+        std::fs::canonicalize(node).expect("canonical fake Node path")
+    }
+
     #[test]
     fn global_typescript_probe_keeps_its_admitted_interpreter_through_async_handoff() {
         let directory = crate::test_support::private_directory("global-ts-async-probe");
-        let script = directory.join("compiler-script");
+        let script_path = directory.join("compiler-script");
+        let node = fake_node(&directory);
         // Deliberately not executable: the admitted interpreter must own the
         // launch, as it does for npm's package entry on every host platform.
         std::fs::write(
-            &script,
-            "test \"$1\" = '--version' || exit 90\nprintf 'Version 5.9.3\\n'\n",
+            &script_path,
+            "if [ \"$1\" = '--version' ]; then printf 'Version 5.9.3\\n'; exit 0; fi\nexit 0\n",
         )
         .expect("compiler version script");
-        let row = LocalRuntimeToolchain::probing_typescript_script(
-            script.clone(),
-            PathBuf::from("/bin/sh"),
-        );
+        let script = std::fs::canonicalize(script_path).expect("canonical compiler script");
+        let row = LocalRuntimeToolchain::probing_typescript_script(script.clone(), node.clone());
         let request = row.probe_request().expect("pending script invocation");
         let (send, receive) = channel();
         start_toolchain_probes(vec![request], send);
@@ -1766,23 +1887,86 @@ mod global_typescript_probe_tests {
         assert_eq!(admitted.state, LocalRuntimeToolchainState::Ready);
         assert_eq!(admitted.identity, Some(expected.identity));
         assert_eq!(admitted.executable_path(), Some(script.as_path()));
+        let ToolchainSelection::ResolvedNative(invocation) = admitted
+            .selection()
+            .expect("admitted typed script invocation")
+        else {
+            panic!("admitted TypeScript script remains available")
+        };
+        assert_eq!(
+            invocation.invocation(),
+            crate::driver::NativeInvocation::InterpretedScript {
+                interpreter: &node,
+                script: &script,
+            }
+        );
+        assert_ne!(invocation.invocation_identity(), expected.identity);
+        invocation
+            .validate_invocation()
+            .expect("admitted compiler and interpreter remain unchanged");
+        let original_script =
+            "if [ \"$1\" = '--version' ]; then printf 'Version 5.9.3\\n'; exit 0; fi\nexit 0\n";
+        std::fs::write(&script, "changed after admission\n").expect("mutate compiler script");
+        assert!(matches!(
+            invocation.validate_invocation(),
+            Err(crate::driver::NativeInvocationError::Changed {
+                role: crate::driver::NativeInvocationFileRole::Script,
+                ..
+            })
+        ));
+        std::fs::write(&script, original_script).expect("restore compiler script bytes");
+        let mut changed_node = std::fs::read(&node).expect("read selected Node");
+        changed_node.extend_from_slice(b"# changed after admission\n");
+        std::fs::write(&node, changed_node).expect("mutate selected Node");
+        assert!(matches!(
+            invocation.validate_invocation(),
+            Err(crate::driver::NativeInvocationError::Changed {
+                role: crate::driver::NativeInvocationFileRole::Interpreter,
+                ..
+            })
+        ));
         std::fs::remove_dir_all(directory).expect("remove private probe directory");
     }
 
     #[test]
     fn global_typescript_probe_cannot_fall_back_after_its_selected_interpreter_fails() {
         let directory = crate::test_support::private_directory("global-ts-failed-probe");
-        let script = directory.join("compiler-script");
-        std::fs::write(&script, "printf 'Version 5.9.3\\n'\n").expect("compiler version script");
-        let row =
-            LocalRuntimeToolchain::probing_typescript_script(script, PathBuf::from("/bin/false"));
+        let script_path = directory.join("compiler-script");
+        std::fs::write(&script_path, "printf 'Version 5.9.3\\n'\n")
+            .expect("compiler version script");
+        let script = std::fs::canonicalize(script_path).expect("canonical compiler script");
+        let node_path = directory.join("bad-node");
+        executable_script(&node_path, "#!/bin/sh\nexit 42\n");
+        let node = std::fs::canonicalize(node_path).expect("canonical bad Node path");
+        let row = LocalRuntimeToolchain::probing_typescript_script(script, node);
         let limits = ToolchainProbeLimits::new(
             Duration::from_secs(2),
             NonZeroUsize::new(1024).expect("stream bound"),
         )
         .expect("probe limits");
-        assert!(row.admit_pending(limits).is_err());
+        let Err(ToolchainProbeError::Exit { tool, status, .. }) = row.admit_pending(limits) else {
+            panic!("the exact selected Node failure should be retained as a typed exit");
+        };
+        assert_eq!(tool, NativeTool::TypeScriptCompiler);
+        assert_eq!(status.code(), Some(42));
         std::fs::remove_dir_all(directory).expect("remove private probe directory");
+    }
+
+    #[test]
+    fn selected_global_typescript_script_without_node_is_an_explicit_probe_refusal() {
+        let script = PathBuf::from("/canonical/global/typescript/bin/tsc");
+        let row = LocalRuntimeToolchain::probe_failed(
+            NativeTool::TypeScriptCompiler,
+            ToolchainProbeError::TypeScriptInterpreterUnavailable {
+                compiler: script.clone(),
+            },
+        );
+        assert_eq!(row.state, LocalRuntimeToolchainState::ProbeFailed);
+        assert!(matches!(
+            row.probe_failure(),
+            Some(ToolchainProbeError::TypeScriptInterpreterUnavailable { compiler })
+                if compiler == &script
+        ));
     }
 }
 

@@ -52,6 +52,74 @@ impl NativeCompilerEnvironment {
 
 const READ_CHUNK_BYTES: usize = 4096;
 const PROBE_POLL_INTERVAL: Duration = Duration::from_millis(2);
+pub(crate) const MAX_INVOCATION_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Hashes one already-selected executable without allocating its full image.
+///
+/// Callers admit only canonical absolute paths. Rechecking the canonical path,
+/// file type, length, and modification time around the bounded read catches a
+/// replaced symlink or an in-place rewrite while taking the snapshot.
+pub(crate) fn executable_content_digest(path: &Path) -> io::Result<[u8; 32]> {
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected executable path is not absolute",
+        ));
+    }
+    let canonical = std::fs::canonicalize(path)?;
+    if canonical != path {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected executable path is not canonical",
+        ));
+    }
+    let mut file = std::fs::File::open(path)?;
+    let before = file.metadata()?;
+    if !before.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected executable is not a regular file",
+        ));
+    }
+    if before.len() > MAX_INVOCATION_EXECUTABLE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "selected executable exceeds the admitted snapshot bound",
+        ));
+    }
+    let before_modified = before.modified().ok();
+    let mut hasher = blake3::Hasher::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; READ_CHUNK_BYTES];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        total = total.checked_add(count as u64).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "executable length overflow")
+        })?;
+        if total > MAX_INVOCATION_EXECUTABLE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "selected executable exceeds the admitted snapshot bound",
+            ));
+        }
+        hasher.update(&buffer[..count]);
+    }
+    let after = file.metadata()?;
+    if total != before.len()
+        || after.len() != before.len()
+        || before_modified != after.modified().ok()
+        || std::fs::canonicalize(path)? != path
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "selected executable changed while it was being witnessed",
+        ));
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
 
 /// Immutable validated bounds for one native version probe.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -206,6 +274,12 @@ pub enum ToolchainProbeStreamError {
 /// Exact terminal while establishing one explicit native-tool version identity.
 #[derive(Debug, Error)]
 pub enum ToolchainProbeError {
+    /// A global TypeScript script was selected without an admitted Node runtime.
+    #[error("TypeScript compiler script {compiler:?} has no admitted Node interpreter")]
+    TypeScriptInterpreterUnavailable {
+        /// Exact TypeScript script selected by the host.
+        compiler: PathBuf,
+    },
     /// Relative execution would consult ambient process state.
     #[error("{tool:?} version probe executable is relative: {executable:?}")]
     RelativeExecutable {
@@ -213,6 +287,25 @@ pub enum ToolchainProbeError {
         tool: NativeTool,
         /// Rejected caller path.
         executable: PathBuf,
+    },
+    /// An invocation file could not be captured under the executable snapshot bound.
+    #[error("could not witness selected TypeScript {role:?} at {path:?}")]
+    ExecutableWitness {
+        /// Which exact invocation input could not be witnessed.
+        role: ToolchainProbeFileRole,
+        /// Exact absolute invocation path.
+        path: PathBuf,
+        /// Original filesystem or bound failure.
+        #[source]
+        source: io::Error,
+    },
+    /// An invocation file changed between version admission and snapshot completion.
+    #[error("selected TypeScript {role:?} changed during admission at {path:?}")]
+    ExecutableChanged {
+        /// Which exact invocation input changed.
+        role: ToolchainProbeFileRole,
+        /// Exact absolute invocation path.
+        path: PathBuf,
     },
     /// The absolute executable could not be started.
     #[error("could not start {tool:?} version probe at {executable:?}")]
@@ -347,6 +440,15 @@ pub enum ToolchainProbeError {
     },
 }
 
+/// The two files that jointly authorize an interpreted TypeScript launch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ToolchainProbeFileRole {
+    /// TypeScript compiler JavaScript source.
+    Script,
+    /// Node executable used to interpret that source.
+    Interpreter,
+}
+
 pub(crate) fn probe_version(
     tool: NativeTool,
     executable: &Path,
@@ -400,6 +502,68 @@ pub(crate) fn probe_typescript_script_with_node(
     }
     command.arg(compiler_script).arg("--version");
     probe_prepared_command(tool, node, command, limits)
+}
+
+/// Admits a TypeScript JavaScript entry and the exact Node interpreter that runs it.
+///
+/// Both selected files are snapshotted before probing and rechecked after both
+/// version commands finish. The returned identities remain distinct: callers
+/// can report the compiler's version while binding the interpreter into the
+/// invocation recipe.
+pub(crate) fn admit_typescript_script_invocation(
+    compiler_script: &Path,
+    node: &Path,
+    limits: ToolchainProbeLimits,
+) -> Result<(Box<[u8]>, Box<[u8]>, [u8; 32], [u8; 32]), ToolchainProbeError> {
+    let tool = NativeTool::TypeScriptCompiler;
+    let script_before = executable_content_digest(compiler_script).map_err(|source| {
+        ToolchainProbeError::ExecutableWitness {
+            role: ToolchainProbeFileRole::Script,
+            path: compiler_script.to_path_buf(),
+            source,
+        }
+    })?;
+    let interpreter_before = executable_content_digest(node).map_err(|source| {
+        ToolchainProbeError::ExecutableWitness {
+            role: ToolchainProbeFileRole::Interpreter,
+            path: node.to_path_buf(),
+            source,
+        }
+    })?;
+    let interpreter_version = probe_version(tool, node, limits)?;
+    let script_version = probe_typescript_script_with_node(compiler_script, node, limits)?;
+    let script_after = executable_content_digest(compiler_script).map_err(|source| {
+        ToolchainProbeError::ExecutableWitness {
+            role: ToolchainProbeFileRole::Script,
+            path: compiler_script.to_path_buf(),
+            source,
+        }
+    })?;
+    let interpreter_after = executable_content_digest(node).map_err(|source| {
+        ToolchainProbeError::ExecutableWitness {
+            role: ToolchainProbeFileRole::Interpreter,
+            path: node.to_path_buf(),
+            source,
+        }
+    })?;
+    if script_before != script_after {
+        return Err(ToolchainProbeError::ExecutableChanged {
+            role: ToolchainProbeFileRole::Script,
+            path: compiler_script.to_path_buf(),
+        });
+    }
+    if interpreter_before != interpreter_after {
+        return Err(ToolchainProbeError::ExecutableChanged {
+            role: ToolchainProbeFileRole::Interpreter,
+            path: node.to_path_buf(),
+        });
+    }
+    Ok((
+        script_version,
+        interpreter_version,
+        script_after,
+        interpreter_after,
+    ))
 }
 
 fn probe_prepared_command(

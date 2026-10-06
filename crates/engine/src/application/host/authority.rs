@@ -324,6 +324,12 @@ impl NativeExecutables {
                             node.to_path_buf(),
                         )
                     }
+                    (NativeTool::TypeScriptCompiler, None) => LocalRuntimeToolchain::probe_failed(
+                        tool,
+                        crate::application::ToolchainProbeError::TypeScriptInterpreterUnavailable {
+                            compiler: executable.to_path_buf(),
+                        },
+                    ),
                     _ => LocalRuntimeToolchain::probing(tool, executable.to_path_buf()),
                 },
                 None => LocalRuntimeToolchain::unavailable(tool),
@@ -360,5 +366,59 @@ impl NativeExecutables {
             (NativeTool::CSharpCompiler, self.csharp.as_deref()),
         ]
         .into_iter()
+    }
+}
+
+#[cfg(test)]
+mod invocation_selection_tests {
+    use super::NativeExecutables;
+    use crate::application::{LocalRuntimeToolchainState, ToolchainProbeError};
+    use backend_semantic::vocabulary::NativeTool;
+    use std::path::PathBuf;
+
+    fn only_typescript(typescript: Option<PathBuf>) -> NativeExecutables {
+        NativeExecutables {
+            rustc: None,
+            cargo: None,
+            cargo_home: None,
+            clang: None,
+            python: None,
+            typescript,
+            go: None,
+            java: None,
+            csharp: None,
+        }
+    }
+
+    #[test]
+    fn global_typescript_script_without_node_is_a_typed_refusal() {
+        let compiler = PathBuf::from("/selected/typescript/bin/tsc");
+        let rows = only_typescript(Some(compiler.clone())).toolchain_rows(None);
+        let typescript = rows
+            .iter()
+            .find(|row| row.tool == NativeTool::TypeScriptCompiler)
+            .expect("fixed TypeScript row");
+
+        assert_eq!(typescript.state, LocalRuntimeToolchainState::ProbeFailed);
+        assert!(matches!(
+            typescript.probe_failure(),
+            Some(ToolchainProbeError::TypeScriptInterpreterUnavailable {
+                compiler: observed
+            }) if observed == &compiler
+        ));
+    }
+
+    #[test]
+    fn selected_node_keeps_global_typescript_in_pending_script_form() {
+        let compiler = PathBuf::from("/selected/typescript/bin/tsc");
+        let node = PathBuf::from("/selected/node/bin/node");
+        let rows = only_typescript(Some(compiler.clone())).toolchain_rows(Some(&node));
+        let typescript = rows
+            .iter()
+            .find(|row| row.tool == NativeTool::TypeScriptCompiler)
+            .expect("fixed TypeScript row");
+
+        assert_eq!(typescript.state, LocalRuntimeToolchainState::Probing);
+        assert!(typescript.probe_failure().is_none());
     }
 }

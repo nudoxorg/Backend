@@ -95,6 +95,7 @@ pub use self::runtime::{
 pub use self::terminal::{LocalCompilerOpenError, LocalCompilerPath};
 pub(crate) use self::toolchain_probe::{
     NATIVE_COMPILER_ENVIRONMENT_POLICY_ID, NativeCompilerEnvironment,
+    admit_typescript_script_invocation, executable_content_digest,
 };
 pub use self::toolchain_probe::{
     ToolchainProbeCleanupAction, ToolchainProbeError, ToolchainProbeLimitError,

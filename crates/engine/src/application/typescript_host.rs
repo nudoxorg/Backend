@@ -18,7 +18,7 @@ use blake3::Hasher;
 use thiserror::Error;
 
 use crate::application::{ToolchainProbeError, ToolchainProbeLimits};
-use crate::driver::ToolchainResolutionError;
+use crate::driver::{ResolvedToolchain, ToolchainResolutionError};
 
 const MAX_PROJECT_ANCESTORS: usize = 32;
 const MAX_PACKAGE_MANIFEST_BYTES: usize = 64 * 1024;
@@ -840,6 +840,13 @@ pub(crate) struct TypeScriptProjectWitness {
 }
 
 impl TypeScriptProjectWitness {
+    fn file_digest(&self, path: &Path) -> Option<[u8; 32]> {
+        self.files
+            .iter()
+            .find(|snapshot| snapshot.path.as_ref() == path)
+            .map(|snapshot| snapshot.digest)
+    }
+
     fn capture(
         project_root: &Path,
         home_root: Option<&Path>,
@@ -2642,6 +2649,40 @@ pub(crate) struct AdmittedTypeScriptProject {
 }
 
 impl AdmittedTypeScriptProject {
+    pub(crate) fn resolved_toolchain(
+        &self,
+    ) -> Result<ResolvedToolchain<'_>, TypeScriptProjectHostError> {
+        if is_module_tsc_script(&self.compiler, &self.module_root) {
+            let script_digest = self.witness.file_digest(&self.compiler).ok_or_else(|| {
+                TypeScriptProjectHostError::WitnessChanged {
+                    path: self.compiler.clone(),
+                }
+            })?;
+            let interpreter_digest = self.witness.file_digest(&self.node).ok_or_else(|| {
+                TypeScriptProjectHostError::WitnessChanged {
+                    path: self.node.clone(),
+                }
+            })?;
+            ResolvedToolchain::from_interpreted_script(
+                NativeTool::TypeScriptCompiler,
+                &self.node,
+                &self.compiler,
+                &self.compiler_version,
+                &self.node_version,
+                script_digest,
+                interpreter_digest,
+            )
+            .map_err(|source| TypeScriptProjectHostError::ToolchainResolution { source })
+        } else {
+            ResolvedToolchain::from_version(
+                NativeTool::TypeScriptCompiler,
+                &self.compiler,
+                &self.compiler_version,
+            )
+            .map_err(|source| TypeScriptProjectHostError::ToolchainResolution { source })
+        }
+    }
+
     pub(crate) fn inputs(&self) -> TypeScriptProjectInputs<'_> {
         TypeScriptProjectInputs {
             package_root: &self.witness.project_root,
