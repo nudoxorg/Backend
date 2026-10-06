@@ -54,6 +54,9 @@ impl DiscoveryGateway {
         &mut self,
         package: &PackageCoordinate,
     ) -> Option<RegistryPackageDiscoveryObservation> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Some(unavailable(None, "registry metadata request was cancelled"));
+        }
         let coordinate = match admit_registry_coordinate(package) {
             Ok(coordinate) => coordinate,
             Err(_) => {
@@ -147,7 +150,7 @@ impl DiscoveryGateway {
             } else if cached.complete {
                 Some(RegistryPackageDiscoveryObservation::Missing {
                     source: source.id(),
-                    proof: cached.proof,
+                    proof: missing_proof(&key, cached.proof),
                     observed_at_millis: cached.observed_at_millis,
                 })
             } else {
@@ -202,6 +205,12 @@ impl DiscoveryGateway {
             }
         };
         let observed_at = DiscoveryObservedAt::from_unix_millis(discovery_now());
+        if self.cancelled.load(Ordering::Acquire) {
+            return Some(unavailable(
+                Some(source.id()),
+                "registry metadata request was cancelled before admission",
+            ));
+        }
         let progress = self.store.progress_token(source);
         let mut facts = releases
             .iter()
@@ -272,7 +281,12 @@ impl DiscoveryGateway {
         let committed = draft
             .admit_for_sequence(progress.sequence)
             .map_err(DiscoveryStoreError::from)
-            .and_then(|batch| self.store.commit(batch));
+            .and_then(|batch| {
+                if self.cancelled.load(Ordering::Acquire) {
+                    return Err(DiscoveryStoreError::Cancelled);
+                }
+                self.store.commit(batch)
+            });
         if let Err(error) = committed {
             self.store.mark_failed(source, true);
             return Some(unavailable(
@@ -281,9 +295,16 @@ impl DiscoveryGateway {
             ));
         }
         self.store.mark_failed(source, false);
+        if self.cancelled.load(Ordering::Acquire) {
+            return Some(unavailable(
+                Some(source.id()),
+                "registry metadata request was cancelled before cache publication",
+            ));
+        }
         let found = releases
             .iter()
             .any(|release| &release.coordinate == package);
+        let negative_proof = missing_proof(&key, proof);
         self.package_metadata.insert(
             key,
             CachedObject {
@@ -301,7 +322,7 @@ impl DiscoveryGateway {
         } else if complete {
             Some(RegistryPackageDiscoveryObservation::Missing {
                 source: source.id(),
-                proof,
+                proof: negative_proof,
                 observed_at_millis: observed_at.as_unix_millis(),
             })
         } else {
@@ -311,6 +332,17 @@ impl DiscoveryGateway {
             ))
         }
     }
+}
+
+fn missing_proof(key: &ObjectKey, response_proof: [u8; 32]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.registry.package-metadata.absence.v1\0");
+    for identity in [&key.endpoint, key.parser, &key.package] {
+        hasher.update(&(identity.len() as u64).to_le_bytes());
+        hasher.update(identity.as_bytes());
+    }
+    hasher.update(&response_proof);
+    *hasher.finalize().as_bytes()
 }
 
 impl PackageMetadataCache {
@@ -460,8 +492,12 @@ fn fetch_object(
         return Err(DiscoveryStoreError::Cancelled);
     }
     if status == 404 || status == 410 {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"backend.registry.package-metadata.http-absence.v1\0");
+        hasher.update(&status.to_le_bytes());
+        hasher.update(&bytes);
         return Ok(ObjectResponse::Missing {
-            proof: *blake3::hash(&bytes).as_bytes(),
+            proof: *hasher.finalize().as_bytes(),
         });
     }
     if status != 200 {
@@ -656,5 +692,43 @@ mod tests {
             go_proxy_escape("example.com/Acme/Lib"),
             "example.com/!acme/!lib"
         );
+    }
+
+    #[test]
+    fn absence_proof_binds_endpoint_parser_and_exact_version() {
+        let key = ObjectKey {
+            endpoint: "https://pypi.org/pypi/requests/json".to_owned(),
+            parser: PARSER_IDENTITY,
+            package: "pkg:pypi/requests@0.0.0".to_owned(),
+        };
+        let proof = missing_proof(&key, [9; 32]);
+        let mut another = key.clone();
+        another.package = "pkg:pypi/requests@0.0.1".to_owned();
+        assert_ne!(missing_proof(&another, [9; 32]), proof);
+        another = key.clone();
+        another.endpoint = "https://example.org/pypi/requests/json".to_owned();
+        assert_ne!(missing_proof(&another, [9; 32]), proof);
+        another = key.clone();
+        another.parser = "different-parser";
+        assert_ne!(missing_proof(&another, [9; 32]), proof);
+        assert_ne!(missing_proof(&key, [8; 32]), proof);
+        assert!(PackageCoordinate::parse("pkg:pypi/requests").is_err());
+        assert!(PackageCoordinate::parse("pkg:pypi/requests@").is_err());
+    }
+
+    #[test]
+    fn cancellation_refuses_a_fresh_cached_object_without_a_new_commit() {
+        let (endpoint, server) = server(vec![("200 OK", REQUESTS)]);
+        let mut owner = gateway(endpoint);
+        let package = PackageCoordinate::parse("pkg:pypi/requests@2.34.2").expect("package");
+        assert!(owner.observe_package(&package).is_none());
+        assert_eq!(server.join().expect("server").len(), 1);
+        let revision = owner.store.observation_revision();
+        owner.cancelled.store(true, Ordering::Release);
+        assert!(matches!(
+            owner.observe_package(&package),
+            Some(RegistryPackageDiscoveryObservation::Unavailable { .. })
+        ));
+        assert_eq!(owner.store.observation_revision(), revision);
     }
 }
