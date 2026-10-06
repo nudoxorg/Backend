@@ -1,0 +1,15 @@
+
+running 1 test
+test service::lease::publication_tests::a_slow_but_legitimate_multipage_reset_completes_within_the_allowance_it_earned ... 
+thread 'service::lease::publication_tests::a_slow_but_legitimate_multipage_reset_completes_within_the_allowance_it_earned' (15245369) panicked at crates/local-service/src/service/lease/publication_tests.rs:343:5:
+three pages of 6 s
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    service::lease::publication_tests::a_slow_but_legitimate_multipage_reset_completes_within_the_allowance_it_earned
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 0.01s
+

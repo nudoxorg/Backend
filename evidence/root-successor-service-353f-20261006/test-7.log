@@ -1,0 +1,15 @@
+
+running 1 test
+test service::lease::publication_tests::a_reset_slower_than_its_allowance_is_abandoned_and_its_lease_released_on_the_same_socket ... 
+thread 'service::lease::publication_tests::a_reset_slower_than_its_allowance_is_abandoned_and_its_lease_released_on_the_same_socket' (15244955) panicked at crates/local-service/src/service/lease/publication_tests.rs:290:13:
+owner never reached: the abandoned lease to be cancelled: Ledger { active: 1, released: ReleaseCounts([0, 0, 0, 0, 0, 0]) }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    service::lease::publication_tests::a_reset_slower_than_its_allowance_is_abandoned_and_its_lease_released_on_the_same_socket
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 10.01s
+

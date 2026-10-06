@@ -1,0 +1,6 @@
+
+running 1 test
+test builtin::browse::tests::two_real_workspaces_keep_exact_context_authority_with_bounded_lru ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1012 filtered out; finished in 41.41s
+
