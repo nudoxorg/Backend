@@ -1,0 +1,12 @@
+{
+  "status": "UNTESTED: guarded build stopped before test execution at freeDisk below24GiB; no restart belowfloor",
+  "stopped_build_source_sha256": "1e73f14cd64ce986d70ffa58cbda185423a3fe69ff8ac132a84a9da14555ba09",
+  "current_source_sha256": "4362bce60e364f0795945b89a499f700d4d587961580ae21551c9a459ce46bd4",
+  "subsequent_source_edits": "Read-only APIinspection found CoverageCapability nonCopy; test expected firstassert nowclones capability. Formatting adjusted. This finalsource has notcompiled.",
+  "needed_tests": [
+    "refused_capture_reconciles_resident_view_before_terminal_reply",
+    "source_capture_terminalization_failure_keeps_primary_typed_refusal",
+    "search_selection_refuses_a_view_from_the_previous_workspace_frontier",
+    "joinedpublic failededit retainssemantic/history+typedsourceSelectorInvalidQuery +livecoldCLI/MCP"
+  ]
+}

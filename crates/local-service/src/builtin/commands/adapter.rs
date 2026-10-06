@@ -110,7 +110,7 @@ fn capture_terminalization_failed(
         backend_library::IndexJobOutcome::Cancelled => "index job was cancelled".to_owned(),
     };
     let detail = bounded_index_detail(format!(
-        "{primary}; additionally, recording the terminal source-capture outcome failed: {error}"
+        "{primary}; additionally, recording or reconciling the terminal source-capture outcome failed: {error}"
     ));
     match outcome {
         backend_library::IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } => {
@@ -2216,7 +2216,18 @@ impl CommandAdapter {
                         &indexing.captures,
                         reason,
                         compiler_failure,
-                    ) {
+                    )
+                    .and_then(|()| {
+                        // Refusal commits a current source/capture frontier even
+                        // when it cannot replace a coherent semantic generation.
+                        // Reconcile through the same authenticated publication
+                        // seam as success before exposing that terminal outcome.
+                        self.publish_view(daemon, None).map_err(|error| {
+                            BuiltinModelError(format!(
+                                "reconcile committed source-capture view: {error}"
+                            ))
+                        })
+                    }) {
                         outcome = capture_terminalization_failed(outcome, error);
                     }
                 }
@@ -4939,6 +4950,66 @@ mod tests {
         assert!(adapter.poll_deferred(daemon).is_empty());
         assert_eq!(owner_cursor(daemon), after, "the queued command runs once");
         assert!(!project_is_admitted(daemon, package));
+    }
+
+    #[test]
+    fn refused_capture_reconciles_resident_view_before_terminal_reply() {
+        let mut fixture = AdapterFixture::new();
+        let (package, label) = fixture.add_target();
+        fs::write(
+            std::path::Path::new(&label).join("pyproject.toml"),
+            "[project]\nname=\"refused_capture\"\nversion=\"1.0.0\"\n",
+        )
+        .expect("write Python manifest");
+        fs::write(
+            std::path::Path::new(&label).join("source.py"),
+            "def captured_name() -> str:\n    return \"captured\"\n",
+        )
+        .expect("write source captured before unavailable compiler refusal");
+        let (adapter, daemon) = fixture.parts();
+        let before = daemon.engine().daemon().library().view().root();
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &add_body(850, package, &label), 9850),
+            Ok(Executed::Deferred)
+        ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut replies = Vec::new();
+        while adapter.indexing.is_some() {
+            replies.extend(adapter.poll_deferred(daemon));
+            assert!(std::time::Instant::now() < deadline, "refused add terminal");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let reply = replies
+            .into_iter()
+            .find(|(ticket, _)| *ticket == 9850)
+            .expect("legacy terminal reply")
+            .1
+            .expect("encode typed refusal");
+        let reply: serde_json::Value = serde_json::from_slice(&reply).expect("actual DTO reply");
+        assert_eq!(reply["reply"]["kind"], "failed", "{reply}");
+        assert_eq!(reply["reply"]["data"]["kind"], "compiler_refused", "{reply}");
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let expected = crate::builtin::builtin_view_capability_for_workspace(&snapshot)
+            .expect("current committed workspace capability");
+        let view = daemon.engine().daemon().library().view();
+        assert_ne!(view.root(), before, "captured structural rows are published");
+        assert_eq!(view.capability(), Some(expected.clone()));
+        assert!(
+            view.row_refs()
+                .any(|row| row.label.ends_with("::captured_name"))
+        );
+        let query = backend_engine::Query::new(
+            "captured_name",
+            view.root(),
+            backend_engine::QueryLimit::default(),
+        );
+        let (reply, _) = adapter.search(daemon, &query, None).expect("owner query reply");
+        assert!(matches!(reply, CommandReply::Search(_)), "{reply:?}");
+        assert!(adapter.poll_deferred(daemon).is_empty());
+        assert_eq!(
+            daemon.engine().daemon().library().view().capability(),
+            Some(expected)
+        );
     }
 
     #[test]

@@ -1,0 +1,28 @@
+{
+  "argv": [
+    "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/run-cargo",
+    "mcp",
+    "test",
+    "--locked",
+    "--offline",
+    "-p",
+    "backend-local-service",
+    "--lib",
+    "refused_capture_reconciles_resident_view_before_terminal_reply",
+    "--",
+    "--nocapture"
+  ],
+  "profile": "test/dev opt-levels/debugassertions true, not release/imagebuild",
+  "source_revision": "efe71ed8a06b27bfac6e031312d0544ee63e51a3",
+  "patch_sha256": "1e73f14cd64ce986d70ffa58cbda185423a3fe69ff8ac132a84a9da14555ba09",
+  "scope": "one guarded j2 existing private warm Cargo graph; source regression only",
+  "pid": 76682,
+  "guard_stop": {
+    "elapsed": 135.25777091700002,
+    "free_bytes": 25711923200,
+    "target_bytes": 441749504
+  },
+  "exit": 143,
+  "seconds": 135.4589470840001,
+  "source_unchanged": true
+}
