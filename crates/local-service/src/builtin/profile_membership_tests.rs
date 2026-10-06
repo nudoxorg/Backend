@@ -1269,6 +1269,10 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     );
     let source_snapshot =
         ProductSourceSnapshot::from_workspace(&snapshot).expect("cold selected source closure");
+    let indexed_sources =
+        super::super::read_indexed_sources(&snapshot).expect("cold selected indexed sources");
+    super::super::view_build::project_structural_plan(&indexed_sources)
+        .expect("actual cold structural projection admits typed unavailable files");
     let source_relation = source_snapshot.relation();
     for (key, expected) in &unavailable_rows {
         let selected = source_snapshot
@@ -1294,6 +1298,42 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
             }
             _ => panic!("unavailable source was promoted to complete facts"),
         }
+        for retention in [
+            backend_engine::builtin::DeclarationRetention::NamesOnly,
+            backend_engine::builtin::DeclarationRetention::ExcerptsElided,
+            backend_engine::builtin::DeclarationRetention::Truncated(
+                backend_engine::builtin::RetainedDeclarations::new(1, 2).expect("counts"),
+            ),
+        ] {
+            let mut compacted = selected.clone();
+            let backend_engine::ProductSourceRecord::File {
+                retention: actual, ..
+            } = &mut compacted
+            else {
+                panic!("selected source file")
+            };
+            *actual = retention;
+            assert!(
+                source_snapshot
+                    .admit_complete_file_facts(&compacted)
+                    .is_err(),
+                "cold compact row without complete facts remains refused"
+            );
+        }
+        let mut contradictory = selected.clone();
+        let backend_engine::ProductSourceRecord::File {
+            content_version, ..
+        } = &mut contradictory
+        else {
+            panic!("selected source file")
+        };
+        *content_version = [1; 32];
+        assert!(
+            source_snapshot
+                .admit_complete_file_facts(&contradictory)
+                .is_err(),
+            "Unavailable cannot assert retained source content"
+        );
     }
     let source_row = source_relation
         .lookup(&file_key)

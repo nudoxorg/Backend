@@ -375,7 +375,7 @@ fn warm_complete_facts_survive_real_commits_and_shrinking_pages_are_retired() {
 }
 
 #[test]
-fn typed_unavailable_source_facts_reopen_without_promoting_compacted_rows() {
+fn typed_unavailable_source_facts_do_not_promote_compacted_rows() {
     use backend_engine::builtin::{DeclarationRetention, RetainedDeclarations};
     let workspace = TempWorkspace::new();
     let label = "pkg:npm/unavailable-cold-control@1.0.0";
@@ -409,12 +409,10 @@ fn typed_unavailable_source_facts_reopen_without_promoting_compacted_rows() {
     let (parsed, facts) = parsed_file(package, "source.ts", 1);
     rows.push((parsed, Some(facts)));
     commit_files(&mut daemon, package, label, 1, &rows);
-    drop(daemon);
-    let daemon = open_daemon(workspace.0.path());
     let snapshot = backend_engine::ProductSourceSnapshot::from_workspace(
         &daemon.engine().daemon().owner().snapshot(),
     )
-    .expect("cold source snapshot");
+    .expect("selected source snapshot");
     for ((expected, _), reason) in rows.iter().zip(reasons) {
         let path = expected.file_fields().expect("file").path;
         let key = backend_engine::product_source_file_key(package.to_bytes(), path);
