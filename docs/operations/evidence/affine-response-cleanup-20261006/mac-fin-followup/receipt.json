@@ -1,0 +1,35 @@
+{
+  "schema": "nudox.affine-cleanup.mac-fin-followup.v1",
+  "before": {
+    "client_exchange_tests": "4 PASS / 1 FAIL",
+    "failing_test": "abandoned_held_page_discards_partial_response_then_cancels_on_exact_socket",
+    "failure": "ReadingBody request2 InvalidInput",
+    "replication_suite": "not run after client failure",
+    "warm_qa_log_sha256": "e7faea1e97e1befd5979a62ee012aa0823548e3ac6c52b2ae2bf4d45b078978e"
+  },
+  "native_observation": "Both timeout setters return EINVAL after FIN while framed bytes remain readable. Nonblocking mode succeeds after FIN, framed bytes remain readable and EOF remains Ok(0).",
+  "repair": "Unix terminal Cancel only uses nonblocking I/O with existing shared strict parser and same absolute drain+Cancel deadline. Named pipes retain configured timeout policy. No ignored timeout errors or fixture keepalive changes. Exact socket always retires.",
+  "after": "Source formatted and diff checked. Native probes executed. Production focused compilation and tests pending Root warm QA; no pass claimed.",
+  "files": {
+    "nonblocking.rs": {
+      "bytes": 1169,
+      "sha256": "538dddda9d3f3f708fcf31684667da3bb8304de83ee58ae01cd9c7f6738aa799"
+    },
+    "warm-qa-before.log": {
+      "bytes": 168217,
+      "sha256": "e7faea1e97e1befd5979a62ee012aa0823548e3ac6c52b2ae2bf4d45b078978e"
+    },
+    "main.rs": {
+      "bytes": 972,
+      "sha256": "23c24fc637e66bffa9553296754d82fb961855efbde0074a95be9c10e8519ee8"
+    },
+    "nonblocking.log": {
+      "bytes": 277,
+      "sha256": "91e08c9e2e1915ad4c965d2a79f1c900a51ffbda373bb61b3c23adfd23f11fd8"
+    },
+    "results.log": {
+      "bytes": 3316,
+      "sha256": "80840a3b945ea0907f5efaa310bed13c837b4fe29c3f1ed3662986993bf316ad"
+    }
+  }
+}

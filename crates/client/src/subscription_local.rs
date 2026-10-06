@@ -899,6 +899,17 @@ impl LocalSubscriptionTransport {
             None => Instant::now() + timeout,
         };
         let result = (|| {
+            // Darwin rejects timeout setters after peer FIN even when a
+            // complete acknowledgement remains buffered. This terminal Unix
+            // exchange uses nonblocking I/O and the existing absolute-deadline
+            // parser instead. The socket is always retired, never reused.
+            #[cfg(unix)]
+            self.client
+                .stream()
+                .set_nonblocking(true)
+                .map_err(|error| ClientError::Io(error.to_string()))?;
+            // Named pipes do not expose the Unix nonblocking socket contract.
+            #[cfg(windows)]
             self.client
                 .stream()
                 .set_read_timeout(Some(timeout))
@@ -920,9 +931,19 @@ impl LocalSubscriptionTransport {
                 .wait_exact_with_io_deadline(
                     |_| LocalControlExchangeDecision::Continue,
                     |stream, remaining| {
-                        stream
-                            .set_read_timeout(Some(remaining))
-                            .and_then(|()| stream.set_write_timeout(Some(remaining)))
+                        #[cfg(unix)]
+                        {
+                            // Every native attempt is nonblocking; the shared
+                            // loop checks the same deadline before each attempt.
+                            let _ = (stream, remaining);
+                            Ok(())
+                        }
+                        #[cfg(windows)]
+                        {
+                            stream
+                                .set_read_timeout(Some(remaining))
+                                .and_then(|()| stream.set_write_timeout(Some(remaining)))
+                        }
                     },
                 )
                 .map_err(|error| ClientError::Protocol(error.to_string()))?
@@ -1713,6 +1734,44 @@ mod exchange_tests {
             assert!(transport.terminal_cleanup.is_none());
             assert_eq!(transport.lifecycle, Lifecycle::Released);
             owner.join().expect("one socket owner");
+        }
+    }
+
+    #[test]
+    fn terminal_nonblocking_cancel_retires_missing_partial_or_wrong_ack() {
+        for prefix in [0, 2, 5, usize::MAX] {
+            let (stream, mut peer) = UnixStream::pair().expect("socket pair");
+            let lease = LocalSubscriptionId::from_bytes([93; 16]);
+            let mut transport = LocalSubscriptionTransport::from_stream(stream);
+            let connection = transport.connection();
+            let owner = std::thread::spawn(move || {
+                let raw = read_frame(&mut peer, control_limits()).expect("only Cancel request");
+                let request = decode_request(&raw, control_limits()).expect("decode Cancel");
+                let body = encode_response(
+                    &LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                        request_id: request.request_id() + u64::from(prefix == usize::MAX),
+                        lease,
+                    }),
+                    control_limits(),
+                )
+                .expect("encode ack");
+                let mut frame = (body.len() as u32).to_be_bytes().to_vec();
+                frame.extend(body);
+                peer.write_all(&frame[..prefix.min(frame.len())])
+                    .expect("partial or wrong ack");
+                peer.set_read_timeout(Some(Duration::from_secs(1)))
+                    .expect("bound owner EOF observation");
+                assert_eq!(peer.read(&mut [0]).expect("terminal socket retires"), 0);
+            });
+            let started = Instant::now();
+            transport
+                .cancel_lease_current(lease, connection.clone(), Duration::from_millis(20))
+                .expect_err("missing, partial and unrelated acks cannot release credit");
+            assert!(started.elapsed() < Duration::from_millis(250));
+            assert_eq!(transport.connection(), connection);
+            assert!(transport.peer.is_none());
+            assert_eq!(transport.lifecycle, Lifecycle::Released);
+            owner.join().expect("same socket owner, no redial");
         }
     }
 
