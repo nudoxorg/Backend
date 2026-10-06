@@ -601,6 +601,7 @@ pub(super) fn finish_index_scan(
         &relation,
         facts_relation.as_ref(),
         &scan.source_facts,
+        &scan.files,
         &old_files,
     )?;
     // Keep these source rows private until every semantic profile has been
@@ -938,16 +939,21 @@ fn replace_project_cargo_aliases(
     Ok(())
 }
 
-fn prepare_source_facts_changes(
+pub(in crate::builtin) fn prepare_source_facts_changes(
     source_relation: &backend_engine::WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
     facts_relation: Option<
         &backend_engine::WorkspaceRelationHandle<ProductSourceFileFactsRelation>,
     >,
     updates: &[ProductSourceFileFactsUpdate],
+    selected_files: &[([u8; 32], ProductSourceRecord)],
     previous_files: &[[u8; 32]],
 ) -> Result<Vec<BuiltinSourceFactsChange>, BuiltinModelError> {
+    if selected_files.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+        return Err(BuiltinModelError(
+            "selected source file coordinates must be unique and ordered".to_owned(),
+        ));
+    }
     let mut afters = BTreeMap::<[u8; 32], Option<ProductSourceFileFactsRecord>>::new();
-    let mut selected_files = BTreeSet::new();
     for update in updates {
         let manifest = ProductSourceFileFactsRecord::Manifest(update.manifest().clone());
         let manifest_key = update.manifest_key();
@@ -959,7 +965,6 @@ fn prepare_source_facts_changes(
                 "source facts manifest key does not match its file".to_owned(),
             ));
         }
-        selected_files.insert(manifest_key);
         insert_source_facts_after(&mut afters, manifest_key, manifest)?;
         for (key, record) in update.pages() {
             if product_source_file_facts_record_key(record.file_key().unwrap_or([0; 32]), record)
@@ -974,12 +979,17 @@ fn prepare_source_facts_changes(
         }
     }
 
+    let mut required_preserved = selected_files
+        .iter()
+        .filter(|(key, row)| {
+            !afters.contains_key(key)
+                && row
+                    .file_fields()
+                    .is_some_and(|file| file.source_identity.is_some())
+        })
+        .count();
     if let Some(facts_relation) = facts_relation {
-        for file_key in previous_files
-            .iter()
-            .copied()
-            .filter(|key| !selected_files.contains(key))
-        {
+        for file_key in previous_files.iter().copied() {
             let Some(ProductSourceFileFactsRecord::Manifest(manifest)) =
                 facts_relation.lookup(&file_key).map_err(|error| {
                     BuiltinModelError(format!("read prior source facts manifest: {error}"))
@@ -1000,6 +1010,28 @@ fn prepare_source_facts_changes(
             let file = source_record.file_fields().ok_or_else(|| {
                 BuiltinModelError("source facts owner is not a source file".to_owned())
             })?;
+            let retained = selected_files
+                .binary_search_by_key(&file_key, |(key, _)| *key)
+                .ok()
+                .and_then(|index| selected_files.get(index));
+            if !afters.contains_key(&file_key)
+                && retained.is_some_and(|(_, next)| next == &source_record)
+                && file.source_identity.is_some()
+            {
+                if !manifest.matches_file_identity(file) || manifest.file_key() != file_key {
+                    return Err(BuiltinModelError(
+                        "retained source facts do not bind the exact unchanged source row"
+                            .to_owned(),
+                    ));
+                }
+                required_preserved = required_preserved.checked_sub(1).ok_or_else(|| {
+                    BuiltinModelError("duplicate prior source facts owner".to_owned())
+                })?;
+                // No page reads or copies: this immutable selected tree is
+                // retained only for the exact same admitted source row. A
+                // changed, unavailable or deleted file cannot use this path.
+                continue;
+            }
             let owned_keys = product_source_file_facts_row_keys(file, file_key, manifest, |key| {
                 facts_relation
                     .lookup(key)
@@ -1014,6 +1046,12 @@ fn prepare_source_facts_changes(
         }
     }
 
+    if required_preserved != 0 {
+        return Err(BuiltinModelError(
+            "selected unchanged source has no exact complete facts manifest; rescan required"
+                .to_owned(),
+        ));
+    }
     let mut changes = Vec::with_capacity(afters.len());
     for (key, after) in afters {
         let expected = facts_relation

@@ -3579,3 +3579,7 @@ mod persisted_intent_tests {
 #[cfg(test)]
 #[path = "profile_membership_tests.rs"]
 mod membership_tests;
+
+#[cfg(test)]
+#[path = "profile_source_facts_tests.rs"]
+mod source_facts_tests;

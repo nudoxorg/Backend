@@ -247,6 +247,17 @@ impl ProductSourceFileFactsManifest {
         self.source_identity
     }
 
+    /// Tests only the exact source identity binding. This does not admit the
+    /// directory/page tree; complete admission additionally validates its rows.
+    #[must_use]
+    pub fn matches_file_identity(&self, file: ProductFileRef<'_>) -> bool {
+        self.project == file.project
+            && self.path == file.path
+            && self.content_version == file.content_version
+            && self.analysis_version == file.analysis_version
+            && Some(self.source_identity) == file.source_identity
+    }
+
     /// Stored declaration layout.
     #[must_use]
     pub const fn status(&self) -> &ProductSourceFileFactsStatus {
@@ -708,13 +719,7 @@ where
     Lookup: FnMut(&[u8; 32]) -> Result<Option<ProductSourceFileFactsRecord>, String>,
 {
     let file_key = product_source_file_key(file.project, file.path);
-    if manifest_key != file_key
-        || manifest.project != file.project
-        || manifest.path != file.path
-        || manifest.content_version != file.content_version
-        || manifest.analysis_version != file.analysis_version
-        || Some(manifest.source_identity) != file.source_identity
-    {
+    if manifest_key != file_key || !manifest.matches_file_identity(file) {
         return Err("source facts manifest does not bind the selected file row".to_owned());
     }
     match manifest.status {

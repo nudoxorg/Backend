@@ -13,6 +13,8 @@ mod snapshot;
 #[cfg(any(test, feature = "test-support"))]
 pub(in crate::builtin) use adapter::commit_builtin_intent;
 pub(in crate::builtin) use adapter::{CommandAdapter, Executed};
+#[cfg(test)]
+pub(in crate::builtin) use index::prepare_source_facts_changes;
 pub(in crate::builtin) use index::{
     recover_awaiting_selection, recover_offered_reservation, source_capture_receipt_for_root,
 };

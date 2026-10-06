@@ -11,10 +11,10 @@ use std::sync::Arc;
 
 type TestFile = ([u8; 32], String, [u8; 32]);
 
-struct TempWorkspace(tempfile::TempDir);
+pub(super) struct TempWorkspace(pub(super) tempfile::TempDir);
 
 impl TempWorkspace {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let directory = tempfile::Builder::new()
             .prefix("nudox-membership-owner-")
             .tempdir()
@@ -23,7 +23,7 @@ impl TempWorkspace {
     }
 }
 
-fn open_daemon(workspace: &Path) -> super::super::ProductDaemon {
+pub(super) fn open_daemon(workspace: &Path) -> super::super::ProductDaemon {
     let profile = profile_descriptor(BuiltinProfile::Product).expect("product profile");
     let dispatcher = super::super::builtin_dispatcher(
         Some(super::super::ECHO_AUTHORITY_SECRET),
