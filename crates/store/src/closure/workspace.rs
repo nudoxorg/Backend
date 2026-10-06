@@ -64,7 +64,8 @@ impl WorkspaceClosure {
     /// immutable payload objects.
     ///
     /// `target` must be the checked workspace manifest that names
-    /// `target_root`. The frontier must contain that root. Each supplied node
+    /// `target_root`. The frontier or extra typed objects must contain that
+    /// exact root, including when it is unchanged. Each supplied node
     /// is converted directly from its checked canonical handle; the base
     /// manifest's persistent index is then path-copied, removing the replaced
     /// root from a root-only base so generations do not grow monotonically.
@@ -154,6 +155,14 @@ impl WorkspaceClosure {
             }
         }
         for object in extra_objects {
+            // A capture-only transition can reuse its exact admitted primary
+            // relation root while changing auxiliary relations. It still
+            // supplies that typed root; an empty path-copy frontier is work
+            // avoidance, not missing admission evidence. Its canonical bytes
+            // are verified with every other extension object below.
+            if object.schema() == schema && *object.version() == target_version {
+                target_retained = true;
+            }
             checked_objects.push(object.clone());
             retained_ids.push(object.id());
             // A transition may path-copy more than one registered relation

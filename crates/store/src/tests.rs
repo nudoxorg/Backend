@@ -1038,6 +1038,33 @@ fn closure_extension_binds_checked_target_and_replaces_root_only_frontier() {
     assert!(!extended.manifest().contains_object_id(old_object.id()));
     assert_eq!(extended.manifest().objects().len(), 2);
 
+    // A capture-only or unchanged reindex has no newly copied relation nodes.
+    // Its exact typed base root is supplied as an unchanged object; it must
+    // not be treated as a missing target or removed from the closure.
+    let unchanged = must(WorkspaceClosure::extend_checked_nodes(
+        &extended,
+        &target_workspace,
+        target_state.root(),
+        std::iter::empty::<backend_version::TreeNodeHandle<RawRelation>>(),
+        [authority_object.clone(), target_object.clone()],
+    ));
+    assert_eq!(unchanged.root(), extended.root());
+    assert_eq!(unchanged.manifest(), extended.manifest());
+    assert!(unchanged.manifest().contains_object_id(target_object.id()));
+
+    // Empty work cannot introduce a different relation root merely because
+    // its caller presents a separately checked target manifest.
+    assert!(
+        WorkspaceClosure::extend_checked_nodes(
+            &base,
+            &target_workspace,
+            target_state.root(),
+            std::iter::empty::<backend_version::TreeNodeHandle<RawRelation>>(),
+            [authority_object.clone(), old_object.clone()],
+        )
+        .is_err()
+    );
+
     assert!(
         WorkspaceClosure::extend_checked_nodes(
             &base,
