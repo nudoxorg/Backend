@@ -2952,6 +2952,146 @@ func CgoOnly() C.int { return 1 }
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires the retained origin-bound github.com/gorilla/mux v1.8.1 fixture"]
+    fn real_gorilla_mux_builds_offline_with_the_embedded_helper()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::legacy::GoImage;
+
+        let source_root = std::env::var_os("NUDOX_GO_REAL_GORILLA_SOURCE")
+            .map(PathBuf::from)
+            .ok_or_else(|| io::Error::other("NUDOX_GO_REAL_GORILLA_SOURCE is required"))?
+            .canonicalize()?;
+        let module_owner = tempfile::tempdir()?;
+        let module = module_owner.path().join("gorilla-mux");
+        std::fs::create_dir(&module)?;
+        let mut copied = 0usize;
+        for entry in std::fs::read_dir(&source_root)? {
+            let entry = entry?;
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name
+                .to_str()
+                .ok_or_else(|| io::Error::other("Gorilla source filename is not UTF-8"))?;
+            let kind = std::fs::symlink_metadata(&path)?.file_type();
+            if kind.is_symlink() {
+                return Err(io::Error::other("Gorilla fixture contains a symlink").into());
+            }
+            if kind.is_file() && (name == "go.mod" || name == "go.sum" || name.ends_with(".go")) {
+                std::fs::copy(path, module.join(name))?;
+                copied += 1;
+            }
+        }
+        assert!(
+            copied >= 10,
+            "expected the complete root Go package and tests"
+        );
+        let go_mod = std::fs::read_to_string(module.join("go.mod"))?;
+        assert!(go_mod.starts_with("module github.com/gorilla/mux\n"));
+
+        let go = std::env::var_os("COMPILER_GO_COMPILER")
+            .map(PathBuf::from)
+            .ok_or_else(|| io::Error::other("COMPILER_GO_COMPILER is required"))?
+            .canonicalize()?;
+        let (goroot, _) = explicit_go_roots(&go)?;
+        let module_cache = module_owner.path().join("empty-module-cache");
+        std::fs::create_dir(&module_cache)?;
+        let build_cache = module_owner.path().join("private-build-cache");
+        let child_environment = GoOracleChildEnvironment::new(
+            go.clone(),
+            goroot,
+            module_cache.clone(),
+            build_cache.clone(),
+        )?;
+        let toolchain_identity = child_environment.toolchain_identity();
+        let oracle = GoOracle::default()
+            .with_configuration(GoOracleConfiguration::go_toolchain(go)?)
+            .with_child_environment(child_environment)?;
+        let witness = oracle.package_authority_witness(&module)?;
+
+        // This exact test file failed with authority_runtime/open in the ordinary
+        // cold-I/O acceptance. Keep it as the first real helper invocation.
+        let bench_source = module.join("bench_test.go");
+        let bench_bytes = oracle.authority_image_for_package_with_authority_witness(
+            &bench_source,
+            &module,
+            &witness,
+        )?;
+        let bench_image = GoImage::open(&bench_bytes)?;
+        let bench_packages = bench_image.packages().collect::<Result<Vec<_>, _>>()?;
+        assert!(
+            bench_packages
+                .iter()
+                .any(|package| package.import_path == b"github.com/gorilla/mux")
+        );
+
+        let mux_source = module.join("mux.go");
+        let mux_bytes = oracle.authority_image_for_package_with_authority_witness(
+            &mux_source,
+            &module,
+            &witness,
+        )?;
+        let mux_image = GoImage::open(&mux_bytes)?;
+        let mut saw_new_route = false;
+        for method in mux_image.methods() {
+            let method = method?;
+            if method.name == b"NewRoute" {
+                let owner = mux_image.declaration(usize::try_from(method.owner)?)?;
+                assert_eq!(owner.name, b"Router");
+                assert_eq!(owner.package, b"github.com/gorilla/mux");
+                assert!(method.file.ends_with(b"mux.go"));
+                assert!(method.bound);
+                assert!(method.span.is_some());
+                saw_new_route = true;
+            }
+        }
+        assert!(saw_new_route, "the image must carry Router.NewRoute");
+
+        let cache_root = build_cache.join("nudox-go-oracle-v1");
+        let entries = std::fs::read_dir(&cache_root)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let directories = entries
+            .into_iter()
+            .filter(|path| std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            directories.len(),
+            1,
+            "one helper build must serve both requests"
+        );
+        let helper_entry = &directories[0];
+        let helper = helper_entry.join("oracle");
+        let manifest = helper_entry.join("manifest.txt");
+        let source_identity = super::helper_source_identity();
+        let prefix = format!(
+            "schema=1\nsource={}\ntoolchain={}\n",
+            digest_hex(&source_identity),
+            digest_hex(&toolchain_identity),
+        );
+        assert!(cache_entry_is_valid(
+            helper_entry,
+            &helper,
+            &manifest,
+            &prefix
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&manifest)?,
+            format!(
+                "{prefix}binary={}\n",
+                digest_hex(&hash_regular_file(&helper)?)
+            ),
+        );
+        assert!(!module_cache.join("golang.org/x/tools@v0.30.0").exists());
+        assert!(
+            !module_cache
+                .join("cache/download/golang.org/x/tools")
+                .exists()
+        );
+        Ok(())
+    }
+
     fn explicit_go_roots(go: &Path) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
         let go_directory = go
             .parent()
