@@ -35,6 +35,20 @@ pub struct PythonProjectControl<'control> {
     pub deadline: Instant,
 }
 
+/// Finite native type decoding refusal; never substituted with `Any`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PythonTypeProjectionFault {
+    /// Nested constructors exceed the retained output depth contract.
+    #[error("type depth {observed} exceeds {limit}")]
+    Depth { observed: usize, limit: usize },
+    /// The shared transaction projection work allowance is exhausted.
+    #[error("type projection work exceeds {limit} nodes")]
+    Work { limit: usize },
+    /// A borrowed native type refers to an active ancestor.
+    #[error("native type graph contains a cycle")]
+    Cycle,
+}
+
 /// Exact selected declaration reached by a native Pyrefly reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DefinitionTarget {

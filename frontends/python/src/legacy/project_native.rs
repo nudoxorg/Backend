@@ -18,13 +18,14 @@ use pyrefly_python::sys_info::PythonVersion as NativeVersion;
 use pyrefly_types::callable::{Callable, Param, Params};
 use pyrefly_types::literal::Lit;
 use pyrefly_types::tuple::Tuple;
-use pyrefly_types::types::{Forallable, Type};
+use pyrefly_types::types::{BoundMethodType, Forallable, Type};
 use pyrefly_util::arc_id::ArcId;
 use pyrefly_util::thread_pool::ThreadCount;
 use ruff_native_text_size::{Ranged, TextSize};
 
 use super::project::{
-    DefinitionTarget, PythonProjectControl, PythonProjectSource, checkpoint, project_error,
+    DefinitionTarget, PythonProjectControl, PythonProjectSource, PythonTypeProjectionFault,
+    checkpoint, project_error,
 };
 use super::{
     CheckerError, CheckerReport, Inference, InferenceSite, InferredType, SymbolOutcome,
@@ -110,6 +111,7 @@ pub(super) fn analyze(
         .map(|source| (source.relative_path, source.source))
         .collect::<BTreeMap<_, _>>();
     let mut modules = BTreeMap::new();
+    let mut projection = TypeProjection::new(control);
     for (source, handle) in sources.iter().zip(&handles) {
         checkpoint(control)?;
         let native_module = read.get_module_info(handle).ok_or_else(|| {
@@ -151,7 +153,11 @@ pub(super) fn analyze(
                     inferences.push(Inference {
                         site: declaration.name_span,
                         kind: InferenceSite::Return,
-                        observed: convert(&callable.ret),
+                        observed: projection.convert(
+                            &callable.ret,
+                            source.relative_path,
+                            declaration.name_span,
+                        )?,
                     });
                 }
                 if let Params::List(parameters) = &callable.params {
@@ -172,7 +178,11 @@ pub(super) fn analyze(
                             inferences.push(Inference {
                                 site: written.name_span,
                                 kind: InferenceSite::Parameter,
-                                observed: convert(ty),
+                                observed: projection.convert(
+                                    ty,
+                                    source.relative_path,
+                                    written.name_span,
+                                )?,
                             });
                         }
                     }
@@ -196,7 +206,11 @@ pub(super) fn analyze(
                     } else {
                         InferenceSite::ModuleBinding
                     },
-                    observed: convert(&ty),
+                    observed: projection.convert(
+                        &ty,
+                        source.relative_path,
+                        declaration.name_span,
+                    )?,
                 });
             }
         }
@@ -577,14 +591,18 @@ fn captured_finder(
     ))
 }
 
-fn callable(ty: &Type) -> Option<Callable> {
+fn callable(ty: &Type) -> Option<&Callable> {
     match ty {
-        Type::Function(function) => Some(function.signature.clone()),
-        Type::Callable(callable) => Some((**callable).clone()),
-        Type::BoundMethod(method) => callable(&method.func.clone().as_type()),
+        Type::Function(function) => Some(&function.signature),
+        Type::Callable(callable) => Some(callable),
+        Type::BoundMethod(method) => match &method.func {
+            BoundMethodType::Function(function) => Some(&function.signature),
+            BoundMethodType::Forall(forall) => Some(&forall.body.signature),
+            BoundMethodType::Overload(_) => None,
+        },
         Type::Forall(forall) => match &forall.body {
-            Forallable::Function(function) => Some(function.signature.clone()),
-            Forallable::Callable(callable) => Some(callable.clone()),
+            Forallable::Function(function) => Some(&function.signature),
+            Forallable::Callable(callable) => Some(callable),
             _ => None,
         },
         // A source branch cannot be identified by taking an arbitrary overload.
@@ -592,53 +610,261 @@ fn callable(ty: &Type) -> Option<Callable> {
     }
 }
 
-fn convert(ty: &Type) -> InferredType {
-    match ty {
-        Type::None => InferredType::NoneType,
-        Type::Literal(literal) => match &literal.value {
-            Lit::Str(_) => InferredType::Str,
-            Lit::Int(_) => InferredType::Integer,
-            Lit::Bool(_) => InferredType::Boolean,
-            Lit::Bytes(_) => InferredType::Bytes,
-            Lit::Enum(_) => InferredType::Any,
-        },
-        Type::LiteralString(_) => InferredType::Str,
-        Type::Union(union) => InferredType::Union(union.members.iter().map(convert).collect()),
-        Type::ClassType(class) if class.is_builtin("int") => InferredType::Integer,
-        Type::ClassType(class) if class.is_builtin("float") => InferredType::Float,
-        Type::ClassType(class) if class.is_builtin("bool") => InferredType::Boolean,
-        Type::ClassType(class) if class.is_builtin("str") => InferredType::Str,
-        Type::ClassType(class) if class.is_builtin("bytes") => InferredType::Bytes,
-        Type::ClassType(class) if class.is_builtin("complex") => InferredType::Complex,
-        Type::ClassType(class) if class.is_builtin("list") => InferredType::List(
-            class
-                .targs()
-                .as_slice()
-                .first()
-                .map(|arg| Box::new(convert(arg))),
-        ),
-        Type::ClassType(class) if class.is_builtin("set") || class.is_builtin("frozenset") => {
-            InferredType::Set(
-                class
-                    .targs()
-                    .as_slice()
-                    .first()
-                    .map(|arg| Box::new(convert(arg))),
-            )
+const TYPE_DEPTH: usize = 64;
+const TYPE_WORK: usize = 262_144;
+
+/// One allowance shared by every inference in the solved transaction. The
+/// traversal borrows native nodes and keeps recursion off the thread stack.
+struct TypeProjection<'control> {
+    control: PythonProjectControl<'control>,
+    visited: usize,
+}
+
+#[derive(Clone, Copy)]
+enum TypeContainer {
+    Union,
+    Tuple,
+    List,
+    Set,
+    Dict,
+}
+
+enum TypeStep<'type_> {
+    Visit(&'type_ Type, usize),
+    Build(TypeContainer, usize),
+    Leave(usize),
+}
+
+fn queue_children<'type_>(
+    pending: &mut Vec<TypeStep<'type_>>,
+    container: TypeContainer,
+    children: &'type_ [Type],
+    depth: usize,
+) {
+    pending.push(TypeStep::Build(container, children.len()));
+    pending.extend(
+        children
+            .iter()
+            .rev()
+            .map(|child| TypeStep::Visit(child, depth + 1)),
+    );
+}
+
+impl<'control> TypeProjection<'control> {
+    fn new(control: PythonProjectControl<'control>) -> Self {
+        Self {
+            control,
+            visited: 0,
         }
-        Type::ClassType(class) if class.is_builtin("dict") => match class.targs().as_slice() {
-            [key, value] => {
-                InferredType::Dict(Some((Box::new(convert(key)), Box::new(convert(value)))))
+    }
+
+    fn convert(&mut self, ty: &Type, path: &str, site: Span) -> Result<InferredType, CheckerError> {
+        let refusal = |cause| CheckerError::NativeTypeProjection {
+            path: path.into(),
+            site,
+            cause,
+        };
+        let mut pending = vec![TypeStep::Visit(ty, 0)];
+        let mut active = BTreeSet::new();
+        let mut values = Vec::new();
+        while let Some(step) = pending.pop() {
+            checkpoint(self.control)?;
+            match step {
+                TypeStep::Leave(identity) => {
+                    active.remove(&identity);
+                }
+                TypeStep::Build(container, count) => {
+                    let children = values.split_off(values.len() - count);
+                    let value = match container {
+                        TypeContainer::Union => InferredType::Union(children),
+                        TypeContainer::Tuple => InferredType::Tuple(children),
+                        TypeContainer::List => {
+                            InferredType::List(children.into_iter().next().map(Box::new))
+                        }
+                        TypeContainer::Set => {
+                            InferredType::Set(children.into_iter().next().map(Box::new))
+                        }
+                        TypeContainer::Dict => {
+                            let mut children = children.into_iter();
+                            InferredType::Dict(Some((
+                                Box::new(children.next().expect("dict key")),
+                                Box::new(children.next().expect("dict value")),
+                            )))
+                        }
+                    };
+                    values.push(value);
+                }
+                TypeStep::Visit(ty, depth) => {
+                    if depth > TYPE_DEPTH {
+                        return Err(refusal(PythonTypeProjectionFault::Depth {
+                            observed: depth,
+                            limit: TYPE_DEPTH,
+                        }));
+                    }
+                    if self.visited == TYPE_WORK {
+                        return Err(refusal(PythonTypeProjectionFault::Work {
+                            limit: TYPE_WORK,
+                        }));
+                    }
+                    self.visited += 1;
+                    let identity = std::ptr::from_ref(ty) as usize;
+                    if !active.insert(identity) {
+                        return Err(refusal(PythonTypeProjectionFault::Cycle));
+                    }
+                    pending.push(TypeStep::Leave(identity));
+                    let leaf = match ty {
+                        Type::None => Some(InferredType::NoneType),
+                        Type::Literal(literal) => Some(match &literal.value {
+                            Lit::Str(_) => InferredType::Str,
+                            Lit::Int(_) => InferredType::Integer,
+                            Lit::Bool(_) => InferredType::Boolean,
+                            Lit::Bytes(_) => InferredType::Bytes,
+                            Lit::Enum(_) => InferredType::Any,
+                        }),
+                        Type::LiteralString(_) => Some(InferredType::Str),
+                        Type::Union(union) => {
+                            queue_children(
+                                &mut pending,
+                                TypeContainer::Union,
+                                &union.members,
+                                depth,
+                            );
+                            None
+                        }
+                        Type::Tuple(Tuple::Concrete(elements)) => {
+                            queue_children(&mut pending, TypeContainer::Tuple, elements, depth);
+                            None
+                        }
+                        Type::Annotated(inner, _) | Type::Unpack(inner) => {
+                            pending.push(TypeStep::Visit(inner, depth + 1));
+                            None
+                        }
+                        Type::ClassType(class) => {
+                            let builtin = [
+                                ("int", InferredType::Integer),
+                                ("float", InferredType::Float),
+                                ("bool", InferredType::Boolean),
+                                ("str", InferredType::Str),
+                                ("bytes", InferredType::Bytes),
+                                ("complex", InferredType::Complex),
+                            ]
+                            .into_iter()
+                            .find(|(name, _)| class.is_builtin(name));
+                            if let Some((_, value)) = builtin {
+                                Some(value)
+                            } else if class.is_builtin("list")
+                                || class.is_builtin("set")
+                                || class.is_builtin("frozenset")
+                            {
+                                let container = if class.is_builtin("list") {
+                                    TypeContainer::List
+                                } else {
+                                    TypeContainer::Set
+                                };
+                                queue_children(
+                                    &mut pending,
+                                    container,
+                                    &class.targs().as_slice()[..class.targs().len().min(1)],
+                                    depth,
+                                );
+                                None
+                            } else if class.is_builtin("dict") && class.targs().len() == 2 {
+                                queue_children(
+                                    &mut pending,
+                                    TypeContainer::Dict,
+                                    class.targs().as_slice(),
+                                    depth,
+                                );
+                                None
+                            } else if class.is_builtin("dict") {
+                                Some(InferredType::Dict(None))
+                            } else {
+                                Some(InferredType::Named(
+                                    class.qname().module_qualified_name().into_boxed_str(),
+                                ))
+                            }
+                        }
+                        _ => Some(InferredType::Any),
+                    };
+                    if let Some(leaf) = leaf {
+                        values.push(leaf);
+                    }
+                }
             }
-            _ => InferredType::Dict(None),
-        },
-        Type::ClassType(class) => {
-            InferredType::Named(class.qname().module_qualified_name().into_boxed_str())
         }
-        Type::Tuple(Tuple::Concrete(elements)) => {
-            InferredType::Tuple(elements.iter().map(convert).collect())
+        Ok(values.pop().expect("one native type result"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn native_projection_refuses_depth_and_shared_work_with_typed_operands() {
+        let cancelled = AtomicBool::new(false);
+        let control = PythonProjectControl {
+            cancelled: &cancelled,
+            deadline: Instant::now() + Duration::from_secs(5),
+        };
+        let site = Span { start: 2, end: 7 };
+        let mut deep = Type::None;
+        for _ in 0..TYPE_DEPTH + 2 {
+            deep = Type::Tuple(Tuple::Concrete(vec![deep]));
         }
-        Type::Annotated(inner, _) | Type::Unpack(inner) => convert(inner),
-        _ => InferredType::Any,
+        assert!(matches!(
+            TypeProjection::new(control).convert(&deep, "deep.py", site),
+            Err(CheckerError::NativeTypeProjection {
+                cause: PythonTypeProjectionFault::Depth {
+                    limit: TYPE_DEPTH,
+                    ..
+                },
+                ..
+            })
+        ));
+        let mut projection = TypeProjection::new(control);
+        projection.visited = TYPE_WORK - 1;
+        assert_eq!(
+            projection
+                .convert(&Type::None, "plain.py", site)
+                .expect("last node"),
+            InferredType::NoneType
+        );
+        assert!(matches!(
+            projection.convert(&Type::None, "plain.py", site),
+            Err(CheckerError::NativeTypeProjection {
+                cause: PythonTypeProjectionFault::Work { limit: TYPE_WORK },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn native_projection_checkpoints_and_preserves_tuple_order() {
+        let cancelled = AtomicBool::new(false);
+        let control = PythonProjectControl {
+            cancelled: &cancelled,
+            deadline: std::time::Instant::now() + Duration::from_secs(5),
+        };
+        let site = Span { start: 0, end: 1 };
+        let ty = Type::Tuple(Tuple::Concrete(vec![
+            Type::None,
+            Type::Tuple(Tuple::Concrete(vec![Type::None])),
+        ]));
+        assert_eq!(
+            TypeProjection::new(control)
+                .convert(&ty, "tuple.py", site)
+                .expect("bounded type"),
+            InferredType::Tuple(vec![
+                InferredType::NoneType,
+                InferredType::Tuple(vec![InferredType::NoneType])
+            ])
+        );
+        cancelled.store(true, Ordering::Release);
+        assert!(matches!(
+            TypeProjection::new(control).convert(&ty, "tuple.py", site),
+            Err(CheckerError::Cancelled { .. })
+        ));
     }
 }

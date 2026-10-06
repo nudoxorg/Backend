@@ -38,7 +38,7 @@ mod project;
 mod project_native;
 pub use project::{
     DefinitionTarget, PythonProjectControl, PythonProjectReport, PythonProjectSource,
-    PythonProjectWitness,
+    PythonProjectWitness, PythonTypeProjectionFault,
 };
 
 use std::path::{Path, PathBuf};
@@ -110,6 +110,16 @@ pub enum CheckerError {
     UncapturedDependency {
         /// Explicit unsupported dependency/source path.
         path: PathBuf,
+    },
+    /// Native type projection exceeded its explicit finite contract.
+    #[error("native Python type projection {path:?} at {site:?}: {cause}")]
+    NativeTypeProjection {
+        /// Original selected module path.
+        path: PathBuf,
+        /// Exact declaration or parameter identifier.
+        site: Span,
+        /// Typed depth, work, or cycle refusal.
+        cause: PythonTypeProjectionFault,
     },
     /// A native project report failed the source or schema join.
     #[error("pyrefly project report {path:?}: {message}")]
