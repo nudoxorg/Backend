@@ -1,0 +1,267 @@
+{
+  "source_checkpoint": "039c360d286962a6cf19488fb86caabd1d8c93de",
+  "evidence_kind": "Read-only Git source inspection; no compiler or runtime execution claimed.",
+  "anchors": [
+    {
+      "commit": "1ec859f8aef06507efb72f021de334df466adfd2",
+      "path": "workspace/nudox-ir-vcs/serve_cache.rs",
+      "blob": "d94c90e3c1dc9283039e0e7085b3328de9095b24",
+      "sha256": "7527f2c674e3edeafc609b0d72052f6072594b7115358dec3ff5c19771bb0dbc",
+      "bytes": 6807,
+      "lines": 169,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "1ec859f8aef06507efb72f021de334df466adfd2",
+      "path": "workspace/nudox-ir-vcs/tests.rs",
+      "blob": "d2346f50887e91795ecd3d509f62d7d30168b906",
+      "sha256": "775445d12a85759b07fa315423e777fe65c95c7c6ed7cb8aef284d5ce7933300",
+      "bytes": 25747,
+      "lines": 629,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "1db1d688331972509e872da792552d48a0c3a8df",
+      "path": "workspace/compiler/ir/vcs/serve_cache.rs",
+      "blob": "693166af5fc45d387c14ec93f9bf6349b8f7e442",
+      "sha256": "a9aab404f09173522de1379d6bad9da1eb7c8c83d5b242ce39bfdbd1e2e00c1c",
+      "bytes": 6805,
+      "lines": 169,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "1db1d688331972509e872da792552d48a0c3a8df",
+      "path": "workspace/compiler/ir/vcs/repo/mod.rs",
+      "blob": "85a2aaf9f55697c0cb25800c1e77b191023ce5e6",
+      "sha256": "1ba6bc16919d85186b6baa4338c9d388b1ff55ad7c1e0f04acd95b3e7e28c4ab",
+      "bytes": 84691,
+      "lines": 2114,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "1db1d688331972509e872da792552d48a0c3a8df",
+      "path": "workspace/compiler/ir/vcs/archive/seal.rs",
+      "blob": "3705952eda4a5a505ac4833f3a0d45bd9eba367c",
+      "sha256": "e512fa3e1553d2a7c8328e724bc76edc31bb22db89e7f9a20f1b16501309b419",
+      "bytes": 48488,
+      "lines": 1312,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "1db1d688331972509e872da792552d48a0c3a8df",
+      "path": "workspace/compiler/ir/vcs/archive/header.rs",
+      "blob": "c96b5a0a60005d4bfe01314affd4cb164ee12c31",
+      "sha256": "ca0e3874002c7ffaffe1e6fbdac1fd7007469b8055a3050ec3b739fd3d721777",
+      "bytes": 14677,
+      "lines": 427,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "1db1d688331972509e872da792552d48a0c3a8df",
+      "path": "workspace/compiler/languages/src/python/context.rs",
+      "blob": "b43376950d94503fb2eb88195a592d585570b31f",
+      "sha256": "99c6a238ac1454d7cfd9f6871d4a91baa89e78fe7a88ad7d90d8f425146e22a5",
+      "bytes": 43651,
+      "lines": 1013,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "1db1d688331972509e872da792552d48a0c3a8df",
+      "path": "workspace/compiler/languages/src/python/oracle.rs",
+      "blob": "27b02b4b04204fda64d75b4c6db19dff00f8243a",
+      "sha256": "ad1b567e49ae48f19584eb6e3ac39c2f84aa26050f40e9338b04605c7925fb79",
+      "bytes": 13740,
+      "lines": 376,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "1db1d688331972509e872da792552d48a0c3a8df",
+      "path": "workspace/compiler/languages/src/python/syntax/mod.rs",
+      "blob": "f5b08a1cde1a5415a0032fbacd1a6046bdb02085",
+      "sha256": "af32bee55ce0e41f21fe247150b460e7e57f3f03f8f6cf0b1d136a572301069c",
+      "bytes": 63383,
+      "lines": 1672,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "1db1d688331972509e872da792552d48a0c3a8df",
+      "path": "workspace/compiler/languages/src/python/types.rs",
+      "blob": "a2731c4970a5645f032f843bf906d94dc61484cd",
+      "sha256": "9873efe406c22e75fc6401bd3ee0b298ec063044483b146dbf407e6a4fbf59ba",
+      "bytes": 78199,
+      "lines": 1860,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "1db1d688331972509e872da792552d48a0c3a8df",
+      "path": "workspace/compiler/languages/src/go/lower/mod.rs",
+      "blob": "4674312134340f29c5abb874c953d9fa14f541bd",
+      "sha256": "f5571d259cf0877e74ef2990861fd38eb77ec9c0ef77ad4c6344c45570878e41",
+      "bytes": 35231,
+      "lines": 908,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "628a6698ca3cdda8c952120cc75f6b1f325daa0b",
+      "path": "compiler/driver/lower/python.rs",
+      "blob": "c95e6835ebaad65f13cec29b9cdee458ecc57520",
+      "sha256": "e33564e64357248f443c31d4c3a2f50ce34e9f74cb6ac36cb61cb7fdbab69ea5",
+      "bytes": 2272,
+      "lines": 60,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "6e46f27c76d09c50376e0586d3d501b5bb0dcca1",
+      "path": "compiler/languages/python/checker.rs",
+      "blob": "2180014794b04fdeb2f74a82d9938f2bcca891b9",
+      "sha256": "c11e1768920122046fa5ef8bcacecf7e2bfcb3c11e3d390a03cf5f2d345c562a",
+      "bytes": 75285,
+      "lines": 2048,
+      "commit_is_ancestor_of_pinned_source": false
+    },
+    {
+      "commit": "a147db6d39ca9c072bcdbbc3d231c9dd877aea67",
+      "path": "frontends/python/src/legacy/batch_wire.rs",
+      "blob": "ea5296b5b5364a0b0577bf1c239d23bc5f54eab6",
+      "sha256": "ff26420a0b14f2ae4c8c0c41d7724afae646dcf97d4c60a04ab413be79e1c161",
+      "bytes": 35430,
+      "lines": 917,
+      "commit_is_ancestor_of_pinned_source": false
+    },
+    {
+      "commit": "a147db6d39ca9c072bcdbbc3d231c9dd877aea67",
+      "path": "crates/engine/src/application/python_host.rs",
+      "blob": "3d32f89c8ccb6a3fff887aafd61460858633e454",
+      "sha256": "551a4a256b96c3e3eb98f2bf0c08261b24ca362cba4515705a923af0b61f9810",
+      "bytes": 5853,
+      "lines": 158,
+      "commit_is_ancestor_of_pinned_source": false
+    },
+    {
+      "commit": "2e03d3ab9e059640bdee3e6b83772adfd03cb1f1",
+      "path": "compiler/driver/lower/go.rs",
+      "blob": "28bd374a470fb4c553b26e8a9306f123d08b99e9",
+      "sha256": "f50852486eac26de530fccf4c4a2bc47932c3fd0a5e46405bfaea8fe85e12779",
+      "bytes": 219786,
+      "lines": 5303,
+      "commit_is_ancestor_of_pinned_source": false
+    },
+    {
+      "commit": "255b2f1d4010c804b17dff51e5f9938e23a1b983",
+      "path": "compiler/src/core/ts_parser.rs",
+      "blob": "1910a2aaa9b1ef99eaa7da64b25c9fde00761d16",
+      "sha256": "559ecee15ce1723a41eebf8fbdb207ed80630a778a4f5092909559607e8278ae",
+      "bytes": 54663,
+      "lines": 1782,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "path": "crates/engine/src/application/package_authority.rs",
+      "blob": "bd56b910d4a2b3c5097ccae00f665d7cf6c26ad3",
+      "sha256": "b8b08aa2c8198c6024607c5afccbdf21133a6642ac5c7a334ba5be9ec9bf2635",
+      "bytes": 47236,
+      "lines": 1106,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "path": "crates/engine/src/driver/lower/python.rs",
+      "blob": "37cbcd7a0921f11ce317da138579afa8143486b8",
+      "sha256": "c2358f30387fbff7d2565177af9691af4d71ebc9743e3a6c0df427990ee1d3f9",
+      "bytes": 316426,
+      "lines": 7625,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "path": "frontends/python/src/legacy/checker.rs",
+      "blob": "082f3dfc4c6b27561a73a4b80ead26538c9939cd",
+      "sha256": "9333c8d3aa1bf04710baea9f48cdd4de20cd23c8b67108abd7ca33c4dd0c8a3e",
+      "bytes": 85393,
+      "lines": 2298,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "path": "crates/engine/src/driver/lower/go.rs",
+      "blob": "b489d79ecb899aa59efddc8189a90c016e6de66a",
+      "sha256": "64236020f61d018781da16cd582c03719ad8199c6cf04f54815cbeba82831661",
+      "bytes": 328238,
+      "lines": 7855,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "path": "frontends/go/src/legacy/oracle/main.go",
+      "blob": "6592db14e9f629201fee57cf094c094366a392d1",
+      "sha256": "81befe319b8853169d55b9e5c1839529036bc535a8f4aac446e9a83dd0a76176",
+      "bytes": 40214,
+      "lines": 1120,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "path": "frontends/go/src/legacy/oracle/image.go",
+      "blob": "a863fd06989ebd388858836be7927c6d3e067553",
+      "sha256": "66ea9e795bda7b10123d8ea6d83ec5b7dc38377953b5af8a09d417b9167dcf9e",
+      "bytes": 55194,
+      "lines": 1708,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "path": "crates/engine/src/driver/lower/typescript.rs",
+      "blob": "2ffe3896499e30b1ee2bb9d816ed9636bbaba47a",
+      "sha256": "e7988e6f5d3cdbdfdef3dfd230316dd6e56993776b2a8f0ca8edac54083265a9",
+      "bytes": 389107,
+      "lines": 9185,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "path": "crates/local-service/src/builtin/generation_residence.rs",
+      "blob": "c8f962924032ffd086e9d8ae32dc55074c3a414f",
+      "sha256": "e93c5c99074998fff24f65dbf714123d3f5845f32b99ef6e906f23deae4a3933",
+      "bytes": 81916,
+      "lines": 2022,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "path": "crates/local-service/src/builtin/view_build/image_rows.rs",
+      "blob": "d2ef3b8b019f68976463ff3e03f580d90db01033",
+      "sha256": "0b8ebd7a2da99aa7a7bb82dbf1d32aafd9a2e77a95dee808a929a9d9249e008e",
+      "bytes": 118061,
+      "lines": 3154,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "path": "crates/local-service/src/builtin/versioned_planes.rs",
+      "blob": "5cbafb11e63fc69b7033ba48f3f1bf508b4bce24",
+      "sha256": "adae721669dd87dc45062addc57748b5acc45a2cbbb1184daaf197a5f0107327",
+      "bytes": 143558,
+      "lines": 3591,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "path": "crates/local-service/src/builtin/selected_full_image.rs",
+      "blob": "7d15bd5312037955f3173b06bcf4fbbd4b4dfc63",
+      "sha256": "983286655b117ea5cf8700f8d3b0f6912fb8142c8842a8ee8ce39ff50d2c863c",
+      "bytes": 39972,
+      "lines": 1059,
+      "commit_is_ancestor_of_pinned_source": true
+    },
+    {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "path": "crates/local-service/src/builtin/discovery_search/release_projection.rs",
+      "blob": "f7547f498b679c9c129dd75da79dbc419885275a",
+      "sha256": "6e1c886fa3d27a3e0bd728567020f3fbe3d3f373511b4a455b34cac313b4b8c1",
+      "bytes": 48345,
+      "lines": 1230,
+      "commit_is_ancestor_of_pinned_source": true
+    }
+  ]
+}

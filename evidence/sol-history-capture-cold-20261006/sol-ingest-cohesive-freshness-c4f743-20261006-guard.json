@@ -1,0 +1,31 @@
+{
+  "source_revision": "c4f743c2031ba681e70d19eb1e0b55c547589f42",
+  "source_tree": "3a5825c6ac92e1047b2ba99a02bd028d47bc0c65",
+  "argv": [
+    "/Users/mileswirht/Downloads/nudox-active-20261005/build-tools/cargo-wrapped",
+    "test",
+    "--locked",
+    "--offline",
+    "-p",
+    "backend-local-service",
+    "--test",
+    "index_operation_lifecycle",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit": 0,
+  "seconds": 198.028,
+  "source_unchanged": true,
+  "guard_stop": null,
+  "first": {
+    "free_bytes": 23761096704,
+    "allocated_bytes": 14859026432
+  },
+  "last": {
+    "elapsed": 192.881,
+    "free_bytes": 23583260672,
+    "allocated_bytes": 14859866112
+  },
+  "log": "/tmp/sol-ingest-cohesive-freshness-c4f743-20261006.log"
+}

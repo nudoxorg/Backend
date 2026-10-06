@@ -1,0 +1,35 @@
+{
+  "source_revision": "d67f12d89cde4fc191e64e1b34d95cd8cc700a6d",
+  "source_tree": "3028e6cdca01d87f8e382740045a2e6832dcd38a",
+  "frozen_at_utc": "2026-10-06T11:11:47.827762+00:00",
+  "binaries": [
+    {
+      "path": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/frozen-verification/capture-cold-d67f12-20261006/backend_local_service-dae9c947bddaefd9",
+      "source": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/build/ingest/.nudox-cargo/slot-0/debug/deps/backend_local_service-dae9c947bddaefd9",
+      "sha256": "8238fa9c0c29b87337bed936910b7f24f3a3795d2a276d97f3c50000017f0e38",
+      "bytes": 324791848,
+      "allocated_bytes": 324792320,
+      "nlink": 1,
+      "mode": "0o555",
+      "flags": 2
+    },
+    {
+      "path": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/frozen-verification/capture-cold-d67f12-20261006/index_operation_lifecycle-0c400900acdd4380",
+      "source": "/Users/mileswirht/Downloads/nudox-active-20261005/luna_ingest_pages_recovery/.local/build/ingest/.nudox-cargo/slot-0/debug/deps/index_operation_lifecycle-0c400900acdd4380",
+      "sha256": "88f9b721a53b3bb9d00ddd120332bfe35064772cafabf96af57be50be39c4e0a",
+      "bytes": 306600920,
+      "allocated_bytes": 317718528,
+      "nlink": 1,
+      "mode": "0o555",
+      "flags": 2
+    }
+  ],
+  "nix_roots": [
+    "/nix/store/4n5rm7aink6xcsj5df33sf7wm3m387a2-sccache-0.17.0",
+    "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16"
+  ],
+  "nix_closure_count": 28,
+  "nix_closure_sha256": "3f51248275ccbd8a5c0cb2560d028477371b52cda811ab862989fc4497afc0ee",
+  "system": "ProductName:\t\tmacOS\nProductVersion:\t\t15.7.4\nBuildVersion:\t\t24G517\n",
+  "scope": "Exact final Mac source-test binaries; read-only single-link uchg copies. Dynamic linkage is system frameworks; compiled-in available Nix roots plus pinned test Rust compiler closure recorded. Not an installed product image."
+}
