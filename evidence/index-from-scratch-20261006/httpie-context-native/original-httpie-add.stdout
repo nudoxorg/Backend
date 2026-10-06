@@ -1,0 +1,7 @@
+{
+  "slug": "protocol",
+  "operand": ".",
+  "cause": "unproven",
+  "detail": "a frame, DTO, or identity proof failed admission: command execution failed: index job did not publish: Refused(ProductText(\"local semantic compilation failed; prior selected semantic generation was preserved: package semantic output could not be prepared for transport: fused compiler outputs could not form a canonical semantic package\\ncaused by: publication includes fragment identity ArtifactId(040cff1d99c4f1a5a9bace44a2d1b6ce7810622180dc1b4b20e5fa6721b52685) more than once\"))",
+  "answer": "fault"
+}

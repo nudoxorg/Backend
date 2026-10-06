@@ -1,0 +1,8 @@
+{
+  "classification": "observer admission refusal; no job launched",
+  "attempted_admission": "httpie-context-0cf-claim-admission.json",
+  "observed_ssh_exit": 1,
+  "observed_tool_stdout": "fleet admission is older than 60 seconds",
+  "receipt_source": "tool-returned stdout; not reconstructed as a raw process receipt",
+  "no_launch_or_completion_receipt_existed_for_attempt": true
+}

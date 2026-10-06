@@ -1,0 +1,12 @@
+
+running 7 tests
+test publication::manifest::tests::empty_packages_use_empty_ordinal_scratch_and_have_a_canonical_header ... ok
+test publication::manifest::tests::canonicalization_reports_undersized_ordinal_scratch ... ok
+test publication::manifest::tests::canonical_manifest_deduplicates_byte_identical_empty_module_fragments ... ok
+test publication::manifest::tests::manifest_rejects_a_range_extent_overflow_without_losing_its_location ... ok
+test publication::manifest::tests::manifest_rejects_a_recipe_identity_mutant_without_losing_the_fragment_ordinal ... ok
+test publication::manifest::tests::canonical_manifest_is_order_stable_and_uses_the_ir_manifest_identity ... ok
+test publication::manifest::tests::canonical_semantic_manifest_deduplicates_exact_pairs_and_preserves_distinct_images ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 840 filtered out; finished in 0.01s
+

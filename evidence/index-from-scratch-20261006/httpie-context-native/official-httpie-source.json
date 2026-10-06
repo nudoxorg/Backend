@@ -1,0 +1,18 @@
+{
+  "origin": "https://github.com/httpie/cli.git",
+  "commit": "5b604c37c6c67e18e7c3e9aee6c88a8c22b98345",
+  "tracked_files": 265,
+  "tracked_python_files": 133,
+  "archive_sha256": "6337eb893c6236ceb852020c238484745aa7c595bfabbec775eb49fdc9a6e058",
+  "empty_python_files": [
+    "httpie/cli/__init__.py",
+    "httpie/internal/__init__.py",
+    "httpie/legacy/__init__.py",
+    "httpie/manager/__init__.py",
+    "httpie/output/__init__.py",
+    "httpie/output/formatters/__init__.py",
+    "httpie/output/lexers/__init__.py",
+    "httpie/output/ui/__init__.py",
+    "tests/__init__.py"
+  ]
+}

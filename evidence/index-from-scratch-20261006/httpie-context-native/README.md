@@ -1,0 +1,13 @@
+# HTTPie contextual semantic publication repair
+
+The installed 4c04 local CLI failed the complete official HTTPie project after 42.237 seconds. It rejected compact artifact `040cff1d99c4f1a5a9bace44a2d1b6ce7810622180dc1b4b20e5fa6721b52685` as duplicate. The exact official commit has 133 Python files, including nine zero-byte modules; no sources were deleted or rewritten.
+
+Source chain `409506a48b` → `f254c40153` → `0cf5434410`, based on exact 4c04, introduces closed semantic manifest schema 3. Entries are ordered by the compact-content/full-image identity pair. The full image retains package/path provenance. Distinct contextual pairs remain separate ordinal entries and exact identical pairs deduplicate. Compact schema 1 and semantic schema 2 retain their strict compact ordering. The byte comparison collision checks remain; the semantic memory-store reuse witness requires both identical descriptor and identical bytes. Every key is derived once from admitted bytes in fallibly reserved measured temporary storage.
+
+Native ARM64 validation used the private remote Mac source `0cf54344102d96199dc82d9e1dda9612fe5db1c1`, tree `00ddab182d427678855bedfbdf49938adbf7873b`, managed Cargo with explicit `-j4`, and a retained private `compiler-index.lock`. Each of the three executed jobs had complete successful fleet admission younger than 60 seconds. All 18 targeted tests passed: 10 durable publication tests, 7 manifest admission tests, and one semantic claim roundtrip. Their raw stdout/stderr, launch, completion, wholefleet samples, compiler identities and test executable hashes are retained here. The test guards kernel-waited exit 0; all six permit/launcher PIDs were absent afterward.
+
+The contextual regression constructs valid compact/full images for the two real empty HTTPie module paths. It proves two manifest entries, one reused compact CAS object, two distinct full-image CAS objects, permutation-stable generation binding and both exact path atoms after cold journal reopen. This is a native publication-boundary fixture, not proof of actual Python frontend compilation for the complete application. Existing tampered image/source/range/recipe and cancellation checks remained enabled and passed.
+
+A first claim-gate attempt was refused before launching any job because its fleet sample expired. The preserved tool observation is explicitly distinct from a raw process receipt. The successful retry collected and launched sequentially with a sample age of 5.56 seconds.
+
+The whole HTTPie CLI/MCP add, retry and cold-read proof requires a matched successor runtime trio. It is not credited by this test evidence. A separate exact-source debug trio build is underway to enable that public check without altering the user installation.
