@@ -1,0 +1,112 @@
+name,transport,started_utc,seconds,outcome,response_bytes,byte_measure,estimated_tokens_bytes_div_4,stderr_bytes,cli_exit,rpc_error,adapter_tool_error,engine_fault_slug,engine_budget
+cli-default-wide,CLI,2026-10-06T21:41:07.824555+00:00,0.085885,success,30309,exact CLI stdout bytes,7578,0,0,,,,"{""bytes"": 30309, ""estimatedTokens"": 7578, ""bytesPerToken"": 4}"
+cli-document-missing,CLI,2026-10-06T21:39:44.809943+00:00,0.028684,CLI failure/refusal,215,exact CLI stdout bytes,54,0,2,,,protocol,
+cli-graph-caller,CLI,2026-10-06T21:39:40.958329+00:00,2.085477,success,5126,exact CLI stdout bytes,1282,0,0,,,,"{""bytes"": 5126, ""estimatedTokens"": 1282, ""bytesPerToken"": 4}"
+cli-graph-limit-after,CLI,2026-10-06T21:43:51.139273+00:00,0.006653,CLI failure/refusal,0,exact CLI stdout bytes,0,53,64,,,,
+cli-graph-page1,CLI,2026-10-06T21:43:25.705343+00:00,0.012313,CLI failure/refusal,0,exact CLI stdout bytes,0,53,64,,,,
+cli-graph,CLI,2026-10-06T21:38:43.253333+00:00,2.370281,success,3619,exact CLI stdout bytes,905,0,0,,,,"{""bytes"": 3619, ""estimatedTokens"": 905, ""bytesPerToken"": 4}"
+cli-health-final,CLI,2026-10-06T21:45:58.382821+00:00,0.23301,success,805,exact CLI stdout bytes,202,0,0,,,,"{""bytes"": 805, ""estimatedTokens"": 202, ""bytesPerToken"": 4}"
+cli-health,CLI,2026-10-06T21:38:38.776802+00:00,0.193891,success,805,exact CLI stdout bytes,202,0,0,,,,"{""bytes"": 805, ""estimatedTokens"": 202, ""bytesPerToken"": 4}"
+cli-limit-high,CLI,2026-10-06T21:41:08.074518+00:00,0.014718,CLI failure/refusal,167,exact CLI stdout bytes,42,0,64,,,usage,
+cli-limit-zero,CLI,2026-10-06T21:41:08.056013+00:00,0.013482,CLI failure/refusal,165,exact CLI stdout bytes,42,0,64,,,usage,
+cli-malformed-surface,CLI,2026-10-06T21:41:08.095620+00:00,0.015566,CLI failure/refusal,177,exact CLI stdout bytes,45,0,64,,,usage,
+cli-missing-operand,CLI,2026-10-06T21:41:08.115675+00:00,0.011169,CLI failure/refusal,140,exact CLI stdout bytes,35,0,64,,,usage,
+cli-outline,CLI,2026-10-06T21:38:49.757087+00:00,0.087233,success,22757,exact CLI stdout bytes,5690,0,0,,,,"{""bytes"": 22757, ""estimatedTokens"": 5690, ""bytesPerToken"": 4}"
+cli-package-local,CLI,2026-10-06T21:45:58.640234+00:00,1.971988,CLI failure/refusal,201,exact CLI stdout bytes,51,0,2,,,invalid-query,
+cli-packages,CLI,2026-10-06T21:38:38.723716+00:00,0.041374,success,422,exact CLI stdout bytes,106,0,0,,,,"{""bytes"": 422, ""estimatedTokens"": 106, ""bytesPerToken"": 4}"
+cli-passive-health,CLI,2026-10-06T21:37:58.070413+00:00,0.225682,success,805,exact CLI stdout bytes,202,0,0,,,,"{""bytes"": 805, ""estimatedTokens"": 202, ""bytesPerToken"": 4}"
+cli-read-mixed,CLI,2026-10-06T21:39:43.179220+00:00,1.535368,success,4931,exact CLI stdout bytes,1233,0,0,,,,"{""bytes"": 4931, ""estimatedTokens"": 1233, ""bytesPerToken"": 4}"
+cli-references,CLI,2026-10-06T21:38:41.263229+00:00,1.984669,success,649,exact CLI stdout bytes,163,0,0,,,,"{""bytes"": 649, ""estimatedTokens"": 163, ""bytesPerToken"": 4}"
+cli-related,CLI,2026-10-06T21:38:45.661455+00:00,2.256853,success,4309,exact CLI stdout bytes,1078,0,0,,,,"{""bytes"": 4309, ""estimatedTokens"": 1078, ""bytesPerToken"": 4}"
+cli-resolve-ambiguous-page2,CLI,2026-10-06T21:43:25.652500+00:00,0.040352,success,5959,exact CLI stdout bytes,1490,0,0,,,,"{""bytes"": 5959, ""estimatedTokens"": 1490, ""bytesPerToken"": 4}"
+cli-resolve-ambiguous,CLI,2026-10-06T21:43:25.563200+00:00,0.073981,success,6448,exact CLI stdout bytes,1612,0,0,,,,"{""bytes"": 6448, ""estimatedTokens"": 1612, ""bytesPerToken"": 4}"
+cli-resolve-coordinate,CLI,2026-10-06T21:38:47.928013+00:00,1.742347,empty success,486,exact CLI stdout bytes,122,0,0,,,,"{""bytes"": 486, ""estimatedTokens"": 122, ""bytesPerToken"": 4}"
+cli-resolve-name,CLI,2026-10-06T21:38:49.682331+00:00,0.057417,success,6117,exact CLI stdout bytes,1530,0,0,,,,"{""bytes"": 6117, ""estimatedTokens"": 1530, ""bytesPerToken"": 4}"
+cli-resolve-repeat,CLI,2026-10-06T21:43:51.266795+00:00,0.077088,empty success,486,exact CLI stdout bytes,122,0,0,,,,"{""bytes"": 486, ""estimatedTokens"": 122, ""bytesPerToken"": 4}"
+cli-search-after-oversized-retry,CLI,2026-10-06T21:46:39.257341+00:00,0.039926,success,20371,exact CLI stdout bytes,5093,0,0,,,,"{""bytes"": 20371, ""estimatedTokens"": 5093, ""bytesPerToken"": 4}"
+cli-search-first,CLI,2026-10-06T21:38:14.283027+00:00,0.116565,success,5121,exact CLI stdout bytes,1281,0,0,,,,"{""bytes"": 5121, ""estimatedTokens"": 1281, ""bytesPerToken"": 4}"
+cli-search-invalid-cursor,CLI,2026-10-06T21:41:08.022579+00:00,0.014584,CLI failure/refusal,191,exact CLI stdout bytes,48,0,2,,,protocol,
+cli-search-limit200,CLI,2026-10-06T21:45:51.550778+00:00,0.084381,CLI failure/refusal,204,exact CLI stdout bytes,51,0,1,,,transport,
+cli-search-page1,CLI,2026-10-06T21:41:07.925889+00:00,0.047624,success,12106,exact CLI stdout bytes,3027,0,0,,,,"{""bytes"": 12106, ""estimatedTokens"": 3027, ""bytesPerToken"": 4}"
+cli-search-page2,CLI,2026-10-06T21:41:07.975791+00:00,0.045899,success,8090,exact CLI stdout bytes,2023,0,0,,,,"{""bytes"": 8090, ""estimatedTokens"": 2023, ""bytesPerToken"": 4}"
+cli-search-repeat,CLI,2026-10-06T21:43:51.370415+00:00,0.049849,success,5121,exact CLI stdout bytes,1281,0,0,,,,"{""bytes"": 5121, ""estimatedTokens"": 1281, ""bytesPerToken"": 4}"
+cli-semantic-versions,CLI,2026-10-06T21:38:14.424381+00:00,0.232246,success,2639,exact CLI stdout bytes,660,0,0,,,,"{""bytes"": 2639, ""estimatedTokens"": 660, ""bytesPerToken"": 4}"
+cli-show,CLI,2026-10-06T21:38:38.977891+00:00,2.153056,success,13291,exact CLI stdout bytes,3323,0,0,,,,"{""bytes"": 13291, ""estimatedTokens"": 3323, ""bytesPerToken"": 4}"
+cli-source-caller,CLI,2026-10-06T21:39:43.097504+00:00,0.064885,success,1268,exact CLI stdout bytes,317,0,0,,,,"{""bytes"": 1268, ""estimatedTokens"": 317, ""bytesPerToken"": 4}"
+cli-source-legacy,CLI,2026-10-06T21:39:44.734689+00:00,0.070058,CLI failure/refusal,272,exact CLI stdout bytes,68,0,2,,,protocol,
+cli-source-repeat,CLI,2026-10-06T21:43:51.169176+00:00,0.070741,success,12045,exact CLI stdout bytes,3012,0,0,,,,"{""bytes"": 12045, ""estimatedTokens"": 3012, ""bytesPerToken"": 4}"
+cli-source,CLI,2026-10-06T21:38:41.145897+00:00,0.093082,success,12045,exact CLI stdout bytes,3012,0,0,,,,"{""bytes"": 12045, ""estimatedTokens"": 3012, ""bytesPerToken"": 4}"
+cli-version,CLI,2026-10-06T21:43:51.582963+00:00,0.00803,success,14,exact CLI stdout bytes,4,0,0,,,,
+cli-versions-repeat,CLI,2026-10-06T21:43:51.458145+00:00,0.106681,success,2639,exact CLI stdout bytes,660,0,0,,,,"{""bytes"": 2639, ""estimatedTokens"": 660, ""bytesPerToken"": 4}"
+mcp-document-missing,Codex MCP tool,2026-10-06T21:39:19.116Z,0.143,MCP engine fault,473,saved normalized Codex tool wrapper UTF-8 bytes,119,,,,True,protocol,
+mcp-document,Codex MCP tool,2026-10-06T21:38:32.163Z,2.015,success,27026,saved normalized Codex tool wrapper UTF-8 bytes,6757,,,,False,,"{""bytes"": 13291, ""estimatedTokens"": 3323, ""bytesPerToken"": 4}"
+mcp-graph-caller-page1,Codex MCP tool,2026-10-06T21:39:19.116Z,2.214,success,2669,saved normalized Codex tool wrapper UTF-8 bytes,668,,,,False,,"{""bytes"": 1439, ""estimatedTokens"": 360, ""bytesPerToken"": 4}"
+mcp-graph-caller-page2,Codex MCP tool,2026-10-06T21:39:39.814Z,0.269,Codex-wrapped RPC error,327,saved normalized Codex tool wrapper UTF-8 bytes,82,,,,True,,
+mcp-graph-caller,Codex MCP tool,2026-10-06T21:38:46.684Z,2.995,success,11419,saved normalized Codex tool wrapper UTF-8 bytes,2855,,,,False,,"{""bytes"": 5126, ""estimatedTokens"": 1282, ""bytesPerToken"": 4}"
+mcp-graph-class,Codex MCP tool,2026-10-06T21:38:32.163Z,5.934,success,7409,saved normalized Codex tool wrapper UTF-8 bytes,1853,,,,False,,"{""bytes"": 3619, ""estimatedTokens"": 905, ""bytesPerToken"": 4}"
+mcp-graph-immediate-page1,Codex MCP tool,2026-10-06T21:40:03.197Z,1.955,success,2669,saved normalized Codex tool wrapper UTF-8 bytes,668,,,,False,,"{""bytes"": 1439, ""estimatedTokens"": 360, ""bytesPerToken"": 4}"
+mcp-graph-immediate-page2,Codex MCP tool,2026-10-06T21:40:05.189Z,1.568,success,3206,saved normalized Codex tool wrapper UTF-8 bytes,802,,,,False,,"{""bytes"": 1717, ""estimatedTokens"": 430, ""bytesPerToken"": 4}"
+mcp-graph-immediate-page3,Codex MCP tool,2026-10-06T21:41:08.214Z,2.04,success,8017,saved normalized Codex tool wrapper UTF-8 bytes,2005,,,,False,,"{""bytes"": 4162, ""estimatedTokens"": 1041, ""bytesPerToken"": 4}"
+mcp-outline,Codex MCP tool,2026-10-06T21:38:32.164Z,6.019,success,41483,saved normalized Codex tool wrapper UTF-8 bytes,10371,,,,False,,"{""bytes"": 22757, ""estimatedTokens"": 5690, ""bytesPerToken"": 4}"
+mcp-packages-full,Codex MCP tool,2026-10-06T21:38:14.154Z,0.31,success,872,saved normalized Codex tool wrapper UTF-8 bytes,218,,,,False,,"{""bytes"": 422, ""estimatedTokens"": 106, ""bytesPerToken"": 4}"
+mcp-read-mixed,Codex MCP tool,2026-10-06T21:38:49.825Z,3.439,success,10049,saved normalized Codex tool wrapper UTF-8 bytes,2513,,,,False,,"{""bytes"": 4931, ""estimatedTokens"": 1233, ""bytesPerToken"": 4}"
+mcp-references,Codex MCP tool,2026-10-06T21:38:32.163Z,4.032,success,1435,saved normalized Codex tool wrapper UTF-8 bytes,359,,,,False,,"{""bytes"": 649, ""estimatedTokens"": 163, ""bytesPerToken"": 4}"
+mcp-resolve-ambiguous-page2,Codex MCP tool,2026-10-06T21:39:39.814Z,0.331,success,9875,saved normalized Codex tool wrapper UTF-8 bytes,2469,,,,False,,"{""bytes"": 7400, ""estimatedTokens"": 1850, ""bytesPerToken"": 4}"
+mcp-resolve-ambiguous,Codex MCP tool,2026-10-06T21:39:19.116Z,2.277,success,10796,saved normalized Codex tool wrapper UTF-8 bytes,2699,,,,False,,"{""bytes"": 7942, ""estimatedTokens"": 1986, ""bytesPerToken"": 4}"
+mcp-resolve-coordinate,Codex MCP tool,2026-10-06T21:38:32.164Z,4.09,empty success,972,saved normalized Codex tool wrapper UTF-8 bytes,243,,,,False,,"{""bytes"": 486, ""estimatedTokens"": 122, ""bytesPerToken"": 4}"
+mcp-resolve-name,Codex MCP tool,2026-10-06T21:38:32.164Z,4.075,success,13104,saved normalized Codex tool wrapper UTF-8 bytes,3276,,,,False,,"{""bytes"": 6117, ""estimatedTokens"": 1530, ""bytesPerToken"": 4}"
+mcp-resolve-repeat,Codex MCP tool,2026-10-06T21:44:14.964Z,0.132,empty success,972,saved normalized Codex tool wrapper UTF-8 bytes,243,,,,False,,"{""bytes"": 486, ""estimatedTokens"": 122, ""bytesPerToken"": 4}"
+mcp-search-after-oversized-retry,Codex MCP tool,2026-10-06T21:46:39.085Z,0.062,success,55947,saved normalized Codex tool wrapper UTF-8 bytes,13987,,,,False,,"{""bytes"": 21301, ""estimatedTokens"": 5326, ""bytesPerToken"": 4}"
+mcp-search-cursor-invalid,Codex MCP tool,2026-10-06T21:39:39.814Z,0.303,Codex-wrapped RPC error,328,saved normalized Codex tool wrapper UTF-8 bytes,82,,,,True,,
+mcp-search-cursor-wrong-query,Codex MCP tool,2026-10-06T21:39:39.814Z,0.107,Codex-wrapped RPC error,328,saved normalized Codex tool wrapper UTF-8 bytes,82,,,,True,,
+mcp-search-default-wide,Codex MCP tool,2026-10-06T21:39:19.116Z,0.157,success,55947,saved normalized Codex tool wrapper UTF-8 bytes,13987,,,,False,,"{""bytes"": 21301, ""estimatedTokens"": 5326, ""bytesPerToken"": 4}"
+mcp-search-first,Codex MCP tool,2026-10-06T21:38:06.297Z,0.051,success,8947,saved normalized Codex tool wrapper UTF-8 bytes,2237,,,,False,,"{""bytes"": 2639, ""estimatedTokens"": 660, ""bytesPerToken"": 4}"
+mcp-search-limit200,Codex MCP tool,2026-10-06T21:45:51.324Z,0.063,MCP engine fault,450,saved normalized Codex tool wrapper UTF-8 bytes,113,,,,True,transport,
+mcp-search-missing,Codex MCP tool,2026-10-06T21:39:39.814Z,0.332,empty success,1191,saved normalized Codex tool wrapper UTF-8 bytes,298,,,,False,,"{""bytes"": 584, ""estimatedTokens"": 146, ""bytesPerToken"": 4}"
+mcp-search-page1,Codex MCP tool,2026-10-06T21:39:19.116Z,0.167,success,20080,saved normalized Codex tool wrapper UTF-8 bytes,5020,,,,False,,"{""bytes"": 14572, ""estimatedTokens"": 3643, ""bytesPerToken"": 4}"
+mcp-search-page2,Codex MCP tool,2026-10-06T21:39:39.814Z,0.328,success,13084,saved normalized Codex tool wrapper UTF-8 bytes,3271,,,,False,,"{""bytes"": 10001, ""estimatedTokens"": 2501, ""bytesPerToken"": 4}"
+mcp-search-repeat,Codex MCP tool,2026-10-06T21:44:14.964Z,0.061,success,11476,saved normalized Codex tool wrapper UTF-8 bytes,2869,,,,False,,"{""bytes"": 5121, ""estimatedTokens"": 1281, ""bytesPerToken"": 4}"
+mcp-source-caller,Codex MCP tool,2026-10-06T21:38:49.738Z,0.04,success,2804,saved normalized Codex tool wrapper UTF-8 bytes,701,,,,False,,"{""bytes"": 1268, ""estimatedTokens"": 317, ""bytesPerToken"": 4}"
+mcp-source-legacy,Codex MCP tool,2026-10-06T21:39:19.116Z,2.264,MCP engine fault,587,saved normalized Codex tool wrapper UTF-8 bytes,147,,,,True,protocol,
+mcp-source-repeat,Codex MCP tool,2026-10-06T21:44:14.964Z,0.081,success,23721,saved normalized Codex tool wrapper UTF-8 bytes,5931,,,,False,,"{""bytes"": 12045, ""estimatedTokens"": 3012, ""bytesPerToken"": 4}"
+mcp-source,Codex MCP tool,2026-10-06T21:38:32.163Z,4.124,success,23721,saved normalized Codex tool wrapper UTF-8 bytes,5931,,,,False,,"{""bytes"": 12045, ""estimatedTokens"": 3012, ""bytesPerToken"": 4}"
+mcp-status-final,Codex MCP tool,2026-10-06T21:45:58.025Z,0.195,success,1523,saved normalized Codex tool wrapper UTF-8 bytes,381,,,,False,,"{""bytes"": 805, ""estimatedTokens"": 202, ""bytesPerToken"": 4}"
+mcp-status-full,Codex MCP tool,2026-10-06T21:38:14.154Z,0.208,success,1523,saved normalized Codex tool wrapper UTF-8 bytes,381,,,,False,,"{""bytes"": 805, ""estimatedTokens"": 202, ""bytesPerToken"": 4}"
+mcp-workspace-resource,Codex MCP tool,2026-10-06T21:38:14.154Z,0.474,success,651,saved normalized Codex tool wrapper UTF-8 bytes,163,,,,False,,
+private-auto-health,CLI,2026-10-06T21:42:03.864401+00:00,0.061237,CLI failure/refusal,300,exact CLI stdout bytes,75,0,1,,,endpoint,
+private-empty-health,CLI,2026-10-06T21:41:07.763036+00:00,0.037001,CLI failure/refusal,839,exact CLI stdout bytes,210,0,1,,,endpoint,
+private-fresh-add,CLI,2026-10-06T21:43:27.093585+00:00,0.024903,CLI failure/refusal,300,exact CLI stdout bytes,75,0,1,,,endpoint,
+private-mcp-fresh-index-start,MCP stdio JSON-RPC,2026-10-06T21:43:54.463955+00:00,0.01439,RPC error,652,exact wire bytes incl envelope/newline,163,,,"{""code"": -32603, ""message"": ""Backend request failed"", ""data"": {""kind"": ""endpoint"", ""detail"": ""\u2717 endpoint `/Users/mileswirht/Documents/Codex/2026-10-06/nudox-httpie-verification/work/httpie-copy`\nthe local endpoint could not be used: local runtime I/O failed: Operation not permitted (os error 1)"", ""structuredContent"": {""slug"": ""endpoint"", ""operand"": ""/Users/mileswirht/Documents/Codex/2026-10-06/nudox-httpie-verification/work/httpie-copy"", ""cause"": ""unreachable"", ""detail"": ""the local endpoint could not be used: local runtime I/O failed: Operation not permitted (os error 1)"", ""shell"": ""re-run the same command"", ""answer"": ""fault""}}}",False,,
+private-mcp-initialize,MCP stdio JSON-RPC,2026-10-06T21:43:54.434361+00:00,0.000556,success,1907,exact wire bytes incl envelope/newline,477,,,,False,,
+private-mcp-malformed-cancellation,MCP stdio JSON-RPC,2026-10-06T21:43:54.532525+00:00,0.000464,RPC error,147,exact wire bytes incl envelope/newline,37,,,"{""code"": -32602, ""message"": ""Invalid params"", ""data"": {""kind"": ""invalid_params"", ""detail"": ""ticket: missing field `id`""}}",False,,
+private-passive-repeat,CLI,2026-10-06T21:44:14.871992+00:00,0.013457,CLI failure/refusal,728,exact CLI stdout bytes,182,0,1,,,endpoint,
+wire-boundary-array-query,MCP stdio JSON-RPC,2026-10-06T21:42:57.147115+00:00,0.009096,MCP engine fault,260,exact wire bytes incl envelope/newline,65,,,,True,usage,
+wire-boundary-extra-property,MCP stdio JSON-RPC,2026-10-06T21:42:57.157396+00:00,0.011292,MCP engine fault,310,exact wire bytes incl envelope/newline,78,,,,True,usage,
+wire-boundary-graph01640657,MCP stdio JSON-RPC,2026-10-06T21:42:59.293239+00:00,2.127569,success,2208,exact wire bytes incl envelope/newline,552,,,,False,,"{""bytes"": 1717, ""estimatedTokens"": 430, ""bytesPerToken"": 4}"
+wire-boundary-graph0df9e7cb,MCP stdio JSON-RPC,2026-10-06T21:43:01.422709+00:00,1.879691,success,7009,exact wire bytes incl envelope/newline,1753,,,,False,,"{""bytes"": 4162, ""estimatedTokens"": 1041, ""bytesPerToken"": 4}"
+wire-boundary-graph1,MCP stdio JSON-RPC,2026-10-06T21:42:57.173246+00:00,2.092994,success,1739,exact wire bytes incl envelope/newline,435,,,,False,,"{""bytes"": 1439, ""estimatedTokens"": 360, ""bytesPerToken"": 4}"
+wire-boundary-graph8d9e744f,MCP stdio JSON-RPC,2026-10-06T21:43:03.322672+00:00,1.575318,success,1132,exact wire bytes incl envelope/newline,283,,,,False,,"{""bytes"": 891, ""estimatedTokens"": 223, ""bytesPerToken"": 4}"
+wire-boundary-initialize,MCP stdio JSON-RPC,2026-10-06T21:42:57.135297+00:00,0.006681,success,1865,exact wire bytes incl envelope/newline,467,,,,False,,
+wire-boundary-unknown-tool,MCP stdio JSON-RPC,2026-10-06T21:43:04.905341+00:00,0.00735,RPC error,101,exact wire bytes incl envelope/newline,26,,,"{""code"": -32602, ""message"": ""Unknown tool"", ""data"": {""kind"": ""json_rpc""}}",False,,
+wire-final-initialize,MCP stdio JSON-RPC,2026-10-06T21:45:00.231163+00:00,0.003376,success,1865,exact wire bytes incl envelope/newline,467,,,,False,,
+wire-final-package-full,MCP stdio JSON-RPC,2026-10-06T21:45:02.380695+00:00,4.393827,MCP engine fault,401,exact wire bytes incl envelope/newline,101,,,,True,invalid-query,
+wire-final-related-full,MCP stdio JSON-RPC,2026-10-06T21:45:00.350904+00:00,2.017963,success,7355,exact wire bytes incl envelope/newline,1839,,,,False,,"{""bytes"": 4309, ""estimatedTokens"": 1078, ""bytesPerToken"": 4}"
+wire-final-source-summary,MCP stdio JSON-RPC,2026-10-06T21:45:06.845348+00:00,0.021368,success,8500,exact wire bytes incl envelope/newline,2125,,,,False,,"{""bytes"": 747, ""estimatedTokens"": 187, ""bytesPerToken"": 4}"
+wire-final-versions-full,MCP stdio JSON-RPC,2026-10-06T21:45:00.262539+00:00,0.083029,success,3217,exact wire bytes incl envelope/newline,805,,,,False,,"{""bytes"": 2639, ""estimatedTokens"": 660, ""bytesPerToken"": 4}"
+wire-session1-initialize,MCP stdio JSON-RPC,2026-10-06T21:40:22.912055+00:00,0.000979,success,1865,exact wire bytes incl envelope/newline,467,,,,False,,
+wire-session1-limit-high,MCP stdio JSON-RPC,2026-10-06T21:40:23.213205+00:00,0.000827,MCP engine fault,336,exact wire bytes incl envelope/newline,84,,,,True,usage,
+wire-session1-limit-zero,MCP stdio JSON-RPC,2026-10-06T21:40:23.202287+00:00,0.000542,MCP engine fault,332,exact wire bytes incl envelope/newline,83,,,,True,usage,
+wire-session1-malformed-coordinate,MCP stdio JSON-RPC,2026-10-06T21:40:23.250946+00:00,0.00103,MCP engine fault,280,exact wire bytes incl envelope/newline,70,,,,True,usage,
+wire-session1-malformed-query,MCP stdio JSON-RPC,2026-10-06T21:40:23.097611+00:00,0.070639,success,40673,exact wire bytes incl envelope/newline,10169,,,,False,,"{""bytes"": 33291, ""estimatedTokens"": 8323, ""bytesPerToken"": 4}"
+wire-session1-missing-query,MCP stdio JSON-RPC,2026-10-06T21:40:23.195883+00:00,0.000831,MCP engine fault,338,exact wire bytes incl envelope/newline,85,,,,True,usage,
+wire-session1-related,MCP stdio JSON-RPC,2026-10-06T21:40:23.330424+00:00,1.964763,success,4930,exact wire bytes incl envelope/newline,1233,,,,False,,"{""bytes"": 1883, ""estimatedTokens"": 471, ""bytesPerToken"": 4}"
+wire-session1-search,MCP stdio JSON-RPC,2026-10-06T21:40:22.965747+00:00,0.032615,success,8320,exact wire bytes incl envelope/newline,2080,,,,False,,"{""bytes"": 5121, ""estimatedTokens"": 1281, ""bytesPerToken"": 4}"
+wire-session1-semantic-versions,MCP stdio JSON-RPC,2026-10-06T21:40:23.283385+00:00,0.030698,success,3221,exact wire bytes incl envelope/newline,806,,,,False,,"{""bytes"": 2642, ""estimatedTokens"": 661, ""bytesPerToken"": 4}"
+wire-session1-source,MCP stdio JSON-RPC,2026-10-06T21:40:23.019837+00:00,0.039446,success,19798,exact wire bytes incl envelope/newline,4950,,,,False,,"{""bytes"": 12045, ""estimatedTokens"": 3012, ""bytesPerToken"": 4}"
+wire-session1-tools,MCP stdio JSON-RPC,2026-10-06T21:40:22.945977+00:00,0.001551,success,21198,exact wire bytes incl envelope/newline,5300,,,,False,,
+wire-session1-unknown-method,MCP stdio JSON-RPC,2026-10-06T21:40:25.323422+00:00,0.000894,RPC error,106,exact wire bytes incl envelope/newline,27,,,"{""code"": -32601, ""message"": ""Method not found"", ""data"": {""kind"": ""json_rpc""}}",False,,
+wire-session2-initialize,MCP stdio JSON-RPC,2026-10-06T21:40:25.346999+00:00,0.004356,success,1865,exact wire bytes incl envelope/newline,467,,,,False,,
+wire-session2-previous-session-cursor,MCP stdio JSON-RPC,2026-10-06T21:40:25.520157+00:00,0.00222,RPC error,190,exact wire bytes incl envelope/newline,48,,,"{""code"": -32602, ""message"": ""Invalid params"", ""data"": {""kind"": ""invalid_params"", ""detail"": ""cursor is unknown, expired, or belongs to another workspace authority""}}",False,,
+wire-session2-resolve-coordinate,MCP stdio JSON-RPC,2026-10-06T21:40:25.462976+00:00,0.032088,empty success,734,exact wire bytes incl envelope/newline,184,,,,False,,"{""bytes"": 486, ""estimatedTokens"": 122, ""bytesPerToken"": 4}"
+wire-session2-search,MCP stdio JSON-RPC,2026-10-06T21:40:25.364967+00:00,0.039869,success,8320,exact wire bytes incl envelope/newline,2080,,,,False,,"{""bytes"": 5121, ""estimatedTokens"": 1281, ""bytesPerToken"": 4}"
+wire-session2-source,MCP stdio JSON-RPC,2026-10-06T21:40:25.423409+00:00,0.019306,success,19798,exact wire bytes incl envelope/newline,4950,,,,False,,"{""bytes"": 12045, ""estimatedTokens"": 3012, ""bytesPerToken"": 4}"

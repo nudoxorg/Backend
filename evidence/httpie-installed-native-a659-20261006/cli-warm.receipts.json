@@ -1,0 +1,231 @@
+[
+  {
+    "label": "warm-add",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "add",
+      "."
+    ],
+    "exit_code": 0,
+    "seconds": 73.483,
+    "stdout_bytes": 255,
+    "stderr_bytes": 0,
+    "stdout_sha256": "3f09b8eed0647455e08f67c8b705bf84e3ee017cc035a0f992bbd52146ebc62b",
+    "json_root_keys": [
+      "heading",
+      "records",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "warm-versions",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "--detail",
+      "full",
+      "semantic-versions",
+      "/Users/mileswirht/Downloads/nudox-demo-httpie"
+    ],
+    "exit_code": 0,
+    "seconds": 0.064,
+    "stdout_bytes": 2649,
+    "stderr_bytes": 0,
+    "stdout_sha256": "c49bdf733668b5b5e985509e3e2ef6f12d73278987abb01abfd6b14adc7e54c7",
+    "json_root_keys": [
+      "heading",
+      "records",
+      "selected_source_frontier",
+      "semantic_data",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "warm-retry",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "add",
+      "."
+    ],
+    "exit_code": 0,
+    "seconds": 45.495,
+    "stdout_bytes": 255,
+    "stderr_bytes": 0,
+    "stdout_sha256": "3f09b8eed0647455e08f67c8b705bf84e3ee017cc035a0f992bbd52146ebc62b",
+    "json_root_keys": [
+      "heading",
+      "records",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "warm-versions-after-retry",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "--detail",
+      "full",
+      "semantic-versions",
+      "/Users/mileswirht/Downloads/nudox-demo-httpie"
+    ],
+    "exit_code": 0,
+    "seconds": 0.252,
+    "stdout_bytes": 2639,
+    "stderr_bytes": 0,
+    "stdout_sha256": "b47b90ada15d4370734414c954a4b962f20493f260d16ab5ee5a059901b228d1",
+    "json_root_keys": [
+      "heading",
+      "records",
+      "selected_source_frontier",
+      "semantic_data",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "warm-health",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "health"
+    ],
+    "exit_code": 0,
+    "seconds": 0.243,
+    "stdout_bytes": 695,
+    "stderr_bytes": 0,
+    "stdout_sha256": "7d1f6fb7f04c008270a35175cb342e17b6f06c73b35c7290adbd73d10f81c9b4",
+    "json_root_keys": [
+      "readiness",
+      "revision",
+      "revision_tag",
+      "rows",
+      "coverage",
+      "capabilities",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "warm-packages",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "packages"
+    ],
+    "exit_code": 0,
+    "seconds": 18.408,
+    "stdout_bytes": 410,
+    "stderr_bytes": 0,
+    "stdout_sha256": "ef464144a7bf44f9fe5a42ab9896b4c1a7dcc6612d4483e64f87209611062f94",
+    "json_root_keys": [
+      "revision",
+      "projects",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "warm-search",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "search",
+      "HTTPieArgumentParser"
+    ],
+    "exit_code": 0,
+    "seconds": 0.087,
+    "stdout_bytes": 2639,
+    "stderr_bytes": 0,
+    "stdout_sha256": "a103fdd8d5f8f6421b71d493f0135644c7489351070fddc129c128deaf57b67b",
+    "json_root_keys": [
+      "query",
+      "coverage",
+      "readiness",
+      "records",
+      "more",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "warm-resolve-name",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "resolve",
+      "HTTPieArgumentParser"
+    ],
+    "exit_code": 0,
+    "seconds": 0.109,
+    "stdout_bytes": 2482,
+    "stderr_bytes": 0,
+    "stdout_sha256": "803787e2486d6b70cc0d8c5e07ff13bc5073923396de6941c7f238f1495a526d",
+    "json_root_keys": [
+      "query",
+      "coverage",
+      "readiness",
+      "records",
+      "more",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "warm-outline",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "outline",
+      "/Users/mileswirht/Downloads/nudox-demo-httpie"
+    ],
+    "exit_code": 0,
+    "seconds": 0.188,
+    "stdout_bytes": 22760,
+    "stderr_bytes": 0,
+    "stdout_sha256": "947286066a3abe98067632e01b9f0044377d596f6b44227bbaaa9326403b4f81",
+    "json_root_keys": [
+      "package",
+      "roots",
+      "extent",
+      "declarations",
+      "unnamed",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "warm-show",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "show",
+      "/Users/mileswirht/Downloads/nudox-demo-httpie::httpie/cli/argparser.py:138::HTTPieArgumentParser"
+    ],
+    "exit_code": 2,
+    "seconds": 0.1,
+    "stdout_bytes": 272,
+    "stderr_bytes": 0,
+    "stdout_sha256": "3389523bb02b877a41bacd5c8d4886466abd7da36455c5ea975c96c51e680f36",
+    "json_root_keys": [
+      "slug",
+      "operand",
+      "cause",
+      "detail",
+      "answer"
+    ]
+  }
+]

@@ -1,0 +1,45 @@
+{
+  "created_utc": "2026-10-06T21:47:39.990657+00:00",
+  "observations": 111,
+  "outcome_counts": {
+    "MCP stdio JSON-RPC": {
+      "RPC error": 5,
+      "success": 20,
+      "MCP engine fault": 7,
+      "empty success": 1
+    },
+    "CLI": {
+      "success": 26,
+      "CLI failure/refusal": 15,
+      "empty success": 2
+    },
+    "Codex MCP tool": {
+      "MCP engine fault": 3,
+      "success": 26,
+      "Codex-wrapped RPC error": 3,
+      "empty success": 3
+    }
+  },
+  "warm_success_latency": {
+    "MCP stdio JSON-RPC": {
+      "successful_observations": 21,
+      "median_seconds": 0.032615,
+      "max_seconds": 2.127569
+    },
+    "CLI": {
+      "successful_observations": 28,
+      "median_seconds": 0.090158,
+      "max_seconds": 2.370281
+    },
+    "Codex MCP tool": {
+      "successful_observations": 29,
+      "median_seconds": 0.474,
+      "max_seconds": 6.019
+    }
+  },
+  "assertions_true": 30,
+  "assertions_total": 30,
+  "class_coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::a30ebc39e5b44c9fe03d484267ae0f48fe91b603c6b00e69d1ae5be808baedcf::HTTPieArgumentParser",
+  "caller_coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::590f5e6de3f795950ecb0afe065038c9506425ccf75a9e6f562a564d6865fcf0::setup_method",
+  "semantic_generation": "0612a0798c67039f68665440876b63a85ab84f59b5c0a2f0e498b69227d854cd"
+}

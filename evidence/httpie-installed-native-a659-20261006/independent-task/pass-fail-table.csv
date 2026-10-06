@@ -1,0 +1,30 @@
+Gate,Result,Category,Finding,Raw evidence
+Installed identity and login PATH,PASS,Identity,Packaged hashes match; clean HTTPie HEAD; no NUDOX/DYLD override names.,identities.json; final-identities-and-copy.json; fresh-login-path.stdout
+Configured Codex MCP call,PASS,Integration,Actual nudox-httpie backend.search/status/document/source calls from this fresh chat.,mcp-search-first.json; mcp-status-full.json; mcp-workspace-resource.json
+Passive health,PASS,Readiness,Existing owner answers; revision/source/sequence stable through final read.,cli-passive-health.stdout; cli-health-final.stdout
+Compiler generation publication,PASS,Native semantics,CLI and real MCP full versions facets match: 133 artifacts/58536 bytes/current/selected/complete.,cli-semantic-versions.stdout; wire-final-versions-full.reply.json
+Derived IR history,OPEN,Capability,history_status.state=pending; no successful history claim.,cli-semantic-versions.stdout
+Embedding/vector search,OPEN,Setup,Embedding unconfigured; semantic-search unavailable.,mcp-status-full.json; mcp-search-first.json
+Shelf metadata,LIMITED,Coverage,"Project ready, but declarations=0 and languages=[] despite 7618 status rows.",cli-packages.stdout
+Search and name ambiguity,PASS,Functional,Actual Python class selected by path; ambiguous names return distinct candidates without forced choice.,cli-search-first.stdout; mcp-search-first.json; mcp-resolve-ambiguous-page2.json
+Resolve exact semantic coordinate,FAIL,Functional,Same current coordinate succeeds for document/source but repeatedly returns zero resolve records.,cli-resolve-coordinate.stdout; mcp-resolve-coordinate.json; wire-session2-resolve-coordinate.reply.json
+Legacy readable coordinate,FAIL,Compatibility,Old project::file:line::name address refused after native cutover.,cli-source-legacy.stdout; mcp-source-legacy.json
+Outline,LIMITED,Coverage,"Returns a bounded containment tree: 200 declarations, 123 unnamed, extent=truncated; no continuation.",cli-outline.stdout; mcp-outline.json
+Documentation and source,PASS,Content,Prose and source snippets match real files; class body capped at 4096 bytes with truncated extent.,source-comparison.json; documentation-comparison.json; mcp-document.json; mcp-source.json
+Semantic identity consistency,FAIL,Functional data,"For the same coordinate, search key/selected-symbol-id differs from document/source key/selected-symbol-id.",mcp-search-first.json; mcp-document.json; mcp-source.json
+Reference span correctness,PASS,Content,tests/test_cli.py bytes8802..8822 is exactly HTTPieArgumentParser at line 242.,mcp-references.json; source-comparison.json
+Reference coverage,FAIL,Coverage,Only caller returned; options.py import bytes216..236 and default-value use bytes5900..5920 omitted.,cli-references.stdout; mcp-references.json; source-comparison.json
+Class graph neighbors,FAIL,Coverage,Only target record returned; incoming caller visible in references/related is absent.,cli-graph.stdout; mcp-graph-class.json
+Caller graph and related,PASS,Functional,Actual setup_method caller graph reaches class; related returns caller and target.,cli-graph-caller.stdout; wire-final-related-full.reply.json
+Multi-read with missing item,PASS,Functional,"Two valid records plus independent not-found item; overall success, not a top-level tool error.",cli-read-mixed.stdout; mcp-read-mixed.json
+Default bounds / search pagination,PASS,Bounds,Default 25 rows; explicit two-row pages are distinct through CLI and MCP.,cli-default-wide.stdout; cli-search-page2.stdout; mcp-search-page2.json
+Graph pagination,LIMITED,Functional/API,Fresh sequential MCP pagination traverses all 4 rows; one earlier valid continuation was rejected. CLI graph rejects --limit.,wire-boundary-graph8d9e744f.reply.json; mcp-graph-caller-page2.json; cli-graph-limit-after.stderr
+Cursor rejection,PASS,Protocol,Invalid/wrong-query/cross-session cursors rejected; real wire errors distinguish RPC rejection from engine faults.,mcp-search-cursor-invalid.json; wire-session2-previous-session-cursor.reply.json
+Input validation,FAIL,Protocol/schema,"Missing/array inputs and extra properties rejected, but numeric query 123 is coerced to string contrary to advertised string schema.",wire-session1-malformed-query.reply.json; wire-session1-tools.reply.json; wire-boundary-extra-property.reply.json
+Response budget and retry,PASS,Bounds,Legal limit 200 produces explicit oversized refusal; lower limit 25 succeeds; summary alone at 200 also refused.,cli-search-limit200.stdout; mcp-search-limit200.json; mcp-search-after-oversized-retry.json
+MCP discoverability,FAIL,Integration,semantic_versions and related work via real tools/call but are omitted from tools/list.,wire-session1-tools.reply.json; wire-final-versions-full.reply.json; wire-final-related-full.reply.json
+Local package metadata,FAIL,API contract,package advertises an exact local label but rejects the ready shelf path as absent from registry catalog.,cli-package-local.stdout; wire-final-package-full.reply.json
+Repeated sessions and reads,PASS,Repeatability,Separate installed MCP processes return identical source; CLI/MCP retries retain native generation and coordinate behavior.,wire-session1-source.reply.json; wire-session2-source.reply.json; cli-versions-repeat.stdout
+Private runtime / fresh add,BLOCKED,Setup/path,"Fleet admission allowed, but private credential path traversal under Documents fails EPERM before indexing.",private-runtime-ready.stderr; private-fresh-add.stdout; private-mcp-fresh-index-start.reply.json; private-openat-diagnostics.json
+Cancellation/edit/remove/re-add/cold restart,OPEN,Lifecycle,No real indexing ticket or private runtime available; no demonstration mutation used to bypass the block.,private-mcp-fresh-index-start.reply.json; private-mcp-malformed-cancellation.reply.json
+Cold performance,OPEN,Performance,"This observer measured an already-running owner; independent cold gate could not run. Reported prior ~18 s is historical, not fresh proof.",metrics.csv; private-runtime-ready.stderr

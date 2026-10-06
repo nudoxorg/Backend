@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "tools/call",
+  "params": {
+    "name": "backend.search",
+    "arguments": {
+      "query": "HTTPieArgumentParser",
+      "limit": 5
+    }
+  }
+}

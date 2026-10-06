@@ -1,0 +1,38 @@
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "\u25cf nudox-demo-httpie  \u00b7  ready\n`/Users/mileswirht/Downloads/nudox-demo-httpie`\n1 project(s) \u00b7 revision f560e5be\n"
+      }
+    ],
+    "structuredContent": {
+      "revision": "f560e5be",
+      "projects": [
+        {
+          "identity": {
+            "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie",
+            "trail": "nudox-demo-httpie",
+            "name": "nudox-demo-httpie",
+            "shape": "package",
+            "project": "/Users/mileswirht/Downloads/nudox-demo-httpie",
+            "segments": [],
+            "key": "47262d6c"
+          },
+          "readiness": "ready",
+          "declarations": 0
+        }
+      ],
+      "answer": "shelf",
+      "detail": "summary",
+      "budget": {
+        "bytes": 410,
+        "estimatedTokens": 103,
+        "bytesPerToken": 4
+      }
+    },
+    "isError": false
+  }
+}

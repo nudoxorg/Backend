@@ -1,0 +1,49 @@
+{
+  "at_utc": "2026-10-06T21:58:41.302091+00:00",
+  "before": {
+    "name": "nudox-httpie",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "stdio",
+      "command": "/Users/mileswirht/.local/bin/nudox-mcp",
+      "args": [
+        "--project",
+        "/Users/mileswirht/Downloads/nudox-demo-httpie"
+      ],
+      "env": null,
+      "env_vars": [],
+      "cwd": null
+    },
+    "enabled_tools": null,
+    "disabled_tools": null,
+    "startup_timeout_sec": null,
+    "tool_timeout_sec": null
+  },
+  "command": "/Users/mileswirht/.local/lib/nudox/versions/checkpoint-20261006-a659d5d181-macos-arm64/bin/backend-mcp",
+  "exit_code": 0,
+  "stdout": "Added global MCP server 'nudox-httpie'.\n",
+  "stderr": "",
+  "after": {
+    "name": "nudox-httpie",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "stdio",
+      "command": "/Users/mileswirht/.local/lib/nudox/versions/checkpoint-20261006-a659d5d181-macos-arm64/bin/backend-mcp",
+      "args": [
+        "--project",
+        "/Users/mileswirht/Downloads/nudox-demo-httpie"
+      ],
+      "env": null,
+      "env_vars": [],
+      "cwd": null
+    },
+    "enabled_tools": null,
+    "disabled_tools": null,
+    "startup_timeout_sec": null,
+    "tool_timeout_sec": null
+  },
+  "mcp_sha256": "e342fa310db971793b68663951619009de72125952b779898388c351f0299134",
+  "reason": "The existing Codex MCP process retained the prior 4c04 loaded executable after the package pointer changed; pin the verified a659 MCP command for this prepared demo."
+}

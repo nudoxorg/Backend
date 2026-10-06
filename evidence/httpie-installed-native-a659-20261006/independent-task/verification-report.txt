@@ -1,0 +1,109 @@
+NuDox HTTPie independent installed-application verification — 6 October 2026 (UTC)
+
+Verified native publication and useful CLI/MCP reads, with functional, coverage, compatibility, and integration gaps. Production readiness is not established. Fresh lifecycle and cold performance gates remain open because the permitted isolated state location cannot be traversed by the runtime on this Mac.
+
+This is fresh evidence from a separately created Codex chat. The enabled nudox-httpie server was actually called using Codex tools; those calls were not substituted with CLI output. Additional fresh stdio JSON-RPC sessions used the installed nudox-mcp executable with the same selected project. The earlier evidence directory supplied in the task was used only to identify comparison material; none of its results are counted as fresh passes here.
+
+Scope and preservation: the demonstration project stayed read-only and its final Git status is clean. No index was deleted, selected generation changed, global MCP configuration edited, installation changed, or unrelated owner signaled. All installed binary hashes remained unchanged at the final check. Private launch attempts self-exited; their PIDs 34842 and 82404 were absent at the final observation. Owned stdio probe processes were closed after their calls. No builds ran. No authority-secret contents, configuration credentials, or personal history were retained. The copied full repository and private state remain in work/ for inspection; evidence ZIP excludes that private state.
+
+Observed source and binary identities:
+
+  HTTPie project: /Users/mileswirht/Downloads/nudox-demo-httpie
+
+  Upstream HEAD: 5b604c37c6c67e18e7c3e9aee6c88a8c22b98345; Git status empty.
+
+  Installed tag: checkpoint-20261006-a659d5d181-macos-arm64
+
+  NuDox source commit: a659d5d1819078b3c0046937191a9b54a76b1dfb
+
+  Source tree independently found in local Git: d76c5ea835ff0b326c24e7e9d3a2cc9ece277dbb
+
+  nudox -> /Users/mileswirht/.local/lib/nudox/current/bin/backend-cli
+
+  nudox-mcp -> /Users/mileswirht/.local/lib/nudox/current/bin/backend-mcp
+
+  current resolves to /Users/mileswirht/.local/lib/nudox/versions/checkpoint-20261006-a659d5d181-macos-arm64
+
+  backend-cli: actual installed packaged SHA256 5a522b1238f52cd9d876f23b269674df4d5a36b6887f5ad5b2752088e8e8ea2d
+
+    Pre-relocation compiler artifact SHA256 recorded in the build/package manifests: 49a50347f3e7baca793d213e0fd9c9362fdaadaad4576ae623c7eb0735ea9c91
+
+  backend-mcp: actual installed packaged SHA256 e342fa310db971793b68663951619009de72125952b779898388c351f0299134
+
+    Pre-relocation compiler artifact SHA256 recorded in the build/package manifests: d9f4be4edd60ffdf0c1bc1c2a9b52a83bdb1e4ed3eb060485a7e4b4bde87b350
+
+  backend-locald: actual installed packaged SHA256 668d8bff54ab60f407845cf063bbc1ac0a01855b72522544af2fea82780a6f1b
+
+    Pre-relocation compiler artifact SHA256 recorded in the build/package manifests: d5d5fdb6de536d217da5f3007c33831720663953bab8ea367f86973e4aa68713
+
+The packaged hashes above were computed from the actual installed files and match the supplied identities. The different pre-relocation hashes describe compiler artifacts on the build Mac, before Mach-O load-command relocation and signing; their remote bytes were not independently rehashed in this task. otool -L and file outputs are retained in identities.json. The packaging manifest declares ad-hoc signing, no notarization, and production_ready=false. CLI --version returns backend 0.2.0; installation metadata records version 0.0.0 and the checkpoint tag. MCP has no --version option in its help; treating that rejected invocation as a failed installation would be an observer mistake. A fresh zsh login shell discovers both public command names. No environment variable names beginning NUDOX or DYLD were present, and no such override was added.
+
+The configured MCP selects the correct HTTPie project while this projectless chat has a different process working directory. Its workspace resource labels this a configuration mismatch; that diagnostic does not mean a wrong project was queried. Relative paths were interpreted under the explicitly selected project. Health stayed at revision f560e5bed2b1e2ade035bef4a0b368c2905c2f5f76489195bcb3c0313cf03a6b, source a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1, sequence 6, and 7618 rows. That health source is an engine source identity, not the Git commit or binary source commit.
+
+Compiler proof came from the full semantic_data.kind=versions facet, through both CLI semantic-versions and real MCP backend.semantic_versions. The facets match exactly. Selected generation is 0612a0798c67039f68665440876b63a85ab84f59b5c0a2f0e498b69227d854cd. It contains 133 artifacts and 58536 semantic/manifest bytes, complete=true, selected=true, freshness.state=current, compiler profile [2,4], and selected_source_frontier.file_count=133. Its purl is pkg:pypi/local-47262d6cd652dbb4b20e38e2b2c11dce7f0dda41ec3e2ebe2083b7ed1cc4cc9e@0.0.0-local. Repeated CLI versions output was stable. This establishes the selected compiler publication; a ready shelf or a successful parser/name search alone would not establish it. history_status.state remains pending, so derived IR history is not accepted as complete. Health reports 9/9 frontends, 0/18 oracles, 15 no-manifest, and embedding unconfigured. The semantic search lane is unavailable for that setup; vector search is not credited.
+
+Selection began with HTTPieArgumentParser search. The class was selected by identity.path=httpie/cli/argparser.py and language=python at line 138. Its current presentation kind is struct. Returned coordinate, copied verbatim for the reads:
+
+  /Users/mileswirht/Downloads/nudox-demo-httpie::semantic::a30ebc39e5b44c9fe03d484267ae0f48fe91b603c6b00e69d1ae5be808baedcf::HTTPieArgumentParser
+
+The compiler-backed reference furnished this actual caller coordinate, also copied rather than constructed:
+
+  /Users/mileswirht/Downloads/nudox-demo-httpie::semantic::590f5e6de3f795950ecb0afe065038c9506425ccf75a9e6f562a564d6865fcf0::setup_method
+
+Both CLI and MCP document/source answer the class coordinate. The class prose matches the actual Python AST docstring; the source is a precise prefix beginning at the declaration and capped at 4096 bytes, with extent=truncated. The reported caller source has complete extent and matches its two real source lines when comparison begins at the def token. The containing class indentation precedes that token, so the first naive full-line comparison failed; the normalized comparison passes. This was an observer assumption, not changed or mismatched source. CLI and MCP full document/source/references/graph payloads match for equivalent detail settings.
+
+The reported method-call span tests/test_cli.py [bytes8802..8822) is exactly HTTPieArgumentParser at line 242. Caller setup_method starts at line 241. Its graph includes itself, the actual Python class, and two external semantic target placeholders. This is meaningful neighbor evidence, not merely a nonempty target result. Related returns the caller and the class. Multi-read returns both valid records and a separate not found record for __NuDoxVerificationMissingDeclaration__, with overall success; this is neither an RPC error nor a top-level tool failure.
+
+Actionable functional and coverage findings:
+
+  1. Resolve of the complete current semantic coordinate repeatedly returns records=[] with success through CLI, configured MCP, and a separate stdio session, while source/document on that coordinate work. This is a functional failure, not an empty codebase or an unavailable embeddings lane. Name-only resolve does return candidates, including a type with unknown language, the Python declaration, and a BaseHTTPieArgumentParser substring candidate. The read selector must inspect identity.path rather than use the first name-only match.
+
+  2. The old readable coordinate /Users/mileswirht/Downloads/nudox-demo-httpie::httpie/cli/argparser.py:138::HTTPieArgumentParser is refused with protocol/unproven/library record not found. CLI exits 2; MCP returns an engine fault. This is a native-cutover compatibility failure. Hand-building that old address for all subsequent tests would also be an observer error; fresh successful reads here used the returned semantic coordinate.
+
+  3. References return only the test caller. They omit options.py line 8 import at bytes216..236 and line 195 default-value use at bytes5900..5920. Both occurrences were compared with the real files. Span correctness passes for the returned call; completeness of reference coverage fails.
+
+  4. Class graph returns only its target. It does not expose the incoming caller found by references and related. Outgoing traversal from that caller does work; this does not cure the class-neighbor coverage gap.
+
+  5. The same coordinate has search identity.key=8d9e744f and selected-symbol-id beginning 8d9e744f, but document/source identity.key=604981bf and a different selected-symbol-id beginning 604981bf. Coordinates and source are stable across repeats. This is a reproducible identity-field inconsistency between surfaces; the task does not infer a compiler-publication failure from it.
+
+  6. Shelf reports readiness=ready but declarations=0 and languages=[], although native status has 7618 rows and searches find Python declarations. Outline returns 200 declarations, 123 unnamed nodes, and extent=truncated, with no continuation in the returned answer or exposed outline tool. Those bounded outputs are useful, but do not prove full named navigation coverage.
+
+  7. backend.semantic_versions and backend.related both work over actual tools/call but are absent from the 17 advertised tools/list entries. Ordinary clients that use only advertised schemas will not discover them. backend.package advertises an exact local package label but refuses the ready project path as not recorded in the registry catalog, through both CLI and MCP. Packages shelf is a separate operation and passes.
+
+Bounds, malformed requests, and repeated sessions were exercised independently. CLI/MCP default search returns 25 rows. Explicit limit=2 pages for search and __init__ ambiguity return disjoint candidates. A fresh sequential MCP graph loop returns all four unpaged caller identities and reaches more=false. One earlier graph continuation, generated by the server and reused at the same limit/detail/query, was rejected as unknown/expired/other-workspace; an immediate fresh retry worked. No project mutation or owner restart occurred between those calls. Its cause remains unresolved and the graph continuation gate is therefore limited, rather than treated as an unconditional pass. CLI graph rejects --limit with graph does not take a page bound even though MCP graph supports paging. Search/resolve CLI paging works.
+
+Invalid and wrong-query cursors are rejected. A cursor from the Codex-managed MCP session is also rejected by a newly initialized stdio process. Those direct JSON-RPC -32602 rejections are retained separately from tool-result isError faults. Missing queries, array queries, array coordinates, extra properties, and bounds 0/201 are rejected. Numeric query 123 is accepted and coerced to string "123", yielding search results, despite tools/list requiring a string; the malformed-input/schema gate is not fully passed. Unknown method produces RPC -32601; unknown tool produces RPC -32602. An empty cancellation ticket is rejected with missing field id; that validates malformed ticket handling, not real cancellation.
+
+Limit 200 is accepted by the parameter range but refused by the response budget on this query: full CLI response would be 173776 bytes and summary MCP response 145472 bytes against a 49152-byte owner budget. Both are explicit transport/oversized faults. Retry at limit 25 succeeds. Budget enforcement passes; clients cannot assume every legal row bound fits, and the summary suggestion alone did not repair the 200-row request. Source truncation is explicit rather than an empty success. Repeated source reads and separate installed MCP processes are stable. Resolve-coordinate retries remain empty and are not credited as a recovery.
+
+Isolated lifecycle checks were attempted against a full copy at work/httpie-copy, with separate work/private-state. All 265 Git-tracked files match the demonstration byte-for-byte, the copy has the same upstream HEAD, and no source edit was made because its runtime never became ready. The initial complete fleet census refused admission at five local groups. Subsequent complete fresh censuses allowed the bounded local launch/add/index attempts, all with one requested job, local groups below five, fleet below sixteen, per-host limits satisfied, and at least 8 GiB available on every host. Full census outputs are retained. No admission was bypassed, no build was used for verification, and no private runtime/compiler group successfully remained running.
+
+The first manually launched private owner failed because the new state parent was not owner-only; correcting the task-owned work/state permissions to 0700 addressed that observer setup error. The corrected owner then self-exited with local runtime I/O failed: Operation not permitted (os error 1). Ordinary CLI automatic health and fresh add reproduced it. Actual private MCP index_start failed with RPC -32603 and the same endpoint failure before issuing a ticket. A Python diagnostic confirms that absolute directory fsync and socket bind work, while openat of Documents relative to the user-directory descriptor fails EPERM. The installed source commit's private credential read traverses every directory component using openat; the exact Git-object excerpt is retained. This supports a setup/path failure at the Documents traversal, rather than an indexing/compiler result. Its operating-system policy cause was not changed or definitively identified. Passive private health confirms no answering owner. Moving state outside the authorized task directory or changing OS privacy settings was not used as a workaround.
+
+Consequently fresh native indexing completion, unchanged add/index retry, real in-flight cancellation, source edit/refresh, remove/re-add, and a controlled cold restart on the copied project are OPEN/UNVERIFIED. No ready demonstration mutation was used to manufacture those passes. The separately reported prior cold first-read duration of roughly 18 seconds is historical comparison only. This task did not independently reproduce it, and cannot credit the cold performance gate or declare that problem repaired. The separate name-selection source worker's unbuilt changes were not presumed installed; initial/final installed hashes are identical.
+
+Measurement method: all durations use monotonic elapsed time around the external call; CLI stdout/stderr are retained separately. Direct MCP .wire files retain exact JSON-RPC bytes, including envelope/newline. Codex-managed MCP receipt bytes measure the saved, normalized UTF-8 tool-result wrapper, not unobserved wire bytes; it includes both Markdown content and structuredContent. Estimated tokens are ceil(bytes/4), a size estimate, not tokenizer counts. The engine budget describes its own structured rendering and may be substantially smaller than delivered MCP text plus structured duplication. For example the configured default wide search retained 55947 wrapper bytes (about 13987 estimated tokens) while its engine budget says 21301 bytes. This distinction prevents mistaking a structured budget for actual model-context cost. Batched configured calls may include queue delay and are not a controlled performance benchmark.
+
+Measured observations: 111 request receipts. Outcomes include planned negatives and the real failures described above:
+
+  MCP stdio JSON-RPC: 5 RPC error, 20 success, 7 MCP engine fault, 1 empty success
+
+  CLI: 26 success, 15 CLI failure/refusal, 2 empty success
+
+  Codex MCP tool: 3 MCP engine fault, 26 success, 3 Codex-wrapped RPC error, 3 empty success
+
+Empty successes are recorded explicitly: five resolve-coordinate observations and one deliberately missing search. The six Codex error results split into three engine faults and three wrapped underlying RPC errors; raw stdio records distinguish RPC error envelopes from tool-result isError. CLI refusal/failure count also includes expected invalid input, missing operands, and setup failures; it is not a count of functional product defects. Direct launch and admission failures are additional retained evidence, outside the 111 request receipts. Thirty deterministic evidence assertions hold, including assertions that reproduce defects; that number is not thirty passed readiness gates.
+
+Warm-owner successful observations, including metadata/initialization and negative empty-success reads, had these descriptive timings:
+
+  MCP stdio JSON-RPC: median 0.032615 seconds; maximum 2.127569 seconds; 21 observations.
+
+  CLI: median 0.090158 seconds; maximum 2.370281 seconds; 28 observations.
+
+  Codex MCP tool: median 0.474 seconds; maximum 6.019 seconds; 29 observations.
+
+For concrete initial CLI reads: search 0.116565 s / 5121 bytes; source 0.093082 s / 12045 bytes; references 1.984669 s / 649 bytes; graph 2.370281 s / 3619 bytes. Graph/reference/document/related operations commonly took around two seconds on the already-running owner. Readability and source correctness pass, but no production latency target or cold SLO was established.
+
+Deliverables: pass-fail-table.csv contains the compact gate decisions and evidence filenames. metrics.csv and metrics.json contain every timed request, exact/proxy byte measurement, token estimate, exit/RPC/tool-error classification, and engine budget when available. verification-assertions.json records the deterministic comparisons. raw/ contains this task's retained real outputs and identity/admission diagnostics. evidence-index.json hashes every raw artifact. raw-evidence.zip contains raw outputs, assertions, metrics, and the small verification harnesses, excluding private state and credentials.
+
+The verified result is an installed native diagnostic checkpoint with selected HTTPie compiler publication and useful CLI/MCP reads. The listed functional and coverage defects, setup-limited lifecycle work, pending IR history, unconfigured embeddings, and unverified cold performance remain explicit acceptance gaps.

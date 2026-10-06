@@ -1,0 +1,26 @@
+{
+  "installed_source": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+  "upstream_httpie": "5b604c37c6c67e18e7c3e9aee6c88a8c22b98345",
+  "indexed_python_artifacts": 133,
+  "initial_add_seconds": 73.483,
+  "unchanged_retry_seconds": 45.495,
+  "unchanged_retry_retains_generation": true,
+  "cold_reopen_preserves_generation": true,
+  "cold_first_read_seconds": 18.032,
+  "cli_reads_warm": 12,
+  "cli_reads_after_cold": 12,
+  "mcp_wire_replies_warm": 13,
+  "mcp_wire_replies_after_cold": 13,
+  "source_lines_checked_against_checkout": true,
+  "reference_byte_range_checked_against_checkout": true,
+  "fresh_codex_verification_task": "01a11326-036e-7200-a391-ae8a9e5cb8c2",
+  "remaining_gaps": [
+    "Exact-coordinate resolve returns an empty successful result.",
+    "Legacy parser source coordinate does not map to the selected native symbol.",
+    "Import reference coverage is incomplete; class graph only returns its target.",
+    "Derived IR history remains Pending.",
+    "Embeddings are unconfigured.",
+    "Cold startup first read takes about18 seconds."
+  ],
+  "production_ready_claimed": false
+}
