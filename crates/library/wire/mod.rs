@@ -65,9 +65,9 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version; version 16 adds the selected local Project
-/// membership frontier to strict semantic-generation replies. Version 15's
-/// registry-advisory alias coverage remains intact. Clients and services must
-/// use the same version rather than treating missing frontier evidence as a
-/// verified indexed-file count.
-pub const DTO_VERSION: u16 = 16;
+/// Current transport DTO version; version 17 adds strict typed package
+/// compiler-failure summaries to index terminal replies. Version 16's selected
+/// local Project membership frontier and version 15's registry-advisory alias
+/// coverage remain intact. Clients and services must use the same version so
+/// older readers cannot silently discard compiler refusal authority.
+pub const DTO_VERSION: u16 = 17;

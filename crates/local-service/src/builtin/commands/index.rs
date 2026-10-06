@@ -26,10 +26,12 @@ use backend_engine::builtin::{
 };
 use backend_extension_turso::SourceObservationReceipt;
 use backend_library::interface::{
-    CompilerRuntimeCause, CompilerTerminal, CorrelationId, GenerateTarget, PackageCompileRequest,
-    PackageUrl,
+    CompilerCause, CompilerRuntimeCause, CompilerTerminal, CorrelationId, GenerateTarget,
+    PackageCompileRequest, PackageUrl,
 };
-use backend_library::{CargoPackageAliasEvidenceV1, CompileExecutionIntent};
+use backend_library::{
+    CargoPackageAliasEvidenceV1, CompileExecutionIntent, PackageCompilerFailure,
+};
 use backend_semantic::ir::SemanticInputWitness;
 #[cfg(test)]
 use backend_semantic::vocabulary::Language;
@@ -2007,6 +2009,47 @@ pub(super) fn deferred_compile_was_cancelled(
     }
 }
 
+/// A deferred profile refusal with an optional closed compiler summary for
+/// package-fragment terminals.
+#[derive(Debug)]
+pub(super) struct DeferredProfileFailure {
+    pub(super) detail: BuiltinModelError,
+    pub(super) compiler_failure: Option<PackageCompilerFailure>,
+}
+
+impl From<BuiltinModelError> for DeferredProfileFailure {
+    fn from(detail: BuiltinModelError) -> Self {
+        Self {
+            detail,
+            compiler_failure: None,
+        }
+    }
+}
+
+fn typed_fragment_failure(
+    compiled: &Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
+) -> Result<Option<PackageCompilerFailure>, BuiltinModelError> {
+    let Err(PackageSemanticRuntimeError::Package(PackageSemanticError::Compile {
+        path,
+        terminal,
+    })) = compiled
+    else {
+        return Ok(None);
+    };
+    let CompilerTerminal::Compile {
+        attempted,
+        cause: CompilerCause::FragmentFailure(failure),
+    } = terminal.as_ref()
+    else {
+        return Ok(None);
+    };
+    PackageCompilerFailure::from_fragment_failure(path, *attempted, failure)
+        .map(Some)
+        .map_err(|error| {
+            BuiltinModelError(format!("compiler failure projection was rejected: {error}"))
+        })
+}
+
 /// Admits exactly one profile candidate on the owner loop and then drops its
 /// staged output, releasing the package compiler's bounded output credits.
 /// The serving selector remains untouched until every profile has succeeded.
@@ -2016,12 +2059,13 @@ pub(super) fn finish_deferred_profile(
     job: &mut DeferredIndex,
     profile: DeferredProfileTicket,
     compiled: Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
-) -> Result<(), BuiltinModelError> {
+) -> Result<(), DeferredProfileFailure> {
     if job.completed_profiles >= job.expected_profiles {
         return Err(BuiltinModelError(
             "the deferred compile answered more profiles than requested; prior selected semantic generation was preserved"
                 .to_owned(),
-        ));
+        )
+        .into());
     }
     let relation = daemon
         .engine()
@@ -2030,6 +2074,7 @@ pub(super) fn finish_deferred_profile(
         .snapshot()
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
+    let compiler_failure = typed_fragment_failure(&compiled)?;
     let (staged, publication_coverage) =
         match admit_local_compile(compiled, profile.expected_artifacts) {
             Ok(admitted) => admitted,
@@ -2038,7 +2083,10 @@ pub(super) fn finish_deferred_profile(
                     &profile.attempt,
                     backend_extension_turso::CandidateAttemptRetirementReason::Refused,
                 )?;
-                return Err(error);
+                return Err(DeferredProfileFailure {
+                    detail: error,
+                    compiler_failure,
+                });
             }
         };
     let cargo_alias_evidence = match staged_cargo_alias_evidence(
@@ -2053,7 +2101,7 @@ pub(super) fn finish_deferred_profile(
                 &profile.attempt,
                 backend_extension_turso::CandidateAttemptRetirementReason::Refused,
             )?;
-            return Err(error);
+            return Err(error.into());
         }
     };
     // Keep the ticket's exact capability until the publication result is
@@ -2073,7 +2121,7 @@ pub(super) fn finish_deferred_profile(
                 &profile.attempt,
                 backend_extension_turso::CandidateAttemptRetirementReason::Refused,
             )?;
-            return Err(error);
+            return Err(error.into());
         }
     };
     record_semantic_publication(

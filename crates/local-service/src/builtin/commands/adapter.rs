@@ -11,12 +11,12 @@ use super::browse_lane::{BrowseLane, Terminal as BrowseTerminal};
 use super::diff::execute_semantic_diff;
 use super::graph::{execute_certified_graph_query, execute_search};
 use super::index::{
-    DeferredIndex, DeferredProfileTicket, IndexScanFailure, IndexScanResult, IndexScanWork,
-    PreparedIndex, PreparedProductSelection, capture_index_scan, commit_pending_capture_failure,
-    deferred_compile_was_cancelled, finish_deferred_index, finish_deferred_profile,
-    finish_index_scan, index_project_intent_at, index_project_intent_with_cluster_and_intent,
-    remove_project_intent, run_deferred_compile, run_index_scan, semantic_version_record,
-    semantic_versions,
+    DeferredIndex, DeferredProfileFailure, DeferredProfileTicket, IndexScanFailure, IndexScanResult,
+    IndexScanWork, PreparedIndex, PreparedProductSelection, capture_index_scan,
+    commit_pending_capture_failure, deferred_compile_was_cancelled, finish_deferred_index,
+    finish_deferred_profile, finish_index_scan, index_project_intent_at,
+    index_project_intent_with_cluster_and_intent, remove_project_intent, run_deferred_compile,
+    run_index_scan, semantic_version_record, semantic_versions,
 };
 use super::index_operation::{
     Acceptance as IndexOperationAcceptance, IndexOperationJournal, JournalEntry,
@@ -81,6 +81,53 @@ fn bounded_index_detail(value: impl std::fmt::Display) -> backend_library::Produ
         .unwrap_or_else(|_| backend_library::ProductText::from_static("index job failed"))
 }
 
+fn refused_index_outcome(
+    detail: impl std::fmt::Display,
+    compiler_failure: Option<backend_library::PackageCompilerFailure>,
+) -> backend_library::IndexJobOutcome {
+    let detail = bounded_index_detail(detail);
+    match compiler_failure {
+        Some(failure) => backend_library::IndexJobOutcome::RefusedWithCompilerFailure {
+            detail,
+            failure,
+        },
+        None => backend_library::IndexJobOutcome::Refused(detail),
+    }
+}
+
+fn deferred_profile_refused_outcome(
+    refusal: DeferredProfileFailure,
+) -> backend_library::IndexJobOutcome {
+    match refusal.compiler_failure {
+        Some(failure) => {
+            // The semantic summary is the bounded, source-bound explanation.
+            // Do not copy the broader compiler error chain into persisted or
+            // user-visible text: it can contain arbitrary tool output.
+            let detail = format!(
+                "local compiler rejected {} with {}: {}",
+                failure.relative_path(),
+                failure.kind_tag(),
+                failure.detail(),
+            );
+            refused_index_outcome(detail, Some(failure))
+        }
+        None => refused_index_outcome(refusal.detail, None),
+    }
+}
+
+fn legacy_add_compiler_failure(
+    outcome: &backend_library::IndexJobOutcome,
+) -> Option<backend_library::CommandFailure> {
+    let backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, failure } = outcome
+    else {
+        return None;
+    };
+    Some(backend_library::CommandFailure::CompilerRefused {
+        detail: detail.as_str().to_owned(),
+        failure: failure.clone(),
+    })
+}
+
 fn index_operation_failure(
     outcome: Option<&backend_library::IndexJobOutcome>,
 ) -> (
@@ -95,6 +142,10 @@ fn index_operation_failure(
             ),
         ),
         Some(backend_library::IndexJobOutcome::Refused(detail)) => (
+            backend_library::IndexOperationFailureReason::Refused,
+            detail.clone(),
+        ),
+        Some(backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, .. }) => (
             backend_library::IndexOperationFailureReason::Refused,
             detail.clone(),
         ),
@@ -133,7 +184,8 @@ fn index_attempt_retirement_reason(
     use backend_extension_turso::CandidateAttemptRetirementReason as R;
     match outcome {
         backend_library::IndexJobOutcome::Published => None,
-        backend_library::IndexJobOutcome::Refused(_) => Some(R::Refused),
+        backend_library::IndexJobOutcome::Refused(_)
+        | backend_library::IndexJobOutcome::RefusedWithCompilerFailure { .. } => Some(R::Refused),
         backend_library::IndexJobOutcome::Cancelled => Some(R::Cancelled),
         backend_library::IndexJobOutcome::Failed(_) => Some(R::Failed),
     }
@@ -1611,13 +1663,22 @@ impl CommandAdapter {
             outcome,
         };
         self.retain_index_terminal(terminal.clone());
-        if let Some((transport_ticket, _request_id)) = indexing.legacy_add {
-            let reply = legacy_reply.unwrap_or_else(|| {
-                Err(BuiltinModelError(format!(
-                    "index job did not publish: {:?}",
-                    terminal.outcome
-                )))
-            });
+        if let Some((transport_ticket, request_id)) = indexing.legacy_add {
+            let reply = if let Some(failure) = legacy_add_compiler_failure(&terminal.outcome) {
+                Self::encode(
+                    daemon,
+                    request_id,
+                    (CommandReply::Failed(failure), None),
+                    None,
+                )
+            } else {
+                legacy_reply.unwrap_or_else(|| {
+                    Err(BuiltinModelError(format!(
+                        "index job did not publish: {:?}",
+                        terminal.outcome
+                    )))
+                })
+            };
             ready.push((transport_ticket, reply));
         }
         for (transport_ticket, request_id) in indexing.awaiters {
@@ -2017,14 +2078,12 @@ impl CommandAdapter {
                                         }
                                     }
                                 }
-                                Err(refusal) => {
-                                    let mut attempts = vec![current_attempt];
-                                    attempts.extend(job.pending_attempts());
-                                    terminal_attempts = Some(attempts);
-                                    terminal = Some(backend_library::IndexJobOutcome::Refused(
-                                        bounded_index_detail(refusal),
-                                    ));
-                                }
+                            }
+                            Err(refusal) => {
+                                let mut attempts = vec![current_attempt];
+                                attempts.extend(job.pending_attempts());
+                                terminal_attempts = Some(attempts);
+                                terminal = Some(deferred_profile_refused_outcome(refusal));
                             }
                         }
                     }
@@ -3963,7 +4022,7 @@ mod tests {
     use super::{
         ADD_TARGET_REQUIRED, AddTarget, CommandAdapter, Executed, GraphProjectionStamp, IndexJob,
         IndexJobWork, MAX_WAITING_COMMANDS, ProductDaemon, ResidentCatalog, ResidentDependencies,
-        admitted_project_source_root, classify_add_target,
+        admitted_project_source_root, classify_add_target, legacy_add_compiler_failure,
     };
     use crate::builtin::{
         BuiltinIntent, BuiltinModel, BuiltinProfile, BuiltinSemanticRelation,
@@ -3980,6 +4039,52 @@ mod tests {
     use backend_semantic::vocabulary::NativeTool;
     use std::fs;
     use std::num::NonZeroUsize;
+
+    #[test]
+    fn legacy_add_failure_keeps_exact_compiler_summary() {
+        let attempt = backend_library::interface::CompilerAttempt {
+            source: backend_library::interface::SourceAuthority {
+                identity: backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                    b"source bytes",
+                ),
+                byte_len: 12,
+            },
+            recipe: backend_version::ContentId::<backend_version::CompileRecipeDomain>::from_canonical_bytes(
+                b"recipe bytes",
+            ),
+        };
+        let fragment_failure = backend_library::interface::CompilerFragmentFailure::build(
+            backend_semantic::ir::BuildError::InvalidOccurrenceSpan {
+                owner: backend_semantic::ir::EntityId::new(7),
+                start: 18,
+                end: 24,
+            },
+        );
+        let failure = backend_library::PackageCompilerFailure::from_fragment_failure(
+            "src/recovery.ts",
+            attempt,
+            &fragment_failure,
+        )
+        .expect("typed package compiler failure");
+        let outcome = backend_library::IndexJobOutcome::RefusedWithCompilerFailure {
+            detail: backend_library::ProductText::new("local compiler rejected src/recovery.ts")
+                .expect("bounded refusal detail"),
+            failure: failure.clone(),
+        };
+
+        let backend_library::CommandFailure::CompilerRefused {
+            detail,
+            failure: projected,
+        } = legacy_add_compiler_failure(&outcome).expect("legacy Add retains typed refusal")
+        else {
+            panic!("typed outcome must remain a typed command failure");
+        };
+        assert_eq!(detail, "local compiler rejected src/recovery.ts");
+        assert_eq!(projected, failure);
+        assert_eq!(projected.relative_path(), "src/recovery.ts");
+        assert_eq!(projected.kind_tag(), "build_invalid_occurrence_span");
+        assert!(projected.detail().contains("occurrence span"));
+    }
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

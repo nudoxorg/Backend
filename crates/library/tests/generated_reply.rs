@@ -13,7 +13,10 @@ use backend_library::interface::{
     SourceAuthority,
 };
 use backend_library::protocol::encode_cli_reply;
-use backend_semantic::ir::{BuildError, EntityId, LayoutStep, PrepareError};
+use backend_semantic::ir::{
+    AtomId, BuildError, CanonicalDataError, DataResource, EntityId, EntityNameFault,
+    EntityRecordFault, FragmentError, LayoutStep, PrepareError,
+};
 use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, Language, LanguageProfile,
     NativeTool, RustEdition, Stage,
@@ -409,6 +412,11 @@ fn fragment_failure_projects_source_span_coordinates_without_authority_reclassif
         Value::from("build"),
     )?;
     expect_projection(
+        "specific source recovery fault tag",
+        &fault["kind"],
+        Value::from("build_invalid_occurrence_span"),
+    )?;
+    expect_projection(
         "source recovery fault class",
         &fault["facts"]["kind"],
         Value::from("occurrence_span"),
@@ -460,6 +468,11 @@ fn fragment_layout_overflow_keeps_the_lane_and_count_operands() -> Result<(), Te
         Value::from("prepare"),
     )?;
     expect_projection(
+        "specific overflow fault tag",
+        &fault["kind"],
+        Value::from("prepare_layout_overflow"),
+    )?;
+    expect_projection(
         "layout overflow class",
         &fault["facts"]["kind"],
         Value::from("layout_overflow"),
@@ -486,6 +499,168 @@ fn fragment_layout_overflow_keeps_the_lane_and_count_operands() -> Result<(), Te
         return Err(TestError::Projection {
             channel: "bounded layout detail",
             observed: fault["detail"].clone(),
+        });
+    }
+    Ok(())
+}
+
+#[test]
+fn fragment_prepare_count_projects_exact_kind_and_wire_capacity() -> Result<(), TestError> {
+    let actual =
+        usize::try_from(u64::from(u32::MAX) + 1).map_err(|error| TestError::Projection {
+            channel: "host must represent the wire-count overflow fixture",
+            observed: Value::String(error.to_string()),
+        })?;
+    let source = u32::try_from(actual).expect_err("count exceeds the fragment field width");
+    let failure = CompilerFragmentFailure::prepare(PrepareError::Count {
+        lane: LayoutStep::TypeNodeLane,
+        actual,
+        source,
+    });
+    let encoded: Value =
+        serde_json::from_slice(&encode_cli_reply(fragment_failure_reply(failure))?)?;
+    let fault = &encoded["diagnostic"]["detail"]["terminal"]["cause"]["fault"];
+
+    expect_projection(
+        "specific count fault tag",
+        &fault["kind"],
+        Value::from("prepare_count"),
+    )?;
+    expect_projection(
+        "count lane",
+        &fault["facts"]["lane"],
+        Value::from("type_node_lane"),
+    )?;
+    expect_projection(
+        "count overflow actual",
+        &fault["facts"]["actual"],
+        Value::from(actual as u64),
+    )?;
+    expect_projection(
+        "count wire maximum",
+        &fault["facts"]["maximum"],
+        Value::from(u32::MAX),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn fragment_entity_subcause_keeps_exact_nested_tag_and_coordinates() -> Result<(), TestError> {
+    let failure = CompilerFragmentFailure::prepare(PrepareError::Entity {
+        ordinal: EntityId::new(2),
+        fault: EntityRecordFault::Name(EntityNameFault {
+            target: AtomId::new(9),
+            atom_count: 4,
+        }),
+    });
+    let encoded: Value =
+        serde_json::from_slice(&encode_cli_reply(fragment_failure_reply(failure))?)?;
+    let fault = &encoded["diagnostic"]["detail"]["terminal"]["cause"]["fault"];
+
+    expect_projection(
+        "entity prepare outer fault",
+        &fault["kind"],
+        Value::from("prepare_entity"),
+    )?;
+    expect_projection(
+        "entity exact nested cause",
+        &fault["facts"]["fault"],
+        Value::from("entity_name_reference"),
+    )?;
+    expect_projection(
+        "entity coordinate",
+        &fault["facts"]["ordinal"],
+        Value::from(2),
+    )?;
+    expect_projection(
+        "rejected atom coordinate",
+        &fault["facts"]["target"],
+        Value::from(9),
+    )?;
+    expect_projection(
+        "available atom count",
+        &fault["facts"]["count"],
+        Value::from(4),
+    )?;
+    if fault["detail"].as_str().is_none_or(|detail| {
+        detail.len() > backend_library::interface::MAX_COMPILER_FRAGMENT_DETAIL_BYTES
+            || !detail.contains("entity 2")
+            || !detail.contains("outside atom count 4")
+    }) {
+        return Err(TestError::Projection {
+            channel: "entity fragment detail omits the nested cause",
+            observed: fault["detail"].clone(),
+        });
+    }
+    Ok(())
+}
+
+#[test]
+fn fragment_semantic_budget_subcause_keeps_resource_and_operands() -> Result<(), TestError> {
+    let failure = CompilerFragmentFailure::prepare(PrepareError::SemanticData {
+        cause: CanonicalDataError::BudgetExceeded {
+            resource: DataResource::Work,
+            observed: 117,
+            limit: 100,
+        },
+    });
+    let encoded: Value =
+        serde_json::from_slice(&encode_cli_reply(fragment_failure_reply(failure))?)?;
+    let fault = &encoded["diagnostic"]["detail"]["terminal"]["cause"]["fault"];
+
+    expect_projection(
+        "semantic prepare outer fault",
+        &fault["kind"],
+        Value::from("prepare_semantic_data"),
+    )?;
+    expect_projection(
+        "semantic exact nested cause",
+        &fault["facts"]["fault"],
+        Value::from("canonical_data_budget_exceeded"),
+    )?;
+    expect_projection(
+        "semantic budget resource",
+        &fault["facts"]["resource"],
+        Value::from("work"),
+    )?;
+    expect_projection("observed work", &fault["facts"]["actual"], Value::from(117))?;
+    expect_projection("work budget", &fault["facts"]["limit"], Value::from(100))?;
+    if fault["detail"].as_str().is_none_or(|detail| {
+        detail.len() > backend_library::interface::MAX_COMPILER_FRAGMENT_DETAIL_BYTES
+            || !detail.contains("Work budget 100")
+            || !detail.contains("observed 117")
+    }) {
+        return Err(TestError::Projection {
+            channel: "semantic fragment detail omits the nested cause",
+            observed: fault["detail"].clone(),
+        });
+    }
+    Ok(())
+}
+
+#[test]
+fn fragment_validate_fault_has_a_distinct_stable_tag() -> Result<(), TestError> {
+    let failure = CompilerFragmentFailure::validate(FragmentError::TruncatedHeader {
+        required: 32,
+        actual: 7,
+    });
+    let encoded: Value =
+        serde_json::from_slice(&encode_cli_reply(fragment_failure_reply(failure))?)?;
+    let cause = &encoded["diagnostic"]["detail"]["terminal"]["cause"];
+
+    expect_projection("validation phase", &cause["cause"], Value::from("validate"))?;
+    expect_projection(
+        "specific validation error tag",
+        &cause["fault"]["kind"],
+        Value::from("validate_truncated_header"),
+    )?;
+    if cause["fault"]["detail"]
+        .as_str()
+        .is_none_or(|detail| !detail.contains("32 bytes") || !detail.contains("7 are present"))
+    {
+        return Err(TestError::Projection {
+            channel: "validation detail omits required/actual byte lengths",
+            observed: cause["fault"]["detail"].clone(),
         });
     }
     Ok(())

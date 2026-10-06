@@ -4,9 +4,16 @@ use crate::{
     CommandId, DependencyFacts, ForgeCoordinate, ForgeObjectId, ForgeRevision,
     PackageDependencyRecord, RegistryForgeAssociation, RegistryNativeMetadata,
 };
+use crate::interface::{
+    CompilerAttempt, CompilerFragmentFailure, CompilerFragmentFaultFacts,
+    CompilerFragmentFaultKind, CompilerFragmentFaultPhase,
+};
 use backend_advisory::{AdvisoryPackageDto, OverrideEvidence};
 pub use backend_semantic::vocabulary::{PackageUrl as PackageCoordinate, RegistryEcosystem};
-use serde::{Deserialize, Serialize};
+use backend_version::{
+    CompileRecipeDomain, ContentId, Domain, HASH_BYTES, SourceFactDomain,
+};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::SerializeStruct};
 use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::num::NonZeroU64;
@@ -1565,6 +1572,389 @@ pub struct IndexJobTerminal {
     pub outcome: IndexJobOutcome,
 }
 
+/// Compact, identity-bound refusal emitted for one concrete package source
+/// member whose compact semantic fragment could not be built, written, or
+/// independently reopened.
+///
+/// The original compiler authority remains the source and recipe identity;
+/// `detail` is a bounded explanation only. The phase is derived from the
+/// closed `kind` family and is repeated on the wire for direct presentation,
+/// where deserialization verifies that the two agree.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackageCompilerFailure {
+    relative_path: ProductText,
+    source_identity: ContentId<SourceFactDomain>,
+    source_byte_len: u32,
+    recipe_identity: ContentId<CompileRecipeDomain>,
+    kind: CompilerFragmentFaultKind,
+    facts: CompilerFragmentFaultFacts,
+    detail: String,
+    detail_truncated: bool,
+}
+
+impl PackageCompilerFailure {
+    /// Maximum serialized JSON representation, including worst-case path and
+    /// detail escaping.
+    pub const MAX_ENCODED_BYTES: usize = 8 * 1024;
+    /// Maximum accepted package-relative member path in this refusal summary.
+    pub const MAX_RELATIVE_PATH_BYTES: usize = 3_072;
+
+    /// Builds a bounded summary from the exact package member and retained
+    /// attempt authorities at the compiler terminal boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductAdmissionError::PackageCompilerFailureShape`] when
+    /// the package path is not canonical or a projected fact violates its
+    /// fixed bound.
+    pub fn from_fragment_failure(
+        relative_path: &str,
+        attempt: CompilerAttempt,
+        failure: &CompilerFragmentFailure,
+    ) -> Result<Self, ProductAdmissionError> {
+        let relative_path = package_relative_source_path(relative_path)?;
+        let explanation = failure.detail();
+        let (detail, detail_truncated) =
+            sanitize_package_compiler_detail(&explanation.text, explanation.truncated);
+        let summary = Self {
+            relative_path,
+            source_identity: attempt.source.identity,
+            source_byte_len: attempt.source.byte_len,
+            recipe_identity: attempt.recipe,
+            kind: failure.kind(),
+            facts: failure.facts(),
+            detail,
+            detail_truncated,
+        };
+        summary.validate()?;
+        Ok(summary)
+    }
+
+    /// Package-relative source member that reached the compiler terminal.
+    #[must_use]
+    pub fn relative_path(&self) -> &str {
+        self.relative_path.as_str()
+    }
+
+    /// Exact compiler input content identity, retaining the SourceFact domain.
+    #[must_use]
+    pub const fn source_identity(&self) -> ContentId<SourceFactDomain> {
+        self.source_identity
+    }
+
+    /// Exact byte extent bound into the failed compiler attempt.
+    #[must_use]
+    pub const fn source_byte_len(&self) -> u32 {
+        self.source_byte_len
+    }
+
+    /// Exact recipe identity attempted for this source member.
+    #[must_use]
+    pub const fn recipe_identity(&self) -> ContentId<CompileRecipeDomain> {
+        self.recipe_identity
+    }
+
+    /// Closed preparation, write, or validation phase derived from `kind`.
+    #[must_use]
+    pub const fn phase(&self) -> CompilerFragmentFaultPhase {
+        self.kind.phase()
+    }
+
+    /// Specific closed semantic/IR error variant.
+    #[must_use]
+    pub const fn kind(&self) -> CompilerFragmentFaultKind {
+        self.kind
+    }
+
+    /// Stable specific variant tag, including its phase family.
+    #[must_use]
+    pub const fn kind_tag(&self) -> &'static str {
+        self.kind.tag()
+    }
+
+    /// Named, bounded operands retained for this error variant.
+    #[must_use]
+    pub const fn facts(&self) -> CompilerFragmentFaultFacts {
+        self.facts
+    }
+
+    /// Sanitized human explanation, capped at 384 UTF-8 bytes.
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+
+    /// Whether the human explanation was shortened or unavailable.
+    #[must_use]
+    pub const fn detail_truncated(&self) -> bool {
+        self.detail_truncated
+    }
+
+    /// Conservative encoded-size admission bound for capture and reply owners.
+    #[must_use]
+    pub const fn encoded_size_bound(&self) -> usize {
+        Self::MAX_ENCODED_BYTES
+    }
+
+    fn validate(&self) -> Result<(), ProductAdmissionError> {
+        if !is_canonical_package_relative_source_path(self.relative_path.as_str())
+            || self.detail.len() > MAX_COMPILER_FRAGMENT_DETAIL_BYTES
+            || self.detail.chars().any(char::is_control)
+            || self.detail.chars().any(|character| matches!(character, '"' | '\\'))
+            || (self.detail.is_empty() && !self.detail_truncated)
+            || !compiler_fault_facts_match_kind(self.kind, self.facts)
+        {
+            return Err(ProductAdmissionError::PackageCompilerFailureShape);
+        }
+        Ok(())
+    }
+}
+
+fn compiler_fault_facts_match_kind(
+    kind: CompilerFragmentFaultKind,
+    facts: CompilerFragmentFaultFacts,
+) -> bool {
+    use crate::interface::{
+        BuildFaultKind as B, CompilerFragmentNestedFaultKind as N,
+        PrepareFaultKind as P, WriteFaultKind as W, ValidateFaultKind as V,
+    };
+    use CompilerFragmentFaultFacts as F;
+    match kind {
+        CompilerFragmentFaultKind::Build(B::InvalidTreeEntity) => matches!(facts, F::TreeEntity { .. }),
+        CompilerFragmentFaultKind::Build(B::Dangling) => matches!(facts, F::Dangling { .. }),
+        CompilerFragmentFaultKind::Build(B::InvalidOccurrenceSpan) => matches!(facts, F::OccurrenceSpan { .. }),
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierRoleCount) => nested_fault_is(facts, N::SignatureCarrierRoleCount),
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierRoleKind) => nested_fault_is(facts, N::SignatureCarrierRoleKind),
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierRoleOwnerKind) => nested_fault_is(facts, N::SignatureCarrierRoleOwnerKind),
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingOwnerSet) => nested_fault_is(facts, N::SignatureCarrierBindingOwnerSet),
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingSignature) => nested_fault_is(facts, N::SignatureCarrierBindingSignature),
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingCounts) => nested_fault_is(facts, N::SignatureCarrierBindingCounts),
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingEdgeRole) => nested_fault_is(facts, N::SignatureCarrierBindingEdgeRole),
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingTargetCount) => nested_fault_is(facts, N::SignatureCarrierBindingTargetCount),
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingTargetKind) => nested_fault_is(facts, N::SignatureCarrierBindingTargetKind),
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingType) => nested_fault_is(facts, N::SignatureCarrierBindingType),
+        CompilerFragmentFaultKind::Build(B::SignatureCarrierBindingEdgeMismatch) => nested_fault_is(facts, N::SignatureCarrierBindingEdgeMismatch),
+        CompilerFragmentFaultKind::Build(
+            B::Capacity
+            | B::RecursiveType
+            | B::CallableElement
+            | B::MissingTypedVariadicParameter
+            | B::EmptyQualifiedPath
+            | B::TypeParameterRequirements
+            | B::EmptyCxxQualification
+            | B::IllegalCQualifierTarget
+            | B::IllegalCxxMemberPointerOwner
+            | B::InvalidDocumentationUtf8
+            | B::SignatureCarrierRoleAlreadyCaptured
+            | B::SignatureCarrierBindingsAlreadyCaptured
+            | B::ParentCycle
+            | B::DeclarationKey
+            | B::ScopedDeclarationPreimage
+            | B::ForeignKeyPreimage
+            | B::DuplicateDeclarationIdentity
+            | B::TreeVersionCount
+            | B::AuthorityRowCount
+            | B::OccurrenceAuthorityRowCount
+            | B::AuthorityFacts
+            | B::OccurrenceAuthorityFacts
+            | B::ImageProvenanceLineage
+            | B::ImageProvenanceScope
+            | B::ImageProvenanceScopePreimage
+            | B::ImageProvenanceRecipe
+            | B::ImageProvenanceRebind
+            | B::LanguageExtension
+            | B::LanguageProfileMismatch
+            | B::LanguageProfileRebind,
+        ) => matches!(facts, F::None),
+        CompilerFragmentFaultKind::Prepare(P::Count) => matches!(facts, F::Count { .. }),
+        CompilerFragmentFaultKind::Prepare(P::AtomBytePoolOverflow) => {
+            matches!(facts, F::RecordCoordinate { lane: crate::interface::CompilerFragmentRecordLane::Atom, .. })
+        }
+        CompilerFragmentFaultKind::Prepare(P::LayoutOverflow) => matches!(facts, F::LayoutOverflow { .. }),
+        CompilerFragmentFaultKind::Prepare(P::NativeCount) => matches!(facts, F::NativeCount { .. }),
+        CompilerFragmentFaultKind::Prepare(P::OutputLength) => matches!(facts, F::OutputLength { .. }),
+        CompilerFragmentFaultKind::Prepare(P::Entity) => nested_fault_is_one_of(facts, &[N::EntityTypeReference, N::EntityNameReference, N::EntityKindTag, N::EntityReservedBits]),
+        CompilerFragmentFaultKind::Prepare(P::TypeNode) => nested_fault_is_one_of(facts, &[N::TypeNodeReservedBytes, N::TypeNodeTag, N::TypeNodePrimitive, N::TypeNodeEdge]),
+        CompilerFragmentFaultKind::Prepare(P::SemanticData) => nested_fault_is_one_of(facts, &[N::CanonicalDataCount, N::CanonicalDataNativeCount, N::CanonicalDataNativeWork, N::CanonicalDataCanonicalCountOverflow, N::CanonicalDataCanonicalCountMismatch, N::CanonicalDataScratch, N::CanonicalDataOutputTooSmall, N::CanonicalDataProductHead, N::CanonicalDataProductList, N::CanonicalDataConstructorCount, N::CanonicalDataConstructorTag, N::CanonicalDataConstructorReservedPayload, N::CanonicalDataConstructorArityOverflow, N::CanonicalDataConstructorArity, N::CanonicalDataProductChildRole, N::CanonicalDataListExtent, N::CanonicalDataNativeExtent, N::CanonicalDataProductChild, N::CanonicalDataOutputLength, N::CanonicalDataCanonicalListExtent, N::CanonicalDataCanonicalAtom, N::CanonicalDataCanonicalProduct, N::CanonicalDataCanonicalList, N::CanonicalDataRefinementBound, N::CanonicalDataInternTableFull, N::CanonicalDataInternEntry, N::CanonicalDataResourceCounterOverflow, N::CanonicalDataBudgetAdmission, N::CanonicalDataBudgetExceeded]),
+        CompilerFragmentFaultKind::Prepare(P::SemanticDataOverflow) => matches!(facts, F::SemanticDataOverflow { .. }),
+        CompilerFragmentFaultKind::Prepare(P::SemanticEntityRoots) => matches!(facts, F::SemanticEntityRoots { .. }),
+        CompilerFragmentFaultKind::Prepare(P::SemanticAtomLength) => matches!(facts, F::AtomLength { .. }),
+        CompilerFragmentFaultKind::Prepare(P::OccurrenceLane) => {
+            nested_fault_is_one_of(facts, &[N::OccurrenceOwner, N::OccurrenceLocalTarget, N::OccurrenceTargetTag, N::OccurrenceOriginTag, N::OccurrenceReferenceKind, N::OccurrenceConfidence, N::OccurrenceSpan, N::OccurrenceKindCell, N::OccurrenceEmptyPath, N::OccurrenceTruncated, N::OccurrenceTrailingBytes, N::OccurrenceLegacyStableTarget, N::OccurrenceAuthorityDomain, N::OccurrenceAuthorityWidth])
+        }
+        CompilerFragmentFaultKind::Prepare(P::TypeFacts | P::Documentation | P::ExtensionPools | P::ExtensionPoolsMismatch) => matches!(facts, F::None),
+        CompilerFragmentFaultKind::Write(W::OutputTooSmall) => matches!(facts, F::OutputTooSmall { .. }),
+        CompilerFragmentFaultKind::Write(W::AtomLength | W::SemanticAtomLength) => matches!(facts, F::AtomLength { .. }),
+        CompilerFragmentFaultKind::Write(W::AtomExtent) => matches!(facts, F::AtomCoordinate { .. }),
+        CompilerFragmentFaultKind::Write(W::ExtensionSection) => matches!(facts, F::None),
+        CompilerFragmentFaultKind::Validate(V::Entity) => nested_fault_is(facts, N::EntityTypeReference),
+        CompilerFragmentFaultKind::Validate(V::EntityRecord) => nested_fault_is_one_of(facts, &[N::EntityTypeReference, N::EntityNameReference, N::EntityKindTag, N::EntityReservedBits]),
+        CompilerFragmentFaultKind::Validate(V::Atom) => nested_fault_is_one_of(facts, &[N::AtomRange, N::AtomEmpty]),
+        CompilerFragmentFaultKind::Validate(V::TypeNode) => nested_fault_is_one_of(facts, &[N::TypeNodeReservedBytes, N::TypeNodeTag, N::TypeNodePrimitive, N::TypeNodeEdge]),
+        CompilerFragmentFaultKind::Validate(V::SemanticData) => nested_fault_is_one_of(facts, &[N::SemanticDataHeader, N::SemanticDataAtomLength, N::SemanticDataProductHead, N::SemanticDataProductList, N::SemanticDataConstructorCount, N::SemanticDataEntityRootCount, N::SemanticDataEntityRoot, N::SemanticDataConstructorTag, N::SemanticDataConstructorReservedPayload, N::SemanticDataConstructorArityOverflow, N::SemanticDataConstructorArity, N::SemanticDataListExtent, N::SemanticDataChildRoleCode, N::SemanticDataChildRole, N::SemanticDataChildTag, N::SemanticDataLocalChild, N::SemanticDataLocalReserved, N::SemanticDataExternalAuthority, N::SemanticDataTrailing]),
+        CompilerFragmentFaultKind::Validate(V::Occurrences) => nested_fault_is_one_of(facts, &[N::OccurrenceOwner, N::OccurrenceLocalTarget, N::OccurrenceTargetTag, N::OccurrenceOriginTag, N::OccurrenceReferenceKind, N::OccurrenceConfidence, N::OccurrenceSpan, N::OccurrenceKindCell, N::OccurrenceEmptyPath, N::OccurrenceTruncated, N::OccurrenceTrailingBytes, N::OccurrenceLegacyStableTarget, N::OccurrenceAuthorityDomain, N::OccurrenceAuthorityWidth]),
+        CompilerFragmentFaultKind::Validate(V::TruncatedHeader) => nested_fault_is(facts, N::ValidateTruncatedHeader),
+        CompilerFragmentFaultKind::Validate(V::Magic) => nested_fault_is(facts, N::ValidateMagic),
+        CompilerFragmentFaultKind::Validate(V::Schema) => nested_fault_is(facts, N::ValidateSchema),
+        CompilerFragmentFaultKind::Validate(V::DeclaredLength) => nested_fault_is(facts, N::ValidateDeclaredLength),
+        CompilerFragmentFaultKind::Validate(V::Extent) => nested_fault_is(facts, N::ValidateExtent),
+        CompilerFragmentFaultKind::Validate(V::WireWidth) => nested_fault_is(facts, N::ValidateWireWidth),
+        CompilerFragmentFaultKind::Validate(
+            V::ExtensionPoolPair
+            | V::Documentation
+            | V::ExtensionPools
+            | V::LanguageExtensions
+            | V::Directory
+            | V::MissingSection
+            | V::SourceIdentity
+            | V::RecipeFact
+            | V::TypeFacts,
+        ) => matches!(facts, F::None),
+    }
+}
+
+fn nested_fault_is(
+    facts: CompilerFragmentFaultFacts,
+    expected: crate::interface::CompilerFragmentNestedFaultKind,
+) -> bool {
+    matches!(facts, CompilerFragmentFaultFacts::Nested { fault, .. } if fault == expected)
+}
+
+fn nested_fault_is_one_of(
+    facts: CompilerFragmentFaultFacts,
+    expected: &[crate::interface::CompilerFragmentNestedFaultKind],
+) -> bool {
+    matches!(facts, CompilerFragmentFaultFacts::Nested { fault, .. } if expected.contains(&fault))
+}
+
+fn package_relative_source_path(value: &str) -> Result<ProductText, ProductAdmissionError> {
+    if value.trim() != value || !is_canonical_package_relative_source_path(value) {
+        return Err(ProductAdmissionError::PackageCompilerFailureShape);
+    }
+    ProductText::new(value.to_owned())
+        .map_err(|_| ProductAdmissionError::PackageCompilerFailureShape)
+}
+
+fn sanitize_package_compiler_detail(value: &str, source_truncated: bool) -> (String, bool) {
+    let mut retained = String::new();
+    if retained
+        .try_reserve_exact(MAX_COMPILER_FRAGMENT_DETAIL_BYTES)
+        .is_err()
+    {
+        return (retained, true);
+    }
+    for character in value.chars() {
+        retained.push(if character.is_control() || matches!(character, '"' | '\\') {
+            ' '
+        } else {
+            character
+        });
+    }
+    (retained, source_truncated)
+}
+
+fn is_canonical_package_relative_source_path(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= PackageCompilerFailure::MAX_RELATIVE_PATH_BYTES
+        && !value.starts_with('/')
+        && !value.contains('\\')
+        && !value.chars().any(char::is_control)
+        && value
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageCompilerFailureWire {
+    relative_path: String,
+    source_identity: String,
+    source_byte_len: u32,
+    recipe_identity: String,
+    phase: CompilerFragmentFaultPhase,
+    kind_tag: String,
+    kind: CompilerFragmentFaultKind,
+    facts: CompilerFragmentFaultFacts,
+    detail: String,
+    detail_truncated: bool,
+}
+
+struct ContentIdDisplay<'a, DomainTag>(&'a ContentId<DomainTag>);
+
+impl<DomainTag: Domain> Serialize for ContentIdDisplay<'_, DomainTag> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self.0)
+    }
+}
+
+impl Serialize for PackageCompilerFailure {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("PackageCompilerFailure", 10)?;
+        state.serialize_field("relative_path", &self.relative_path)?;
+        state.serialize_field("source_identity", &ContentIdDisplay(&self.source_identity))?;
+        state.serialize_field("source_byte_len", &self.source_byte_len)?;
+        state.serialize_field("recipe_identity", &ContentIdDisplay(&self.recipe_identity))?;
+        state.serialize_field("phase", &self.phase())?;
+        state.serialize_field("kind_tag", self.kind_tag())?;
+        state.serialize_field("kind", &self.kind)?;
+        state.serialize_field("facts", &self.facts)?;
+        state.serialize_field("detail", &self.detail)?;
+        state.serialize_field("detail_truncated", &self.detail_truncated)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for PackageCompilerFailure {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = PackageCompilerFailureWire::deserialize(deserializer)?;
+        let relative_path = package_relative_source_path(&wire.relative_path)
+            .map_err(D::Error::custom)?;
+        let source_identity = parse_content_identity::<SourceFactDomain>(&wire.source_identity)
+            .map_err(D::Error::custom)?;
+        let recipe_identity = parse_content_identity::<CompileRecipeDomain>(&wire.recipe_identity)
+            .map_err(D::Error::custom)?;
+        let summary = Self {
+            relative_path,
+            source_identity,
+            source_byte_len: wire.source_byte_len,
+            recipe_identity,
+            kind: wire.kind,
+            facts: wire.facts,
+            detail: wire.detail,
+            detail_truncated: wire.detail_truncated,
+        };
+        summary.validate().map_err(D::Error::custom)?;
+        if wire.phase != summary.phase() || wire.kind_tag != summary.kind_tag() {
+            return Err(D::Error::custom(
+                ProductAdmissionError::PackageCompilerFailureShape,
+            ));
+        }
+        Ok(summary)
+    }
+}
+
+fn parse_content_identity<DomainTag: Domain>(value: &str) -> Result<ContentId<DomainTag>, &'static str> {
+    let encoded = value.strip_prefix("content:").ok_or("content identity prefix is invalid")?;
+    if encoded.len() != HASH_BYTES * 2 {
+        return Err("content identity width is invalid");
+    }
+    let mut bytes = [0; HASH_BYTES];
+    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+        let high = lower_hex_nibble(pair[0]).ok_or("content identity is not lowercase hex")?;
+        let low = lower_hex_nibble(pair[1]).ok_or("content identity is not lowercase hex")?;
+        bytes[index] = (high << 4) | low;
+    }
+    ContentId::<DomainTag>::try_from(bytes).map_err(|_| "content identity domain is invalid")
+}
+
+fn lower_hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
+    }
+}
+
 /// Terminal effect of one index job.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", content = "detail", rename_all = "kebab-case")]
@@ -1573,10 +1963,41 @@ pub enum IndexJobOutcome {
     Published,
     /// The candidate was refused and did not replace the prior publication.
     Refused(ProductText),
+    /// A compact-fragment compiler refusal with a typed, source-bound cause.
+    RefusedWithCompilerFailure {
+        /// Human-readable refusal retained for older surface presenters.
+        detail: ProductText,
+        /// Exact package member, compiler authority, and closed compact-fragment cause.
+        failure: PackageCompilerFailure,
+    },
     /// The requested cancellation was observed before publication completed.
     Cancelled,
     /// The owner could not establish a terminal publication result.
     Failed(ProductText),
+}
+
+impl IndexJobOutcome {
+    fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if let Self::RefusedWithCompilerFailure { failure, .. } = self {
+            failure.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl IndexJobTerminal {
+    fn admit(&self) -> Result<(), ProductAdmissionError> {
+        self.outcome.admit()
+    }
+}
+
+impl IndexStartResult {
+    fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if let Self::Terminal(terminal) = self {
+            terminal.admit()?;
+        }
+        Ok(())
+    }
 }
 
 /// Immediate result of a cancellation request.
@@ -1603,10 +2024,11 @@ pub struct IndexCancelReceipt {
 
 impl IndexCancelReceipt {
     fn admit(&self) -> Result<(), ProductAdmissionError> {
-        if let IndexCancelStatus::Terminal(terminal) = &self.status
-            && terminal.ticket != self.ticket
-        {
-            return Err(ProductAdmissionError::IndexCancelTicketMismatch);
+        if let IndexCancelStatus::Terminal(terminal) = &self.status {
+            if terminal.ticket != self.ticket {
+                return Err(ProductAdmissionError::IndexCancelTicketMismatch);
+            }
+            terminal.admit()?;
         }
         Ok(())
     }
@@ -1755,7 +2177,8 @@ impl IndexJobObservation {
     fn admit(&self) -> Result<(), ProductAdmissionError> {
         match self {
             Self::Pending(page) => page.admit(),
-            Self::Terminal(_) | Self::Unknown { .. } => Ok(()),
+            Self::Terminal(terminal) => terminal.admit(),
+            Self::Unknown { .. } => Ok(()),
         }
     }
 }
@@ -3533,7 +3956,14 @@ impl SurfaceReply {
                 }
                 1
             }
-            Self::IndexStarted(_) | Self::IndexTerminal(_) => 1,
+            Self::IndexStarted(result) => {
+                result.admit()?;
+                1
+            }
+            Self::IndexTerminal(terminal) => {
+                terminal.admit()?;
+                1
+            }
             Self::IndexOperationStarted(observation) | Self::IndexOperationStatus(observation) => {
                 observation.admit()?;
                 1
@@ -4042,6 +4472,8 @@ pub enum ProductAdmissionError {
     IndexOperationKey,
     /// A durable operation receipt contradicts its package, revision, or publication evidence.
     IndexOperationShape,
+    /// A package compiler refusal summary is malformed, unbounded, or internally inconsistent.
+    PackageCompilerFailureShape,
 }
 impl core::fmt::Display for ProductAdmissionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -4086,6 +4518,9 @@ impl core::fmt::Display for ProductAdmissionError {
             }
             Self::IndexOperationKey => "index operation key is malformed or reserved",
             Self::IndexOperationShape => "index operation status has inconsistent evidence",
+            Self::PackageCompilerFailureShape => {
+                "package compiler failure summary is malformed or inconsistent"
+            }
         })
     }
 }
@@ -4093,6 +4528,92 @@ impl core::fmt::Display for ProductAdmissionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn compiler_failure(path: &str) -> PackageCompilerFailure {
+        use crate::interface::{CompilerFragmentFailure, SourceAuthority};
+        use backend_semantic::ir::{BuildError, EntityId};
+
+        let attempt = CompilerAttempt {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"source bytes"),
+                byte_len: 12,
+            },
+            recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"recipe bytes"),
+        };
+        let failure = CompilerFragmentFailure::build(BuildError::InvalidOccurrenceSpan {
+            owner: EntityId::new(7),
+            start: 18,
+            end: 24,
+        });
+        PackageCompilerFailure::from_fragment_failure(path, attempt, &failure)
+            .expect("a bounded package compiler failure")
+    }
+
+    #[test]
+    fn package_compiler_failure_json_keeps_path_authorities_and_specific_facts() {
+        let failure = compiler_failure("src/recovery.ts");
+        let encoded = serde_json::to_vec(&failure).expect("encode compiler failure");
+        let decoded: PackageCompilerFailure =
+            serde_json::from_slice(&encoded).expect("decode compiler failure");
+        assert_eq!(decoded, failure);
+        assert_eq!(decoded.relative_path(), "src/recovery.ts");
+        assert_eq!(decoded.source_byte_len(), 12);
+        assert_eq!(decoded.kind_tag(), "build_invalid_occurrence_span");
+        assert_eq!(decoded.phase(), CompilerFragmentFaultPhase::Prepare);
+        assert!(decoded.detail().contains("occurrence span"));
+
+        let json: serde_json::Value =
+            serde_json::from_slice(&encoded).expect("JSON object");
+        assert_eq!(json["kind"]["family"], "build");
+        assert_eq!(json["kind"]["kind"], "invalid_occurrence_span");
+        assert_eq!(json["facts"]["kind"], "occurrence_span");
+        assert_eq!(json["facts"]["owner"], 7);
+        assert_eq!(json["facts"]["start"], 18);
+        assert_eq!(json["facts"]["end"], 24);
+        assert_eq!(json["phase"], "prepare");
+        assert!(encoded.len() <= PackageCompilerFailure::MAX_ENCODED_BYTES);
+        assert_eq!(
+            failure.encoded_size_bound(),
+            PackageCompilerFailure::MAX_ENCODED_BYTES
+        );
+    }
+
+    #[test]
+    fn package_compiler_failure_rejects_inconsistent_and_unbounded_wire_data() {
+        let failure = compiler_failure("src/recovery.ts");
+        let original = serde_json::to_value(&failure).expect("encode compiler failure");
+
+        for (field, value) in [
+            ("phase", serde_json::json!("write")),
+            ("kind_tag", serde_json::json!("prepare_count")),
+            ("relative_path", serde_json::json!("../recovery.ts")),
+        ] {
+            let mut malformed = original.clone();
+            malformed[field] = value;
+            assert!(
+                serde_json::from_value::<PackageCompilerFailure>(malformed).is_err(),
+                "accepted malformed `{field}`"
+            );
+        }
+
+        let mut malformed_facts = original.clone();
+        malformed_facts["facts"]["kind"] = serde_json::json!("tree_entity");
+        assert!(serde_json::from_value::<PackageCompilerFailure>(malformed_facts).is_err());
+
+        let mut unknown = original;
+        unknown["arbitrary_output"] = serde_json::json!("private marker");
+        assert!(serde_json::from_value::<PackageCompilerFailure>(unknown).is_err());
+    }
+
+    #[test]
+    fn package_compiler_failure_worst_case_escaped_path_fits_capture_bound() {
+        // Quotes are legal filesystem path bytes and are worst-case JSON escapes
+        // among the admitted characters (control bytes and backslashes are banned).
+        let path = "\"".repeat(PackageCompilerFailure::MAX_RELATIVE_PATH_BYTES);
+        let failure = compiler_failure(&path);
+        let encoded = serde_json::to_vec(&failure).expect("encode worst-case path");
+        assert!(encoded.len() <= PackageCompilerFailure::MAX_ENCODED_BYTES);
+    }
 
     #[test]
     fn package_reference_kind_preserves_explicit_local_identity() {

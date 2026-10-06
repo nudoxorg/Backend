@@ -724,12 +724,21 @@ fn index_terminal_view(terminal: &IndexJobTerminal) -> ProductView {
     let (state, detail) = match &terminal.outcome {
         IndexJobOutcome::Published => ("published", None),
         IndexJobOutcome::Refused(reason) => ("refused", Some(reason.as_str())),
+        IndexJobOutcome::RefusedWithCompilerFailure { detail, .. } => {
+            ("refused", Some(detail.as_str()))
+        }
         IndexJobOutcome::Cancelled => ("cancelled", None),
         IndexJobOutcome::Failed(reason) => ("failed", Some(reason.as_str())),
     };
     let mut tags = vec![format!("outcome {state}")];
     if let Some(detail) = detail {
         tags.push(detail.to_owned());
+    }
+    if let IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } = &terminal.outcome {
+        tags.push(format!(
+            "compiler_failure {}",
+            serde_json::to_string(failure).unwrap_or_else(|_| "{}".to_owned())
+        ));
     }
     ProductView::rows(
         "index-job-terminal",

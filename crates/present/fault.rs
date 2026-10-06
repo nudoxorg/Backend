@@ -37,6 +37,8 @@ pub enum FaultSlug {
     WrongBasis,
     /// The query failed bounded semantic validation.
     InvalidQuery,
+    /// A closed compact-fragment compiler failure refused one package source member.
+    CompilerRefused,
     /// A continuation cursor belongs to another recipe or revision.
     CursorMismatch,
     /// The retained view could not satisfy an invariant.
@@ -75,6 +77,7 @@ impl FaultSlug {
             Self::NotFound => "not-found",
             Self::WrongBasis => "wrong-basis",
             Self::InvalidQuery => "invalid-query",
+            Self::CompilerRefused => "compiler-refused",
             Self::CursorMismatch => "cursor-mismatch",
             Self::IncoherentView => "incoherent-view",
             Self::SequenceOverflow => "sequence-overflow",
@@ -531,6 +534,24 @@ impl Fault {
                 detail.clone(),
                 Affordance::None,
             ),
+            CommandFailure::CompilerRefused { detail, failure } => {
+                let facts = serde_json::to_string(&failure.facts())
+                    .unwrap_or_else(|_| "{}".to_owned());
+                (
+                    FaultSlug::CompilerRefused,
+                    CauseSlug::Refused,
+                    format!(
+                        "{detail}: {} ({}) source={} bytes={} recipe={}; facts={facts}; {}",
+                        failure.relative_path(),
+                        failure.kind_tag(),
+                        failure.source_identity(),
+                        failure.source_byte_len(),
+                        failure.recipe_identity(),
+                        failure.detail(),
+                    ),
+                    Affordance::None,
+                )
+            }
             CommandFailure::CursorMismatch => (
                 FaultSlug::CursorMismatch,
                 CauseSlug::Moved,

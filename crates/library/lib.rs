@@ -246,6 +246,7 @@ pub use surface::{
     ProductAdmissionError, ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector,
     ReferenceRecord, RegistryDiscoveryAdvisory, RegistryDiscoveryCandidate,
     RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness, RegistryDiscoveryMetadata,
+    PackageCompilerFailure,
     RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem, RegistryEvidenceFacet,
     RegistryFactAvailability, RegistryMetadata, RegistryNegativeFactKind,
     RegistryPackageFactAuthority, RegistryPackageFactCompleteness, RegistryPackageFactFreshness,

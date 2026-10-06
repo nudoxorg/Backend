@@ -5,8 +5,10 @@ use std::time::Duration;
 
 use crate::interface::{
     CompilerAttempt, CompilerCause, CompilerDiagnostic, CompilerFragmentFailure,
-    CompilerFragmentFaultFacts, CompilerFragmentFaultFamily, CompilerRuntimeCause, FragmentCause,
-    PackageCompilePhase, PackageSourceCause, PublicationCause, SourceAuthority,
+    CompilerFragmentFaultFacts, CompilerFragmentFaultFamily, CompilerFragmentLayoutStep,
+    CompilerFragmentRecordLane, CompilerFragmentSemanticSpace,
+    CompilerRuntimeCause, FragmentCause, PackageCompilePhase, PackageSourceCause, PublicationCause,
+    SourceAuthority,
 };
 use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, CSharpImageFault, CSharpImageHeaderFault,
@@ -1679,7 +1681,7 @@ pub(crate) enum FragmentCauseWire {
 }
 
 #[derive(Serialize)]
-#[serde(remote = "backend_semantic::ir::LayoutStep", rename_all = "snake_case")]
+#[serde(remote = "crate::interface::CompilerFragmentLayoutStep", rename_all = "snake_case")]
 enum FragmentLayoutStepWire {
     Directory,
     EntityLane,
@@ -1698,7 +1700,7 @@ enum FragmentLayoutStepWire {
 
 #[derive(Serialize)]
 #[serde(
-    remote = "backend_semantic::ir::SemanticSpace",
+    remote = "crate::interface::CompilerFragmentSemanticSpace",
     rename_all = "snake_case"
 )]
 enum FragmentSemanticSpaceWire {
@@ -1775,8 +1777,9 @@ impl Serialize for CompilerFragmentFailureRef<'_> {
         serializer: Output,
     ) -> Result<Output::Ok, Output::Error> {
         let detail = self.0.detail();
-        let mut state = serializer.serialize_struct("CompilerFragmentFailure", 4)?;
+        let mut state = serializer.serialize_struct("CompilerFragmentFailure", 5)?;
         state.serialize_field("family", &FragmentFaultFamilyRef(self.0.family()))?;
+        state.serialize_field("kind", self.0.kind().tag())?;
         state.serialize_field("facts", &FragmentFaultFactsRef(self.0.facts()))?;
         state.serialize_field("detail", &detail.text)?;
         state.serialize_field("detail_truncated", &detail.truncated)?;
@@ -1835,11 +1838,23 @@ impl Serialize for FragmentFaultFactsRef {
                 state.serialize_field("end", &end)?;
                 state.end()
             }
-            CompilerFragmentFaultFacts::Count { lane, actual } => {
-                let mut state = serializer.serialize_struct("CompilerFragmentFaultFacts", 3)?;
+            CompilerFragmentFaultFacts::Count {
+                lane,
+                actual,
+                maximum,
+            } => {
+                let mut state = serializer.serialize_struct("CompilerFragmentFaultFacts", 4)?;
                 state.serialize_field("kind", "count")?;
                 state.serialize_field("lane", &FragmentLayoutStepRef(lane))?;
                 state.serialize_field("actual", &actual)?;
+                state.serialize_field("maximum", &maximum)?;
+                state.end()
+            }
+            CompilerFragmentFaultFacts::RecordCoordinate { lane, ordinal } => {
+                let mut state = serializer.serialize_struct("CompilerFragmentFaultFacts", 3)?;
+                state.serialize_field("kind", "record_coordinate")?;
+                state.serialize_field("lane", &FragmentRecordLaneRef(lane))?;
+                state.serialize_field("ordinal", &ordinal)?;
                 state.end()
             }
             CompilerFragmentFaultFacts::LayoutOverflow {
@@ -1854,17 +1869,23 @@ impl Serialize for FragmentFaultFactsRef {
                 state.serialize_field("type_node_count", &type_node_count)?;
                 state.end()
             }
-            CompilerFragmentFaultFacts::NativeCount { step, actual } => {
-                let mut state = serializer.serialize_struct("CompilerFragmentFaultFacts", 3)?;
+            CompilerFragmentFaultFacts::NativeCount {
+                step,
+                actual,
+                maximum,
+            } => {
+                let mut state = serializer.serialize_struct("CompilerFragmentFaultFacts", 4)?;
                 state.serialize_field("kind", "native_count")?;
                 state.serialize_field("step", &FragmentLayoutStepRef(step))?;
                 state.serialize_field("actual", &actual)?;
+                state.serialize_field("maximum", &maximum)?;
                 state.end()
             }
-            CompilerFragmentFaultFacts::OutputLength { actual } => {
-                let mut state = serializer.serialize_struct("CompilerFragmentFaultFacts", 2)?;
+            CompilerFragmentFaultFacts::OutputLength { actual, maximum } => {
+                let mut state = serializer.serialize_struct("CompilerFragmentFaultFacts", 3)?;
                 state.serialize_field("kind", "output_length")?;
                 state.serialize_field("actual", &actual)?;
+                state.serialize_field("maximum", &maximum)?;
                 state.end()
             }
             CompilerFragmentFaultFacts::SemanticDataOverflow {
@@ -1886,11 +1907,16 @@ impl Serialize for FragmentFaultFactsRef {
                 state.serialize_field("entities", &entities)?;
                 state.end()
             }
-            CompilerFragmentFaultFacts::AtomLength { ordinal, actual } => {
-                let mut state = serializer.serialize_struct("CompilerFragmentFaultFacts", 3)?;
+            CompilerFragmentFaultFacts::AtomLength {
+                ordinal,
+                actual,
+                maximum,
+            } => {
+                let mut state = serializer.serialize_struct("CompilerFragmentFaultFacts", 4)?;
                 state.serialize_field("kind", "atom_length")?;
                 state.serialize_field("ordinal", &ordinal)?;
                 state.serialize_field("actual", &actual)?;
+                state.serialize_field("maximum", &maximum)?;
                 state.end()
             }
             CompilerFragmentFaultFacts::OutputTooSmall {
@@ -1909,29 +1935,77 @@ impl Serialize for FragmentFaultFactsRef {
                 state.serialize_field("ordinal", &ordinal)?;
                 state.end()
             }
+            CompilerFragmentFaultFacts::Nested {
+                fault,
+                lane,
+                resource,
+                ordinal,
+                owner,
+                target,
+                second_coordinate,
+                expected,
+                actual,
+                count,
+                limit,
+                required,
+                available,
+            } => {
+                let mut state = serializer.serialize_struct("CompilerFragmentFaultFacts", 14)?;
+                state.serialize_field("kind", "nested")?;
+                state.serialize_field("fault", &fault)?;
+                state.serialize_field("lane", &lane)?;
+                state.serialize_field("resource", &resource)?;
+                state.serialize_field("ordinal", &ordinal)?;
+                state.serialize_field("owner", &owner)?;
+                state.serialize_field("target", &target)?;
+                state.serialize_field("second_coordinate", &second_coordinate)?;
+                state.serialize_field("expected", &expected)?;
+                state.serialize_field("actual", &actual)?;
+                state.serialize_field("count", &count)?;
+                state.serialize_field("limit", &limit)?;
+                state.serialize_field("required", &required)?;
+                state.serialize_field("available", &available)?;
+                state.end()
+            }
         }
     }
 }
 
-struct FragmentLayoutStepRef(backend_semantic::ir::LayoutStep);
+struct FragmentRecordLaneRef(CompilerFragmentRecordLane);
+
+impl Serialize for FragmentRecordLaneRef {
+    fn serialize<Output: Serializer>(
+        &self,
+        serializer: Output,
+    ) -> Result<Output::Ok, Output::Error> {
+        serializer.serialize_str(match self.0 {
+            CompilerFragmentRecordLane::Entity => "entity",
+            CompilerFragmentRecordLane::TypeNode => "type_node",
+            CompilerFragmentRecordLane::Atom => "atom",
+            CompilerFragmentRecordLane::Occurrence => "occurrence",
+        })
+    }
+}
+
+struct FragmentLayoutStepRef(CompilerFragmentLayoutStep);
 
 impl Serialize for FragmentLayoutStepRef {
     fn serialize<Output: Serializer>(
         &self,
         serializer: Output,
     ) -> Result<Output::Ok, Output::Error> {
-        FragmentLayoutStepWire::serialize(self.0, serializer)
+        FragmentLayoutStepWire::serialize(&self.0, serializer)
     }
 }
 
-struct FragmentSemanticSpaceRef(backend_semantic::ir::SemanticSpace);
+struct FragmentSemanticSpaceRef(CompilerFragmentSemanticSpace);
 
 impl Serialize for FragmentSemanticSpaceRef {
     fn serialize<Output: Serializer>(
         &self,
         serializer: Output,
     ) -> Result<Output::Ok, Output::Error> {
-        FragmentSemanticSpaceWire::serialize(self.0, serializer)
+        FragmentSemanticSpaceWire::serialize(&self.0, serializer)
     }
 }
 

@@ -25,8 +25,13 @@ use crate::interface::{PackageCompilePhase, PackageCompileRequest, PackageSource
 #[path = "compiler_fragment.rs"]
 mod compiler_fragment;
 pub use compiler_fragment::{
-    BoundedCompilerFragmentDetail, CompilerFragmentFailure, CompilerFragmentFault,
-    CompilerFragmentFaultFacts, CompilerFragmentFaultFamily, MAX_COMPILER_FRAGMENT_DETAIL_BYTES,
+    BoundedCompilerFragmentDetail, BuildFaultKind, CompilerFragmentFailure,
+    CompilerFragmentFault, CompilerFragmentFaultFacts, CompilerFragmentFaultFamily,
+    CompilerFragmentFaultKind, CompilerFragmentFaultPhase, CompilerFragmentLayoutStep,
+    CompilerFragmentNestedFaultKind, CompilerFragmentDataLane, CompilerFragmentDataResource,
+    CompilerFragmentRecordLane, CompilerFragmentSemanticSpace,
+    MAX_COMPILER_FRAGMENT_DETAIL_BYTES,
+    PrepareFaultKind, ValidateFaultKind, WriteFaultKind,
 };
 
 /// Typed source authority copied from a validated compiler result without importing its format.

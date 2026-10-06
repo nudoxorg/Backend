@@ -26,9 +26,12 @@ pub use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES,
 };
 pub use compiler::{
-    BoundedCompilerFragmentDetail, CompilerAttempt, CompilerCapability, CompilerCause,
+    BoundedCompilerFragmentDetail, BuildFaultKind, CompilerAttempt, CompilerCapability, CompilerCause,
     CompilerDiagnostic, CompilerDiagnosticFacts, CompilerFragmentFailure, CompilerFragmentFault,
-    CompilerFragmentFaultFacts, CompilerFragmentFaultFamily, CompilerReadiness, CompilerRequest,
+    CompilerFragmentFaultFacts, CompilerFragmentFaultFamily, CompilerFragmentFaultKind,
+    CompilerFragmentFaultPhase, CompilerFragmentLayoutStep, CompilerFragmentNestedFaultKind,
+    CompilerFragmentDataLane, CompilerFragmentDataResource, CompilerFragmentRecordLane,
+    CompilerFragmentSemanticSpace, CompilerReadiness, CompilerRequest,
     CompilerRuntimeCause, CompilerRuntimePanic, CompilerTerminal, DurableReceiptAuthority,
     FragmentCause, GeneratedArtifact, GenerationAuthority, InvalidUtf8Fact, LoweringCause,
     MAX_COMPILER_FRAGMENT_DETAIL_BYTES, MAX_NATIVE_WORKER_PANIC_BYTES, NativeArtifactAction,
@@ -37,6 +40,7 @@ pub use compiler::{
     NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage, PublicationAuthority,
     PublicationCause, PublicationPhase, SemanticImageAccessError, SemanticImageAuthority,
     SemanticImageSnapshot, SourceAuthority, UnavailableCompiler,
+    PrepareFaultKind, ValidateFaultKind, WriteFaultKind,
 };
 pub use index_sync::{
     BaseGeneration, ClientIndex, ClientManifest, ClientSyncError, ClientSyncPhase,
