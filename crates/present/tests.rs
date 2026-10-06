@@ -296,36 +296,22 @@ fn a_fault_names_its_operand_its_cause_and_its_next_step() {
 }
 
 #[test]
-fn a_refusal_a_peer_flattened_into_a_message_is_still_a_typed_refusal() {
-    // A producer on the pre-typed reply schema sends only the failure's own
-    // text, and the shared client can only call that a protocol failure. Left
-    // alone, a mistyped coordinate reaches a reader as "a frame, DTO, or
-    // identity proof failed admission" — a sentence about wire proofs, in
-    // answer to a question about a name.
+fn a_display_string_never_becomes_an_admitted_command_failure() {
     let operand = Operand::Coordinate(Coordinate::new(DECLARATION));
-    let flattened = backend_client::ClientError::Protocol(
+    for message in [
         backend_library::CommandFailure::NotFound.to_string(),
-    );
-    let fault = Fault::from_client_error(&flattened, operand.clone());
-    assert_eq!(fault.slug(), FaultSlug::NotFound);
-    assert_eq!(fault.cause().slug(), CauseSlug::Absent);
-    assert_eq!(fault.operand().render(), DECLARATION);
-
-    let invalid = backend_client::ClientError::Protocol(
-        backend_library::CommandFailure::InvalidQuery("limit is out of range".to_owned())
-            .to_string(),
-    );
-    let fault = Fault::from_client_error(&invalid, operand.clone());
-    assert_eq!(fault.slug(), FaultSlug::InvalidQuery);
-    assert_eq!(fault.cause().sentence(), "limit is out of range");
-
-    // A message this model does not recognise stays a protocol failure: a
-    // surface must not guess a class it was not told.
-    let unknown =
-        backend_client::ClientError::Protocol("the frame length prefix was truncated".to_owned());
-    let fault = Fault::from_client_error(&unknown, operand);
-    assert_eq!(fault.slug(), FaultSlug::Protocol);
-    assert!(fault.cause().sentence().contains("truncated"));
+        backend_library::CommandFailure::InvalidQuery("limit is out of range".to_owned()).to_string(),
+        "the frame length prefix was truncated".to_owned(),
+    ] {
+        let fault = Fault::from_client_error(
+            &backend_client::ClientError::Protocol(message),
+            operand.clone(),
+        );
+        assert_eq!(fault.slug(), FaultSlug::Protocol);
+        assert_eq!(fault.cause().slug(), CauseSlug::Unproven);
+        assert_eq!(fault.operand().render(), DECLARATION);
+        assert!(fault.compiler_failure().is_none());
+    }
 }
 
 #[test]

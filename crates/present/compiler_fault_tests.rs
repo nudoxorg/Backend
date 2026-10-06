@@ -175,6 +175,38 @@ fn compiler_like_protocol_messages_remain_unproven_protocol_errors() {
 }
 
 #[test]
+fn valid_compiler_json_and_coordinate_strings_do_not_elevate_protocol_text() {
+    let failure = setup_failure("src/main.ts", None);
+    let bytes = failure
+        .encode_bounded_json()
+        .expect("valid compiler DTO JSON");
+    assert_eq!(
+        PackageCompilerFailure::decode_bounded_json(&bytes),
+        Ok(failure.clone())
+    );
+    for message in [
+        String::from_utf8(bytes).expect("JSON UTF-8"),
+        serde_json::to_string(&fault_value(&compiler_fault(&failure))).expect("valid fault JSON"),
+        "/abs/trap::src/hidden.ts:12::Secret".to_owned(),
+        "library record not found".to_owned(),
+    ] {
+        let fault = Fault::from_client_error(
+            &backend_client::ClientError::Protocol(message),
+            Operand::Argument("request".to_owned()),
+        );
+        assert_eq!(fault.slug(), FaultSlug::Protocol);
+        assert_eq!(fault.cause().slug(), CauseSlug::Unproven);
+        assert_eq!(fault.operand(), &Operand::Argument("request".to_owned()));
+        assert!(fault.compiler_failure().is_none());
+        let dto = FaultDto::new(&fault);
+        assert!(dto.compiler_failure.is_none());
+        assert!(dto.compiler_tool_requirement.is_none());
+    }
+    // The identical facts are elevated only through the typed command boundary.
+    assert_eq!(compiler_fault(&failure).compiler_failure(), Some(&failure));
+}
+
+#[test]
 fn compiler_fault_packet_is_bounded_and_inconsistent_typed_facts_are_refused() {
     let path = "\"".repeat(PackageCompilerFailure::MAX_RELATIVE_PATH_BYTES);
     let failure = setup_failure(&path, None);
