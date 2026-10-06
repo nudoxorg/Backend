@@ -126,7 +126,9 @@ mod tests {
                 observed: size_of::<ExactEntityValue>(),
             });
         }
-        if size_of::<EntityFact<'_>>() != 64 {
+        // The borrowed named/anonymous sum adds one eight-byte discriminant
+        // beside the former slice. Keep that deliberate public cost bounded.
+        if size_of::<EntityFact<'_>>() != 72 {
             return Err(LayoutTestError::EntityFact {
                 observed: size_of::<EntityFact<'_>>(),
             });

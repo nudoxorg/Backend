@@ -2804,7 +2804,7 @@ fn function_variants_frame_parameter_conventions_and_still_collide_on_twins()
                         b"configure",
                         SemanticProductConstructor::function(1, 0),
                     )
-                    .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+                    .typed(SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer))
                     .type_child(parameter, None, 0)
                     .child(ProductChildRole::FunctionParameter, parameter)
                     // Both overloads carry the identical function extension;

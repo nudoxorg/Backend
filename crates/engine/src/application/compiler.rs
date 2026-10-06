@@ -4492,7 +4492,11 @@ mod tests {
         assert!(diagnostic.text.starts_with("résultat "));
         assert!(!diagnostic.text.contains('\0'));
         assert!(diagnostic.text.is_char_boundary(diagnostic.text.len()));
-        assert!(diagnostic.text.ends_with('…'));
+        assert!(diagnostic.text.contains('…'));
+        assert!(
+            diagnostic.text.ends_with('🦀'),
+            "the bounded terminal suffix stays intact"
+        );
         assert!(diagnostic.truncated);
         assert!(diagnostic.text.len() <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES);
     }

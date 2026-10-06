@@ -13033,17 +13033,14 @@ describe('suite', () => {\n\
         ))?;
         let count_owner = owner_at(count_source_signature.declaration).ok_or(
             LaneError::Missing("number overload at its OXC source range"),
-
         )?;
         let parameter_at = |range: (u32, u32), owner| {
-
             ir.items().find(|item| {
                 item.name() == b"value"
                     && item.kind() == EntityKind::Parameter
                     && item
                         .source()
                         .is_some_and(|source| source.start() == range.0 && source.end() == range.1)
-
                     && item.parent() == Some(owner)
             })
         };
@@ -13086,10 +13083,12 @@ describe('suite', () => {\n\
                         .is_some_and(|source| source.start() == start && source.end() == end)
             })
         };
-        let text_result_alias = exact_alias(b"TextResult", "type TextResult = string;")
-            .ok_or(LaneError::Missing("TextResult alias at its exact source range"))?;
-        let count_result_alias = exact_alias(b"CountResult", "type CountResult = number;")
-            .ok_or(LaneError::Missing("CountResult alias at its exact source range"))?;
+        let text_result_alias = exact_alias(b"TextResult", "type TextResult = string;").ok_or(
+            LaneError::Missing("TextResult alias at its exact source range"),
+        )?;
+        let count_result_alias = exact_alias(b"CountResult", "type CountResult = number;").ok_or(
+            LaneError::Missing("CountResult alias at its exact source range"),
+        )?;
 
         let text_type = text_owner
             .semantic_type()
