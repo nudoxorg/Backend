@@ -1,0 +1,46 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/vendor/gpui_ce_components/Cargo.toml
+workspace: /Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/Cargo.toml
+   Compiling crossbeam-utils v0.8.22
+   Compiling syn v2.0.119
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling crossbeam-epoch v0.9.20
+   Compiling regex-syntax v0.8.11
+   Compiling regex-automata v0.4.18
+   Compiling log v0.4.34
+   Compiling zerocopy v0.8.56
+   Compiling thiserror v2.0.20
+   Compiling derive_more-impl v2.1.1
+   Compiling strum_macros v0.28.0
+   Compiling globset v0.4.20
+   Compiling crossbeam-deque v0.8.7
+   Compiling zerocopy-derive v0.8.56
+   Compiling ignore v0.4.33
+   Compiling strum v0.28.0
+   Compiling derive_more v2.1.1
+   Compiling smallvec v1.16.0
+   Compiling backend-platform v0.2.0 (/Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/crates/platform)
+   Compiling backend-version v0.2.0 (/Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/crates/version)
+   Compiling backend-discovery v0.2.0 (/Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/crates/discovery)
+   Compiling backend-runtime v0.2.0 (/Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/crates/runtime)
+    Finished `test` profile [optimized + debuginfo] target(s) in 18.79s
+     Running unittests src/lib.rs (.local/build/qa/.nudox-cargo/slot-0/debug/deps/backend_runtime-5173c12562d891f2)
+
+running 1 test
+
+thread 'tests::unix_detached_owner_survives_launcher_group_cancellation' (14669841) panicked at crates/runtime/src/lib.rs:1126:9:
+assertion `left == right` failed: owner must lead its own cancellation group
+  left: Pid(1658)
+ right: Pid(1661)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tests::unix_detached_owner_survives_launcher_group_cancellation ... FAILED
+
+failures:
+
+failures:
+    tests::unix_detached_owner_survives_launcher_group_cancellation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p backend-runtime --lib`

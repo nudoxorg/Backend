@@ -1,0 +1,57 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/vendor/gpui_ce_components/Cargo.toml
+workspace: /Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/Cargo.toml
+   Compiling backend-runtime v0.2.0 (/Users/mileswirht/Downloads/nudox-active-20261005/mcp-search-paging/crates/runtime)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.63s
+     Running unittests src/lib.rs (.local/build/qa/.nudox-cargo/slot-0/debug/deps/backend_runtime-5173c12562d891f2)
+
+running 34 tests
+test server::async_admission::tests::pending_admission_future_is_send_and_sync_when_its_work_is ... ok
+test server::async_admission::tests::cancellation_reclaims_a_waiter_slot_and_returns_its_exact_work ... ok
+test server::async_admission::tests::multi_waiter_register_arm_recheck_wakes_every_fitting_byte_request ... ok
+test server::runtime_tests::payload_cell_lifecycle_covers_cancel_terminal_reuse_and_drop ... ok
+test server::runtime_tests::exhausted_slot_is_retired_while_a_healthy_slot_keeps_progressing ... ok
+test server::async_admission::tests::full_waiter_table_never_blocks_an_immediately_admissible_work_item ... ok
+test server::runtime_tests::accounting_policy_is_static_and_default_runtime_carries_no_counter_storage ... ok
+test server::runtime_tests::callback_unwind_commits_executor_unwound_before_the_original_panic_continues ... ok
+test server::runtime_tests::destructor_panic_after_normal_callback_keeps_the_committed_terminal ... ok
+test server::runtime_tests::runtime_identity_rejects_cross_runtime_handles_and_one_work_can_reserve_many_credits ... ok
+test server::runtime_tests::terminal_retention_is_in_place_and_inline_or_local_storage_needs_no_heap_owner ... ok
+test server::runtime_tests::scoped_concurrent_admission_cancellation_and_owner_drain_conserve_every_credit ... ok
+test server::runtime_tests::typed_callback_failure_is_retained_without_panic ... ok
+test server::runtime_tests::wrong_readiness_lanes_restore_payload_and_exact_terminal ... ok
+test server::storage::tests::local_payload_prefix_guard_drops_partial_initialization_during_unwind ... ok
+test tests::derived_endpoints_are_short_stable_and_workspace_specific ... ok
+test tests::a_dead_endpoint_is_unlinked_and_a_live_one_is_left_alone ... ok
+test tests::discover_accepts_an_endpoint_within_sun_path ... ok
+test tests::an_uncreated_workspace_still_agrees_with_its_created_identity ... ok
+test tests::discover_rejects_an_endpoint_that_overflows_sun_path ... ok
+test tests::missing_locald_error_names_the_companion_build_and_override ... ok
+test tests::public_derive_endpoint_matches_the_internal_scheme ... ok
+test tests::passive_connect_preserves_missing_endpoint_cause_without_creating_state ... ok
+test tests::one_workspace_derives_one_endpoint_however_it_is_spelled ... ok
+test tests::authority_secret_admission_rejects_symlinks_without_replacing_them ... ok
+test tests::discover_rejects_state_from_a_different_checkout ... ok
+test tests::git_root_unifies_nested_language_packages ... ok
+test tests::nearest_manifest_is_the_non_git_project_boundary ... ok
+test tests::remote_client_data_initialization_does_not_create_owner_authority ... FAILED
+test tests::passive_connect_preserves_refused_stale_socket_cause ... ok
+test tests::unix_detached_owner_survives_launcher_group_cancellation ... ok
+test tests::locald_sibling_resolves_installed_cli_symlink_to_matched_bundle ... ok
+test tests::concurrent_initializers_publish_one_complete_authority_secret ... ok
+test tests::default_project_state_is_stable_and_isolated_under_app_data ... ok
+
+failures:
+
+---- tests::remote_client_data_initialization_does_not_create_owner_authority stdout ----
+
+thread 'tests::remote_client_data_initialization_does_not_create_owner_authority' (14673783) panicked at crates/runtime/src/lib.rs:1492:10:
+discover client-only workspace: EndpointTooLong { endpoint: "/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nix-shell.FvURXG/backend-runtime-client-only-data-3393-1791284429105039000/locald.sock", bytes: 135, limit: 103 }
+
+
+failures:
+    tests::remote_client_data_initialization_does_not_create_owner_authority
+
+test result: FAILED. 33 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+error: test failed, to rerun pass `-p backend-runtime --lib`

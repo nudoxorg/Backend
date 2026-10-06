@@ -1,0 +1,95 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /root/nudox-corpus-20261006/sol-owner-detach-linux/vendor/gpui_ce_components/Cargo.toml
+workspace: /root/nudox-corpus-20261006/sol-owner-detach-linux/Cargo.toml
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling crossbeam-utils v0.8.22
+   Compiling memchr v2.8.3
+   Compiling serde_core v1.0.229
+   Compiling syn v2.0.119
+   Compiling syn v3.0.4
+   Compiling crossbeam-epoch v0.9.20
+   Compiling find-msvc-tools v0.1.12
+   Compiling serde v1.0.229
+   Compiling shlex v2.0.1
+   Compiling cc v1.2.67
+   Compiling serde_derive v1.0.229
+   Compiling aho-corasick v1.1.5
+   Compiling crossbeam-deque v0.8.7
+   Compiling regex-syntax v0.8.11
+   Compiling libc v0.2.189
+   Compiling regex-automata v0.4.18
+   Compiling blake3 v1.8.7
+   Compiling bstr v1.13.1
+   Compiling rustix v1.1.4
+   Compiling same-file v1.0.6
+   Compiling heck v0.5.0
+   Compiling log v0.4.34
+   Compiling thiserror v2.0.20
+   Compiling zerocopy v0.8.56
+   Compiling unicode-xid v0.2.6
+   Compiling derive_more-impl v2.1.1
+   Compiling strum_macros v0.28.0
+   Compiling walkdir v2.5.0
+   Compiling globset v0.4.20
+   Compiling zerocopy-derive v0.8.56
+   Compiling thiserror-impl v2.0.20
+   Compiling linux-raw-sys v0.12.1
+   Compiling cpufeatures v0.3.1
+   Compiling cfg-if v1.0.4
+   Compiling arrayvec v0.7.8
+   Compiling bitflags v2.13.1
+   Compiling constant_time_eq v0.4.2
+   Compiling ignore v0.4.33
+   Compiling socket2 v0.6.5
+   Compiling strum v0.28.0
+   Compiling derive_more v2.1.1
+   Compiling smallvec v1.16.0
+   Compiling backend-version v0.2.0 (/root/nudox-corpus-20261006/sol-owner-detach-linux/crates/version)
+   Compiling backend-discovery v0.2.0 (/root/nudox-corpus-20261006/sol-owner-detach-linux/crates/discovery)
+   Compiling backend-platform v0.2.0 (/root/nudox-corpus-20261006/sol-owner-detach-linux/crates/platform)
+   Compiling atomic-waker v1.1.2
+   Compiling backend-runtime v0.2.0 (/root/nudox-corpus-20261006/sol-owner-detach-linux/crates/runtime)
+    Finished `release` profile [optimized] target(s) in 28.12s
+     Running unittests src/lib.rs (/root/.cache/nudox/cargo-1.97/build/slot-1/release/deps/backend_runtime-61e3f7c3c89001a7)
+
+running 35 tests
+test server::async_admission::tests::full_waiter_table_never_blocks_an_immediately_admissible_work_item ... ok
+test server::async_admission::tests::cancellation_reclaims_a_waiter_slot_and_returns_its_exact_work ... ok
+test server::async_admission::tests::pending_admission_future_is_send_and_sync_when_its_work_is ... ok
+test server::async_admission::tests::multi_waiter_register_arm_recheck_wakes_every_fitting_byte_request ... ok
+test server::runtime_tests::accounting_policy_is_static_and_default_runtime_carries_no_counter_storage ... ok
+test server::runtime_tests::exhausted_slot_is_retired_while_a_healthy_slot_keeps_progressing ... ok
+test server::runtime_tests::destructor_panic_after_normal_callback_keeps_the_committed_terminal ... ok
+test server::runtime_tests::payload_cell_lifecycle_covers_cancel_terminal_reuse_and_drop ... ok
+test server::runtime_tests::runtime_identity_rejects_cross_runtime_handles_and_one_work_can_reserve_many_credits ... ok
+test server::runtime_tests::callback_unwind_commits_executor_unwound_before_the_original_panic_continues ... ok
+test server::runtime_tests::terminal_retention_is_in_place_and_inline_or_local_storage_needs_no_heap_owner ... ok
+test server::runtime_tests::typed_callback_failure_is_retained_without_panic ... ok
+test server::runtime_tests::scoped_concurrent_admission_cancellation_and_owner_drain_conserve_every_credit ... ok
+test server::runtime_tests::wrong_readiness_lanes_restore_payload_and_exact_terminal ... ok
+test server::storage::tests::local_payload_prefix_guard_drops_partial_initialization_during_unwind ... ok
+test tests::derived_endpoints_are_short_stable_and_workspace_specific ... ok
+test tests::a_dead_endpoint_is_unlinked_and_a_live_one_is_left_alone ... ok
+test tests::an_uncreated_workspace_still_agrees_with_its_created_identity ... ok
+test tests::missing_locald_error_names_the_companion_build_and_override ... ok
+test tests::real_private_owner_launch ... ignored, requires an owned matched runtime fixture and executable
+test tests::public_derive_endpoint_matches_the_internal_scheme ... ok
+test tests::discover_rejects_an_endpoint_that_overflows_sun_path ... ok
+test tests::discover_accepts_an_endpoint_within_sun_path ... ok
+test tests::one_workspace_derives_one_endpoint_however_it_is_spelled ... ok
+test tests::passive_connect_preserves_refused_stale_socket_cause ... ok
+test tests::locald_sibling_resolves_installed_cli_symlink_to_matched_bundle ... ok
+test tests::git_root_unifies_nested_language_packages ... ok
+test tests::discover_rejects_state_from_a_different_checkout ... ok
+test tests::nearest_manifest_is_the_non_git_project_boundary ... ok
+test tests::passive_connect_preserves_missing_endpoint_cause_without_creating_state ... ok
+test tests::unix_detached_owner_survives_launcher_group_cancellation ... ok
+test tests::remote_client_data_initialization_does_not_create_owner_authority ... ok
+test tests::authority_secret_admission_rejects_symlinks_without_replacing_them ... ok
+test tests::concurrent_initializers_publish_one_complete_authority_secret ... ok
+test tests::default_project_state_is_stable_and_isolated_under_app_data ... ok
+
+test result: ok. 34 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
