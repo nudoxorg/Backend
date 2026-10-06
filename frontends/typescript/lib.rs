@@ -43,6 +43,12 @@ pub use tsz_authority::{
 };
 #[cfg(feature = "tsz-semantic-session-test-support")]
 pub use tsz_authority::{TszProjectQuerySession, TszProjectQuerySessionError};
+/// Shared cancellation, deadline, and work control for one native TSZ project.
+pub use tsz_common::{
+    ExecutionCheckpoint as TszExecutionCheckpoint,
+    ProjectExecutionBudget as TszProjectExecutionBudget,
+    ProjectExecutionStop as TszProjectExecutionStop,
+};
 /// Interned string handle used by TSZ shapes and member names.
 pub use tsz_common::interner::Atom as TszAtom;
 
