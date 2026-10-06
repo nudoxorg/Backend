@@ -1,0 +1,46 @@
+{
+  "source": {
+    "revision": "039c360d286962a6cf19488fb86caabd1d8c93de",
+    "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+    "status": "",
+    "cargo_lock_sha256": "ae4af21a8c401aaad1a9c5769f5db6bd441f563ed8bbe7c009aee0ac3d0423b9"
+  },
+  "profile": "dev",
+  "checks": {
+    "names": {
+      "warm_pages": 13,
+      "cold_pages": 13,
+      "unique_count": 37,
+      "warm_complete": true,
+      "cold_complete": true,
+      "warm_set_matches_independent_reference": true,
+      "cold_set_matches_independent_reference": true,
+      "warm_cold_stream_exact_equal": true,
+      "cross_limit_order_exact_equal": false,
+      "cli_page_has_more": true,
+      "cli_page_has_nextCursor": false
+    },
+    "search": {
+      "warm_pages": 13,
+      "cold_pages": 13,
+      "unique_count": 37,
+      "warm_complete": true,
+      "cold_complete": true,
+      "warm_set_matches_independent_reference": true,
+      "cold_set_matches_independent_reference": true,
+      "warm_cold_stream_exact_equal": true,
+      "cross_limit_order_exact_equal": false,
+      "cli_page_has_more": true,
+      "cli_page_has_nextCursor": false
+    }
+  },
+  "old_cursor_second_page_exact": true,
+  "same_mcp_alive": true,
+  "cold_new_owner": true,
+  "runtime_seconds": 11.173239290998026,
+  "peak_rss_kib": 307408,
+  "peak_process_count": 5,
+  "remaining_owners": 0,
+  "whole_package_accepted": false,
+  "strict_harness_acceptance": false
+}

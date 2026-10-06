@@ -1,0 +1,21 @@
+{
+  "source": "039c360d286962a6cf19488fb86caabd1d8c93de",
+  "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+  "scope": "actual local Mac unbundled debug tuple, manual private HOME symlinks; no GUI, remote Mac, fresh OS, app bundle or release acceptance",
+  "archive": {
+    "path": "runtime.tar.gz",
+    "bytes": 615656,
+    "sha256": "2b7101bb8362c702e18f0a09c43130c59bc71aa81465b7d56dd3b11369173786",
+    "member_count": 189
+  },
+  "remote_mac": "bounded SSH timeout already recorded in earlier evidence; no remote test claim",
+  "root_whole_library_test": "resource stopped; no verdict",
+  "whole_package_accepted": false,
+  "excluded": [
+    "portable CLI continuation",
+    "unchanged add no-op",
+    "NodeInvocation authority runtime",
+    "native Go helper bootstrap/vendor",
+    "Python real caller refs/content fidelity"
+  ]
+}

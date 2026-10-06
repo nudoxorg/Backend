@@ -1,0 +1,35 @@
+{
+  "source": {
+    "revision": "039c360d286962a6cf19488fb86caabd1d8c93de",
+    "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+    "status": "",
+    "cargo_lock_sha256": "ae4af21a8c401aaad1a9c5769f5db6bd441f563ed8bbe7c009aee0ac3d0423b9"
+  },
+  "receipt_sha256": "306001e5f43d77821989b23ab64bd61fd1b5ffe2c9a2a1945aba40c7cf7762a6",
+  "scope": "one immutable separately copied local Mac debug tuple; no release/app bundle/no-GUI; fresh private HOME symlinks will target it",
+  "programs": {
+    "backend-mcp": {
+      "canonical_path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/successor-039c-images/backend-mcp",
+      "sha256": "5f078297db67bbd0e4db467dae66a57a17a9de4e8a7073eb3e1e97db09b74422",
+      "mode": "0o555",
+      "inode": 252106520,
+      "bytes": 84744544
+    },
+    "backend-cli": {
+      "canonical_path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/successor-039c-images/backend-cli",
+      "sha256": "dac958e7cedaeb6aeffa1c174f2d0842c8843c3e168ab7fbe0321d547f5e2152",
+      "mode": "0o555",
+      "inode": 252106521,
+      "bytes": 108559856
+    },
+    "backend-locald": {
+      "canonical_path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-current-mac-runtime/.local/successor-039c-images/backend-locald",
+      "sha256": "8e67a3a9b7d13341a5a149780b826e90773f6f32508ae48e7752c065c992e66f",
+      "mode": "0o555",
+      "inode": 252106522,
+      "bytes": 223455344
+    }
+  },
+  "free_bytes": 18236870656,
+  "source_clean": true
+}
