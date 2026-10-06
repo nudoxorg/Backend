@@ -3667,7 +3667,8 @@ mod transit_tests {
             window: &mut gpui::Window, cx: &mut gpui::App) {
             let first = window.painted_texts().len();
             self.child.paint(id, inspector, bounds, layout, prepaint, window, cx);
-            if let Some(trace) = cx.try_global_mut::<InkTrace>() {
+            if cx.has_global::<InkTrace>() {
+                let trace = cx.global_mut::<InkTrace>();
                 trace.0.extend(window.painted_texts()[first..].iter().cloned()
                     .map(|text| (self.page, text)));
             }
