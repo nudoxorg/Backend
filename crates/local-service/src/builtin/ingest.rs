@@ -1547,8 +1547,8 @@ pub(super) fn scan_project(
 }
 
 /// Scans one project for compiler lanes that cannot prove a complete input
-/// read set. Configuration paths remain in the revision fence, but their
-/// contents are not redundantly hashed when no exact reuse can be authorized.
+/// read set. Bounded configuration observations still contribute to freshness;
+/// observing them does not prove dynamic or negative reads or authorize reuse.
 pub(super) fn scan_project_for_unproven_authorities(
     coordinate: &str,
     project: [u8; 32],
@@ -1559,7 +1559,7 @@ pub(super) fn scan_project_for_unproven_authorities(
         project,
         reusable,
         source_selection_policy(),
-        false,
+        true,
     )
 }
 
@@ -1579,7 +1579,7 @@ pub(super) fn scan_project_for_unproven_authorities_cancellable(
         project,
         reusable,
         source_selection_policy(),
-        false,
+        true,
         true,
         Some(cancellation),
         source_policy,

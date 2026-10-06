@@ -6781,13 +6781,15 @@ mod compiler_input_witness_tests {
         let runtime_no_op =
             ingest::scan_project_for_unproven_authorities(root_text, [31; 32], &reusable)
                 .expect("no-op scan for unproven authorities");
-        assert!(runtime_no_op.compiler_configuration.files.is_empty());
-        assert!(
-            runtime_no_op
-                .compiler_configuration
-                .complete_languages
-                .is_empty()
-        );
+        let runtime_configuration =
+            observe_compiler_configuration(&runtime_no_op.compiler_configuration);
+        for language in [Language::Rust, Language::TypeScript] {
+            assert_eq!(
+                runtime_configuration[&language].digest,
+                first[&language].digest
+            );
+            assert!(runtime_configuration[&language].complete);
+        }
         let live_profiles = runtime_no_op
             .reused_compiler_files
             .iter()
@@ -6899,6 +6901,143 @@ mod compiler_input_witness_tests {
         assert_eq!(
             after_lockfile[&Language::Rust].digest,
             after_package_lock[&Language::Rust].digest
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn configuration_observation_tracks_unproven_runtime_inputs() {
+        let root = scratch_directory();
+        for (path, source) in [
+            ("main.rs", "pub fn fixture() {}\n"),
+            ("app.ts", "export const fixture = 1;\n"),
+            ("app.py", "def fixture():\n    return 1\n"),
+            (
+                "main.go",
+                "package fixture\nfunc Fixture() int { return 1 }\n",
+            ),
+        ] {
+            fs::write(root.join(path), source).expect("write actual language source");
+        }
+        let configurations = [
+            (
+                Language::Rust,
+                "Cargo.toml",
+                "[package]\nname='fixture'\nversion='0.1.0'\n",
+                "[package]\nname='fixture'\nversion='0.2.0'\n",
+            ),
+            (
+                Language::TypeScript,
+                "package.json",
+                "{\"name\":\"fixture\",\"version\":\"0.1.0\"}\n",
+                "{\"name\":\"fixture\",\"version\":\"0.2.0\"}\n",
+            ),
+            (
+                Language::Python,
+                "pyproject.toml",
+                "[project]\nname='fixture'\nversion='0.1.0'\n",
+                "[project]\nname='fixture'\nversion='0.2.0'\n",
+            ),
+            (
+                Language::Go,
+                "go.mod",
+                "module fixture\ngo 1.25\n",
+                "module fixture\ngo 1.26\n",
+            ),
+        ];
+        for (_, path, before, _) in &configurations {
+            fs::write(root.join(path), before).expect("write bounded project configuration");
+        }
+        let root_text = root.to_str().expect("UTF-8 fixture path");
+        let cancellation = AtomicBool::new(false);
+        let baseline = ingest::scan_project_for_unproven_authorities_cancellable(
+            root_text,
+            [74; 32],
+            &BTreeMap::new(),
+            &cancellation,
+        )
+        .expect("same cancellable scan used by run_index_scan");
+        let profiles = ingest::live_compiler_profiles(
+            &root,
+            &baseline.compiler_sources,
+            &baseline.reused_compiler_files,
+        );
+        let reusable = baseline.files.iter().cloned().collect::<BTreeMap<_, _>>();
+        for (language, path, before, after) in &configurations {
+            let profile = *profiles
+                .iter()
+                .find(|profile| profile.language() == *language)
+                .expect("actual source keeps the tested compiler profile live");
+            assert!(
+                baseline
+                    .compiler_configuration
+                    .complete_languages
+                    .contains(language)
+            );
+            fs::write(root.join(path), after).expect("change only project configuration");
+            let changed = ingest::scan_project_for_unproven_authorities_cancellable(
+                root_text,
+                [74; 32],
+                &reusable,
+                &cancellation,
+            )
+            .expect("capture changed runtime configuration");
+            assert_eq!(
+                changed.source_version, baseline.source_version,
+                "syntax source bytes remain unchanged"
+            );
+            assert_ne!(
+                semantic_input_digest(&changed, profile),
+                semantic_input_digest(&baseline, profile),
+                "a changed configuration must change the observed profile input"
+            );
+            let inputs = BTreeMap::from([(
+                profile,
+                CompilerInputAdmission {
+                    lineage: None,
+                    read_set_completeness: ReadSetCompleteness::Unproven,
+                },
+            )]);
+            let live = BTreeSet::from([profile]);
+            assert_eq!(
+                profiles_requiring_compilation(
+                    &live,
+                    &BTreeSet::new(),
+                    &BTreeSet::new(),
+                    &inputs,
+                    &live,
+                ),
+                live,
+                "configuration observation cannot certify an unproven authority or skip compilation"
+            );
+            fs::write(root.join(path), before).expect("restore exact baseline configuration");
+        }
+        let oversized =
+            fs::File::create(root.join("package.json")).expect("open oversized configuration");
+        oversized
+            .set_len(ingest::MAX_COMPILER_CONFIGURATION_FILE_BYTES as u64 + 1)
+            .expect("exceed one bounded configuration input");
+        drop(oversized);
+        let incomplete = ingest::scan_project_for_unproven_authorities_cancellable(
+            root_text,
+            [74; 32],
+            &reusable,
+            &cancellation,
+        )
+        .expect("retain bounded incomplete observation");
+        assert!(
+            !incomplete
+                .compiler_configuration
+                .complete_languages
+                .contains(&Language::TypeScript)
+        );
+        assert!(
+            !incomplete
+                .compiler_configuration
+                .files
+                .iter()
+                .any(|file| file.relative_path == Path::new("package.json")),
+            "an oversized configuration cannot be promoted to a complete observed input"
         );
         let _ = fs::remove_dir_all(root);
     }
