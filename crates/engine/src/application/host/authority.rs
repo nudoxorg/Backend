@@ -26,7 +26,7 @@ use super::{
 use crate::application::toolchain_probe::{
     ToolchainProbeError, ToolchainProbeLimits, ToolchainProbePrimary, probe_command,
 };
-use crate::application::typescript_host::TypeScriptProjectHost;
+use crate::application::typescript_host::{TypeScriptProjectHost, is_module_tsc_script};
 use crate::application::{
     LocalRuntimeCSharpAuthority, LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority,
     LocalRuntimePackageRoot, LocalRuntimePythonCheckerAdmission,
@@ -446,12 +446,22 @@ impl NativeExecutables {
         self.toolchain_executables()
             .map(|(tool, executable)| match executable {
                 Some(executable) => match (tool, typescript_node, typescript_module_root) {
-                    (NativeTool::TypeScriptCompiler, Some(node), Some(module_root)) => {
+                    (NativeTool::TypeScriptCompiler, Some(node), Some(module_root))
+                        if is_module_tsc_script(executable, module_root) =>
+                    {
                         LocalRuntimeToolchain::probing_typescript_script(
                             executable.to_path_buf(),
                             node.to_path_buf(),
                             module_root.to_path_buf(),
                         )
+                    }
+                    // A PATH-selected executable may be a platform wrapper around the package
+                    // entrypoint (for example, Nix's shell `bin/tsc`). It is still the selected
+                    // compiler command and must be launched by its own shebang, not passed to
+                    // Node as if the wrapper were JavaScript. The project host separately uses
+                    // the exact module-root API through the admitted Node runtime.
+                    (NativeTool::TypeScriptCompiler, Some(_), Some(_)) => {
+                        LocalRuntimeToolchain::probing(tool, executable.to_path_buf())
                     }
                     (NativeTool::TypeScriptCompiler, None, _) => LocalRuntimeToolchain::probe_failed(
                         tool,
@@ -510,9 +520,11 @@ impl NativeExecutables {
 #[cfg(test)]
 mod invocation_selection_tests {
     use super::{NativeExecutables, selected_go_module_cache};
-    use crate::application::{LocalRuntimeToolchainState, ToolchainProbeError};
+    use crate::application::{
+        LocalRuntimeToolchainState, ToolchainProbeError, ToolchainProbeLimits,
+    };
     use backend_semantic::vocabulary::NativeTool;
-    use std::path::PathBuf;
+    use std::{num::NonZeroUsize, path::PathBuf, time::Duration};
 
     #[test]
     fn go_without_installed_modules_uses_an_isolated_owner_cache() {
@@ -571,7 +583,7 @@ mod invocation_selection_tests {
     }
 
     #[test]
-    fn selected_node_keeps_global_typescript_in_pending_script_form() {
+    fn selected_node_keeps_global_typescript_compiler_pending() {
         let compiler = PathBuf::from("/selected/typescript/bin/tsc");
         let node = PathBuf::from("/selected/node/bin/node");
         let module_root = PathBuf::from("/selected/node_modules");
@@ -584,5 +596,143 @@ mod invocation_selection_tests {
 
         assert_eq!(typescript.state, LocalRuntimeToolchainState::Probing);
         assert!(typescript.probe_failure().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_wrapper_is_probed_as_an_executable_not_as_a_typescript_js_script() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "nudox-typescript-wrapper-probe-{}-{}",
+            std::process::id(),
+            super::super::NEXT_NATIVE_WORK.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        let module_root = root.join("lib/node_modules");
+        let package = module_root.join("typescript");
+        let module_entry = package.join("bin/tsc");
+        std::fs::create_dir_all(module_entry.parent().expect("module entry parent"))
+            .expect("create package entry directory");
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"typescript","version":"5.9.3"}"#,
+        )
+        .expect("write selected module metadata");
+        std::fs::write(&module_entry, "require('../lib/tsc.js');\n")
+            .expect("write canonical JavaScript entrypoint");
+
+        let compiler = root.join("bin/tsc");
+        std::fs::create_dir_all(compiler.parent().expect("wrapper parent"))
+            .expect("create wrapper directory");
+        std::fs::write(
+            &compiler,
+            "#!/bin/sh\nif [ \"$1\" = '--version' ]; then printf 'Version 5.9.3\\n'; exit 0; fi\nexit 64\n",
+        )
+        .expect("write host executable wrapper");
+        std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o755))
+            .expect("make wrapper executable");
+
+        let node = root.join("bin/node");
+        std::fs::write(&node, "not used by direct wrapper invocation\n")
+            .expect("write paired Node fixture");
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755))
+            .expect("make paired Node fixture executable");
+        let compiler = std::fs::canonicalize(compiler).expect("canonical wrapper");
+        let module_root = std::fs::canonicalize(module_root).expect("canonical module root");
+        let node = std::fs::canonicalize(node).expect("canonical Node fixture");
+
+        let mut rows = only_typescript(Some(compiler.clone()))
+            .toolchain_rows(Some(&node), Some(&module_root))
+            .into_vec();
+        let pending = rows
+            .iter()
+            .find(|row| row.tool == NativeTool::TypeScriptCompiler)
+            .expect("fixed TypeScript row");
+        assert_eq!(pending.state, LocalRuntimeToolchainState::Probing);
+        let limits = ToolchainProbeLimits::new(
+            Duration::from_secs(2),
+            NonZeroUsize::new(4096).expect("nonzero output bound"),
+        )
+        .expect("valid probe limits");
+        let index = rows
+            .iter()
+            .position(|row| row.tool == NativeTool::TypeScriptCompiler)
+            .expect("TypeScript row index");
+        let admitted = rows
+            .remove(index)
+            .admit_pending(limits)
+            .expect("direct TSC probe");
+        assert_eq!(admitted.state, LocalRuntimeToolchainState::Ready);
+        assert!(admitted.identity.is_some());
+        assert!(admitted.probe_failure().is_none());
+
+        assert!(module_entry.is_file());
+        std::fs::remove_dir_all(root).expect("remove wrapper fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn module_owned_tsc_entry_uses_the_admitted_node_runtime() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "nudox-typescript-module-entry-probe-{}-{}",
+            std::process::id(),
+            super::super::NEXT_NATIVE_WORK.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        let module_root = root.join("node_modules");
+        let package = module_root.join("typescript");
+        let compiler = package.join("bin/tsc");
+        std::fs::create_dir_all(compiler.parent().expect("compiler parent"))
+            .expect("create package compiler directory");
+        std::fs::create_dir_all(package.join("lib")).expect("create compiler module directory");
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"typescript","version":"5.9.3"}"#,
+        )
+        .expect("write selected module metadata");
+        std::fs::write(package.join("lib/tsc.js"), "module.exports = {};\n")
+            .expect("write compiler library fixture");
+        std::fs::write(
+            &compiler,
+            "if [ \"$1\" = '--version' ]; then printf 'Version 5.9.3\\n'; exit 0; fi\nexit 64\n",
+        )
+        .expect("write package JavaScript entrypoint");
+
+        let node = root.join("bin/node");
+        std::fs::create_dir_all(node.parent().expect("node parent"))
+            .expect("create Node fixture directory");
+        std::fs::write(
+            &node,
+            "#!/bin/sh\nif [ \"$1\" = '--version' ]; then printf 'v24.18.0\\n'; exit 0; fi\ncompiler=$1\nshift\nexec /bin/sh \"$compiler\" \"$@\"\n",
+        )
+        .expect("write deterministic Node wrapper");
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755))
+            .expect("make Node fixture executable");
+
+        let compiler = std::fs::canonicalize(compiler).expect("canonical package tsc entry");
+        let module_root = std::fs::canonicalize(module_root).expect("canonical module root");
+        let node = std::fs::canonicalize(node).expect("canonical Node fixture");
+        let mut rows = only_typescript(Some(compiler))
+            .toolchain_rows(Some(&node), Some(&module_root))
+            .into_vec();
+        let limits = ToolchainProbeLimits::new(
+            Duration::from_secs(2),
+            NonZeroUsize::new(4096).expect("nonzero output bound"),
+        )
+        .expect("valid probe limits");
+        let index = rows
+            .iter()
+            .position(|row| row.tool == NativeTool::TypeScriptCompiler)
+            .expect("TypeScript row index");
+        let admitted = rows
+            .remove(index)
+            .admit_pending(limits)
+            .expect("Node TSC probe");
+        assert_eq!(admitted.state, LocalRuntimeToolchainState::Ready);
+        assert!(admitted.identity.is_some());
+        assert!(admitted.probe_failure().is_none());
+
+        std::fs::remove_dir_all(root).expect("remove package fixture");
     }
 }

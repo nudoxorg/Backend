@@ -3429,7 +3429,7 @@ fn find_module_root_for_compiler(
     Ok(None)
 }
 
-fn is_module_tsc_script(compiler: &Path, module_root: &Path) -> bool {
+pub(crate) fn is_module_tsc_script(compiler: &Path, module_root: &Path) -> bool {
     let expected = module_root.join("typescript/bin/tsc");
     matches!(
         (fs::canonicalize(compiler), fs::canonicalize(expected)),
