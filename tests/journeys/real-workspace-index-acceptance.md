@@ -39,6 +39,14 @@ This is a format illustration, not an acceptance corpus. Supply real project roo
 
 ## Build receipt
 
+A language shard may add `package` to a project entry:
+
+```json
+{"ecosystem":"npm","id":"typescript","version":"5.7.2","provenance":{"kind":"archive-sha256","sha256":"<64 lowercase hex digits>"}}
+```
+
+The closed ecosystem is `npm`, `pypi`, or `go` for the corresponding language. The provenance kind is `archive-sha256` or `source-tree-sha256`. Results retain this **declared** package metadata with the corpus-manifest hash under `package_provenance`. This field does not verify a downloaded artifact and cannot by itself establish a package pass. Artifact verification requires its separate hash-bound acquisition evidence. The runner's recognized-source census covers a different input domain and is not substituted for the package archive or complete source-tree digest. This optional metadata is unavailable in the default all-profile scope, whose admission requirements remain unchanged.
+
 The receipt adapter accepts only `nudox.runtime-artifact-build-receipt.v1`, checks the source commit/tree/clean state and lockfile, verifies the recorded runner and Cargo/rustc identities, rejects check/test/Clippy or incomplete target selections, and re-hashes all three host-architecture executables. A runtime manifest is emitted only for a successful, cleanly terminated build with all three artifacts. An interrupted, failed, dirty, or partial build is not admissible.
 
 The capture command must receive the exact process argv used by the pinned Cargo runner after `--`. When an explicit interpreter is used, the argv must be exactly `[absolute shell, absolute runner script, Cargo verb/options…]`; `-c`/evaluation forms are refused. Both the runner and explicit interpreter are hashed and rechecked around execution. Root supplies the realized runner, Cargo/rustc paths, argv, and artifact paths for a real build; this document intentionally does not provide a fake or host-independent build command.

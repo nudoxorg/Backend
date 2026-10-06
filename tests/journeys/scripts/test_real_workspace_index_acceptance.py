@@ -678,6 +678,72 @@ class RuntimeToolFileAdmissionTests(unittest.TestCase):
                 receipt.stable_file(linked, "Cargo.lock")
 
 
+class PackageProvenanceMetadataTests(unittest.TestCase):
+    def metadata(self, ecosystem: str, name: str) -> dict:
+        return {"ecosystem": ecosystem, "id": name, "version": "1.2.3",
+                "provenance": {"kind": "archive-sha256", "sha256": "a" * 64}}
+
+    def test_language_scoped_package_identity_keeps_the_declared_artifact_hash_domain(self) -> None:
+        for language, ecosystem, name in [("typescript", "npm", "@scope/package"),
+                                           ("python", "pypi", "requests"),
+                                           ("go", "go", "github.com/gorilla/mux")]:
+            with self.subTest(language=language):
+                value = self.metadata(ecosystem, name)
+                self.assertEqual(runner.validate_package_metadata(value, language), value)
+                value["provenance"]["kind"] = "source-tree-sha256"
+                self.assertEqual(runner.validate_package_metadata(value, language), value)
+
+    def test_declared_metadata_cannot_assert_verification_or_change_the_default_all_profile_scope(self) -> None:
+        value = self.metadata("npm", "typescript")
+        with self.assertRaises(runner.Blocked):
+            runner.validate_package_metadata(value, None)
+        with self.assertRaises(runner.Blocked):
+            runner.validate_package_metadata(value, "python")
+        value["provenance"]["verified"] = True
+        with self.assertRaises(runner.Blocked):
+            runner.validate_package_metadata(value, "typescript")
+
+    def test_malformed_hash_and_noncanonical_package_names_are_refused(self) -> None:
+        for kind, digest in [("recognized-source-census", "a" * 64),
+                             ("archive-sha256", "a" * 40),
+                             ("source-tree-sha256", "A" * 64)]:
+            value = self.metadata("npm", "typescript")
+            value["provenance"] = {"kind": kind, "sha256": digest}
+            with self.subTest(provenance=value["provenance"]):
+                with self.assertRaises(runner.Blocked):
+                    runner.validate_package_metadata(value, "typescript")
+        for language, ecosystem, name in [("typescript", "npm", "TypeScript"),
+                                           ("python", "pypi", "Some_Package")]:
+            with self.assertRaises(runner.Blocked):
+                runner.validate_package_metadata(self.metadata(ecosystem, name), language)
+
+    def test_manifest_retains_declared_metadata_without_relaxing_profile_admission(self) -> None:
+        extensions, _ = runner.parse_language_contract(REPOSITORY)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "package"
+            project.mkdir()
+            (project / "index.ts").write_text("export class Program {}\n")
+            package = self.metadata("npm", "typescript")
+            manifest = root / "manifest.json"
+            value = {"schema": runner.MANIFEST_SCHEMA, "projects": [{
+                "id": "typescript", "path": str(project), "large": False,
+                "minimum_source_candidates": 0, "package": package,
+                "symbols": [{"profile": "typescript", "path": "index.ts", "name": "Program"}],
+            }]}
+            manifest.write_text(json.dumps(value))
+            cases, raw = runner.validate_corpus_manifest(
+                manifest, root / "evidence", extensions, 2046, "typescript")
+            self.assertEqual(cases[0].package, package)
+            self.assertEqual(raw, manifest.read_bytes())
+            with self.assertRaises(runner.Blocked):
+                runner.validate_corpus_manifest(manifest, root / "evidence", extensions, 2046)
+            value["projects"][0].pop("package")
+            manifest.write_text(json.dumps(value))
+            with self.assertRaisesRegex(runner.Blocked, "missing supported-profile"):
+                runner.validate_corpus_manifest(manifest, root / "evidence", extensions, 2046)
+
+
 class OperationObservationBoundaryTests(unittest.TestCase):
     """The actual 80543 TypeScript pilot used these two different envelopes."""
 

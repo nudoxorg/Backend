@@ -246,6 +246,7 @@ class ProjectCase:
     large: bool
     min_candidates: int
     symbols: tuple[dict[str, str], ...]
+    package: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -1355,6 +1356,36 @@ def validate_snapshot_toolchains(
     return {profile: list(PROFILE_REQUIRED_ROLES[profile]) for profile in sorted(required_profiles)}
 
 
+def validate_package_metadata(value: Any, language: str | None) -> dict[str, Any]:
+    ecosystems = {"typescript": "npm", "python": "pypi", "go": "go"}
+    if language not in ecosystems:
+        raise Blocked("package provenance metadata requires an explicit language corpus scope")
+    if not isinstance(value, dict) or set(value) != {"ecosystem", "id", "version", "provenance"}:
+        raise Blocked("package metadata has missing or unknown fields")
+    if value["ecosystem"] != ecosystems[language]:
+        raise Blocked("package ecosystem does not match the selected language corpus")
+    for field, maximum in [("id", 1024), ("version", 256)]:
+        text = value[field]
+        if not isinstance(text, str) or not text or len(text) > maximum or any(
+            ord(char) < 33 or ord(char) > 126 for char in text
+        ):
+            raise Blocked("package identity and version must be bounded nonempty ASCII labels")
+    if language == "typescript" and value["id"].lower() != value["id"]:
+        raise Blocked("npm package identity is not canonical")
+    if language == "python" and re.sub(r"[-_.]+", "-", value["id"]).lower() != value["id"]:
+        raise Blocked("PyPI package identity is not canonical")
+    provenance = value["provenance"]
+    if (
+        not isinstance(provenance, dict)
+        or set(provenance) != {"kind", "sha256"}
+        or provenance.get("kind") not in {"archive-sha256", "source-tree-sha256"}
+        or not isinstance(provenance.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", provenance["sha256"]) is None
+    ):
+        raise Blocked("package provenance requires one exact archive or source-tree SHA-256")
+    return value
+
+
 def validate_corpus_manifest(
     path: Path,
     output: Path,
@@ -1387,14 +1418,16 @@ def validate_corpus_manifest(
     variants: set[str] = set()
     large_count = 0
     for item in projects_value:
-        if not isinstance(item, dict) or set(item) != {
+        project_fields = {
             "id",
             "path",
             "large",
             "minimum_source_candidates",
             "symbols",
-        }:
+        }
+        if not isinstance(item, dict) or set(item) not in [project_fields, project_fields | {"package"}]:
             raise Blocked("a project manifest entry has missing or unknown fields")
+        package_metadata = validate_package_metadata(item["package"], language) if "package" in item else None
         project_id = item["id"]
         raw_path = item["path"]
         large = item["large"]
@@ -1486,7 +1519,7 @@ def validate_corpus_manifest(
         project_ids.add(project_id)
         canonical_roots.add(root)
         total_symbols += len(symbols)
-        cases.append(ProjectCase(project_id, root, large, minimum, tuple(symbols)))
+        cases.append(ProjectCase(project_id, root, large, minimum, tuple(symbols), package_metadata))
 
     required_variants = set(PROFILE_LANGUAGE_VARIANT) if language is None else set()
     missing_variants = sorted(required_variants - variants)
@@ -2666,6 +2699,11 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
             "accepted_project_membership_files_before_restart": None,
             "accepted_project_membership_files_after_restart": None,
             "symbols": list(case.symbols),
+            **({"package_provenance": {
+                "declared": case.package,
+                "verification": "declared-by-corpus-manifest; artifact bytes not independently verified by this runner",
+                "corpus_manifest_sha256": corpus_manifest_sha,
+            }} if case.package is not None else {}),
         }
         for case in cases
     ]
