@@ -258,7 +258,7 @@ class DirectProvenanceContractTests(unittest.TestCase):
                 "$CARGO", "build", "--locked", "--manifest-path", "$SOURCE_ROOT/Cargo.toml",
                 "--target-dir", "$SOURCE_ROOT/.local/target", "--target", target,
                 "--profile", "release", "-p", "backend-desktop", "-p", "backend-mcp",
-                "-p", "backend-locald", "--message-format=json-render-diagnostics",
+                "-p", "backend-locald", "-p", "backend-cli", "--message-format=json-render-diagnostics",
             ],
             "toolchain": {
                 "cargo": {"version": "cargo 1.97.1", "sha256": assets["runner.exec"]},
@@ -274,7 +274,7 @@ class DirectProvenanceContractTests(unittest.TestCase):
             "rustc_wrapper_sha256": None,
             "outputs": [
                 {"path": f"{target}/release/{name}", "sha256": "9" * 64, "size_bytes": 1}
-                for name in ("backend-desktop", "backend-mcp", "backend-locald")
+                for name in ("backend-desktop", "backend-mcp", "backend-locald", "backend-cli")
             ],
         }
         return provenance, source, runner
@@ -282,13 +282,14 @@ class DirectProvenanceContractTests(unittest.TestCase):
     def test_schema_three_contract_binds_runner_source_and_all_outputs(self) -> None:
         provenance, source, runner = self._valid_provenance()
         outputs = bundle.validate_direct_cargo_provenance(provenance, source, "aarch64-apple-darwin", runner)
-        self.assertEqual(len(outputs), 3)
+        self.assertEqual(len(outputs), 4)
         self.assertEqual(
             set(outputs),
             {
                 "aarch64-apple-darwin/release/backend-desktop",
                 "aarch64-apple-darwin/release/backend-mcp",
                 "aarch64-apple-darwin/release/backend-locald",
+                "aarch64-apple-darwin/release/backend-cli",
             },
         )
 

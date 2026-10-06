@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "archive_sha256": "REPLACE_WITH_FINAL_ARCHIVE_SHA256",
+  "source_sha": "REPLACE_WITH_CANONICAL_SOURCE_SHA",
+  "tested_by": "REPLACE_WITH_OPERATOR",
+  "tested_at": "REPLACE_WITH_UTC_TIMESTAMP",
+  "macos_version": "REPLACE_WITH_TEST_HOST_VERSION",
+  "cases": {
+    "bundled_helpers": false,
+    "clean_environment": false,
+    "cold_restart": false,
+    "finder_launch": false,
+    "gatekeeper": false,
+    "minimum_os": false,
+    "preferences": false,
+    "project_index_search": false
+  }
+}

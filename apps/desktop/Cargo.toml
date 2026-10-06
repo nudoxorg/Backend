@@ -1,10 +1,21 @@
 [package]
 name = "backend-desktop"
+description = "NuDox local code intelligence desktop application"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[package.metadata.bundle.bin.backend-desktop]
+name = "Nudox"
+identifier = "dev.nudox.desktop"
+short_description = "NuDox local code intelligence"
+icon = ["macos/Nudox.icns"]
+resources = ["macos/Info.plist"]
+
+[package.metadata.bundle.bin.backend-desktop.osx]
+minimum_system_version = "12.0"
 
 [lib]
 path = "src/lib.rs"
