@@ -3617,6 +3617,8 @@ mod transit_tests {
     use std::collections::BTreeSet;
     use std::time::Duration;
 
+    include!("reader/transit_capture_tests.rs");
+
     /// Actual paint calls, attributed by the mounted child that issued them.
     /// None denotes Map; Some is the exact page place. No word or geometry
     /// filter is used, including when a child paints outside its viewport.
