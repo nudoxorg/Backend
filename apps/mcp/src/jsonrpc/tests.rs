@@ -446,10 +446,6 @@ fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
         "../../../../crates/library/fixtures/semantic-shape-read.json"
     ))
     .expect("shared operands fixture");
-    let export: backend_library::SemanticShapeExport = serde_json::from_str(include_str!(
-        "../../../../crates/library/fixtures/semantic-shape-egress-view.json"
-    ))
-    .expect("egress fixture");
     for detail in ["summary", "full"] {
         let selected: backend_library::SemanticShapeReadRequest =
             serde_json::from_value(operands.clone()).expect("request");
@@ -459,6 +455,15 @@ fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
                 .clone()]))),
             ..Fake::default()
         });
+        let resolved = call(
+            &mut server,
+            "backend.resolve",
+            &json!({"query":"ferris","detail":detail}),
+        );
+        let selector =
+            resolved["structuredContent"]["records"][0]["identity"]["semantic_data"].clone();
+        assert_eq!(selector["kind"], "selected-symbol-id");
+        assert_eq!(selector["value"], json!(symbol_key(DECLARATION).as_bytes()));
         let versions = call(
             &mut server,
             "backend.semantic_versions",
@@ -468,6 +473,16 @@ fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
         assert_eq!(source, operands["source"]);
         let mut shape_operands = operands.clone();
         shape_operands["source"] = source;
+        shape_operands["symbols"] = json!([selector["value"]]);
+        let mut export_view: Value = serde_json::from_str(include_str!(
+            "../../../../crates/library/fixtures/semantic-shape-egress-view.json"
+        ))
+        .expect("untrusted unavailable display fixture");
+        export_view["batch"]["entries"][0]["symbol"]["id"] = json!(backend_library::encode_id(
+            symbol_key(DECLARATION).as_bytes()
+        ));
+        let export: backend_library::SemanticShapeExport = serde_json::from_value(export_view)
+            .expect("closed display selector from actual resolve output");
         server.product.surface_reply = Some(SurfaceReply::SemanticShapes(export.clone()));
         let result = call(
             &mut server,
@@ -482,7 +497,7 @@ fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
         assert_eq!(server.product.surface_commands.len(), 2);
         assert!(
             matches!(&server.product.surface_commands[1], SurfaceCommand::SemanticShapes { request }
-            if request.symbols() == &[[6;32]])
+            if request.symbols() == &[*symbol_key(DECLARATION).as_bytes()])
         );
     }
     let mut server = ready(Fake::default());

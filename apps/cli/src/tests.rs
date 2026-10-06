@@ -668,6 +668,62 @@ fn typed_rows_lower_without_the_json_escape_hatch() {
 }
 
 #[test]
+fn cli_resolve_selector_round_trips_into_the_shared_shape_request() {
+    use backend_library::{Coverage, Cursor, Library, Reason, Row, RowId, symbol_key};
+    struct Owner(Library);
+    impl CommandTransport for Owner {
+        fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+            admit_reply(&request, self.0.execute_dto(request.clone()))
+        }
+    }
+    let key = symbol_key(b"retained-selected-row");
+    let base = root();
+    let basis = base.basis();
+    let root = ViewRoot::new_incomplete(
+        view_key(b"selector-owner"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        vec![Row::new(
+            RowId::Symbol(key),
+            basis,
+            "/abs/p::src/lib.rs:1::ferris",
+        )],
+        vec![Coverage::Unavailable {
+            lane: backend_library::Lane::Semantic,
+            reason: Reason::Unconfigured,
+        }],
+    )
+    .expect("structural owner fixture claims no compiler completeness");
+    let owner = Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("owner");
+    let mut session =
+        backend_client::Session::from_transport("/private/selector.sock", Owner(owner));
+    let invocation = invoke::parse(&words("resolve ferris"), None).expect("CLI parse");
+    let request = lower(&invocation, "/abs/p").expect("CLI lower");
+    let answer = run::execute(&mut session, &request).expect("actual admitted resolve");
+    let value: serde_json::Value =
+        serde_json::from_str(&render::json(&answer)).expect("public CLI JSON");
+    let selector = &value["records"][0]["identity"]["semantic_data"];
+    assert_eq!(selector["kind"], "selected-symbol-id");
+    assert_eq!(selector["value"], serde_json::json!(key.as_bytes()));
+    let mut operands: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../crates/library/fixtures/semantic-shape-read.json"
+    ))
+    .expect("source operand fixture; no compiler authority claim");
+    operands["symbols"] = serde_json::json!([selector["value"]]);
+    let words = vec![
+        "semantic-shapes".to_owned(),
+        serde_json::to_string(&operands).expect("operand JSON"),
+    ];
+    let invocation = invoke::parse(&words, None).expect("public shape CLI parse");
+    let Request::Surface(SurfaceCommand::SemanticShapes { request }) =
+        lower(&invocation, "/abs/p").expect("shared shape grammar")
+    else {
+        panic!("shape request must retain its typed surface route");
+    };
+    assert_eq!(request.symbols(), &[*key.as_bytes()]);
+}
+
+#[test]
 fn every_durable_row_lowers_into_the_one_surface_contract() {
     let cases = [
         "read one two",

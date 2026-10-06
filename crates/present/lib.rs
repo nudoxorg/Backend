@@ -53,9 +53,9 @@ mod browse;
 #[cfg(test)]
 mod browse_tests;
 mod budget;
+mod call;
 #[cfg(test)]
 mod compiler_fault_tests;
-mod call;
 mod coverage;
 mod drive;
 mod dto;
@@ -79,8 +79,8 @@ pub use assemble::{
     record_list, record_list_from_rows, shelf_from_root, shelf_from_snapshot,
 };
 pub use browse::{
-    AlertReading, InventoryReading, RoleReading, RowReading, TreeReading, TwiceReading, count, display_version,
-    read_tree, role_label, why_line,
+    AlertReading, InventoryReading, RoleReading, RowReading, TreeReading, TwiceReading, count,
+    display_version, read_tree, role_label, why_line,
 };
 pub use budget::{
     BudgetExceeded, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, ESTIMATED_BYTES_PER_TOKEN,
@@ -96,9 +96,10 @@ pub use coverage::{
 };
 pub use drive::{Answer, ContinuationCursor, Engine, Probe, answer, answer_paged};
 pub use dto::{
-    CapabilitiesDto, CompilerToolRequirementDto, CoverageDto, FaultDto, IdentityDto, LanguageCountDto, MemberGroupDto,
-    OutlineDto, OutlineNodeDto, PageDto, ProductDto, ProductIndexSearchPageDto, ProductRecordDto, ReasonDto, RecordDto,
-    RecordListDto, RelationGroupDto, ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto,
+    CapabilitiesDto, CompilerToolRequirementDto, CoverageDto, FaultDto, IdentityDto,
+    IdentitySemanticData, LanguageCountDto, MemberGroupDto, OutlineDto, OutlineNodeDto, PageDto,
+    ProductDto, ProductIndexSearchPageDto, ProductRecordDto, ReasonDto, RecordDto, RecordListDto,
+    RelationGroupDto, SelectedSymbolIdDto, ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto,
     StatusDto, answer_value, fault_value,
 };
 pub use fault::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};

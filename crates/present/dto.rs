@@ -66,6 +66,44 @@ fn tagged<T: Serialize>(kind: &str, value: &T) -> serde_json::Value {
     }
 }
 
+/// Full bytes of an observed selected symbol row, exported as display operand
+/// material. This does not deserialize into a compiler `SymbolKey` or proof.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct SelectedSymbolIdDto([u8; 32]);
+
+impl SelectedSymbolIdDto {
+    /// Exact retained row bytes for a public selected-symbol operand.
+    #[must_use]
+    pub const fn bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for SelectedSymbolIdDto {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let bytes = <[u8; 32]>::deserialize(deserializer)?;
+        if bytes == [0; 32] {
+            return Err(serde::de::Error::custom("selected symbol row id is empty"));
+        }
+        Ok(Self(bytes))
+    }
+}
+
+/// Closed identity operand facet; display abbreviations and other key families
+/// cannot be treated as selected symbol identifiers.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
+pub enum IdentitySemanticData {
+    /// Full bytes retained from the actual selected symbol row.
+    SelectedSymbolId(SelectedSymbolIdDto),
+}
+
 /// One identity, in parts.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct IdentityDto {
@@ -91,6 +129,9 @@ pub struct IdentityDto {
     /// The display abbreviation of the row's stable key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// Exact selected symbol operand, independently of its short display label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_data: Option<IdentitySemanticData>,
 }
 
 impl IdentityDto {
@@ -112,6 +153,14 @@ impl IdentityDto {
                 .map(|segment| segment.as_str().to_owned())
                 .collect(),
             key: identity.key().tag().map(|tag| tag.to_string()),
+            semantic_data: match identity.key() {
+                crate::IdentityKey::Symbol(key) if key.as_bytes() != &[0; 32] => Some(
+                    IdentitySemanticData::SelectedSymbolId(SelectedSymbolIdDto(*key.as_bytes())),
+                ),
+                crate::IdentityKey::Package(_)
+                | crate::IdentityKey::Symbol(_)
+                | crate::IdentityKey::Absent => None,
+            },
         }
     }
 }

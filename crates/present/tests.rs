@@ -278,6 +278,62 @@ fn key_tags_are_eight_hex_and_never_parsed_back() {
 }
 
 #[test]
+fn selected_symbol_operand_uses_retained_row_bytes_and_preserves_key_families() {
+    let key = symbol_key(b"selected-row-not-the-coordinate-image-key");
+    let label = format!("/abs/p::semantic::{}::ferris", "ab".repeat(32));
+    let row = backend_library::Row::new(RowId::Symbol(key), basis(), label);
+    let record = Record::from_row(&row);
+    let answer = Answer::Records(Box::new(RecordList::new(
+        "ferris",
+        CoverageLine::new(&[], Some(1)),
+        vec![record],
+    )));
+    for detail in [Detail::Summary, Detail::Full] {
+        let encoded = encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+            .expect("bounded actual row projection");
+        let value: serde_json::Value = serde_json::from_slice(&encoded.bytes).expect("JSON");
+        let identity = &value["records"][0]["identity"];
+        assert_eq!(
+            identity["key"],
+            IdentityKey::Symbol(key).tag().expect("tag").to_string()
+        );
+        assert_eq!(
+            identity["semantic_data"],
+            serde_json::json!({
+                "kind":"selected-symbol-id", "value":key.as_bytes(),
+            })
+        );
+        assert_ne!(
+            identity["semantic_data"]["value"],
+            serde_json::json!(vec![0xabu8; 32])
+        );
+        let decoded: IdentitySemanticData =
+            serde_json::from_value(identity["semantic_data"].clone())
+                .expect("closed retained selector");
+        let IdentitySemanticData::SelectedSymbolId(id) = decoded;
+        assert_eq!(id.bytes(), key.as_bytes());
+    }
+    for key in [
+        IdentityKey::Package(package_key(PROJECT)),
+        IdentityKey::Absent,
+    ] {
+        let identity = IdentityDto::new(&Identity::parse_with_key(DECLARATION, key));
+        assert!(
+            identity.semantic_data.is_none(),
+            "other planes are not shape selectors"
+        );
+    }
+    for bad in [
+        serde_json::json!({"kind":"package-id","value":vec![6u8;32]}),
+        serde_json::json!({"kind":"selected-symbol-id","value":vec![6u8;4]}),
+        serde_json::json!({"kind":"selected-symbol-id","value":vec![0u8;32]}),
+        serde_json::json!({"kind":"selected-symbol-id","value":key.as_bytes(),"extra":true}),
+    ] {
+        assert!(serde_json::from_value::<IdentitySemanticData>(bad).is_err());
+    }
+}
+
+#[test]
 fn an_unavailable_lane_never_reads_like_an_empty_success() {
     let complete = CoverageLine::new(&[Coverage::Complete], Some(12));
     assert_eq!(
