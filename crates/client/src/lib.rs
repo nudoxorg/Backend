@@ -1219,13 +1219,16 @@ impl Session {
                 .symbols()
                 .iter()
                 .copied()
-                .map(SymbolKey::from_bytes)
+                .map(SymbolAddress::Selected)
                 .collect::<Vec<_>>();
             let budget = request
                 .budget()
                 .map_err(|error| ClientError::Protocol(error.to_string()))?;
-            let (_, admitted_request, reply) =
-                self.read_semantic_shapes(request.source().clone(), &keys, budget)?;
+            let (_, admitted_request, reply) = self.read_semantic_shapes(
+                request.source().clone(),
+                keys.into_boxed_slice(),
+                budget,
+            )?;
             let export = backend_library::SemanticShapeExport::from_admitted_reply(
                 &reply,
                 &admitted_request,
@@ -1474,14 +1477,23 @@ impl Session {
         symbols: &[SymbolKey],
         budget: SemanticShapeBudget,
     ) -> Result<SemanticShapeBatch, ClientError> {
-        self.read_semantic_shapes(source, symbols, budget)
-            .map(|(batch, _, _)| batch)
+        self.read_semantic_shapes(
+            source,
+            symbols
+                .iter()
+                .copied()
+                .map(SymbolAddress::selected)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            budget,
+        )
+        .map(|(batch, _, _)| batch)
     }
 
     fn read_semantic_shapes(
         &mut self,
         source: SemanticVersionRecord,
-        symbols: &[SymbolKey],
+        symbols: Box<[SymbolAddress]>,
         budget: SemanticShapeBudget,
     ) -> Result<(SemanticShapeBatch, SemanticShapeRequest, ReplyDto), ClientError> {
         if symbols.is_empty() || symbols.len() > backend_library::MAX_SEMANTIC_SHAPE_BATCH {
@@ -1490,18 +1502,16 @@ impl Session {
             ));
         }
         let revision = self.revision()?;
-        let addresses = symbols
-            .iter()
-            .copied()
-            .map(SymbolAddress::selected)
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        let request = SemanticShapeRequest::new(revision.root, source, addresses, budget)
-            .map_err(|error| ClientError::Protocol(error.to_string()))?;
         let certificate = symbols
             .iter()
-            .copied()
-            .fold(revision.certificate, selected_symbol_certificate);
+            .fold(revision.certificate, |certificate, symbol| {
+                certificate.with_claim_once(WireClaim::KeyCommitment {
+                    schema: WireSchema::Symbol,
+                    id: encode_id(&symbol.claimed_bytes()),
+                })
+            });
+        let request = SemanticShapeRequest::new(revision.root, source, symbols, budget)
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
         let reply =
             self.send_success(Command::SemanticShapes(request.clone()), Some(certificate))?;
         let CommandReply::SemanticShapes(batch) = &reply.reply else {
