@@ -722,7 +722,12 @@ mod tests {
             let until = Instant::now() + Duration::from_secs(2);
             loop {
                 match listener.accept() {
-                    Ok((stream, _)) => return stream,
+                    Ok((stream, _)) => {
+                        // macOS accepts inherit the listener's nonblocking
+                        // flag; the owner uses bounded blocking frame reads.
+                        stream.set_nonblocking(false).expect("blocking accepted stream");
+                        return stream;
+                    }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         assert!(Instant::now() < until, "replacement socket never connected");
                         std::thread::sleep(Duration::from_millis(2));
