@@ -4,6 +4,7 @@ use super::focus::Zone;
 use super::tests::{page_route, rig};
 use crate::navigation::{Intent, SettingsPage};
 use gpui::{AppContext as _, InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _, Styled as _, TestAppContext};
+use gpui_component::WindowExt as _;
 
 #[gpui::test]
 fn escape_from_settings_returns_to_the_exact_reader_target(cx: &mut TestAppContext) {
@@ -58,7 +59,7 @@ fn settings_unmatched_markdown_origin_never_restores_a_stale_logical_row(cx: &mu
     rig.cx.update(|window, cx| {
         window.replace_root(cx, |window, cx| {
             let view = cx.new(|_| WithMarkdown { shell });
-            cx.new(|cx| gpui_component::Root::new(view, window, cx).bordered(false))
+            gpui_component::Root::new(view, window, cx).bordered(false)
         });
     });
     rig.repaint();
