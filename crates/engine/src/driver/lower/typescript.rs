@@ -74,6 +74,11 @@ pub(crate) enum TypeScriptCollectError {
     Span { start: u32, end: u32 },
     /// Native TSZ could not provide the requested project/file authority.
     TszAuthority(TszAuthorityError),
+    /// The temporary semantic-session regression adapter could not lend its
+    /// exact project-scoped checker. It exists only in unit-test builds; the
+    /// production path requires the budgeted session for admission.
+    #[cfg(test)]
+    TszQuerySession(backend_frontend_typescript::TszProjectQuerySessionError),
 }
 
 /// The lane's one coarse terminal, shared by every bounded-lane rejection
@@ -4163,8 +4168,7 @@ pub(crate) fn collect_with_tsz<'source>(
         || source_path.ends_with(".d.cts");
     let program_files = &project.program().files;
     let program_identity = native_tsz_program_identity(program_files);
-    let lowered = project
-        .with_file_checker_and_types(file_index, |checker, binder, bound_file, database| {
+    let consume = |checker, binder, bound_file, database| {
             let build = |module: OxcModule<'_>| {
                 let mut projector = Projector {
                     semantic: &module.semantic,
@@ -4219,8 +4223,28 @@ pub(crate) fn collect_with_tsz<'source>(
             } else {
                 with_analysis(profile, source, build)
             }
-            .map_err(TypeScriptCollectError::Authority)?
-        })
+            .map_err(TypeScriptCollectError::Authority)
+    };
+    #[cfg(test)]
+    let lowered = {
+        let mut session = project
+            .checked_query_session_unmetered_for_test()
+            .map_err(TypeScriptCollectError::TszQuerySession)?;
+        let session_file_index = session
+            .file_index(source_path)
+            .map_err(TypeScriptCollectError::TszAuthority)?;
+        if session_file_index != file_index {
+            return Err(TypeScriptCollectError::TszAuthority(
+                TszAuthorityError::MissingSource(source_path.to_owned()),
+            ));
+        }
+        session
+            .with_file_checker_and_types(session_file_index, consume)
+            .map_err(TypeScriptCollectError::TszQuerySession)?
+    };
+    #[cfg(not(test))]
+    let lowered = project
+        .with_file_checker_and_types(file_index, consume)
         .map_err(TypeScriptCollectError::TszAuthority)?;
     lowered
 }
