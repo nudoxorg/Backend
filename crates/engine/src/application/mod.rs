@@ -16,6 +16,7 @@ mod runtime;
 mod terminal;
 mod toolchain_probe;
 mod typescript_host;
+mod typescript_program;
 mod unit_authority_v2;
 
 pub use self::cluster_coordinator::{

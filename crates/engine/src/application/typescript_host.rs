@@ -3279,6 +3279,8 @@ pub enum TypeScriptProjectHostError {
     },
     #[error("TypeScript configuration {config:?} does not exist")]
     ConfigMissing { config: Box<Path> },
+    #[error("the admitted TypeScript compiler API rejected its program input: {message}")]
+    CompilerApiBridge { message: Box<str> },
     #[error("TypeScript configuration graph contains a cycle at {config:?}")]
     ConfigCycle { config: Box<Path> },
     #[error("TypeScript configuration {config:?} escapes workspace boundary {boundary:?}")]
