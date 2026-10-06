@@ -1947,7 +1947,28 @@ mod tests {
             .expect("release V3 publisher after writer has blocked on the marker lease");
 
         let (mut authority, daemon, commit_a) = writer.join().expect("join product marker writer");
-        let commit_a = commit_a.expect("generation B marker commits after generation A CAS");
+        let commit_a = match commit_a {
+            Ok(commit_a) => commit_a,
+            Err(error) => {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let status = loop {
+                    let status = authority
+                        .native_history_status(&key, claim_a)
+                        .expect("read generation A status after marker failure");
+                    if !matches!(
+                        status,
+                        backend_engine::SemanticHistoryPublicationStatus::Pending { .. }
+                    ) || Instant::now() >= deadline
+                    {
+                        break status;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                panic!(
+                    "generation B marker commits after generation A CAS: {error}; generation A publication status: {status:?}"
+                );
+            }
+        };
         drop(daemon);
 
         let deadline = Instant::now() + Duration::from_secs(45);
