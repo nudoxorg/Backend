@@ -715,10 +715,12 @@ fn cli_resolve_selector_round_trips_into_the_shared_shape_request() {
         serde_json::to_string(&operands).expect("operand JSON"),
     ];
     let invocation = invoke::parse(&words, None).expect("public shape CLI parse");
-    let Request::Surface(SurfaceCommand::SemanticShapes { request }) =
-        lower(&invocation, "/abs/p").expect("shared shape grammar")
+    let Request::Surface(surface) = lower(&invocation, "/abs/p").expect("shared shape grammar")
     else {
         panic!("shape request must retain its typed surface route");
+    };
+    let SurfaceCommand::SemanticShapes { request } = *surface else {
+        panic!("shape request must retain its typed semantic-shapes command");
     };
     assert_eq!(request.symbols(), &[*key.as_bytes()]);
 }
