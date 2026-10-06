@@ -825,24 +825,23 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
                 let declaration = page
                     .declaration(index)
                     .ok_or_else(|| "cold admitted declaration".to_owned())?;
+                let restored = declaration.to_owned()?;
+                let expected = declarations
+                    .get(visited)
+                    .ok_or_else(|| "cold source facts added a declaration".to_owned())?;
+                if &restored != expected {
+                    return Err(format!(
+                        "cold source facts changed declaration {}",
+                        restored.name()
+                    ));
+                }
                 visited += 1;
-                if declaration.source_declaration().kind()
-                    == backend_compile::DeclarationKind::Module
-                {
-                    continue;
-                }
-                if declaration.source_declaration().documentation().is_empty()
-                    || declaration
-                        .source_declaration()
-                        .source_excerpt()
-                        .text()
-                        .is_none()
-                {
-                    return Err("cold source facts lost complete prose or excerpt".to_owned());
-                }
-                if declaration.source_declaration().kind()
-                    == backend_compile::DeclarationKind::Function
-                {
+                if restored.kind() == backend_compile::DeclarationKind::Function {
+                    if restored.documentation().is_empty()
+                        || restored.source_excerpt().text().is_none()
+                    {
+                        return Err("cold panel facts lost complete prose or excerpt".to_owned());
+                    }
                     complete_panel_facts += 1;
                 }
             }

@@ -2804,11 +2804,16 @@ fn admit_persisted_relations(
         prepare_semantic_update(&base_semantic, persisted_intent.semantic_changes())?;
     let source_changed = update.delta().changes().next().is_some();
     let semantic_changed = semantic_update.delta().changes().next().is_some();
+    // Captures and paged facts are retained in the authenticated closure,
+    // outside these two relation deltas. Match live preparation's work count
+    // so a capture-only terminal remains admissible after a cold restart.
     let changed_items = update
         .delta()
         .changes()
         .count()
-        .saturating_add(semantic_update.delta().changes().count());
+        .saturating_add(semantic_update.delta().changes().count())
+        .saturating_add(persisted_intent.source_facts_changes().len())
+        .saturating_add(persisted_intent.capture_changes().len());
     if changed_items == 0 {
         return Err(BuiltinModelError(
             "persisted product transition is a no-op".to_owned(),

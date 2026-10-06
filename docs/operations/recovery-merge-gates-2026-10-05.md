@@ -26,10 +26,21 @@ does not establish installed acceptance.
 ## Checks on this joined branch
 
 - The package Python suite passes: 32 tests.
-- The pinned-shell five-package Rust all-target check passes after fixing five
-  recovered test compilation errors: the `CompilerAttempt` namespace, two stale
+- The pinned-shell six-package Rust all-target check passes (including GPUI
+  with test support). Five recovered test compilation errors were corrected:
+  the `CompilerAttempt` namespace, two stale
   declaration accessor calls, and two omitted optional source-capture fields.
-  The existing assertions and product acceptance requirements are preserved.
+  Three native clip tests also use the existing scaled-pixel accessor rather
+  than an unsupported conversion. Their clip assertions and negative control
+  remain intact.
+- All five focused shared compiler-refusal presentation tests pass.
+- The 900-function cold-capture regression passes after aligning persisted
+  recovery's work count with live capture/source-fact preparation. It compares
+  every reconstructed declaration exactly with the producer and requires prose
+  and excerpts on all 900 functions. The producer's additional `title`
+  properties legitimately have no JSDoc; the old blanket prose assertion was
+  incorrect. Typed refusal identity, phase/operands, recipe and source bytes
+  remain checked across the cold reopen.
 - Installed native application, complete Plural semantic indexing, and joined
   GUI acceptance have not passed. Historical results in the
   [recovery ledger](../architecture/briefs/checkpoint-2026-10-05/MEETING-BLOCKERS-RECOVERY.md)
@@ -41,7 +52,13 @@ Reproduce the source checks from this checkout:
 python3 -m unittest discover -s tools/package -p 'test_*.py' -v
 nix develop .#compiler --command cargo check --locked --offline --jobs 2 \
   -p backend-engine -p backend-library -p backend-local-service \
-  -p backend-present -p backend-desktop --all-targets
+  -p backend-present -p backend-desktop -p gpui-ce \
+  --features gpui-ce/test-support --all-targets
+nix develop .#compiler --command cargo test --locked --offline --jobs 2 \
+  -p backend-present --lib compiler_fault_tests
+nix develop .#compiler --command cargo test --locked --offline --jobs 2 \
+  -p backend-local-service --lib \
+  paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen
 ```
 
 ## Merge and operator sequence
@@ -54,10 +71,13 @@ nix develop .#compiler --command cargo check --locked --offline --jobs 2 \
    TypeScript admission, large-file cold capture, typed-refusal, and native
    publication/focus/Reader/Graph regressions against the joined tree. Repair
    remaining failures rather than carrying earlier passing receipts forward.
-   PR #24 records a concrete outstanding failure: the 900-function TSX
-   cold-capture regression reaches restart, where capture-only recovery is
-   incorrectly classified as a no-op. Repair that durable recovery path and
-   rerun `paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen`.
+   PR #24's capture-only cold-recovery failure is repaired and its regression
+   passes here. That focused structural/replay proof does not close complete
+   configured semantic indexing or installed native acceptance.
+   The concurrently updated ledger also describes a stronger before-capture
+   witness packet (`4d2d0d46c` and follow-up) for Pending A, unrelated commit B,
+   then terminal A. Its joined runtime gate is still pending; retain that
+   requirement rather than treating the simple cold-reopen test as its proof.
 3. Test matched installed CLI/MCP/GUI binaries outside the Nix shell and source
    checkout. A normal project-local TypeScript installation must work. The full
    Plural reproduction needs its exact checkout, successful semantic publication,
