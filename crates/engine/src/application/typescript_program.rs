@@ -37,7 +37,7 @@ const LIB_VIRTUAL_PREFIX: &str = "@compiler/lib.";
 /// Fully admitted source/lib/options set produced by the selected compiler API.
 pub(crate) struct NativeTypeScriptInputs {
     pub(crate) sources: Vec<TszFileInput>,
-    pub(crate) libraries: Vec<std::sync::Arc<tsz::lib_loader::LibFile>>,
+    pub(crate) libraries: Vec<std::sync::Arc<backend_frontend_typescript::TszLibFile>>,
     pub(crate) options: TszProjectOptions,
     /// Package-relative source path to the exact workspace-root TSZ path.
     pub(crate) package_paths: BTreeMap<Box<str>, Box<str>>,
@@ -419,8 +419,10 @@ pub(crate) fn build_native_inputs(
         };
         let resolution_mode = match request.mode.as_deref() {
             None => None,
-            Some("import") => Some(tsz::checker::context::ResolutionModeOverride::Import),
-            Some("require") => Some(tsz::checker::context::ResolutionModeOverride::Require),
+            Some("import") => Some(backend_frontend_typescript::TszResolutionModeOverride::Import),
+            Some("require") => {
+                Some(backend_frontend_typescript::TszResolutionModeOverride::Require)
+            }
             Some(other) => {
                 return Err(bridge_error(&format!(
                     "unsupported TypeScript resolution mode {other:?}"
@@ -774,7 +776,7 @@ fn program_environment_fingerprint(
 fn calculate_work_units(
     inputs: &TypeScriptProjectInputs<'_>,
     sources: &[TszFileInput],
-    libraries: &[std::sync::Arc<tsz::lib_loader::LibFile>],
+    libraries: &[std::sync::Arc<backend_frontend_typescript::TszLibFile>],
 ) -> u64 {
     let source_bytes = sources
         .iter()

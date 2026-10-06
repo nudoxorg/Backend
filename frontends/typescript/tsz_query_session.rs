@@ -35,6 +35,15 @@ pub struct TszProjectQuerySession<'project> {
     file_indexes: HashMap<&'project str, usize>,
 }
 
+impl std::fmt::Debug for TszProjectQuerySession<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TszProjectQuerySession")
+            .field("file_count", &self.file_indexes.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl TszProject {
     /// Opens a budgeted native query session for exact semantic projection.
     ///

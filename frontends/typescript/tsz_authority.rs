@@ -175,6 +175,10 @@ pub enum TszAuthorityError {
         /// Stable source path selected by the package authority.
         path: String,
     },
+    /// A compiler file projection attempted to use a query session owned by
+    /// a different checked project.
+    #[error("TSZ query session is bound to a different project")]
+    ProjectSessionMismatch,
     /// Exact compiler module-resolution authority could not be attached to
     /// the merged program without guessing a path or weakening a request.
     #[error(transparent)]

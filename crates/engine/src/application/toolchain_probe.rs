@@ -373,7 +373,7 @@ pub(crate) fn probe_command(
     let mut command = Command::new(executable);
     NativeCompilerEnvironment::apply(&mut command, tool);
     command.args(arguments);
-    probe_prepared_command(tool, executable, command, limits)
+    probe_prepared_command(tool, executable, command, limits, None)
 }
 
 /// Probes the package-owned TypeScript JavaScript entry through one exact Node executable.

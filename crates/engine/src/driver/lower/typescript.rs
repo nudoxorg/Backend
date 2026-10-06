@@ -4371,6 +4371,7 @@ pub(crate) fn collect_with_tsz<'source>(
     source: &'source [u8],
     project: &'source TszProject,
     source_path: &str,
+    session: &'source backend_frontend_typescript::TszProjectQuerySession<'source>,
     facts: &mut FactSet<'source>,
 ) -> Result<(), TypeScriptCollectError> {
     let source = std::str::from_utf8(source).map_err(TypeScriptCollectError::Utf8)?;
@@ -4381,16 +4382,14 @@ pub(crate) fn collect_with_tsz<'source>(
             },
         ));
     }
-    let file_index = project
-        .program()
-        .files
-        .iter()
-        .position(|file| file.file_name == source_path)
-        .ok_or_else(|| {
-            TypeScriptCollectError::TszAuthority(TszAuthorityError::MissingSource(
-                source_path.to_owned(),
-            ))
-        })?;
+    if !std::ptr::eq(session.project(), project) {
+        return Err(TypeScriptCollectError::TszAuthority(
+            TszAuthorityError::ProjectSessionMismatch,
+        ));
+    }
+    let file_index = session
+        .file_index(source_path)
+        .map_err(TypeScriptCollectError::TszAuthority)?;
     let declaration_file = source_path.ends_with(".d.ts")
         || source_path.ends_with(".d.mts")
         || source_path.ends_with(".d.cts");
@@ -4459,43 +4458,30 @@ pub(crate) fn collect_with_tsz<'source>(
             .map_err(TypeScriptCollectError::Authority)?
         }};
     }
-    #[cfg(test)]
-    let lowered = {
-        let mut session = project
-            .checked_query_session_unmetered_for_test()
-            .map_err(|error| {
-                TypeScriptCollectError::TszAuthority(TszAuthorityError::ProjectCheckerSession(
-                    error,
-                ))
-            })?;
-        let session_file_index = session
-            .file_index(source_path)
-            .map_err(TypeScriptCollectError::TszAuthority)?;
-        if session_file_index != file_index {
-            return Err(TypeScriptCollectError::TszAuthority(
-                TszAuthorityError::MissingSource(source_path.to_owned()),
-            ));
-        }
-        session
-            .with_file_checker_and_types(
-                session_file_index,
-                |checker, binder, bound_file, database| {
-                    lower_with_tsz_checker!(checker, binder, bound_file, database)
-                },
-            )
-            .map_err(|error| {
-                TypeScriptCollectError::TszAuthority(TszAuthorityError::ProjectCheckerSession(
-                    error,
-                ))
-            })?
-    };
-    #[cfg(not(test))]
-    let lowered = project
+    let lowered = session
         .with_file_checker_and_types(file_index, |checker, binder, bound_file, database| {
             lower_with_tsz_checker!(checker, binder, bound_file, database)
         })
-        .map_err(TypeScriptCollectError::TszAuthority)?;
+        .map_err(|error| {
+            TypeScriptCollectError::TszAuthority(TszAuthorityError::ProjectCheckerSession(error))
+        })?;
     lowered
+}
+
+#[cfg(test)]
+fn collect_with_tsz_unmetered_for_test<'source>(
+    profile: TypeScriptSource,
+    source: &'source [u8],
+    project: &'source TszProject,
+    source_path: &str,
+    facts: &mut FactSet<'source>,
+) -> Result<(), TypeScriptCollectError> {
+    let session = project
+        .checked_query_session_unmetered_for_test()
+        .map_err(|error| {
+            TypeScriptCollectError::TszAuthority(TszAuthorityError::ProjectCheckerSession(error))
+        })?;
+    collect_with_tsz(profile, source, project, source_path, &session, facts)
 }
 
 impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
@@ -10496,7 +10482,7 @@ mod lane_tests {
             .project()
             .ok_or(LaneError::Missing("native TSZ project result"))?;
         let mut facts = FactSet::new();
-        collect_with_tsz(
+        collect_with_tsz_unmetered_for_test(
             TypeScriptSource::TypeScript,
             source.as_bytes(),
             project,
@@ -10630,7 +10616,7 @@ mod lane_tests {
         source: &'source str,
     ) -> Result<FactSet<'source>, LaneError> {
         let mut facts = FactSet::new();
-        collect_with_tsz(
+        collect_with_tsz_unmetered_for_test(
             TypeScriptSource::TypeScript,
             source.as_bytes(),
             project,

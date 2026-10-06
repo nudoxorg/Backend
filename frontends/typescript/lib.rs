@@ -22,6 +22,10 @@ pub use package::{
     PackagePurlError, RegistryMetadata, TarballMember, TarballMemberKind, decode_packument,
     locate_package, read_tarball,
 };
+/// TypeScript module-resolution mode carried by exact compiler API requests.
+pub use tsz::checker::context::ResolutionModeOverride as TszResolutionModeOverride;
+/// In-memory compiler library admitted for one TSZ project.
+pub use tsz::lib_loader::LibFile as TszLibFile;
 /// One merged source file and its TSZ-owned syntax/binder spans.
 pub use tsz::parallel::BoundFile as TszBoundFile;
 /// Native TSZ syntax arena used by exact source-coordinate occurrence joins.
@@ -35,23 +39,22 @@ pub use tsz::tsz_solver::construction::TypeDatabase as TszTypeDatabase;
 pub use tsz::tsz_solver::type_handles as tsz_type_handles;
 pub use tsz_authority::{
     TszAuthorityError, TszBinderState, TszCheckerOptions, TszCheckerState, TszCompilerOptionsError,
-    TszDiagnostic,
-    TszEnvironmentFingerprint, TszFileInput, TszLibraryInput, TszModuleDetectionKind,
-    TszModuleKind, TszNodeIndex, TszParseDiagnostic, TszProject, TszProjectAuthority,
-    TszProjectModuleRequestKind, TszProjectModuleResolution, TszProjectModuleResolutionError,
-    TszProjectModuleResolutionTarget, TszProjectOptions, TszProjectSemanticOptions,
-    TszScriptTarget, TszSourceError, TszSymbolId, TszTypeId, TszUpdateReport,
-    checker_options_from_compiler_api_json,
+    TszDiagnostic, TszEnvironmentFingerprint, TszFileInput, TszLibraryInput,
+    TszModuleDetectionKind, TszModuleKind, TszNodeIndex, TszParseDiagnostic, TszProject,
+    TszProjectAuthority, TszProjectModuleRequestKind, TszProjectModuleResolution,
+    TszProjectModuleResolutionError, TszProjectModuleResolutionTarget, TszProjectOptions,
+    TszProjectSemanticOptions, TszScriptTarget, TszSourceError, TszSymbolId, TszTypeId,
+    TszUpdateReport, checker_options_from_compiler_api_json,
 };
 pub use tsz_authority::{TszProjectQuerySession, TszProjectQuerySessionError};
+/// Interned string handle used by TSZ shapes and member names.
+pub use tsz_common::interner::Atom as TszAtom;
 /// Shared cancellation, deadline, and work control for one native TSZ project.
 pub use tsz_common::{
     ExecutionCheckpoint as TszExecutionCheckpoint,
     ProjectExecutionBudget as TszProjectExecutionBudget,
     ProjectExecutionStop as TszProjectExecutionStop,
 };
-/// Interned string handle used by TSZ shapes and member names.
-pub use tsz_common::interner::Atom as TszAtom;
 
 use backend_compile::{
     Authority, AuthorityError as CompileAuthorityError, AuthorityIdentity, DiscoverySnapshot,
