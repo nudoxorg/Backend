@@ -681,6 +681,127 @@ mod tests {
     }
 
     #[test]
+    fn source_membership_rejects_forged_cursor_and_missing_intermediate_page() {
+        let declarations = shared_declarations(1).expect("declarations");
+        let stored = snapshot_holding(1, 2_043, &declarations).expect("indexed snapshot");
+        let package = local_package("pkg-0");
+        let mut first_request = PackageSourceMembershipPageRequestV1::first(package.clone());
+        first_request.limit = 32;
+        let PackageSourceMembershipPageResultV1::Page {
+            source_relation_root,
+            source_version,
+            next: Some(cursor),
+            ..
+        } = membership_page(&stored, &first_request)
+        else {
+            panic!("first page has a continuation");
+        };
+
+        let mut forged_ordinal = cursor.clone();
+        forged_ordinal.ordinal = forged_ordinal.ordinal.saturating_add(1);
+        let mut forged_request = PackageSourceMembershipPageRequestV1::first(package.clone())
+            .with_selection(source_relation_root, source_version)
+            .with_cursor(forged_ordinal);
+        forged_request.limit = 1;
+        assert!(matches!(
+            membership_page(&stored, &forged_request),
+            PackageSourceMembershipPageResultV1::Unavailable {
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                ..
+            }
+        ));
+
+        let mut forged_key = cursor;
+        forged_key.last_file_key[31] ^= 1;
+        let mut forged_request = PackageSourceMembershipPageRequestV1::first(package)
+            .with_selection(source_relation_root, source_version)
+            .with_cursor(forged_key);
+        forged_request.limit = 1;
+        assert!(matches!(
+            membership_page(&stored, &forged_request),
+            PackageSourceMembershipPageResultV1::Unavailable {
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                ..
+            }
+        ));
+
+        // Remove an intermediate selected page while retaining the Project
+        // root and later rows. A response that resumes at the preceding page
+        // must discover the missing next page, rather than trusting that the
+        // cursor's key and ordinal imply a complete prefix.
+        let broken_label = "pkg-missing-intermediate";
+        let project_key = backend_engine::package_key(broken_label).to_bytes();
+        let mut entries = super::labelled_source_entries(
+            std::iter::once(broken_label.to_owned()),
+            2_043,
+            &declarations,
+        )
+        .expect("complete source entries");
+        let project_record = entries
+            .iter()
+            .find(|(key, _)| *key == project_key)
+            .map(|(_, record)| record.clone())
+            .expect("selected project row");
+        let project = project_record.project_fields().expect("project fields");
+        let backend_engine::ProductProjectFileMembership::Paged {
+            page_keys,
+            page_offsets: Some(page_offsets),
+            ..
+        } = project.files
+        else {
+            panic!("large fixture has committed page offsets");
+        };
+        let first_page = entries
+            .iter()
+            .find(|(key, _)| *key == page_keys[0])
+            .map(|(_, record)| record.membership_page_fields().expect("membership page"))
+            .expect("first page row");
+        let first_page_len = first_page.files.len();
+        let cursor = backend_library::PackageSourceMembershipCursorV1 {
+            schema: backend_library::PACKAGE_SOURCE_MEMBERSHIP_SCHEMA,
+            package: local_package(broken_label),
+            project_key,
+            source_relation_root: [0; 32],
+            source_version: project.source_version,
+            membership_page: 0,
+            membership_offset: u16::try_from(first_page_len - 1).expect("page offset fits"),
+            ordinal: u32::try_from(first_page_len - 1).expect("member ordinal fits"),
+            last_file_key: *first_page.files.last().expect("last first-page key"),
+        };
+        let missing_page_key = page_keys[1];
+        entries.retain(|(key, _)| *key != missing_page_key);
+        let relation =
+            backend_engine::RelationState::<backend_engine::ProductSourceRelation>::from_entries(
+                entries,
+                super::super::admitted_coverage().expect("coverage"),
+            )
+            .expect("snapshot with one missing membership page");
+        let broken = store_relation(relation, "missing-intermediate-membership-page".to_owned())
+            .expect("stored incomplete membership");
+        let root = *broken
+            .snapshot
+            .relation::<backend_engine::ProductSourceRelation>()
+            .expect("source relation")
+            .root()
+            .as_bytes();
+        let mut request = PackageSourceMembershipPageRequestV1::first(local_package(broken_label))
+            .with_selection(root, project.source_version)
+            .with_cursor(backend_library::PackageSourceMembershipCursorV1 {
+                source_relation_root: root,
+                ..cursor
+            });
+        request.limit = 1;
+        assert!(matches!(
+            membership_page(&broken.snapshot, &request),
+            PackageSourceMembershipPageResultV1::Unavailable {
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                ..
+            }
+        ));
+        assert_eq!(page_offsets[0], 0);
+    }
+
+    #[test]
     fn one_package_lookup_matches_its_rows_in_the_full_page() {
         let declarations = shared_declarations(4).expect("declarations");
         let snapshot = snapshot_holding(8, 8, &declarations).expect("snapshot");
@@ -861,18 +982,15 @@ mod tests {
     #[test]
     fn full_source_page_rejects_missing_and_unreferenced_membership_pages() {
         let declarations = shared_declarations(1).expect("declarations");
+        let project_key = backend_engine::package_key("pkg-0").to_bytes();
+        let mut file_keys = (0..2_043)
+            .map(|index| {
+                backend_engine::product_source_file_key(project_key, &format!("src/f{index}.rs"))
+            })
+            .collect::<Vec<_>>();
+        file_keys.sort_unstable();
         let update = backend_engine::ProductSourceRecord::project_with_membership_pages(
-            "pkg-0",
-            [3; 32],
-            (0..2_043)
-                .map(|index| {
-                    backend_engine::product_source_file_key(
-                        backend_engine::package_key("pkg-0").to_bytes(),
-                        &format!("src/f{index}.rs"),
-                    )
-                })
-                .collect::<Vec<_>>(),
-            None,
+            "pkg-0", [3; 32], file_keys, None,
         )
         .expect("paged project update");
         let project_key = update.project_key();

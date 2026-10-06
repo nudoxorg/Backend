@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 /// Maximum number of selected source files returned by one page.
 pub const MAX_PACKAGE_SOURCE_MEMBERSHIP_PAGE_FILES: u16 = 128;
 
+/// Default membership page size chosen to fit the standard structured reply
+/// budget while preserving complete typed and human-readable file records.
+pub const DEFAULT_PACKAGE_SOURCE_MEMBERSHIP_PAGE_FILES: u16 = 32;
+
 /// Maximum canonical package-relative path size in a membership reply.
 pub const MAX_PACKAGE_SOURCE_MEMBERSHIP_PATH_BYTES: usize = MAX_PRODUCT_TEXT_BYTES;
 
@@ -146,7 +150,7 @@ impl PackageSourceMembershipPageRequestV1 {
             expected_source_relation_root: None,
             expected_source_version: None,
             cursor: None,
-            limit: MAX_PACKAGE_SOURCE_MEMBERSHIP_PAGE_FILES,
+            limit: DEFAULT_PACKAGE_SOURCE_MEMBERSHIP_PAGE_FILES,
         }
     }
 

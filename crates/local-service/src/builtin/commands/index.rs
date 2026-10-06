@@ -5640,7 +5640,11 @@ pub(in crate::builtin) fn package_source_membership_page_from_snapshot(
         });
     }
 
-    let load_membership_page = |page_key: &[u8; 32]| -> Result<Vec<[u8; 32]>, String> {
+    let selected_file_count = project.files.file_count();
+    let load_membership_page = |page_index: usize,
+                                page_key: &[u8; 32],
+                                page_offsets: &[u32]|
+     -> Result<Vec<[u8; 32]>, String> {
         let page_record = relation
             .lookup(page_key)
             .map_err(|error| format!("read membership page: {error}"))?
@@ -5657,15 +5661,34 @@ pub(in crate::builtin) fn package_source_membership_page_from_snapshot(
         {
             return Err("selected Project membership page identity is invalid".to_owned());
         }
+        let start = *page_offsets
+            .get(page_index)
+            .ok_or_else(|| "selected Project membership prefix offset is missing".to_owned())?
+            as usize;
+        let end = page_offsets
+            .get(page_index + 1)
+            .map_or(selected_file_count, |offset| *offset as usize);
+        if fields.files.len() != end.saturating_sub(start) {
+            return Err("selected Project membership page count is inconsistent".to_owned());
+        }
         Ok(fields.files.to_vec())
     };
 
-    let (file_count, inline_files, page_keys) = match project.files {
-        ProductProjectFileMembership::Inline(files) => (files.len(), Some(files), None),
+    let (file_count, inline_files, page_keys, page_offsets) = match project.files {
+        ProductProjectFileMembership::Inline(files) => (files.len(), Some(files), None, None),
         ProductProjectFileMembership::Paged {
             file_count,
             page_keys,
-        } => (file_count, None, Some(page_keys)),
+            page_offsets: Some(offsets),
+        } => (file_count, None, Some(page_keys), Some(offsets)),
+        ProductProjectFileMembership::Paged {
+            page_offsets: None, ..
+        } => {
+            return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                package,
+                reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+            });
+        }
     };
     if file_count > backend_library::MAX_SELECTED_PROJECT_FRONTIER_FILES {
         return Ok(PackageSourceMembershipPageResultV1::Unavailable {
@@ -5695,8 +5718,8 @@ pub(in crate::builtin) fn package_source_membership_page_from_snapshot(
                 current_source_version: Some(project.source_version),
             });
         }
-        let (membership, actual_key) = match (inline_files, page_keys) {
-            (Some(files), None) => {
+        let (membership, actual_key) = match (inline_files, page_keys, page_offsets) {
+            (Some(files), None, None) => {
                 let offset = usize::from(cursor.membership_offset);
                 if cursor.membership_page != 0 || files.get(offset).is_none() {
                     return Ok(PackageSourceMembershipPageResultV1::Unavailable {
@@ -5706,7 +5729,7 @@ pub(in crate::builtin) fn package_source_membership_page_from_snapshot(
                 }
                 (offset, files[offset])
             }
-            (None, Some(pages)) => {
+            (None, Some(pages), Some(offsets)) => {
                 page_index = usize::from(cursor.membership_page);
                 let Some(page_key) = pages.get(page_index) else {
                     return Ok(PackageSourceMembershipPageResultV1::Unavailable {
@@ -5714,29 +5737,8 @@ pub(in crate::builtin) fn package_source_membership_page_from_snapshot(
                         reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
                     });
                 };
-                let mut ordinal_before_page = 0_u32;
-                for prior_page_key in pages.iter().take(page_index) {
-                    let Ok(prior) = load_membership_page(prior_page_key) else {
-                        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
-                            package,
-                            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
-                        });
-                    };
-                    let Ok(prior_len) = u32::try_from(prior.len()) else {
-                        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
-                            package,
-                            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
-                        });
-                    };
-                    let Some(next) = ordinal_before_page.checked_add(prior_len) else {
-                        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
-                            package,
-                            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
-                        });
-                    };
-                    ordinal_before_page = next;
-                }
-                let Ok(current) = load_membership_page(page_key) else {
+                let ordinal_before_page = offsets[page_index];
+                let Ok(current) = load_membership_page(page_index, page_key, offsets) else {
                     return Ok(PackageSourceMembershipPageResultV1::Unavailable {
                         package,
                         reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
@@ -5745,8 +5747,8 @@ pub(in crate::builtin) fn package_source_membership_page_from_snapshot(
                 let offset = usize::from(cursor.membership_offset);
                 if current.get(offset).is_none()
                     || current[offset] != cursor.last_file_key
-                    || ordinal_before_page.saturating_add(cursor.membership_offset as u32)
-                        != cursor.ordinal
+                    || ordinal_before_page.checked_add(cursor.membership_offset as u32)
+                        != Some(cursor.ordinal)
                 {
                     return Ok(PackageSourceMembershipPageResultV1::Unavailable {
                         package,
@@ -5798,7 +5800,13 @@ pub(in crate::builtin) fn package_source_membership_page_from_snapshot(
                         exhausted = true;
                         break;
                     };
-                    let Ok(page) = load_membership_page(page_key) else {
+                    let Some(offsets) = page_offsets else {
+                        return Ok(PackageSourceMembershipPageResultV1::Unavailable {
+                            package,
+                            reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,
+                        });
+                    };
+                    let Ok(page) = load_membership_page(page_index, page_key, offsets) else {
                         return Ok(PackageSourceMembershipPageResultV1::Unavailable {
                             package,
                             reason: PackageSourceMembershipUnavailableV1::SelectedRelationInvalid,

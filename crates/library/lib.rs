@@ -231,12 +231,12 @@ pub use source_discovery::{
     MAX_DISCOVERY_REVISION_BYTES, RegistryFactReadError, RegistryFactVersionId,
 };
 pub use source_membership::{
-    MAX_PACKAGE_SOURCE_MEMBERSHIP_PAGE_FILES, MAX_PACKAGE_SOURCE_MEMBERSHIP_PATH_BYTES,
-    PACKAGE_SOURCE_MEMBERSHIP_SCHEMA, PackageSourceMembershipCursorV1,
-    PackageSourceMembershipExclusionsV1, PackageSourceMembershipFileV1,
-    PackageSourceMembershipLanguageV1, PackageSourceMembershipPageRequestV1,
-    PackageSourceMembershipPageResultV1, PackageSourceMembershipScopeV1,
-    PackageSourceMembershipUnavailableV1,
+    DEFAULT_PACKAGE_SOURCE_MEMBERSHIP_PAGE_FILES, MAX_PACKAGE_SOURCE_MEMBERSHIP_PAGE_FILES,
+    MAX_PACKAGE_SOURCE_MEMBERSHIP_PATH_BYTES, PACKAGE_SOURCE_MEMBERSHIP_SCHEMA,
+    PackageSourceMembershipCursorV1, PackageSourceMembershipExclusionsV1,
+    PackageSourceMembershipFileV1, PackageSourceMembershipLanguageV1,
+    PackageSourceMembershipPageRequestV1, PackageSourceMembershipPageResultV1,
+    PackageSourceMembershipScopeV1, PackageSourceMembershipUnavailableV1,
 };
 pub use surface::{
     AuthorityClassFact, AuthorityPhaseFact, CompilerAuthorityDiagnosticFacts, CompilerLanguageFact,
