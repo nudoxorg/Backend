@@ -5,6 +5,7 @@ out=pathlib.Path(os.environ['PC2_OUTPUT']);out.mkdir(mode=0o700);state=out/'stat
 env=dict(witness['environment']);env.update(HOME=str(out/'home'),TMPDIR=str(out/'tmp'))
 for key in ('HOME','TMPDIR'):pathlib.Path(env[key]).mkdir(mode=0o700)
 endpoint='/tmp/nudox-pc2-'+uuid.uuid4().hex[:16]+'.sock'
+references={}
 locald=base/'successor-039c-images/backend-locald';oldcli=base/'successor-039c-images/backend-cli';cli=pathlib.Path(os.environ['PC2_CLI']);mcp=pathlib.Path(os.environ['PC2_MCP'])
 def sha(p):
  h=hashlib.sha256()
@@ -54,7 +55,7 @@ def cli_walk(route,generation):
    assert p.get('more') is False,p;break
   assert token.startswith('pc2-') and len(token)<=32768,'bounded pc2'
  else:raise AssertionError('unresolved CLI token')
- expected=witness['names_reference' if route=='resolve' else 'search_reference']['identities'];passed=coordinates==expected and len(set(coordinates))==37 and len(pages)==13 and len(set(pids))==13
+ expected=references[route];passed=coordinates==expected and len(set(coordinates))==37 and len(pages)==13 and len(set(pids))==13
  receipt['checks']['cli-'+route+'-'+str(generation)]={'pass':passed,'identities':coordinates,'page_count':len(pages),'pids':pids,'token_sizes':[len(p['nextCursor']) for p in pages if p.get('nextCursor')]};assert passed,'CLI complete/order/fresh-process'
  return pages
 
@@ -91,13 +92,18 @@ def mcp_walk(route):
   p,pid=mcp_page(route,token,i);pids.append(pid);pages.append(p);coordinates+=ids(p);token=p.get('nextCursor')
   if not token:assert p.get('more') is False;break
  else:raise AssertionError('unresolved MCP token')
- expected=witness['names_reference' if route=='resolve' else 'search_reference']['identities'];passed=coordinates==expected and len(set(coordinates))==37 and len(pages)==13 and len(set(pids))==1
+ expected=references[route];passed=coordinates==expected and len(set(coordinates))==37 and len(pages)==13 and len(set(pids))==1
  receipt['checks']['persistent-mcp-'+route]={'pass':passed,'identities':coordinates,'page_count':len(pages),'pids':pids};assert passed,'MCP persistent process parity'
 
 def mutate(token,change):
  data=json.loads(bytes.fromhex(token[4:]));change(data);return 'pc2-'+json.dumps(data,separators=(',',':')).encode().hex()
 try:
  start(1);old=command(oldcli,['resolve','pagemark','--limit','3'],'before-old-cli');receipt['before']=old;assert old['exit']==0 and old['payload']['more'] and not old['payload'].get('nextCursor'),'before failure'
+ for route in ['resolve','search']:
+  ref=cli_page(route,limit=200,label='independent-reference-'+route);assert ref['exit']==0 and ref['payload'].get('more') is False,ref
+  references[route]=ids(ref['payload']);expected=witness['names_reference' if route=='resolve' else 'search_reference']['identities']
+  assert len(references[route])==37 and set(references[route])==set(expected),'preserved source-coordinate fidelity'
+ receipt['independent_references']=references
  names=cli_walk('resolve',1);search=cli_walk('search',1);token=names[0]['nextCursor'];receipt['token_before_cold']=token
  for label,route,text,limit,raw in [('family','search','pagemark',3,token),('text','resolve','pagemark_other',3,token),('credit-down','resolve','pagemark',1,token),('credit-up','resolve','pagemark',4,token),('malformed','resolve','pagemark',3,'pc2-zz'),('oversize','resolve','pagemark',3,'pc2-'+'00'*16385)]:
   d=cli_page(route,raw,limit,text,'negative-'+label);passed=d['exit']!=0 and d['stdout_bytes']+d['stderr_bytes']<=8192;receipt['checks']['negative-'+label]={'pass':passed,'exit':d['exit'],'body_bytes':d['stdout_bytes']+d['stderr_bytes']};assert passed,label
