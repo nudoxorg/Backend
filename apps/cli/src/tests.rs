@@ -802,3 +802,125 @@ fn markdown_output_is_the_shared_renderer_and_json_is_the_typed_dto() {
         "the product JSON must not leak wire proof"
     );
 }
+
+#[cfg(any(unix, windows))]
+#[test]
+fn cli_keeps_bounded_graph_page_without_exporting_a_query_proof() {
+    use backend_library::{
+        AuthorityScopeClaim, Coverage, CoverageCapability, Cursor, Library,
+        ProducerObservationClaims, ProducerObservationVerifier, Row, RowId, ScopeRoot,
+        UntrustedProducerObservation, admit_complete_scope, admit_producer_observation, symbol_key,
+        view_state_root,
+    };
+    struct GraphVerifier;
+    impl ProducerObservationVerifier for GraphVerifier {
+        type Error = &'static str;
+        fn verify(
+            &self,
+            observation: &UntrustedProducerObservation,
+        ) -> Result<ProducerObservationClaims, Self::Error> {
+            if observation.producer_identity() != [7; 32]
+                || observation.context() != [8; 32]
+                || observation.evidence() != [9; 32]
+            {
+                return Err("foreign test graph producer");
+            }
+            Ok(ProducerObservationClaims::new(
+                observation.producer_identity(),
+                observation.scope_root(),
+                observation.context(),
+                *blake3::hash(observation.evidence()).as_bytes(),
+            ))
+        }
+    }
+    struct GraphTransport(Library);
+    impl CommandTransport for GraphTransport {
+        fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+            let reply = self.0.execute_dto(request.clone());
+            admit_reply(&request, reply)
+        }
+    }
+    let object = object_version(b"library-source-v1");
+    let observation = admit_producer_observation(
+        UntrustedProducerObservation::new(
+            [7; 32],
+            ScopeRoot::from_bytes(object.to_bytes()),
+            [8; 32],
+            vec![9; 32],
+        ),
+        &GraphVerifier,
+    )
+    .expect("graph observation");
+    let capability = CoverageCapability::from_authorized_with_evidence(
+        admit_complete_scope(
+            AuthorityScopeClaim::from_object_version(object),
+            observation,
+        )
+        .expect("scope"),
+        vec![9; 32],
+    )
+    .expect("graph capability");
+    let basis = Basis::new(view_state_root(&[]), object);
+    let package = package_key("pkg");
+    let parent = symbol_key("pkg::Parent");
+    let mut rows = vec![Row::in_package(
+        RowId::Symbol(parent),
+        basis,
+        package,
+        "pkg::Parent",
+    )];
+    for i in 0..5 {
+        let mut child = Row::in_package(
+            RowId::Symbol(symbol_key(&format!("pkg::Child{i}"))),
+            basis,
+            package,
+            format!("pkg::Child{i}"),
+        );
+        child.parent = Some(parent);
+        rows.push(child);
+    }
+    let root = ViewRoot::new_checked(
+        view_key(b"library-view-v1"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        rows,
+        vec![Coverage::Complete],
+        capability,
+    )
+    .expect("graph root");
+    let owner =
+        Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("graph owner");
+    let mut session =
+        backend_client::Session::from_transport("/private/graph-owner.sock", GraphTransport(owner));
+    let reply = session
+        .graph_page("pkg::Parent", 2, None)
+        .expect("real bounded graph page");
+    let CommandReply::ProjectionPage(page) = reply.reply else {
+        panic!("graph page reply");
+    };
+    assert_eq!(page.snapshot.root.rows().len(), 2);
+    let continuation = page
+        .snapshot
+        .next
+        .expect("five children exceed graph page credit");
+    let answer = backend_present::Answer::Records(Box::new(backend_present::record_list(
+        "pkg::Parent",
+        &page.snapshot,
+    )));
+    assert!(answer.continuation().is_some());
+    assert!(!session.has_portable_query_continuation(
+        backend_library::PageContinuation::from_cursor(continuation)
+    ));
+    let options = options::split(&["--json".to_owned()])
+        .expect("JSON options")
+        .0;
+    let rendered = process::render_admitted_answer(&session, &answer, &options)
+        .expect("graph response remains successful");
+    let payload: serde_json::Value = serde_json::from_str(&rendered).expect("rendered graph JSON");
+    assert_eq!(payload["more"], true);
+    assert_eq!(payload["records"].as_array().expect("records").len(), 2);
+    assert!(
+        payload.get("nextCursor").is_none(),
+        "do not invent a portable nonquery token"
+    );
+}
