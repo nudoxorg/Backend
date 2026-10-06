@@ -2029,9 +2029,12 @@ mod tests {
     #[gpui::test]
     fn pointer_focused_source_pager_gives_tab_to_the_next_reader_control(cx: &mut TestAppContext) {
         use crate::shell::focus::Zone;
-        let route = crate::shell::tests::view_route("RelationLabel", View::Code);
+        let Route::Symbol(mut route) = crate::shell::tests::view_route("RelationLabel", View::Code) else { unreachable!() };
+        // The fixture declaration is near EOF. Ask for the beginning so
+        // both the clicked page and its successor have a real Next control.
+        route.line = Some(1);
         let pool = ReadPool::start(2, |_| LongSource).expect("source read pool");
-        let mut rig = crate::shell::tests::rig_with_reads(cx, Some(route), 720.0, 700.0, pool);
+        let mut rig = crate::shell::tests::rig_with_reads(cx, Some(Route::Symbol(route)), 720.0, 700.0, pool);
         let targets = pointer_focus_current_pager(&mut rig);
         let order = targets.native_keys();
         let at = order.iter().position(|id| id == "source-page-top-next").expect("pager in native order");
@@ -2044,9 +2047,10 @@ mod tests {
     #[gpui::test]
     fn pointer_focused_source_pager_gives_j_and_k_the_reader_walk(cx: &mut TestAppContext) {
         use crate::shell::focus::Zone;
-        let route = crate::shell::tests::view_route("RelationLabel", View::Code);
+        let Route::Symbol(mut route) = crate::shell::tests::view_route("RelationLabel", View::Code) else { unreachable!() };
+        route.line = Some(1);
         let pool = ReadPool::start(2, |_| LongSource).expect("source read pool");
-        let mut rig = crate::shell::tests::rig_with_reads(cx, Some(route), 720.0, 700.0, pool);
+        let mut rig = crate::shell::tests::rig_with_reads(cx, Some(Route::Symbol(route)), 720.0, 700.0, pool);
         let targets = pointer_focus_current_pager(&mut rig);
         let list = targets.list_probe().upgrade().expect("Reader target list");
         let order: Vec<_> = list.borrow().iter().map(|target| target.id.clone()).collect();

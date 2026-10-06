@@ -799,8 +799,7 @@ impl crate::runtime::reads::PageReader for PackageAtRequest {
         let crate::runtime::reads::ReadRequest::Package(package) = request else {
             return crate::shell::tests::Fixture.read(request, context);
         };
-        let mut about = dossier();
-        about.package = package.clone();
+        let about = crate::shell::tests::registry_dossier(package);
         Ok(crate::model::pages::PageValue::Package(about))
     }
 }
