@@ -225,6 +225,15 @@ pub enum ToolchainProbeError {
         #[source]
         source: io::Error,
     },
+    /// A compiler-owner probe worker could not be created before a process was started.
+    #[error("could not start the bounded probe worker for {tool:?}")]
+    ProbeWorkerSpawn {
+        /// Closed tool family.
+        tool: NativeTool,
+        /// Original operating-system cause.
+        #[source]
+        source: io::Error,
+    },
     /// A named reader thread could not be created.
     #[error("could not start {worker:?} reader for {tool:?} version probe")]
     ReaderSpawn {
@@ -360,8 +369,46 @@ pub(crate) fn probe_command(
     }
     let mut command = Command::new(executable);
     NativeCompilerEnvironment::apply(&mut command, tool);
+    command.args(arguments);
+    probe_prepared_command(tool, executable, command, limits)
+}
+
+/// Probes the package-owned TypeScript JavaScript entry through one exact Node executable.
+///
+/// `tsc`'s package-manager link and its `#!/usr/bin/env node` shebang are never executed by the
+/// operating system. Node receives the canonical package script as an argument. The only child
+/// search path is Node's own directory, which keeps any nested `env node` invocation bound to the
+/// same admitted runtime while preserving the closed environment contract.
+pub(crate) fn probe_typescript_script_with_node(
+    compiler_script: &Path,
+    node: &Path,
+    limits: ToolchainProbeLimits,
+) -> Result<Box<[u8]>, ToolchainProbeError> {
+    let tool = NativeTool::TypeScriptCompiler;
+    for executable in [compiler_script, node] {
+        if !executable.is_absolute() {
+            return Err(ToolchainProbeError::RelativeExecutable {
+                tool,
+                executable: executable.to_path_buf(),
+            });
+        }
+    }
+    let mut command = Command::new(node);
+    NativeCompilerEnvironment::apply(&mut command, tool);
+    if let Some(node_directory) = node.parent() {
+        command.env("PATH", node_directory);
+    }
+    command.arg(compiler_script).arg("--version");
+    probe_prepared_command(tool, node, command, limits)
+}
+
+fn probe_prepared_command(
+    tool: NativeTool,
+    executable: &Path,
+    mut command: Command,
+    limits: ToolchainProbeLimits,
+) -> Result<Box<[u8]>, ToolchainProbeError> {
     command
-        .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

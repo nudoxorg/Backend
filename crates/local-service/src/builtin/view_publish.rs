@@ -179,6 +179,11 @@ pub(super) fn read_project_sources(
             projects: BTreeMap::new(),
             files: Vec::new(),
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: Some(
+                backend_engine::ProductSourceSnapshot::from_workspace(snapshot).map_err(
+                    |error| BuiltinModelError(format!("admit selected source closure: {error}")),
+                )?,
+            ),
         });
     };
     let fields = record.project_fields().ok_or_else(|| {
@@ -222,6 +227,11 @@ pub(super) fn read_project_sources(
         projects,
         files,
         cargo_aliases,
+        source_snapshot: Some(
+            backend_engine::ProductSourceSnapshot::from_workspace(snapshot).map_err(|error| {
+                BuiltinModelError(format!("admit selected source closure: {error}"))
+            })?,
+        ),
     })
 }
 
@@ -1104,6 +1114,7 @@ fn structural_fixtures(
         projects,
         files: records,
         cargo_aliases: BTreeMap::new(),
+        source_snapshot: None,
     };
     let (project, files) = first.expect("one package");
     let mut projects = BTreeMap::new();
@@ -1112,6 +1123,7 @@ fn structural_fixtures(
         projects,
         files,
         cargo_aliases: BTreeMap::new(),
+        source_snapshot: None,
     };
     (workspace, one)
 }
@@ -1738,6 +1750,7 @@ mod tests {
                 projects,
                 files,
                 cargo_aliases: std::collections::BTreeMap::new(),
+                source_snapshot: None,
             },
             package,
             widget_key,

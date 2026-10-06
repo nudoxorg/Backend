@@ -35,7 +35,11 @@ fn open_daemon(workspace: &Path) -> super::super::ProductDaemon {
         .with_relation::<BuiltinWorkspaceRelation>()
         .expect("workspace relation registry")
         .with_relation::<BuiltinSemanticRelation>()
-        .expect("semantic relation registry");
+        .expect("semantic relation registry")
+        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+        .expect("semantic capture relation registry")
+        .with_relation::<backend_engine::builtin::ProductSourceFileFactsRelation>()
+        .expect("source facts relation registry");
     crate::Locald::open_with_dispatcher_and_registry(
         workspace,
         BuiltinModel,
@@ -589,6 +593,290 @@ fn raw_psrd_page(files: &[[u8; 32]]) -> Vec<u8> {
         bytes.extend_from_slice(key);
     }
     bytes
+}
+
+#[test]
+fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
+    use backend_engine::builtin::{
+        ProductSemanticCaptureOutcome, ProductSemanticPublicationKey,
+        ProductSourceFileFactsAdmission, ProductSourceFileFactsRecord, ProductSourceSnapshot,
+        SemanticSourceCapture, build_product_source_file_facts, semantic_capture_relation,
+    };
+    use backend_library::interface::{CompilerFragmentFailure, SourceAuthority};
+    use backend_semantic::ir::{BuildError, EntityId};
+    use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, TypeScriptSource};
+    use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain};
+
+    let temp = TempWorkspace::new();
+    let label = "pkg:npm/paged-panels@1.0.0";
+    let package = backend_engine::PackageKey::from_value(label);
+    let path = "src/Panels.tsx";
+    let frontend = backend_frontend_typescript::syntax_frontend().expect("TypeScript frontend");
+    let mut source = String::new();
+    for index in 0..900 {
+        source.push_str(&format!(
+            "/** Catalog panel {index}; retained prose. */\n\
+             export function Panel_{index:04}({{ title }}: {{ title: string }}) {{\n\
+               return <article data-panel=\"{index}\">{{title}}</article>;\n\
+             }}\n"
+        ));
+    }
+    let analysis = frontend
+        .analyze(Path::new(path), source.as_bytes())
+        .expect("actual TSX source analysis");
+    let declarations = analysis.declarations().to_vec();
+    let expected_declaration_count = declarations.len();
+    assert_eq!(
+        declarations
+            .iter()
+            .filter(|declaration| declaration.kind() == backend_compile::DeclarationKind::Function)
+            .count(),
+        900,
+        "the producer emits all 900 actual panel functions"
+    );
+    let source_identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
+    let content_version = *source_identity.as_ref();
+    let analysis_version = [0x61; 32];
+    let project_key = package.to_bytes();
+    let file_key = backend_engine::product_source_file_key(project_key, path);
+    let frontier = vec![(file_key, path.to_owned(), content_version)];
+    let source_version = source_version(&frontier);
+    let project_record = BuiltinPackageRecord::project(label, source_version, vec![file_key])
+        .expect("one-file project frontier");
+    let file_record = backend_engine::ProductSourceRecord::identified_file_within_row_capacity(
+        project_key,
+        path,
+        SourceLanguage::TypeScript,
+        content_version,
+        analysis_version,
+        declarations.clone(),
+        source_identity,
+    )
+    .expect("bounded compact file row with exact source identity");
+    assert!(
+        !file_record
+            .file_fields()
+            .expect("compact file fields")
+            .retention
+            .is_complete(),
+        "900 source declarations overflow the compact summary and need complete facts pages"
+    );
+    let facts = build_product_source_file_facts(
+        project_key,
+        path,
+        SourceLanguage::TypeScript,
+        content_version,
+        analysis_version,
+        source_identity,
+        &declarations,
+    )
+    .expect("complete paged declaration facts");
+    assert_eq!(facts.declaration_count(), expected_declaration_count);
+    assert!(
+        facts
+            .pages()
+            .iter()
+            .any(|(_, row)| { matches!(row, ProductSourceFileFactsRecord::Page(_)) })
+    );
+
+    let recipe_identity =
+        ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"fixture TSX recipe");
+    let attempt = backend_library::interface::CompilerAttempt {
+        source: SourceAuthority {
+            identity: source_identity,
+            byte_len: u32::try_from(source.len()).expect("bounded TSX source length"),
+        },
+        recipe: recipe_identity,
+    };
+    let compile_failure = CompilerFragmentFailure::build(BuildError::InvalidOccurrenceSpan {
+        owner: EntityId::new(7),
+        start: 18,
+        end: 24,
+    });
+    let failure = backend_library::PackageCompilerFailure::from_fragment_failure(
+        path,
+        attempt,
+        &compile_failure,
+    )
+    .expect("typed package compiler refusal bound to exact source");
+
+    let package_reference =
+        backend_engine::PackageReference::parse(label.to_owned()).expect("package reference");
+    let coordinate = PackageUrl::parse(label.to_owned()).expect("npm coordinate");
+    let capture_key = ProductSemanticPublicationKey::new(
+        package_reference,
+        coordinate,
+        LanguageProfile::TypeScript(TypeScriptSource::Tsx),
+    )
+    .expect("TSX compiler profile key");
+    let capture =
+        SemanticSourceCapture::new(None, source_version, [0x85; 32], 1, 1).expect("source capture");
+
+    let mut source_facts_changes = vec![BuiltinSourceFactsChange {
+        key: facts.manifest_key(),
+        expected: None,
+        after: Some(ProductSourceFileFactsRecord::Manifest(
+            facts.manifest().clone(),
+        )),
+    }];
+    source_facts_changes.extend(
+        facts
+            .pages()
+            .iter()
+            .map(|(key, row)| BuiltinSourceFactsChange {
+                key: *key,
+                expected: None,
+                after: Some(row.clone()),
+            }),
+    );
+    let intent = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        vec![
+            BuiltinSourceChange {
+                key: project_key,
+                after: Some(project_record),
+            },
+            BuiltinSourceChange {
+                key: file_key,
+                after: Some(file_record),
+            },
+        ],
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            key: capture_key.clone(),
+            expected: None,
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Pending { prior: None },
+            compiler_failure: None,
+        }],
+    )
+    .expect("source plus pending capture intent")
+    .with_source_facts(source_facts_changes)
+    .expect("atomic complete facts update");
+
+    let mut daemon = open_daemon(temp.0.path());
+    super::super::commands::commit_builtin_intent(&mut daemon, 1, &intent)
+        .expect("atomically commit structural source facts and pending capture");
+    let source_capture_root = daemon.engine().daemon().owner().head().root();
+    let pending_capture = semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+        .expect("pending semantic capture relation")
+        .expect("pending capture relation exists")
+        .lookup(&capture_key)
+        .expect("read pending source capture")
+        .expect("pending source capture persisted");
+    assert_eq!(
+        pending_capture.outcome(),
+        ProductSemanticCaptureOutcome::Pending { prior: None }
+    );
+    let terminal_intent = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        Vec::new(),
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            key: capture_key.clone(),
+            expected: Some(pending_capture),
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Unavailable {
+                reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+            },
+            compiler_failure: Some(failure.clone()),
+        }],
+    )
+    .expect("typed terminal semantic refusal intent");
+    super::super::commands::commit_builtin_intent(&mut daemon, 2, &terminal_intent)
+        .expect("commit terminal typed refusal against captured source");
+    let selected_root = daemon.engine().daemon().owner().head().root();
+    drop(daemon);
+
+    let daemon = open_daemon(temp.0.path());
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    assert_eq!(
+        daemon.engine().daemon().owner().head().root(),
+        selected_root
+    );
+    let source_snapshot =
+        ProductSourceSnapshot::from_workspace(&snapshot).expect("cold selected source closure");
+    let source_relation = source_snapshot.relation();
+    let source_row = source_relation
+        .lookup(&file_key)
+        .expect("cold source file lookup")
+        .expect("cold source file row remains selected");
+    let mut admitted = match source_snapshot
+        .admit_complete_file_facts(&source_row)
+        .expect("cold manifest and every page validate against exact source")
+        .expect("overflow source row requires its complete facts manifest")
+    {
+        ProductSourceFileFactsAdmission::PagedVerified(paged) => paged,
+        ProductSourceFileFactsAdmission::InlineComplete(_) => {
+            panic!("900 declarations must remain page bounded")
+        }
+    };
+    assert_eq!(
+        usize::try_from(admitted.declaration_count()).expect("bounded declaration count"),
+        expected_declaration_count
+    );
+    let mut visited = 0usize;
+    let mut complete_panel_facts = 0usize;
+    admitted
+        .visit_pages(|page| {
+            for index in 0..page.len() {
+                let declaration = page
+                    .declaration(index)
+                    .ok_or_else(|| "cold admitted declaration".to_owned())?;
+                visited += 1;
+                if declaration.source_declaration().kind()
+                    == backend_compile::DeclarationKind::Module
+                {
+                    continue;
+                }
+                if declaration.source_declaration().documentation().is_empty()
+                    || declaration
+                        .source_declaration()
+                        .source_excerpt()
+                        .text()
+                        .is_none()
+                {
+                    return Err("cold source facts lost complete prose or excerpt".to_owned());
+                }
+                if declaration.source_declaration().kind()
+                    == backend_compile::DeclarationKind::Function
+                {
+                    complete_panel_facts += 1;
+                }
+            }
+            Ok(())
+        })
+        .expect("cold bounded page visitation");
+    assert_eq!(visited, expected_declaration_count);
+    assert_eq!(complete_panel_facts, 900);
+
+    let captures = semantic_capture_relation(&snapshot)
+        .expect("cold semantic capture relation")
+        .expect("terminal capture relation exists");
+    let terminal = captures
+        .lookup(&capture_key)
+        .expect("cold typed semantic terminal lookup")
+        .expect("semantic refusal retained");
+    assert_eq!(
+        terminal.outcome(),
+        ProductSemanticCaptureOutcome::Unavailable {
+            reason: backend_engine::builtin::SemanticUnavailableReason::Rejected,
+        }
+    );
+    assert_eq!(terminal.compiler_failure(), Some(&failure));
+    assert_eq!(
+        terminal.source_workspace_root(),
+        source_capture_root.as_bytes()
+    );
+    assert_eq!(failure.source_identity(), source_identity);
+    assert_eq!(failure.relative_path(), path);
+    assert_eq!(
+        failure.source_byte_len(),
+        u32::try_from(source.len()).expect("bounded TSX source length")
+    );
+    assert_eq!(failure.recipe_identity(), Some(recipe_identity));
 }
 
 fn psrd_decodes(bytes: &[u8]) -> bool {

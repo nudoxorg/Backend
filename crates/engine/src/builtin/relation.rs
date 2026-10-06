@@ -1,6 +1,10 @@
 //! Typed source relations and owner-held lazy source snapshots.
 
 use super::complete_coverage;
+use super::file_facts_relation::{
+    ProductSourceFileFactsAdmission, ProductSourceFileFactsLookup, ProductSourceFileFactsRecord,
+    admit_product_source_file_facts, product_source_file_facts_relation,
+};
 use crate::workspace::{TransitionWork, WorkspaceRelationHandle, WorkspaceSnapshot};
 pub use backend_compile::{
     Container, DeclarationKind, SourceDeclaration, SourceLanguage, SourceLocation,
@@ -990,6 +994,28 @@ impl ProductSourceRecord {
         declarations: impl Into<Arc<[SourceDeclaration]>>,
         retention: DeclarationRetention,
     ) -> Result<Self, String> {
+        Self::file_with_retention_and_identity(
+            project,
+            path,
+            language,
+            content_version,
+            analysis_version,
+            declarations,
+            retention,
+            None,
+        )
+    }
+
+    fn file_with_retention_and_identity(
+        project: [u8; 32],
+        path: impl Into<String>,
+        language: SourceLanguage,
+        content_version: [u8; 32],
+        analysis_version: [u8; 32],
+        declarations: impl Into<Arc<[SourceDeclaration]>>,
+        retention: DeclarationRetention,
+        source_identity: Option<ContentId<SourceFactDomain>>,
+    ) -> Result<Self, String> {
         let path = path.into();
         let declarations = declarations.into();
         if path.is_empty() || path.len() > Self::MAX_LABEL_BYTES {
@@ -1004,7 +1030,7 @@ impl ProductSourceRecord {
             language,
             content_version,
             analysis_version,
-            source_identity: None,
+            source_identity,
             declarations,
             retention,
         };
@@ -1068,10 +1094,59 @@ impl ProductSourceRecord {
         analysis_version: [u8; 32],
         declarations: impl Into<Arc<[SourceDeclaration]>>,
     ) -> Result<Self, String> {
+        Self::file_within_row_capacity_and_identity(
+            project,
+            path,
+            language,
+            content_version,
+            analysis_version,
+            declarations,
+            None,
+        )
+    }
+
+    /// Constructs a compact row using its final source identity and wire format.
+    ///
+    /// Identity changes the encoding of every declaration's containment as well
+    /// as the row header. It must therefore participate in every capacity probe,
+    /// rather than being attached to an already compacted row. Complete facts
+    /// remain in their separate pages; this constructor bounds their summary.
+    ///
+    /// # Errors
+    /// Returns an error if the file's bare identity cannot fit a canonical row.
+    pub fn identified_file_within_row_capacity(
+        project: [u8; 32],
+        path: impl Into<String>,
+        language: SourceLanguage,
+        content_version: [u8; 32],
+        analysis_version: [u8; 32],
+        declarations: impl Into<Arc<[SourceDeclaration]>>,
+        source_identity: ContentId<SourceFactDomain>,
+    ) -> Result<Self, String> {
+        Self::file_within_row_capacity_and_identity(
+            project,
+            path,
+            language,
+            content_version,
+            analysis_version,
+            declarations,
+            Some(source_identity),
+        )
+    }
+
+    fn file_within_row_capacity_and_identity(
+        project: [u8; 32],
+        path: impl Into<String>,
+        language: SourceLanguage,
+        content_version: [u8; 32],
+        analysis_version: [u8; 32],
+        declarations: impl Into<Arc<[SourceDeclaration]>>,
+        source_identity: Option<ContentId<SourceFactDomain>>,
+    ) -> Result<Self, String> {
         let path = path.into();
         let extracted = declarations.into();
         let build = |declarations: Arc<[SourceDeclaration]>, retention| {
-            Self::file_with_retention(
+            Self::file_with_retention_and_identity(
                 project,
                 path.clone(),
                 language,
@@ -1079,6 +1154,7 @@ impl ProductSourceRecord {
                 analysis_version,
                 declarations,
                 retention,
+                source_identity,
             )
         };
         if let Ok(record) = build(Arc::clone(&extracted), DeclarationRetention::Complete) {
@@ -1216,8 +1292,9 @@ impl ProductSourceRecord {
     ///
     /// # Errors
     ///
-    /// Returns an error when this record is a project frontier, which names
-    /// no source bytes at all.
+    /// Returns an error when this is not a file record, or when binding the
+    /// identity makes the final encoding exceed the row capacity. Producers
+    /// needing compaction use [`Self::identified_file_within_row_capacity`].
     pub fn with_source_identity(
         mut self,
         identity: ContentId<SourceFactDomain>,
@@ -1227,6 +1304,13 @@ impl ProductSourceRecord {
                 source_identity, ..
             } => {
                 *source_identity = Some(identity);
+                let encoded = self.encoded_value_bytes();
+                if encoded > Self::ROW_VALUE_CAPACITY {
+                    return Err(format!(
+                        "identified source file row for {} is {encoded} bytes, above the {} byte canonical row capacity",
+                        self.label(), Self::ROW_VALUE_CAPACITY,
+                    ));
+                }
                 Ok(self)
             }
             Self::Project { .. } | Self::MembershipPage { .. } => Err(
@@ -1977,7 +2061,7 @@ fn decode_file_record(
     if version == 6 {
         skip_legacy_semantics(reader)?;
     }
-    let record = ProductSourceRecord::file_with_retention(
+    ProductSourceRecord::file_with_retention_and_identity(
         project,
         path,
         language,
@@ -1985,14 +2069,9 @@ fn decode_file_record(
         analysis_version,
         declarations,
         retention,
+        source_identity,
     )
-    .map_err(|_| ())?;
-    match source_identity {
-        Some(identity) if matches!(record, ProductSourceRecord::File { .. }) => {
-            record.with_source_identity(identity).map_err(|_| ())
-        }
-        _ => Ok(record),
-    }
+    .map_err(|_| ())
 }
 
 /// Decodes one declaration, tolerating the older pre-`PSR4` field shapes.
@@ -2294,6 +2373,8 @@ pub struct ProductSourceSnapshot {
     workspace: WorkspaceRoot,
     transition: ProductSourceTransition,
     relation: WorkspaceRelationHandle<ProductSourceRelation>,
+    source_facts:
+        Option<WorkspaceRelationHandle<super::file_facts_relation::ProductSourceFileFactsRelation>>,
     manifest: Arc<[u8]>,
     authority: [u8; backend_version::ID_BYTES],
     delta: ProductSourceDeltaFacts,
@@ -2314,6 +2395,8 @@ impl ProductSourceSnapshot {
         let relation = snapshot
             .relation::<ProductSourceRelation>()
             .map_err(|error| error.to_string())?;
+        let source_facts =
+            product_source_file_facts_relation(snapshot).map_err(|error| error.to_string())?;
         let relation_root = relation.root_node().map_err(|error| error.to_string())?;
         let (base, target) = snapshot
             .transition_relation_roots::<ProductSourceRelation>()
@@ -2327,6 +2410,7 @@ impl ProductSourceSnapshot {
             workspace: snapshot.root(),
             transition: ProductSourceTransition { base, target },
             relation,
+            source_facts,
             manifest: Arc::from(snapshot.manifest().encode().into_boxed_slice()),
             authority: *snapshot.manifest().authority(),
             delta: ProductSourceDeltaFacts::from_transition(snapshot.transition_work()),
@@ -2360,6 +2444,58 @@ impl ProductSourceSnapshot {
     #[must_use]
     pub const fn relation(&self) -> &WorkspaceRelationHandle<ProductSourceRelation> {
         &self.relation
+    }
+
+    /// Admits complete structural facts for one exact file row from the
+    /// auxiliary relation selected by this same workspace closure.
+    ///
+    /// `Some` is returned only after the manifest and every referenced page
+    /// have been checked against the exact file identity. The returned paged
+    /// form keeps a lazy relation lookup and visits one bounded page at a
+    /// time. `None` is reserved for legacy rows whose compact retention is
+    /// already complete; a compact overflow row with no facts manifest is a
+    /// hard error and can never be presented as complete.
+    pub fn admit_complete_file_facts(
+        &self,
+        record: &ProductSourceRecord,
+    ) -> Result<Option<ProductSourceFileFactsAdmission<ProductSourceFileFactsLookup>>, String> {
+        let file = record
+            .file_fields()
+            .ok_or_else(|| "complete source facts requested for a non-file row".to_owned())?;
+        let file_key = product_source_file_key(file.project, file.path);
+        let Some(relation) = &self.source_facts else {
+            return if file.retention.is_complete() {
+                Ok(None)
+            } else {
+                Err(
+                    "compact source row is incomplete and has no selected complete facts relation"
+                        .to_owned(),
+                )
+            };
+        };
+        let Some(manifest_record) = relation
+            .lookup(&file_key)
+            .map_err(|error| error.to_string())?
+        else {
+            return if file.retention.is_complete() {
+                Ok(None)
+            } else {
+                Err(
+                    "compact source row is incomplete and has no complete facts manifest"
+                        .to_owned(),
+                )
+            };
+        };
+        let ProductSourceFileFactsRecord::Manifest(manifest) = manifest_record else {
+            return Err("source facts manifest key names another row kind".to_owned());
+        };
+        let selected_relation = relation.clone();
+        let lookup: ProductSourceFileFactsLookup = Box::new(move |key| {
+            selected_relation
+                .lookup(key)
+                .map_err(|error| error.to_string())
+        });
+        admit_product_source_file_facts(file, file_key, manifest, lookup).map(Some)
     }
 
     /// Returns exact source change facts carried by the selected head.
@@ -3521,6 +3657,49 @@ mod tests {
         )
         .expect("a capacity-aware record");
         assert_eq!(record, again, "shedding must be a pure function");
+    }
+
+    #[test]
+    fn identified_compaction_accounts_for_header_and_each_containment() {
+        let declarations = (0..2048).map(wide_declaration).collect::<Vec<_>>();
+        let identity = fixture_source_identity();
+        let unbound = ProductSourceRecord::file_within_row_capacity(
+            [3; 32],
+            "src/lib.rs",
+            super::SourceLanguage::Rust,
+            [4; 32],
+            [5; 32],
+            Arc::from(declarations.clone()),
+        )
+        .expect("unbound compact row");
+        assert!(
+            unbound.with_source_identity(identity).is_err(),
+            "attaching identity must refuse a row that no longer fits"
+        );
+        let record = ProductSourceRecord::identified_file_within_row_capacity(
+            [3; 32],
+            "src/lib.rs",
+            super::SourceLanguage::Rust,
+            [4; 32],
+            [5; 32],
+            Arc::from(declarations),
+            identity,
+        )
+        .expect("final-format compact row");
+        assert!(encoded(&record) <= ProductSourceRecord::ROW_VALUE_CAPACITY);
+        let fields = record.file_fields().expect("file fields");
+        assert_eq!(fields.source_identity, Some(identity));
+        let DeclarationRetention::Truncated(counts) = fields.retention else {
+            panic!("expected truthful truncated retention");
+        };
+        assert_eq!(counts.extracted(), 2048);
+        assert_eq!(counts.retained() as usize, fields.declarations.len());
+        let mut bytes = Vec::new();
+        ProductSourceRelation::encode_value(&record, &mut bytes);
+        assert_eq!(
+            ProductSourceRelation::decode_value(&bytes).expect("identified round trip"),
+            record
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 /// Wire schema of [`ProjectTree`].
-pub const PROJECT_TREE_SCHEMA: u16 = 8;
+pub const PROJECT_TREE_SCHEMA: u16 = 9;
 
 /// Wire schema of [`ProjectTreeRequestBindingV1`].
 pub const PROJECT_TREE_REQUEST_BINDING_SCHEMA: u16 = 1;
@@ -116,6 +116,44 @@ impl ProjectTreeRequestBindingV1 {
         self.schema == PROJECT_TREE_REQUEST_BINDING_SCHEMA
             && self.requested_root_digest != [0; 32]
             && self.effective_workspace_root_digest != [0; 32]
+    }
+}
+
+/// Exact identity of an owner-observed tree, separate from retained source
+/// authority. A display-only observation never authorizes package file reads.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ProjectTreeObservationV1 {
+    /// Cargo or a lockfile supplied dependency facts without an owner-held
+    /// source observation (for example, a bounded cache could not retain it).
+    DisplayOnly {
+        /// Exact request and effective workspace commitments.
+        binding: ProjectTreeRequestBindingV1,
+    },
+    /// The owner retained the exact source observation for this request.
+    /// Subsequent reads must still revalidate it and may report eviction.
+    Retained {
+        /// Exact request and effective workspace commitments.
+        binding: ProjectTreeRequestBindingV1,
+    },
+}
+
+impl ProjectTreeObservationV1 {
+    /// Request/display identity exists in both observation states.
+    #[must_use]
+    pub const fn request_binding(self) -> ProjectTreeRequestBindingV1 {
+        match self {
+            Self::DisplayOnly { binding } | Self::Retained { binding } => binding,
+        }
+    }
+
+    /// Only a retained observation can establish a source browse context.
+    #[must_use]
+    pub const fn retained_request_binding(self) -> Option<ProjectTreeRequestBindingV1> {
+        match self {
+            Self::Retained { binding } => Some(binding),
+            Self::DisplayOnly { .. } => None,
+        }
     }
 }
 
@@ -408,11 +446,9 @@ pub struct ProjectTree {
     pub source: TreeSource,
     /// The workspace root.
     pub root: String,
-    /// The exact submitted directory and Cargo-resolved workspace binding.
-    /// Library-only tree construction leaves this absent; an owner reply must
-    /// attach it before the value crosses the surface boundary.
-    #[serde(default)]
-    pub request_binding: Option<ProjectTreeRequestBindingV1>,
+    /// Exact request identity and the owner's retention state. Pure tree
+    /// construction leaves this absent; every owner reply must attach it.
+    pub observation: Option<ProjectTreeObservationV1>,
     /// The project's display name (the root folder's name).
     pub name: String,
     /// Your own packages.
@@ -433,6 +469,17 @@ pub struct ProjectTree {
 }
 
 impl ProjectTree {
+    /// Exact request/display identity, including display-only observations.
+    #[must_use]
+    pub fn request_binding(&self) -> Option<ProjectTreeRequestBindingV1> {
+        self.observation.map(ProjectTreeObservationV1::request_binding)
+    }
+
+    /// Source context is unavailable for unbound or display-only trees.
+    #[must_use]
+    pub fn retained_request_binding(&self) -> Option<ProjectTreeRequestBindingV1> {
+        self.observation.and_then(ProjectTreeObservationV1::retained_request_binding)
+    }
     /// The direct dependencies playing `role`, in display order.
     pub fn in_role(&self, role: RoleId) -> impl Iterator<Item = &DirectDependency> {
         self.direct
@@ -478,7 +525,7 @@ impl ProjectTree {
             || self.packages.len() > MAX_TREE_PACKAGES
             || self.direct.len() > self.packages.len()
             || !self.packages.iter().all(TreePackage::has_admissible_shape)
-            || !self.request_binding.is_some_and(|binding| {
+            || !self.request_binding().is_some_and(|binding| {
                 binding.has_admissible_shape()
                     && binding.matches_effective_workspace_root(&self.root)
             })
@@ -1092,7 +1139,7 @@ pub fn build_tree(input: &TreeInput, advisories: &dyn AdvisoryObserver) -> Proje
         schema: PROJECT_TREE_SCHEMA,
         source: input.source.clone(),
         root: input.root.clone(),
-        request_binding: None,
+        observation: None,
         name: Path::new(&input.root).file_name().map_or_else(
             || input.root.clone(),
             |name| name.to_string_lossy().into_owned(),

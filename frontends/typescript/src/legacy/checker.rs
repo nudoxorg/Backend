@@ -15,7 +15,8 @@
 //! the caller's boundary.
 
 use std::{
-    io::Read,
+    fs::{self, OpenOptions},
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicUsize, Ordering},
@@ -36,6 +37,8 @@ const TRANSCRIPT_PREFIX_LIMIT: usize = 4096;
 const TRANSCRIPT_TAIL_LIMIT: usize = 4096;
 /// Exit code the vendored driver uses when `typescript` is not resolvable.
 const MODULE_MISSING_EXIT: i32 = 3;
+/// Bytes of the vendored driver carried by this library artifact.
+const VENDORED_CHECKER_DRIVER: &[u8] = include_bytes!("checker/main.cjs");
 /// Maximum number of files copied for one package-context run.
 ///
 /// The bound caps staging work, not package legitimacy: the per-run byte
@@ -1167,8 +1170,7 @@ impl Checker {
     /// Returns every [`CheckerError`] cause; tool and module unavailability
     /// are distinct typed causes so callers can report the exact rejection.
     pub fn run(&self, profile: TypeScriptSource, source: &[u8]) -> Result<Report, CheckerError> {
-        let work = work_directory();
-        std::fs::create_dir(&work).map_err(|cause| CheckerError::Work {
+        let work = create_private_work_directory().map_err(|cause| CheckerError::Work {
             phase: "prepare",
             source: cause,
         })?;
@@ -1222,8 +1224,7 @@ impl Checker {
         if let Some(path) = source_relative {
             validate_package_source_profile(profile, path)?;
         }
-        let work = work_directory();
-        std::fs::create_dir(&work).map_err(|cause| CheckerError::Work {
+        let work = create_private_work_directory().map_err(|cause| CheckerError::Work {
             phase: "prepare",
             source: cause,
         })?;
@@ -1261,9 +1262,7 @@ impl Checker {
             let report = match std::env::var("NUDOX_TYPESCRIPT_CHECKER_BIN") {
                 Ok(binary) => self.run_child(&work, Path::new(&binary), &file),
                 Err(std::env::VarError::NotPresent) => {
-                    let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                        .join("src/legacy/checker")
-                        .join("main.cjs");
+                    let driver = materialize_vendored_checker_driver(&work)?;
                     let mut command = Command::new("node");
                     command.arg(driver).arg(&file);
                     self.run_child_prepared(&work, command, &file)
@@ -1302,8 +1301,7 @@ impl Checker {
         if let Some(path) = source_relative {
             validate_package_source_profile(profile, path)?;
         }
-        let work = work_directory();
-        std::fs::create_dir(&work).map_err(|cause| CheckerError::Work {
+        let work = create_private_work_directory().map_err(|cause| CheckerError::Work {
             phase: "prepare",
             source: cause,
         })?;
@@ -1371,8 +1369,7 @@ impl Checker {
         profile: TypeScriptSource,
         source: &[u8],
     ) -> Result<Report, CheckerError> {
-        let work = work_directory();
-        std::fs::create_dir(&work).map_err(|cause| CheckerError::Work {
+        let work = create_private_work_directory().map_err(|cause| CheckerError::Work {
             phase: "prepare",
             source: cause,
         })?;
@@ -1404,9 +1401,7 @@ impl Checker {
         match std::env::var("NUDOX_TYPESCRIPT_CHECKER_BIN") {
             Ok(binary) => self.run_child(work, Path::new(&binary), &file),
             Err(std::env::VarError::NotPresent) => {
-                let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("src/legacy/checker")
-                    .join("main.cjs");
+                let driver = materialize_vendored_checker_driver(work)?;
                 let mut command = Command::new("node");
                 command.arg(driver).arg(&file);
                 self.run_child_prepared(work, command, &file)
@@ -1439,8 +1434,7 @@ impl Checker {
         profile: TypeScriptSource,
         source: &[u8],
     ) -> Result<Report, CheckerError> {
-        let work = work_directory();
-        std::fs::create_dir(&work).map_err(|cause| CheckerError::Work {
+        let work = create_private_work_directory().map_err(|cause| CheckerError::Work {
             phase: "prepare",
             source: cause,
         })?;
@@ -1482,9 +1476,7 @@ impl Checker {
                 program,
                 module_root,
             } => {
-                let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("src/legacy/checker")
-                    .join("main.cjs");
+                let driver = materialize_vendored_checker_driver(work)?;
                 let mut command = Command::new(program.as_ref());
                 isolate_authority_environment(&mut command);
                 command.env("NODE_PATH", module_root.as_ref());
@@ -1874,12 +1866,14 @@ fn is_vcs_directory(name: &std::ffi::OsStr) -> bool {
 /// Files the checker reads: TypeScript and JavaScript sources plus JSON
 /// configuration (`tsconfig.json`, `package.json`, imported JSON modules).
 fn is_checker_input(path: &Path) -> bool {
-    path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| {
-        matches!(
-            extension,
-            "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "json"
-        )
-    })
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension,
+                "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "json"
+            )
+        })
 }
 
 #[cfg(unix)]
@@ -1902,6 +1896,57 @@ fn work_directory() -> PathBuf {
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed),
     ))
+}
+
+fn create_private_work_directory() -> std::io::Result<PathBuf> {
+    for _ in 0..16 {
+        let path = work_directory();
+        let result = create_private_directory(&path);
+        match result {
+            Ok(()) => return Ok(path),
+            Err(cause) if cause.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(cause) => return Err(cause),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not reserve a unique TypeScript checker work directory",
+    ))
+}
+
+#[cfg(unix)]
+fn create_private_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder.create(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_directory(path: &Path) -> std::io::Result<()> {
+    fs::create_dir(path)
+}
+
+fn materialize_vendored_checker_driver(work: &Path) -> Result<PathBuf, CheckerError> {
+    let path = work.join("checker-main.cjs");
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path).map_err(|cause| CheckerError::Work {
+        phase: "materialize vendored checker driver",
+        source: cause,
+    })?;
+    file.write_all(VENDORED_CHECKER_DRIVER)
+        .map_err(|cause| CheckerError::Work {
+            phase: "write vendored checker driver",
+            source: cause,
+        })?;
+    Ok(path)
 }
 
 struct BoundedBytes {
@@ -2001,8 +2046,40 @@ mod capability_tests {
 
     use super::{
         Checker, CheckerError, PackageBudget, TypeScriptCheckerProgramError,
-        TypeScriptInvocationModeV1, stage_package, validate_package_source_profile, work_directory,
+        TypeScriptInvocationModeV1, VENDORED_CHECKER_DRIVER, create_private_work_directory,
+        materialize_vendored_checker_driver, stage_package, validate_package_source_profile,
+        work_directory,
     };
+
+    #[test]
+    fn vendored_checker_driver_is_materialized_inside_the_private_run_directory() {
+        let work = create_private_work_directory().expect("private run directory is reserved");
+        let driver = materialize_vendored_checker_driver(&work)
+            .expect("embedded checker driver is materialized");
+        let metadata = fs::symlink_metadata(&driver).expect("materialized driver is present");
+
+        assert_eq!(driver.parent(), Some(work.as_path()));
+        assert!(metadata.file_type().is_file());
+        assert_eq!(
+            fs::read(&driver).expect("materialized driver is readable"),
+            VENDORED_CHECKER_DRIVER
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                fs::metadata(&work)
+                    .expect("run directory metadata is readable")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        }
+        fs::remove_dir_all(work).expect("private run directory is removed");
+    }
 
     #[test]
     fn package_checker_keeps_javascript_source_path_and_bytes_exact() {

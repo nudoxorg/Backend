@@ -25,11 +25,10 @@ use backend_library::{
     ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector,
     RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness,
     RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem, RegistryFactAvailability,
-    RegistryMetadata, RegistryNativeMetadata,
-    RegistryPackageRecord, RegistryPackageSearchGroup, RegistryReleaseMatchScope,
-    RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit, RegistrySearchRelease,
-    ReleaseRecord, Row, SemanticVersionRecord, SubscriptionRecord, TreeNodeRecord, TreeOpener,
-    TreeSubject, command_spec,
+    RegistryMetadata, RegistryNativeMetadata, RegistryPackageRecord, RegistryPackageSearchGroup,
+    RegistryReleaseMatchScope, RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit,
+    RegistrySearchRelease, ReleaseRecord, Row, SemanticVersionRecord, SubscriptionRecord,
+    TreeNodeRecord, TreeOpener, TreeSubject, command_spec,
 };
 use backend_platform::durable;
 use base64::Engine as _;
@@ -3515,8 +3514,7 @@ mod tests {
     use super::*;
     use backend_engine::registry::{
         DiscoveryBatch, DiscoveryCompleteness, DiscoveryCursor, DiscoveryFact, DiscoveryObservedAt,
-        DiscoverySourceEvent, DiscoveryStanding, RegistryEndpoint,
-        discovery_source_identity,
+        DiscoverySourceEvent, DiscoveryStanding, RegistryEndpoint, discovery_source_identity,
     };
     use backend_engine::{
         AdvisoryPackageDto, DependencyAuthority, DependencyEvidence, DependencyFacts,

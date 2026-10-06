@@ -1,6 +1,4 @@
-use super::super::{
-    BuiltinAuthorityVerifier, BuiltinModel, BuiltinModelError, BuiltinValidator,
-};
+use super::super::{BuiltinAuthorityVerifier, BuiltinModel, BuiltinModelError, BuiltinValidator};
 use super::snapshot::{
     SemanticDeclaration, SemanticLinkSummary, SemanticPackageSnapshot,
     semantic_declaration_identity, semantic_link_kind, semantic_link_target,

@@ -25,7 +25,7 @@ TARGETS = {
     "aarch64-apple-darwin": "arm64",
     "x86_64-apple-darwin": "x86_64",
 }
-EXECUTABLES = ("backend-desktop", "backend-mcp", "backend-locald")
+EXECUTABLES = ("backend-desktop", "backend-mcp", "backend-locald", "backend-cli")
 RUNNER_TOOL_VARIABLES = {"RUSTC", "RUSTDOC", "RUSTC_WRAPPER", "CARGO"}
 DIRECT_ENVIRONMENT_VARIABLES = {
     "AR",
@@ -834,6 +834,8 @@ def _write_direct_cargo_provenance(
             "backend-mcp",
             "-p",
             "backend-locald",
+            "-p",
+            "backend-cli",
             "--message-format=json-render-diagnostics",
         ],
         "toolchain": tools,
@@ -913,6 +915,8 @@ def main() -> int:
         "backend-mcp",
         "-p",
         "backend-locald",
+        "-p",
+        "backend-cli",
     ]
     direct_mode = runner["execution_kind"] == "direct-cargo"
     direct_run_id = uuid.uuid4().hex if direct_mode else None
@@ -1106,6 +1110,8 @@ def main() -> int:
                 "backend-mcp",
                 "-p",
                 "backend-locald",
+                "-p",
+                "backend-cli",
             ],
             "executables": {
                 name: sha256(artifacts / name)

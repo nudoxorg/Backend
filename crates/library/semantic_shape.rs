@@ -1555,9 +1555,7 @@ mod tests {
                 shape: SemanticDeclarationShape::Typed(SemanticTypeFact::Known(
                     SemanticTypeExpr::Builtin(backend_semantic::ir::BuiltinType::Never),
                 )),
-                language: SemanticShapeLanguageFacts::CommonOnly {
-                    profile,
-                },
+                language: SemanticShapeLanguageFacts::CommonOnly { profile },
             },
         }
     }
@@ -1926,16 +1924,18 @@ mod tests {
         };
         let mut within_budget = batch.clone();
         let SemanticShapeFact::Available {
-            language: SemanticShapeLanguageFacts::Partial {
-                facts: SemanticShapeLanguageFact::Java { annotations, .. },
-                ..
-            },
+            language:
+                SemanticShapeLanguageFacts::Partial {
+                    facts: SemanticShapeLanguageFact::Java { annotations, .. },
+                    ..
+                },
             ..
-        } = &mut within_budget.entries[0].fact else {
+        } = &mut within_budget.entries[0].fact
+        else {
             panic!("fixture has Java language facts");
         };
-        *annotations = vec![SourceAtomText::new("A").expect("exact annotation text")]
-            .into_boxed_slice();
+        *annotations =
+            vec![SourceAtomText::new("A").expect("exact annotation text")].into_boxed_slice();
         assert_eq!(within_budget.admit_against(&request), Ok(()));
         assert_eq!(
             batch.admit_against(&request),

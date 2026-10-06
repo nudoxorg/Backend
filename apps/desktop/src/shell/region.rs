@@ -80,6 +80,11 @@ pub(crate) trait Region: Render + Sized + 'static {
     /// The region's core.
     fn core(&mut self) -> &mut RegionCore;
 
+    /// The current embedding frame in window space, before the region renders.
+    /// This records layout only: implementations must not notify or request a
+    /// frame here, so an unchanged cached subtree remains reusable.
+    fn measure_frame(&mut self, _frame: Bounds<Pixels>) {}
+
     /// The page keys this region draws for a snapshot. Called whenever the
     /// route or overlay changes; the default draws no page.
     fn keys(&self, _snapshot: &AppSnapshot) -> Vec<PageKey> {
@@ -246,7 +251,11 @@ impl<R: Region> Element for Measured<R> {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<AnyElement> {
-        self.entity.update(cx, |region, _| region.core().width = bounds.size.width);
+        let frame = window.layer_transform().apply_bounds(bounds);
+        self.entity.update(cx, |region, _| {
+            region.core().width = bounds.size.width;
+            region.measure_frame(frame);
+        });
         if let Some(inner) = inner {
             inner.prepaint(window, cx);
             return None;

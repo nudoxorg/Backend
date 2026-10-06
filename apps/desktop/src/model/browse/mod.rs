@@ -191,8 +191,8 @@ pub struct FindPackage {
 pub struct TreeModel {
     /// The workspace root the tree was read at.
     pub root: Arc<str>,
-    /// Full owner binding for the submitted Tree address, never inferred.
-    pub request_binding: Option<backend_library::browse::ProjectTreeRequestBindingV1>,
+    /// Exact request identity and owner retention state, never inferred.
+    pub observation: Option<backend_library::browse::ProjectTreeObservationV1>,
     /// Every sentence of the page.
     pub reading: backend_present::TreeReading,
     /// Exact release destinations prepared by the read worker, aligned with
@@ -208,6 +208,22 @@ pub struct TreeModel {
     /// UI-ready words and stable action keys prepared once on the read lane.
     /// Drawing the page only borrows this model; it never rescans the tree.
     pub prepared: Arc<facet::browse::LibraryModel>,
+}
+
+impl TreeModel {
+    /// Exact request identity exists for either owner observation state.
+    #[must_use]
+    pub fn request_binding(&self) -> Option<backend_library::browse::ProjectTreeRequestBindingV1> {
+        self.observation
+            .map(backend_library::browse::ProjectTreeObservationV1::request_binding)
+    }
+
+    pub fn retained_request_binding(
+        &self,
+    ) -> Option<backend_library::browse::ProjectTreeRequestBindingV1> {
+        self.observation
+            .and_then(backend_library::browse::ProjectTreeObservationV1::retained_request_binding)
+    }
 }
 
 /// One package inventory row aligned with `TreeReading::inventory`.

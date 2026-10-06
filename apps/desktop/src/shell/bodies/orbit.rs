@@ -259,9 +259,28 @@ pub(super) fn body(
                 let words = ctx.say("An earlier Library reading is retained. Its package links are unavailable until this index answers.");
                 leaves.push(Leaf::new(quiet(words, &measure, palette)));
             }
+            // Without any local projects, the failed reading is the whole
+            // first Library screen. Retained empty bytes still cannot turn
+            // this fresh failure into onboarding or a successful empty read.
+            let what = if workspace.projects.is_empty() {
+                "The Library"
+            } else {
+                "The packages around your projects"
+            };
             match terminal {
-                ResourceTerminal::Fault(error) => leaves.extend(super::state::not_ready::<crate::model::pages::OrbitModel>(&Shown::Fault(error), &PageKey::Orbit, "The packages around your projects", ctx, cx)),
-                ResourceTerminal::Unavailable(reason) => leaves.extend(super::state::not_ready::<crate::model::pages::OrbitModel>(&Shown::Unavailable(reason, None), &PageKey::Orbit, "The packages around your projects", ctx, cx)),
+                ResourceTerminal::Fault(error) => {
+                    let status = format!("{what} could not be read. {}", error.message());
+                    let failures = super::state::not_ready::<crate::model::pages::OrbitModel>(
+                        &Shown::Fault(error), &PageKey::Orbit, what, ctx, cx,
+                    );
+                    leaves.extend(failures.into_iter().map(|mut leaf| {
+                        leaf.main = div().id("orbit-read-failure")
+                            .role(gpui::Role::Status).aria_label(status.clone())
+                            .child(leaf.main).into_any_element();
+                        leaf
+                    }));
+                }
+                ResourceTerminal::Unavailable(reason) => leaves.extend(super::state::not_ready::<crate::model::pages::OrbitModel>(&Shown::Unavailable(reason, None), &PageKey::Orbit, what, ctx, cx)),
                 ResourceTerminal::Complete | ResourceTerminal::Partial => {}
             }
         }

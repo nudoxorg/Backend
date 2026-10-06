@@ -1,6 +1,8 @@
 //! Closed product commands and bounded query descriptors.
 
-use crate::surface::{SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget};
+use crate::surface::{
+    PackageCompilerFailure, SemanticLinkEvidence, SemanticLinkKind, SemanticLinkTarget,
+};
 use crate::{
     Cursor, Document, NameRecord, Outline, PackageKey, Row, SymbolKey, ViewRoot, ViewSnapshot,
     ViewStateRoot,
@@ -1070,6 +1072,13 @@ pub enum CommandFailure {
     },
     /// The query failed bounded semantic validation.
     InvalidQuery(String),
+    /// Adding a package reached an exact compact-fragment compiler refusal.
+    CompilerRefused {
+        /// Existing human-readable refusal retained for compatibility.
+        detail: String,
+        /// Exact package member and closed compiler fault projection.
+        failure: PackageCompilerFailure,
+    },
     /// The cursor belongs to another recipe, revision, or stream position.
     CursorMismatch,
     /// The retained view could not satisfy an invariant.
@@ -1104,6 +1113,15 @@ impl core::fmt::Display for CommandFailure {
                 formatter.write_str("query basis does not match the view revision")
             }
             Self::InvalidQuery(message) => write!(formatter, "invalid query: {message}"),
+            Self::CompilerRefused { detail, failure } => {
+                write!(
+                    formatter,
+                    "{detail}: {} ({}): {}",
+                    failure.relative_path(),
+                    failure.kind_tag(),
+                    failure.detail(),
+                )
+            }
             Self::CursorMismatch => formatter.write_str("cursor does not match the view"),
             Self::IncoherentView(message) => write!(formatter, "incoherent view: {message}"),
             Self::SequenceOverflow => formatter.write_str("event sequence overflowed"),

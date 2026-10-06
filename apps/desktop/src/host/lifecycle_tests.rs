@@ -374,12 +374,17 @@ fn an_owner_that_could_not_start_is_named_on_the_first_screen_and_try_again_star
     let (_graph, shell) = window_before_its_owner(cx, &gate);
     let window = cx.windows().into_iter().next().expect("window");
     let cx = VisualTestContext::from_window(window, cx).into_mut();
+    cx.update(|window, cx| {
+        cx.set_global(gpui::TextTrace);
+        window.set_a11y_forced(true);
+    });
     let _ = &shell;
-    // Every text run the window drew (the failure plate paints its own words).
+    // Use the text GPUI actually paints, independently of declared probe words.
     let said = |cx: &mut VisualTestContext| -> Vec<String> {
-        cx.update(|_, cx| facet::probe::enable(cx));
         draw(cx);
-        cx.update(|_, cx| facet::probe::take(cx)).texts.into_iter().map(|text| text.content).collect()
+        cx.update(|window, _| window.painted_texts().iter()
+            .filter(|text| text.alpha > 0.0)
+            .map(|text| text.text.to_string()).collect())
     };
     draw(cx);
     gate.publish(OwnerState::Failed("could not own /tmp/demo and nothing answered on /tmp/demo.sock".into()));
@@ -393,8 +398,90 @@ fn an_owner_that_could_not_start_is_named_on_the_first_screen_and_try_again_star
         !words.iter().any(|line| line == "Read the code you depend on."),
         "a Library the index could not answer is not offered as an empty first run: {words:#?}"
     );
+    cx.update(|window, _| {
+        let tree: serde_json::Value = serde_json::from_str(
+            &window.debug_a11y_tree_json().expect("first screen native tree"),
+        ).expect("first screen native JSON");
+        let nodes = tree["nodes"].as_object().expect("first screen native nodes");
+        assert!(nodes.values().any(|node| {
+            node["aria"]["role"].as_str() == Some("Status")
+                && node["aria"]["label"].as_str().is_some_and(|label| {
+                    label.starts_with("The Library could not be read.")
+                        && label.contains("could not own /tmp/demo")
+                })
+        }), "the owner's reason is accessible on the first Library screen: {tree:#?}");
+        assert!(nodes.values().any(|node| {
+            node["aria"]["role"].as_str() == Some("Button")
+                && node["aria"]["label"].as_str() == Some("Try again")
+        }), "the first Library screen exposes native Retry: {tree:#?}");
+    });
     press(cx, "retry");
     assert_eq!(gate.state(), OwnerState::Starting, "Try again starts the owner again");
+}
+
+#[gpui::test]
+fn a_same_authority_retained_library_cannot_hide_a_fresh_owner_failure(cx: &mut TestAppContext) {
+    let key = VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("library failure".into(), "unchanged".into())]), 1,
+    );
+    let gate = OwnerGate::starting();
+    let (graph, _shell) = window_before_its_owner(cx, &gate);
+    let window = cx.windows().into_iter().next().expect("window");
+    let cx = VisualTestContext::from_window(window, cx).into_mut();
+    cx.update(|window, cx| {
+        cx.set_global(gpui::TextTrace);
+        window.set_a11y_forced(true);
+    });
+    // This helper launches from an unserved snapshot. Admit the real owner
+    // publication after mounting instead of installing a Ready epoch-zero
+    // gate whose key was never delivered to the root's watcher.
+    draw(cx);
+    assert!(graph.store.read_with(cx, |store, _| store.snapshot().key().is_unserved()));
+    gate.publish(OwnerState::Ready { key, mode: crate::model::ServiceMode::Attached });
+    until(cx, "Library has its real owner read", |cx| {
+        graph.store.read_with(cx, |store, _| {
+            let resource = store.orbit();
+            crate::core::admit_resource(&resource, store.snapshot().key(), store.owner_serving())
+                .current_value().is_some()
+        })
+    });
+    let value_root = graph.store.read_with(cx, |store, _| {
+        let resource = store.orbit();
+        assert!(resource.loaded_value().is_some());
+        resource.value_root()
+    });
+    gate.publish(OwnerState::Failed("fresh owner failure with unchanged Library authority".into()));
+    until(cx, "fresh owner failure paints over retained Library", |cx| {
+        cx.update(|window, _| window.painted_texts().iter().any(|text| {
+            text.alpha > 0.0 && text.text.contains("fresh owner failure with unchanged Library authority")
+        }))
+    });
+    graph.store.read_with(cx, |store, _| {
+        let resource = store.orbit();
+        assert!(resource.loaded_value().is_some(), "the successful reading is actually retained");
+        assert_eq!(resource.value_root(), value_root, "failure did not manufacture a new reading");
+        assert!(store.snapshot().key().same_authority(key));
+        assert!(matches!(resource.terminal(), crate::core::ResourceTerminal::Fault(_)));
+    });
+    cx.update(|window, _| {
+        let painted = window.painted_texts();
+        assert!(painted.iter().any(|text| text.alpha > 0.0
+            && text.text.as_ref() == "The Library could not be read."),
+            "retained bytes cannot hide the Library failure: {painted:#?}");
+        assert!(!painted.iter().any(|text| text.text.as_ref() == "Read the code you depend on."));
+        let tree: serde_json::Value = serde_json::from_str(
+            &window.debug_a11y_tree_json().expect("retained failure native tree"),
+        ).expect("retained failure native JSON");
+        assert!(tree["nodes"].as_object().expect("native nodes").values().any(|node| {
+            node["aria"]["role"].as_str() == Some("Status")
+                && node["aria"]["label"].as_str().is_some_and(|label| {
+                    label.contains("The Library could not be read.")
+                        && label.contains("fresh owner failure with unchanged Library authority")
+                })
+        }), "fresh failure is in the native Library tree: {tree:#?}");
+    });
+    press(cx, "retry");
+    assert_eq!(gate.state(), OwnerState::Starting, "retained failure Retry restarts the owner");
 }
 
 #[gpui::test]

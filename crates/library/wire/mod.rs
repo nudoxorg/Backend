@@ -65,9 +65,9 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version; version 16 adds the selected local Project
-/// membership frontier to strict semantic-generation replies. Version 15's
-/// registry-advisory alias coverage remains intact. Clients and services must
-/// use the same version rather than treating missing frontier evidence as a
-/// verified indexed-file count.
-pub const DTO_VERSION: u16 = 16;
+/// Current transport DTO version; version 18 separates exact Tree observation
+/// identity from retained source capability. Version 17's compiler-failure
+/// family and earlier membership/frontier evidence remain intact. Clients
+/// and services must agree on the version; old optional Tree bindings cannot
+/// be interpreted as retained source authority.
+pub const DTO_VERSION: u16 = 18;

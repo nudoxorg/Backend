@@ -1896,7 +1896,7 @@ mod measured_layout_tests {
 
     #[gpui::test]
     fn first_deep_reveal_and_sticky_chain_share_nonmultiple_frame_geometry(cx: &mut gpui::TestAppContext) {
-        use gpui::{AppContext as _, Context, IntoElement as _, Render, Styled as _, Window, div, list, point, size};
+        use gpui::{VisualContext as _, Context, IntoElement as _, Render, Styled as _, Window, div, list, size};
         use std::cell::RefCell;
 
         let cx = cx.add_empty_window();
@@ -1928,22 +1928,23 @@ mod measured_layout_tests {
                         let mut pinned = div().w_full().flex().flex_col();
                         for (index, _) in chain {
                             pinned = pinned.child(div().id(format!("frame-sticky-{index}"))
-                                .h(row_height).w_full());
+                                .debug_selector(move || format!("frame-sticky-{index}"))
+                                .h(row_height).flex_none().w_full());
                         }
                         Some(super::view::clipped_sticky_chain(pinned, viewport_height, row_height, count))
                     }),
                 }
             }
         }
-        let scene = cx.update(|_, cx| cx.new(|_| Scene(Rc::clone(&layout))));
-        cx.draw(point(px(0.0), px(0.0)), size(px(264.0), px(0.0)),
-            |_, _| scene.clone().into_any_element());
+        let _scene = cx.replace_root_view(|_, _| Scene(Rc::clone(&layout)));
+        cx.simulate_resize(size(px(264.0), px(0.0)));
+        cx.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
         let first_ticket = layout.borrow().reveal.as_ref().expect("zero viewport retains reveal").ticket();
         assert!(!layout.borrow().scroll.prepaint_reveal_applied(first_ticket),
             "a zero-height list must not claim to have painted the target");
         let paint = |cx: &mut gpui::VisualTestContext, height: f32| {
-            cx.draw(point(px(0.0), px(0.0)), size(px(264.0), px(height)),
-                |_, _| scene.clone().into_any_element());
+            cx.simulate_resize(size(px(264.0), px(height)));
+            cx.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
             let scroll = layout.borrow().scroll.clone();
             let viewport = scroll.viewport_bounds();
             let target = scroll.bounds_for_item(40).expect("deep target is measured in this paint");
@@ -1968,8 +1969,8 @@ mod measured_layout_tests {
         layout.borrow_mut().reveal_item(40);
         paint(cx, 99.0);
         layout.borrow_mut().reveal_item(40);
-        cx.draw(point(px(0.0), px(0.0)), size(px(264.0), px(20.0)),
-            |_, _| scene.clone().into_any_element());
+        cx.simulate_resize(size(px(264.0), px(20.0)));
+        cx.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
         let scroll = layout.borrow().scroll.clone();
         let viewport = scroll.viewport_bounds();
         let target = scroll.bounds_for_item(40).expect("short viewport still measures the target");
@@ -1979,7 +1980,7 @@ mod measured_layout_tests {
 
     #[gpui::test]
     fn freshly_shrunk_viewport_clips_an_old_five_row_sticky_chain(cx: &mut gpui::TestAppContext) {
-        use gpui::{Context, IntoElement as _, Render, Styled as _, Window, div, list, point, size};
+        use gpui::{VisualContext as _, Context, IntoElement as _, Render, Styled as _, Window, div, list, size};
         use std::cell::RefCell;
         use std::rc::Rc;
 
@@ -2008,16 +2009,18 @@ mod measured_layout_tests {
                         let mut pinned = div().w_full().flex().flex_col();
                         for (index, _) in chain {
                             pinned = pinned.child(div().id(format!("sticky-{index}"))
-                                .h(px(32.0)).w_full());
+                                .debug_selector(move || format!("sticky-{index}"))
+                                .h(px(32.0)).flex_none().w_full());
                         }
                         Some(super::view::clipped_sticky_chain(pinned, viewport_height, px(32.0), row_count))
                     }),
                 }
             }
         }
-        let view = cx.update(|_, cx| cx.new(|_| StickyView(Rc::clone(&layout))));
+        let _view = cx.replace_root_view(|_, _| StickyView(Rc::clone(&layout)));
         let paint = |cx: &mut gpui::VisualTestContext, height: f32| {
-            cx.draw(point(px(0.0), px(0.0)), size(px(264.0), px(height)), |_, _| view.clone().into_any_element());
+            cx.simulate_resize(size(px(264.0), px(height)));
+            cx.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
         };
         paint(cx, 400.0);
         layout.borrow().scroll.scroll_to(ListOffset { item_ix: 40, offset_in_item: px(0.0) });
@@ -2115,7 +2118,7 @@ impl Render for Shelf {
                         action: super::focus::TargetAction::new(
                             guard.clone(),
                             act(&weak, item.does.clone(), snapshot.session().reading.current.id, guard.clone()),
-                        ),
+                        ).with_payload(item.does.clone()),
                         peek: item.warm.clone(),
                         source: item.source.clone(),
                     });

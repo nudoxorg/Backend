@@ -124,19 +124,62 @@ pub(crate) struct Live {
     state: gpui::Entity<MarkState>,
     focus: FocusHandle,
     sheet: Rc<Cell<bool>>,
+    native_link: Option<NativeLink>,
+}
+
+struct NativeLink {
+    label: SharedString,
+    admit: Rc<dyn Fn(&mut App) -> bool>,
 }
 
 /// Reads a mark's state and animates its lit amount.
 pub(crate) fn live(id: &ElementId, key: &ElementId, window: &mut Window, cx: &mut App) -> Live {
+    live_impl(id, key, None, None, window, cx)
+}
+
+/// One host-bound native owner for the existing mark/card trigger.
+pub(crate) fn native_link_live(
+    id: &ElementId,
+    key: &ElementId,
+    focus: FocusHandle,
+    label: SharedString,
+    admit: Rc<dyn Fn(&mut App) -> bool>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Live {
+    live_impl(
+        id,
+        key,
+        Some(focus),
+        Some(NativeLink { label, admit }),
+        window,
+        cx,
+    )
+}
+
+fn live_impl(
+    id: &ElementId,
+    key: &ElementId,
+    host_focus: Option<FocusHandle>,
+    native_link: Option<NativeLink>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Live {
     let state = window.use_keyed_state(id.clone(), cx, |_, cx| MarkState {
-        focus: cx.focus_handle().tab_stop(true),
+        focus: host_focus
+            .clone()
+            .unwrap_or_else(|| cx.focus_handle().tab_stop(true)),
         hovered: false,
         sheet: Rc::new(Cell::new(false)),
     });
     let open = float::is_open(key, window, cx);
     let (hovered, focus, sheet) = {
         let st = state.read(cx);
-        (st.hovered, st.focus.clone(), st.sheet.clone())
+        (
+            st.hovered,
+            host_focus.unwrap_or_else(|| st.focus.clone()),
+            st.sheet.clone(),
+        )
     };
     let focused = focus.is_focused(window) && window.last_input_was_keyboard();
     let motion = Motion::scoped(ElementId::View(state.entity_id()), cx);
@@ -147,7 +190,13 @@ pub(crate) fn live(id: &ElementId, key: &ElementId, window: &mut Window, cx: &mu
         window,
         cx,
     );
-    Live { lit, state, focus, sheet }
+    Live {
+        lit,
+        state,
+        focus,
+        sheet,
+        native_link,
+    }
 }
 
 /// What Enter does on a mark that is also a link (it follows the link;
@@ -184,19 +233,45 @@ pub(crate) fn door(
     };
     let key_request = key.clone();
     let key_card = card.clone();
-    outer = outer.track_focus(&live.focus).on_key_down(move |event: &KeyDownEvent, window, cx| {
-        let pressed = event.keystroke.key.as_str();
-        if pressed == "enter"
-            && let Some(activate) = &activate
-        {
-            activate(window, cx);
-            cx.stop_propagation();
-        } else if matches!(pressed, "enter" | "space") {
-            let anchor = float::reported(&key_request, window, cx).unwrap_or_default();
-            float::open(request(&key_request, anchor, &key_card), window, cx);
-            cx.stop_propagation();
-        }
-    });
+    outer = if let Some(native) = &live.native_link {
+        let admit = native.admit.clone();
+        let outer = outer
+            .role(gpui::Role::Link)
+            .aria_label(native.label.clone());
+        crate::controls::button::native_button_with_event(
+            outer,
+            &live.focus,
+            move |event, window, cx| {
+                if !admit(cx) {
+                    return;
+                }
+                if !matches!(event, gpui::ClickEvent::Keyboard(key) if key.button == gpui::KeyboardButton::Space)
+                    && let Some(activate) = &activate
+                {
+                    activate(window, cx);
+                } else {
+                    let anchor = float::reported(&key_request, window, cx).unwrap_or_default();
+                    float::open(request(&key_request, anchor, &key_card), window, cx);
+                }
+            },
+        )
+    } else {
+        outer
+            .track_focus(&live.focus)
+            .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                let pressed = event.keystroke.key.as_str();
+                if pressed == "enter"
+                    && let Some(activate) = &activate
+                {
+                    activate(window, cx);
+                    cx.stop_propagation();
+                } else if matches!(pressed, "enter" | "space") {
+                    let anchor = float::reported(&key_request, window, cx).unwrap_or_default();
+                    float::open(request(&key_request, anchor, &key_card), window, cx);
+                    cx.stop_propagation();
+                }
+            })
+    };
     let trigger_key = key.clone();
     let trigger_card = card.clone();
     let trigger = float::trigger(
@@ -207,11 +282,17 @@ pub(crate) fn door(
     outer = outer.child(trigger);
     if let Some(after) = sheet {
         let opened = live.sheet.clone();
-        let anchor = SheetAnchor { key: key.clone(), card: card.clone(), after, opened, style: StyleRefinement::default() }
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full();
+        let anchor = SheetAnchor {
+            key: key.clone(),
+            card: card.clone(),
+            after,
+            opened,
+            style: StyleRefinement::default(),
+        }
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
         outer = outer.child(anchor);
     }
     outer.into_any_element()

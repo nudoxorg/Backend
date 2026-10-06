@@ -382,12 +382,14 @@ impl RouteDependencies {
         let BrowseValue::Tree(model) = admission.current_value()? else {
             return None;
         };
-        let context = model.request_binding.and_then(|binding| {
-            binding
-                .matches_effective_workspace_root(&model.root)
-                .then_some(())?;
-            CargoBrowseContext::from_binding_address(selected.requested_project.clone(), binding)
-        });
+        let binding = model.request_binding()?;
+        if !binding.has_admissible_shape()
+            || !binding.matches_effective_workspace_root(&model.root)
+            || !binding.matches_requested_root(&selected.requested_project.path()) {
+            return None;
+        }
+        let context = model.observation.and_then(|observation|
+            CargoBrowseContext::from_observation(selected.requested_project.clone(), observation));
         if selected
             .expected
             .as_ref()

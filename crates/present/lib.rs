@@ -53,6 +53,8 @@ mod browse;
 #[cfg(test)]
 mod browse_tests;
 mod budget;
+#[cfg(test)]
+mod compiler_fault_tests;
 mod call;
 mod coverage;
 mod drive;
@@ -94,7 +96,7 @@ pub use coverage::{
 };
 pub use drive::{Answer, ContinuationCursor, Engine, Probe, answer, answer_paged};
 pub use dto::{
-    CapabilitiesDto, CoverageDto, FaultDto, IdentityDto, LanguageCountDto, MemberGroupDto,
+    CapabilitiesDto, CompilerToolRequirementDto, CoverageDto, FaultDto, IdentityDto, LanguageCountDto, MemberGroupDto,
     OutlineDto, OutlineNodeDto, PageDto, ProductDto, ProductIndexSearchPageDto, ProductRecordDto, ReasonDto, RecordDto,
     RecordListDto, RelationGroupDto, ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto,
     StatusDto, answer_value, fault_value,

@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 
-const SOURCE_FRONTIER_VERSION: u8 = 1;
+const SOURCE_FRONTIER_VERSION: u8 = 2;
 const SOURCE_FRONTIER_POLICY_IDENTITY: &str =
     "backend.local-source-frontier.v1;selection=source-selection-policy.v1;git-clean-paths.v1";
 const MAX_SOURCE_FRONTIERS: usize = 8 * 1024;
@@ -63,7 +63,7 @@ struct SourceFrontier {
     version: u8,
     root: PathBuf,
     project: [u8; 32],
-    policy_identity: &'static str,
+    policy_identity: [u8; 32],
     git_policy_digest: [u8; 32],
     policy_blobs: Vec<(String, String)>,
     files: Vec<SourceFrontierFile>,
@@ -699,12 +699,13 @@ fn stable_source_delta(
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     frontier: &SourceFrontier,
     state: &GitSourceState,
+    admission_policy_identity: [u8; 32],
     is_supported_source: impl Fn(&Path) -> bool,
 ) -> Option<SourceDelta> {
     if frontier.version != SOURCE_FRONTIER_VERSION
         || frontier.root != root
         || frontier.project != project
-        || frontier.policy_identity != SOURCE_FRONTIER_POLICY_IDENTITY
+        || frontier.policy_identity != source_frontier_policy_identity(admission_policy_identity)
         || frontier.git_policy_digest != state.git_policy_digest
         || frontier.policy_blobs != state.policy_blobs
         || source_policy_changed(state)
@@ -835,6 +836,7 @@ fn source_frontier_from_snapshot(
         };
         if fields.project != project
             || fields.content_version == [0; 32]
+            || fields.source_identity.is_none()
             || state.changed_paths.contains(fields.path)
         {
             continue;
@@ -884,7 +886,9 @@ fn source_frontier_from_snapshot(
         version: SOURCE_FRONTIER_VERSION,
         root: root.to_path_buf(),
         project,
-        policy_identity: SOURCE_FRONTIER_POLICY_IDENTITY,
+        policy_identity: source_frontier_policy_identity(
+            snapshot.source_admission_policy.identity(),
+        ),
         git_policy_digest: state.git_policy_digest,
         policy_blobs: state.policy_blobs.clone(),
         files,
@@ -900,6 +904,7 @@ pub(super) fn source_delta(
     directories_stable: bool,
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     state: &GitSourceState,
+    admission_policy_identity: [u8; 32],
     is_supported_source: impl Fn(&Path) -> bool,
 ) -> Option<SourceDelta> {
     let frontier = cached_source_frontier(root, project)?;
@@ -912,8 +917,17 @@ pub(super) fn source_delta(
         reusable,
         &frontier,
         state,
+        admission_policy_identity,
         is_supported_source,
     )
+}
+
+fn source_frontier_policy_identity(admission_policy_identity: [u8; 32]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(SOURCE_FRONTIER_POLICY_IDENTITY.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(&admission_policy_identity);
+    *hasher.finalize().as_bytes()
 }
 
 pub(super) fn remember_snapshot_frontier(

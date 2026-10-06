@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +49,7 @@ FONT_LICENSES = (
     "GeistMono-OFL.txt",
     "Newsreader-OFL.txt",
 )
-EXECUTABLES = ("backend-desktop", "backend-mcp", "backend-locald")
+EXECUTABLES = ("backend-desktop", "backend-mcp", "backend-locald", "backend-cli")
 HELPER_EXECUTABLES = {
     "go_oracle": "go/oracle",
     "pyrefly": "python/pyrefly",
@@ -414,6 +415,8 @@ def validate_direct_cargo_provenance(
         "backend-mcp",
         "-p",
         "backend-locald",
+        "-p",
+        "backend-cli",
         "--message-format=json-render-diagnostics",
     ]
     if (
@@ -665,6 +668,8 @@ def validate_app_build(
         "backend-mcp",
         "-p",
         "backend-locald",
+        "-p",
+        "backend-cli",
     ]
     if execution_kind == "direct-cargo":
         expected_command.append("--message-format=json-render-diagnostics")
@@ -1328,9 +1333,36 @@ def inspect_macho_tree(
     return records
 
 
+def write_application_launcher(macos: Path) -> None:
+    """Preserve caller TypeScript settings for the shared Rust host resolver.
+
+    The host admits TypeScript from the selected package. Inherited explicit
+    runtime and compiler paths remain available. Bundled Node is admitted
+    through the executable's manifest, rather than an ambient override.
+    """
+    launcher = macos / "Nudox"
+    launcher.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        'contents=$(CDPATH= cd "$(dirname "$0")/.." && pwd)\n'
+        'export NUDOX_DOTNET="${NUDOX_DOTNET-$contents/Resources/dotnet/dotnet}"\n'
+        'export NUDOX_ROSLYN_HELPER="${NUDOX_ROSLYN_HELPER-$contents/Resources/Helpers/csharp/oracle.dll}"\n'
+        'export NUDOX_GO_ORACLE="${NUDOX_GO_ORACLE-$contents/Resources/Helpers/go/oracle}"\n'
+        'export NUDOX_GO_ORACLE_BIN="${NUDOX_GO_ORACLE_BIN-$contents/Resources/Helpers/go/oracle}"\n'
+        'export NUDOX_PYREFLY="${NUDOX_PYREFLY-$contents/Resources/Helpers/python/pyrefly}"\n'
+        'exec "$contents/MacOS/backend-desktop" "$@"\n',
+        encoding="utf-8",
+    )
+    launcher.chmod(0o755)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", required=True, type=Path, help="clean checkout at the pinned application revision")
+    parser.add_argument("--cargo-bundle", type=Path, help="pinned cargo-bundle 0.12.0 executable; use for release app skeleton")
+    parser.add_argument("--minimum-os", default="12.0", help="explicitly reviewed minimum macOS version")
+    parser.add_argument("--icon", type=Path, help="approved .icns file for public distribution")
+    parser.add_argument("--expected-icon-sha256", help="content pin for the approved icon")
     parser.add_argument("--expected-revision", required=True, help="full operator-reviewed application Git commit SHA")
     parser.add_argument("--expected-tree", required=True, help="full operator-reviewed application Git tree SHA")
     parser.add_argument("--expected-runner-sha256", required=True, help="full operator-reviewed Cargo runner SHA-256 from the application build")
@@ -1431,17 +1463,45 @@ def main() -> int:
         plist = plistlib.load(stream)
     if plist.get("CFBundleExecutable") != "Nudox" or plist.get("CFBundlePackageType") != "APPL":
         fail("Info.plist does not describe the expected Nudox application bundle")
-    if plist.get("LSMinimumSystemVersion") != "12.0":
-        fail("unexpected LSMinimumSystemVersion; update and review the packaging floor deliberately")
+    if re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", args.minimum_os) is None:
+        fail("invalid minimum macOS version")
+    plist["LSMinimumSystemVersion"] = args.minimum_os
+    version = tomllib.loads((source_root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+    plist["CFBundleShortVersionString"] = version
+    plist["CFBundleVersion"] = version
+    if args.icon:
+        if args.icon.suffix != ".icns" or sha256(args.icon) != args.expected_icon_sha256:
+            fail("approved .icns icon does not match its content pin")
+        plist["CFBundleIconFile"] = "Nudox.icns"
+    elif args.expected_icon_sha256:
+        fail("icon digest provided without its file")
 
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="nudox-package-", dir=output_dir.parent) as temporary:
         staging = Path(temporary) / "Nudox.app"
+        if args.cargo_bundle:
+            tool = args.cargo_bundle.resolve(strict=True)
+            if "0.12.0" not in run([str(tool), "--version"]):
+                fail("release packaging requires pinned cargo-bundle 0.12.0")
+            environment = dict(os.environ)
+            # cargo-bundle 0.12 warning output cannot reset a dumb terminal.
+            environment["TERM"] = "xterm-256color"
+            environment["CARGO_TARGET_DIR"] = str(Path(temporary) / "target")
+            command = [str(tool), "bundle", "--package", "backend-desktop", "--bin", "backend-desktop", "--release", "--target", args.target, "--format", "osx", "--binary-path", str(binaries["backend-desktop"])]
+            completed = subprocess.run(command, cwd=source_root, env=environment, check=False)
+            if completed.returncode:
+                fail("cargo-bundle failed to create the release app skeleton")
+            generated = Path(temporary) / "target" / args.target / "release/bundle/osx/Nudox.app"
+            if not generated.is_dir():
+                fail("cargo-bundle did not produce the expected Nudox.app")
+            shutil.copytree(generated, staging, symlinks=True)
         macos = staging / "Contents/MacOS"
         resources = staging / "Contents/Resources"
-        macos.mkdir(parents=True)
-        resources.mkdir(parents=True)
-        shutil.copyfile(plist_path, staging / "Contents/Info.plist")
+        macos.mkdir(parents=True, exist_ok=True)
+        resources.mkdir(parents=True, exist_ok=True)
+        (staging / "Contents/Info.plist").write_bytes(plistlib.dumps(plist))
+        if args.icon:
+            shutil.copyfile(args.icon, resources / "Nudox.icns")
 
         for name, source_binary in binaries.items():
             destination_name = "backend-desktop" if name == "backend-desktop" else name
@@ -1449,24 +1509,7 @@ def main() -> int:
             shutil.copy2(source_binary, destination)
             destination.chmod(0o755)
 
-        launcher = macos / "Nudox"
-        launcher.write_text(
-            "#!/bin/sh\n"
-            "set -eu\n"
-            'contents=$(CDPATH= cd "$(dirname "$0")/.." && pwd)\n'
-            'export NUDOX_DOTNET="${NUDOX_DOTNET-$contents/Resources/dotnet/dotnet}"\n'
-            'export NUDOX_ROSLYN_HELPER="${NUDOX_ROSLYN_HELPER-$contents/Resources/Helpers/csharp/oracle.dll}"\n'
-            'export NUDOX_GO_ORACLE="${NUDOX_GO_ORACLE-$contents/Resources/Helpers/go/oracle}"\n'
-            'export NUDOX_GO_ORACLE_BIN="${NUDOX_GO_ORACLE_BIN-$contents/Resources/Helpers/go/oracle}"\n'
-            'export NUDOX_PYREFLY="${NUDOX_PYREFLY-$contents/Resources/Helpers/python/pyrefly}"\n'
-            'export NUDOX_TYPESCRIPT_NODE="${NUDOX_TYPESCRIPT_NODE-$contents/Resources/Helpers/typescript/node/bin/node}"\n'
-            'export NUDOX_TYPESCRIPT_MODULE_ROOT="${NUDOX_TYPESCRIPT_MODULE_ROOT-$contents/Resources/Helpers/typescript/node_modules}"\n'
-            'export NUDOX_TYPESCRIPT_REPORT_PROGRAM="${NUDOX_TYPESCRIPT_REPORT_PROGRAM-$contents/Resources/Helpers/typescript/report-program}"\n'
-            'export NUDOX_TSC="${NUDOX_TSC-$contents/Resources/Helpers/typescript/tsc}"\n'
-            'exec "$contents/MacOS/backend-desktop" "$@"\n',
-            encoding="utf-8",
-        )
-        launcher.chmod(0o755)
+        write_application_launcher(macos)
 
         helper_resources = resources / "Helpers"
         shutil.copytree(helpers_dir, helper_resources, symlinks=False)

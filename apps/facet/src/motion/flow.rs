@@ -63,6 +63,88 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+/// Paint this subtree's moving Flow items after its static content and before
+/// later siblings. Popovers and tooltips keep their ordinary global deferral.
+/// The child is laid out and prepainted once; there is no copied presentation.
+pub fn local_paint(key: impl Into<ElementId>, child: impl IntoElement) -> impl IntoElement {
+    LocalPaint {
+        key: key.into(),
+        child: child.into_element(),
+    }
+}
+
+struct LocalPaint<E> {
+    key: ElementId,
+    child: E,
+}
+impl<E: gpui::Element> IntoElement for LocalPaint<E> {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+impl<E: gpui::Element> gpui::Element for LocalPaint<E> {
+    type RequestLayoutState = E::RequestLayoutState;
+    type PrepaintState = E::PrepaintState;
+    fn id(&self) -> Option<ElementId> {
+        Some(self.key.clone())
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        self.child.source_location()
+    }
+    fn a11y_role(&self) -> Option<gpui::Role> {
+        self.child.a11y_role()
+    }
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        self.child.write_a11y_info(node);
+    }
+    fn a11y_synthetic_children(
+        &mut self,
+        state: &mut Self::PrepaintState,
+        builder: &mut gpui::A11ySubtreeBuilder,
+    ) {
+        self.child.a11y_synthetic_children(state, builder);
+    }
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.child.request_layout(id, inspector, window, cx)
+    }
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        state: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        let id = id.expect("local Flow paint has a stable element owner");
+        window.with_local_deferred_draw_scope(id, |window| {
+            self.child
+                .prepaint(Some(id), inspector, bounds, state, window, cx)
+        })
+    }
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        state: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child
+            .paint(id, inspector, bounds, state, prepaint, window, cx);
+        window.paint_local_deferred_draws(id.expect("local Flow paint owner"), cx);
+    }
+}
+
 /// How an item's size change animates.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub enum Resize {
@@ -1071,7 +1153,7 @@ impl gpui::Element for FlowItem {
                     // Moving: paint above static content, in the same clip.
                     let offset = window.element_offset();
                     let mask = window.content_mask();
-                    window.defer_draw(child, offset, 0, Some(mask));
+                    window.defer_draw_local(child, offset, 0, Some(mask));
                 } else {
                     child.prepaint(window, cx);
                     self.child = Some(child);

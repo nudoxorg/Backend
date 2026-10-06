@@ -29,13 +29,12 @@ use backend_engine::cluster_transport::{
     ChunkRange, ClusterListener, CompilerProbeDemand, CompilerProbePage, CompilerProbeSession,
     ControlChannel, ControlGrantPage, ControlMessage, ControlResultAck, ControlResultRecoveryQuery,
     ControlResultRecoveryState, ControlResultRetired, ControlResultRetirementConfirm, ControlRole,
-    Endpoint,
-    EndpointAddr, EndpointId, GrantDirection, MAX_CONTROL_GRANT_PAGES, MAX_OFFER_CAPABILITIES,
-    MAX_PROBE_LIFETIME_MS, MAX_PROBE_OBJECTS_PER_PAGE, MAX_PROBE_PAGES, MAX_RANGE_CHUNKS,
-    MAX_RESPONSE_BYTES, OwnerClusterAdmissionRegistry, ProbeCapability, ProbeInventoryDescriptor,
-    ProbeInventoryHasher, ProbeObjectClaim, ProbeResourceCredits, ResultAckDisposition,
-    ResultRejectReason, ResumeState, ServerState, StoreBlobCatalog, TransferScope, TransportError,
-    VerifiedCoverage, bind_direct, connect_probe, verify_admission,
+    Endpoint, EndpointAddr, EndpointId, GrantDirection, MAX_CONTROL_GRANT_PAGES,
+    MAX_OFFER_CAPABILITIES, MAX_PROBE_LIFETIME_MS, MAX_PROBE_OBJECTS_PER_PAGE, MAX_PROBE_PAGES,
+    MAX_RANGE_CHUNKS, MAX_RESPONSE_BYTES, OwnerClusterAdmissionRegistry, ProbeCapability,
+    ProbeInventoryDescriptor, ProbeInventoryHasher, ProbeObjectClaim, ProbeResourceCredits,
+    ResultAckDisposition, ResultRejectReason, ResumeState, ServerState, StoreBlobCatalog,
+    TransferScope, TransportError, VerifiedCoverage, bind_direct, connect_probe, verify_admission,
 };
 use backend_extension_turso::CandidateAttempt;
 use backend_platform::durable::{
@@ -441,10 +440,7 @@ impl ProbeFailureSummary {
     fn record_timeout(&mut self) {
         self.record(
             ProbeFailureReason::ProbeDeadlineElapsed,
-            ProbeFailureDiagnostic::new(
-                ProbeFailureClass::Timeout,
-                Some("probe deadline elapsed"),
-            ),
+            ProbeFailureDiagnostic::new(ProbeFailureClass::Timeout, Some("probe deadline elapsed")),
         );
     }
 
@@ -1289,9 +1285,7 @@ impl RecoveredCompilerAssignment {
 
     /// Retains the pinned V2 capture used for re-admission and output selection.
     #[must_use]
-    pub(crate) const fn capture(
-        &self,
-    ) -> &CapturedFullWorkspaceV2 {
+    pub(crate) const fn capture(&self) -> &CapturedFullWorkspaceV2 {
         &self.capture
     }
 
@@ -3654,9 +3648,7 @@ impl OwnerCompilerClusterRuntime {
                 })
                 .map(|(candidate, _)| candidate.node().peer());
         }
-        if chosen_peer.is_none()
-            && request.demand == CompilerDemand::Background
-        {
+        if chosen_peer.is_none() && request.demand == CompilerDemand::Background {
             chosen_peer = candidates
                 .iter()
                 .filter(|(_, probe)| probe.exploratory)
@@ -3886,11 +3878,8 @@ impl OwnerCompilerClusterRuntime {
             manifest.target_platform(),
         );
         let current_policy = self.trusted_workers()?;
-        if !current_policy.contains_exact_authorizing_grant(
-            grant,
-            worker_id,
-            &current_grant_scope,
-        ) {
+        if !current_policy.contains_exact_authorizing_grant(grant, worker_id, &current_grant_scope)
+        {
             return Err(ClusterDispatchError::ProbeRejected(
                 ProbeFailureReason::TrustChangedDuringProbe,
             ));
@@ -3953,11 +3942,9 @@ impl OwnerCompilerClusterRuntime {
                 .session_affinity
                 .map(CompilerSessionAffinity::as_bytes),
         };
-        session
-            .validate(probe_started_at)
-            .map_err(|_| {
-                ClusterDispatchError::ProbeRejected(ProbeFailureReason::ProbeRequestInvalid)
-            })?;
+        session.validate(probe_started_at).map_err(|_| {
+            ClusterDispatchError::ProbeRejected(ProbeFailureReason::ProbeRequestInvalid)
+        })?;
 
         let worker_address = EndpointAddr::new(worker_id).with_ip_addr(grant.address());
         let mut channel = tokio::time::timeout(
@@ -4072,40 +4059,33 @@ impl OwnerCompilerClusterRuntime {
                 ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyRejected)
             })?;
             let now = current_unix_ms()?;
-            let missing = reply
-                .missing_objects(&page, now)
-                .map_err(|_| {
-                    ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyInvalid)
-                })?;
+            let missing = reply.missing_objects(&page, now).map_err(|_| {
+                ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyInvalid)
+            })?;
             let page_missing_bytes = missing.iter().try_fold(0_u64, |sum, object| {
                 sum.checked_add(u64::from(object.payload_bytes))
             });
-            have_objects = have_objects
-                .checked_add(reply.have_count)
-                .ok_or(ClusterDispatchError::ProbeRejected(
-                    ProbeFailureReason::HaveReplyInvalid,
-                ))?;
+            have_objects = have_objects.checked_add(reply.have_count).ok_or(
+                ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyInvalid),
+            )?;
             have_payload_bytes = have_payload_bytes
                 .checked_add(reply.have_payload_bytes)
                 .ok_or(ClusterDispatchError::ProbeRejected(
                     ProbeFailureReason::HaveReplyInvalid,
                 ))?;
             missing_objects = missing_objects
-                .checked_add(
-                    u32::try_from(missing.len())
-                        .map_err(|_| {
-                            ClusterDispatchError::ProbeRejected(
-                                ProbeFailureReason::HaveReplyInvalid,
-                            )
-                        })?,
-                )
+                .checked_add(u32::try_from(missing.len()).map_err(|_| {
+                    ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyInvalid)
+                })?)
                 .ok_or(ClusterDispatchError::ProbeRejected(
                     ProbeFailureReason::HaveReplyInvalid,
                 ))?;
             missing_payload_bytes = missing_payload_bytes
-                .checked_add(page_missing_bytes.ok_or(ClusterDispatchError::ProbeRejected(
-                    ProbeFailureReason::HaveReplyInvalid,
-                ))?)
+                .checked_add(
+                    page_missing_bytes.ok_or(ClusterDispatchError::ProbeRejected(
+                        ProbeFailureReason::HaveReplyInvalid,
+                    ))?,
+                )
                 .ok_or(ClusterDispatchError::ProbeRejected(
                     ProbeFailureReason::HaveReplyInvalid,
                 ))?;
@@ -4115,35 +4095,25 @@ impl OwnerCompilerClusterRuntime {
                 .ok_or(ClusterDispatchError::ProbeRejected(
                     ProbeFailureReason::HaveReplyInvalid,
                 ))?;
-            let response_bytes = u64::try_from(reply.have_bitmap.len())
-                .map_err(|_| {
-                    ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyInvalid)
-                })?;
+            let response_bytes = u64::try_from(reply.have_bitmap.len()).map_err(|_| {
+                ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyInvalid)
+            })?;
             minimum_probe_control_bytes = minimum_probe_control_bytes
                 .checked_add(request_bytes)
                 .and_then(|sum| sum.checked_add(response_bytes))
                 .ok_or(ClusterDispatchError::ProbeRejected(
                     ProbeFailureReason::HaveReplyInvalid,
                 ))?;
-            transcript.update(
-                &page
-                    .request_digest()
-                    .map_err(|_| {
-                        ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyInvalid)
-                    })?,
-            );
+            transcript.update(&page.request_digest().map_err(|_| {
+                ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyInvalid)
+            })?);
             transcript.update(&reply.page_digest);
             transcript.update(&reply.have_bitmap);
             transcript.update(&reply.have_count.to_be_bytes());
             transcript.update(&reply.have_payload_bytes.to_be_bytes());
-            transcript.update(
-                &reply
-                    .snapshot
-                    .digest()
-                    .map_err(|_| {
-                        ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyInvalid)
-                    })?,
-            );
+            transcript.update(&reply.snapshot.digest().map_err(|_| {
+                ClusterDispatchError::ProbeRejected(ProbeFailureReason::HaveReplyInvalid)
+            })?);
             if snapshot.is_some_and(|existing| existing != reply.snapshot) {
                 return Err(ClusterDispatchError::ProbeRejected(
                     ProbeFailureReason::HaveReplyInvalid,

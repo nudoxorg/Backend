@@ -835,7 +835,7 @@ dependencies = [
 
 [[package]]
 name = "backend-advisory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-platform",
  "blake3",
@@ -848,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "backend-capacity-planning"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "allocation-counter",
  "backend-engine",
@@ -864,7 +864,7 @@ dependencies = [
 
 [[package]]
 name = "backend-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-client",
  "backend-engine",
@@ -882,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "backend-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-engine",
  "backend-library",
@@ -896,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "backend-cluster-transport"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-store",
  "backend-version",
@@ -915,7 +915,7 @@ dependencies = [
 
 [[package]]
 name = "backend-compatibility-tests"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-compile",
  "backend-engine",
@@ -931,7 +931,7 @@ dependencies = [
 
 [[package]]
 name = "backend-compile"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-flow",
  "backend-platform",
@@ -950,7 +950,7 @@ dependencies = [
 
 [[package]]
 name = "backend-concurrency-tests"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-execution",
  "backend-replication",
@@ -959,7 +959,7 @@ dependencies = [
 
 [[package]]
 name = "backend-control"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-store",
  "backend-version",
@@ -971,7 +971,7 @@ dependencies = [
 
 [[package]]
 name = "backend-crash-tests"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-engine",
  "backend-execution",
@@ -983,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "backend-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -1020,14 +1020,14 @@ dependencies = [
 
 [[package]]
 name = "backend-discovery"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ignore",
 ]
 
 [[package]]
 name = "backend-embedding-candle"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "candle-core",
@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "backend-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "allocation-counter",
  "arrayvec",
@@ -1094,7 +1094,7 @@ dependencies = [
 
 [[package]]
 name = "backend-execution"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-flow",
  "backend-replication",
@@ -1108,7 +1108,7 @@ dependencies = [
 
 [[package]]
 name = "backend-extension-qdrant"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "allocation-counter",
  "arrayvec",
@@ -1126,7 +1126,7 @@ dependencies = [
 
 [[package]]
 name = "backend-extension-tantivy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-platform",
  "backend-semantic",
@@ -1138,7 +1138,7 @@ dependencies = [
 
 [[package]]
 name = "backend-extension-trustfall"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "allocation-counter",
  "backend-flow",
@@ -1156,7 +1156,7 @@ dependencies = [
 
 [[package]]
 name = "backend-extension-turso"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-library",
  "backend-platform",
@@ -1170,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "backend-facet"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-gui-harness",
  "gpui-ce",
@@ -1187,11 +1187,11 @@ dependencies = [
 
 [[package]]
 name = "backend-fleet"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "backend-flow"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-engine",
  "backend-frontend-clang",
@@ -1212,7 +1212,7 @@ dependencies = [
 
 [[package]]
 name = "backend-frontend-clang"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-compile",
  "backend-semantic",
@@ -1227,7 +1227,7 @@ dependencies = [
 
 [[package]]
 name = "backend-frontend-csharp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-compile",
  "backend-semantic",
@@ -1240,7 +1240,7 @@ dependencies = [
 
 [[package]]
 name = "backend-frontend-go"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-compile",
  "backend-semantic",
@@ -1254,7 +1254,7 @@ dependencies = [
 
 [[package]]
 name = "backend-frontend-java"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-compile",
  "backend-semantic",
@@ -1267,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "backend-frontend-python"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-compile",
  "backend-semantic",
@@ -1283,7 +1283,7 @@ dependencies = [
 
 [[package]]
 name = "backend-frontend-rust"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "backend-compile",
@@ -1306,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "backend-frontend-typescript"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-compile",
  "backend-semantic",
@@ -1327,7 +1327,7 @@ dependencies = [
 
 [[package]]
 name = "backend-fuzz"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-compile",
  "backend-engine",
@@ -1341,7 +1341,7 @@ dependencies = [
 
 [[package]]
 name = "backend-gui-harness"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "gpui-ce",
  "gpui_ce_platform",
@@ -1355,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "backend-journeys"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-cli",
  "backend-client",
@@ -1392,7 +1392,7 @@ dependencies = [
 
 [[package]]
 name = "backend-laws"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-compile",
  "backend-engine",
@@ -1405,7 +1405,7 @@ dependencies = [
 
 [[package]]
 name = "backend-library"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "allocation-counter",
  "arrayvec",
@@ -1426,7 +1426,7 @@ dependencies = [
 
 [[package]]
 name = "backend-local-service"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-client",
  "backend-compile",
@@ -1475,14 +1475,14 @@ dependencies = [
 
 [[package]]
 name = "backend-locald"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-local-service",
 ]
 
 [[package]]
 name = "backend-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "backend-client",
@@ -1504,7 +1504,7 @@ dependencies = [
 
 [[package]]
 name = "backend-performance-tests"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "allocation-counter",
  "backend-cli",
@@ -1531,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "backend-platform"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "rustix 1.1.4",
@@ -1542,19 +1542,21 @@ dependencies = [
 
 [[package]]
 name = "backend-present"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "allocation-counter",
  "backend-advisory",
  "backend-client",
  "backend-library",
+ "backend-semantic",
+ "backend-version",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "backend-replication"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-platform",
  "backend-semantic",
@@ -1568,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "backend-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "atomic-waker",
  "backend-discovery",
@@ -1582,7 +1584,7 @@ dependencies = [
 
 [[package]]
 name = "backend-semantic"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "allocation-counter",
  "arrayvec",
@@ -1600,7 +1602,7 @@ dependencies = [
 
 [[package]]
 name = "backend-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "allocation-counter",
  "arrayvec",
@@ -1623,7 +1625,7 @@ dependencies = [
 
 [[package]]
 name = "backend-store-s3"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-platform",
  "backend-store",
@@ -1637,7 +1639,7 @@ dependencies = [
 
 [[package]]
 name = "backend-token-budget"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "allocation-counter",
  "backend-library",
@@ -1649,7 +1651,7 @@ dependencies = [
 
 [[package]]
 name = "backend-version"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrayvec",
  "blake3",
@@ -1664,7 +1666,7 @@ dependencies = [
 
 [[package]]
 name = "backend-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "backend-compile",
  "backend-engine",
@@ -1681,7 +1683,7 @@ dependencies = [
 
 [[package]]
 name = "backend-workspace"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",

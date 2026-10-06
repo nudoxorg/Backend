@@ -170,20 +170,39 @@ impl<E: InteractiveElement + ParentElement + Styled + Element + 'static> Element
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        None
+        self.base.source_location()
+    }
+
+    // This wrapper is the base element's native node, rather than an extra
+    // semantic container. Forward every accessibility hook so its role,
+    // properties, actions and synthetic descendants survive composition.
+    fn a11y_role(&self) -> Option<gpui::Role> {
+        self.base.a11y_role()
+    }
+
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        self.base.write_a11y_info(node);
+    }
+
+    fn a11y_synthetic_children(
+        &mut self,
+        prepaint: &mut Self::PrepaintState,
+        builder: &mut gpui::A11ySubtreeBuilder,
+    ) {
+        self.base.a11y_synthetic_children(prepaint, builder);
     }
 
     fn request_layout(
         &mut self,
         global_id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        inspector_id: Option<&gpui::InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         // Register this focus trap with the manager
         FocusTrapManager::register_trap(global_id.unwrap(), self.focus_handle.downgrade(), cx);
 
-        self.base.request_layout(global_id, None, window, cx)
+        self.base.request_layout(global_id, inspector_id, window, cx)
     }
 
     fn prepaint(

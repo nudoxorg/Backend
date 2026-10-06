@@ -819,11 +819,23 @@ fn hero(
             })
             .collect();
         let (targets, on_page, recall) = (ctx.targets.clone(), ctx.active, ctx.targets.recall());
+        // DepLine mounts its visible links in RenderOnce, after the Reader
+        // finishes collecting its body. Preserve each existing owner now;
+        // the visible line binds that same handle to its actual Link below.
+        if on_page {
+            for (_, id) in &door_of { targets.reuse_native_handle(id); }
+        }
+        let native_targets = targets.clone();
+        let click_admit = dep_admit.clone();
         let (click_links, click_recall, door_links) =
             (ctx.links.clone(), recall.clone(), ctx.links.clone());
         marks = marks.child(
             dep_line("mk-deps", facts, parent, measure)
+                .native_focus(move |dep, cx| on_page.then(|| {
+                    native_targets.native_handle(&PageTarget::Dependency(dep.name.clone()).id(), cx)
+                }), dep_admit.clone())
                 .on_open(move |place, _window, cx| {
+                    if !click_admit(cx) { return; }
                     let door = door_of
                         .iter()
                         .find(|(at, _)| at == place)

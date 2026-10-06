@@ -649,6 +649,9 @@ impl From<CompilerCause> for GoldenCompilerCause {
             CompilerCause::Fragment(cause) => Self::Fragment {
                 cause: cause.into(),
             },
+            CompilerCause::FragmentFailure(failure) => Self::Fragment {
+                cause: failure.phase().into(),
+            },
         }
     }
 }

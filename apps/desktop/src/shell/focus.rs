@@ -20,6 +20,7 @@ use gpui::{
     LayoutId, MouseExitEvent, MouseMoveEvent, Pixels, SharedString, StatefulInteractiveElement,
     Style, Window, div, point, px, size,
 };
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
@@ -53,11 +54,38 @@ pub(crate) type Act = Rc<dyn Fn(&mut Window, &mut App)>;
 pub(crate) struct TargetAction {
     admit: Rc<dyn Fn(&mut App) -> bool>,
     act: Act,
+    payload: Option<SemanticPayload>,
+}
+
+/// Optional typed payload for actions whose row can change within one local
+/// visit. Equality uses the original owned type, never its display label.
+#[derive(Clone)]
+struct SemanticPayload(Rc<dyn PayloadEquality>);
+
+trait PayloadEquality {
+    fn as_any(&self) -> &dyn Any;
+    fn same(&self, other: &dyn PayloadEquality) -> bool;
+}
+
+impl<T: PartialEq + 'static> PayloadEquality for T {
+    fn as_any(&self) -> &dyn Any { self }
+    fn same(&self, other: &dyn PayloadEquality) -> bool {
+        other.as_any().downcast_ref::<T>().is_some_and(|other| self == other)
+    }
+}
+
+impl PartialEq for SemanticPayload {
+    fn eq(&self, other: &Self) -> bool { self.0.same(other.0.as_ref()) }
 }
 
 impl TargetAction {
     pub(crate) fn new(admit: Rc<dyn Fn(&mut App) -> bool>, act: Act) -> Self {
-        Self { admit, act }
+        Self { admit, act, payload: None }
+    }
+
+    pub(crate) fn with_payload<T: PartialEq + 'static>(mut self, payload: T) -> Self {
+        self.payload = Some(SemanticPayload(Rc::new(payload)));
+        self
     }
 
     pub(crate) fn admits(&self, cx: &mut App) -> bool {
@@ -274,10 +302,46 @@ pub(crate) struct Targets {
     native: Rc<RefCell<NativeTargets>>,
 }
 
+/// Identity of one continuously mounted semantic target. This receipt owns
+/// no callback or serving authority; the original TargetAction still admits
+/// its captured visit/resource at activation time.
+#[derive(Clone)]
+pub(crate) struct TargetMountClaim {
+    id: SharedString,
+    identity: Rc<()>,
+    native: Option<FocusHandle>,
+}
+
+impl TargetMountClaim {
+    pub(crate) fn id(&self) -> &str { &self.id }
+
+    #[cfg(test)]
+    pub(crate) fn unadmitted(id: SharedString) -> Self {
+        Self { id, identity: Rc::new(()), native: None }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct TargetSemantics {
+    payload: Option<SemanticPayload>,
+    label: SharedString,
+    peek: Option<PageKey>,
+    source: Option<SymbolRef>,
+}
+
+struct MountedTarget {
+    identity: Rc<()>,
+    semantics: TargetSemantics,
+    registered: u64,
+    painted: Option<u64>,
+    ambiguous: bool,
+}
+
 #[derive(Default)]
 struct NativeTargets {
     frame: u64,
     handles: HashMap<SharedString, (FocusHandle, u64)>,
+    mounts: HashMap<SharedString, MountedTarget>,
 }
 
 impl NativeTargets {
@@ -313,7 +377,18 @@ impl Targets {
     pub(crate) fn begin(&self) {
         let _ = self.list.with(Vec::clear);
         let mut native = self.native.borrow_mut();
-        native.frame = native.frame.wrapping_add(1);
+        let preceding = native.frame;
+        native.mounts.retain(|_, mount| mount.registered == preceding && mount.painted == Some(preceding));
+        native.frame = match native.frame.checked_add(1) {
+            Some(frame) => frame,
+            None => {
+                // Mint a fresh mount namespace at numeric bookkeeping
+                // exhaustion. A held identity can never survive this reset.
+                native.mounts.clear();
+                native.handles.clear();
+                0
+            }
+        };
         drop(native);
         self.layouts.borrow_mut().clear();
         self.escape.borrow_mut().take();
@@ -342,6 +417,29 @@ impl Targets {
 
     /// Registers one target in walk order.
     pub(crate) fn push(&self, target: Target) {
+        let semantics = TargetSemantics {
+            payload: target.action.payload.clone(),
+            label: target.label.clone(), peek: target.peek.clone(), source: target.source.clone(),
+        };
+        let mut native = self.native.borrow_mut();
+        let frame = native.frame;
+        match native.mounts.get_mut(&target.id) {
+            Some(mount) if mount.registered == frame => {
+                // Two current controls with one key cannot lend each other a
+                // native hint claim, even if their words happen to agree.
+                mount.ambiguous = true;
+            }
+            Some(mount) if mount.semantics == semantics => {
+                mount.registered = frame;
+                mount.painted = None;
+            }
+            _ => {
+                native.mounts.insert(target.id.clone(), MountedTarget {
+                    identity: Rc::new(()), semantics, registered: frame, painted: None, ambiguous: false,
+                });
+            }
+        }
+        drop(native);
         if let Some(source) = &target.source {
             self.sources
                 .borrow_mut()
@@ -368,11 +466,17 @@ impl Targets {
         let id = id.into();
         let focused = self.is_focused(&id);
         let source = self.sources.borrow().get(&id).cloned();
+        let mount = {
+            let native = self.native.borrow();
+            native.mounts.get(&id).map(|mount| (Rc::clone(&mount.identity), native.frame))
+        };
         Tracked {
             id,
             focused,
             source,
             target: true,
+            mount,
+            native: Rc::clone(&self.native),
             bounds: Rc::clone(&self.bounds),
             layouts: Rc::clone(&self.layouts),
             child: child.into_any_element(),
@@ -387,6 +491,8 @@ impl Targets {
             focused: false,
             source: None,
             target: false,
+            mount: None,
+            native: Rc::clone(&self.native),
             bounds: Rc::clone(&self.bounds),
             layouts: Rc::clone(&self.layouts),
             child: child.into_any_element(),
@@ -430,15 +536,19 @@ impl Targets {
     /// left by must not fly the bevel in from the other page).
     pub(crate) fn new_page(&self) {
         self.recall.clear_focus();
-        self.native.borrow_mut().handles.clear();
+        let mut native = self.native.borrow_mut();
+        native.handles.clear();
+        native.mounts.clear();
         self.fresh.set(true);
     }
 
     pub(crate) fn take_native_departure(&self) -> NativeFocusDeparture {
         let mut native = self.native.borrow_mut();
+        native.mounts.clear();
         NativeFocusDeparture(NativeTargets {
             frame: native.frame,
             handles: std::mem::take(&mut native.handles),
+            mounts: HashMap::new(),
         })
     }
 
@@ -480,8 +590,34 @@ impl Targets {
         native.handles.insert(id.clone(), (handle, frame));
     }
 
-    /// A hint can focus only the exact target list frame that supplied it.
-    /// Reader redraws may reuse ids while replacing actions and evidence.
+    /// Capture only an actually painted target. Incidental render frames
+    /// retain its identity while semantic replacement or unmounting retires it.
+    pub(crate) fn mount_claim(&self, id: &str) -> Option<TargetMountClaim> {
+        let native = self.native.borrow();
+        let mount = native.mounts.get(id)?;
+        if mount.ambiguous || mount.registered != native.frame || mount.painted != Some(native.frame) {
+            return None;
+        }
+        let handle = native.handles.get(id)
+            .filter(|(_, seen)| *seen == native.frame).map(|(handle, _)| handle.clone());
+        Some(TargetMountClaim { id: id.to_owned().into(), identity: Rc::clone(&mount.identity), native: handle })
+    }
+
+    pub(crate) fn admits_mount(&self, claim: &TargetMountClaim, window: &Window) -> bool {
+        let Some(current) = self.mount_claim(&claim.id) else { return false; };
+        let owner_current = match (&current.native, &claim.native) {
+            (Some(current), Some(original)) => current == original && window.is_focus_handle_mounted(original),
+            // Raw targets keep the Shell owner; no native child is claimed.
+            (None, None) => true,
+            _ => false,
+        };
+        Rc::ptr_eq(&current.identity, &claim.identity)
+            && owner_current
+            && self.list.with(|list| list.iter().any(|target| target.id == claim.id)).unwrap_or(false)
+    }
+
+    /// Numeric frame for immediate registration probes and diagnostics.
+    /// Deferred activation uses an actually painted mount receipt instead.
     pub(crate) fn hint_frame(&self) -> u64 {
         self.native.borrow().frame
     }
@@ -704,6 +840,8 @@ pub(crate) struct Tracked {
     /// Published to the probe as a target (`track`), or only measured
     /// (`measure`: a part of a target, such as a row's name).
     target: bool,
+    mount: Option<(Rc<()>, u64)>,
+    native: Rc<RefCell<NativeTargets>>,
     bounds: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     layouts: Rc<RefCell<HashMap<SharedString, LayoutId>>>,
     child: AnyElement,
@@ -790,6 +928,15 @@ impl Element for Tracked {
         cx: &mut App,
     ) {
         self.child.paint(window, cx);
+        if let Some((identity, frame)) = &self.mount {
+            let mut native = self.native.borrow_mut();
+            if native.frame == *frame
+                && let Some(mount) = native.mounts.get_mut(&self.id)
+                && Rc::ptr_eq(&mount.identity, identity)
+                && mount.registered == *frame {
+                mount.painted = Some(*frame);
+            }
+        }
         // Twins: the pointer on a declaration lights that declaration
         // everywhere it stands (`side::twin`), and leaving puts it out.
         if let (Some(source), Some(hitbox)) = (self.source.clone(), hitbox.clone()) {
@@ -1185,3 +1332,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "focus/native_hint_tests.rs"]
+mod native_hint_tests;

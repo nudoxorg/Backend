@@ -539,8 +539,19 @@ fn clicking_a_chip_filters_to_that_verb_and_a_test_place_shows_when_tests_are_in
 
 fn choose_hint(rig: &mut Rig, id: &str) {
     rig.keys("f");
-    let code = rig.shell.read_with(rig.cx, |shell, _| shell.hint_code_for(id))
-        .unwrap_or_else(|| panic!("mounted target {id} has a hint"));
+    let choice = rig.shell.read_with(rig.cx, |shell, _| shell.hinted_target_for(id))
+        .unwrap_or_else(|| panic!("painted target {id} has an original hint receipt"));
+    let before = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).hint_frame());
+    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+    reader.update(rig.cx, |_, cx| cx.notify());
+    rig.repaint();
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    assert_ne!(targets.hint_frame(), before, "the actual Reader render advanced its paint frame");
+    assert!(rig.cx.update(|window, _| targets.admits_mount(&choice.mount, window)),
+        "the original semantic/native mount survives the new paint");
+    assert!(rig.cx.update(|_, cx| choice.target.action.admits(cx)),
+        "the original typed action, rather than a rebound callback, still admits its resource and visit");
+    let code = choice.code;
     rig.keys(&code.chars().map(|letter| letter.to_string()).collect::<Vec<_>>().join(" "));
 }
 

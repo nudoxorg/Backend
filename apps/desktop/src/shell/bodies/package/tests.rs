@@ -799,8 +799,7 @@ impl crate::runtime::reads::PageReader for PackageAtRequest {
         let crate::runtime::reads::ReadRequest::Package(package) = request else {
             return crate::shell::tests::Fixture.read(request, context);
         };
-        let mut about = dossier();
-        about.package = package.clone();
+        let about = crate::shell::tests::registry_dossier(package);
         Ok(crate::model::pages::PageValue::Package(about))
     }
 }
@@ -816,8 +815,10 @@ impl crate::runtime::reads::PageReader for RegistryPackagePage {
         let crate::runtime::reads::ReadRequest::Package(package) = request else {
             return crate::shell::tests::Fixture.read(request, context);
         };
-        let mut about = dossier();
-        about.package = package.clone();
+        let mut about = crate::shell::tests::registry_dossier(package);
+        assert!(matches!(about.record_evidence(),
+            crate::model::pages::package::PackageRecordEvidence::Bound(_)),
+            "the release fixture must bind its record and outline to the exact requested registry release");
         let name = package.display_name().to_owned();
         let entry = |version: &str| crate::model::pages::VersionEntry {
             package: PackageRef::parse(&format!("pkg:cargo/{name}@{version}"))
@@ -1382,7 +1383,13 @@ fn the_releases_are_doors_and_enter_travels_to_one(cx: &mut TestAppContext) {
         crate::runtime::fixture_releases::install(cx);
         facet::probe::enable(cx);
     });
-    let _ = painted(&mut rig);
+    let ledger = painted(&mut rig);
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.package(&package)
+        .loaded_value().is_some_and(|dossier| matches!(dossier.record_evidence(),
+            crate::model::pages::package::PackageRecordEvidence::Bound(_)))),
+        "the native walk starts from the admitted exact registry dossier");
+    assert!(ledger.targets.iter().any(|target| target.key == "pkg-release-newest"),
+        "the release fixture actually paints the production newest-release door");
     walk_to(&mut rig, "pkg-release-newest", 40);
     rig.keys("enter");
     assert!(
@@ -1920,6 +1927,51 @@ impl crate::runtime::reads::PageReader for Depends {
     }
 }
 
+fn enable_dependency_native_ax(rig: &mut Rig) {
+    // The ordinary fixture already mounts Root → CloseView → Shell.
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+}
+
+fn assert_dependency_native_focus(rig: &mut Rig) {
+    let targets = rig
+        .shell
+        .read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let json = rig.cx.update(|window, _| {
+        assert_eq!(
+            targets.native_focused(window).as_deref(),
+            Some("pkg-dep-serde"),
+            "the exact mounted dependency Link owns native keyboard focus"
+        );
+        assert!(targets.focused_native_is_live(window));
+        window
+            .debug_a11y_tree_json()
+            .expect("actual native dependency tree")
+    });
+    let tree: serde_json::Value = serde_json::from_str(&json).expect("native JSON");
+    let nodes = tree["nodes"].as_object().expect("native nodes");
+    let matching: Vec<_> = nodes
+        .iter()
+        .filter(|(_, node)| node["aria"]["label"].as_str() == Some("Open dependency serde"))
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "one actual dependency link, without a second focusable wrapper"
+    );
+    let (node_id, node) = matching[0];
+    assert_eq!(node["aria"]["role"].as_str(), Some("Link"));
+    assert!(node["aria"]["on_action"].as_array().is_some_and(|actions| {
+        actions
+            .iter()
+            .any(|action| action.as_str() == Some("Click"))
+    }));
+    assert_eq!(
+        tree["accesskit_focus"].as_str(),
+        Some(node_id.as_str()),
+        "AccessKit and native keyboard stand on the same real dependency link"
+    );
+}
+
 /// A dependency the hero names is a door when it goes somewhere: the
 /// keyboard reaches it, Enter opens the release it names as a click does,
 /// and ⌘[ comes back with the keyboard standing on it. A name with no place
@@ -1928,13 +1980,15 @@ impl crate::runtime::reads::PageReader for Depends {
 fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut TestAppContext) {
     let _registry = super::use_registry_binding_for_test("test-authority", 7);
     let indexed = serde_registry_tree();
-    let expected_destination = indexed.package.as_str().to_owned();
+    let expected_destination = crate::shell::kit::package_route(&indexed.package)
+        .expect("the admitted local indexed tree has its exact package route");
     let pool = crate::runtime::reads::ReadPool::start(1, move |_| Depends {
         indexed: indexed.clone(),
     })
     .expect("pool");
     let mut rig =
         crate::shell::tests::rig_with_reads(cx, Some(package_route()), 1440.0, 900.0, pool);
+    enable_dependency_native_ax(&mut rig);
     rig.cx.update(|_, cx| facet::probe::enable(cx));
     let ledger = painted(&mut rig);
     assert_eq!(
@@ -1964,12 +2018,30 @@ fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut Tes
         .bounds
         .clone();
     assert!(door.height >= 24.0, "a door a pointer can hit: {door:?}");
-    walk_to(&mut rig, "pkg-dep-serde", 24);
-    rig.keys("enter");
-    let opened = rig.route();
     assert!(
-        format!("{opened:?}").contains(&expected_destination),
-        "Enter opened the exact indexed tree admitted by the test receipt: {opened:?}"
+        crate::shell::tests::native_bounds(&mut rig, "Link", "Open dependency serde", true)
+            .is_some(),
+        "the admitted dependency paints a real native Link with Click"
+    );
+    walk_to(&mut rig, "pkg-dep-serde", 24);
+    assert_dependency_native_focus(&mut rig);
+    let enter = gpui::Keystroke::parse("enter").expect("native dependency activation");
+    rig.cx.simulate_event(gpui::KeyDownEvent {
+        keystroke: enter.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    assert_eq!(
+        rig.route(),
+        package_route(),
+        "KeyDown alone cannot follow the dependency"
+    );
+    rig.cx.simulate_event(gpui::KeyUpEvent { keystroke: enter });
+    rig.settle();
+    let opened = rig.route();
+    assert_eq!(
+        opened, expected_destination,
+        "Enter opened the exact indexed tree admitted by the test receipt"
     );
     rig.keys("secondary-[");
     assert_eq!(rig.route(), package_route(), "⌘[ came back");
@@ -1977,6 +2049,35 @@ fn a_dependency_that_goes_somewhere_is_a_door_and_back_stands_on_it(cx: &mut Tes
         focused(&mut rig).as_deref(),
         Some("pkg-dep-serde"),
         "and the keyboard stands on the door it left by"
+    );
+    assert_dependency_native_focus(&mut rig);
+    let link = gpui::ElementId::NamedChild(
+        Arc::new(gpui::ElementId::Name("mk-deps".into())),
+        "dep-serde-0".into(),
+    );
+    let card = gpui::ElementId::NamedChild(Arc::new(link), "card".into());
+    let space = gpui::Keystroke::parse("space").expect("native dependency disclosure");
+    rig.cx.simulate_event(gpui::KeyDownEvent {
+        keystroke: space.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    assert!(
+        !rig.cx
+            .update(|window, cx| facet::overlay::float::is_open(&card, window, cx)),
+        "Space KeyDown does not disclose the card prematurely"
+    );
+    rig.cx.simulate_event(gpui::KeyUpEvent { keystroke: space });
+    rig.settle();
+    assert_eq!(
+        rig.route(),
+        package_route(),
+        "Space discloses the dependency card without following its link"
+    );
+    assert!(
+        rig.cx
+            .update(|window, cx| facet::overlay::float::is_open(&card, window, cx)),
+        "the same native dependency owner preserves Space's existing card behavior"
     );
 }
 
@@ -1993,6 +2094,7 @@ fn after_back_the_focus_bevel_comes_back_on_the_door_not_flying_in(cx: &mut Test
     .expect("pool");
     let mut rig =
         crate::shell::tests::rig_with_reads(cx, Some(package_route()), 1440.0, 900.0, pool);
+    enable_dependency_native_ax(&mut rig);
     rig.cx.update(|_, cx| facet::probe::enable(cx));
     let _ = painted(&mut rig);
     walk_to(&mut rig, "pkg-dep-serde", 24);
@@ -2013,6 +2115,7 @@ fn after_back_the_focus_bevel_comes_back_on_the_door_not_flying_in(cx: &mut Test
         "back stands on the door"
     );
     let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    assert_dependency_native_focus(&mut rig);
     let glow: Vec<&facet::probe::TrackSample> = ledger
         .tracks
         .iter()
@@ -2041,5 +2144,80 @@ fn after_back_the_focus_bevel_comes_back_on_the_door_not_flying_in(cx: &mut Test
             .all(|sample| !sample.live && (sample.value - door.y).abs() < 0.5),
         "and never flies: {:#?}",
         &glow[born..]
+    );
+}
+
+
+#[gpui::test]
+fn a_dependency_native_link_rejects_a_replaced_owner_before_any_repaint(cx: &mut TestAppContext) {
+    use crate::core::VersionedRoot;
+    use crate::runtime::owner::{OwnerGate, OwnerState};
+    use crate::shell::tests::{RootOnly, rig_with_engine_gate};
+    let _registry = super::use_registry_binding_for_test("test-authority", 7);
+    let root = VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]),
+        4,
+    );
+    let gate = OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+    let indexed = serde_registry_tree();
+    let pool = crate::runtime::reads::ReadPool::start(1, move |_| Depends {
+        indexed: indexed.clone(),
+    })
+    .expect("pool");
+    let mut rig = rig_with_engine_gate(
+        cx,
+        Some(package_route()),
+        1440.,
+        900.,
+        pool,
+        RootOnly,
+        Some(gate.clone()),
+    );
+    enable_dependency_native_ax(&mut rig);
+    rig.repaint();
+    rig.settle();
+    let tree: serde_json::Value = serde_json::from_str(
+        &rig.cx
+            .update(|window, _| window.debug_a11y_tree_json())
+            .expect("real mounted dependency tree"),
+    )
+    .expect("native JSON");
+    let (node_id, node) = tree["nodes"]
+        .as_object()
+        .expect("native nodes")
+        .iter()
+        .find(|(_, node)| {
+            node["aria"]["label"].as_str() == Some("Open dependency serde")
+                && node["aria"]["role"].as_str() == Some("Link")
+        })
+        .expect("actual admitted dependency link");
+    assert!(node["aria"]["on_action"].as_array().is_some_and(|actions| {
+        actions
+            .iter()
+            .any(|action| action.as_str() == Some("Click"))
+    }));
+    let old = gpui::accesskit::NodeId(node_id.parse().expect("native dependency id"));
+    // Deliver directly to the old mounted action, before any notification,
+    // rebuilt link, or typed read can conceal the attachment replacement.
+    gate.publish(OwnerState::Starting);
+    gate.publish(OwnerState::Ready {
+        key: root,
+        mode: crate::model::ServiceMode::Attached,
+    });
+    rig.cx.update(|window, cx| {
+        window.simulate_a11y_action(
+            gpui::accesskit::ActionRequest {
+                action: gpui::AccessibleAction::Click,
+                target_tree: gpui::accesskit::TreeId::ROOT,
+                target_node: old,
+                data: None,
+            },
+            cx,
+        )
+    });
+    assert_eq!(
+        rig.route(),
+        package_route(),
+        "the old native dependency link cannot cross a replacement owner"
     );
 }

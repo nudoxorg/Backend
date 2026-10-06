@@ -69,7 +69,7 @@ impl PageReader for ScheduledOwnerReader {
                 LockedInactiveCoverage, LockfileGraphCoverage, LockfileWorkspaceMembership,
                 TreeInput, TreeSource, build_tree,
             };
-            let tree = build_tree(
+            let mut tree = build_tree(
                 &TreeInput {
                     root: project
                         .service_coordinate()
@@ -87,6 +87,10 @@ impl PageReader for ScheduledOwnerReader {
                 },
                 &|_: &str, _: &str| panic!("empty fixture must not ask for advisories"),
             );
+            let binding = backend_library::browse::ProjectTreeRequestBindingV1::for_paths(
+                &project.path(), &tree.root,
+            ).expect("exact display fixture request");
+            tree.observation = Some(backend_library::browse::ProjectTreeObservationV1::DisplayOnly { binding });
             return Ok(PageValue::Browse(BrowseValue::Tree(Arc::new(
                 crate::runtime::browse_reads::tree_model(&tree),
             ))));

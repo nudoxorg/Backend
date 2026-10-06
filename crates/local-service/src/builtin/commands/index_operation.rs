@@ -11,9 +11,10 @@
 
 use backend_library::{
     CompileExecutionIntent, IndexOperationFailureReason, IndexOperationKey,
-    IndexOperationObservation, IndexOperationPublicationReceipt, IndexOperationState,
-    IndexOperationStatus, IndexOperationUnresolvedReason, PackageReference, ProductText,
-    SurfaceReply, index_operation_request_digest,
+    IndexOperationObservation, IndexOperationPublicationReceipt,
+    IndexOperationSourceCaptureReceipt, IndexOperationState, IndexOperationStatus,
+    IndexOperationUnresolvedReason, PackageReference, ProductText, SurfaceReply,
+    index_operation_request_digest,
 };
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -72,7 +73,22 @@ pub(super) struct StoredOperation {
     pub(super) request_digest: [u8; 32],
     pub(super) package: PackageReference,
     pub(super) execution_intent: CompileExecutionIntent,
+    /// Structural capture committed before semantic completion, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) source_capture: Option<IndexOperationSourceCaptureReceipt>,
+    /// Exact selected head before keyed indexing work began. This witness lets
+    /// recovery distinguish the one source-capture commit from a later root
+    /// that merely happens to retain the same package rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) source_capture_base: Option<SourceCaptureBase>,
     pub(super) state: StoredOperationState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SourceCaptureBase {
+    pub(super) workspace_root: [u8; 32],
+    pub(super) workspace_sequence: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -279,6 +295,8 @@ impl IndexOperationJournal {
                         request_digest,
                         package,
                         execution_intent,
+                        source_capture: None,
+                        source_capture_base: None,
                         state: StoredOperationState::Accepted,
                     };
                     validate_entry(&entry)?;
@@ -351,6 +369,98 @@ impl IndexOperationJournal {
                 base_workspace_root,
                 base_workspace_sequence,
             };
+            Ok(entry)
+        })
+    }
+
+    /// Persists the independent structural source receipt after its exact
+    /// operation marker commits in the workspace root.
+    pub(super) fn source_captured(
+        &mut self,
+        operation_key: IndexOperationKey,
+        receipt: IndexOperationSourceCaptureReceipt,
+    ) -> Result<(), JournalError> {
+        if receipt.operation_key() != operation_key {
+            return Err(JournalError::InvalidTransition);
+        }
+        self.transition(operation_key, |mut entry| {
+            if !matches!(
+                entry.state,
+                StoredOperationState::Accepted | StoredOperationState::Prepared { .. }
+            ) {
+                return Err(JournalError::InvalidTransition);
+            }
+            let Some(base) = entry.source_capture_base else {
+                return Err(JournalError::InvalidTransition);
+            };
+            if receipt.workspace_sequence() != base.workspace_sequence.saturating_add(1) {
+                return Err(JournalError::InvalidTransition);
+            }
+            match &entry.source_capture {
+                Some(existing) if existing != &receipt => {
+                    return Err(JournalError::InvalidTransition);
+                }
+                Some(_) => return Ok(entry),
+                None => entry.source_capture = Some(receipt),
+            }
+            Ok(entry)
+        })
+    }
+
+    pub(super) fn bind_source_capture_base(
+        &mut self,
+        operation_key: IndexOperationKey,
+        workspace_root: [u8; 32],
+        workspace_sequence: u64,
+    ) -> Result<(), JournalError> {
+        if workspace_root.iter().all(|byte| *byte == 0) {
+            return Err(JournalError::InvalidTransition);
+        }
+        self.transition(operation_key, |mut entry| {
+            if !matches!(entry.state, StoredOperationState::Accepted) {
+                return Err(JournalError::InvalidTransition);
+            }
+            let base = SourceCaptureBase {
+                workspace_root,
+                workspace_sequence,
+            };
+            match entry.source_capture_base {
+                Some(existing) if existing != base => Err(JournalError::InvalidTransition),
+                Some(_) => Ok(entry),
+                None => {
+                    entry.source_capture_base = Some(base);
+                    Ok(entry)
+                }
+            }
+        })
+    }
+
+    /// Updates per-profile outcomes while preserving the exact structural
+    /// source root committed for this operation.
+    pub(super) fn source_capture_updated(
+        &mut self,
+        operation_key: IndexOperationKey,
+        receipt: IndexOperationSourceCaptureReceipt,
+    ) -> Result<(), JournalError> {
+        if receipt.operation_key() != operation_key {
+            return Err(JournalError::InvalidTransition);
+        }
+        self.transition(operation_key, |mut entry| {
+            if !matches!(
+                entry.state,
+                StoredOperationState::Accepted | StoredOperationState::Prepared { .. }
+            ) {
+                return Err(JournalError::InvalidTransition);
+            }
+            let Some(previous) = entry.source_capture.as_ref() else {
+                return Err(JournalError::InvalidTransition);
+            };
+            if !same_source_capture_basis(previous, &receipt)
+                || !source_capture_states_advance(previous.profiles(), receipt.profiles())
+            {
+                return Err(JournalError::InvalidTransition);
+            }
+            entry.source_capture = Some(receipt);
             Ok(entry)
         })
     }
@@ -505,12 +615,15 @@ impl IndexOperationJournal {
                         }
                     }
                 };
-                IndexOperationObservation::Known(IndexOperationStatus::new(
-                    entry.operation_key,
-                    entry.package,
-                    entry.execution_intent,
-                    state,
-                ))
+                IndexOperationObservation::Known(
+                    IndexOperationStatus::new(
+                        entry.operation_key,
+                        entry.package,
+                        entry.execution_intent,
+                        state,
+                    )
+                    .with_source_capture(entry.source_capture),
+                )
             }
         };
         Ok(Some(observation))
@@ -1098,6 +1211,32 @@ fn validate_entry(entry: &StoredOperation) -> Result<(), JournalError> {
             "stored request digest does not match the canonical request".to_owned(),
         ));
     }
+    if let Some(base) = entry.source_capture_base
+        && base.workspace_root.iter().all(|byte| *byte == 0)
+    {
+        return Err(JournalError::Corrupt(
+            "source-capture base root is reserved".to_owned(),
+        ));
+    }
+    if let Some(source_capture) = &entry.source_capture {
+        if entry.source_capture_base.is_none_or(|base| {
+            source_capture.workspace_sequence() != base.workspace_sequence.saturating_add(1)
+        }) {
+            return Err(JournalError::Corrupt(
+                "source capture does not immediately follow its recorded base head".to_owned(),
+            ));
+        }
+        let status = IndexOperationStatus::new(
+            entry.operation_key,
+            entry.package.clone(),
+            entry.execution_intent,
+            IndexOperationState::Accepted,
+        )
+        .with_source_capture(Some(source_capture.clone()));
+        SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status))
+            .admit(backend_library::CommandId::IndexProgress)
+            .map_err(|error| JournalError::Corrupt(error.to_string()))?;
+    }
     if let StoredOperationState::Prepared {
         request_identity,
         base_workspace_root,
@@ -1135,13 +1274,59 @@ fn validate_entry(entry: &StoredOperation) -> Result<(), JournalError> {
             entry.package.clone(),
             entry.execution_intent,
             IndexOperationState::Published(receipt.clone()),
-        );
+        )
+        .with_source_capture(entry.source_capture.clone());
         let reply = SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status));
         reply
             .admit(backend_library::CommandId::IndexProgress)
             .map_err(|error| JournalError::Corrupt(error.to_string()))?;
     }
     Ok(())
+}
+
+fn same_source_capture_basis(
+    previous: &IndexOperationSourceCaptureReceipt,
+    next: &IndexOperationSourceCaptureReceipt,
+) -> bool {
+    previous.operation_key() == next.operation_key()
+        && previous.commit_identity() == next.commit_identity()
+        && previous.workspace_root() == next.workspace_root()
+        && previous.workspace_sequence() == next.workspace_sequence()
+        && previous.profiles().len() == next.profiles().len()
+        && previous
+            .profiles()
+            .iter()
+            .zip(next.profiles())
+            .all(|(left, right)| {
+                left.profile == right.profile
+                    && left.source_version == right.source_version
+                    && left.input_digest == right.input_digest
+                    && left.observation_sequence == right.observation_sequence
+                    && left.source_count == right.source_count
+            })
+}
+
+fn source_capture_states_advance(
+    previous: &[backend_library::IndexOperationSourceProfile],
+    next: &[backend_library::IndexOperationSourceProfile],
+) -> bool {
+    use backend_library::IndexOperationSemanticProfileState as State;
+    previous.iter().zip(next).all(|(previous, next)| {
+        if previous.profile != next.profile {
+            return false;
+        }
+        match previous.state {
+            State::Pending { prior } => match next.state {
+                State::Pending { prior: next_prior } => prior == next_prior,
+                State::Unavailable { .. } => true,
+                State::Failed {
+                    prior: next_prior, ..
+                } => prior == Some(next_prior),
+                State::Published { .. } => true,
+            },
+            terminal => terminal == next.state,
+        }
+    })
 }
 
 fn published_receipt_matches(
@@ -1268,6 +1453,30 @@ mod tests {
         .expect("checked receipt")
     }
 
+    fn source_capture_receipt(
+        operation_key: IndexOperationKey,
+        state: backend_library::IndexOperationSemanticProfileState,
+        sequence: u64,
+    ) -> IndexOperationSourceCaptureReceipt {
+        IndexOperationSourceCaptureReceipt::from_checked_parts(
+            operation_key,
+            [21; 32],
+            [22; 32],
+            sequence,
+            vec![backend_library::IndexOperationSourceProfile {
+                profile: backend_library::SemanticLanguageProfile::from_name("rust")
+                    .expect("Rust profile"),
+                source_version: [23; 32],
+                input_digest: [24; 32],
+                observation_sequence: 25,
+                source_count: 1,
+                state,
+            }]
+            .into_boxed_slice(),
+        )
+        .expect("checked source-capture receipt")
+    }
+
     fn cleanup(path: &std::path::Path) {
         if let Some(parent) = path.parent()
             && let Some(root) = parent.parent()
@@ -1339,6 +1548,88 @@ mod tests {
         else {
             panic!("accepted row should survive the reopen")
         };
+        assert!(matches!(status.state, IndexOperationState::Accepted));
+        drop(journal);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn source_capture_receipt_reopens_and_retry_keeps_the_exact_pending_root() {
+        let path = path();
+        let mut journal = open(&path);
+        let operation = key(4);
+        journal
+            .accept(operation, package(), CompileExecutionIntent::Interactive)
+            .expect("accept operation");
+        journal
+            .bind_source_capture_base(operation, [20; 32], 9)
+            .expect("bind exact base head");
+        let receipt = source_capture_receipt(
+            operation,
+            backend_library::IndexOperationSemanticProfileState::Pending { prior: None },
+            10,
+        );
+        journal
+            .source_captured(operation, receipt.clone())
+            .expect("persist committed source marker");
+        drop(journal);
+
+        let mut journal = open(&path);
+        assert_eq!(
+            journal
+                .accept(operation, package(), CompileExecutionIntent::Interactive)
+                .expect("same-key retry is idempotent"),
+            Acceptance::Existing
+        );
+        let Some(IndexOperationObservation::Known(status)) = journal
+            .observation(operation, None)
+            .expect("read source capture")
+        else {
+            panic!("source-captured operation should remain known")
+        };
+        assert!(matches!(status.state, IndexOperationState::Accepted));
+        assert_eq!(status.source_capture, Some(receipt.clone()));
+
+        let different_root = IndexOperationSourceCaptureReceipt::from_checked_parts(
+            operation,
+            [31; 32],
+            [32; 32],
+            10,
+            receipt.profiles().to_vec().into_boxed_slice(),
+        )
+        .expect("shape-valid different root");
+        assert_eq!(
+            journal.source_capture_updated(operation, different_root),
+            Err(JournalError::InvalidTransition)
+        );
+
+        let terminal_profile = backend_library::IndexOperationSourceProfile {
+            state: backend_library::IndexOperationSemanticProfileState::Unavailable {
+                reason: backend_library::IndexOperationSemanticUnavailableReason::Toolchain,
+            },
+            ..receipt.profiles()[0]
+        };
+        let terminal = IndexOperationSourceCaptureReceipt::from_checked_parts(
+            operation,
+            *receipt.commit_identity(),
+            *receipt.workspace_root(),
+            receipt.workspace_sequence(),
+            vec![terminal_profile].into_boxed_slice(),
+        )
+        .expect("same-root terminal receipt");
+        journal
+            .source_capture_updated(operation, terminal.clone())
+            .expect("record separate semantic refusal");
+        drop(journal);
+
+        let journal = open(&path);
+        let Some(IndexOperationObservation::Known(status)) = journal
+            .observation(operation, None)
+            .expect("reopen terminal capture")
+        else {
+            panic!("source-captured operation should remain known")
+        };
+        assert_eq!(status.source_capture, Some(terminal));
         assert!(matches!(status.state, IndexOperationState::Accepted));
         drop(journal);
         cleanup(&path);

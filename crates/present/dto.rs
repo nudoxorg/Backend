@@ -8,7 +8,7 @@
 //! coverage, typed faults — and it changes only when the presentation model
 //! changes.
 
-use backend_library::RegistryNativeMetadata;
+use backend_library::{CompilerNativeToolFact, PackageCompilerFailure, RegistryNativeMetadata};
 use serde::{Deserialize, Serialize};
 
 use crate::coverage::{CoverageLine, LaneState};
@@ -237,6 +237,27 @@ pub struct FaultDto {
     /// The next step as an MCP tool call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call: Option<serde_json::Value>,
+    /// Exact producer-supplied bounded compiler refusal, including closed phase and kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler_failure: Option<PackageCompilerFailure>,
+    /// Native setup requirement projected from the same closed compiler cause.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler_tool_requirement: Option<CompilerToolRequirementDto>,
+}
+
+/// Machine-actionable setup facts derived from a producer's native tool requirement.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CompilerToolRequirementDto {
+    /// Exact selected native tool family.
+    pub tool: CompilerNativeToolFact,
+    /// Executable expected by the compiler registry.
+    pub executable: String,
+    /// Public host configuration variable for this executable family.
+    pub configuration_variable: String,
+    /// Currently configured family, when a setup mismatch supplied one.
+    pub configured_tool: Option<CompilerNativeToolFact>,
+    /// Whether configuring this native tool can satisfy the setup requirement.
+    pub configuration_required: bool,
 }
 
 impl FaultDto {
@@ -250,6 +271,18 @@ impl FaultDto {
             detail: fault.cause().sentence().to_owned(),
             shell: fault.affordance().shell(),
             call: fault.affordance().tool_call(),
+            compiler_failure: fault.compiler_failure().cloned(),
+            compiler_tool_requirement: fault.compiler_failure().and_then(|failure| {
+                failure
+                    .required_native_tool()
+                    .map(|tool| CompilerToolRequirementDto {
+                        tool,
+                        executable: tool.executable().to_owned(),
+                        configuration_variable: tool.configuration_variable().to_owned(),
+                        configured_tool: failure.configured_native_tool(),
+                        configuration_required: failure.requires_tool_configuration(),
+                    })
+            }),
         }
     }
 

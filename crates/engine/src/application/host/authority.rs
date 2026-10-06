@@ -23,6 +23,7 @@ use super::{
     LocalHostPathRole, LocalHostVariable, PACKAGE_SOURCE_BYTES, nonzero,
 };
 use crate::application::toolchain_probe::{ToolchainProbeLimits, probe_command};
+use crate::application::typescript_host::TypeScriptProjectHost;
 use crate::application::{
     LocalRuntimeCSharpAuthority, LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority,
     LocalRuntimePackageRoot, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
@@ -67,7 +68,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         go_module_cache: Option<&Path>,
         native_work_directory: &Path,
         probe_limits: ToolchainProbeLimits,
-    ) -> Result<LocalRuntimePackageAuthority, LocalCompilerHostError> {
+    ) -> Result<(LocalRuntimePackageAuthority, TypeScriptProjectHost), LocalCompilerHostError> {
         let libclang =
             self.file_or_directory(LocalHostVariable::LibclangPath, LocalHostPathRole::Libclang)?;
         let clang = match (executables.clang.as_deref(), libclang.as_deref()) {
@@ -81,13 +82,26 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalHostPathRole::TypeScriptReportProgram,
             ArrayVec::new(),
         )?;
-        let node = self.executable(
-            LocalHostVariable::NudoxTypeScriptNode,
-            LocalHostPathRole::TypeScriptNode,
-            self.auxiliary_candidates(home, "node"),
-        )?;
+        let node_selection = self.typescript_node_executable(home)?;
+        let (node, node_origin) = match node_selection {
+            Some(selection) => (Some(selection.path), Some(selection.origin)),
+            None => (None, None),
+        };
         let typescript_module_root =
             self.typescript_module_root(executables.typescript.as_deref())?;
+        let typescript_project_host = TypeScriptProjectHost::new_with_node_origin(
+            self.environment
+                .value(LocalHostVariable::NudoxTypeScriptCompiler)
+                .and(executables.typescript.clone()),
+            node.clone(),
+            node_origin,
+            home.map(Path::to_path_buf),
+            self.environment
+                .value(LocalHostVariable::NudoxTypeScriptModuleRoot)
+                .and(typescript_module_root.clone()),
+            typescript_report.clone(),
+            probe_limits,
+        );
         let typescript = if executables.typescript.is_some() {
             match (typescript_report, node, typescript_module_root) {
                 (Some(program), _, _) => Some(TypeScriptChecker::default().with_program(program)?),
@@ -174,17 +188,20 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             }),
             _ => None,
         };
-        Ok(LocalRuntimePackageAuthority {
-            clang,
-            typescript,
-            python,
-            python_toolchain_identity,
-            rust,
-            go,
-            csharp,
-            java,
-            maximum_image_bytes: Some(nonzero(AUTHORITY_IMAGE_BYTES)),
-        })
+        Ok((
+            LocalRuntimePackageAuthority {
+                clang,
+                typescript,
+                python,
+                python_toolchain_identity,
+                rust,
+                go,
+                csharp,
+                java,
+                maximum_image_bytes: Some(nonzero(AUTHORITY_IMAGE_BYTES)),
+            },
+            typescript_project_host,
+        ))
     }
 
     fn rust_authority(
@@ -303,7 +320,9 @@ impl NativeExecutables {
             .map(|(tool, executable)| match executable {
                 Some(executable) => {
                     LocalRuntimeToolchain::probe(tool, executable.to_path_buf(), limits)
-                        .unwrap_or_else(|_| LocalRuntimeToolchain::probe_failed(tool))
+                        .unwrap_or_else(|failure| {
+                            LocalRuntimeToolchain::probe_failed(tool, failure)
+                        })
                 }
                 None => LocalRuntimeToolchain::unavailable(tool),
             })

@@ -29,9 +29,7 @@ pub(crate) use call_join::{
     join_project_field, join_project_mention, join_project_value, project_paths_for_package,
 };
 #[cfg(test)]
-pub(crate) use call_join::{
-    foreign_display_name, join_project_call,
-};
+pub(crate) use call_join::{foreign_display_name, join_project_call};
 
 #[cfg(test)]
 pub(crate) use identity::query_semantic_id;
@@ -44,8 +42,7 @@ pub(super) use semantic::{ForeignPublication, rows_for_indexed_sources};
 pub(crate) use structural::{
     structural_call_coordinate_pairs, structural_call_graph_relations,
     structural_call_graph_relations_mapped, structural_call_span, structural_file_span,
-    structural_reference_facts,
-    structural_symbol_identity, view_row_for_structural_coordinate,
+    structural_reference_facts, structural_symbol_identity, view_row_for_structural_coordinate,
 };
 
 #[cfg(test)]
@@ -375,6 +372,7 @@ pub fn execute() {}
             )]),
             files: vec![(file_key, record)],
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
         let structural_plan =
@@ -382,7 +380,7 @@ pub fn execute() {}
         let targets = super::SemanticTargets::default();
         let mut projection = SourceRowProjection::new(
             &initial,
-            &sources.projects,
+            &sources,
             64,
             &targets,
             &structural_plan,
@@ -475,6 +473,7 @@ pub fn execute() {}
             )]),
             files: vec![(file_key, record)],
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         })
     }
 
@@ -728,7 +727,7 @@ pub fn execute() {}
         let targets = super::SemanticTargets::default();
         let mut projection = SourceRowProjection::new(
             &initial,
-            &sources.projects,
+            &sources,
             64,
             &targets,
             &structural_plan,
@@ -1095,6 +1094,7 @@ pub fn execute() {}
             )]),
             files: vec![(child_key, child_record), (semantic_key, semantic_record)],
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         };
         let complete = BTreeSet::from([(
             package.to_bytes(),
@@ -1127,7 +1127,7 @@ pub fn execute() {}
         let targets = super::SemanticTargets::default();
         let mut projection = SourceRowProjection::new(
             &initial,
-            &sources.projects,
+            &sources,
             64,
             &targets,
             &plan,
@@ -1438,6 +1438,7 @@ pub fn execute() {}
             )]),
             files: vec![(file_key, record)],
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
         let complete = BTreeSet::from([(
@@ -1456,7 +1457,7 @@ pub fn execute() {}
         let targets = super::SemanticTargets::default();
         let mut projection = SourceRowProjection::new(
             &initial,
-            &sources.projects,
+            &sources,
             64,
             &targets,
             &structural_plan,
@@ -1536,6 +1537,7 @@ pub fn execute() {}
             )]),
             files,
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
         let rust = LanguageProfile::Rust(RustEdition::Rust2024);
@@ -1549,7 +1551,7 @@ pub fn execute() {}
         let targets = super::SemanticTargets::default();
         let mut projection = SourceRowProjection::new(
             &initial,
-            &sources.projects,
+            &sources,
             64,
             &targets,
             &structural_plan,
@@ -1628,6 +1630,7 @@ pub fn execute() {}
             )]),
             files: vec![(file_key, record)],
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
         let mut targets = super::SemanticTargets::default();
@@ -1642,7 +1645,7 @@ pub fn execute() {}
             StructuralProjectionPlan::of(&sources, &BTreeSet::new()).map_err(|e| e.to_string())?;
         let mut projection = SourceRowProjection::new(
             &initial,
-            &sources.projects,
+            &sources,
             64,
             &targets,
             &structural_plan,
@@ -1890,6 +1893,7 @@ pub fn execute() {}
                 )]),
                 files: file_records,
                 cargo_aliases: BTreeMap::new(),
+                source_snapshot: None,
             },
             package,
         ))
@@ -1904,7 +1908,7 @@ pub fn execute() {}
         let targets = super::SemanticTargets::default();
         let mut projection = SourceRowProjection::new(
             &initial,
-            &sources.projects,
+            &sources,
             256,
             &targets,
             &structural_plan,

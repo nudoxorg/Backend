@@ -491,25 +491,32 @@ sudo rm -f /tmp/nudox-cargo-registry.tgz
 
 Keep the files' contents and canonical values byte-for-byte identical. The
 `nudox-*` service accounts must be members of their respective groups.
-Production discovery is explicit-only: having Rust and Cargo on `PATH` is not
-enough. `NUDOX_CARGO` must name the Cargo executable beside the selected Nix
+For native compiler capabilities, production discovery is explicit-only:
+having Rust and Cargo on `PATH` is not enough. `NUDOX_CARGO` must name the Cargo executable beside the selected Nix
 Rust compiler, and `NUDOX_CARGO_HOME` is part of the enrolled capability.
 
 Go compiler authority captures the nearest `go.work` path and bounded contents
 as an input, and it ignores an ambient developer-shell `GOWORK` value. In the
 current coordinator, a project with a selected `go.work` is local-only and
-will not be delegated to an Iroh worker. For other profiles, pin and set their
-typed authority paths in the same file on both machines: `NUDOX_CLANG`,
-`NUDOX_PYTHON`, `NUDOX_TSC`, `NUDOX_GO`,
+will not be delegated to an Iroh worker. TypeScript is project-scoped: install
+`typescript` in each npm, pnpm, or Yarn workspace; Nudox discovers that package
+and admits its config candidates without requiring a global `tsc`. Node may be
+explicitly pinned, found through the process `PATH`, or selected from a
+manifest-validated Nudox app bundle. Yarn Plug'n'Play remains unsupported. For
+For other native profiles, pin and set their typed authority paths in the same
+file on both machines: `NUDOX_CLANG`, `NUDOX_PYTHON`, `NUDOX_GO`,
 `NUDOX_JAVAC`, or `NUDOX_DOTNET`; applicable helpers are
-`NUDOX_TYPESCRIPT_NODE`, `NUDOX_TYPESCRIPT_MODULE_ROOT`,
-`NUDOX_TYPESCRIPT_REPORT_PROGRAM`, `NUDOX_PYREFLY`, `NUDOX_GO_ORACLE`,
-`NUDOX_JDK`, and `NUDOX_ROSLYN_HELPER`. Package roots are
+`NUDOX_PYREFLY`, `NUDOX_GO_ORACLE`, `NUDOX_JDK`, and
+`NUDOX_ROSLYN_HELPER`. TypeScript's `NUDOX_TSC`,
+`NUDOX_TYPESCRIPT_NODE`, `NUDOX_TYPESCRIPT_MODULE_ROOT`, and
+`NUDOX_TYPESCRIPT_REPORT_PROGRAM` are optional explicit overrides for
+installations that need pinning. Package roots are
 `NUDOX_CARGO_ROOT`, `NUDOX_NPM_ROOT`, `NUDOX_PYPI_ROOT`, `NUDOX_GO_ROOT`,
 `NUDOX_MAVEN_ROOT`, `NUDOX_NUGET_ROOT`, and `NUDOX_GENERIC_ROOT`. Set only
 paths required for the selected language, but configure those paths
-identically on owner and worker. Production discovery is explicit-only; a
-compiler that happens to be on `PATH` is not admitted.
+identically on owner and worker. Production discovery for native compiler
+profiles is explicit-only; a compiler that happens to be on `PATH` is not
+admitted.
 
 The exact grant also binds OS and architecture, compiler version-probe output,
 selected absolute compiler/helper/package-root paths, and compiler options.
