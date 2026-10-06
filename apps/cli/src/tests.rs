@@ -667,6 +667,56 @@ fn typed_rows_lower_without_the_json_escape_hatch() {
     }
 }
 
+// Authenticate only this closed projection fixture. This capability is not a
+// compiler fact or a semantic-shape certificate.
+fn fixture_projection_capability(basis: Basis) -> backend_library::CoverageCapability {
+    use backend_library::{
+        AuthorityScopeClaim, CoverageCapability, ProducerObservationClaims,
+        ProducerObservationVerifier, ScopeRoot, UntrustedProducerObservation, admit_complete_scope,
+        admit_producer_observation,
+    };
+    struct ProjectionVerifier;
+    impl ProducerObservationVerifier for ProjectionVerifier {
+        type Error = &'static str;
+        fn verify(
+            &self,
+            observation: &UntrustedProducerObservation,
+        ) -> Result<ProducerObservationClaims, Self::Error> {
+            if observation.producer_identity() != [7; 32]
+                || observation.context() != [8; 32]
+                || observation.evidence() != [9; 32]
+            {
+                return Err("foreign test projection producer");
+            }
+            Ok(ProducerObservationClaims::new(
+                observation.producer_identity(),
+                observation.scope_root(),
+                observation.context(),
+                *blake3::hash(observation.evidence()).as_bytes(),
+            ))
+        }
+    }
+    let observation = admit_producer_observation(
+        UntrustedProducerObservation::new(
+            [7; 32],
+            ScopeRoot::from_bytes(basis.object.to_bytes()),
+            [8; 32],
+            vec![9; 32],
+        ),
+        &ProjectionVerifier,
+    )
+    .expect("closed projection observation");
+    CoverageCapability::from_authorized_with_evidence(
+        admit_complete_scope(
+            AuthorityScopeClaim::from_object_version(basis.object),
+            observation,
+        )
+        .expect("projection source scope"),
+        vec![9; 32],
+    )
+    .expect("projection capability")
+}
+
 #[test]
 fn cli_resolve_selector_round_trips_into_the_shared_shape_request() {
     use backend_library::{Coverage, Cursor, Library, Reason, Row, RowId, symbol_key};
@@ -679,7 +729,7 @@ fn cli_resolve_selector_round_trips_into_the_shared_shape_request() {
     let key = symbol_key("retained-selected-row");
     let base = root();
     let basis = base.basis();
-    let root = ViewRoot::new_incomplete(
+    let root = ViewRoot::new_checked(
         view_key(b"selector-owner"),
         basis,
         Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
@@ -688,12 +738,16 @@ fn cli_resolve_selector_round_trips_into_the_shared_shape_request() {
             basis,
             "/abs/p::src/lib.rs:1::ferris",
         )],
-        vec![Coverage::Unavailable {
-            lane: backend_library::Lane::Semantic,
-            reason: Reason::Unconfigured,
-        }],
+        vec![
+            Coverage::Complete,
+            Coverage::Unavailable {
+                lane: backend_library::Lane::Semantic,
+                reason: Reason::Unconfigured,
+            },
+        ],
+        fixture_projection_capability(basis),
     )
-    .expect("structural owner fixture claims no compiler completeness");
+    .expect("checked projection fixture; semantic lane stays unconfigured");
     let owner = Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("owner");
     let mut session =
         backend_client::Session::from_transport("/private/selector.sock", Owner(owner));
@@ -864,33 +918,7 @@ fn markdown_output_is_the_shared_renderer_and_json_is_the_typed_dto() {
 #[cfg(any(unix, windows))]
 #[test]
 fn cli_keeps_bounded_graph_page_without_exporting_a_query_proof() {
-    use backend_library::{
-        AuthorityScopeClaim, Coverage, CoverageCapability, Cursor, Library,
-        ProducerObservationClaims, ProducerObservationVerifier, Row, RowId, ScopeRoot,
-        UntrustedProducerObservation, admit_complete_scope, admit_producer_observation, symbol_key,
-        view_state_root,
-    };
-    struct GraphVerifier;
-    impl ProducerObservationVerifier for GraphVerifier {
-        type Error = &'static str;
-        fn verify(
-            &self,
-            observation: &UntrustedProducerObservation,
-        ) -> Result<ProducerObservationClaims, Self::Error> {
-            if observation.producer_identity() != [7; 32]
-                || observation.context() != [8; 32]
-                || observation.evidence() != [9; 32]
-            {
-                return Err("foreign test graph producer");
-            }
-            Ok(ProducerObservationClaims::new(
-                observation.producer_identity(),
-                observation.scope_root(),
-                observation.context(),
-                *blake3::hash(observation.evidence()).as_bytes(),
-            ))
-        }
-    }
+    use backend_library::{Coverage, Cursor, Library, Row, RowId, symbol_key, view_state_root};
     struct GraphTransport(Library);
     impl CommandTransport for GraphTransport {
         fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
@@ -899,26 +927,8 @@ fn cli_keeps_bounded_graph_page_without_exporting_a_query_proof() {
         }
     }
     let object = object_version(b"library-source-v1");
-    let observation = admit_producer_observation(
-        UntrustedProducerObservation::new(
-            [7; 32],
-            ScopeRoot::from_bytes(object.to_bytes()),
-            [8; 32],
-            vec![9; 32],
-        ),
-        &GraphVerifier,
-    )
-    .expect("graph observation");
-    let capability = CoverageCapability::from_authorized_with_evidence(
-        admit_complete_scope(
-            AuthorityScopeClaim::from_object_version(object),
-            observation,
-        )
-        .expect("scope"),
-        vec![9; 32],
-    )
-    .expect("graph capability");
     let basis = Basis::new(view_state_root(&[]), object);
+    let capability = fixture_projection_capability(basis);
     let package = package_key("pkg");
     let parent = symbol_key("pkg::Parent");
     let mut rows = vec![Row::in_package(
