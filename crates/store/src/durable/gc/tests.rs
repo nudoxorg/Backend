@@ -140,10 +140,23 @@ fn staged_direct_object_mark_pages_continue_at_the_existing_byte_limit() {
         .collect_garbage(&roots, limits)
         .expect("bounded mark continuation");
     assert_eq!(report.swept_items, 1);
+    for object in &live {
+        assert_eq!(&store.read_object(object.id()).unwrap(), object);
+    }
+    assert!(!store.contains_object(orphan.id()).unwrap());
+    let mut members = live.clone();
+    members.sort_by_key(|object| (object.schema(), *object.key(), *object.version()));
+    let closure = store
+        .write_closure(&ClosureManifest::new(members).unwrap())
+        .unwrap();
+    let mut closure_roots = GcRoots::new();
+    closure_roots.add(GcRoot::Closure(closure));
+    store
+        .collect_garbage(&closure_roots, limits)
+        .expect("manifest continuation begins with a fresh byte allowance");
     for object in live {
         assert_eq!(store.read_object(object.id()).unwrap(), object);
     }
-    assert!(!store.contains_object(orphan.id()).unwrap());
     let _ = fs::remove_dir_all(path);
 }
 

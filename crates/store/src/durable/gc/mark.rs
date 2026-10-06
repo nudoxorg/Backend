@@ -36,6 +36,20 @@ impl FileStore {
             // step but not the remaining allowance; a single oversized
             // envelope still fails admission below before sweep.
             if processed != 0 {
+                if matches!(
+                    item,
+                    QueueItem::Head { .. }
+                        | QueueItem::Closure(_)
+                        | QueueItem::ManifestPage { .. }
+                        | QueueItem::RemoteClosureIndex(_)
+                        | QueueItem::RemoteManifestPage { .. }
+                ) {
+                    // A manifest page must begin with a fresh byte allowance.
+                    // Earlier direct envelopes can leave too little for even
+                    // its first member, which is a continuation, not a bounds
+                    // failure for the immutable object.
+                    break;
+                }
                 let object = match item {
                     QueueItem::Object(id) | QueueItem::RelationRefs { object: id, .. } => Some(id),
                     _ => None,
