@@ -47,6 +47,22 @@ def run(command: list[str]) -> str:
         fail(f"tool failed: {' '.join(command)}: {error}")
 
 
+def ldd_dependencies(linkage: str) -> list[tuple[str, str]]:
+    """Accept sonames and exclude ldd's path-qualified loader alias row."""
+    dependencies = []
+    for soname, raw_path in NEEDED.findall(linkage):
+        if "/" in soname:
+            if (soname.startswith("/") and raw_path.startswith("/")
+                    and Path(soname).name == Path(INTERPRETER).name
+                    and Path(raw_path).name == Path(INTERPRETER).name):
+                continue
+            fail(f"ldd contains an unsafe path-qualified dependency: {soname}")
+        if soname in (".", "..") or "\\" in soname:
+            fail(f"ldd contains an unsafe dependency name: {soname}")
+        dependencies.append((soname, raw_path))
+    return dependencies
+
+
 def load_json(path: Path, label: str) -> dict:
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
         fail(f"{label} must be a regular file under 16 MiB")
@@ -217,7 +233,7 @@ def main() -> int:
         packaged.chmod(0o755)
         linkage = run([str(ldd), str(source_binary)])
         (output / f"{name}.ldd.txt").write_text(linkage + "\n")
-        for soname, raw_path in NEEDED.findall(linkage):
+        for soname, raw_path in ldd_dependencies(linkage):
             if soname in glibc_family:
                 continue
             if raw_path == "not":
