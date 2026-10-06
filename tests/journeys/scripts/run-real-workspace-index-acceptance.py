@@ -2016,6 +2016,12 @@ def mcp_operation_status(
         evidence,
         label,
     )
+    if (
+        structured.get("answer") != "surface"
+        or not isinstance(structured.get("surface"), dict)
+        or structured["surface"].get("result") != "index-operation-status"
+    ):
+        raise AcceptanceError("MCP operation status returned another result route")
     return operation_state(structured, key, case.path)
 
 

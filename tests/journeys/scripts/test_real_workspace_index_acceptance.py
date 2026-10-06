@@ -682,7 +682,7 @@ class OperationObservationBoundaryTests(unittest.TestCase):
     """The actual 80543 TypeScript pilot used these two different envelopes."""
 
     key = "6bf72b553ff267091039bfc8afe35983a53278970e48f079ff8ae2fbbe16af64"
-    package = Path("/root/nudox-corpus-20261006/corpora/npm-seed100-20261006/packages/eaa3f7c03744ef1b64433c49")
+    package = Path(tempfile.gettempdir()) / "nudox-operation-contract-fixture"
 
     def observation(self) -> dict:
         return {
@@ -739,6 +739,17 @@ class OperationObservationBoundaryTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(runner.AcceptanceError):
                     runner.operation_state(value, self.key, self.package)
+
+    def test_mcp_status_refuses_a_start_reply_even_with_the_exact_same_operation_binding(self) -> None:
+        wrong_route = self.surface(self.observation())
+        wrong_route["surface"]["result"] = "index-operation-started"
+        self.assertEqual(runner.operation_state(wrong_route, self.key, self.package),
+                         ("active", None, None))
+        case = runner.ProjectCase("fixture", self.package, False, 0, ())
+        with patch.object(runner, "mcp_call", return_value=wrong_route):
+            with self.assertRaisesRegex(runner.AcceptanceError, "another result route"):
+                runner.mcp_operation_status(None, self.package, self.package / "endpoint",
+                                            case, self.key, {}, runner.Deadline(1), [], "status")
 
 
 class BoundedCaptureTests(unittest.TestCase):
