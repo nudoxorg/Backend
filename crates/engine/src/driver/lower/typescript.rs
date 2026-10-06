@@ -95,8 +95,12 @@ fn grow_side_lane<T: Clone>(
     if required > maximum {
         return Err(lane_rejection());
     }
-    let doubled = lane.len().max(8).saturating_mul(2);
-    let next_len = required.max(doubled).min(maximum);
+    let growth_target = if lane.is_empty() {
+        8
+    } else {
+        lane.len().saturating_mul(2)
+    };
+    let next_len = required.max(growth_target).min(maximum);
     lane.try_reserve(next_len - lane.len())
         .map_err(|_| lane_rejection())?;
     lane.resize(next_len, fill);
