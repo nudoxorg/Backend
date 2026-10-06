@@ -2121,7 +2121,6 @@ mod tests {
         admitted
             .visit_pages(|page| {
                 for (index, declaration) in page.declarations.iter().enumerate() {
-                    let declaration = declaration.source_declaration();
                     let line = page
                         .declaration_line(index)
                         .ok_or_else(|| "admitted TSX declaration line".to_owned())?;
@@ -2396,7 +2395,6 @@ mod tests {
         admitted
             .visit_pages(|page| {
                 for (index, declaration) in page.declarations.iter().enumerate() {
-                    let declaration = declaration.source_declaration();
                     visited.push((
                         declaration.name().to_owned(),
                         page.declaration_line(index)

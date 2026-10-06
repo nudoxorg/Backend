@@ -5647,6 +5647,7 @@ mod tests {
             package: PackageReference::parse("/workspace/demo").expect("package"),
             execution_intent: crate::CompileExecutionIntent::Interactive,
             state: IndexOperationState::Published(receipt),
+            source_capture: None,
         };
         let observation = IndexOperationObservation::Known(status);
         observation.admit().expect("operation status admission");
@@ -5795,6 +5796,7 @@ mod tests {
             package,
             execution_intent: crate::CompileExecutionIntent::Interactive,
             state: IndexOperationState::Published(receipt.clone()),
+            source_capture: None,
         };
 
         for (range, replacement) in [

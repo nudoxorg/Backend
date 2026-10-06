@@ -595,12 +595,12 @@ fn take_u64(bytes: &[u8]) -> Result<(u64, &[u8]), RelationDecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use backend_library::interface::{CompilerFragmentFailure, SourceAuthority};
+    use backend_library::interface::{CompilerAttempt, CompilerFragmentFailure, SourceAuthority};
     use backend_semantic::ir::{BuildError, EntityId};
     use backend_version::{CompileRecipeDomain, ContentId, SourceFactDomain};
 
     fn compiler_failure() -> backend_library::PackageCompilerFailure {
-        let attempt = backend_library::CompilerAttempt {
+        let attempt = CompilerAttempt {
             source: SourceAuthority {
                 identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"source bytes"),
                 byte_len: 12,
