@@ -6,7 +6,7 @@ use tracing::trace;
 use tsz_common::interner::AstAtom;
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(crate) fn missing_semicolon_after_expression_text(
         &self,
         expression: NodeIndex,

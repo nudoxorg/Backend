@@ -166,7 +166,11 @@ const ERROR_SUPPRESSION_DISTANCE: u32 = 3;
 
 /// This parser produces the same AST semantically as `ParserState`,
 /// but uses the cache-optimized `NodeArena` for storage.
-pub struct ParserState {
+pub struct ParserStateCore<'work> {
+    /// Present only for a checked production parse. The borrowed checkpoint is
+    /// polled at scanner token boundaries so a single very large statement is
+    /// interruptible without ambient state or per-node shared ownership.
+    pub(crate) execution_checkpoint: Option<&'work dyn tsz_common::ExecutionCheckpoint>,
     /// The scanner for tokenizing
     pub(crate) scanner: ScannerState,
     /// Arena for allocating Nodes
@@ -363,7 +367,13 @@ pub struct ParserState {
     pub(crate) reserved_parameter_yielded_to_statement: bool,
 }
 
-impl ParserState {
+/// Compatibility type for existing unmetered parser callers and test helpers.
+pub type ParserState = ParserStateCore<'static>;
+
+/// Parser state whose token advancement borrows one project execution budget.
+pub type MeteredParserState<'work> = ParserStateCore<'work>;
+
+impl<'work> ParserStateCore<'work> {
     #[inline]
     #[must_use]
     pub(crate) fn u32_from_usize(&self, value: usize) -> u32 {
@@ -417,6 +427,7 @@ impl ParserState {
         let mut scanner = ScannerState::new(source_text, true);
         scanner.set_language_version(language_version);
         Self {
+            execution_checkpoint: None,
             scanner,
             arena: NodeArena::with_capacity(estimated_nodes),
             file_name,
@@ -748,6 +759,16 @@ impl ParserState {
 
     /// Advance to next token
     pub(crate) fn next_token(&mut self) -> SyntaxKind {
+        if self
+            .execution_checkpoint
+            .is_some_and(|checkpoint| checkpoint.checkpoint(1).is_err())
+        {
+            // The checked parse wrapper observes the latched stop and discards
+            // the partial AST. EOF only unwinds the existing recursive parser
+            // control flow; it is never returned as a successful parse.
+            self.current_token = SyntaxKind::EndOfFileToken;
+            return self.current_token;
+        }
         self.current_token = self.scanner.scan();
         self.current_token
     }

@@ -1,11 +1,11 @@
 //! Parser state - advanced type forms and type arguments.
 
-use super::state::ParserState;
+use super::state::ParserStateCore;
 use crate::parser::{NodeIndex, NodeList, node, syntax_kind_ext};
 use tsz_common::interner::IdentText;
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(crate) fn parse_parenthesized_type_or_function_type(&mut self) -> NodeIndex {
         if self.look_ahead_is_function_type() {
             return self.parse_function_type();

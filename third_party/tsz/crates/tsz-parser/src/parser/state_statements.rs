@@ -1,5 +1,5 @@
 //! Parser state - statement and declaration parsing methods
-use super::state::{CONTEXT_FLAG_IN_BLOCK, IncrementalParseResult, ParserState};
+use super::state::{CONTEXT_FLAG_IN_BLOCK, IncrementalParseResult, ParserStateCore};
 use crate::parser::{
     NodeIndex, NodeList,
     node::{
@@ -11,7 +11,7 @@ use crate::parser::{
 use tsz_common::diagnostics::diagnostic_codes;
 use tsz_scanner::{SyntaxKind, token_is_keyword};
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     fn recover_invalid_statement_list_comma(&mut self) -> bool {
         if !self.is_token(SyntaxKind::CommaToken) {
             return false;
@@ -125,6 +125,29 @@ impl ParserState {
 
     /// Parse a source file
     pub fn parse_source_file(&mut self) -> NodeIndex {
+        self.parse_source_file_with_checkpoint(None)
+    }
+
+    /// Parse a source file while charging the shared project work budget at
+    /// each top-level statement boundary. A stopped
+    /// parse may have a partial arena; callers must discard it on stop.
+    pub fn parse_source_file_with_execution_checkpoint(
+        &mut self,
+        checkpoint: &'work dyn tsz_common::ExecutionCheckpoint,
+    ) -> Result<NodeIndex, tsz_common::ProjectExecutionStop> {
+        self.execution_checkpoint = Some(checkpoint);
+        let root = self.parse_source_file_with_checkpoint(Some(checkpoint));
+        self.execution_checkpoint = None;
+        checkpoint.checkpoint(0).map(|()| root)
+    }
+
+    fn parse_source_file_with_checkpoint(
+        &mut self,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> NodeIndex {
+        if checkpoint.is_some_and(|checkpoint| checkpoint.checkpoint(0).is_err()) {
+            return NodeIndex::NONE;
+        }
         let start_pos = 0u32;
 
         // Skip shebang (#!) if present at start of file
@@ -134,7 +157,13 @@ impl ParserState {
         self.next_token();
 
         // Parse statements (using source file version that handles stray braces)
-        let statements = self.parse_source_file_statements();
+        let statements = self.parse_source_file_statements_with_checkpoint(checkpoint);
+
+        // In particular, do not run the whole-file comment-range pass after a
+        // stop. The owner will discard this partial parse.
+        if checkpoint.is_some_and(|checkpoint| checkpoint.checkpoint(0).is_err()) {
+            return NodeIndex::NONE;
+        }
 
         // Cache comment ranges once during parsing (O(N) scan, done only once)
         // This avoids rescanning on every hover/documentation request
@@ -240,6 +269,13 @@ impl ParserState {
     /// Reports error 1128 for unexpected closing braces.
     /// Uses resynchronization to recover from errors and continue parsing.
     pub(crate) fn parse_source_file_statements(&mut self) -> NodeList {
+        self.parse_source_file_statements_with_checkpoint(None)
+    }
+
+    fn parse_source_file_statements_with_checkpoint(
+        &mut self,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> NodeList {
         let mut statements = Vec::new();
         let mut skip_after_binary_payload = false;
         let mut previous_statement_was_block = false;
@@ -252,6 +288,9 @@ impl ParserState {
         let mut prev_block_needs_post_equals_semi = false;
 
         while !self.is_token(SyntaxKind::EndOfFileToken) {
+            if checkpoint.is_some_and(|checkpoint| checkpoint.checkpoint(1).is_err()) {
+                break;
+            }
             let pos_before = self.token_pos();
             if skip_after_binary_payload {
                 break;
@@ -1975,4 +2014,65 @@ impl ParserState {
             },
         )
     }
+}
+
+#[cfg(test)]
+mod execution_checkpoint_tests {
+    use crate::parser::state::MeteredParserState;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+    use tsz_common::{ProjectExecutionBudget, ProjectExecutionStop};
+
+    #[test]
+    fn parser_charges_top_level_work_and_latches_partial_parse() {
+        let cancelled = AtomicBool::new(false);
+        let budget = ProjectExecutionBudget::new(
+            Instant::now() + Duration::from_secs(1),
+            &cancelled,
+            1,
+        );
+        let mut parser = MeteredParserState::new(
+            "test.ts".to_string(),
+            "const first = 1; const second = 2;".to_string(),
+        );
+
+        let result = parser.parse_source_file_with_execution_checkpoint(&budget);
+
+        assert!(matches!(
+            result,
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        ));
+        assert_eq!(
+            budget.checkpoint(0),
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        );
+    }
+
+    #[test]
+    fn parser_stops_inside_one_large_statement_at_token_boundaries() {
+        let cancelled = AtomicBool::new(false);
+        let budget = ProjectExecutionBudget::new(
+            Instant::now() + Duration::from_secs(1),
+            &cancelled,
+            32,
+        );
+        let expression = std::iter::repeat_n("value", 10_000)
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let source = format!("const result = {expression};");
+        let mut parser = MeteredParserState::new("large.ts".to_string(), source);
+
+        let result = parser.parse_source_file_with_execution_checkpoint(&budget);
+
+        assert!(matches!(
+            result,
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        ));
+        assert_eq!(budget.remaining_work_units(), 0);
+        assert_eq!(
+            budget.stop_reason(),
+            Some(ProjectExecutionStop::WorkBudgetExhausted)
+        );
+    }
+
 }

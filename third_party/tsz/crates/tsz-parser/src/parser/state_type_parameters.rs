@@ -8,7 +8,7 @@
 //! parsing, etc.), so it does not naturally belong to any single
 //! owning state module.
 
-use super::state::ParserState;
+use super::state::ParserStateCore;
 use crate::parser::{
     NodeIndex, NodeList,
     node::{IdentifierData, TypeParameterData},
@@ -18,7 +18,7 @@ use tsz_common::diagnostics::{diagnostic_codes, diagnostic_messages};
 use tsz_common::interner::{AstAtom, IdentText};
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     // Parse type parameters: <T, U extends Foo, V = `DefaultType`>
     pub(crate) fn parse_type_parameters(&mut self) -> NodeList {
         let mut params = Vec::new();

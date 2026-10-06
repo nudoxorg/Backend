@@ -2,9 +2,9 @@
 //!
 //! Split out of `state_declarations.rs` to keep each parser source file under
 //! the 2000-line architecture ceiling. Behaviour is unchanged; these methods
-//! remain `impl ParserState` and are called from the same sites as before.
+//! remain `impl ParserStateCore<'_>` and are called from the same sites as before.
 
-use super::state::ParserState;
+use super::state::ParserStateCore;
 use crate::parser::{
     NodeIndex, NodeList,
     node::{EnumData, EnumMemberData, IdentifierData},
@@ -13,7 +13,7 @@ use crate::parser::{
 use tsz_common::interner::{AstAtom, IdentText};
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     /// Parse enum declaration
     pub(crate) fn parse_enum_declaration(&mut self) -> NodeIndex {
         let start_pos = self.token_pos();

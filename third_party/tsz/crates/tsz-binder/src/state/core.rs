@@ -1110,6 +1110,30 @@ impl BinderState {
     ///
     /// Panics if either resolution cache lock is poisoned.
     pub fn bind_source_file(&mut self, arena: &NodeArena, root: NodeIndex) {
+        let _ = self.bind_source_file_with_optional_checkpoint(arena, root, None);
+    }
+
+    /// Bind a source file while charging the shared project work budget at
+    /// major pass and top-level statement boundaries. A stopped binder may be
+    /// partially mutated; callers must discard it when this returns an error.
+    pub fn bind_source_file_with_execution_checkpoint(
+        &mut self,
+        arena: &NodeArena,
+        root: NodeIndex,
+        checkpoint: &dyn tsz_common::ExecutionCheckpoint,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
+        self.bind_source_file_with_optional_checkpoint(arena, root, Some(checkpoint))
+    }
+
+    fn bind_source_file_with_optional_checkpoint(
+        &mut self,
+        arena: &NodeArena,
+        root: NodeIndex,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
+        if let Some(checkpoint) = checkpoint {
+            checkpoint.checkpoint(0)?;
+        }
         // Reset per-file binder stack guard so a pathological earlier file on
         // this thread does not prevent subsequent files from being bound.
         crate::binding::stack_guard::reset_stack_overflow_flag();
@@ -1215,32 +1239,65 @@ impl BinderState {
                 || Self::has_use_strict_prologue(arena, &sf.statements.nodes);
 
             // First pass: collect hoisted declarations
-            self.collect_hoisted_declarations(arena, &sf.statements);
+            if let Some(checkpoint) = checkpoint {
+                self.collect_hoisted_declarations_with_execution_checkpoint(
+                    arena,
+                    &sf.statements,
+                    checkpoint,
+                )?;
+            } else {
+                self.collect_hoisted_declarations(arena, &sf.statements);
+            }
 
             // Process hoisted function declarations first (for hoisting)
-            self.process_hoisted_functions(arena);
+            if let Some(checkpoint) = checkpoint {
+                self.process_hoisted_functions_with_execution_checkpoint(arena, checkpoint)?;
+            } else {
+                self.process_hoisted_functions(arena);
+            }
 
             // Process hoisted var declarations (for hoisting)
-            self.process_hoisted_vars(arena);
+            if let Some(checkpoint) = checkpoint {
+                self.process_hoisted_vars_with_execution_checkpoint(arena, checkpoint)?;
+            } else {
+                self.process_hoisted_vars(arena);
+            }
 
             // Second pass: bind each statement
             for &stmt_idx in &sf.statements.nodes {
-                self.bind_node(arena, stmt_idx);
+                if let Some(checkpoint) = checkpoint {
+                    checkpoint.checkpoint(1)?;
+                }
+                match checkpoint {
+                    Some(checkpoint) => {
+                        self.bind_node_with_execution_checkpoint(arena, stmt_idx, checkpoint)?;
+                    }
+                    None => self.bind_node(arena, stmt_idx),
+                }
                 Arc::make_mut(&mut self.top_level_flow).insert(stmt_idx.0, self.current_flow);
             }
 
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.checkpoint(1)?;
+            }
             self.bind_jsdoc_import_tags(arena, sf, root);
 
             // Re-process `export = X` statements that may have failed on the first
             // pass due to forward-reference ordering (e.g., `export = React` appears
             // before `declare namespace React { ... }`). All declarations are bound
             // now, so the target name is resolvable in current_scope.
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.checkpoint(1)?;
+            }
             self.resolve_deferred_export_assignment(arena, &sf.statements.nodes);
 
             // Re-process `export { X, Y }` statements that may have failed on
             // the first pass due to forward references (e.g., `export { Hash }`
             // appearing before `interface Hash<T> { ... }`). All declarations
             // are bound now, so we can mark them as exported.
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.checkpoint(1)?;
+            }
             self.resolve_deferred_named_exports(arena, &sf.statements.nodes);
 
             // Populate module_exports for cross-file import resolution
@@ -1291,6 +1348,10 @@ impl BinderState {
         if self.file_idx != u32::MAX {
             self.stamp_file_idx();
         }
+        if let Some(checkpoint) = checkpoint {
+            checkpoint.checkpoint(0)?;
+        }
+        Ok(())
     }
 
     /// Stamp all symbols and `semantic_defs` with `self.file_idx`.

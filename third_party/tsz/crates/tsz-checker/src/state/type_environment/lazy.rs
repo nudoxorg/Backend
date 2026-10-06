@@ -10,6 +10,7 @@ use crate::query_boundaries::type_predicates::contains_conditional_with_applicat
 use crate::state::CheckerState;
 use tsz_binder::{SymbolId, symbol_flags};
 use tsz_solver::TypeId;
+use tsz_solver::construction::TypeExecutionCheckpoint;
 
 use super::lazy_guard_state::{
     ApplicationResolutionEntryState, ApplicationResolutionWorkState,
@@ -1280,6 +1281,11 @@ impl CheckerState<'_> {
         type_id: TypeId,
         visited: &mut rustc_hash::FxHashSet<TypeId>,
     ) -> TypeId {
+        if self.ctx.types.execution_checkpoint(1).is_err() {
+            // The owning ProjectCheckerSession observes the latched reason and
+            // discards this placeholder result before it can be published.
+            return TypeId::UNKNOWN;
+        }
         // Prevent infinite loops in circular type aliases
         if !visited.insert(type_id) {
             return type_id;

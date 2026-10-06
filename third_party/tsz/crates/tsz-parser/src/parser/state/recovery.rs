@@ -1,6 +1,6 @@
 use super::*;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(crate) fn parse_error_at(&mut self, start: u32, length: u32, message: &str, code: u32) {
         if code == tsz_common::diagnostics::diagnostic_codes::EXPECTED
             && message == "')' expected."

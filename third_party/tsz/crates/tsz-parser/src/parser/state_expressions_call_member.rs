@@ -1,5 +1,5 @@
 /// Parser state - left-hand side, call, member access, and optional chaining expression parsing
-use super::state::ParserState;
+use super::state::ParserStateCore;
 use crate::parser::{
     NodeIndex,
     node::{AccessExprData, CallExprData, TaggedTemplateData},
@@ -7,7 +7,7 @@ use crate::parser::{
 };
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     // Parse left-hand side expression (member access, call, etc.)
     pub(crate) fn parse_left_hand_side_expression(&mut self) -> NodeIndex {
         let start_pos = self.token_pos();

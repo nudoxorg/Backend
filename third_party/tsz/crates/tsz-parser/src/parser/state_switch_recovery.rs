@@ -5,7 +5,7 @@ use tsz_common::diagnostics::{diagnostic_codes, diagnostic_messages};
 use tsz_scanner::SyntaxKind;
 use tsz_scanner::scanner_impl::TokenFlags;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(crate) fn parse_recovered_leading_colon_expression_statement(&mut self) -> NodeIndex {
         let start_pos = self.token_pos();
         let missing_left = self.create_missing_expression();

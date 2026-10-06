@@ -3,7 +3,7 @@
 use super::state::{
     CONTEXT_FLAG_ASYNC, CONTEXT_FLAG_DISALLOW_IN, CONTEXT_FLAG_FUNCTION_BODY,
     CONTEXT_FLAG_GENERATOR, CONTEXT_FLAG_IN_PARENTHESIZED_EXPRESSION, CONTEXT_FLAG_STATIC_BLOCK,
-    ParserState,
+    ParserStateCore,
 };
 use crate::parser::{
     NodeIndex, NodeList,
@@ -22,7 +22,7 @@ use tsz_scanner::scanner_impl::TokenFlags;
 #[path = "state_expressions_literals/object_members.rs"]
 mod object_members;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     /// Parse object binding pattern: { x, y: z, ...rest }
     pub(crate) fn parse_object_binding_pattern(&mut self) -> NodeIndex {
         let start_pos = self.token_pos();

@@ -4,6 +4,7 @@ use crate::scopes::ContainerKind;
 use crate::{SymbolId, SymbolTable, symbol_flags};
 use std::sync::Arc;
 use tsz_common::common::ScriptTarget;
+use tsz_common::{ProjectExecutionBudget, ProjectExecutionStop};
 use tsz_parser::parser::{ParserState, node_flags, syntax_kind_ext};
 
 mod enclosing_scope_memo;
@@ -17,6 +18,57 @@ mod semantic_defs_cross_file;
 mod semantic_defs_extended;
 mod state_storage;
 mod symbols_and_flags;
+
+#[test]
+fn source_binding_returns_the_shared_typed_stop_reason() {
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+
+    let mut parser = ParserState::new(
+        "test.ts".to_string(),
+        "const value = 1;".to_string(),
+    );
+    let root = parser.parse_source_file();
+    let (arena, _) = parser.into_parts();
+    let cancelled = AtomicBool::new(true);
+    let budget = ProjectExecutionBudget::new(
+        Instant::now() + Duration::from_secs(1),
+        &cancelled,
+        100,
+    );
+    let mut binder = BinderState::new();
+
+    assert_eq!(
+        binder.bind_source_file_with_execution_checkpoint(&arena, root, &budget),
+        Err(ProjectExecutionStop::Cancelled),
+    );
+}
+
+#[test]
+fn source_binding_stops_while_traversing_hoisted_statements() {
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+
+    let mut parser = ParserState::new(
+        "test.ts".to_string(),
+        "var first = 1; var second = 2; var third = 3; var fourth = 4;"
+            .to_string(),
+    );
+    let root = parser.parse_source_file();
+    let (arena, _) = parser.into_parts();
+    let cancelled = AtomicBool::new(false);
+    let budget = ProjectExecutionBudget::new(
+        Instant::now() + Duration::from_secs(1),
+        &cancelled,
+        2,
+    );
+    let mut binder = BinderState::new();
+
+    assert_eq!(
+        binder.bind_source_file_with_execution_checkpoint(&arena, root, &budget),
+        Err(ProjectExecutionStop::WorkBudgetExhausted),
+    );
+}
 
 fn parse_test_source(source: &str) -> (tsz_parser::ParserState, tsz_parser::parser::NodeIndex) {
     let mut parser = tsz_parser::ParserState::new("test.ts".to_string(), source.to_string());

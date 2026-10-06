@@ -8,7 +8,7 @@ use super::regex_unicode_properties::{
     BINARY_UNICODE_PROPERTIES_OF_STRINGS, canonical_non_binary_property_name,
     is_known_unicode_property_name_or_value, unicode_property_value_is_known,
 };
-use super::state::ParserState;
+use super::state::ParserStateCore;
 use crate::parser::{NodeIndex, node::LiteralData};
 use std::cell::RefCell;
 use tsz_common::diagnostics::{diagnostic_codes, diagnostic_messages, format_message};
@@ -47,7 +47,7 @@ const fn decode_surrogate_pair(high: u32, low: u32) -> Option<u32> {
     Some(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
 }
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     fn regex_literal_follows_invalid_shebang(&self, start_pos: u32) -> bool {
         let source = self.scanner.source_text().as_bytes();
         let start = start_pos as usize;
@@ -96,7 +96,7 @@ impl ParserState {
         }
 
         fn validate_regex_literal_body(
-            parser: &mut ParserState,
+            parser: &mut ParserStateCore<'_>,
             raw_text: &str,
             start_pos: u32,
             body_end: usize,
@@ -119,13 +119,13 @@ impl ParserState {
             }
 
             let emit =
-                |parser: &mut ParserState, pos: usize, len: u32, message: &str, code: u32| {
+                |parser: &mut ParserStateCore<'_>, pos: usize, len: u32, message: &str, code: u32| {
                     parser.parse_error_at(start_pos + pos as u32, len, message, code);
                 };
 
             struct RegexScanContext<'a, F>
             where
-                F: Fn(&mut ParserState, usize, u32, &str, u32),
+                F: Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
             {
                 emit: &'a F,
                 body: &'a [u8],
@@ -249,12 +249,12 @@ impl ParserState {
             /// their resolution against the pattern's declared names is the
             /// checker's existing `TS1532` pass.
             fn scan_group_name_and_delimiter<F>(
-                parser: &mut ParserState,
+                parser: &mut ParserStateCore<'_>,
                 ctx: &RegexScanContext<'_, F>,
                 pos: &mut usize,
                 is_reference: bool,
             ) where
-                F: Fn(&mut ParserState, usize, u32, &str, u32),
+                F: Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
             {
                 let name_start = *pos;
                 let scanned = regex_group_names::scan_group_name(ctx.body, ctx.body_end, pos);
@@ -306,8 +306,8 @@ impl ParserState {
             }
 
             fn scan_braced_unicode_escape_value(
-                parser: &mut ParserState,
-                emit: &impl Fn(&mut ParserState, usize, u32, &str, u32),
+                parser: &mut ParserStateCore<'_>,
+                emit: &impl Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
                 body: &[u8],
                 end: usize,
                 pos: &mut usize,
@@ -366,8 +366,8 @@ impl ParserState {
             use crate::parser::regex_modifier_groups::scan_modifier_group_prelude;
 
             fn scan_character_escape(
-                parser: &mut ParserState,
-                emit: &impl Fn(&mut ParserState, usize, u32, &str, u32),
+                parser: &mut ParserStateCore<'_>,
+                emit: &impl Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
                 scan_ctx: &CharEscapeScanCtx<'_>,
                 pos: &mut usize,
                 atom_escape: bool,
@@ -652,8 +652,8 @@ impl ParserState {
             }
 
             fn scan_unicode_property_value_expression(
-                parser: &mut ParserState,
-                emit: &impl Fn(&mut ParserState, usize, u32, &str, u32),
+                parser: &mut ParserStateCore<'_>,
+                emit: &impl Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
                 body: &[u8],
                 mode: PropertyExpressionMode,
                 end: usize,
@@ -801,8 +801,8 @@ impl ParserState {
             }
 
             fn scan_character_class_escape(
-                parser: &mut ParserState,
-                emit: &impl Fn(&mut ParserState, usize, u32, &str, u32),
+                parser: &mut ParserStateCore<'_>,
+                emit: &impl Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
                 body: &[u8],
                 strict_mode: bool,
                 unicode_sets_mode: bool,
@@ -975,7 +975,7 @@ impl ParserState {
             }
 
             fn scan_class_atom<F>(
-                parser: &mut ParserState,
+                parser: &mut ParserStateCore<'_>,
                 ctx: &RegexScanContext<'_, F>,
                 pos: &mut usize,
                 range: &mut Vec<ClassAtomKind>,
@@ -986,7 +986,7 @@ impl ParserState {
                 // reports are suppressed while consumption stays identical.
                 report_bare_char_errors: bool,
             ) where
-                F: Fn(&mut ParserState, usize, u32, &str, u32),
+                F: Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
             {
                 if *pos >= ctx.body_end {
                     return;
@@ -1134,12 +1134,12 @@ impl ParserState {
             /// it. See the TS1518 block below for why that answer is the
             /// *first* operand's rather than the union of every operand's.
             fn scan_class_ranges<F>(
-                parser: &mut ParserState,
+                parser: &mut ParserStateCore<'_>,
                 ctx: &RegexScanContext<'_, F>,
                 pos: &mut usize,
             ) -> bool
             where
-                F: Fn(&mut ParserState, usize, u32, &str, u32),
+                F: Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
             {
                 fn is_class_set_operator_at(body: &[u8], pos: usize, end: usize) -> bool {
                     pos + 1 < end
@@ -1174,7 +1174,7 @@ impl ParserState {
                 /// on a mismatch so the report stays keyed to the class's
                 /// original production.
                 fn note_class_set_kind<F>(
-                    parser: &mut ParserState,
+                    parser: &mut ParserStateCore<'_>,
                     ctx: &RegexScanContext<'_, F>,
                     committed: &mut Option<ClassSetKind>,
                     mixed_reported: &mut bool,
@@ -1182,7 +1182,7 @@ impl ParserState {
                     at: usize,
                     len: u32,
                 ) where
-                    F: Fn(&mut ParserState, usize, u32, &str, u32),
+                    F: Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
                 {
                     match *committed {
                         None => *committed = Some(kind),
@@ -1201,8 +1201,8 @@ impl ParserState {
                 }
 
                 fn scan_class_set_operator(
-                    parser: &mut ParserState,
-                    emit: &impl Fn(&mut ParserState, usize, u32, &str, u32),
+                    parser: &mut ParserStateCore<'_>,
+                    emit: &impl Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
                     body: &[u8],
                     body_end: usize,
                     pos: &mut usize,
@@ -1237,13 +1237,13 @@ impl ParserState {
                 /// syntax character or reserved double punctuator does not add
                 /// its own report on top of the `TS1005`.
                 fn drain_committed_set_op_tail<F>(
-                    parser: &mut ParserState,
+                    parser: &mut ParserStateCore<'_>,
                     ctx: &RegexScanContext<'_, F>,
                     committed: &mut Option<ClassSetKind>,
                     mixed_reported: &mut bool,
                     pos: &mut usize,
                 ) where
-                    F: Fn(&mut ParserState, usize, u32, &str, u32),
+                    F: Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
                 {
                     let expected = if *committed == Some(ClassSetKind::Subtraction) {
                         "--"
@@ -1556,12 +1556,12 @@ impl ParserState {
             }
 
             fn scan_alternative<F>(
-                parser: &mut ParserState,
+                parser: &mut ParserStateCore<'_>,
                 ctx: &RegexScanContext<'_, F>,
                 pos: &mut usize,
                 in_group: bool,
             ) where
-                F: Fn(&mut ParserState, usize, u32, &str, u32),
+                F: Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
             {
                 let mut is_previous_term_quantifiable = false;
 
@@ -1940,12 +1940,12 @@ impl ParserState {
             }
 
             fn scan_disjunction<F>(
-                parser: &mut ParserState,
+                parser: &mut ParserStateCore<'_>,
                 ctx: &RegexScanContext<'_, F>,
                 pos: &mut usize,
                 in_group: bool,
             ) where
-                F: Fn(&mut ParserState, usize, u32, &str, u32),
+                F: Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
             {
                 loop {
                     // tsc brackets every alternative with a fresh capturing-group

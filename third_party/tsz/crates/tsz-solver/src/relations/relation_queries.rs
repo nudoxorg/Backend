@@ -7,6 +7,7 @@
 use crate::caches::db::QueryDatabase;
 use crate::classes::inheritance::InheritanceGraph;
 use crate::construction::TypeDatabase;
+use crate::construction::TypeExecutionCheckpoint;
 use crate::evaluation::session::EvaluationSession;
 use crate::operations::AssignabilityChecker;
 use crate::relations::compat::{
@@ -730,6 +731,12 @@ pub fn query_relation_with_overrides<
         kind = ?kind,
     )
     .entered();
+
+    if interner.execution_checkpoint(1).is_err() {
+        // The caller receives a typed stop from its shared project budget and
+        // must discard this deliberately non-cacheable placeholder verdict.
+        return RelationResult::new(kind, false, false, false, false);
+    }
 
     let result = match kind {
         RelationKind::Assignable => {

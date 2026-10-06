@@ -1,7 +1,7 @@
 use tsz_common::diagnostics::diagnostic_codes;
 
 /// Parser state - binary/conditional/as-satisfies expression parsing
-use super::state::{CONTEXT_FLAG_IN_CONDITIONAL_TRUE, ParserState};
+use super::state::{CONTEXT_FLAG_IN_CONDITIONAL_TRUE, ParserStateCore};
 use crate::parser::{
     NodeIndex,
     node::{BinaryExprData, ConditionalExprData},
@@ -9,7 +9,7 @@ use crate::parser::{
 };
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(crate) fn parse_binary_expression_chain(
         &mut self,
         min_precedence: u8,

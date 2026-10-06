@@ -2,7 +2,7 @@
 //!
 //! Enum declaration parsing lives in `state_declarations_enums.rs`.
 
-use super::state::ParserState;
+use super::state::ParserStateCore;
 use crate::parser::{
     NodeIndex, NodeList,
     node::{IdentifierData, ParameterData},
@@ -27,7 +27,7 @@ enum SecondTypeMemberModifier {
     Illegal(String),
 }
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     /// Parse interface declaration
     pub(crate) fn parse_interface_declaration(&mut self) -> NodeIndex {
         let start_pos = self.token_pos();

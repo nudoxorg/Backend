@@ -5,7 +5,7 @@ use tsz_common::diagnostics::{diagnostic_codes, diagnostic_messages};
 //
 //
 /// switch/try/do statements, string literals, and expression statements.
-use super::state::{CONTEXT_FLAG_DISALLOW_IN, ParserState};
+use super::state::{CONTEXT_FLAG_DISALLOW_IN, ParserStateCore};
 use crate::parser::parse_rules::look_ahead_is;
 use crate::parser::{
     NodeIndex, NodeList,
@@ -19,7 +19,7 @@ use tsz_scanner::SyntaxKind;
 use tsz_scanner::keyword_text_len;
 use tsz_scanner::scanner_impl::TokenFlags;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     // Parse export declaration
     // export { x, y };
     // export { x } from "mod";

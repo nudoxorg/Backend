@@ -452,7 +452,7 @@ pub use node::NodeArena;
 pub use node_access::ModuleInstanceState;
 
 // Parser implementation (NodeArena-based).
-pub use state::{ParseDiagnostic, ParserState};
+pub use state::{MeteredParserState, ParseDiagnostic, ParserState};
 
 /// Extended `SyntaxKind` values for AST nodes that are not tokens.
 /// These match TypeScript's `SyntaxKind` enum values exactly.

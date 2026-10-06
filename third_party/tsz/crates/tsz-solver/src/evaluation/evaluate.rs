@@ -19,6 +19,7 @@ mod array_methods;
 
 use crate::caches::db::QueryDatabase;
 use crate::construction::TypeDatabase;
+use crate::construction::TypeExecutionCheckpoint;
 use crate::construction::UnionComplexityCheckpoint;
 use crate::def::{DefId, DefKind};
 use crate::diagnostics::display_provenance::{
@@ -1245,6 +1246,12 @@ impl<'a, R: TypeResolver> TypeEvaluator<'a, R> {
     /// Returns the evaluated type (may be the same if no evaluation needed).
     #[inline]
     pub fn evaluate(&mut self, type_id: TypeId) -> TypeId {
+        if self.interner.execution_checkpoint(1).is_err() {
+            // This value is never published by the project API: the shared
+            // budget remains latched and its owner returns a typed stop after
+            // the enclosing query unwinds.
+            return TypeId::UNKNOWN;
+        }
         // Fast path for intrinsics
         if type_id.is_intrinsic() {
             return type_id;

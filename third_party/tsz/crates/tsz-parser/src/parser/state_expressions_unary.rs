@@ -2,7 +2,7 @@ use tsz_common::diagnostics::diagnostic_codes;
 use tsz_common::interner::IdentText;
 
 /// Parser state - unary, postfix, await, and yield expression parsing
-use super::state::{CONTEXT_FLAG_ARROW_PARAMETERS, ParserState};
+use super::state::{CONTEXT_FLAG_ARROW_PARAMETERS, ParserStateCore};
 use crate::parser::{
     NodeIndex,
     node::{IdentifierData, UnaryExprData, UnaryExprDataEx},
@@ -10,7 +10,7 @@ use crate::parser::{
 };
 use tsz_scanner::{SyntaxKind, keyword_text_len};
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     // Parse unary expression
     pub(crate) fn parse_unary_expression(&mut self) -> NodeIndex {
         match self.token() {

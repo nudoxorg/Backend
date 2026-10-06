@@ -5,7 +5,7 @@
 //! extraction (see the call site in `scan_character_class_escape`'s `b'q'`
 //! arm). Keeps the parent under the parser LOC ceiling.
 use crate::parser::regex_modifier_groups::next_utf8_char;
-use crate::parser::state::ParserState;
+use crate::parser::state::ParserStateCore;
 use tsz_common::diagnostics::{diagnostic_codes, diagnostic_messages, format_message};
 
 /// A `\q{...}` alternative has no range or class-set-operator grammar, so —
@@ -55,8 +55,8 @@ const fn is_class_string_reserved_syntax_character(ch: u8) -> bool {
 /// `\q{\u{1F600}}` are single characters and must not be judged by their
 /// source bytes or truncated at a brace that belongs to an escape.
 pub(super) fn scan_class_string_disjunction_body(
-    parser: &mut ParserState,
-    emit: &impl Fn(&mut ParserState, usize, u32, &str, u32),
+    parser: &mut ParserStateCore<'_>,
+    emit: &impl Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
     body: &[u8],
     pos: &mut usize,
 ) -> bool {

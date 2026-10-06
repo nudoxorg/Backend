@@ -2,7 +2,7 @@
 
 use super::state::{
     CONTEXT_FLAG_ARROW_PARAMETERS, CONTEXT_FLAG_CONSTRUCTOR_PARAMETERS, CONTEXT_FLAG_IN_CLASS,
-    CONTEXT_FLAG_PARAMETER_BINDING_PATTERN, CONTEXT_FLAG_PARAMETER_DEFAULT, ParserState,
+    CONTEXT_FLAG_PARAMETER_BINDING_PATTERN, CONTEXT_FLAG_PARAMETER_DEFAULT, ParserStateCore,
 };
 use crate::parser::{
     NodeIndex, NodeList,
@@ -49,7 +49,7 @@ impl SeenParamModifiers {
     }
 }
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     fn report_missing_close_paren_after_body_recovery(&mut self) {
         let snapshot = self.scanner.save_state();
         let saved_token = self.current_token;

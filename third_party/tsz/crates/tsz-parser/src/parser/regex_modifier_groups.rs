@@ -19,7 +19,7 @@
 
 use tsz_common::diagnostics::{diagnostic_codes, diagnostic_messages, format_message};
 
-use super::state::ParserState;
+use super::state::ParserStateCore;
 
 /// Flag bits, mirroring tsc's `RegularExpressionFlags` so the toggleable mask
 /// below can be read against `scanner.ts` directly.
@@ -65,8 +65,8 @@ pub(crate) fn next_utf8_char(bytes: &[u8], end: usize, pos: usize) -> Option<(ch
 /// ends at the first character that is not an identifier part, so a bad flag is
 /// reported and consumed rather than terminating the run.
 pub(crate) fn scan_pattern_modifiers(
-    parser: &mut ParserState,
-    emit: &impl Fn(&mut ParserState, usize, u32, &str, u32),
+    parser: &mut ParserStateCore<'_>,
+    emit: &impl Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
     body: &[u8],
     end: usize,
     pos: &mut usize,
@@ -146,8 +146,8 @@ pub(crate) fn scan_pattern_modifiers(
 /// A prelude with flags on either side of the minus (`(?i-:x)`, `(?-i:x)`) is
 /// legal, so a flag-set test would report where tsc does not.
 pub(crate) fn scan_modifier_group_prelude(
-    parser: &mut ParserState,
-    emit: &impl Fn(&mut ParserState, usize, u32, &str, u32),
+    parser: &mut ParserStateCore<'_>,
+    emit: &impl Fn(&mut ParserStateCore<'_>, usize, u32, &str, u32),
     body: &[u8],
     end: usize,
     pos: &mut usize,

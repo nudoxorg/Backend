@@ -2,7 +2,7 @@
 
 use super::{
     CONTEXT_FLAG_ASYNC, CONTEXT_FLAG_FUNCTION_BODY, CONTEXT_FLAG_GENERATOR,
-    CONTEXT_FLAG_STATIC_BLOCK, ParserState,
+    CONTEXT_FLAG_STATIC_BLOCK, ParserStateCore,
 };
 use crate::parser::{
     NodeIndex, node::IdentifierData, state::CONTEXT_FLAG_GENERATOR_MEMBER_NAME, syntax_kind_ext,
@@ -12,7 +12,7 @@ use tsz_common::interner::IdentText;
 use tsz_scanner::SyntaxKind;
 use tsz_scanner::scanner_impl::TokenFlags;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     /// Check if current token can start an object property
     /// Used for error recovery in object literals when commas are missing
     pub(crate) const fn is_property_start(&self) -> bool {

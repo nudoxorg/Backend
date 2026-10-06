@@ -4,9 +4,9 @@
 //! Relocated from the parent module file to keep it under the per-file
 //! line ceiling; pure move, no logic change.
 
-use crate::parser::state::ParserState;
+use crate::parser::state::ParserStateCore;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(super) fn missing_regex_closing_token(&self, text: &str) -> Option<u8> {
         let bytes = text.as_bytes();
         if bytes.len() < 2 || bytes[0] != b'/' {

@@ -235,6 +235,7 @@ impl SharedCacheCounter {
 pub struct QueryCache<'a> {
     interner: &'a TypeInterner,
     project_semantic_options: ProjectSemanticOptions,
+    execution_checkpoint: Option<&'a dyn tsz_common::ExecutionCheckpoint>,
     eval_cache: RefCell<FxHashMap<EvaluationCacheKey, TypeId>>,
     eval_dependency_index: EvalDependencyIndex,
     /// Top-level `eval_cache` keys whose result passed the depth-agnostic gate
@@ -363,6 +364,7 @@ impl<'a> QueryCache<'a> {
         QueryCache {
             interner,
             project_semantic_options: ProjectSemanticOptions::structural(),
+            execution_checkpoint: None,
             eval_cache: RefCell::new(FxHashMap::default()),
             eval_dependency_index: RefCell::new(EvalDependencyIndexState::default()),
             registration_window_eval_keys: RefCell::new(rustc_hash::FxHashSet::default()),
@@ -424,6 +426,23 @@ impl<'a> QueryCache<'a> {
     ) -> Self {
         self.project_semantic_options = options;
         self
+    }
+
+    /// Attach the one shared program execution checkpoint to semantic query work.
+    #[must_use]
+    pub const fn with_execution_checkpoint(
+        mut self,
+        checkpoint: &'a dyn tsz_common::ExecutionCheckpoint,
+    ) -> Self {
+        self.execution_checkpoint = Some(checkpoint);
+        self
+    }
+
+    /// Whether the owning project query has latched a stop. Persistent cache
+    /// writes must stop because `TypeId` cannot encode execution provenance.
+    pub(super) fn execution_stopped(&self) -> bool {
+        self.execution_checkpoint
+            .is_some_and(|checkpoint| checkpoint.checkpoint(0).is_err())
     }
 
     pub(crate) const fn has_definition_store(&self) -> bool {
@@ -633,6 +652,9 @@ impl<'a> QueryCache<'a> {
         key: RelationCacheKey,
         result: bool,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         let value = RelationCacheValue::from_bool(result);
         self.relation_local_cache(relation)
             .borrow_mut()
@@ -656,6 +678,9 @@ impl<'a> QueryCache<'a> {
         target: TypeId,
         policy: RelationPolicy,
     ) -> bool {
+        if self.execution_stopped() {
+            return false;
+        }
         if let Some(result) = self.relation_fast_path(source, target) {
             return result;
         }
@@ -705,6 +730,9 @@ impl<'a> QueryCache<'a> {
             policy,
             RelationContext::default(),
         );
+        if self.execution_stopped() {
+            return false;
+        }
         let result = relation_result.related;
 
         // Keep request-local relation answers out of this outer boolean cache.
@@ -1295,6 +1323,18 @@ impl TypeDatabase for QueryCache<'_> {
     }
 }
 
+impl super::db_base_traits::TypeExecutionCheckpoint for QueryCache<'_> {
+    fn execution_checkpoint(
+        &self,
+        work_units: u64,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
+        match self.execution_checkpoint {
+            Some(checkpoint) => checkpoint.checkpoint(work_units),
+            None => Ok(()),
+        }
+    }
+}
+
 impl CollectPropertiesResultCache for QueryCache<'_> {
     fn collect_properties_result_cached(
         &self,
@@ -1381,6 +1421,9 @@ impl QueryDatabase for QueryCache<'_> {
         type_id: TypeId,
         no_unchecked_indexed_access: bool,
     ) -> TypeId {
+        if self.execution_stopped() {
+            return TypeId::UNKNOWN;
+        }
         // Fast path: intrinsic types never need evaluation
         if type_id.is_intrinsic() {
             return type_id;
@@ -1436,6 +1479,12 @@ impl QueryDatabase for QueryCache<'_> {
         let mut evaluator = self.query_backed_evaluator();
         let evaluation_memo_result = evaluator.evaluate_request_memo_result(request);
         let result = evaluation_memo_result.into_type_id();
+        if self.execution_stopped() {
+            // A recursive evaluator may return an internal UNKNOWN placeholder
+            // after a child observes cancellation. Never publish it or any
+            // drained intermediates to this or the shared cache.
+            return TypeId::UNKNOWN;
+        }
 
         // PERF: Persist intermediate evaluation results from this session into
         // the long-lived eval_cache. During recursive mapped type expansion

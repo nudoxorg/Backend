@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use crate::caches::db::QueryDatabase;
 use crate::construction::TypeDatabase;
+use crate::construction::TypeExecutionCheckpoint;
 use crate::def::DefId;
 #[cfg(test)]
 use crate::diagnostics::SubtypeFailureReason;
@@ -1523,6 +1524,11 @@ impl<'a, R: TypeResolver> SubtypeChecker<'a, R> {
     /// [`SubtypeResult::DepthExceeded`] (tsc's `Ternary.Maybe` behavior), while
     /// proof-oriented relations may make exhaustion a definitive failure.
     pub(crate) fn check_subtype_inner(&mut self, source: TypeId, target: TypeId) -> SubtypeResult {
+        if self.interner.execution_checkpoint(1).is_err() {
+            // The enclosing typed project boundary observes the latched stop
+            // and discards this incomplete relation result.
+            return SubtypeResult::False;
+        }
         crate::recursion::with_solver_frame(|| self.check_subtype_inner_impl(source, target))
             .unwrap_or_else(|| self.depth_result())
     }

@@ -1,8 +1,8 @@
-use super::state::{ParseDiagnostic, ParserState};
+use super::state::{ParseDiagnostic, ParserStateCore};
 use tsz_scanner::SyntaxKind;
 use tsz_scanner::scanner_impl::TokenFlags;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub fn parse_error_at_current_token(&mut self, message: &str, code: u32) {
         if code == tsz_common::diagnostics::diagnostic_codes::EXPECTED
             && message == "')' expected."

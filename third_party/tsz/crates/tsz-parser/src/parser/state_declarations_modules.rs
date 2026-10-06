@@ -1,6 +1,6 @@
 //! Parser state - module and import declarations.
 
-use super::state::ParserState;
+use super::state::ParserStateCore;
 use crate::parser::{
     NodeIndex, NodeList,
     node::{IdentifierData, ImportClauseData, ImportDeclData, NamedImportsData, SpecifierData},
@@ -9,7 +9,7 @@ use crate::parser::{
 use tsz_common::interner::{AstAtom, IdentText};
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     /// Parse module or namespace declaration: module "name" { } or namespace X { }
     pub(crate) fn parse_module_declaration(&mut self) -> NodeIndex {
         let start_pos = self.token_pos();

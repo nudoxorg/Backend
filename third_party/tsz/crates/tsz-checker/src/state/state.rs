@@ -31,6 +31,7 @@ use tsz_parser::parser::NodeIndex;
 use tsz_parser::parser::node::NodeArena;
 use tsz_parser::parser::syntax_kind_ext;
 use tsz_solver::TypeId;
+use tsz_solver::construction::TypeExecutionCheckpoint;
 
 thread_local! {
     /// Shared depth counter for all cross-arena delegation points.
@@ -1264,6 +1265,9 @@ impl<'a> CheckerState<'a> {
         idx: NodeIndex,
         request: &TypingRequest,
     ) -> TypeId {
+        if self.ctx.types.execution_checkpoint(1).is_err() {
+            return TypeId::UNKNOWN;
+        }
         // Guard: NodeIndex::NONE is a sentinel (u32::MAX) that must never reach
         // the type cache — doing so would try to allocate a multi-GB Vec.
         if idx.is_none() {

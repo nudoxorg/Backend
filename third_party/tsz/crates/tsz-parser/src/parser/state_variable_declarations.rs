@@ -5,7 +5,7 @@ use tsz_common::diagnostics::diagnostic_codes;
 use tsz_common::interner::AstAtom;
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(crate) fn recover_jsx_closing_namespace_tail_greater_statement(&mut self) {
         let start_pos = self.token_pos();
         let left = self.create_missing_expression();

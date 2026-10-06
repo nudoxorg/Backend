@@ -15,7 +15,17 @@ impl BinderState {
         arena: &NodeArena,
         statements: &NodeList,
     ) {
-        self.collect_hoisted_declarations_impl(arena, statements, false);
+        let _ = self.collect_hoisted_declarations_impl(arena, statements, false, None);
+    }
+
+    /// Collect hoisted declarations with the admitted program's shared budget.
+    pub(crate) fn collect_hoisted_declarations_with_execution_checkpoint(
+        &mut self,
+        arena: &NodeArena,
+        statements: &NodeList,
+        checkpoint: &dyn tsz_common::ExecutionCheckpoint,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
+        self.collect_hoisted_declarations_impl(arena, statements, false, Some(checkpoint))
     }
 
     /// Internal implementation with block tracking.
@@ -24,8 +34,12 @@ impl BinderState {
         arena: &NodeArena,
         statements: &NodeList,
         in_block: bool,
-    ) {
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
         for &stmt_idx in &statements.nodes {
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.checkpoint(1)?;
+            }
             if let Some(node) = arena.get(stmt_idx) {
                 match node.kind {
                     k if k == syntax_kind_ext::VARIABLE_STATEMENT => {
@@ -55,14 +69,27 @@ impl BinderState {
                         // function-scoped regardless of target).
                         // Pass in_block=true to prevent function hoisting from blocks.
                         if let Some(block) = arena.get_block(node) {
-                            self.collect_hoisted_declarations_impl(arena, &block.statements, true);
+                            self.collect_hoisted_declarations_impl(
+                                arena,
+                                &block.statements,
+                                true,
+                                checkpoint,
+                            )?;
                         }
                     }
                     k if k == syntax_kind_ext::IF_STATEMENT => {
                         if let Some(if_stmt) = arena.get_if_statement(node) {
-                            self.collect_hoisted_from_node(arena, if_stmt.then_statement);
+                            self.collect_hoisted_from_node_with_checkpoint(
+                                arena,
+                                if_stmt.then_statement,
+                                checkpoint,
+                            )?;
                             if if_stmt.else_statement.is_some() {
-                                self.collect_hoisted_from_node(arena, if_stmt.else_statement);
+                                self.collect_hoisted_from_node_with_checkpoint(
+                                    arena,
+                                    if_stmt.else_statement,
+                                    checkpoint,
+                                )?;
                             }
                         }
                     }
@@ -70,7 +97,11 @@ impl BinderState {
                         || k == syntax_kind_ext::DO_STATEMENT =>
                     {
                         if let Some(loop_data) = arena.get_loop(node) {
-                            self.collect_hoisted_from_node(arena, loop_data.statement);
+                            self.collect_hoisted_from_node_with_checkpoint(
+                                arena,
+                                loop_data.statement,
+                                checkpoint,
+                            )?;
                         }
                     }
                     k if k == syntax_kind_ext::FOR_STATEMENT => {
@@ -84,7 +115,11 @@ impl BinderState {
                                 self.collect_hoisted_var_decl(arena, init);
                             }
                             // Hoist from the loop body
-                            self.collect_hoisted_from_node(arena, loop_data.statement);
+                            self.collect_hoisted_from_node_with_checkpoint(
+                                arena,
+                                loop_data.statement,
+                                checkpoint,
+                            )?;
                         }
                     }
                     k if k == syntax_kind_ext::FOR_IN_STATEMENT
@@ -99,23 +134,39 @@ impl BinderState {
                                 self.collect_hoisted_var_decl(arena, init);
                             }
                             // Hoist from the loop body
-                            self.collect_hoisted_from_node(arena, for_data.statement);
+                            self.collect_hoisted_from_node_with_checkpoint(
+                                arena,
+                                for_data.statement,
+                                checkpoint,
+                            )?;
                         }
                     }
                     k if k == syntax_kind_ext::TRY_STATEMENT => {
                         if let Some(try_data) = arena.get_try(node) {
                             // Hoist from try block
-                            self.collect_hoisted_from_node(arena, try_data.try_block);
+                            self.collect_hoisted_from_node_with_checkpoint(
+                                arena,
+                                try_data.try_block,
+                                checkpoint,
+                            )?;
                             // Hoist from catch clause's block
                             if try_data.catch_clause.is_some()
                                 && let Some(catch_data) =
                                     arena.get_catch_clause_at(try_data.catch_clause)
                             {
-                                self.collect_hoisted_from_node(arena, catch_data.block);
+                                self.collect_hoisted_from_node_with_checkpoint(
+                                    arena,
+                                    catch_data.block,
+                                    checkpoint,
+                                )?;
                             }
                             // Hoist from finally block
                             if try_data.finally_block.is_some() {
-                                self.collect_hoisted_from_node(arena, try_data.finally_block);
+                                self.collect_hoisted_from_node_with_checkpoint(
+                                    arena,
+                                    try_data.finally_block,
+                                    checkpoint,
+                                )?;
                             }
                         }
                     }
@@ -125,12 +176,17 @@ impl BinderState {
                             if let Some(block_data) = arena.get_block_at(switch_data.case_block) {
                                 // Each child is a case/default clause with statements
                                 for &clause_idx in &block_data.statements.nodes {
+                                    if let Some(checkpoint) = checkpoint {
+                                        checkpoint.checkpoint(1)?;
+                                    }
                                     if let Some(clause_data) = arena.get_case_clause_at(clause_idx)
                                     {
-                                        self.collect_hoisted_declarations(
+                                        self.collect_hoisted_declarations_impl(
                                             arena,
                                             &clause_data.statements,
-                                        );
+                                            false,
+                                            checkpoint,
+                                        )?;
                                     }
                                 }
                             }
@@ -138,7 +194,11 @@ impl BinderState {
                     }
                     k if k == syntax_kind_ext::LABELED_STATEMENT => {
                         if let Some(label_data) = arena.get_labeled_statement(node) {
-                            self.collect_hoisted_from_node(arena, label_data.statement);
+                            self.collect_hoisted_from_node_with_checkpoint(
+                                arena,
+                                label_data.statement,
+                                checkpoint,
+                            )?;
                         }
                     }
                     // `var` inside a `with` body is function-scoped and hoisted by
@@ -147,13 +207,18 @@ impl BinderState {
                     // TS2304. Mirrors the IF/LABELED sibling arms.
                     k if k == syntax_kind_ext::WITH_STATEMENT => {
                         if let Some(with_stmt) = arena.get_with_statement(node) {
-                            self.collect_hoisted_from_node(arena, with_stmt.then_statement);
+                            self.collect_hoisted_from_node_with_checkpoint(
+                                arena,
+                                with_stmt.then_statement,
+                                checkpoint,
+                            )?;
                         }
                     }
                     _ => {}
                 }
             }
         }
+        Ok(())
     }
 
     pub(crate) fn collect_hoisted_var_decl(&mut self, arena: &NodeArena, decl_list_idx: NodeIndex) {
@@ -183,6 +248,15 @@ impl BinderState {
     }
 
     pub(crate) fn collect_hoisted_from_node(&mut self, arena: &NodeArena, idx: NodeIndex) {
+        let _ = self.collect_hoisted_from_node_with_checkpoint(arena, idx, None);
+    }
+
+    fn collect_hoisted_from_node_with_checkpoint(
+        &mut self,
+        arena: &NodeArena,
+        idx: NodeIndex,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
         if let Some(node) = arena.get(idx) {
             if node.kind == syntax_kind_ext::BLOCK {
                 // Always recurse into blocks for var hoisting (var is always
@@ -209,7 +283,8 @@ impl BinderState {
                         arena,
                         &block.statements,
                         !is_function_body,
-                    );
+                        checkpoint,
+                    )?;
                 }
             } else if node.kind == syntax_kind_ext::MODULE_BLOCK {
                 // Namespace bodies are function scopes: top-level `function`
@@ -217,7 +292,7 @@ impl BinderState {
                 if let Some(block) = arena.get_module_block(node)
                     && let Some(ref statements) = block.statements
                 {
-                    self.collect_hoisted_declarations_impl(arena, statements, false);
+                    self.collect_hoisted_declarations_impl(arena, statements, false, checkpoint)?;
                 }
             } else {
                 // Handle single statement (not wrapped in a block)
@@ -225,15 +300,36 @@ impl BinderState {
                 // These are at the same scope level, not in a block.
                 let mut stmts = tsz_parser::NodeList::new();
                 stmts.nodes.push(idx);
-                self.collect_hoisted_declarations(arena, &stmts);
+                self.collect_hoisted_declarations_impl(arena, &stmts, false, checkpoint)?;
             }
         }
+        Ok(())
     }
 
     /// Process hoisted function declarations.
     pub(crate) fn process_hoisted_functions(&mut self, arena: &NodeArena) {
+        let _ = self.process_hoisted_functions_with_optional_checkpoint(arena, None);
+    }
+
+    /// Process hoisted function declarations with the shared project budget.
+    pub(crate) fn process_hoisted_functions_with_execution_checkpoint(
+        &mut self,
+        arena: &NodeArena,
+        checkpoint: &dyn tsz_common::ExecutionCheckpoint,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
+        self.process_hoisted_functions_with_optional_checkpoint(arena, Some(checkpoint))
+    }
+
+    fn process_hoisted_functions_with_optional_checkpoint(
+        &mut self,
+        arena: &NodeArena,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
         let functions = std::mem::take(&mut self.hoisted_functions);
         for func_idx in functions {
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.checkpoint(1)?;
+            }
             if let Some(node) = arena.get(func_idx)
                 && let Some(func) = arena.get_function(node)
                 && let Some(name) = Self::get_identifier_name(arena, func.name)
@@ -246,13 +342,34 @@ impl BinderState {
                 self.declare_in_persistent_scope(name.to_string(), sym_id);
             }
         }
+        Ok(())
     }
 
     /// Process hoisted var declarations.
     /// Var declarations are hoisted to the top of their function/global scope.
     pub(crate) fn process_hoisted_vars(&mut self, arena: &NodeArena) {
+        let _ = self.process_hoisted_vars_with_optional_checkpoint(arena, None);
+    }
+
+    /// Process hoisted var declarations with the shared project budget.
+    pub(crate) fn process_hoisted_vars_with_execution_checkpoint(
+        &mut self,
+        arena: &NodeArena,
+        checkpoint: &dyn tsz_common::ExecutionCheckpoint,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
+        self.process_hoisted_vars_with_optional_checkpoint(arena, Some(checkpoint))
+    }
+
+    fn process_hoisted_vars_with_optional_checkpoint(
+        &mut self,
+        arena: &NodeArena,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
         let hoisted_vars = std::mem::take(&mut self.hoisted_vars);
         for (name, decl_idx) in hoisted_vars {
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.checkpoint(1)?;
+            }
             // Declare the var symbol with FUNCTION_SCOPED_VARIABLE flag
             // This makes it accessible before its actual declaration point
             let is_exported = Self::is_node_exported(arena, decl_idx);
@@ -267,5 +384,6 @@ impl BinderState {
             // Also add to persistent scope
             self.declare_in_persistent_scope(name, sym_id);
         }
+        Ok(())
     }
 }

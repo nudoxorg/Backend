@@ -75,7 +75,8 @@ impl<T: TypeDatabase + ?Sized> TypeStore for T {
 
 pub use super::db_base_traits::{
     IntersectionDisplayReduction, JsSignatureDisplaySource, TypeApplicationEvalCache,
-    TypeCompilerOptions, TypePredicateCache, TypeRawIntersectionConstruction, TypeTupleLimitSignal,
+    TypeCompilerOptions, TypeExecutionCheckpoint, TypePredicateCache,
+    TypeRawIntersectionConstruction, TypeTupleLimitSignal,
 };
 
 /// Cache for the canonical `widen_type` result keyed by `TypeId`.
@@ -249,6 +250,7 @@ pub trait TypeDatabase:
     + TypeExtractParamsCache
     + TypeContainsByIdCache
     + TypePruneUnionCache
+    + TypeExecutionCheckpoint
 {
     /// Immutable semantic options owned by the current TypeScript project.
     /// Standalone databases keep the historical structural defaults.
@@ -766,6 +768,8 @@ impl TypeBuiltinAccess for TypeInterner {
         Self::is_boxed_def_id(self, def_id, kind)
     }
 }
+
+impl TypeExecutionCheckpoint for TypeInterner {}
 
 impl TypeDatabase for TypeInterner {
     fn intern(&self, key: TypeData) -> TypeId {

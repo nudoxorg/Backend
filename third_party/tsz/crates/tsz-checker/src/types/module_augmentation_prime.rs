@@ -10,6 +10,7 @@ use crate::query_boundaries::state::type_environment;
 use crate::state::CheckerState;
 use rustc_hash::FxHashSet;
 use tsz_solver::TypeId;
+use tsz_solver::construction::TypeExecutionCheckpoint;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct ModuleAugmentationPrimeTask {
@@ -32,6 +33,10 @@ impl<'a> CheckerState<'a> {
             return;
         }
 
+        if self.ctx.types.execution_checkpoint(0).is_err() {
+            return;
+        }
+
         let tasks = self.module_augmentation_prime_tasks();
         if tasks.is_empty() {
             return;
@@ -40,9 +45,12 @@ impl<'a> CheckerState<'a> {
         let saved_diagnostics = std::mem::take(&mut self.ctx.diagnostics);
         let original_file_idx = self.ctx.current_file_idx;
         let original_file_name = self.ctx.file_name.clone();
-        let mut primed = 0usize;
+        let mut pending_primed_bodies = Vec::new();
 
         for task in tasks {
+            if self.ctx.types.execution_checkpoint(1).is_err() {
+                break;
+            }
             self.ctx.set_current_file_idx(task.augmenting_file_idx);
             if let Some(file_name) = self
                 .ctx
@@ -90,14 +98,23 @@ impl<'a> CheckerState<'a> {
                 continue;
             }
 
-            self.publish_primed_module_augmentation_body(target_sym, merged_type);
-            primed += 1;
+            pending_primed_bodies.push((target_sym, merged_type));
         }
 
         self.ctx.set_current_file_idx(original_file_idx);
         self.ctx.file_name = original_file_name;
         self.ctx.diagnostics = saved_diagnostics;
 
+        if self.ctx.types.execution_checkpoint(0).is_err() {
+            return;
+        }
+        let primed = pending_primed_bodies.len();
+        // Commit the staged augmentation set only after every task completed.
+        // This final bounded phase is atomic with respect to cancellation so a
+        // later budget cannot observe a half-primed project.
+        for (target_sym, merged_type) in pending_primed_bodies {
+            self.publish_primed_module_augmentation_body(target_sym, merged_type);
+        }
         if primed != 0 {
             tracing::debug!(primed, "primed module augmentation bodies");
         }
@@ -128,6 +145,9 @@ impl<'a> CheckerState<'a> {
         if let Some(index) = self.ctx.global_module_augmentations_index.as_ref() {
             for (module_spec, entries) in index.iter() {
                 for (file_idx, aug) in entries {
+                    if self.ctx.types.execution_checkpoint(1).is_err() {
+                        return Vec::new();
+                    }
                     push_task(*file_idx, module_spec, &aug.name);
                 }
             }
@@ -135,6 +155,9 @@ impl<'a> CheckerState<'a> {
             for (file_idx, binder) in all_binders.iter().enumerate() {
                 for (module_spec, augmentations) in binder.module_augmentations.iter() {
                     for aug in augmentations {
+                        if self.ctx.types.execution_checkpoint(1).is_err() {
+                            return Vec::new();
+                        }
                         push_task(file_idx, module_spec, &aug.name);
                     }
                 }
@@ -142,6 +165,9 @@ impl<'a> CheckerState<'a> {
         } else {
             for (module_spec, augmentations) in self.ctx.binder.module_augmentations.iter() {
                 for aug in augmentations {
+                    if self.ctx.types.execution_checkpoint(1).is_err() {
+                        return Vec::new();
+                    }
                     push_task(self.ctx.current_file_idx, module_spec, &aug.name);
                 }
             }

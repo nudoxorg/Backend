@@ -5,7 +5,7 @@ use tsz_common::diagnostics::diagnostic_codes;
 use tsz_common::interner::IdentText;
 use tsz_scanner::{SyntaxKind, keyword_text_len};
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(crate) fn parse_exported_declaration(&mut self, start_pos: u32) -> NodeIndex {
         match self.token() {
             SyntaxKind::FunctionKeyword => self.parse_function_declaration(),

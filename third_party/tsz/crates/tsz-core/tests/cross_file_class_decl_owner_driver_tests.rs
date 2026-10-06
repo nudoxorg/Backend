@@ -46,7 +46,14 @@ fn check_consumer_cold(program: &MergedProgram, file_name: &str) -> Vec<u32> {
         strict: true,
         ..CheckerOptions::default()
     };
-    let plan = ParallelCheckPlan::build(program, &options, &[]);
+    let plan = ParallelCheckPlan::build(
+        program,
+        &options,
+        &[],
+        tsz_common::ProjectSemanticOptions::structural(),
+        None,
+        None,
+    );
     plan.check_one_file(file_idx, &program.files[file_idx])
         .diagnostics
         .into_iter()

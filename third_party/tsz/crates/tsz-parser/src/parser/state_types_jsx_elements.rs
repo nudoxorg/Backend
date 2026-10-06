@@ -4,7 +4,7 @@ use crate::parser::{NodeIndex, NodeList, node, syntax_kind_ext};
 use tsz_common::interner::AstAtom;
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     // =========================================================================
     // JSX Parsing
     // =========================================================================

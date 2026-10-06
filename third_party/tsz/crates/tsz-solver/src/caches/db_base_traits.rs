@@ -3,6 +3,17 @@ use crate::def::DefId;
 use crate::types::{TypeData, TypeId, TypeParamInfo};
 use std::sync::Arc;
 
+/// Cooperative cancellation/work checkpoint supplied by a query database.
+pub trait TypeExecutionCheckpoint {
+    /// Charge work and return the shared terminal reason, if execution stopped.
+    fn execution_checkpoint(
+        &self,
+        _work_units: u64,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
+        Ok(())
+    }
+}
+
 /// Redundant-supertype reduction of an intersection type, for diagnostic
 /// DISPLAY only. It does not change any interned identity — in particular it
 /// must not feed back into `try_merge_objects_in_intersection`'s raw,

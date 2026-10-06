@@ -3,7 +3,7 @@
 use super::state::{
     CONTEXT_FLAG_ASYNC, CONTEXT_FLAG_CLASS_MEMBER_NAME, CONTEXT_FLAG_CONSTRUCTOR_PARAMETERS,
     CONTEXT_FLAG_FUNCTION_BODY, CONTEXT_FLAG_GENERATOR, CONTEXT_FLAG_GENERATOR_MEMBER_NAME,
-    CONTEXT_FLAG_STATIC_BLOCK, ParserState,
+    CONTEXT_FLAG_STATIC_BLOCK, ParserStateCore,
 };
 use crate::parser::{
     NodeIndex, NodeList,
@@ -76,7 +76,7 @@ pub(crate) struct ClassMemberModifierSet {
     pub(crate) diag_len_before_modifiers: usize,
 }
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     /// Parse class member modifiers (static, public, private, protected, readonly, abstract, override).
     ///
     /// Returns the modifier list plus whether a `static`/`async` ordering

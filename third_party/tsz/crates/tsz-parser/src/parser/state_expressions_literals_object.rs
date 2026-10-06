@@ -1,6 +1,6 @@
 //! Object literal parsing extracted from `state_expressions_literals.rs`.
 
-use super::state::ParserState;
+use super::state::ParserStateCore;
 use crate::parser::{
     NodeIndex,
     node::{IdentifierData, LiteralExprData},
@@ -10,7 +10,7 @@ use tsz_common::diagnostics::diagnostic_codes;
 use tsz_common::interner::IdentText;
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     /// Whether the current token can start an object-literal element, mirroring
     /// tsc's `isListElement(ParsingContext.ObjectLiteralMembers)`.
     pub(crate) const fn is_object_literal_element_start(&self) -> bool {

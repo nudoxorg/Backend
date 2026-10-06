@@ -12,6 +12,10 @@
 // Declarative `u32` identity-newtype generator (shared by all crates).
 pub mod id;
 
+/// Shared cooperative cancellation/deadline/work budget for one project run.
+pub mod execution_budget;
+pub use execution_budget::{ExecutionCheckpoint, ProjectExecutionBudget, ProjectExecutionStop};
+
 // String interning for identifier deduplication
 pub mod interner;
 pub use interner::{AstAtom, Atom, Interner, ShardedInterner};

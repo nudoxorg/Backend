@@ -1,6 +1,6 @@
 //! Recovery logic for malformed `let [<non-binding-start>]` statement patterns.
 
-use super::state::ParserState;
+use super::state::ParserStateCore;
 use crate::parser::parse_rules::is_identifier_or_keyword;
 use crate::parser::{NodeIndex, syntax_kind_ext};
 use tsz_scanner::SyntaxKind;
@@ -27,10 +27,10 @@ pub(super) fn is_invalid_let_array_start(next: SyntaxKind, first_elem: SyntaxKin
 }
 
 // ---------------------------------------------------------------------------
-// Recovery implementation on ParserState
+// Recovery implementation on ParserStateCore<'_>
 // ---------------------------------------------------------------------------
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     /// Returns `Some(empty_statement)` when `let [<non-binding>` is detected and recovered;
     /// returns `None` to let normal variable-declaration parsing proceed.
     pub(crate) fn try_parse_invalid_let_array_declaration_statement(

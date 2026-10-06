@@ -118,7 +118,7 @@ pub(crate) enum AsyncExportTarget {
     NamespaceExport,
 }
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(crate) fn parse_statement_async_declaration_or_expression(&mut self) -> NodeIndex {
         use tsz_common::diagnostics::diagnostic_codes;
 
@@ -1491,7 +1491,7 @@ impl ParserState {
     /// tsc still treats `let` as the declaration keyword there and reports
     /// TS18029 on the binding name, rather than falling back to parsing `let`
     /// as an identifier expression. `is_identifier_or_keyword` (the free
-    /// function, not `ParserState::is_identifier_or_keyword`) does not cover
+    /// function, not `ParserStateCore<'_>::is_identifier_or_keyword`) does not cover
     /// `PrivateIdentifier`, so this needs its own arm.
     pub(crate) fn look_ahead_is_let_declaration(&mut self) -> bool {
         look_ahead_is(&mut self.scanner, self.current_token, |token| {

@@ -42,7 +42,7 @@ use crate::lib_loader;
 use crate::parser::NodeIndex;
 use crate::parser::NodeList;
 use crate::parser::node::{NodeArena, SourceFileData};
-use crate::parser::{ParseDiagnostic, ParserState};
+use crate::parser::{MeteredParserState, ParseDiagnostic, ParserState};
 use anyhow::{Context, Result, bail};
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::{

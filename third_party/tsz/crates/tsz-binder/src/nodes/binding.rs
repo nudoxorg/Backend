@@ -366,29 +366,55 @@ impl BinderState {
 
     /// Bind a node and its children.
     pub(crate) fn bind_node(&mut self, arena: &NodeArena, idx: NodeIndex) {
+        let _ = self.bind_node_with_optional_execution_checkpoint(arena, idx, None);
+    }
+
+    /// Bind one node and recursively charge the same project work checkpoint.
+    /// A stopped binder is partially mutated and its owner must discard it.
+    pub(crate) fn bind_node_with_execution_checkpoint(
+        &mut self,
+        arena: &NodeArena,
+        idx: NodeIndex,
+        checkpoint: &dyn tsz_common::ExecutionCheckpoint,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
+        self.bind_node_with_optional_execution_checkpoint(arena, idx, Some(checkpoint))
+    }
+
+    fn bind_node_with_optional_execution_checkpoint(
+        &mut self,
+        arena: &NodeArena,
+        idx: NodeIndex,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
+        if let Some(checkpoint) = checkpoint {
+            checkpoint.checkpoint(1)?;
+        }
         if idx.is_none() {
-            return;
+            return Ok(());
         }
 
         let Some(node) = arena.get(idx) else {
-            return;
+            return Ok(());
         };
 
         // Amortized stack guard: bail immediately if the breaker was already tripped,
         // probe every 64th call to avoid paying `remaining_stack()` on each node,
         // and trip the breaker + return if headroom is critically low.
         if crate::binding::stack_guard::stack_overflow_tripped() {
-            return;
+            return Ok(());
         }
         if crate::binding::stack_guard::should_probe_stack()
             && crate::binding::stack_guard::headroom_below(1024 * 1024)
         {
             crate::binding::stack_guard::trip_stack_overflow();
-            return;
+            return Ok(());
         }
         stacker::maybe_grow(256 * 1024, 2 * 1024 * 1024, || {
-            self.bind_node_by_node_kind(arena, node, idx);
-        });
+            self.bind_node_by_node_kind_with_optional_execution_checkpoint(
+                arena, node, idx, checkpoint,
+            )
+        })?;
+        Ok(())
     }
 
     /// Whether a `using`/`await using` declaration list has a declarator that
@@ -420,7 +446,13 @@ impl BinderState {
     }
 
     #[inline]
-    fn bind_node_by_node_kind(&mut self, arena: &NodeArena, node: &Node, idx: NodeIndex) {
+    fn bind_node_by_node_kind_with_optional_execution_checkpoint(
+        &mut self,
+        arena: &NodeArena,
+        node: &Node,
+        idx: NodeIndex,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
         match node.kind {
             k if k == SyntaxKind::Identifier as u16 => {
                 self.record_flow(idx);
@@ -428,7 +460,7 @@ impl BinderState {
             k if k == syntax_kind_ext::HERITAGE_CLAUSE => {
                 if let Some(heritage) = arena.get_heritage_clause(node) {
                     for &type_idx in &heritage.types.nodes {
-                        self.bind_node(arena, type_idx);
+                        self.bind_node_with_optional_execution_checkpoint(arena, type_idx, checkpoint)?;
                     }
                 }
             }
@@ -459,14 +491,14 @@ impl BinderState {
                                 });
                             }
                         }
-                        self.bind_node(arena, decl_list_idx);
+                        self.bind_node_with_optional_execution_checkpoint(arena, decl_list_idx, checkpoint)?;
                     }
                 }
             }
             k if k == syntax_kind_ext::VARIABLE_DECLARATION_LIST => {
                 if let Some(list) = arena.get_variable(node) {
                     for &decl_idx in &list.declarations.nodes {
-                        self.bind_node(arena, decl_idx);
+                        self.bind_node_with_optional_execution_checkpoint(arena, decl_idx, checkpoint)?;
                     }
                 }
             }
@@ -534,7 +566,7 @@ impl BinderState {
                 if let Some(block) = arena.get_block(node) {
                     self.enter_scope(ContainerKind::Block, idx);
                     for &stmt_idx in &block.statements.nodes {
-                        self.bind_node(arena, stmt_idx);
+                        self.bind_node_with_optional_execution_checkpoint(arena, stmt_idx, checkpoint)?;
                     }
                     self.exit_scope(arena);
                 }
@@ -575,15 +607,15 @@ impl BinderState {
             // Labeled statement
             k if k == syntax_kind_ext::LABELED_STATEMENT => {
                 if let Some(labeled) = arena.get_labeled_statement(node) {
-                    self.bind_node(arena, labeled.statement);
+                    self.bind_node_with_optional_execution_checkpoint(arena, labeled.statement, checkpoint)?;
                 }
             }
 
             // With statement
             k if k == syntax_kind_ext::WITH_STATEMENT => {
                 if let Some(with_stmt) = arena.get_with_statement(node) {
-                    self.bind_node(arena, with_stmt.expression);
-                    self.bind_node(arena, with_stmt.then_statement);
+                    self.bind_node_with_optional_execution_checkpoint(arena, with_stmt.expression, checkpoint)?;
+                    self.bind_node_with_optional_execution_checkpoint(arena, with_stmt.then_statement, checkpoint)?;
                 }
             }
 
@@ -608,7 +640,7 @@ impl BinderState {
                 if let Some(assign) = arena.get_export_assignment(node) {
                     // export = expr; exports all members of expr as module exports
                     // For example: export = Utils; makes all Utils exports available
-                    self.bind_node(arena, assign.expression);
+                    self.bind_node_with_optional_execution_checkpoint(arena, assign.expression, checkpoint)?;
 
                     // Resolve the `export =` target (identifier or qualified name)
                     // and copy its exports to the current module.
@@ -646,13 +678,22 @@ impl BinderState {
                 }
             }
             _ => {
-                self.bind_node_by_node_kind_tail(arena, node, idx);
+                self.bind_node_by_node_kind_tail_with_optional_execution_checkpoint(
+                    arena, node, idx, checkpoint,
+                )?;
             }
         }
+        Ok(())
     }
 
     #[inline]
-    fn bind_node_by_node_kind_tail(&mut self, arena: &NodeArena, node: &Node, idx: NodeIndex) {
+    fn bind_node_by_node_kind_tail_with_optional_execution_checkpoint(
+        &mut self,
+        arena: &NodeArena,
+        node: &Node,
+        idx: NodeIndex,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
         match node.kind {
             // Module/namespace declarations
             k if k == syntax_kind_ext::MODULE_DECLARATION => {
@@ -663,7 +704,7 @@ impl BinderState {
                     && let Some(ref statements) = block.statements
                 {
                     for &stmt_idx in &statements.nodes {
-                        self.bind_node(arena, stmt_idx);
+                        self.bind_node_with_optional_execution_checkpoint(arena, stmt_idx, checkpoint)?;
                     }
                 }
             }
@@ -719,7 +760,7 @@ impl BinderState {
                         cond.condition,
                     );
                     self.current_flow = true_flow;
-                    self.bind_node(arena, cond.when_true);
+                    self.bind_node_with_optional_execution_checkpoint(arena, cond.when_true, checkpoint)?;
                     let after_true_flow = self.current_flow;
 
                     // Create FALSE_CONDITION flow for when_false branch
@@ -729,7 +770,7 @@ impl BinderState {
                         cond.condition,
                     );
                     self.current_flow = false_flow;
-                    self.bind_node(arena, cond.when_false);
+                    self.bind_node_with_optional_execution_checkpoint(arena, cond.when_false, checkpoint)?;
                     let after_false_flow = self.current_flow;
 
                     // Create merge point for both branches
@@ -746,8 +787,8 @@ impl BinderState {
             {
                 self.record_flow(idx);
                 if let Some(access) = arena.get_access_expr(node) {
-                    self.bind_node(arena, access.expression);
-                    self.bind_node(arena, access.name_or_argument);
+                    self.bind_node_with_optional_execution_checkpoint(arena, access.expression, checkpoint)?;
+                    self.bind_node_with_optional_execution_checkpoint(arena, access.name_or_argument, checkpoint)?;
                 }
             }
 
@@ -756,7 +797,7 @@ impl BinderState {
                 || k == syntax_kind_ext::POSTFIX_UNARY_EXPRESSION =>
             {
                 if let Some(unary) = arena.get_unary_expr(node) {
-                    self.bind_node(arena, unary.operand);
+                    self.bind_node_with_optional_execution_checkpoint(arena, unary.operand, checkpoint)?;
                     if (unary.operator == SyntaxKind::PlusPlusToken as u16
                         || unary.operator == SyntaxKind::MinusMinusToken as u16)
                         && !Self::is_inside_class_member_computed_property_name(arena, idx)
@@ -772,14 +813,14 @@ impl BinderState {
                 if node.has_data()
                     && let Some(unary) = arena.unary_exprs_ex.get(node.data_index as usize)
                 {
-                    self.bind_node(arena, unary.expression);
+                    self.bind_node_with_optional_execution_checkpoint(arena, unary.expression, checkpoint)?;
                 }
             }
 
             // Await expression - create flow node for async suspension point
             k if k == syntax_kind_ext::AWAIT_EXPRESSION => {
                 if let Some(unary) = arena.get_unary_expr_ex(node) {
-                    self.bind_node(arena, unary.expression);
+                    self.bind_node_with_optional_execution_checkpoint(arena, unary.expression, checkpoint)?;
                 }
                 let flow = self.create_flow_await_point(idx);
                 self.current_flow = flow;
@@ -788,7 +829,7 @@ impl BinderState {
             // Yield expression - create flow node for generator suspension point
             k if k == syntax_kind_ext::YIELD_EXPRESSION => {
                 if let Some(unary) = arena.get_unary_expr_ex(node) {
-                    self.bind_node(arena, unary.expression);
+                    self.bind_node_with_optional_execution_checkpoint(arena, unary.expression, checkpoint)?;
                 }
                 let flow = self.create_flow_yield_point(idx);
                 self.current_flow = flow;
@@ -805,7 +846,7 @@ impl BinderState {
                 if node.has_data()
                     && let Some(assertion) = arena.type_assertions.get(node.data_index as usize)
                 {
-                    self.bind_node(arena, assertion.expression);
+                    self.bind_node_with_optional_execution_checkpoint(arena, assertion.expression, checkpoint)?;
                 }
             }
 
@@ -813,7 +854,7 @@ impl BinderState {
             k if k == syntax_kind_ext::DECORATOR => {
                 self.file_features.set(FileFeatures::DECORATORS);
                 if let Some(decorator) = arena.get_decorator(node) {
-                    self.bind_node(arena, decorator.expression);
+                    self.bind_node_with_optional_execution_checkpoint(arena, decorator.expression, checkpoint)?;
                 }
             }
 
@@ -822,24 +863,24 @@ impl BinderState {
                 if node.has_data()
                     && let Some(tagged) = arena.tagged_templates.get(node.data_index as usize)
                 {
-                    self.bind_node(arena, tagged.tag);
-                    self.bind_node(arena, tagged.template);
+                    self.bind_node_with_optional_execution_checkpoint(arena, tagged.tag, checkpoint)?;
+                    self.bind_node_with_optional_execution_checkpoint(arena, tagged.template, checkpoint)?;
                 }
             }
 
             // Template expressions
             k if k == syntax_kind_ext::TEMPLATE_EXPRESSION => {
                 if let Some(template) = arena.get_template_expr(node) {
-                    self.bind_node(arena, template.head);
+                    self.bind_node_with_optional_execution_checkpoint(arena, template.head, checkpoint)?;
                     for &span in &template.template_spans.nodes {
-                        self.bind_node(arena, span);
+                        self.bind_node_with_optional_execution_checkpoint(arena, span, checkpoint)?;
                     }
                 }
             }
             k if k == syntax_kind_ext::TEMPLATE_SPAN => {
                 if let Some(span) = arena.get_template_span(node) {
-                    self.bind_node(arena, span.expression);
-                    self.bind_node(arena, span.literal);
+                    self.bind_node_with_optional_execution_checkpoint(arena, span.expression, checkpoint)?;
+                    self.bind_node_with_optional_execution_checkpoint(arena, span.literal, checkpoint)?;
                 }
             }
 
@@ -849,21 +890,21 @@ impl BinderState {
             {
                 if let Some(lit) = arena.get_literal_expr(node) {
                     for &elem in &lit.elements.nodes {
-                        self.bind_node(arena, elem);
+                        self.bind_node_with_optional_execution_checkpoint(arena, elem, checkpoint)?;
                     }
                 }
             }
             k if k == syntax_kind_ext::PROPERTY_ASSIGNMENT => {
                 if let Some(prop) = arena.get_property_assignment(node) {
-                    self.bind_node(arena, prop.name);
-                    self.bind_node(arena, prop.initializer);
+                    self.bind_node_with_optional_execution_checkpoint(arena, prop.name, checkpoint)?;
+                    self.bind_node_with_optional_execution_checkpoint(arena, prop.initializer, checkpoint)?;
                 }
             }
             k if k == syntax_kind_ext::SHORTHAND_PROPERTY_ASSIGNMENT => {
                 if let Some(prop) = arena.get_shorthand_property(node) {
-                    self.bind_node(arena, prop.name);
+                    self.bind_node_with_optional_execution_checkpoint(arena, prop.name, checkpoint)?;
                     if prop.object_assignment_initializer.is_some() {
-                        self.bind_node(arena, prop.object_assignment_initializer);
+                        self.bind_node_with_optional_execution_checkpoint(arena, prop.object_assignment_initializer, checkpoint)?;
                     }
                 }
             }
@@ -871,12 +912,12 @@ impl BinderState {
                 || k == syntax_kind_ext::SPREAD_ASSIGNMENT =>
             {
                 if let Some(spread) = arena.get_spread(node) {
-                    self.bind_node(arena, spread.expression);
+                    self.bind_node_with_optional_execution_checkpoint(arena, spread.expression, checkpoint)?;
                 }
             }
             k if k == syntax_kind_ext::COMPUTED_PROPERTY_NAME => {
                 if let Some(computed) = arena.get_computed_property(node) {
-                    self.bind_node(arena, computed.expression);
+                    self.bind_node_with_optional_execution_checkpoint(arena, computed.expression, checkpoint)?;
                 }
             }
 
@@ -896,16 +937,16 @@ impl BinderState {
                         // This matches tsc's binding order for IIFEs.
                         if let Some(args) = &call.arguments {
                             for &arg in &args.nodes {
-                                self.bind_node(arena, arg);
+                                self.bind_node_with_optional_execution_checkpoint(arena, arg, checkpoint)?;
                             }
                         }
-                        self.bind_node(arena, call.expression);
+                        self.bind_node_with_optional_execution_checkpoint(arena, call.expression, checkpoint)?;
                     } else {
                         // Normal call: bind callee first, then arguments.
-                        self.bind_node(arena, call.expression);
+                        self.bind_node_with_optional_execution_checkpoint(arena, call.expression, checkpoint)?;
                         if let Some(args) = &call.arguments {
                             for &arg in &args.nodes {
-                                self.bind_node(arena, arg);
+                                self.bind_node_with_optional_execution_checkpoint(arena, arg, checkpoint)?;
                             }
                         }
                     }
@@ -921,10 +962,10 @@ impl BinderState {
             // New expressions - traverse into expression and arguments
             k if k == syntax_kind_ext::NEW_EXPRESSION => {
                 if let Some(new_expr) = arena.get_call_expr(node) {
-                    self.bind_node(arena, new_expr.expression);
+                    self.bind_node_with_optional_execution_checkpoint(arena, new_expr.expression, checkpoint)?;
                     if let Some(args) = &new_expr.arguments {
                         for &arg in &args.nodes {
-                            self.bind_node(arena, arg);
+                            self.bind_node_with_optional_execution_checkpoint(arena, arg, checkpoint)?;
                         }
                     }
                 }
@@ -934,7 +975,7 @@ impl BinderState {
             k if k == syntax_kind_ext::PARENTHESIZED_EXPRESSION => {
                 self.record_flow(idx);
                 if let Some(paren) = arena.get_parenthesized(node) {
-                    self.bind_node(arena, paren.expression);
+                    self.bind_node_with_optional_execution_checkpoint(arena, paren.expression, checkpoint)?;
                 }
             }
 
@@ -955,7 +996,7 @@ impl BinderState {
             {
                 self.record_flow(idx);
                 if let Some(unary) = arena.get_unary_expr(node) {
-                    self.bind_node(arena, unary.operand);
+                    self.bind_node_with_optional_execution_checkpoint(arena, unary.operand, checkpoint)?;
                 }
             }
 
@@ -966,54 +1007,54 @@ impl BinderState {
             {
                 self.record_flow(idx);
                 if let Some(unary) = arena.get_unary_expr_ex(node) {
-                    self.bind_node(arena, unary.expression);
+                    self.bind_node_with_optional_execution_checkpoint(arena, unary.expression, checkpoint)?;
                 }
             }
 
             // JSX elements - recurse into children for flow graph
             k if k == syntax_kind_ext::JSX_ELEMENT => {
                 if let Some(jsx) = arena.get_jsx_element(node) {
-                    self.bind_node(arena, jsx.opening_element);
+                    self.bind_node_with_optional_execution_checkpoint(arena, jsx.opening_element, checkpoint)?;
                     for &child in &jsx.children.nodes {
-                        self.bind_node(arena, child);
+                        self.bind_node_with_optional_execution_checkpoint(arena, child, checkpoint)?;
                     }
-                    self.bind_node(arena, jsx.closing_element);
+                    self.bind_node_with_optional_execution_checkpoint(arena, jsx.closing_element, checkpoint)?;
                 }
             }
             k if k == syntax_kind_ext::JSX_SELF_CLOSING_ELEMENT
                 || k == syntax_kind_ext::JSX_OPENING_ELEMENT =>
             {
                 if let Some(opening) = arena.get_jsx_opening(node) {
-                    self.bind_node(arena, opening.attributes);
+                    self.bind_node_with_optional_execution_checkpoint(arena, opening.attributes, checkpoint)?;
                 }
             }
             k if k == syntax_kind_ext::JSX_FRAGMENT => {
                 if let Some(fragment) = arena.get_jsx_fragment(node) {
                     for &child in &fragment.children.nodes {
-                        self.bind_node(arena, child);
+                        self.bind_node_with_optional_execution_checkpoint(arena, child, checkpoint)?;
                     }
                 }
             }
             k if k == syntax_kind_ext::JSX_ATTRIBUTES => {
                 if let Some(attrs) = arena.get_jsx_attributes(node) {
                     for &prop in &attrs.properties.nodes {
-                        self.bind_node(arena, prop);
+                        self.bind_node_with_optional_execution_checkpoint(arena, prop, checkpoint)?;
                     }
                 }
             }
             k if k == syntax_kind_ext::JSX_ATTRIBUTE => {
                 if let Some(attr) = arena.get_jsx_attribute(node) {
-                    self.bind_node(arena, attr.initializer);
+                    self.bind_node_with_optional_execution_checkpoint(arena, attr.initializer, checkpoint)?;
                 }
             }
             k if k == syntax_kind_ext::JSX_SPREAD_ATTRIBUTE => {
                 if let Some(spread) = arena.get_jsx_spread_attribute(node) {
-                    self.bind_node(arena, spread.expression);
+                    self.bind_node_with_optional_execution_checkpoint(arena, spread.expression, checkpoint)?;
                 }
             }
             k if k == syntax_kind_ext::JSX_EXPRESSION => {
                 if let Some(expr) = arena.get_jsx_expression(node) {
-                    self.bind_node(arena, expr.expression);
+                    self.bind_node_with_optional_execution_checkpoint(arena, expr.expression, checkpoint)?;
                 }
             }
 
@@ -1021,6 +1062,7 @@ impl BinderState {
                 // For other node types, no symbols to create
             }
         }
+        Ok(())
     }
 
     pub(crate) fn resolve_export_assignment_target_symbol(

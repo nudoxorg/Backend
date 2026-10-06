@@ -1,14 +1,14 @@
 //! Parser state - class member property parsing and recovery helpers.
 
 use super::state::{
-    CONTEXT_FLAG_ASYNC, CONTEXT_FLAG_GENERATOR, CONTEXT_FLAG_STATIC_BLOCK, ParserState,
+    CONTEXT_FLAG_ASYNC, CONTEXT_FLAG_GENERATOR, CONTEXT_FLAG_STATIC_BLOCK, ParserStateCore,
 };
 use super::state_statements_class_members::ClassMemberModifierSet;
 use crate::parser::{NodeIndex, syntax_kind_ext};
 use tsz_common::diagnostics::diagnostic_codes;
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     /// Construct the body of a property class member: parse type annotation,
     /// optional/definite tokens, and initializer expression.
     pub(crate) fn construct_class_member_property(

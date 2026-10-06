@@ -5,11 +5,11 @@
 //! (`@dec export @dec class` / `@dec export default @dec class`), not a
 //! shared dependency of the rest of that file.
 
-use super::state::ParserState;
+use super::state::ParserStateCore;
 use crate::parser::NodeIndex;
 use tsz_common::diagnostics::diagnostic_codes;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     /// TS8038 (`Decorators may not appear after 'export' or 'export default' if
     /// they also appear before 'export'.`) with its TS1486 (`Decorator used
     /// before 'export' here.`) related-info pointer, for `@dec export @dec

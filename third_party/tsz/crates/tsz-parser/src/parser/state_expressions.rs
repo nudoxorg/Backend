@@ -1,11 +1,11 @@
 use tsz_common::diagnostics::diagnostic_codes;
 
 /// Parser state - expression parsing methods (comma, assignment, arrow helpers)
-use super::state::{CONTEXT_FLAG_IN_CONDITIONAL_TRUE, ParserState};
+use super::state::{CONTEXT_FLAG_IN_CONDITIONAL_TRUE, ParserStateCore};
 use crate::parser::{NodeIndex, node::BinaryExprData, syntax_kind_ext};
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(crate) fn count_following_close_braces(&mut self) -> u32 {
         let snapshot = self.scanner.save_state();
         let current = self.current_token;

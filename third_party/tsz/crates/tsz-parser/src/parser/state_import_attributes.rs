@@ -1,6 +1,6 @@
 //! Parser state - import attribute and import type option parsing helpers.
 
-use super::state::ParserState;
+use super::state::ParserStateCore;
 use crate::parser::{
     NodeIndex,
     node::{LiteralExprData, PropertyAssignmentData},
@@ -9,7 +9,7 @@ use crate::parser::{
 use tsz_common::diagnostics::{diagnostic_codes, diagnostic_messages};
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(crate) fn look_ahead_is_import_attributes_property(&mut self) -> bool {
         let matches_key = if self.is_token(SyntaxKind::StringLiteral) {
             matches!(self.scanner.get_token_value_ref(), "with" | "assert")

@@ -1,10 +1,10 @@
 //! Parser state - class member recovery helpers.
 
-use super::state::ParserState;
+use super::state::ParserStateCore;
 use tsz_common::diagnostics::diagnostic_codes;
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(crate) fn recover_module_like_class_member_as_outer_statement(&mut self) -> bool {
         if !matches!(
             self.token(),

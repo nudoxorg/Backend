@@ -1,11 +1,11 @@
 //! Parser state - type parsing, JSX, accessors, and `into_parts` methods
 
-use super::state::ParserState;
+use super::state::ParserStateCore;
 use crate::parser::{NodeIndex, syntax_kind_ext};
 use tsz_common::interner::{AstAtom, IdentText};
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(crate) fn prefix_nullable_type_suggestion(suggested: &str) -> String {
         let suggested = suggested.trim_end_matches('?');
         match suggested {
@@ -975,7 +975,7 @@ impl ParserState {
 
 #[cfg(test)]
 mod missing_required_constituent_tests {
-    use crate::parser::state::ParserState;
+    use crate::parser::ParserState;
     use tsz_common::diagnostics::diagnostic_codes;
 
     /// Parse `source` as a full file and return the list of diagnostic codes.

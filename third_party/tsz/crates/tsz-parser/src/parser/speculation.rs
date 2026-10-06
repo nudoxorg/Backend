@@ -8,15 +8,15 @@
 //! recovery flags. The full field set lives on [`ParserCheckpoint`].
 //!
 //! Capture a [`ParserCheckpoint`] at the start of the speculation, then
-//! either drop it (commit) or call [`ParserState::restore_speculation_checkpoint`]
-//! (roll back). [`ParserState::speculate`] wraps the roll-back pattern in a
+//! either drop it (commit) or call [`ParserStateCore<'_>::restore_speculation_checkpoint`]
+//! (roll back). [`ParserStateCore<'_>::speculate`] wraps the roll-back pattern in a
 //! closure.
 
 use tsz_scanner::SyntaxKind;
 use tsz_scanner::scanner_impl::ScannerSnapshot;
 
 use crate::parser::node::NodeArenaPoolLengths;
-use crate::parser::state::ParserState;
+use crate::parser::state::{ParserState, ParserStateCore};
 
 /// Snapshot of every parser-state field that a speculative `parse_*` call is
 /// allowed to mutate. See the module docs for the field set.
@@ -52,7 +52,7 @@ pub(crate) struct ParserCheckpoint {
     saw_arrow_parameter_recovery: bool,
 }
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     /// Capture a [`ParserCheckpoint`] for full speculation. Pair with
     /// [`Self::restore_speculation_checkpoint`] to roll back, or drop the
     /// checkpoint to commit.

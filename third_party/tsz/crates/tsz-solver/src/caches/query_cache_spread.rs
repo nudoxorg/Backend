@@ -96,6 +96,9 @@ impl QueryCache<'_> {
     }
 
     pub(super) fn insert_eval_cache_entry(&self, key: EvaluationCacheKey, result: TypeId) {
+        if self.execution_stopped() {
+            return;
+        }
         let old_result = self.eval_cache.borrow_mut().insert(key, result);
         eval_dependency_index::record_dependencies(
             self.interner,
@@ -112,6 +115,9 @@ impl QueryCache<'_> {
         key: EvaluationCacheKey,
         result: TypeId,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         let inserted = {
             let mut cache = self.eval_cache.borrow_mut();
             match cache.entry(key) {

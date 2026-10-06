@@ -8,11 +8,11 @@
 //! signature. `readonly` is the one modifier `tsc` accepts on a type member and
 //! is preserved.
 
-use super::state::ParserState;
+use super::state::ParserStateCore;
 use crate::parser::NodeIndex;
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     /// A class-member modifier keyword that is illegal on a *type* member.
     /// `readonly` is deliberately excluded: it is the one member modifier `tsc`
     /// accepts on a property signature or index signature.

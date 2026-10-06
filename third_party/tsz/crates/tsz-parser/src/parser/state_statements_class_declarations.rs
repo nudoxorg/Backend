@@ -1,6 +1,6 @@
 //! Parser state - class declarations, decorators, and heritage clauses.
 
-use super::state::{CONTEXT_FLAG_AMBIENT, CONTEXT_FLAG_IN_CLASS, ParserState};
+use super::state::{CONTEXT_FLAG_AMBIENT, CONTEXT_FLAG_IN_CLASS, ParserStateCore};
 use crate::parser::{NodeIndex, NodeList, node::ClassData, syntax_kind_ext};
 use tsz_common::diagnostics::diagnostic_codes;
 use tsz_scanner::SyntaxKind;
@@ -9,7 +9,7 @@ use tsz_scanner::SyntaxKind;
 /// close and its outer container close visible as statement-level stray braces.
 const CLASS_DOT_RECOVERY_STRAY_CLOSE_BRACE_COUNT: u8 = 2;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     /// Parse class declaration
     pub(crate) fn parse_class_declaration(&mut self) -> NodeIndex {
         let start_pos = self.token_pos();

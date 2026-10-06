@@ -8,6 +8,7 @@ use crate::query_boundaries::common::{callable_shape_for_type, unique_symbol_ref
 use crate::state::CheckerState;
 use crate::statements::StatementChecker;
 use rustc_hash::FxHashSet;
+use tsz_solver::construction::TypeExecutionCheckpoint;
 use tracing::{Level, span};
 use tsz_parser::parser::NodeIndex;
 use tsz_parser::parser::syntax_kind_ext;
@@ -624,6 +625,9 @@ impl CheckerState<'_> {
         let mut seen_dts_ambient_violation = false;
         let statement_timing_enabled = tsz_common::perf_counters::enabled_fast();
         for &stmt_idx in &sf.statements.nodes {
+            if self.ctx.types.execution_checkpoint(1).is_err() {
+                break;
+            }
             let stmt_timing_start = statement_timing_enabled.then(web_time::Instant::now);
             let stmt_timing_node = self
                 .ctx

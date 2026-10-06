@@ -6,7 +6,7 @@ use tsz_common::interner::AstAtom;
 use tsz_scanner::SyntaxKind;
 use tsz_scanner::scanner_impl::TokenFlags;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(crate) fn is_optional_chain_expression(&self, expr: NodeIndex) -> bool {
         let Some(node) = self.arena.get(expr) else {
             return false;

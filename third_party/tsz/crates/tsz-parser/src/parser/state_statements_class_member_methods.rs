@@ -1,12 +1,12 @@
 //! Parser state - class member method construction.
 
-use super::state::{CONTEXT_FLAG_RECOVERED_IF_CLASS_MEMBER_PARAMETERS, ParserState};
+use super::state::{CONTEXT_FLAG_RECOVERED_IF_CLASS_MEMBER_PARAMETERS, ParserStateCore};
 use super::state_statements_class_members::ClassMemberModifierSet;
 use crate::parser::{NodeIndex, node, syntax_kind_ext};
 use tsz_common::diagnostics::diagnostic_codes;
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     /// Construct the body of a method class member: parse type params,
     /// parameter list, return-type annotation, and method body.
     pub(super) fn construct_class_member_method(

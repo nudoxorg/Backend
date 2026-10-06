@@ -1439,6 +1439,45 @@ pub fn parse_and_bind_parallel_with_libs_and_options(
     language_version: ScriptTarget,
     module_detection: ModuleDetectionKind,
 ) -> Vec<BindResult> {
+    parse_and_bind_parallel_with_optional_execution_checkpoint(
+        files,
+        lib_files,
+        language_version,
+        module_detection,
+        None,
+    )
+    .expect("unmetered TSZ binding cannot stop")
+}
+
+/// Parse and bind a project using the caller's one shared cooperative work
+/// checkpoint. Parser and binder loops charge that checkpoint while walking
+/// top-level statements; any partial BindResults are discarded on stop.
+pub fn parse_and_bind_parallel_with_libs_and_options_and_execution_checkpoint(
+    files: Vec<(String, String)>,
+    lib_files: &[Arc<lib_loader::LibFile>],
+    language_version: ScriptTarget,
+    module_detection: ModuleDetectionKind,
+    checkpoint: &dyn tsz_common::ExecutionCheckpoint,
+) -> std::result::Result<Vec<BindResult>, tsz_common::ProjectExecutionStop> {
+    parse_and_bind_parallel_with_optional_execution_checkpoint(
+        files,
+        lib_files,
+        language_version,
+        module_detection,
+        Some(checkpoint),
+    )
+}
+
+fn parse_and_bind_parallel_with_optional_execution_checkpoint(
+    files: Vec<(String, String)>,
+    lib_files: &[Arc<lib_loader::LibFile>],
+    language_version: ScriptTarget,
+    module_detection: ModuleDetectionKind,
+    checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+) -> std::result::Result<Vec<BindResult>, tsz_common::ProjectExecutionStop> {
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.checkpoint(0)?;
+    }
     let premerged_lib_binder = if files.len() > 1 && !lib_files.is_empty() {
         let mut binder = BinderState::new();
         binder.merge_lib_symbols(lib_files);
@@ -1446,61 +1485,96 @@ pub fn parse_and_bind_parallel_with_libs_and_options(
     } else {
         None
     };
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.checkpoint(0)?;
+    }
 
     if files.len() <= 1 {
-        return files
+        let results = files
             .into_iter()
             .map(|(file_name, source_text)| {
-                bind_file_with_libs_with_language_version(
+                bind_file_with_optional_execution_checkpoint(
                     file_name,
                     source_text,
                     lib_files,
                     language_version,
                     module_detection,
                     premerged_lib_binder.as_deref(),
+                    checkpoint,
                 )
             })
-            .collect();
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if let Some(checkpoint) = checkpoint {
+            checkpoint.checkpoint(0)?;
+        }
+        return Ok(results);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     ensure_rayon_global_pool();
 
-    maybe_parallel_into!(files)
+    let results = maybe_parallel_into!(files)
         .map(|(file_name, source_text)| {
-            bind_file_with_libs_with_language_version(
+            bind_file_with_optional_execution_checkpoint(
                 file_name,
                 source_text,
                 lib_files,
                 language_version,
                 module_detection,
                 premerged_lib_binder.as_deref(),
+                checkpoint,
             )
         })
-        .collect()
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.checkpoint(0)?;
+    }
+    Ok(results)
 }
 
-fn bind_file_with_libs_with_language_version(
+fn bind_file_with_optional_execution_checkpoint(
     file_name: String,
     source_text: String,
     lib_files: &[Arc<lib_loader::LibFile>],
     language_version: ScriptTarget,
     module_detection: ModuleDetectionKind,
     premerged_lib_binder: Option<&BinderState>,
-) -> BindResult {
+    checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+) -> std::result::Result<BindResult, tsz_common::ProjectExecutionStop> {
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.checkpoint(0)?;
+    }
     // Skip parsing .json files - they should not be parsed as TypeScript.
     // JSON module imports should be resolved during module resolution and
     // emit TS2732 if resolveJsonModule is false.
     if file_name.ends_with(".json") {
-        return synthesize_json_bind_result(file_name, source_text);
+        return Ok(synthesize_json_bind_result(file_name, source_text));
     }
 
-    // Parse
-    let mut parser =
-        ParserState::new_with_language_version(file_name.clone(), source_text, language_version);
-    let source_file = parser.parse_source_file();
-
-    let (arena, parse_diagnostics) = parser.into_parts();
+    // Keep the work control borrowed by the parser state, so every token
+    // advancement within one statement remains cooperatively stoppable.
+    let (arena, parse_diagnostics, source_file) = match checkpoint {
+        Some(checkpoint) => {
+            let mut parser = MeteredParserState::new_with_language_version(
+                file_name.clone(),
+                source_text,
+                language_version,
+            );
+            let source_file = parser.parse_source_file_with_execution_checkpoint(checkpoint)?;
+            let (arena, diagnostics) = parser.into_parts();
+            (arena, diagnostics, source_file)
+        }
+        None => {
+            let mut parser =
+                ParserState::new_with_language_version(file_name.clone(), source_text, language_version);
+            let source_file = parser.parse_source_file();
+            let (arena, diagnostics) = parser.into_parts();
+            (arena, diagnostics, source_file)
+        }
+    };
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.checkpoint(0)?;
+    }
 
     // Bind with lib symbols
     let mut binder = premerged_lib_binder
@@ -1518,15 +1592,23 @@ fn bind_file_with_libs_with_language_version(
         binder.merge_lib_symbols(lib_files);
     }
 
-    binder.bind_source_file(&arena, source_file);
+    match checkpoint {
+        Some(checkpoint) => {
+            binder.bind_source_file_with_execution_checkpoint(&arena, source_file, checkpoint)?;
+        }
+        None => binder.bind_source_file(&arena, source_file),
+    }
     compact_premerged_lib_state(&mut binder);
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.checkpoint(0)?;
+    }
 
     // Extract lib_binders and lib_arenas from binder before it's moved
     let lib_binders = binder.lib_binders.clone();
     let lib_arenas: Vec<Arc<NodeArena>> =
         lib_files.iter().map(|lf| Arc::clone(&lf.arena)).collect();
 
-    BindResult {
+    Ok(BindResult {
         file_name,
         source_file,
         arena: Arc::new(arena),
@@ -1560,7 +1642,7 @@ fn bind_file_with_libs_with_language_version(
         file_features: binder.file_features,
         semantic_defs: binder.semantic_defs,
         file_import_sources: binder.file_import_sources,
-    }
+    })
 }
 
 fn compact_premerged_lib_state(binder: &mut BinderState) {
@@ -1832,4 +1914,38 @@ fn remap_compacted_bind_state(binder: &mut BinderState, id_remap: &FxHashMap<Sym
     binder.expando_properties = remap_expando_properties(&binder.expando_properties, id_remap);
     // All SymbolIds were remapped; any cached (name → old_id) results are now stale.
     binder.clear_resolution_caches();
+}
+
+#[cfg(test)]
+mod project_execution_checkpoint_tests {
+    use super::parse_and_bind_parallel_with_libs_and_options_and_execution_checkpoint;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+    use tsz_common::{ProjectExecutionBudget, ProjectExecutionStop, ScriptTarget};
+    use tsz_common::options::module_detection::ModuleDetectionKind;
+
+    #[test]
+    fn project_parse_returns_typed_stop_instead_of_partial_bind_results() {
+        let cancelled = AtomicBool::new(false);
+        let checkpoint = ProjectExecutionBudget::new(
+            Instant::now() + Duration::from_secs(1),
+            &cancelled,
+            0,
+        );
+        let result = parse_and_bind_parallel_with_libs_and_options_and_execution_checkpoint(
+            vec![(
+                "src/main.ts".to_owned(),
+                "const first = 1; const second = 2;".to_owned(),
+            )],
+            &[],
+            ScriptTarget::ESNext,
+            ModuleDetectionKind::default(),
+            &checkpoint,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        ));
+    }
 }

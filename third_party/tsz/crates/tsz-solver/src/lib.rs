@@ -253,7 +253,8 @@ pub mod observability {
 pub mod construction {
     pub use crate::caches::db::{
         JsSignatureDisplaySource, QueryDatabase, TypeBuiltinAccess, TypeDatabase,
-        TypeRawIntersectionConstruction, TypeSubstitutionConstruction, UnionComplexityCheckpoint,
+        TypeExecutionCheckpoint, TypeRawIntersectionConstruction, TypeSubstitutionConstruction,
+        UnionComplexityCheckpoint,
     };
     pub use crate::caches::query_cache::{QueryCache, RelationCacheProbe, SharedQueryCache};
     pub use crate::caches::query_cache_statistics::{QueryCacheStatistics, RelationCacheStats};

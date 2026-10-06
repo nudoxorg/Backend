@@ -4,7 +4,7 @@ use crate::parser::{NodeIndex, syntax_kind_ext};
 use tsz_common::diagnostics::diagnostic_codes;
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(crate) fn look_ahead_can_commit_async_arrow_function(&mut self) -> bool {
         self.speculate(|p| {
             p.saw_arrow_parameter_recovery = false;

@@ -1,11 +1,11 @@
 //! Parser state - function type, type assertion, and JSX parsing.
 
-use super::state::{ParseDiagnostic, ParserState};
+use super::state::{ParseDiagnostic, ParserStateCore};
 use crate::parser::{NodeArena, NodeIndex, NodeList, node, syntax_kind_ext};
 use tsz_common::interner::IdentText;
 use tsz_scanner::SyntaxKind;
 
-impl ParserState {
+impl<'work> ParserStateCore<'work> {
     pub(crate) const fn is_jsx_attribute_list_abort_token(kind: SyntaxKind) -> bool {
         matches!(
             kind,
