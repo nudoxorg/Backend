@@ -6348,6 +6348,10 @@ mod tests {
         helper_manifest_bytes.extend_from_slice(b"\n# second shared input change\n");
         std::fs::write(&helper_manifest, helper_manifest_bytes)
             .expect("mutate A's shared local path dependency input");
+        // This selector predates the shared-input edit, so its stale check
+        // performs one final fresh Cargo observation and replaces the cached
+        // TreeInput before refusing the old source route.
+        let allocations_before_final_stale_check = owner.counters.tree_input_allocations;
         assert!(
             matches!(
                 owner.source_file(newest_request, source_path),
@@ -6357,7 +6361,12 @@ mod tests {
         );
         assert_eq!(
             owner.counters.tree_input_allocations,
-            7 + MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE
+            allocations_before_final_stale_check + 1,
+            "the post-loop shared-input edit causes exactly one fresh retained TreeInput"
+        );
+        assert_eq!(
+            owner.counters.tree_input_allocations,
+            8 + MAX_BROWSE_REQUEST_BINDINGS_PER_WORKSPACE
         );
         assert!(owner.counters.cache_hits >= 6);
         assert!(owner.counters.retained_bytes_reused > 0);
