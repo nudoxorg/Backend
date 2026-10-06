@@ -309,6 +309,7 @@ struct ViewElementCacheKey {
     inert: bool,
     /// Cached input listeners may be replayed only for the same activation owner.
     native_activation_scope: Option<crate::NativeActivationScope>,
+    local_deferred_scope: Option<GlobalElementId>,
 }
 
 impl<V: View> Element for ViewElement<V> {
@@ -426,6 +427,7 @@ impl<V: View> Element for ViewElement<V> {
                             opacity: window.element_opacity(),
                             inert: true,
                             native_activation_scope: window.native_activation_scope(),
+                            local_deferred_scope: window.local_deferred_draw_scope(),
                         };
 
                         return window.with_element_state::<ViewElementState, _>(
@@ -466,6 +468,7 @@ impl<V: View> Element for ViewElement<V> {
                             && element_state.cache_key.opacity == opacity
                             && element_state.cache_key.inert == window.is_inert_subtree()
                             && element_state.cache_key.native_activation_scope == window.native_activation_scope()
+                            && element_state.cache_key.local_deferred_scope == window.local_deferred_draw_scope()
                             && !window.dirty_views.contains(&entity_id)
                             && !window.refreshing
                             // Replayed prepaint/paint ranges do not contain AccessKit nodes or
@@ -514,6 +517,7 @@ impl<V: View> Element for ViewElement<V> {
                                     opacity,
                                     inert: window.is_inert_subtree(),
                                     native_activation_scope: window.native_activation_scope(),
+                                    local_deferred_scope: window.local_deferred_draw_scope(),
                                 },
                             },
                         )
