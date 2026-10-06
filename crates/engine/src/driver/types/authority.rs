@@ -635,7 +635,8 @@ fn go_phase(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityPhase 
         | backend_frontend_go::legacy::OracleError::WorkerPanic { .. }
         | backend_frontend_go::legacy::OracleError::GoOracleSourceDirectory(_)
         | backend_frontend_go::legacy::OracleError::GoOracleSourceFile { .. }
-        | backend_frontend_go::legacy::OracleError::GoOracleHelperCache { .. } => {
+        | backend_frontend_go::legacy::OracleError::GoOracleHelperCache { .. }
+        | backend_frontend_go::legacy::OracleError::GoToolchainIdentityChanged => {
             AuthorityPhase::Open
         }
     }
@@ -771,6 +772,7 @@ mod go_authority_projection_tests {
             OracleError::GoOracleHelperCache {
                 detail: "offline helper build cache could not be installed".to_owned(),
             },
+            OracleError::GoToolchainIdentityChanged,
         ];
 
         for cause in &errors {

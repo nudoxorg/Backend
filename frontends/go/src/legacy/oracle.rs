@@ -813,6 +813,9 @@ pub enum OracleError {
     /// The content-addressed offline helper cache could not be validated or installed.
     #[error("Go oracle helper cache failed: {detail}")]
     GoOracleHelperCache { detail: String },
+    /// The selected Go executable or GOROOT changed after host admission.
+    #[error("Go toolchain contents changed after host admission")]
+    GoToolchainIdentityChanged,
     /// Package authority needs a selected Go toolchain, cache roots, and
     /// isolated child environment before it may start an oracle.
     #[error("Go package authority has no explicit isolated child environment")]
@@ -1112,6 +1115,22 @@ impl GoOracleChildEnvironment {
     #[must_use]
     pub const fn toolchain_identity(&self) -> [u8; 32] {
         self.toolchain_identity
+    }
+
+    /// Revalidates the full bounded Go executable and GOROOT closure once at
+    /// the package boundary before helper preparation or package dispatch.
+    fn revalidate_toolchain(&self) -> Result<(), OracleError> {
+        let observed =
+            hash_toolchain_identity(&self.go_executable, &self.goroot).map_err(|source| {
+                OracleError::ToolingUnavailable {
+                    tool: "Go toolchain identity",
+                    source,
+                }
+            })?;
+        if observed != self.toolchain_identity {
+            return Err(OracleError::GoToolchainIdentityChanged);
+        }
+        Ok(())
     }
 
     /// Returns the explicit cgo policy.
@@ -1602,22 +1621,22 @@ impl ConfiguredGoOracle {
         Ok(self)
     }
 
-    fn cached_helper_binary(&self) -> Result<Option<PathBuf>, OracleError> {
+    fn cached_helper_binary(&self) -> Result<(Option<PathBuf>, bool), OracleError> {
         let GoOracleConfiguration::GoToolchain(executable) = &self.configuration else {
-            return Ok(None);
+            return Ok((None, false));
         };
         let Some(environment) = &self.child_environment else {
-            return Ok(None);
+            return Ok((None, false));
         };
         self.prepare_cached_helper(executable.as_ref(), environment)
-            .map(Some)
+            .map(|(path, revalidated_after_build)| (Some(path), revalidated_after_build))
     }
 
     fn prepare_cached_helper(
         &self,
         executable: &Path,
         environment: &GoOracleChildEnvironment,
-    ) -> Result<PathBuf, OracleError> {
+    ) -> Result<(PathBuf, bool), OracleError> {
         use fs4::fs_std::FileExt;
         use std::time::Instant;
 
@@ -1683,7 +1702,7 @@ impl ConfiguredGoOracle {
                     detail: format!("cache root identity changed at {cache_root_path:?}: {error}"),
                 }
             })?;
-            return Ok(binary_path);
+            return Ok((binary_path, false));
         }
         remove_helper_cache_entry(&cache_root, &key).map_err(|error| {
             OracleError::GoOracleHelperCache {
@@ -1737,6 +1756,9 @@ impl ConfiguredGoOracle {
             .current_dir(source.path());
         environment.apply_to(&mut build, &GoWorkWitness::Disabled, true);
         self.oracle.execute_configured(&mut build)?;
+        // Reject toolchain drift caused by the helper build before publishing
+        // a manifest that would bind its output to the old identity.
+        environment.revalidate_toolchain()?;
         cache_root
             .verify_path(&cache_root_path)
             .and_then(|()| staging_capability.verify_path(&staging_path))
@@ -1752,7 +1774,7 @@ impl ConfiguredGoOracle {
         hash_regular_file_handle(
             &mut binary_file,
             MAX_HELPER_BINARY_BYTES,
-            true,
+            RegularFileRole::PrivateHelperBinary,
             &mut binary_digest,
         )
         .map_err(|error| OracleError::GoOracleHelperCache {
@@ -1813,7 +1835,7 @@ impl ConfiguredGoOracle {
                 detail: format!("cache root identity changed after publish: {error}"),
             }
         })?;
-        Ok(binary_path)
+        Ok((binary_path, true))
     }
 
     /// Captures the nearest selected `go.work` for a package module root.
@@ -1933,28 +1955,46 @@ impl ConfiguredGoOracle {
             .map(|_| GoWorkWitness::capture(module))
             .transpose()
             .map_err(|error| OracleError::WorkspaceWitness(error.to_string()))?;
-        let helper_binary = self.cached_helper_binary()?;
-        self.oracle.run_configured(
+        if let Some(environment) = &self.child_environment {
+            environment.revalidate_toolchain()?;
+        }
+        let (helper_binary, revalidated_after_build) = self.cached_helper_binary()?;
+        if !revalidated_after_build {
+            if let Some(environment) = &self.child_environment {
+                environment.revalidate_toolchain()?;
+            }
+        }
+        let output = self.oracle.run_configured(
             &self.configuration,
             self.child_environment.as_ref(),
             work.as_ref(),
             helper_binary.as_deref(),
             module,
-        )
+        )?;
+        if let Some(environment) = &self.child_environment {
+            environment.revalidate_toolchain()?;
+        }
+        Ok(output)
     }
 
     /// Produces the authority image for one selected source file and module.
     pub fn authority_image(&self, source: &Path, module: &Path) -> Result<Vec<u8>, OracleError> {
         let (environment, work) = self.authority_child_context(module, None)?;
-        let helper_binary = self.cached_helper_binary()?;
-        self.oracle.authority_image_configured(
+        environment.revalidate_toolchain()?;
+        let (helper_binary, revalidated_after_build) = self.cached_helper_binary()?;
+        if !revalidated_after_build {
+            environment.revalidate_toolchain()?;
+        }
+        let image = self.oracle.authority_image_configured(
             &self.configuration,
             environment,
             &work,
             helper_binary.as_deref(),
             source,
             module,
-        )
+        )?;
+        environment.revalidate_toolchain()?;
+        Ok(image)
     }
 
     /// Produces the authority image for exactly the package that owns
@@ -1983,15 +2023,21 @@ impl ConfiguredGoOracle {
         witness: &GoWorkWitness,
     ) -> Result<Vec<u8>, OracleError> {
         let (environment, work) = self.authority_child_context(module, Some(witness))?;
-        let helper_binary = self.cached_helper_binary()?;
-        self.oracle.authority_image_for_package_configured(
+        environment.revalidate_toolchain()?;
+        let (helper_binary, revalidated_after_build) = self.cached_helper_binary()?;
+        if !revalidated_after_build {
+            environment.revalidate_toolchain()?;
+        }
+        let image = self.oracle.authority_image_for_package_configured(
             &self.configuration,
             environment,
             &work,
             helper_binary.as_deref(),
             source,
             module,
-        )
+        )?;
+        environment.revalidate_toolchain()?;
+        Ok(image)
     }
 
     /// Produces the selected package image under the exact package-authority
@@ -2016,7 +2062,11 @@ impl ConfiguredGoOracle {
         if !witness.matches_current(package_root)? {
             return Err(OracleError::PackageAuthorityWitnessChanged);
         }
-        let helper_binary = self.cached_helper_binary()?;
+        environment.revalidate_toolchain()?;
+        let (helper_binary, revalidated_after_build) = self.cached_helper_binary()?;
+        if !revalidated_after_build {
+            environment.revalidate_toolchain()?;
+        }
         let mut command = GoOracle::configured_command(
             &self.configuration,
             helper_binary.as_deref(),
@@ -2031,7 +2081,9 @@ impl ConfiguredGoOracle {
         if !witness.matches_current(package_root)? {
             return Err(OracleError::PackageAuthorityWitnessChanged);
         }
-        self.oracle.execute_configured(command.command_mut())
+        let image = self.oracle.execute_configured(command.command_mut())?;
+        environment.revalidate_toolchain()?;
+        Ok(image)
     }
 
     fn authority_child_context(
@@ -2125,7 +2177,7 @@ fn validate_helper_cache_entry(
     if hash_regular_file_handle(
         &mut binary,
         MAX_HELPER_BINARY_BYTES,
-        true,
+        RegularFileRole::PrivateHelperBinary,
         &mut binary_digest,
     )
     .is_err()
@@ -2143,7 +2195,7 @@ fn read_bounded_regular_file(
     use std::io::Read;
 
     let mut file = directory.open_file_read(name)?;
-    let before = validate_regular_file_handle(&file, maximum, false)?;
+    let before = validate_regular_file_handle(&file, maximum, RegularFileRole::PrivateManifest)?;
     let before_modified = before.modified()?;
     let capacity = usize::try_from(before.len())
         .map_err(|_| std::io::Error::other("bounded manifest length does not fit memory"))?;
@@ -2165,7 +2217,7 @@ fn read_bounded_regular_file(
         }
         bytes.extend_from_slice(&buffer[..read]);
     }
-    let after = validate_regular_file_handle(&file, maximum, false)?;
+    let after = validate_regular_file_handle(&file, maximum, RegularFileRole::PrivateManifest)?;
     if after.len() != before.len()
         || bytes.len() as u64 != before.len()
         || after.modified()? != before_modified
@@ -2178,10 +2230,31 @@ fn read_bounded_regular_file(
     Ok(bytes)
 }
 
+#[derive(Clone, Copy)]
+enum RegularFileRole {
+    PrivateManifest,
+    PrivateHelperBinary,
+    ExternalToolchainExecutable,
+    ExternalToolchainMember,
+}
+
+impl RegularFileRole {
+    const fn require_executable(self) -> bool {
+        matches!(
+            self,
+            Self::PrivateHelperBinary | Self::ExternalToolchainExecutable
+        )
+    }
+
+    const fn require_single_link(self) -> bool {
+        matches!(self, Self::PrivateManifest | Self::PrivateHelperBinary)
+    }
+}
+
 fn validate_regular_file_handle(
     file: &std::fs::File,
     maximum: u64,
-    require_executable: bool,
+    role: RegularFileRole,
 ) -> std::io::Result<std::fs::Metadata> {
     use std::io::ErrorKind;
     let metadata = file.metadata()?;
@@ -2200,13 +2273,13 @@ fn validate_regular_file_handle(
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-        if metadata.nlink() != 1 {
+        if role.require_single_link() && metadata.nlink() != 1 {
             return Err(std::io::Error::new(
                 ErrorKind::InvalidData,
-                "opened helper/toolchain file has multiple hard links",
+                "opened private helper artifact has multiple hard links",
             ));
         }
-        if require_executable && metadata.permissions().mode() & 0o111 == 0 {
+        if role.require_executable() && metadata.permissions().mode() & 0o111 == 0 {
             return Err(std::io::Error::new(
                 ErrorKind::InvalidData,
                 "opened helper/toolchain binary is not executable",
@@ -2216,16 +2289,16 @@ fn validate_regular_file_handle(
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt as _;
-        if metadata.number_of_links() != 1 {
+        if role.require_single_link() && metadata.number_of_links() != 1 {
             return Err(std::io::Error::new(
                 ErrorKind::InvalidData,
-                "opened helper/toolchain file has multiple hard links",
+                "opened private helper artifact has multiple hard links",
             ));
         }
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = require_executable;
+        let _ = role;
         return Err(std::io::Error::new(
             ErrorKind::Unsupported,
             "helper/toolchain file identity is unsupported on this platform",
@@ -2237,12 +2310,12 @@ fn validate_regular_file_handle(
 fn hash_regular_file_handle(
     file: &mut std::fs::File,
     maximum: u64,
-    require_executable: bool,
+    role: RegularFileRole,
     digest: &mut Sha256,
 ) -> std::io::Result<u64> {
     use std::io::Read;
 
-    let before = validate_regular_file_handle(file, maximum, require_executable)?;
+    let before = validate_regular_file_handle(file, maximum, role)?;
     let before_modified = before.modified()?;
     let mut total = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
@@ -2265,7 +2338,7 @@ fn hash_regular_file_handle(
         }
         digest.update(&buffer[..read]);
     }
-    let after = validate_regular_file_handle(file, maximum, require_executable)?;
+    let after = validate_regular_file_handle(file, maximum, role)?;
     if after.len() != before.len() || total != before.len() || after.modified()? != before_modified
     {
         return Err(std::io::Error::new(
@@ -2295,7 +2368,12 @@ fn hash_regular_file(path: &Path) -> std::io::Result<[u8; 32]> {
     let directory = DirectoryCapability::open_read_only_source(parent)?;
     let mut file = directory.open_file_read(name)?;
     let mut digest = Sha256::new();
-    hash_regular_file_handle(&mut file, MAX_HELPER_BINARY_BYTES, false, &mut digest)?;
+    hash_regular_file_handle(
+        &mut file,
+        MAX_HELPER_BINARY_BYTES,
+        RegularFileRole::PrivateHelperBinary,
+        &mut digest,
+    )?;
     Ok(digest.finalize().into())
 }
 
@@ -2460,11 +2538,11 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
         file: &mut std::fs::File,
         logical: &Path,
         maximum: u64,
-        executable: bool,
+        role: RegularFileRole,
         budget: &mut WalkBudget,
         digest: &mut Sha256,
     ) -> std::io::Result<()> {
-        let metadata = validate_regular_file_handle(file, maximum, executable)?;
+        let metadata = validate_regular_file_handle(file, maximum, role)?;
         budget.bytes = budget
             .bytes
             .checked_add(metadata.len())
@@ -2485,7 +2563,7 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
             use std::os::unix::fs::PermissionsExt;
             digest.update(metadata.permissions().mode().to_be_bytes());
         }
-        hash_regular_file_handle(file, maximum, executable, digest)?;
+        hash_regular_file_handle(file, maximum, role, digest)?;
         Ok(())
     }
 
@@ -2537,7 +2615,7 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
                         &mut file,
                         &child_logical,
                         MAX_GO_TOOLCHAIN_FILE_BYTES,
-                        false,
+                        RegularFileRole::ExternalToolchainMember,
                         budget,
                         digest,
                     )?;
@@ -2586,7 +2664,7 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
         &mut executable_file,
         Path::new("selected-go-executable"),
         MAX_GO_TOOLCHAIN_FILE_BYTES,
-        true,
+        RegularFileRole::ExternalToolchainExecutable,
         &mut budget,
         &mut digest,
     )?;
@@ -3100,6 +3178,39 @@ mod read_tests {
     }
 
     #[test]
+    fn retained_go_environment_detects_toolchain_mutation_at_package_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir()?;
+        let go_dir = root.path().join("go/bin");
+        let goroot = root.path().join("go/root");
+        let module_cache = root.path().join("modules");
+        std::fs::create_dir_all(&go_dir)?;
+        std::fs::create_dir_all(&goroot)?;
+        std::fs::create_dir_all(&module_cache)?;
+        let go = go_dir.join("go");
+        std::fs::write(&go, b"selected executable")?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&go, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::write(goroot.join("VERSION"), b"go1.27.1\n")?;
+        let environment = GoOracleChildEnvironment::new(
+            go,
+            goroot.clone(),
+            module_cache,
+            root.path().join("cache"),
+        )?;
+        environment.revalidate_toolchain()?;
+        std::fs::write(goroot.join("VERSION"), b"go1.27.2\n")?;
+        assert!(matches!(
+            environment.revalidate_toolchain(),
+            Err(super::OracleError::GoToolchainIdentityChanged)
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn helper_cache_requires_an_exact_bounded_private_regular_manifest() -> io::Result<()> {
         #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
@@ -3166,7 +3277,7 @@ mod read_tests {
 
     #[cfg(unix)]
     #[test]
-    fn go_toolchain_identity_is_bounded_and_refuses_links_specials_and_hardlinks()
+    fn go_toolchain_identity_is_bounded_and_refuses_links_and_specials_but_accepts_external_hardlinks()
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -3203,8 +3314,14 @@ mod read_tests {
         let (hardlink_go, hardlink_goroot) = fixture(&hardlink_root)?;
         std::fs::write(hardlink_goroot.join("one"), b"shared")?;
         std::fs::hard_link(hardlink_goroot.join("one"), hardlink_goroot.join("two"))?;
-        assert!(hash_toolchain_identity(&hardlink_go, &hardlink_goroot).is_err());
+        let hardlinked_identity = hash_toolchain_identity(&hardlink_go, &hardlink_goroot)?;
         assert_eq!(std::fs::metadata(hardlink_goroot.join("one"))?.nlink(), 2);
+        std::fs::write(hardlink_goroot.join("two"), b"changed shared contents")?;
+        assert_ne!(
+            hardlinked_identity,
+            hash_toolchain_identity(&hardlink_go, &hardlink_goroot)?,
+            "external aliases are accepted only with all logical contents hashed",
+        );
 
         let special_root = root.path().join("special-root");
         let (special_go, special_goroot) = fixture(&special_root)?;
@@ -3240,6 +3357,7 @@ mod read_tests {
         let helper_cwd = root.path().join("helper-cwd.txt");
         let build_count = root.path().join("build-count.txt");
         let build_started = root.path().join("build-started.txt");
+        let mutate_toolchain = root.path().join("mutate-toolchain.txt");
         let host_path =
             std::env::var_os("PATH").ok_or_else(|| io::Error::other("host PATH is unavailable"))?;
         let chmod = std::env::split_paths(&host_path)
@@ -3270,6 +3388,7 @@ out="$6"
 [ "$7" = . ]
 printf '%s\n' '#!/bin/sh' 'set -eu' "printf '%s\n' '{{\"schemaVersion\":5}}'" > "$out"
 : > '{}'
+if [ -f '{}' ]; then printf '%s\n' changed > "$GOROOT/VERSION"; fi
 {} 1
 {} 700 "$out"
 "#,
@@ -3278,6 +3397,7 @@ printf '%s\n' '#!/bin/sh' 'set -eu' "printf '%s\n' '{{\"schemaVersion\":5}}'" > 
             build_count.display(),
             build_count.display(),
             build_started.display(),
+            mutate_toolchain.display(),
             sleeper.display(),
             chmod.display(),
         );
@@ -3288,6 +3408,7 @@ printf '%s\n' '#!/bin/sh' 'set -eu' "printf '%s\n' '{{\"schemaVersion\":5}}'" > 
         let module_cache = root.path().join("modules");
         let module = root.path().join("target");
         std::fs::create_dir_all(&goroot)?;
+        std::fs::write(goroot.join("VERSION"), "go-fixture\n")?;
         std::fs::create_dir_all(&module_cache)?;
         std::fs::create_dir_all(&module)?;
         std::fs::write(
@@ -3389,6 +3510,17 @@ printf '%s\n' '#!/bin/sh' 'set -eu' "printf '%s\n' '{{\"schemaVersion\":5}}'" > 
             "2",
             "a cached binary changed after first use must be rejected and rebuilt"
         );
+
+        // A selected toolchain that changes while the helper is being rebuilt
+        // must not publish a cache entry carrying the previously admitted key.
+        std::fs::write(&cached_binary, b"force helper rebuild")?;
+        std::fs::write(&mutate_toolchain, b"mutate after compiler starts")?;
+        assert!(matches!(
+            oracle.run(&module),
+            Err(super::OracleError::GoToolchainIdentityChanged)
+        ));
+        assert!(!published_entry.exists());
+        assert_eq!(std::fs::read_to_string(&build_count)?.trim(), "3");
 
         let helper_cwd = PathBuf::from(std::fs::read_to_string(&helper_cwd)?.trim());
         assert!(helper_cwd.is_absolute());
@@ -3592,6 +3724,23 @@ func CgoOnly() C.int { return 1 }
             .ok_or_else(|| io::Error::other("COMPILER_GO_COMPILER is required"))?
             .canonicalize()?;
         let (goroot, _) = explicit_go_roots(&go)?;
+        if let Some(expected_version) = std::env::var_os("NUDOX_GO_EXPECTED_VERSION") {
+            let output = Command::new(&go).arg("version").output()?;
+            assert!(output.status.success(), "selected Go executable must run");
+            let version = String::from_utf8(output.stdout)?;
+            assert!(
+                version.contains(&expected_version.to_string_lossy().into_owned()),
+                "expected selected Go version {expected_version:?}, got {version:?}",
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                assert!(
+                    std::fs::metadata(&go)?.nlink() > 1,
+                    "stock Nix toolchain fixture should retain its shared hardlinks",
+                );
+            }
+        }
         let module_cache = module_owner.path().join("empty-module-cache");
         std::fs::create_dir(&module_cache)?;
         let build_cache = module_owner.path().join("private-build-cache");
