@@ -10973,7 +10973,7 @@ mod deferred_clip_tests {
             self.child.paint(window, cx);
             let hit = hit.clone();
             let downs = self.downs.clone();
-            window.on_mouse_event(move |_: &MouseDownEvent, phase, window, _| {
+            window.on_mouse_event(move |_: &crate::MouseDownEvent, phase, window, _| {
                 if phase == DispatchPhase::Bubble && hit.is_hovered(window) {
                     downs.set(downs.get() + 1);
                 }
@@ -11087,7 +11087,7 @@ mod deferred_clip_tests {
                     first_renders = Some(renders.get());
                 }
                 let before = downs.get();
-                cx.simulate_event(MouseDownEvent {
+                cx.simulate_event(crate::MouseDownEvent {
                     position: point(px(100.0), px(40.0)),
                     button: MouseButton::Left,
                     modifiers: Modifiers::default(),
