@@ -387,7 +387,7 @@ fn typed_unavailable_source_facts_reopen_without_promoting_compacted_rows() {
         backend_library::SourceUnavailableReason::TooLarge,
         backend_library::SourceUnavailableReason::Unparsed,
     ];
-    let rows = reasons
+    let mut rows = reasons
         .iter()
         .enumerate()
         .map(|(index, reason)| {
@@ -404,6 +404,10 @@ fn typed_unavailable_source_facts_reopen_without_promoting_compacted_rows() {
             )
         })
         .collect::<Vec<_>>();
+    // The real mixed-source capture also contains extracted sources. The
+    // source-facts intent requires at least one authenticated facts change.
+    let (parsed, facts) = parsed_file(package, "source.ts", 1);
+    rows.push((parsed, Some(facts)));
     commit_files(&mut daemon, package, label, 1, &rows);
     drop(daemon);
     let daemon = open_daemon(workspace.0.path());
