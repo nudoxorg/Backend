@@ -672,12 +672,14 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
             .any(|(_, row)| { matches!(row, ProductSourceFileFactsRecord::Page(_)) })
     );
 
+    let recipe_identity =
+        ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"fixture TSX recipe");
     let attempt = backend_library::CompilerAttempt {
         source: SourceAuthority {
             identity: source_identity,
             byte_len: u32::try_from(source.len()).expect("bounded TSX source length"),
         },
-        recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"fixture TSX recipe"),
+        recipe: recipe_identity,
     };
     let compile_failure = CompilerFragmentFailure::build(BuildError::InvalidOccurrenceSpan {
         owner: EntityId::new(7),
@@ -742,7 +744,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
             compiler_failure: None,
         }],
     )
-    .expect("source plus terminal capture intent")
+    .expect("source plus pending capture intent")
     .with_source_facts(source_facts_changes)
     .expect("atomic complete facts update");
 
@@ -848,6 +850,11 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     );
     assert_eq!(failure.source_identity(), source_identity);
     assert_eq!(failure.relative_path(), path);
+    assert_eq!(
+        failure.source_byte_len(),
+        u32::try_from(source.len()).expect("bounded TSX source length")
+    );
+    assert_eq!(failure.recipe_identity(), Some(recipe_identity));
 }
 
 fn psrd_decodes(bytes: &[u8]) -> bool {

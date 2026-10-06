@@ -82,6 +82,67 @@ pub(super) fn visit_complete_declarations(
     }
     Ok(())
 }
+
+/// Collects one source file's complete declarations for a consumer that must
+/// retain them while projecting that file's semantic image. The selected
+/// relation is paged and authenticated first; only this single file is
+/// materialized, so a project-wide semantic refresh never hydrates every
+/// declaration page at once.
+pub(super) fn complete_declarations_for_file(
+    sources: &IndexedSources,
+    record: &super::super::ProductSourceRecord,
+) -> Result<Vec<backend_compile::SourceDeclaration>, BuiltinModelError> {
+    let file = record.file_fields().ok_or_else(|| {
+        BuiltinModelError("complete source facts requested for a non-file row".to_owned())
+    })?;
+    if let Some(snapshot) = &sources.source_snapshot {
+        match snapshot
+            .admit_complete_file_facts(record)
+            .map_err(|error| BuiltinModelError(format!("admit complete source facts: {error}")))?
+        {
+            Some(backend_engine::ProductSourceFileFactsAdmission::InlineComplete(inline)) => {
+                return Ok(inline.declarations().to_vec());
+            }
+            Some(backend_engine::ProductSourceFileFactsAdmission::PagedVerified(mut paged)) => {
+                let expected_count = usize::try_from(paged.declaration_count()).map_err(|_| {
+                    BuiltinModelError("source facts declaration count exceeds usize".to_owned())
+                })?;
+                let mut declarations = Vec::with_capacity(expected_count);
+                paged
+                    .visit_pages(|page| {
+                        for index in 0..page.len() {
+                            let declaration = page
+                                .declaration(index)
+                                .ok_or_else(|| {
+                                    "verified source-facts page item is missing".to_owned()
+                                })?
+                                .to_owned()?;
+                            declarations.push(declaration);
+                        }
+                        Ok(())
+                    })
+                    .map_err(|error| {
+                        BuiltinModelError(format!("visit complete source-facts pages: {error}"))
+                    })?;
+                if declarations.len() != expected_count {
+                    return Err(BuiltinModelError(
+                        "complete source-facts page count changed during visitation".to_owned(),
+                    ));
+                }
+                return Ok(declarations);
+            }
+            None => return Ok(file.declarations.to_vec()),
+        }
+    }
+    if !file.retention.is_complete() {
+        return Err(BuiltinModelError(
+            "compact source row is incomplete and has no selected complete facts relation"
+                .to_owned(),
+        ));
+    }
+    Ok(file.declarations.to_vec())
+}
+
 pub(super) fn is_file_module(declaration: &backend_compile::SourceDeclaration, path: &str) -> bool {
     declaration.kind() == DeclarationKind::Module
         && declaration.line() == 1

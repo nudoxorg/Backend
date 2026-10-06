@@ -1387,9 +1387,7 @@ fn encode_optional_compiler_failure(
     match failure {
         None => output.push(0),
         Some(failure) => {
-            if let Ok(bytes) = serde_json::to_vec(failure)
-                && bytes.len() <= backend_library::PackageCompilerFailure::MAX_ENCODED_BYTES
-            {
+            if let Ok(bytes) = failure.encode_bounded_json() {
                 output.push(1);
                 output.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
                 output.extend_from_slice(&bytes);
@@ -1800,11 +1798,11 @@ impl<'a> IntentDecoder<'a> {
                     ));
                 }
                 let bytes = self.take(length)?;
-                let failure: backend_library::PackageCompilerFailure =
-                    serde_json::from_slice(bytes).map_err(|_| {
-                        BuiltinModelError("malformed typed compiler-failure payload".to_owned())
-                    })?;
-                let canonical = serde_json::to_vec(&failure).map_err(|_| {
+                let failure = backend_library::PackageCompilerFailure::decode_bounded_json(bytes)
+                    .map_err(|_| {
+                    BuiltinModelError("malformed typed compiler-failure payload".to_owned())
+                })?;
+                let canonical = failure.encode_bounded_json().map_err(|_| {
                     BuiltinModelError("could not re-encode typed compiler failure".to_owned())
                 })?;
                 if canonical.as_slice() != bytes {

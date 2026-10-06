@@ -10,8 +10,8 @@ use super::identity::{
 use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
 use super::structural::{
     ProfileSourceIdentities, ProfileSourcePaths, StructuralDeclaration, StructuralParent,
-    StructuralProjectionPlan, profile_source_identities, profile_source_paths,
-    projected_source_capacity,
+    StructuralProjectionPlan, complete_declarations_for_file, profile_source_identities,
+    profile_source_paths, projected_source_capacity,
 };
 use super::{
     MAX_SEMANTIC_DOCUMENT_BYTES, MAX_SEMANTIC_SIGNATURE_BYTES, MAX_SEMANTIC_TYPE_DEPTH, STALE_NOTE,
@@ -665,70 +665,90 @@ fn semantic_rows(
                 current_paths.get(&target).unwrap_or(&empty),
                 current_identities.get(&target),
             );
-            for image in &opened {
+            let mut image_groups = Vec::<(String, Vec<usize>)>::new();
+            let mut group_by_path = BTreeMap::<String, usize>::new();
+            for (index, image) in opened.iter().enumerate() {
                 let path = match image {
                     super::image_rows::CompiledImage::Resident { path, .. }
-                    | super::image_rows::CompiledImage::Opened { path, .. } => path.as_str(),
+                    | super::image_rows::CompiledImage::Opened { path, .. } => path,
                 };
+                let group = match group_by_path.get(path).copied() {
+                    Some(group) => group,
+                    None => {
+                        let group = image_groups.len();
+                        group_by_path.insert(path.clone(), group);
+                        image_groups.push((path.clone(), Vec::new()));
+                        group
+                    }
+                };
+                image_groups[group].1.push(index);
+            }
+            for (path, image_indices) in image_groups {
                 // Staleness is per image: this image is stale exactly when the
-                // current file compiled from its path no longer hashes to the
+                // current file compiled from its path no longer hashes to an
                 // image's own source identity. A legacy scan without persisted
                 // identities falls back to the coarse path-set comparison.
-                let stale = match decision.compiled.get(path) {
-                    Some(compiled) => decision.image_stale(path, *compiled),
+                let stale = match decision.compiled.get(&path) {
+                    Some(compiled) => decision.image_stale(&path, *compiled),
                     None => decision.path_sets_differ,
                 };
-                // A stale image was compiled from other bytes than the
-                // file's current structural declarations, so their lines
-                // cannot be trusted for it.
-                let site_declarations = if stale {
-                    &[][..]
+                // Each source path is grouped before projection, so all
+                // semantic fragments for this file share one bounded facts
+                // visit. The owned declarations are dropped before the next
+                // file; this avoids both per-fragment rereads and eager
+                // project-wide fact hydration.
+                let owned_site_declarations = if stale {
+                    Vec::new()
                 } else {
-                    sites.declarations(key.package_key().as_bytes(), path)
+                    sites.declarations(key.package_key().as_bytes(), &path)?
                 };
-                let mut sink = SemanticRowSink {
-                    initial,
-                    symbols: &mut symbols,
-                    rows: &mut rows,
-                    capacity: row_capacity,
-                    remaining_bytes: &mut remaining_bytes,
-                    stale,
-                    path,
-                    site_declarations,
-                };
-                match image {
-                    super::image_rows::CompiledImage::Opened { view, .. } => {
-                        super::image_rows::append_resident_image_rows(
-                            view,
-                            project,
-                            key.profile(),
-                            &mut sink,
-                            residence,
-                        )?;
-                    }
-                    super::image_rows::CompiledImage::Resident {
-                        bytes,
-                        digest,
-                        snapshot,
-                        ..
-                    } => {
-                        if !super::image_rows::apply_resident_image(
-                            *digest,
-                            project,
-                            key.profile(),
-                            &mut sink,
-                            residence,
-                        )? {
-                            let view = super::image_rows::reopen_resident_image(
-                                bytes, *snapshot, residence,
-                            )?;
+                let site_declarations = owned_site_declarations.iter().collect::<Vec<_>>();
+                for image_index in image_indices {
+                    let image = &opened[image_index];
+                    let mut sink = SemanticRowSink {
+                        initial,
+                        symbols: &mut symbols,
+                        rows: &mut rows,
+                        capacity: row_capacity,
+                        remaining_bytes: &mut remaining_bytes,
+                        stale,
+                        path: &path,
+                        site_declarations: &site_declarations,
+                    };
+                    match image {
+                        super::image_rows::CompiledImage::Opened { view, .. } => {
                             super::image_rows::append_resident_image_rows(
-                                &view,
+                                view,
                                 project,
                                 key.profile(),
                                 &mut sink,
                                 residence,
                             )?;
+                        }
+                        super::image_rows::CompiledImage::Resident {
+                            bytes,
+                            digest,
+                            snapshot,
+                            ..
+                        } => {
+                            if !super::image_rows::apply_resident_image(
+                                *digest,
+                                project,
+                                key.profile(),
+                                &mut sink,
+                                residence,
+                            )? {
+                                let view = super::image_rows::reopen_resident_image(
+                                    bytes, *snapshot, residence,
+                                )?;
+                                super::image_rows::append_resident_image_rows(
+                                    &view,
+                                    project,
+                                    key.profile(),
+                                    &mut sink,
+                                    residence,
+                                )?;
+                            }
                         }
                     }
                 }
@@ -937,7 +957,8 @@ pub(super) struct SemanticRowSink<'a> {
 /// source location and text a reader needs, instead of rendering every
 /// compiler-backed row without a path, language, or source.
 pub(crate) struct StructuralSites<'a> {
-    files: BTreeMap<([u8; 32], String), Vec<&'a backend_compile::SourceDeclaration>>,
+    sources: &'a IndexedSources,
+    files: BTreeMap<([u8; 32], String), &'a super::super::ProductSourceRecord>,
 }
 
 impl<'a> StructuralSites<'a> {
@@ -947,22 +968,27 @@ impl<'a> StructuralSites<'a> {
             let file = record
                 .file_fields()
                 .ok_or_else(|| BuiltinModelError("expected a source file record".to_owned()))?;
-            files.insert(
-                (file.project, file.path.to_owned()),
-                file.declarations.iter().collect::<Vec<_>>(),
-            );
+            if files
+                .insert((file.project, file.path.to_owned()), record)
+                .is_some()
+            {
+                return Err(BuiltinModelError(
+                    "source frontier has duplicate project paths".to_owned(),
+                ));
+            }
         }
-        Ok(Self { files })
+        Ok(Self { sources, files })
     }
 
     fn declarations(
         &self,
         project: &[u8; 32],
         path: &str,
-    ) -> &[&'a backend_compile::SourceDeclaration] {
-        self.files
-            .get(&(*project, path.to_owned()))
-            .map_or(&[][..], Vec::as_slice)
+    ) -> Result<Vec<backend_compile::SourceDeclaration>, BuiltinModelError> {
+        let Some(record) = self.files.get(&(*project, path.to_owned())) else {
+            return Ok(Vec::new());
+        };
+        complete_declarations_for_file(self.sources, record)
     }
 }
 /// Pairs each semantic declaration with the structural declaration of the
