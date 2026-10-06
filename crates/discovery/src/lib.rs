@@ -412,7 +412,7 @@ impl DiscoveryPolicy {
         // `bin` is ordinary Python and npm source (for example celery/bin).
         // The C# source loader alone treats it as build output, irrespective
         // of filesystem case sensitivity; retain that source-specific rule.
-        let csharp_binary_output = self.generated_defaults
+        let csharp_binary_output = !path.is_dir()
             && relative
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("cs"))
@@ -421,10 +421,12 @@ impl DiscoveryPolicy {
                     .components()
                     .any(|component| component.as_os_str().eq_ignore_ascii_case("bin"))
             });
-        let generated = csharp_binary_output
-            || relative
-                .components()
-                .any(|component| self.generated_component(component.as_os_str()));
+        if csharp_binary_output {
+            return false;
+        }
+        let generated = relative
+            .components()
+            .any(|component| self.generated_component(component.as_os_str()));
         if !generated {
             return true;
         }
@@ -774,6 +776,7 @@ mod tests {
         for path in [
             "celery/bin/celery.py",
             "npm/bin/cli.js",
+            "celery/bin/layout.cs/extra.py",
             "dotnet/bin/generated.cs",
             "dotnet/BIN/Generated.CS",
         ] {
@@ -800,13 +803,18 @@ mod tests {
             files(DiscoveryPolicy::default()),
             [
                 PathBuf::from("celery/bin/celery.py"),
+                PathBuf::from("celery/bin/layout.cs/extra.py"),
                 PathBuf::from("npm/bin/cli.js")
             ]
         );
         assert_eq!(
             files(DiscoveryPolicy::default().generated_defaults(false)).len(),
-            4,
-            "the explicit generated-source policy remains available"
+            3,
+            "the C# source loader also refuses bin outputs when generic defaults are disabled"
+        );
+        assert!(
+            files(DiscoveryPolicy::default().include("dotnet/bin/generated.cs")).is_empty(),
+            "explicit includes cannot ask the C# loader for a file it excludes"
         );
         fs::write(scratch.0.join(".gitignore"), b"npm/bin/\n").expect("ignore");
         assert!(
