@@ -4,6 +4,7 @@
 //! Public caller authority plus closed compile terminals and compact output facts.
 
 mod authority;
+pub(crate) use authority::go_authority_projection;
 mod compile;
 mod lowering;
 mod request;

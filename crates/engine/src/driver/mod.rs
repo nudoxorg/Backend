@@ -12,6 +12,7 @@ mod lower;
 #[cfg(all(test, unix))]
 mod native;
 mod types;
+pub(crate) use self::types::go_authority_projection;
 
 pub use self::database::{DatabaseCompileFailure, compile_database_translation_unit};
 pub(crate) use self::types::rust_authority_diagnostic;

@@ -605,6 +605,12 @@ fn python_class(
     }
 }
 
+pub(crate) fn go_authority_projection(
+    cause: &backend_frontend_go::legacy::OracleError,
+) -> (AuthorityPhase, AuthorityDiagnosticClass) {
+    (go_phase(cause), go_class(cause))
+}
+
 fn go_phase(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityPhase {
     match cause {
         backend_frontend_go::legacy::OracleError::Decode { .. } => AuthorityPhase::Parse,
@@ -626,7 +632,11 @@ fn go_phase(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityPhase 
         | backend_frontend_go::legacy::OracleError::OutputLimit { .. }
         | backend_frontend_go::legacy::OracleError::Timeout { .. }
         | backend_frontend_go::legacy::OracleError::Pipe { .. }
-        | backend_frontend_go::legacy::OracleError::WorkerPanic { .. } => AuthorityPhase::Open,
+        | backend_frontend_go::legacy::OracleError::WorkerPanic { .. }
+        | backend_frontend_go::legacy::OracleError::GoOracleSourceDirectory(_)
+        | backend_frontend_go::legacy::OracleError::GoOracleSourceFile { .. } => {
+            AuthorityPhase::Open
+        }
     }
 }
 
@@ -738,5 +748,48 @@ fn java_bound_class(
         AuthorityPhase::Open | AuthorityPhase::Resolve | AuthorityPhase::TypeCheck => {
             AuthorityDiagnosticClass::Authority
         }
+    }
+}
+
+#[cfg(test)]
+mod go_authority_projection_tests {
+    use super::{AuthorityDiagnosticClass, AuthorityPhase, go_authority_projection};
+    use backend_frontend_go::legacy::OracleError;
+    use std::path::PathBuf;
+
+    #[test]
+    fn private_helper_workspace_errors_keep_open_phase_authority_class_and_detail() {
+        let errors = [
+            OracleError::GoOracleSourceDirectory(std::io::Error::other(
+                "private temporary directory unavailable",
+            )),
+            OracleError::GoOracleSourceFile {
+                path: PathBuf::from("/tmp/nudox-go-oracle/main.go"),
+                source: std::io::Error::other("private source write denied"),
+            },
+        ];
+
+        for cause in &errors {
+            let (phase, class) = go_authority_projection(cause);
+            assert_eq!(phase, AuthorityPhase::Open);
+            assert_eq!(class, AuthorityDiagnosticClass::Authority);
+            assert!(!cause.to_string().is_empty());
+        }
+
+        assert!(
+            errors[0]
+                .to_string()
+                .contains("private temporary directory unavailable")
+        );
+        assert!(
+            errors[1]
+                .to_string()
+                .contains("/tmp/nudox-go-oracle/main.go")
+        );
+        assert!(
+            errors[1]
+                .to_string()
+                .contains("private source write denied")
+        );
     }
 }

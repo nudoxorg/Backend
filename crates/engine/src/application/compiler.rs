@@ -12,7 +12,8 @@ use crate::compiler_read_observation_v2::{
 use crate::driver::{
     AuthorityFailure, CompileControl, CompileOutput, CompileRequest, CompileScratch,
     CompiledFragment, DeclarationScope, PackageDeclarationScopeFault, ResolvedToolchain,
-    ToolchainSelection, compile_semantic as compile_fused_semantic, rust_authority_diagnostic,
+    ToolchainSelection, compile_semantic as compile_fused_semantic, go_authority_projection,
+    rust_authority_diagnostic,
 };
 use crate::publication::{
     OpenSemanticPublicationScratch, PreparedSemanticOutput, PublishControl, PublishedCompilation,
@@ -4085,7 +4086,7 @@ fn compiler_attempt_terminal(
     }
 }
 
-const fn package_authority_projection(
+fn package_authority_projection(
     cause: &PackageAuthorityError,
 ) -> (
     backend_semantic::vocabulary::AuthorityPhase,
@@ -4106,9 +4107,8 @@ const fn package_authority_projection(
         | PackageAuthorityError::ClangProject(_) => (Phase::Open, Class::Binding),
         PackageAuthorityError::PythonSyntax(_) => (Phase::Parse, Class::Syntax),
         PackageAuthorityError::PythonPyrefly(_) => (Phase::TypeCheck, Class::Type),
-        PackageAuthorityError::RustProject(_) | PackageAuthorityError::GoOracle(_) => {
-            (Phase::Resolve, Class::Authority)
-        }
+        PackageAuthorityError::RustProject(_) => (Phase::Resolve, Class::Authority),
+        PackageAuthorityError::GoOracle(cause) => go_authority_projection(cause),
         PackageAuthorityError::CSharp(_) => (Phase::TypeCheck, Class::Authority),
         PackageAuthorityError::TypeScript(_) | PackageAuthorityError::TypeScriptProjectHost(_) => {
             (Phase::TypeCheck, Class::Authority)
@@ -4190,15 +4190,46 @@ mod tests {
     use thiserror::Error;
 
     use crate::application::{LocalToolchainSet, LocalToolchainSetError, PackageAuthorityError};
+    use backend_frontend_go::legacy::OracleError;
     use backend_frontend_rust::legacy::RustAuthorityError;
 
     use super::{
         CompilerTerminal, EmbeddingProvisioningFailure, PackageSemanticError, PackageSource,
         PackageSourceSet, PackageSourceSetError, StagedEmbeddingStatus, ToolchainRouteError,
-        bounded_error_chain, package_authority_terminal, request_source, select_toolchain,
+        bounded_error_chain, package_authority_projection, package_authority_terminal,
+        request_source, select_toolchain,
     };
     use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
     use backend_version::{ContentId, SourceFactDomain};
+
+    #[test]
+    fn go_oracle_workspace_setup_errors_keep_open_authority_projection_and_cause_detail() {
+        let directory_error = PackageAuthorityError::GoOracle(
+            OracleError::GoOracleSourceDirectory(std::io::Error::other(
+                "private temporary directory unavailable",
+            )),
+        );
+        let file_error = PackageAuthorityError::GoOracle(OracleError::GoOracleSourceFile {
+            path: Path::new("/tmp/nudox-go-oracle/main.go").to_path_buf(),
+            source: std::io::Error::other("private source write denied"),
+        });
+
+        for error in [&directory_error, &file_error] {
+            assert_eq!(
+                package_authority_projection(error),
+                (AuthorityPhase::Open, AuthorityDiagnosticClass::Authority)
+            );
+        }
+        let directory_detail = bounded_error_chain(&directory_error);
+        assert!(
+            directory_detail
+                .text
+                .contains("private temporary directory unavailable")
+        );
+        let file_detail = bounded_error_chain(&file_error);
+        assert!(file_detail.text.contains("/tmp/nudox-go-oracle/main.go"));
+        assert!(file_detail.text.contains("private source write denied"));
+    }
 
     #[test]
     fn missing_typescript_host_error_explains_dependencies_and_warm_daemon_restart() {

@@ -721,7 +721,6 @@ pub struct Term {
     pub r#type: Option<Type>,
 }
 
-/// Typed failures at the subprocess and protocol boundary.
 struct EmbeddedGoOracleSource(tempfile::TempDir);
 
 impl EmbeddedGoOracleSource {
@@ -770,20 +769,13 @@ impl GoOracleCommand {
     }
 }
 
-impl std::ops::Deref for GoOracleCommand {
-    type Target = std::process::Command;
-
-    fn deref(&self) -> &Self::Target {
-        &self.command
-    }
-}
-
-impl std::ops::DerefMut for GoOracleCommand {
-    fn deref_mut(&mut self) -> &mut Self::Target {
+impl GoOracleCommand {
+    fn command_mut(&mut self) -> &mut std::process::Command {
         &mut self.command
     }
 }
 
+/// Typed failures at the subprocess, private helper workspace, and protocol boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum OracleError {
     /// The configured executable could not be started.
@@ -1231,7 +1223,7 @@ impl GoOracle {
                 ],
             )?
         };
-        let stdout = self.execute(&mut command)?;
+        let stdout = self.execute(command.command_mut())?;
         self.decode(&stdout)
     }
 
@@ -1285,7 +1277,7 @@ impl GoOracle {
                 ],
             )?
         };
-        self.execute(&mut command)
+        self.execute(command.command_mut())
     }
 
     fn configured_command(
@@ -1327,12 +1319,12 @@ impl GoOracle {
         let mut command = Self::configured_command(configuration, None, module)?;
         if let (Some(environment), Some(work)) = (environment, work) {
             environment.apply_to(
-                &mut command,
+                command.command_mut(),
                 work,
                 matches!(configuration, GoOracleConfiguration::GoToolchain(_)),
             );
         }
-        let stdout = self.execute_configured(&mut command)?;
+        let stdout = self.execute_configured(command.command_mut())?;
         self.decode(&stdout)
     }
 
@@ -1347,11 +1339,11 @@ impl GoOracle {
         let mut command =
             Self::configured_command(configuration, Some(("--authority-image", source)), module)?;
         environment.apply_to(
-            &mut command,
+            command.command_mut(),
             work,
             matches!(configuration, GoOracleConfiguration::GoToolchain(_)),
         );
-        self.execute_configured(&mut command)
+        self.execute_configured(command.command_mut())
     }
 
     fn authority_image_for_package_configured(
@@ -1368,11 +1360,11 @@ impl GoOracle {
             module,
         )?;
         environment.apply_to(
-            &mut command,
+            command.command_mut(),
             work,
             matches!(configuration, GoOracleConfiguration::GoToolchain(_)),
         );
-        self.execute_configured(&mut command)
+        self.execute_configured(command.command_mut())
     }
 
     /// Spawns one bounded oracle child and collects its standard output.
@@ -1754,14 +1746,14 @@ impl ConfiguredGoOracle {
             package_root,
         )?;
         environment.apply_to(
-            &mut command,
+            command.command_mut(),
             witness.go_work_witness(),
             matches!(&self.configuration, GoOracleConfiguration::GoToolchain(_)),
         );
         if !witness.matches_current(package_root)? {
             return Err(OracleError::PackageAuthorityWitnessChanged);
         }
-        self.oracle.execute_configured(&mut command)
+        self.oracle.execute_configured(command.command_mut())
     }
 
     fn authority_child_context(
