@@ -1025,7 +1025,7 @@ mod tests {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "staged_intent::tests::crash_after_unselected_page_is_invisible",
+                "builtin::staged_intent::tests::crash_after_unselected_page_is_invisible",
                 "--nocapture",
             ])
             .env(CHILD_DIRECTORY, directory.path())

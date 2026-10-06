@@ -50,5 +50,8 @@ pin lifetime contract with root, compile this checkpoint under fresh fleet
 admission, run meaningful queue/fence/identity/quota/cancellation/restart and
 missing-page gates, and reproduce the actual 596-file Zod 8,092,105-byte red
 through the public path. Staged page/manifest allocation is charged; durable
-index node allocation accounting was still outstanding at this checkpoint; a
-whole-store physical quota.
+index node allocation accounting was still outstanding at this checkpoint.
+Later source checkpoints add reader closure leases and a physical allocator
+primitive. Root rejected applying a fixed staging quota to all selected CAS;
+the producer now derives its admission budget from the existing configured
+source policy and transfers selected members out of pending accounting.
