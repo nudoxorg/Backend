@@ -10097,7 +10097,6 @@ mod lane_tests {
     };
     use backend_semantic::ir::{
         ComputedType, EntityKind, FragmentError, FragmentView, OccurrenceFault, OccurrenceTarget,
-        ComputedType, EntityKind, FragmentError, FragmentView, OccurrenceFault, OccurrenceTarget,
         ReferenceKind, SemanticReader, TypeExpr, TypeId, TypeQuery,
         TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeScriptSourceCoordinate,
     };
