@@ -5600,16 +5600,19 @@ pub(super) fn semantic_versions(
                     .map_err(|error| {
                         BuiltinModelError(format!("admit selected semantic target: {error}"))
                     })?;
+                    let freshness = semantic_authority.freshness(&selected_key, claim);
                     generations.push((
                         target,
                         selected_key,
                         claim,
                         semantic_version_record(
-                            key,
-                            coverage,
-                            claim,
-                            false,
-                            semantic_authority.freshness(key, claim),
+                            key, coverage, claim, false,
+                            // Freshness observations are keyed by the live
+                            // selected product, while this history row is
+                            // keyed by its immutable generation. Query the
+                            // selected key so a newly published generation is
+                            // not incorrectly exposed as Unverified.
+                            freshness,
                         ),
                     ));
                 }
