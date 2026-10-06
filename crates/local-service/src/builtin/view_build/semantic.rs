@@ -104,7 +104,7 @@ pub(crate) fn rows_for_indexed_sources(
     let structural_plan = StructuralProjectionPlan::of(sources, &semantics.complete)?;
     let mut projection = SourceRowProjection::new(
         initial,
-        &sources.projects,
+        sources,
         total_capacity,
         &semantics.targets,
         &structural_plan,
@@ -130,7 +130,7 @@ pub(crate) fn rows_for_indexed_sources(
 
 pub(super) struct SourceRowProjection<'a> {
     initial: &'a ViewRoot,
-    projects: &'a BTreeMap<[u8; 32], IndexedProject>,
+    sources: &'a IndexedSources,
     rows: Vec<Row>,
     selected_files: BTreeSet<([u8; 32], [u8; 32])>,
     ledger: ProjectionLedger,
@@ -141,7 +141,7 @@ pub(super) struct SourceRowProjection<'a> {
 impl<'a> SourceRowProjection<'a> {
     pub(super) fn new(
         initial: &'a ViewRoot,
-        projects: &'a BTreeMap<[u8; 32], IndexedProject>,
+        sources: &'a IndexedSources,
         capacity: usize,
         targets: &'a SemanticTargets,
         structural_plan: &'a StructuralProjectionPlan,
@@ -149,7 +149,7 @@ impl<'a> SourceRowProjection<'a> {
     ) -> Result<Self, BuiltinModelError> {
         let mut rows = Vec::with_capacity(capacity);
         let mut selected_files = BTreeSet::new();
-        for (project_key, project) in projects {
+        for (project_key, project) in &sources.projects {
             let row = Row::new(
                 RowId::Package(project.package),
                 initial.basis(),
@@ -178,7 +178,7 @@ impl<'a> SourceRowProjection<'a> {
         }
         Ok(Self {
             initial,
-            projects,
+            sources,
             rows,
             selected_files,
             ledger: ProjectionLedger::default(),
@@ -205,8 +205,7 @@ impl<'a> SourceRowProjection<'a> {
         let project_key = file.project;
         let path = file.path;
         let language = file.language;
-        let declarations = file.declarations;
-        let project = self.projects.get(&project_key).ok_or_else(|| {
+        let project = self.sources.projects.get(&project_key).ok_or_else(|| {
             BuiltinModelError("source file refers to a missing project record".to_owned())
         })?;
         if product_source_file_key(project_key, path) != file_key
@@ -255,7 +254,8 @@ impl<'a> SourceRowProjection<'a> {
                 "structural source is missing its emitted declaration plan".to_owned(),
             ));
         }
-        for (index, declaration) in declarations.iter().enumerate() {
+        let mut index = 0usize;
+        super::structural::visit_complete_declarations(self.sources, record, |declaration| {
             let prepared = self.structural_plan.declaration(file_key, index)?;
             let row = self.declaration_row(
                 declaration,
@@ -267,6 +267,19 @@ impl<'a> SourceRowProjection<'a> {
                 prepared,
             )?;
             self.rows.push(row);
+            index = index.checked_add(1).ok_or_else(|| {
+                BuiltinModelError("structural declaration count overflow".to_owned())
+            })?;
+            Ok(())
+        })?;
+        if self
+            .structural_plan
+            .file(file_key)
+            .is_some_and(|file| file.declarations.len() != index)
+        {
+            return Err(BuiltinModelError(
+                "complete source-facts count differs from its structural plan".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -342,7 +355,8 @@ pub(super) fn rows_for_changed_structural_files(
                 "source file is outside its project's canonical frontier".to_owned(),
             ));
         }
-        for (index, declaration) in file.declarations.iter().enumerate() {
+        let mut index = 0usize;
+        super::structural::visit_complete_declarations(sources, record, |declaration| {
             let prepared = plan.declaration(*file_key, index)?;
             rows.push(structural_declaration_row(
                 initial,
@@ -356,6 +370,18 @@ pub(super) fn rows_for_changed_structural_files(
                 file.language,
                 prepared,
             )?);
+            index = index.checked_add(1).ok_or_else(|| {
+                BuiltinModelError("structural declaration count overflow".to_owned())
+            })?;
+            Ok(())
+        })?;
+        if plan
+            .file(*file_key)
+            .is_some_and(|file| file.declarations.len() != index)
+        {
+            return Err(BuiltinModelError(
+                "complete source-facts count differs from its structural plan".to_owned(),
+            ));
         }
     }
     Ok(rows)

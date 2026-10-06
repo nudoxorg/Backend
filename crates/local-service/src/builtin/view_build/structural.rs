@@ -7,19 +7,80 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 pub(super) fn duplicate_declaration_coordinates(
+    sources: &IndexedSources,
+    record: &super::super::ProductSourceRecord,
     containment: &FileContainment<'_>,
-    declarations: &[backend_compile::SourceDeclaration],
-) -> BTreeSet<String> {
+) -> Result<BTreeSet<String>, BuiltinModelError> {
     let mut counts = BTreeMap::<String, u32>::new();
-    for declaration in declarations {
+    visit_complete_declarations(sources, record, |declaration| {
         let coordinate = containment.coordinate(declaration);
         let count = counts.entry(coordinate).or_default();
         *count = count.saturating_add(1);
-    }
-    counts
+        Ok(())
+    })?;
+    Ok(counts
         .into_iter()
         .filter_map(|(coordinate, count)| (count > 1).then_some(coordinate))
-        .collect()
+        .collect())
+}
+
+/// Visits one file's exact complete declarations without hydrating its page
+/// tree or the project's facts relation. Legacy compact rows are accepted
+/// only when their retention marker proves that the row itself is complete.
+pub(super) fn visit_complete_declarations(
+    sources: &IndexedSources,
+    record: &super::super::ProductSourceRecord,
+    mut visit: impl FnMut(&backend_compile::SourceDeclaration) -> Result<(), BuiltinModelError>,
+) -> Result<(), BuiltinModelError> {
+    let file = record.file_fields().ok_or_else(|| {
+        BuiltinModelError("complete source facts requested for a non-file row".to_owned())
+    })?;
+    if let Some(snapshot) = &sources.source_snapshot {
+        match snapshot
+            .admit_complete_file_facts(record)
+            .map_err(|error| BuiltinModelError(format!("admit complete source facts: {error}")))?
+        {
+            Some(backend_engine::ProductSourceFileFactsAdmission::InlineComplete(inline)) => {
+                for declaration in inline.declarations() {
+                    visit(declaration)?;
+                }
+            }
+            Some(backend_engine::ProductSourceFileFactsAdmission::PagedVerified(mut paged)) => {
+                paged
+                    .visit_pages(|page| {
+                        for index in 0..page.len() {
+                            let declaration = page
+                                .declaration(index)
+                                .ok_or_else(|| {
+                                    "verified source-facts page item is missing".to_owned()
+                                })?
+                                .to_owned()?;
+                            visit(&declaration).map_err(|error| error.to_string())?;
+                        }
+                        Ok(())
+                    })
+                    .map_err(|error| {
+                        BuiltinModelError(format!("visit complete source-facts pages: {error}"))
+                    })?;
+            }
+            None => {
+                for declaration in file.declarations.iter() {
+                    visit(declaration)?;
+                }
+            }
+        }
+        return Ok(());
+    }
+    if !file.retention.is_complete() {
+        return Err(BuiltinModelError(
+            "compact source row is incomplete and has no selected complete facts relation"
+                .to_owned(),
+        ));
+    }
+    for declaration in file.declarations.iter() {
+        visit(declaration)?;
+    }
+    Ok(())
 }
 pub(super) fn is_file_module(declaration: &backend_compile::SourceDeclaration, path: &str) -> bool {
     declaration.kind() == DeclarationKind::Module
@@ -52,15 +113,15 @@ pub(super) struct ProjectTypeIndex {
 }
 
 impl ProjectTypeIndex {
-    pub(super) fn of(sources: &IndexedSources) -> Self {
+    pub(super) fn of(sources: &IndexedSources) -> Result<Self, BuiltinModelError> {
         let mut index = Self::default();
         for (_, record) in &sources.files {
             let Some(file) = record.file_fields() else {
                 continue;
             };
-            for declaration in file.declarations.iter() {
+            visit_complete_declarations(sources, record, |declaration| {
                 if !declares_a_type(declaration.kind()) {
-                    continue;
+                    return Ok(());
                 }
                 let entry = (file.path.to_owned(), declaration.line());
                 index
@@ -72,9 +133,10 @@ impl ProjectTypeIndex {
                         }
                     })
                     .or_insert(entry);
-            }
+                Ok(())
+            })?;
         }
-        index
+        Ok(index)
     }
 
     fn resolve(&self, project: [u8; 32], type_name: &str) -> Option<(&str, u32)> {
@@ -169,7 +231,7 @@ impl StructuralProjectionPlan {
         complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
         only: Option<&BTreeSet<[u8; 32]>>,
     ) -> Result<Self, BuiltinModelError> {
-        let types = ProjectTypeIndex::of(sources);
+        let types = ProjectTypeIndex::of(sources)?;
         let mut plan = Self::default();
         for (file_key, record) in &sources.files {
             if only.is_some_and(|keys| !keys.contains(file_key)) {
@@ -184,13 +246,12 @@ impl StructuralProjectionPlan {
             if semantic_profile_is_complete(complete, Some(project.package), file.path)? {
                 continue;
             }
-            let containment =
-                FileContainment::new(&project.label, file.path, file.project, file.declarations);
+            let containment = FileContainment::for_file(sources, record, &project.label)?;
             let duplicate_coordinates =
-                duplicate_declaration_coordinates(&containment, file.declarations);
+                duplicate_declaration_coordinates(sources, record, &containment)?;
             let mut occurrences = BTreeMap::new();
-            let mut declarations = Vec::with_capacity(file.declarations.len());
-            for declaration in file.declarations.iter() {
+            let mut declarations = Vec::new();
+            visit_complete_declarations(sources, record, |declaration| {
                 let coordinate = containment.coordinate(declaration);
                 let (id, identity_preimage) = declaration_symbol(
                     &coordinate,
@@ -220,7 +281,8 @@ impl StructuralProjectionPlan {
                     identity_preimage,
                     is_file_module: is_file_module(declaration, file.path),
                 });
-            }
+                Ok(())
+            })?;
             plan.files.insert(
                 *file_key,
                 StructuralFilePlan {
@@ -337,7 +399,7 @@ pub(super) struct FileContainment<'a> {
     path: &'a str,
     project: [u8; 32],
     module_coordinate: String,
-    local_types: BTreeMap<&'a str, u32>,
+    local_types: BTreeMap<String, u32>,
 }
 
 impl<'a> FileContainment<'a> {
@@ -353,7 +415,7 @@ impl<'a> FileContainment<'a> {
                 continue;
             }
             local_types
-                .entry(declaration.name())
+                .entry(declaration.name().to_owned())
                 .and_modify(|line: &mut u32| *line = (*line).min(declaration.line()))
                 .or_insert(declaration.line());
         }
@@ -364,6 +426,33 @@ impl<'a> FileContainment<'a> {
             module_coordinate: format!("{label}::{path}"),
             local_types,
         }
+    }
+
+    fn for_file(
+        sources: &IndexedSources,
+        record: &super::super::ProductSourceRecord,
+        label: &'a str,
+    ) -> Result<Self, BuiltinModelError> {
+        let file = record.file_fields().ok_or_else(|| {
+            BuiltinModelError("structural source row changed type during admission".to_owned())
+        })?;
+        let mut local_types = BTreeMap::<String, u32>::new();
+        visit_complete_declarations(sources, record, |declaration| {
+            if declares_a_type(declaration.kind()) {
+                local_types
+                    .entry(declaration.name().to_owned())
+                    .and_modify(|line| *line = (*line).min(declaration.line()))
+                    .or_insert(declaration.line());
+            }
+            Ok(())
+        })?;
+        Ok(Self {
+            label,
+            path: file.path,
+            project: file.project,
+            module_coordinate: format!("{label}::{}", file.path),
+            local_types,
+        })
     }
 
     /// Returns the coordinate a declaration's own row is addressed by.
@@ -417,30 +506,28 @@ pub(super) fn projected_source_capacity(
     sources: &IndexedSources,
     complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
 ) -> Result<usize, BuiltinModelError> {
-    let count = sources
-        .files
-        .iter()
-        .try_fold(sources.projects.len(), |count, (_, record)| {
-            let rows = match record.file_fields() {
-                Some(fields)
-                    if semantic_profile_is_complete(
-                        complete,
-                        sources
-                            .projects
-                            .get(&fields.project)
-                            .map(|project| project.package),
-                        fields.path,
-                    )? =>
-                {
-                    0
-                }
-                Some(fields) => fields.declarations.len(),
-                None => 0,
-            };
-            count
-                .checked_add(rows)
-                .ok_or_else(|| BuiltinModelError("workspace view row count overflow".to_owned()))
+    let mut count = sources.projects.len();
+    for (_, record) in &sources.files {
+        let Some(fields) = record.file_fields() else {
+            continue;
+        };
+        if semantic_profile_is_complete(
+            complete,
+            sources
+                .projects
+                .get(&fields.project)
+                .map(|project| project.package),
+            fields.path,
+        )? {
+            continue;
+        }
+        visit_complete_declarations(sources, record, |_| {
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| BuiltinModelError("workspace view row count overflow".to_owned()))?;
+            Ok(())
         })?;
+    }
     if count > MAX_REBUILD_PACKAGES {
         return Err(BuiltinModelError(
             "workspace source declarations exceed the rebuild row bound".to_owned(),

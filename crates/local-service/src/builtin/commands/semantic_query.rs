@@ -8671,6 +8671,7 @@ mod project_call_tests {
             )]),
             files: file_records,
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         })
     }
 

@@ -372,6 +372,7 @@ pub fn execute() {}
             )]),
             files: vec![(file_key, record)],
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
         let structural_plan =
@@ -379,7 +380,7 @@ pub fn execute() {}
         let targets = super::SemanticTargets::default();
         let mut projection = SourceRowProjection::new(
             &initial,
-            &sources.projects,
+            &sources,
             64,
             &targets,
             &structural_plan,
@@ -472,6 +473,7 @@ pub fn execute() {}
             )]),
             files: vec![(file_key, record)],
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         })
     }
 
@@ -725,7 +727,7 @@ pub fn execute() {}
         let targets = super::SemanticTargets::default();
         let mut projection = SourceRowProjection::new(
             &initial,
-            &sources.projects,
+            &sources,
             64,
             &targets,
             &structural_plan,
@@ -1092,6 +1094,7 @@ pub fn execute() {}
             )]),
             files: vec![(child_key, child_record), (semantic_key, semantic_record)],
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         };
         let complete = BTreeSet::from([(
             package.to_bytes(),
@@ -1124,7 +1127,7 @@ pub fn execute() {}
         let targets = super::SemanticTargets::default();
         let mut projection = SourceRowProjection::new(
             &initial,
-            &sources.projects,
+            &sources,
             64,
             &targets,
             &plan,
@@ -1435,6 +1438,7 @@ pub fn execute() {}
             )]),
             files: vec![(file_key, record)],
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
         let complete = BTreeSet::from([(
@@ -1453,7 +1457,7 @@ pub fn execute() {}
         let targets = super::SemanticTargets::default();
         let mut projection = SourceRowProjection::new(
             &initial,
-            &sources.projects,
+            &sources,
             64,
             &targets,
             &structural_plan,
@@ -1533,6 +1537,7 @@ pub fn execute() {}
             )]),
             files,
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
         let rust = LanguageProfile::Rust(RustEdition::Rust2024);
@@ -1546,7 +1551,7 @@ pub fn execute() {}
         let targets = super::SemanticTargets::default();
         let mut projection = SourceRowProjection::new(
             &initial,
-            &sources.projects,
+            &sources,
             64,
             &targets,
             &structural_plan,
@@ -1625,6 +1630,7 @@ pub fn execute() {}
             )]),
             files: vec![(file_key, record)],
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         };
         let (initial, _) = initial_view().map_err(|e| e.to_string())?;
         let mut targets = super::SemanticTargets::default();
@@ -1639,7 +1645,7 @@ pub fn execute() {}
             StructuralProjectionPlan::of(&sources, &BTreeSet::new()).map_err(|e| e.to_string())?;
         let mut projection = SourceRowProjection::new(
             &initial,
-            &sources.projects,
+            &sources,
             64,
             &targets,
             &structural_plan,
@@ -1887,6 +1893,7 @@ pub fn execute() {}
                 )]),
                 files: file_records,
                 cargo_aliases: BTreeMap::new(),
+                source_snapshot: None,
             },
             package,
         ))
@@ -1901,7 +1908,7 @@ pub fn execute() {}
         let targets = super::SemanticTargets::default();
         let mut projection = SourceRowProjection::new(
             &initial,
-            &sources.projects,
+            &sources,
             256,
             &targets,
             &structural_plan,

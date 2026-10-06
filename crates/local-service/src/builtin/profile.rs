@@ -1516,7 +1516,6 @@ impl<'a> IntentDecoder<'a> {
                     | (Some(b"BPI6"), 6)
                     | (Some(b"BPI7"), 7)
                     | (Some(b"BPI8"), 8)
-                    | (Some(b"BPI8"), 8)
             )
         {
             return Err(BuiltinModelError(
@@ -3350,8 +3349,8 @@ mod persisted_intent_tests {
             ),
         )
         .expect("compiler refusal key");
-        let capture = SemanticSourceCapture::new(None, [5; 32], [6; 32], 1, 1)
-            .expect("source capture");
+        let capture =
+            SemanticSourceCapture::new(None, [5; 32], [6; 32], 1, 1).expect("source capture");
         let intent = BuiltinIntent::index_with_capture(
             package,
             label,
@@ -3370,7 +3369,10 @@ mod persisted_intent_tests {
         .expect("typed refusal intent");
         let encoded = intent.encode();
         assert!(encoded.starts_with(b"BPI8"));
-        assert_eq!(BuiltinIntent::decode(&encoded).expect("decode BPI8"), intent);
+        assert_eq!(
+            BuiltinIntent::decode(&encoded).expect("decode BPI8"),
+            intent
+        );
 
         let mut noncanonical = encoded;
         *noncanonical.last_mut().expect("failure json byte") ^= 1;

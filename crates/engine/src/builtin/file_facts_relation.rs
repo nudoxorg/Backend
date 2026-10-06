@@ -545,12 +545,11 @@ pub fn build_product_source_file_facts(
     let path = path.into();
     validate_file_facts_input(&path, declarations)?;
     let file_key = product_source_file_key(project, &path);
-    let inline_estimate = declarations.iter().fold(
-        96usize.saturating_add(path.len()),
-        |total, declaration| {
+    let inline_estimate = declarations
+        .iter()
+        .fold(96usize.saturating_add(path.len()), |total, declaration| {
             total.saturating_add(estimate_declaration_bytes(declaration, &path))
-        },
-    );
+        });
     if inline_estimate <= ProductSourceFileFactsRecord::ROW_VALUE_CAPACITY {
         let inline_manifest = ProductSourceFileFactsManifest {
             project,
@@ -669,10 +668,12 @@ pub fn build_product_source_file_facts(
         })
         .chain(directory_rows)
     {
-        if let Some((prior, _)) = unique.insert(key, (record.clone(), encoded_len)) {
-            if prior != record {
+        if let Some((prior, _)) = unique.get(&key) {
+            if prior != &record {
                 return Err("facts page content key collision".to_owned());
             }
+        } else {
+            unique.insert(key, (record, encoded_len));
         }
     }
     let mut encoded_bytes = manifest_bytes.len();
@@ -934,7 +935,7 @@ fn build_declaration_pages(
         if end == start {
             return Err("source facts page planner made no progress".to_owned());
         }
-        let mut page = build_page(
+        let mut record = ProductSourceFileFactsRecord::Page(build_page(
             file_key,
             project,
             path,
@@ -942,8 +943,8 @@ fn build_declaration_pages(
             base_line,
             &declarations[start..end],
             &boundaries[start..end],
-        )?;
-        let mut encoded = encode_record(&ProductSourceFileFactsRecord::Page(page.clone()));
+        )?);
+        let mut encoded = encode_record(&record);
         while encoded.len() > ProductSourceFileFactsRecord::ROW_VALUE_CAPACITY {
             if end <= start + 1 {
                 return Err(
@@ -951,7 +952,7 @@ fn build_declaration_pages(
                 );
             }
             end -= 1;
-            page = build_page(
+            record = ProductSourceFileFactsRecord::Page(build_page(
                 file_key,
                 project,
                 path,
@@ -959,10 +960,13 @@ fn build_declaration_pages(
                 base_line,
                 &declarations[start..end],
                 &boundaries[start..end],
-            )?;
-            encoded = encode_record(&ProductSourceFileFactsRecord::Page(page.clone()));
+            )?);
+            encoded = encode_record(&record);
         }
         let key = content_key_bytes(&encoded);
+        let ProductSourceFileFactsRecord::Page(page) = record else {
+            return Err("facts page planner produced a non-page row".to_owned());
+        };
         pages.push(BuiltPage {
             key,
             base_line,
@@ -1034,10 +1038,7 @@ fn build_page(
     })
 }
 
-fn estimate_declaration_bytes(
-    declaration: &SourceDeclaration,
-    path: &str,
-) -> usize {
+fn estimate_declaration_bytes(declaration: &SourceDeclaration, path: &str) -> usize {
     let excerpt = declaration.source_excerpt().text().map_or(0, str::len);
     let container = match declaration.container() {
         Container::Module => 1,
@@ -1081,6 +1082,48 @@ fn validate_declarations(path: &str, declarations: &[SourceDeclaration]) -> Resu
         if declaration.location().path() != path || declaration.line() < prior_line {
             return Err("source facts declarations are not exact-path source order".to_owned());
         }
+        if [
+            declaration.name(),
+            declaration.kind_name(),
+            declaration.signature(),
+            declaration.documentation(),
+        ]
+        .into_iter()
+        .any(|text| text.len() > SourceDeclaration::MAX_TEXT_BYTES)
+        {
+            return Err("source facts declaration has oversized retained text".to_owned());
+        }
+        if declaration
+            .source_excerpt()
+            .text()
+            .is_some_and(|text| text.is_empty() || text.len() > SourceExcerpt::MAX_BYTES)
+        {
+            return Err("source facts declaration has an invalid source excerpt".to_owned());
+        }
+        let container_name = match declaration.container() {
+            Container::Module => None,
+            Container::Enclosing { name, .. } | Container::Attached { type_name: name } => {
+                Some(name.as_str())
+            }
+        };
+        if container_name
+            .is_some_and(|name| name.is_empty() || name.len() > SourceDeclaration::MAX_TEXT_BYTES)
+        {
+            return Err("source facts declaration has an invalid container name".to_owned());
+        }
+        if declaration
+            .facts()
+            .deprecation
+            .present()
+            .is_some_and(|notice| {
+                [notice.since(), notice.note()]
+                    .into_iter()
+                    .flatten()
+                    .any(|text| text.len() > MAX_FACT_TEXT_BYTES)
+            })
+        {
+            return Err("source facts declaration has oversized fact text".to_owned());
+        }
         prior_line = declaration.line();
         if let Container::Enclosing { line, .. } = declaration.container()
             && line.get() > declaration.line()
@@ -1109,7 +1152,7 @@ fn declaration_boundary_key(declaration: &SourceDeclaration) -> Result<[u8; 32],
             push_text(&mut bytes, type_name)?;
         }
     }
-    encode_facts(declaration.facts(), &mut bytes)?;
+    encode_facts_infallible(declaration.facts(), &mut bytes);
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.product-source-facts.boundary.v1\0");
     hasher.update(&bytes);
@@ -1492,11 +1535,6 @@ fn encode_container_infallible(container: &Container, output: &mut Vec<u8>) {
             push_text_infallible(output, type_name);
         }
     }
-}
-
-fn encode_facts(facts: &DeclarationFacts, output: &mut Vec<u8>) -> Result<(), String> {
-    encode_facts_infallible(facts, output);
-    Ok(())
 }
 
 fn encode_facts_infallible(facts: &DeclarationFacts, output: &mut Vec<u8>) {
@@ -1927,11 +1965,9 @@ mod tests {
         );
         let file = source.file_fields().expect("file fields");
         let ProductSourceFileFactsRecord::Manifest(manifest) =
-            ProductSourceFileFactsRelation::decode_value(
-                &encode_record(&ProductSourceFileFactsRecord::Manifest(
-                    update.manifest.clone(),
-                )),
-            )
+            ProductSourceFileFactsRelation::decode_value(&encode_record(
+                &ProductSourceFileFactsRecord::Manifest(update.manifest.clone()),
+            ))
             .expect("canonical manifest")
         else {
             panic!("manifest record")
@@ -2057,6 +2093,53 @@ mod tests {
             "line-only prefix must preserve every page key"
         );
         assert_eq!(second.declaration_count(), original.len());
+        let compact = source_row(
+            project,
+            "src/Panels.tsx",
+            [8; 32],
+            [2; 32],
+            ContentId::<SourceFactDomain>::from_canonical_bytes(prefixed_source.as_bytes()),
+            changed.clone(),
+        );
+        let stored_rows = second.pages().iter().cloned().collect::<BTreeMap<_, _>>();
+        let mut admitted = match admit_product_source_file_facts(
+            compact.file_fields().expect("compact source row"),
+            second.manifest_key(),
+            second.manifest().clone(),
+            move |key| Ok(stored_rows.get(key).cloned()),
+        )
+        .expect("admit actual paged TSX facts")
+        {
+            ProductSourceFileFactsAdmission::PagedVerified(paged) => paged,
+            ProductSourceFileFactsAdmission::InlineComplete(_) => {
+                panic!("900 declaration TSX inventory must use bounded pages")
+            }
+        };
+        assert_eq!(admitted.declaration_count() as usize, changed.len());
+        let mut visited = 0usize;
+        let mut last_line = 0;
+        admitted
+            .visit_pages(|page| {
+                for (index, declaration) in page.declarations.iter().enumerate() {
+                    let declaration = declaration.source_declaration();
+                    let line = page
+                        .declaration_line(index)
+                        .ok_or_else(|| "admitted TSX declaration line".to_owned())?;
+                    if line < last_line {
+                        return Err("admitted TSX declaration order".to_owned());
+                    }
+                    last_line = line;
+                    if declaration.documentation().is_empty()
+                        || declaration.source_excerpt().text().is_none()
+                    {
+                        return Err("admitted TSX declaration lost captured facts".to_owned());
+                    }
+                    visited += 1;
+                }
+                Ok(())
+            })
+            .expect("visit every verified TSX page");
+        assert_eq!(visited, changed.len());
         let prefix_page_bytes = first
             .pages()
             .iter()
@@ -2238,6 +2321,101 @@ mod tests {
             ));
         }
         source
+    }
+
+    #[test]
+    fn largest_valid_declaration_fields_still_form_a_complete_canonical_page() {
+        let project = [0x17; 32];
+        let path = "src/maximal.ts";
+        let text = "x".repeat(SourceDeclaration::MAX_TEXT_BYTES);
+        let excerpt = "e".repeat(SourceExcerpt::MAX_BYTES);
+        let fact_text = "f".repeat(MAX_FACT_TEXT_BYTES);
+        let deprecation = Deprecation::admit(Some(fact_text.clone()), Some(fact_text))
+            .expect("maximal bounded fact text");
+        let declarations = (1..=4)
+            .map(|line| {
+                SourceDeclaration::at_path(
+                    path,
+                    text.clone(),
+                    DeclarationKind::Function,
+                    line,
+                    text.clone(),
+                    text.clone(),
+                )
+                .expect("bounded declaration")
+                .with_source_excerpt(
+                    SourceExcerpt::captured(&excerpt, SourceExcerptExtent::Complete)
+                        .expect("maximal bounded excerpt"),
+                )
+                .with_container(Container::attached(&text))
+                .with_facts(DeclarationFacts {
+                    deprecation: Fact::Present(deprecation.clone()),
+                    obligation: Fact::Present(Obligation::Required),
+                })
+            })
+            .collect::<Vec<_>>();
+        let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(b"maximal source");
+        let update = build_product_source_file_facts(
+            project,
+            path,
+            SourceLanguage::TypeScript,
+            [0x21; 32],
+            [0x22; 32],
+            identity,
+            &declarations,
+        )
+        .expect("valid maximum-sized declaration facts");
+        assert!(update.pages().iter().all(|(_, row)| {
+            encode_record(row).len() <= ProductSourceFileFactsRecord::ROW_VALUE_CAPACITY
+        }));
+        let compact = source_row(
+            project,
+            path,
+            [0x21; 32],
+            [0x22; 32],
+            identity,
+            declarations.clone(),
+        );
+        let stored_rows = update.pages().iter().cloned().collect::<BTreeMap<_, _>>();
+        let mut admitted = match admit_product_source_file_facts(
+            compact
+                .file_fields()
+                .expect("compact maximum-sized source row"),
+            update.manifest_key(),
+            update.manifest().clone(),
+            move |key| Ok(stored_rows.get(key).cloned()),
+        )
+        .expect("admit maximum-sized declaration pages")
+        {
+            ProductSourceFileFactsAdmission::PagedVerified(paged) => paged,
+            ProductSourceFileFactsAdmission::InlineComplete(_) => {
+                panic!("maximum-sized facts must use pages")
+            }
+        };
+        let mut visited = Vec::new();
+        admitted
+            .visit_pages(|page| {
+                for (index, declaration) in page.declarations.iter().enumerate() {
+                    let declaration = declaration.source_declaration();
+                    visited.push((
+                        declaration.name().to_owned(),
+                        page.declaration_line(index)
+                            .ok_or_else(|| "maximal declaration line".to_owned())?,
+                        declaration.signature().len(),
+                        declaration.documentation().len(),
+                        declaration.source_excerpt().text().map(str::len),
+                    ));
+                }
+                Ok(())
+            })
+            .expect("visit maximum-sized pages");
+        assert_eq!(visited.len(), declarations.len());
+        assert!(visited.iter().all(|(name, _, signature, docs, excerpt)| {
+            name.len() == SourceDeclaration::MAX_TEXT_BYTES
+                && *signature == SourceDeclaration::MAX_TEXT_BYTES
+                && *docs == SourceDeclaration::MAX_TEXT_BYTES
+                && *excerpt == Some(SourceExcerpt::MAX_BYTES)
+        }));
     }
 
     #[test]

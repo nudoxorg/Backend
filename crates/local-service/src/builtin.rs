@@ -696,13 +696,20 @@ struct IndexedSources {
     projects: BTreeMap<[u8; 32], IndexedProject>,
     files: Vec<([u8; 32], ProductSourceRecord)>,
     cargo_aliases: BTreeMap<[u8; 32], backend_library::CargoPackageAliasEvidenceV1>,
+    source_snapshot: Option<backend_engine::ProductSourceSnapshot>,
 }
 
 fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, BuiltinModelError> {
     let relation = snapshot
         .relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("open indexed source relation: {error}")))?;
-    read_indexed_relation(&relation, profile::SourceFileKeyLayout::Current)
+    let mut sources = read_indexed_relation(&relation, profile::SourceFileKeyLayout::Current)?;
+    sources.source_snapshot = Some(
+        backend_engine::ProductSourceSnapshot::from_workspace(snapshot).map_err(|error| {
+            BuiltinModelError(format!("admit selected source closure: {error}"))
+        })?,
+    );
+    Ok(sources)
 }
 
 fn read_indexed_relation(
@@ -827,6 +834,7 @@ fn read_indexed_relation(
         projects,
         files: resolved_files,
         cargo_aliases,
+        source_snapshot: None,
     })
 }
 
@@ -847,6 +855,7 @@ fn empty_indexed_sources() -> IndexedSources {
         projects: BTreeMap::new(),
         files: Vec::new(),
         cargo_aliases: BTreeMap::new(),
+        source_snapshot: None,
     }
 }
 

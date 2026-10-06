@@ -306,6 +306,7 @@ mod tests {
             projects: BTreeMap::new(),
             files,
             cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
         }
     }
 
