@@ -1219,6 +1219,10 @@ mod tests {
             "a tuple preimage cannot mint producer authority"
         );
         let json: serde_json::Value = serde_json::from_slice(&bytes).expect("wire JSON");
+        let mut old_contract = json.clone();
+        old_contract["version"] = serde_json::json!(21);
+        let refusal = ReplyDto::decode_with_certificate(&serde_json::to_vec(&old_contract).expect("old version"), capability.clone()).expect_err("incompatible document grammar");
+        assert!(refusal.contains("unsupported reply DTO version"), "{refusal}");
         for path in ["coordinate", "symbol", "version", "source"] {
             let mut forged = json.clone();
             forged["reply"]["data"]["selection"][path] = match path {
