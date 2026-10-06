@@ -564,7 +564,12 @@ mod tests {
         let kept = kept.snapshot;
         assert_eq!(kept.route(), &symbol_route("B", View::Page));
         assert_eq!(kept.session().preview, None);
-        assert_eq!(reduce(&kept, Intent::Back).snapshot.route(), &package_route(None), "Back skips every walked result");
+        assert_eq!(kept.overlay(), Some(Overlay::CommandPalette));
+        // Ask commits the preview and then dismisses its cover. A bare Back
+        // while that cover is still open only dismisses it.
+        let uncovered = reduce(&kept, Intent::DismissOverlay).snapshot;
+        assert_eq!(uncovered.route(), kept.route());
+        assert_eq!(reduce(&uncovered, Intent::Back).snapshot.route(), &package_route(None), "Back skips every walked result");
     }
 
     /// Following a link inside a previewed page keeps both places: Back

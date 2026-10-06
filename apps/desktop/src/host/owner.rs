@@ -438,9 +438,11 @@ mod tests {
             ),
             "the attached owner answered the page lane"
         );
+        let initial_root = root_reply(1);
         assert!(
-            matches!(root_reply(1).result, Ok(EngineDto::Root { .. })),
-            "the attached owner answered the actor lane"
+            matches!(&initial_root.result, Ok(EngineDto::Root { .. })),
+            "the attached owner must answer the actor lane: {:?}",
+            initial_root.result
         );
 
         drop(external);
