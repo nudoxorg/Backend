@@ -162,6 +162,17 @@ fn assert_complete(
     let mut names = std::collections::BTreeSet::new();
     let mut record_function = |declaration: &backend_compile::SourceDeclaration| {
         if declaration.kind() == backend_compile::DeclarationKind::Function {
+            let index = declaration
+                .name()
+                .strip_prefix("function_")
+                .expect("source-backed name")
+                .parse::<u32>()
+                .expect("source function ordinal in this fixture only");
+            assert_eq!(
+                declaration.line(),
+                2 * index + 2,
+                "absolute current source line"
+            );
             assert!(
                 names.insert(declaration.name().to_owned()),
                 "duplicate parser fact"
@@ -177,7 +188,8 @@ fn assert_complete(
         ProductSourceFileFactsAdmission::PagedVerified(mut paged) => {
             paged
                 .visit_pages(|page| {
-                    for declaration in page.declarations.iter() {
+                    for index in 0..page.len() {
+                        let declaration = page.declaration(index).expect("admitted declaration");
                         record_function(&declaration.to_owned()?);
                     }
                     Ok(())
