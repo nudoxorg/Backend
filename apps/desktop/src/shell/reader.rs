@@ -1775,7 +1775,7 @@ impl Reader {
                     (Some(transit), _) => {
                         let mut carry = transit.carry;
                         carry.retarget(1.0, now);
-                        Transit { verb: Verb::Open, inside: arrival.key, find: None, row_id: None, carry, start: now, fold: None, print_after: PRINT_AFTER, ..transit.clone() }
+                        Transit { verb: Verb::Open, inside: arrival.key, find: None, row_id: None, carry, start: now, fold: None, print_after: if transit.row.is_some() { PRINT_AFTER } else { Duration::ZERO }, ..transit.clone() }
                     }
                     (None, Some(transit)) => Transit { inside: arrival.key, ..transit.clone() },
                     (None, None) => Transit {
@@ -1789,7 +1789,10 @@ impl Reader {
                         start: now,
                         scroll: arrival.scroll,
                         fold: None,
-                        print_after: PRINT_AFTER,
+                        // An edge launch has full height from its first pixel; the plate's
+                        // native mask already admits the ready ink as room is uncovered.
+                        // Only a physical row must first clear the page's top.
+                        print_after: if row.is_some() { PRINT_AFTER } else { Duration::ZERO },
                         gem: None,
                         symbol: None,
                     },
@@ -1883,7 +1886,7 @@ impl Reader {
                     start: now,
                     scroll: Point::default(),
                     fold: None,
-                    print_after: if node.is_some() { UNFOLD_PRINT_AFTER } else { PRINT_AFTER },
+                    print_after: if node.is_some() { UNFOLD_PRINT_AFTER } else { Duration::ZERO },
                     gem,
                     symbol: symbol.filter(|_| node.is_some()),
                 });
