@@ -691,7 +691,7 @@ fn portable_names_public_rank_reproduces_full_rows_across_fresh_pages() {
     expected.sort_by_key(|row| std::cmp::Reverse(row.score));
     assert_ne!(storage_order, expected.iter().map(|row| row.id).collect::<Vec<_>>(), "fixture must exercise names order different from canonical storage");
     let mut seen = Vec::new();
-    let mut token = None;
+    let mut token: Option<String> = None;
     loop {
         let mut fresh = session(&owner, &requests);
         let continuation = token
