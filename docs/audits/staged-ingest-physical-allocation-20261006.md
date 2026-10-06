@@ -1,28 +1,36 @@
-# Physical CAS allocation through staged publication
+# Physical CAS allocation and pending admission accounting
 
-The fixed staging policy now checks actual Unix allocated blocks for all
-immutable object, pack, closure descriptor, and durable closure-index node
-files. Selected and abandoned files remain charged until normal store GC
-reclaims them. Scans use descriptor-relative no-symlink reads, single-link
-regular-file checks, a fixed file-count bound, and constant scan memory.
+Commits 0654a73f and 3e1c3807 introduced an optional store allocator that
+measures actual Unix allocated blocks for immutable object, pack, closure
+descriptor, and closure-index files. The initial production policy attached
+a fixed 256 MiB limit to the entire workspace CAS. Root rejected that policy:
+selected projects cannot remain charged against a pending ingest budget.
+Commit ea70a748 removes this production attachment and the separate fixed
+64 MiB per-intent limit. Neither rejected limit is a current production gate.
 
-Stage admission and immutable page writes check this allocation policy, and
-the completed staged index is checked before entering the command queue.
-Stored membership carries the policy through control rebinds. The durable
-publication validates it again under the store process lock after the
-pre-HEAD callback and before selecting HEAD. This closes the page-only
-accounting gap in the earlier fcc876ec checkpoint. Immutable CAS allocation
-is bounded to the existing four 64 MiB admissions (256 MiB); the command queue
-remains 4 MiB. Per-intent canonical/raw-source payload remains bounded to
-64 MiB. No owned committed CAS reclamation was introduced.
+Production staged limits now derive from the existing validated
+SourceAdmissionPolicy project source and record limits. Four affine live
+admissions share the resulting pending budget. The command queue remains
+4 MiB. The pending catalog charges actual allocated blocks for staged page
+and manifest CAS files, including abandoned admissions after their live
+reservations drop. An exact current HEAD membership proof transfers selected
+IDs out of this catalog. Only accounting markers are removed; normal store
+GC retains ownership of CAS reclamation, and per-closure filesystem leases
+protect retained reader snapshots.
 
-The budget charges immutable CAS and index allocation, not the workspace's
-append-only journal or unrelated product metadata. Directory allocation for
-the three CAS directories is included. Platforms without a physical block
-adapter refuse stored staging rather than substituting logical bytes.
+The pending catalog does not yet charge generated closure-index nodes and
+changed control/relation frontier files. This is an explicit remaining gap,
+so complete physical pending-storage quota acceptance is not claimed.
 
-A source test measures actual allocation before and after durable index
-composition, checks the exact quota boundary and file-count refusal through
-an independently opened cold store, and checks that writing the same immutable
-object again does not allocate a second payload. No passing execution is
-claimed here; fresh full-fleet admission is still required for the next job.
+The optional PhysicalAllocationBudget allocator remains available for an
+explicitly configured total-store policy. It is not attached to production
+staged membership. Its descriptor-relative scans reject symlinks and
+multiply-linked/nonregular files, include CAS directory blocks, and use
+constant scan memory. They exclude the append-only journal and unrelated
+product metadata. Platforms without an allocation adapter refuse this policy
+rather than substituting logical bytes.
+
+An authored allocator test measures physical allocation before and after
+index composition, exact quota boundaries through a cold store, and unchanged
+allocation when the same immutable object is written again. Execution results
+will be recorded separately with the frozen source and admitted compiler job.
